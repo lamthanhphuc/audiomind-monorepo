@@ -1,0 +1,10 @@
+server:
+  port: 8082
+
+ai:
+  service:
+    url: http://localhost:8000
+
+meeting:
+  service:
+    url: http://localhost:8081
