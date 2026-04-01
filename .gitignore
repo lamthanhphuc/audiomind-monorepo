@@ -41,9 +41,9 @@ Thumbs.db
 # Temp artifacts
 **/temp/
 **/.openapi-baseline/
+**/uploads/
 
 # Local service artifacts
 demoRecordAUDIOMID/uploads/
 demoRecordAUDIOMID/ai-service/storage/
-demoRecordAUDIOMID/ai-service/uploads/
 FE-Audiomind/dist/
