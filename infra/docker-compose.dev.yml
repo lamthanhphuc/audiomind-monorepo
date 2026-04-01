@@ -2,19 +2,19 @@ version: "3.9"
 
 services:
   meeting-api:
-    build: ./apps/meeting-api
+    build: ../demoRecordAUDIOMID/meeting-service
     env_file: .env
 
   processing-api:
-    build: ./apps/processing-api
+    build: ../demoRecordAUDIOMID/processing-service
     env_file: .env
 
   ai-api:
-    build: ./apps/ai-api
+    build: ../demoRecordAUDIOMID/ai-service
     env_file: .env
 
   web:
-    build: ./apps/web
+    build: ../FE-Audiomind
 
   db:
     image: postgres:15
