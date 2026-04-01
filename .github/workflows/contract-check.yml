@@ -1,0 +1,51 @@
+name: Contract Check
+
+on:
+  pull_request:
+    paths:
+      - "packages/contracts/**"
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Cache npm
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-node-${{ hashFiles('package-lock.json') }}
+
+      - name: Validate structure
+        run: |
+          test -d packages/contracts || (echo "packages/contracts missing" && exit 1)
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Fetch main branch
+        run: git fetch origin main
+
+      - name: Validate schema
+        run: npm run validate:schema
+
+      - name: OpenAPI diff
+        run: npm run check:openapi
+
+      - name: Generate client
+        run: npm run generate:client
+
+      - name: Type check generated client
+        run: npx tsc --noEmit -p tsconfig.generated.json
+
+      - name: Check drift
+        run: git diff --exit-code

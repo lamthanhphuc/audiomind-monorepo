@@ -1,0 +1,40 @@
+services:
+  db:
+    image: postgres:15
+    container_name: postgres
+    restart: always
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: pass
+      POSTGRES_DB: mydb
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  api:
+    build: .
+    container_name: ai-service-gpu
+    depends_on:
+      - db
+    environment:
+      DATABASE_URL: postgresql://user:pass@postgres:5432/mydb
+      HUGGINGFACE_TOKEN: ${HUGGINGFACE_TOKEN}
+      AI_PROVIDER: ollama
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+      OLLAMA_MODEL: qwen2.5:3b-instruct
+      OLLAMA_TIMEOUT_SECONDS: 300
+      DEVICE: cuda   
+    ports:
+      - "8001:8000"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: [gpu]
+              count: all
+    runtime: nvidia
+
+volumes:
+  postgres_data:

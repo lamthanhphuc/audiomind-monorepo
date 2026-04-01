@@ -1,0 +1,11 @@
+{
+  "timestamp": "ISO8601",
+  "level": "INFO|ERROR|WARN",
+  "service": "processing-api",
+  "correlation_id": "...",
+  "meeting_id": "...",
+  "job_id": "...",
+  "step": "stt|diarization|summary",
+  "duration_ms": 123,
+  "message": "..."
+}

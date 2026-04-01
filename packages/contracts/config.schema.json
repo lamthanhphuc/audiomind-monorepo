@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "config.schema.json",
+  "type": "object",
+  "required": [
+    "NODE_ENV",
+    "DATABASE_URL",
+    "AI_API_URL"
+  ],
+  "properties": {
+    "NODE_ENV": {
+      "type": "string",
+      "enum": ["development", "staging", "production"]
+    },
+    "DATABASE_URL": {
+      "type": "string",
+      "minLength": 1
+    },
+    "AI_API_URL": {
+      "type": "string",
+      "format": "uri"
+    },
+    "LOG_LEVEL": {
+      "type": "string",
+      "enum": ["debug", "info", "warn", "error"]
+    }
+  },
+  "additionalProperties": false
+}

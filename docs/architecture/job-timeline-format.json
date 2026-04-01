@@ -1,0 +1,10 @@
+{
+  "job_id": "123",
+  "timeline": [
+    { "step": "created", "service": "meeting-api", "duration_ms": 10 },
+    { "step": "queued", "service": "processing-api", "duration_ms": 5 },
+    { "step": "stt", "service": "ai-api", "duration_ms": 1200 },
+    { "step": "diarization", "service": "ai-api", "duration_ms": 800 },
+    { "step": "summary", "service": "ai-api", "duration_ms": 600 }
+  ]
+}
