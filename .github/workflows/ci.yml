@@ -1,0 +1,157 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Cache npm
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-node-${{ hashFiles('package-lock.json') }}
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: 3.11
+
+      - name: Validate monorepo structure
+        run: |
+          test -d apps/meeting-api || (echo "apps/meeting-api missing" && exit 1)
+          test -d apps/processing-api || (echo "apps/processing-api missing" && exit 1)
+          test -d apps/ai-api || (echo "apps/ai-api missing" && exit 1)
+          test -d packages/contracts || (echo "packages/contracts missing" && exit 1)
+
+      - name: Install deps (node)
+        run: |
+          npm ci
+
+      - name: Lint (TS)
+        run: |
+          npm run lint
+
+      - name: Install Python deps
+        run: |
+          test -f apps/ai-api/requirements.txt || (echo "apps/ai-api/requirements.txt missing" && exit 1)
+          pip install -r apps/ai-api/requirements.txt
+
+      - name: Lint Python
+        run: |
+          pip install ruff black
+          ruff check .
+          black --check .
+
+      - name: Build Java
+        run: |
+          test -f pom.xml || (echo "root pom.xml missing" && exit 1)
+          mvn -B verify --no-transfer-progress -DskipTests
+
+      - name: Run tests
+        run: |
+          npm test --if-present
+          mvn test --no-transfer-progress
+          pip install pytest
+          pytest apps/ai-api
+
+  contract-check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Cache npm
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-node-${{ hashFiles('package-lock.json') }}
+
+      - name: Validate monorepo structure
+        run: |
+          test -d packages/contracts || (echo "packages/contracts missing" && exit 1)
+
+      - name: Install deps (node)
+        run: |
+          npm ci
+
+      - name: Fetch main branch
+        run: git fetch origin main
+
+      - name: Validate schemas
+        run: |
+          npm run validate:schema
+
+      - name: Check OpenAPI breaking changes
+        run: |
+          npm run check:openapi
+
+      - name: Generate client
+        run: |
+          npm run generate:client
+
+      - name: Type check generated client
+        run: |
+          npx tsc --noEmit -p tsconfig.generated.json
+
+      - name: Check client drift
+        run: |
+          git diff --exit-code
+
+  commit-check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Cache npm
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-node-${{ hashFiles('package-lock.json') }}
+
+      - name: Install deps (node)
+        run: |
+          npm ci
+
+      - name: Validate commit messages
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            npx commitlint --from ${{ github.event.pull_request.base.sha }} --to ${{ github.sha }} --verbose
+          else
+            npx commitlint --from HEAD~1 --to HEAD --verbose
+          fi

@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://audiomind/contracts/error.schema.json",
+  "title": "ErrorContract",
+  "type": "object",
+  "required": ["code", "message", "retryable"],
+  "properties": {
+    "code": {
+      "type": "string",
+      "enum": [
+        "VALIDATION_ERROR",
+        "EXTERNAL_SERVICE_ERROR",
+        "AI_MODEL_ERROR",
+        "TIMEOUT",
+        "RATE_LIMIT",
+        "UNKNOWN"
+      ]
+    },
+    "message": { "type": "string" },
+    "retryable": { "type": "boolean" },
+    "http_status": { "type": "number" },
+    "correlation_id": { "type": "string" }
+  },
+  "additionalProperties": false
+}

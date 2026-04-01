@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://audiomind/contracts/ai-step.schema.json",
+  "title": "AIStepContract",
+  "type": "object",
+  "required": ["step", "output", "duration_ms"],
+  "properties": {
+    "step": { "type": "string" },
+    "input_ref": { "type": "string" },
+    "output": {},
+    "confidence": { "type": "number" },
+    "duration_ms": { "type": "number" },
+    "model": { "type": "string" },
+    "prompt_hash": { "type": "string" },
+    "error_code": { "type": "string" }
+  },
+  "additionalProperties": false
+}

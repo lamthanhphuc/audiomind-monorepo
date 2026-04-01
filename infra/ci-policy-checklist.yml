@@ -1,0 +1,18 @@
+# pseudo checklist
+
+checks:
+  - lint
+  - test
+  - build
+
+  - contract_check:
+      description: "Fail neu OpenAPI breaking"
+
+  - client_drift_check:
+      description: "Fail neu generated client khong match OpenAPI"
+
+  - schema_validation:
+      description: "Validate JSON schema (error + ai-step)"
+
+  - commit_format:
+      description: "Conventional commits required"

@@ -1,0 +1,49 @@
+# Node / JS
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Build outputs
+dist/
+build/
+coverage/
+*.tsbuildinfo
+
+# Java / Maven
+**/target/
+!**/src/main/**/target/
+!**/src/test/**/target/
+
+# Python
+**/__pycache__/
+**/*.py[cod]
+**/.pytest_cache/
+**/.mypy_cache/
+**/venv/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Logs
+**/logs/
+*.log
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Temp artifacts
+**/temp/
+**/.openapi-baseline/
+
+# Local service artifacts
+demoRecordAUDIOMID/uploads/
+demoRecordAUDIOMID/ai-service/storage/
+demoRecordAUDIOMID/ai-service/uploads/
+FE-Audiomind/dist/

@@ -1,0 +1,29 @@
+{
+  "name": "audiomind-monorepo-tooling",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "prepare": "husky install",
+    "lint": "eslint . --ext .ts,.tsx,.js,.jsx --no-error-on-unmatched-pattern",
+    "test": "jest --passWithNoTests",
+    "validate:config:node": "node packages/tooling/config-validation/validate-config.mjs",
+    "generate:client": "openapi-typescript ./packages/contracts/meeting-api.yaml -o ./packages/api-clients/meeting.ts && openapi-typescript ./packages/contracts/processing-api.yaml -o ./packages/api-clients/processing.ts && openapi-typescript ./packages/contracts/ai-api.yaml -o ./packages/api-clients/ai.ts",
+    "typecheck:client": "tsc --noEmit -p tsconfig.generated.json",
+    "validate:schema": "ajv compile --spec=draft2020 -c ajv-formats -s packages/contracts/*.schema.json",
+    "check:openapi": "node ./infra/scripts/check-openapi-main.mjs"
+  },
+  "devDependencies": {
+    "@typescript-eslint/parser": "^8.29.1",
+    "@commitlint/cli": "^19.8.0",
+    "@commitlint/config-conventional": "^19.8.0",
+    "ajv": "^8.17.1",
+    "ajv-cli": "^5.0.0",
+    "ajv-formats": "^3.0.1",
+    "eslint": "^9.24.0",
+    "husky": "^9.1.7",
+    "jest": "^29.7.0",
+    "openapi-diff": "^0.24.1",
+    "openapi-typescript": "^7.6.1",
+    "typescript": "^5.8.3"
+  }
+}
