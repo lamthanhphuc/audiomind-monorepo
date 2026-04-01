@@ -13,7 +13,6 @@ from app.database import (
     wait_for_database,
     ensure_bigint_meeting_id,
 )
-from app.pipeline import ProcessingPipeline
 from app.schemas import (
     ProcessRequest,
     ProcessResponse,
@@ -24,6 +23,12 @@ from app.schemas import (
 )
 from app.config import get_settings, get_runtime_device
 from app.ffmpeg_utils import ensure_ffmpeg_on_path
+
+try:
+    from app.pipeline import ProcessingPipeline
+except Exception as pipeline_import_error:
+    ProcessingPipeline = None
+    logger.warning(f"Pipeline modules unavailable: {repr(pipeline_import_error)}")
 
 # Configure logging
 logger.remove()
@@ -47,7 +52,7 @@ app.add_middleware(
 )
 
 # Initialize pipeline
-pipeline = ProcessingPipeline()
+pipeline = ProcessingPipeline() if ProcessingPipeline is not None else None
 settings = get_settings()
 
 
@@ -85,6 +90,12 @@ async def process_audio(
     - Saves results to database
     """
     try:
+        if pipeline is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Processing pipeline dependencies are not available",
+            )
+
         logger.info(
             f"Received process request for meeting {request.meeting_id}, audio: {request.audio_path}"
         )
@@ -218,9 +229,12 @@ async def get_analysis(meeting_id: int, db: Session = Depends(get_db)):
 @app.on_event("startup")
 async def startup_event():
     """Startup event"""
-    wait_for_database()
-    ensure_bigint_meeting_id()
-    Base.metadata.create_all(bind=engine)
+    try:
+        wait_for_database()
+        ensure_bigint_meeting_id()
+        Base.metadata.create_all(bind=engine)
+    except Exception as e:
+        logger.warning(f"Database bootstrap skipped: {repr(e)}")
 
     try:
         ensure_ffmpeg_on_path(log=True)
