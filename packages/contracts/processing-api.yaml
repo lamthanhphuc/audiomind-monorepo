@@ -3,9 +3,49 @@ info:
   title: Processing API
   version: 0.1.0
 paths:
+  /api/v1/jobs:
+    post:
+      summary: Create processing job
+      operationId: createProcessingJob
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateJobRequest"
+      responses:
+        "200":
+          description: Job processed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobResponse"
   /health:
     get:
       summary: Health check
       responses:
         "200":
           description: OK
+components:
+  schemas:
+    CreateJobRequest:
+      type: object
+      required:
+        - meeting_id
+      properties:
+        meeting_id:
+          type: string
+    JobResponse:
+      type: object
+      required:
+        - meeting_id
+        - status
+      properties:
+        meeting_id:
+          type: string
+        status:
+          type: string
+        transcript:
+          type: string
+        summary:
+          type: string

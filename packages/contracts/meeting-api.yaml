@@ -3,9 +3,88 @@ info:
   title: Meeting API
   version: 0.1.0
 paths:
+  /api/v1/meetings:
+    post:
+      summary: Create meeting
+      operationId: createMeeting
+      responses:
+        "200":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Meeting"
+  /api/v1/meetings/{id}:
+    get:
+      summary: Get meeting
+      operationId: getMeeting
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Meeting
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Meeting"
+  /api/v1/meetings/{id}/result:
+    put:
+      summary: Update meeting result
+      operationId: updateMeetingResult
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MeetingResultUpdate"
+      responses:
+        "200":
+          description: Updated meeting
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Meeting"
   /health:
     get:
       summary: Health check
       responses:
         "200":
           description: OK
+components:
+  schemas:
+    Meeting:
+      type: object
+      required:
+        - id
+        - status
+      properties:
+        id:
+          type: string
+        status:
+          type: string
+        transcript:
+          type: string
+          nullable: true
+        summary:
+          type: string
+          nullable: true
+    MeetingResultUpdate:
+      type: object
+      required:
+        - transcript
+        - summary
+      properties:
+        transcript:
+          type: string
+        summary:
+          type: string

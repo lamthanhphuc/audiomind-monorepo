@@ -3,9 +3,43 @@ info:
   title: AI API
   version: 0.1.0
 paths:
+  /api/v1/process:
+    post:
+      summary: Process meeting in AI service
+      operationId: processMeetingV1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProcessRequest"
+      responses:
+        "200":
+          description: Mock processing result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProcessResult"
   /health:
     get:
       summary: Health check
       responses:
         "200":
           description: OK
+components:
+  schemas:
+    ProcessRequest:
+      type: object
+      properties:
+        meeting_id:
+          type: string
+    ProcessResult:
+      type: object
+      required:
+        - transcript
+        - summary
+      properties:
+        transcript:
+          type: string
+        summary:
+          type: string

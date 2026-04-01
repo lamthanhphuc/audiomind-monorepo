@@ -111,6 +111,18 @@ async def process_audio(
         raise HTTPException(status_code=500, detail=repr(e))
 
 
+@app.post("/api/v1/process")
+async def process_mock_v1(request: dict):
+    """Minimal v1 endpoint for vertical slice integration."""
+    meeting_id = request.get("meeting_id")
+    logger.info(f"Received v1 mock process request for meeting {meeting_id}")
+
+    return {
+        "transcript": "This is a sample transcript",
+        "summary": "This is a short summary"
+    }
+
+
 @app.post("/api/upload-audio")
 async def upload_audio(file: UploadFile = File(...)):
     try:

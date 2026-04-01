@@ -1,10 +1,16 @@
 server:
   port: 8082
 
+audiomind:
+  ai-api:
+    base-url: ${AUDIOMIND_AI_API_BASE_URL:http://localhost:8000}
+  meeting-api:
+    base-url: ${AUDIOMIND_MEETING_API_BASE_URL:http://localhost:8081}
+
 ai:
   service:
-    url: http://localhost:8000
+    url: ${AUDIOMIND_AI_API_BASE_URL:http://localhost:8000}
 
 meeting:
   service:
-    url: http://localhost:8081
+    url: ${AUDIOMIND_MEETING_API_BASE_URL:http://localhost:8081}
