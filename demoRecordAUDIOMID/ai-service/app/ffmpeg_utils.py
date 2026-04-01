@@ -23,7 +23,13 @@ def _candidate_paths() -> list[Path]:
                 Path(r"C:\ffmpeg\bin\ffmpeg.exe"),
                 program_data / "chocolatey" / "bin" / "ffmpeg.exe",
                 Path.home() / "scoop" / "shims" / "ffmpeg.exe",
-                Path.home() / "scoop" / "apps" / "ffmpeg" / "current" / "bin" / "ffmpeg.exe",
+                Path.home()
+                / "scoop"
+                / "apps"
+                / "ffmpeg"
+                / "current"
+                / "bin"
+                / "ffmpeg.exe",
             ]
         )
 

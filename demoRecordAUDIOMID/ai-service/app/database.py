@@ -20,8 +20,7 @@ def wait_for_database() -> None:
 
 
 def ensure_bigint_meeting_id() -> None:
-    migration_sql = text(
-        """
+    migration_sql = text("""
         DO $$
         BEGIN
             IF EXISTS (
@@ -46,8 +45,7 @@ def ensure_bigint_meeting_id() -> None:
                 ALTER TABLE analysis ALTER COLUMN meeting_id TYPE BIGINT;
             END IF;
         END$$;
-        """
-    )
+        """)
 
     with engine.begin() as connection:
         connection.execute(migration_sql)

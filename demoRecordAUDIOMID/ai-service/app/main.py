@@ -6,15 +6,21 @@ import sys
 from pathlib import Path
 from uuid import uuid4
 
-from app.database import get_db, engine, Base, wait_for_database, ensure_bigint_meeting_id
+from app.database import (
+    get_db,
+    engine,
+    Base,
+    wait_for_database,
+    ensure_bigint_meeting_id,
+)
 from app.pipeline import ProcessingPipeline
 from app.schemas import (
-    ProcessRequest, 
-    ProcessResponse, 
-    TranscriptResponse, 
+    ProcessRequest,
+    ProcessResponse,
+    TranscriptResponse,
     AnalysisResponse,
     TranscriptSegment,
-    ActionItem
+    ActionItem,
 )
 from app.config import get_settings, get_runtime_device
 from app.ffmpeg_utils import ensure_ffmpeg_on_path
@@ -28,7 +34,7 @@ logger.add("logs/app.log", rotation="500 MB", level="DEBUG")
 app = FastAPI(
     title="AudioMind AI Service",
     description="AI-powered audio processing service for meeting transcription and analysis",
-    version="1.0.0"
+    version="1.0.0",
 )
 
 # CORS middleware
@@ -48,11 +54,7 @@ settings = get_settings()
 @app.get("/")
 async def root():
     """Root endpoint"""
-    return {
-        "service": "AudioMind AI Service",
-        "version": "1.0.0",
-        "status": "running"
-    }
+    return {"service": "AudioMind AI Service", "version": "1.0.0", "status": "running"}
 
 
 @app.get("/health")
@@ -63,7 +65,7 @@ async def health_check():
         "whisper_model": settings.whisper_model,
         "device": get_runtime_device(),
         "lazy_load_models": settings.lazy_load_models,
-        "enable_speaker_diarization": settings.enable_speaker_diarization
+        "enable_speaker_diarization": settings.enable_speaker_diarization,
     }
 
 
@@ -71,11 +73,11 @@ async def health_check():
 async def process_audio(
     request: ProcessRequest,
     background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """
     Process audio file through complete pipeline
-    
+
     - Loads audio from path
     - Performs speech recognition
     - Performs speaker diarization
@@ -88,10 +90,10 @@ async def process_audio(
         )
 
         meeting_id = request.meeting_id
-        
+
         # Process in background (for long audio files)
         # For prototype, we'll process synchronously
-        result = pipeline.process_meeting(
+        pipeline.process_meeting(
             audio_path=request.audio_path,
             meeting_id=meeting_id,
             db=db,
@@ -99,13 +101,13 @@ async def process_audio(
             glossary_terms=request.glossary_terms,
             language=request.language,
         )
-        
+
         return ProcessResponse(
             meeting_id=meeting_id,
             status="completed",
-            message="Processing completed successfully"
+            message="Processing completed successfully",
         )
-        
+
     except Exception as e:
         logger.exception(f"Processing error: {repr(e)}")
         raise HTTPException(status_code=500, detail=repr(e))
@@ -119,7 +121,7 @@ async def process_mock_v1(request: dict):
 
     return {
         "transcript": "This is a sample transcript",
-        "summary": "This is a short summary"
+        "summary": "This is a short summary",
     }
 
 
@@ -150,32 +152,29 @@ async def upload_audio(file: UploadFile = File(...)):
 async def get_transcript(meeting_id: int, db: Session = Depends(get_db)):
     """
     Get transcript for a meeting
-    
+
     Returns all transcript segments with speaker labels and timestamps
     """
     try:
         logger.info(f"Fetching transcript for meeting {meeting_id}")
-        
+
         transcripts = pipeline.get_transcript(meeting_id, db)
-        
+
         if not transcripts:
             raise HTTPException(status_code=404, detail="Transcript not found")
-        
+
         segments = [
             TranscriptSegment(
                 speaker=t.speaker,
                 start_time=t.start_time,
                 end_time=t.end_time,
-                text=t.text
+                text=t.text,
             )
             for t in transcripts
         ]
-        
-        return TranscriptResponse(
-            meeting_id=meeting_id,
-            transcripts=segments
-        )
-        
+
+        return TranscriptResponse(meeting_id=meeting_id, transcripts=segments)
+
     except HTTPException:
         raise
     except Exception as e:
@@ -187,30 +186,28 @@ async def get_transcript(meeting_id: int, db: Session = Depends(get_db)):
 async def get_analysis(meeting_id: int, db: Session = Depends(get_db)):
     """
     Get AI analysis for a meeting
-    
+
     Returns summary, keywords, technical terms, and action items
     """
     try:
         logger.info(f"Fetching analysis for meeting {meeting_id}")
-        
+
         analysis = pipeline.get_analysis(meeting_id, db)
-        
+
         if not analysis:
             raise HTTPException(status_code=404, detail="Analysis not found")
-        
-        action_items = [
-            ActionItem(**item) for item in analysis.action_items
-        ]
-        
+
+        action_items = [ActionItem(**item) for item in analysis.action_items]
+
         return AnalysisResponse(
             meeting_id=meeting_id,
             summary=analysis.summary,
             keywords=analysis.keywords,
             technical_terms=analysis.technical_terms,
             action_items=action_items,
-            created_at=analysis.created_at
+            created_at=analysis.created_at,
         )
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -246,9 +243,5 @@ async def shutdown_event():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(
-        "app.main:app",
-        host=settings.host,
-        port=settings.port,
-        reload=True
-    )
+
+    uvicorn.run("app.main:app", host=settings.host, port=settings.port, reload=True)

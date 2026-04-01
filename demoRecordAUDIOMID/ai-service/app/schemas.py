@@ -40,7 +40,7 @@ class ProcessResponse(BaseModel):
 class TranscriptResponse(BaseModel):
     meeting_id: int
     transcripts: List[TranscriptSegment]
-    
+
     class Config:
         from_attributes = True
 
@@ -52,6 +52,6 @@ class AnalysisResponse(BaseModel):
     technical_terms: List[str]
     action_items: List[ActionItem]
     created_at: datetime
-    
+
     class Config:
         from_attributes = True

@@ -9,8 +9,25 @@ import unicodedata
 
 class AIAnalyzer:
     STOPWORDS = {
-        "trong", "va", "và", "cua", "của", "nhau", "la", "là", "mot", "một", "cac", "các",
-        "cho", "tai", "tại", "the", "of", "in", "on"
+        "trong",
+        "va",
+        "và",
+        "cua",
+        "của",
+        "nhau",
+        "la",
+        "là",
+        "mot",
+        "một",
+        "cac",
+        "các",
+        "cho",
+        "tai",
+        "tại",
+        "the",
+        "of",
+        "in",
+        "on",
     }
 
     IT_WHITELIST_TERMS = [
@@ -59,7 +76,10 @@ class AIAnalyzer:
     def _phrase_in_text(self, phrase: str, normalized_text: str) -> bool:
         if not phrase or not normalized_text:
             return False
-        return re.search(rf"(?<!\\w){re.escape(phrase)}(?!\\w)", normalized_text) is not None
+        return (
+            re.search(rf"(?<!\\w){re.escape(phrase)}(?!\\w)", normalized_text)
+            is not None
+        )
 
     def _extract_candidate_phrases_by_regex(self, transcript: str) -> Set[str]:
         normalized_text = self._normalize_text(transcript)
@@ -72,7 +92,7 @@ class AIAnalyzer:
         max_ngram = 5
         for n in range(2, max_ngram + 1):
             for idx in range(0, max(0, len(words) - n + 1)):
-                ngram_words = words[idx:idx + n]
+                ngram_words = words[idx : idx + n]
                 if all(word in self.STOPWORDS for word in ngram_words):
                     continue
                 candidates.add(" ".join(ngram_words))
@@ -86,8 +106,7 @@ class AIAnalyzer:
         keywords: List[str],
     ) -> List[str]:
         whitelist_map = {
-            self._normalize_text(term): term
-            for term in self.IT_WHITELIST_TERMS
+            self._normalize_text(term): term for term in self.IT_WHITELIST_TERMS
         }
         whitelist_order = list(whitelist_map.keys())
 
@@ -97,9 +116,7 @@ class AIAnalyzer:
             if str(item).strip()
         }
         normalized_keywords = {
-            self._normalize_text(item)
-            for item in (keywords or [])
-            if str(item).strip()
+            self._normalize_text(item) for item in (keywords or []) if str(item).strip()
         }
         normalized_transcript = self._normalize_text(transcript)
 
@@ -121,9 +138,7 @@ class AIAnalyzer:
 
         # 2) Match single-token whitelist entries (excluding stopwords).
         single_token_whitelist = {
-            key: value
-            for key, value in whitelist_map.items()
-            if " " not in key
+            key: value for key, value in whitelist_map.items() if " " not in key
         }
         token_candidates: Set[str] = set()
         for value in normalized_terms.union(normalized_keywords):
@@ -141,7 +156,9 @@ class AIAnalyzer:
         # whitelist + regex phrase candidates + intersection with keywords.
         if not selected_keys:
             regex_candidates = self._extract_candidate_phrases_by_regex(transcript)
-            keyword_intersection = normalized_keywords.intersection(whitelist_map.keys())
+            keyword_intersection = normalized_keywords.intersection(
+                whitelist_map.keys()
+            )
 
             for phrase_key in whitelist_order:
                 if phrase_key in keyword_intersection or phrase_key in regex_candidates:
@@ -182,7 +199,7 @@ class AIAnalyzer:
         start = text.find("{")
         end = text.rfind("}")
         if start != -1 and end != -1 and end > start:
-            text = text[start:end + 1]
+            text = text[start : end + 1]
 
         return text.strip()
 
@@ -195,7 +212,9 @@ class AIAnalyzer:
             if repaired != cleaned:
                 try:
                     data = json.loads(repaired)
-                    logger.warning("Recovered malformed JSON from Ollama response using local repair.")
+                    logger.warning(
+                        "Recovered malformed JSON from Ollama response using local repair."
+                    )
                 except json.JSONDecodeError:
                     logger.error(f"JSON decode failed at pos={e.pos}: {e}")
                     logger.error(f"Raw response: {text}")
@@ -289,16 +308,10 @@ NỘI DUNG:
         payload = {
             "model": self.model,
             "stream": False,
-            "options": {
-                "temperature": 0.2,
-                "num_predict": 150
-            },
+            "options": {"temperature": 0.2, "num_predict": 150},
             "messages": [
-                {
-                "role": "system",
-                "content": system_prompt
-            },
-                {"role": "user", "content": prompt}
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt},
             ],
         }
 
@@ -330,7 +343,9 @@ NỘI DUNG:
                 continue
             freq[k] = freq.get(k, 0) + 1
 
-        keywords = [k for k, _ in sorted(freq.items(), key=lambda kv: kv[1], reverse=True)[:10]]
+        keywords = [
+            k for k, _ in sorted(freq.items(), key=lambda kv: kv[1], reverse=True)[:10]
+        ]
 
         logger.warning(f"Using fallback analysis: {reason}")
         return {
@@ -353,7 +368,9 @@ NỘI DUNG:
                 continue
             freq[k] = freq.get(k, 0) + 1
 
-        keywords = [k for k, _ in sorted(freq.items(), key=lambda kv: kv[1], reverse=True)[:10]]
+        keywords = [
+            k for k, _ in sorted(freq.items(), key=lambda kv: kv[1], reverse=True)[:10]
+        ]
 
         return {
             "summary": summary,
@@ -362,15 +379,21 @@ NỘI DUNG:
             "action_items": self._extract_action_items_fallback(text, summary),
         }
 
-    def _extract_technical_terms_fallback(self, transcript: str, keywords: List[str]) -> List[str]:
+    def _extract_technical_terms_fallback(
+        self, transcript: str, keywords: List[str]
+    ) -> List[str]:
         return self.sanitize_technical_terms(
             transcript=transcript,
             technical_terms=[],
             keywords=keywords,
         )
 
-    def _extract_action_items_fallback(self, transcript: str, summary: str) -> List[Dict]:
-        lines = [line.strip() for line in (transcript or "").splitlines() if line.strip()]
+    def _extract_action_items_fallback(
+        self, transcript: str, summary: str
+    ) -> List[Dict]:
+        lines = [
+            line.strip() for line in (transcript or "").splitlines() if line.strip()
+        ]
         triggers = ("cần", "nên", "phải", "hãy", "chuẩn bị", "thực hiện", "hoàn thành")
 
         tasks: List[str] = []
@@ -385,7 +408,11 @@ NỘI DUNG:
 
             if not tasks:
                 base = summary.strip() if isinstance(summary, str) else ""
-                default_task = base[:180] if base else "Tổng hợp nội dung chính của buổi họp và lập danh sách việc cần làm."
+                default_task = (
+                    base[:180]
+                    if base
+                    else "Tổng hợp nội dung chính của buổi họp và lập danh sách việc cần làm."
+                )
                 tasks = [default_task]
 
         return [{"task": task, "owner": None, "deadline": None} for task in tasks[:3]]
@@ -415,7 +442,7 @@ NỘI DUNG:
         def _normalize_list(items):
             normalized = []
             seen_local = set()
-            for item in (items or []):
+            for item in items or []:
                 value = str(item).strip()
                 if not value:
                     continue
@@ -439,9 +466,13 @@ NỘI DUNG:
         technical_terms = [t for t in technical_terms if t.lower() not in keyword_keys]
 
         if not technical_terms:
-            fallback_terms = self._extract_technical_terms_fallback(transcript, keywords)
+            fallback_terms = self._extract_technical_terms_fallback(
+                transcript, keywords
+            )
             fallback_terms = _normalize_list(fallback_terms)
-            technical_terms = [t for t in fallback_terms if t.lower() not in keyword_keys]
+            technical_terms = [
+                t for t in fallback_terms if t.lower() not in keyword_keys
+            ]
 
         # Ensure keywords don't become too technical-only by removing exact duplicates both ways.
         term_keys = {t.lower() for t in technical_terms}
@@ -517,10 +548,7 @@ TEXT:
             "model": self.model,
             "stream": False,
             "format": "json",
-            "options": {
-                "temperature": 0.1,
-                "num_predict": 1000
-            },
+            "options": {"temperature": 0.1, "num_predict": 1000},
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": prompt},
@@ -536,7 +564,9 @@ TEXT:
             )
             return self._loads_json_safe(content)
         except json.JSONDecodeError:
-            logger.warning("Primary Ollama analysis returned malformed JSON; requesting JSON repair from Ollama.")
+            logger.warning(
+                "Primary Ollama analysis returned malformed JSON; requesting JSON repair from Ollama."
+            )
 
             repair_system_prompt = (
                 "Bạn là bộ sửa JSON. Chỉ được trả về đúng một object JSON hợp lệ, "
@@ -578,7 +608,9 @@ TEXT:
         expect_json: bool,
     ) -> str:
         with httpx.Client(timeout=self.timeout_seconds) as client:
-            chat_response = client.post(f"{self.ollama_base_url}/api/chat", json=chat_payload)
+            chat_response = client.post(
+                f"{self.ollama_base_url}/api/chat", json=chat_payload
+            )
             if chat_response.status_code != 404:
                 chat_response.raise_for_status()
                 chat_body = chat_response.json()
@@ -586,7 +618,9 @@ TEXT:
                 if content:
                     return content.strip()
 
-            logger.warning("Ollama /api/chat unavailable; falling back to Ollama /api/generate compatibility endpoint")
+            logger.warning(
+                "Ollama /api/chat unavailable; falling back to Ollama /api/generate compatibility endpoint"
+            )
 
             generate_payload = {
                 "model": self.model,
@@ -605,7 +639,9 @@ TEXT:
             generate_body = generate_response.json()
             content = (generate_body.get("response", "") or "").strip()
             if not content:
-                raise ValueError(f"Empty response from Ollama generate API: {generate_body}")
+                raise ValueError(
+                    f"Empty response from Ollama generate API: {generate_body}"
+                )
             return content
 
     def generate_summary(self, transcript: str) -> str:

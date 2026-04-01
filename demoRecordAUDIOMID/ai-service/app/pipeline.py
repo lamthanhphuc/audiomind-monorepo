@@ -20,12 +20,12 @@ class ProcessingPipeline:
     """
     Main processing pipeline orchestrating all services
     """
-    
+
     def __init__(self):
         """Initialize all processing components"""
-        
+
         logger.info("Initializing Processing Pipeline")
-        
+
         # Lightweight components are initialized immediately.
         self.audio_processor = AudioProcessor(target_sr=16000)
 
@@ -36,7 +36,7 @@ class ProcessingPipeline:
 
         if not settings.lazy_load_models:
             self._ensure_models_loaded()
-        
+
         logger.info("Processing Pipeline initialized successfully")
 
     def _ensure_models_loaded(self):
@@ -68,15 +68,16 @@ class ProcessingPipeline:
                 from app.services.speaker_diarizer import SpeakerDiarizer
 
                 self.speaker_diarizer = SpeakerDiarizer(
-                    hf_token=settings.huggingface_token,
-                    device=runtime_device
+                    hf_token=settings.huggingface_token, device=runtime_device
                 )
                 self.diarization_available = True
             except Exception as e:
                 # Fallback gracefully to single-speaker mode when model/token is unavailable.
                 self.diarization_available = False
                 self.speaker_diarizer = None
-                logger.warning(f"Speaker diarization auto-disabled due to initialization failure: {repr(e)}")
+                logger.warning(
+                    f"Speaker diarization auto-disabled due to initialization failure: {repr(e)}"
+                )
 
     def _should_enable_diarization(self, runtime_device: str) -> bool:
         # GPU defaults to diarization enabled; CPU follows config toggle.
@@ -89,7 +90,9 @@ class ProcessingPipeline:
             "meeting_id": meeting_id,
             "runtime_device": runtime_device,
             "whisper_model": settings.whisper_model,
-            "enable_speaker_diarization": self._should_enable_diarization(runtime_device),
+            "enable_speaker_diarization": self._should_enable_diarization(
+                runtime_device
+            ),
             "diarization_available": self.diarization_available,
             "ollama_timeout_seconds": settings.ollama_timeout_seconds,
             "timestamp": datetime.utcnow().isoformat(),
@@ -100,7 +103,9 @@ class ProcessingPipeline:
         logs_dir = Path(__file__).resolve().parent.parent / "logs"
         logs_dir.mkdir(parents=True, exist_ok=True)
         baseline_path = logs_dir / f"baseline_{meeting_id}.json"
-        baseline_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        baseline_path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
 
     def _normalize_speaker_labels(self, segments: List[Dict]) -> List[Dict]:
         speaker_map: Dict[str, str] = {}
@@ -147,30 +152,39 @@ class ProcessingPipeline:
             run_end = idx
             while run_end + 1 < len(segments):
                 nxt = segments[run_end + 1]
-                next_text = re.sub(r"\s+", " ", str(nxt.get("text", "")).strip().lower())
-                time_gap = float(nxt.get("start", 0.0)) - float(segments[run_end].get("end", 0.0))
+                next_text = re.sub(
+                    r"\s+", " ", str(nxt.get("text", "")).strip().lower()
+                )
+                time_gap = float(nxt.get("start", 0.0)) - float(
+                    segments[run_end].get("end", 0.0)
+                )
                 if next_text != normalized_text or time_gap > max_time_gap_seconds:
                     break
                 run_end += 1
 
             run_length = run_end - idx + 1
-            is_short_loop = bool(normalized_text) and len(normalized_text) <= max_short_text_len
+            is_short_loop = (
+                bool(normalized_text) and len(normalized_text) <= max_short_text_len
+            )
 
             if is_short_loop and run_length > repeat_threshold:
                 deduped.append(current)
                 total_removed += run_length - 1
             else:
-                deduped.extend(segments[idx:run_end + 1])
+                deduped.extend(segments[idx : run_end + 1])
 
             idx = run_end + 1
 
         if total_removed > 0:
-            logger.warning(f"Removed {total_removed} repeated transcript segments before DB save")
+            logger.warning(
+                f"Removed {total_removed} repeated transcript segments before DB save"
+            )
 
         return deduped
 
     def _resolve_audio_path(self, audio_path: str) -> str:
         """Resolve incoming path from other services to an existing local file path."""
+
         def _decode_mojibake(value: str) -> str:
             try:
                 return value.encode("latin-1").decode("utf-8")
@@ -194,11 +208,13 @@ class ProcessingPipeline:
             if raw_path.is_absolute():
                 candidates.append(raw_path)
             else:
-                candidates.extend([
-                    project_root / raw_path,
-                    workspace_root / raw_path,
-                    Path.cwd() / raw_path,
-                ])
+                candidates.extend(
+                    [
+                        project_root / raw_path,
+                        workspace_root / raw_path,
+                        Path.cwd() / raw_path,
+                    ]
+                )
 
         upload_roots = [
             Path("/app/uploads"),
@@ -266,7 +282,13 @@ class ProcessingPipeline:
                 "Lambda",
                 "DevOps",
             ],
-            "finance": ["invoice", "balance sheet", "VAT", "reconciliation", "cash flow"],
+            "finance": [
+                "invoice",
+                "balance sheet",
+                "VAT",
+                "reconciliation",
+                "cash flow",
+            ],
             "hr": ["onboarding", "payroll", "KPI", "OKR", "headcount"],
         }
 
@@ -279,7 +301,7 @@ class ProcessingPipeline:
                 seen.add(key)
                 merged_terms.append(term)
 
-        for term in (glossary_terms or []):
+        for term in glossary_terms or []:
             clean_term = str(term).strip()
             if not clean_term:
                 continue
@@ -295,7 +317,9 @@ class ProcessingPipeline:
         if not merged_terms:
             return base
 
-        return f"{base} Keep original spelling for these terms: {', '.join(merged_terms)}."
+        return (
+            f"{base} Keep original spelling for these terms: {', '.join(merged_terms)}."
+        )
 
     def _build_normalization_map(
         self,
@@ -328,12 +352,14 @@ class ProcessingPipeline:
                 }
             )
 
-        for term in (glossary_terms or []):
+        for term in glossary_terms or []:
             clean = str(term).strip()
             if not clean:
                 continue
             # Keep explicit canonical terms safe against accidental spacing in transcript.
-            letters_spaced_pattern = r"\\b" + r"\\s*".join(re.escape(ch) for ch in clean) + r"\\b"
+            letters_spaced_pattern = (
+                r"\\b" + r"\\s*".join(re.escape(ch) for ch in clean) + r"\\b"
+            )
             normalization_map.setdefault(letters_spaced_pattern, clean)
 
         return normalization_map
@@ -345,7 +371,9 @@ class ProcessingPipeline:
         glossary_terms: Optional[List[str]] = None,
     ) -> List[Dict]:
         """Normalize common misrecognized terms while preserving timestamps/speakers."""
-        replacements = self._build_normalization_map(topic=topic, glossary_terms=glossary_terms)
+        replacements = self._build_normalization_map(
+            topic=topic, glossary_terms=glossary_terms
+        )
         normalized = []
 
         for seg in segments:
@@ -363,7 +391,7 @@ class ProcessingPipeline:
             )
 
         return normalized
-    
+
     def process_meeting(
         self,
         audio_path: str,
@@ -375,7 +403,7 @@ class ProcessingPipeline:
     ) -> Dict:
         """
         Complete processing pipeline for a meeting
-        
+
         Pipeline:
         1. Load and preprocess audio
         2. Speech-to-text transcription
@@ -383,12 +411,12 @@ class ProcessingPipeline:
         4. Align transcript with speakers
         5. AI analysis
         6. Save to database
-        
+
         Args:
             audio_path: Path to audio file
             meeting_id: Meeting ID from meeting-service
             db: Database session
-            
+
         Returns:
             Processing result dictionary
         """
@@ -401,7 +429,7 @@ class ProcessingPipeline:
             self._record_baseline_snapshot(meeting_id, runtime_device)
             if meeting_id == BASELINE_MEETING_ID:
                 logger.info(f"Baseline test meeting detected: {BASELINE_MEETING_ID}")
-            
+
             # Step 1: Load audio
             logger.info("Step 1: Loading audio")
             try:
@@ -410,10 +438,12 @@ class ProcessingPipeline:
                 logger.warning(
                     f"Step 1 failed but pipeline will continue with Whisper direct input: {repr(e)}"
                 )
-            
+
             # Step 2: Speech-to-text
             logger.info("Step 2: Speech recognition")
-            initial_prompt = self._build_initial_prompt(topic=topic, glossary_terms=glossary_terms)
+            initial_prompt = self._build_initial_prompt(
+                topic=topic, glossary_terms=glossary_terms
+            )
             logger.info(f"Using Whisper initial prompt: {initial_prompt}")
 
             transcript_result = self.speech_recognizer.transcribe(
@@ -421,16 +451,21 @@ class ProcessingPipeline:
                 language=language,
                 initial_prompt=initial_prompt,
             )
-            transcript_segments = self.speech_recognizer.format_transcript(transcript_result)
+            transcript_segments = self.speech_recognizer.format_transcript(
+                transcript_result
+            )
             transcript_segments = self._normalize_transcript_segments(
                 transcript_segments,
                 topic=topic,
                 glossary_terms=glossary_terms,
             )
-            
+
             logger.info(f"Transcription complete: {len(transcript_segments)} segments")
-            
-            diarization_enabled = self._should_enable_diarization(runtime_device) and self.diarization_available
+
+            diarization_enabled = (
+                self._should_enable_diarization(runtime_device)
+                and self.diarization_available
+            )
             if diarization_enabled and self.speaker_diarizer is not None:
                 # Step 3: Speaker diarization
                 logger.info("Step 3: Speaker diarization")
@@ -443,8 +478,7 @@ class ProcessingPipeline:
                 # Step 4: Align transcript with speakers
                 logger.info("Step 4: Aligning transcript with speakers")
                 aligned_segments = self.speaker_diarizer.align_transcript_with_speakers(
-                    transcript_segments,
-                    speaker_segments
+                    transcript_segments, speaker_segments
                 )
                 aligned_segments = self._normalize_speaker_labels(aligned_segments)
             else:
@@ -461,37 +495,41 @@ class ProcessingPipeline:
                 ]
 
             aligned_segments = self._deduplicate_repeated_segments(aligned_segments)
-            
+
             # Step 5: AI Analysis
             logger.info("Step 5: AI analysis")
-            formatted_transcript = self.ai_analyzer.format_transcript_for_analysis(aligned_segments)
+            formatted_transcript = self.ai_analyzer.format_transcript_for_analysis(
+                aligned_segments
+            )
             analysis_result = self.ai_analyzer.analyze_meeting(formatted_transcript)
-            
+
             # Step 6: Save to database
             logger.info("Step 6: Saving to database")
             self._save_results(meeting_id, aligned_segments, analysis_result, db)
-            
+
             logger.info(f"Processing complete for meeting {meeting_id}")
-            
+
             return {
                 "meeting_id": meeting_id,
                 "status": "completed",
                 "transcript_segments": len(aligned_segments),
                 "speaker_count": speaker_count,
                 "diarization_enabled": diarization_enabled,
-                "analysis": analysis_result
+                "analysis": analysis_result,
             }
-            
+
         except Exception as e:
-            logger.exception(f"Processing pipeline error for meeting {meeting_id}: {repr(e)}")
+            logger.exception(
+                f"Processing pipeline error for meeting {meeting_id}: {repr(e)}"
+            )
             raise
-    
+
     def _save_results(
-        self, 
-        meeting_id: int, 
+        self,
+        meeting_id: int,
         aligned_segments: List[Dict],
         analysis_result: Dict,
-        db: Session
+        db: Session,
     ):
         """
         Save processing results to database
@@ -503,8 +541,11 @@ class ProcessingPipeline:
             db: Database session
         """
         try:
+
             def _to_builtin(value):
-                if value is None or isinstance(value, (str, int, float, bool, datetime)):
+                if value is None or isinstance(
+                    value, (str, int, float, bool, datetime)
+                ):
                     return value
 
                 # numpy scalar types support .item()
@@ -529,7 +570,7 @@ class ProcessingPipeline:
                     speaker=str(segment.get("speaker", "UNKNOWN")),
                     start_time=float(_to_builtin(segment.get("start", 0.0))),
                     end_time=float(_to_builtin(segment.get("end", 0.0))),
-                    text=str(segment.get("text", ""))
+                    text=str(segment.get("text", "")),
                 )
                 db.add(transcript)
 
@@ -539,7 +580,9 @@ class ProcessingPipeline:
             clean_technical_terms = clean_analysis.get("technical_terms", [])
             if self.ai_analyzer is not None:
                 clean_technical_terms = self.ai_analyzer.sanitize_technical_terms(
-                    transcript="\n".join(str(segment.get("text", "")) for segment in aligned_segments),
+                    transcript="\n".join(
+                        str(segment.get("text", "")) for segment in aligned_segments
+                    ),
                     technical_terms=clean_technical_terms,
                     keywords=clean_keywords,
                 )
@@ -548,50 +591,53 @@ class ProcessingPipeline:
                 summary=str(clean_analysis.get("summary", "")),
                 keywords=clean_keywords,
                 technical_terms=clean_technical_terms,
-                action_items=clean_analysis.get("action_items", [])
+                action_items=clean_analysis.get("action_items", []),
             )
             db.add(analysis)
 
             # Commit
             db.commit()
 
-            logger.info(f"Saved {len(aligned_segments)} transcript segments and analysis")
+            logger.info(
+                f"Saved {len(aligned_segments)} transcript segments and analysis"
+            )
 
         except Exception as e:
             db.rollback()
             logger.error(f"Database save error: {e}")
             raise
-    
+
     def get_transcript(self, meeting_id: int, db: Session) -> List[Transcript]:
         """
         Retrieve transcript for a meeting
-        
+
         Args:
             meeting_id: Meeting ID
             db: Database session
-            
+
         Returns:
             List of transcript segments
         """
-        transcripts = db.query(Transcript).filter(
-            Transcript.meeting_id == meeting_id
-        ).order_by(Transcript.start_time).all()
-        
+        transcripts = (
+            db.query(Transcript)
+            .filter(Transcript.meeting_id == meeting_id)
+            .order_by(Transcript.start_time)
+            .all()
+        )
+
         return transcripts
-    
+
     def get_analysis(self, meeting_id: int, db: Session) -> Analysis:
         """
         Retrieve analysis for a meeting
-        
+
         Args:
             meeting_id: Meeting ID
             db: Database session
-            
+
         Returns:
             Analysis object
         """
-        analysis = db.query(Analysis).filter(
-            Analysis.meeting_id == meeting_id
-        ).first()
-        
+        analysis = db.query(Analysis).filter(Analysis.meeting_id == meeting_id).first()
+
         return analysis
