@@ -67,12 +67,14 @@ jobs:
         run: |
           test -f demoRecordAUDIOMID/pom.xml || (echo "demoRecordAUDIOMID/pom.xml missing" && exit 1)
           cd demoRecordAUDIOMID
+          chmod +x ./mvnw
           ./mvnw -B verify --no-transfer-progress -DskipTests
 
       - name: Run tests
         run: |
           npm test --if-present
           cd demoRecordAUDIOMID
+          chmod +x ./mvnw
           ./mvnw test --no-transfer-progress
           cd ..
           pip install pytest
