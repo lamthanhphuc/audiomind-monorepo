@@ -39,9 +39,9 @@ jobs:
 
       - name: Validate monorepo structure
         run: |
-          test -d apps/meeting-api || (echo "apps/meeting-api missing" && exit 1)
-          test -d apps/processing-api || (echo "apps/processing-api missing" && exit 1)
-          test -d apps/ai-api || (echo "apps/ai-api missing" && exit 1)
+          test -d demoRecordAUDIOMID/meeting-service || (echo "demoRecordAUDIOMID/meeting-service missing" && exit 1)
+          test -d demoRecordAUDIOMID/processing-service || (echo "demoRecordAUDIOMID/processing-service missing" && exit 1)
+          test -d demoRecordAUDIOMID/ai-service || (echo "demoRecordAUDIOMID/ai-service missing" && exit 1)
           test -d packages/contracts || (echo "packages/contracts missing" && exit 1)
 
       - name: Install deps (node)
@@ -54,8 +54,8 @@ jobs:
 
       - name: Install Python deps
         run: |
-          test -f apps/ai-api/requirements.txt || (echo "apps/ai-api/requirements.txt missing" && exit 1)
-          pip install -r apps/ai-api/requirements.txt
+          test -f demoRecordAUDIOMID/ai-service/requirements.txt || (echo "demoRecordAUDIOMID/ai-service/requirements.txt missing" && exit 1)
+          pip install -r demoRecordAUDIOMID/ai-service/requirements.txt
 
       - name: Lint Python
         run: |
@@ -65,15 +65,18 @@ jobs:
 
       - name: Build Java
         run: |
-          test -f pom.xml || (echo "root pom.xml missing" && exit 1)
-          mvn -B verify --no-transfer-progress -DskipTests
+          test -f demoRecordAUDIOMID/pom.xml || (echo "demoRecordAUDIOMID/pom.xml missing" && exit 1)
+          cd demoRecordAUDIOMID
+          ./mvnw -B verify --no-transfer-progress -DskipTests
 
       - name: Run tests
         run: |
           npm test --if-present
-          mvn test --no-transfer-progress
+          cd demoRecordAUDIOMID
+          ./mvnw test --no-transfer-progress
+          cd ..
           pip install pytest
-          pytest apps/ai-api
+          pytest demoRecordAUDIOMID/ai-service
 
   contract-check:
     runs-on: ubuntu-latest

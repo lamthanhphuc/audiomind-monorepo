@@ -9,7 +9,7 @@
     "validate:config:node": "node packages/tooling/config-validation/validate-config.mjs",
     "generate:client": "openapi-typescript ./packages/contracts/meeting-api.yaml -o ./packages/api-clients/meeting.ts && openapi-typescript ./packages/contracts/processing-api.yaml -o ./packages/api-clients/processing.ts && openapi-typescript ./packages/contracts/ai-api.yaml -o ./packages/api-clients/ai.ts",
     "typecheck:client": "tsc --noEmit -p tsconfig.generated.json",
-    "validate:schema": "ajv compile --spec=draft2020 -c ajv-formats -s packages/contracts/*.schema.json",
+    "validate:schema": "node ./packages/tooling/config-validation/validate-schemas.mjs",
     "check:openapi": "node ./infra/scripts/check-openapi-main.mjs"
   },
   "devDependencies": {
