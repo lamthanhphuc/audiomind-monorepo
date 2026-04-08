@@ -1,18 +1,35 @@
 package com.example.processingservice.client;
 
+import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
+import io.github.resilience4j.retry.annotation.Retry;
 import lombok.RequiredArgsConstructor;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.ParameterizedTypeReference;
+import org.springframework.core.io.ByteArrayResource;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
+import org.springframework.util.LinkedMultiValueMap;
+import org.springframework.util.MultiValueMap;
+import org.springframework.web.multipart.MultipartFile;
 
+import java.io.IOException;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 @Service
 @RequiredArgsConstructor
 public class AIServiceClient {
+
+    private static final Logger log = LoggerFactory.getLogger(AIServiceClient.class);
 
     private final RestTemplate restTemplate;
 
@@ -20,19 +37,25 @@ public class AIServiceClient {
     private String aiUrl;
 
     public Map<String, Object> processAudio(Long meetingId, String audioPath) {
-        return processAudio(meetingId, audioPath, null, null);
+        return processAudio(meetingId, audioPath, null, null, null, "vi", null);
     }
 
+    @Retry(name = "ai-service")
+    @CircuitBreaker(name = "ai-service")
     public Map<String, Object> processAudio(
             Long meetingId,
             String audioPath,
+            String fileId,
             String topic,
-            List<String> glossaryTerms) {
+            List<String> glossaryTerms,
+            String language,
+            String traceId) {
 
         Map<String, Object> request = new HashMap<>();
 
         request.put("meeting_id", meetingId);
         request.put("audio_path", audioPath);
+        request.put("file_id", fileId);
 
         if (topic != null && !topic.isBlank()) {
             request.put("topic", topic);
@@ -42,27 +65,130 @@ public class AIServiceClient {
             request.put("glossary_terms", glossaryTerms);
         }
 
-        ResponseEntity<Map> response =
-                restTemplate.postForEntity(
+        if (language != null && !language.isBlank()) {
+            request.put("language", language);
+        }
+
+        HttpHeaders headers = new HttpHeaders();
+        String resolvedTraceId = resolveTraceId(traceId);
+        headers.add("x-trace-id", resolvedTraceId);
+        headers.add("x-request-id", resolvedTraceId);
+        log.info("[traceId={}] [jobId={}] enqueue request sent to ai-service", resolvedTraceId, meetingId);
+
+        ResponseEntity<Map<String, Object>> response =
+            restTemplate.exchange(
                         aiUrl + "/api/process",
-                        request,
-                        Map.class
+                HttpMethod.POST,
+            new HttpEntity<>(request, headers),
+                new ParameterizedTypeReference<>() {
+                }
                 );
 
-        return response.getBody();
+        return requireBody(response, "processAudio", meetingId);
     }
 
-    public Map<String, Object> getTranscript(Long meetingId) {
-        return restTemplate.getForObject(
+    @Retry(name = "ai-service")
+    @CircuitBreaker(name = "ai-service")
+    public Map<String, Object> getTranscript(Long meetingId, String traceId) {
+        HttpHeaders headers = new HttpHeaders();
+        String resolvedTraceId = resolveTraceId(traceId);
+        headers.add("x-trace-id", resolvedTraceId);
+        headers.add("x-request-id", resolvedTraceId);
+        ResponseEntity<Map<String, Object>> response = restTemplate.exchange(
                 aiUrl + "/api/meeting/" + meetingId + "/transcript",
-                Map.class
+            HttpMethod.GET,
+            new HttpEntity<>(headers),
+            new ParameterizedTypeReference<>() {
+            }
         );
+        return requireBody(response, "getTranscript", meetingId);
     }
 
-    public Map<String, Object> getAnalysis(Long meetingId) {
-        return restTemplate.getForObject(
+        @Retry(name = "ai-service")
+        @CircuitBreaker(name = "ai-service")
+    public Map<String, Object> getAnalysis(Long meetingId, String traceId) {
+        HttpHeaders headers = new HttpHeaders();
+        String resolvedTraceId = resolveTraceId(traceId);
+        headers.add("x-trace-id", resolvedTraceId);
+        headers.add("x-request-id", resolvedTraceId);
+        ResponseEntity<Map<String, Object>> response = restTemplate.exchange(
                 aiUrl + "/api/meeting/" + meetingId + "/analysis",
-                Map.class
+            HttpMethod.GET,
+            new HttpEntity<>(headers),
+            new ParameterizedTypeReference<>() {
+            }
         );
+        return requireBody(response, "getAnalysis", meetingId);
+    }
+
+    @Retry(name = "ai-service")
+    @CircuitBreaker(name = "ai-service")
+    public Map<String, Object> getStatus(Long meetingId, String traceId) {
+        HttpHeaders headers = new HttpHeaders();
+        String resolvedTraceId = resolveTraceId(traceId);
+        headers.add("x-trace-id", resolvedTraceId);
+        headers.add("x-request-id", resolvedTraceId);
+
+        ResponseEntity<Map<String, Object>> response = restTemplate.exchange(
+            aiUrl + "/api/meeting/" + meetingId + "/status",
+            HttpMethod.GET,
+            new HttpEntity<>(headers),
+            new ParameterizedTypeReference<>() {
+            }
+        );
+        return requireBody(response, "getStatus", meetingId);
+    }
+
+    @Retry(name = "ai-service")
+    @CircuitBreaker(name = "ai-service")
+    public Map<String, Object> uploadAudio(MultipartFile file, String traceId) {
+        HttpHeaders headers = new HttpHeaders();
+        String resolvedTraceId = resolveTraceId(traceId);
+        headers.add("x-trace-id", resolvedTraceId);
+        headers.add("x-request-id", resolvedTraceId);
+        headers.setContentType(MediaType.MULTIPART_FORM_DATA);
+
+        MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
+        body.add("file", toNamedResource(file));
+
+        ResponseEntity<Map<String, Object>> response = restTemplate.exchange(
+            aiUrl + "/api/upload-audio",
+            HttpMethod.POST,
+            new HttpEntity<>(body, headers),
+            new ParameterizedTypeReference<>() {
+            }
+        );
+        return requireBody(response, "uploadAudio", 0L);
+    }
+
+    private String resolveTraceId(String traceId) {
+        if (traceId == null || traceId.isBlank()) {
+            return UUID.randomUUID().toString();
+        }
+        return traceId;
+    }
+
+    private Map<String, Object> requireBody(ResponseEntity<Map<String, Object>> response, String operation, Long meetingId) {
+        Map<String, Object> body = response.getBody();
+        if (body == null) {
+            throw new IllegalStateException("AI service returned empty body for " + operation + " (meetingId=" + meetingId + ")");
+        }
+        return body;
+    }
+
+    private ByteArrayResource toNamedResource(MultipartFile file) {
+        try {
+            return new ByteArrayResource(file.getBytes()) {
+                @Override
+                public String getFilename() {
+                    if (file.getOriginalFilename() == null || file.getOriginalFilename().isBlank()) {
+                        return "audio.wav";
+                    }
+                    return file.getOriginalFilename();
+                }
+            };
+        } catch (IOException e) {
+            throw new IllegalStateException("Unable to read upload payload", e);
+        }
     }
 }

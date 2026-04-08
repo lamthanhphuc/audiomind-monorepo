@@ -1,5 +1,7 @@
-from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, UploadFile, File
+from fastapi import FastAPI, Depends, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.requests import Request
+from starlette.responses import Response
 from sqlalchemy.orm import Session
 from loguru import logger
 import sys
@@ -23,6 +25,13 @@ from app.schemas import (
 )
 from app.config import get_settings, get_runtime_device
 from app.ffmpeg_utils import ensure_ffmpeg_on_path
+from app.job_status_store import (
+    cleanup_expired_job_statuses,
+    get_job_status,
+    load_job_statuses,
+    set_job_status,
+)
+from app.tasks import process_meeting
 
 try:
     from app.pipeline import ProcessingPipeline
@@ -42,24 +51,70 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 # Initialize pipeline
 pipeline = ProcessingPipeline() if ProcessingPipeline is not None else None
 settings = get_settings()
 
 
+def _resolve_cors_origins() -> list[str]:
+    raw = (settings.cors_allowed_origins or "").strip()
+    if not raw:
+        return ["http://localhost:5173"]
+
+    values = [item.strip() for item in raw.split(",") if item.strip()]
+    return values or ["http://localhost:5173"]
+
+
+# CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_resolve_cors_origins(),
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "PUT", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-Request-ID", "X-Trace-ID"],
+)
+
+
+@app.middleware("http")
+async def inject_trace_headers(request: Request, call_next) -> Response:
+    trace_id = (
+        request.headers.get("x-trace-id")
+        or request.headers.get("x-request-id")
+        or uuid4().hex
+    )
+    request_id = request.headers.get("x-request-id") or trace_id
+    request.state.trace_id = trace_id
+    request.state.request_id = request_id
+
+    response = await call_next(request)
+    response.headers["x-trace-id"] = trace_id
+    response.headers["x-request-id"] = request_id
+    logger.bind(trace_id=trace_id, request_id=request_id).debug(
+        f"request completed path={request.url.path} status={response.status_code}"
+    )
+    return response
+
+
+def ensure_runtime_dirs() -> None:
+    """Create writable runtime directories for mounted volumes in containers."""
+    for runtime_dir in (Path("/app/models"), Path("/app/uploads"), Path("./storage")):
+        runtime_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            runtime_dir.chmod(0o775)
+        except OSError as permission_error:
+            logger.warning(
+                f"Could not update permissions for {runtime_dir}: {permission_error}"
+            )
+
+
 @app.get("/")
 async def root():
     """Root endpoint"""
-    return {"service": "AudioMind AI Service", "version": "1.0.0", "status": "running"}
+    return {
+        "service": "AudioMind AI Service",
+        "version": "1.0.0",
+        "status": "running",
+    }
 
 
 @app.get("/health")
@@ -77,17 +132,12 @@ async def health_check():
 @app.post("/api/process", response_model=ProcessResponse)
 async def process_audio(
     request: ProcessRequest,
-    background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db),
+    http_request: Request,
 ):
     """
-    Process audio file through complete pipeline
+    Queue audio file processing.
 
-    - Loads audio from path
-    - Performs speech recognition
-    - Performs speaker diarization
-    - Performs AI analysis
-    - Saves results to database
+    Long-running model work executes in background task.
     """
     try:
         if pipeline is None:
@@ -96,44 +146,47 @@ async def process_audio(
                 detail="Processing pipeline dependencies are not available",
             )
 
+        trace_id = request.trace_id or getattr(http_request.state, "trace_id", None)
         logger.info(
-            f"Received process request for meeting {request.meeting_id}, audio: {request.audio_path}"
+            f"[traceId={trace_id}] [jobId={request.meeting_id}] received process request"
         )
 
-        meeting_id = request.meeting_id
-
-        # Process in background (for long audio files)
-        # For prototype, we'll process synchronously
-        pipeline.process_meeting(
-            audio_path=request.audio_path,
-            meeting_id=meeting_id,
-            db=db,
-            topic=request.topic,
-            glossary_terms=request.glossary_terms,
-            language=request.language,
+        set_job_status(
+            request.meeting_id,
+            "QUEUED",
+            file_id=request.file_id,
+            trace_id=trace_id,
         )
+        payload = request.model_dump()
+        payload["trace_id"] = trace_id
+        process_meeting.delay(payload)
 
         return ProcessResponse(
-            meeting_id=meeting_id,
-            status="completed",
-            message="Processing completed successfully",
+            meeting_id=request.meeting_id,
+            status="queued",
+            message="Processing job queued",
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.exception(f"Processing error: {repr(e)}")
-        raise HTTPException(status_code=500, detail=repr(e))
+        request_id = uuid4().hex
+        logger.exception(
+            f"Unexpected processing error request_id={request_id}: {repr(e)}"
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal server error. request_id={request_id}",
+        )
 
 
 @app.post("/api/v1/process")
-async def process_mock_v1(request: dict):
-    """Minimal v1 endpoint for vertical slice integration."""
-    meeting_id = request.get("meeting_id")
-    logger.info(f"Received v1 mock process request for meeting {meeting_id}")
-
-    return {
-        "transcript": "This is a sample transcript",
-        "summary": "This is a short summary",
-    }
+async def process_mock_v1(_: dict):
+    """Deprecated endpoint retained for migration notice only."""
+    raise HTTPException(
+        status_code=410,
+        detail="/api/v1/process is deprecated. Use /api/process with upload-audio flow.",
+    )
 
 
 @app.post("/api/upload-audio")
@@ -143,20 +196,59 @@ async def upload_audio(file: UploadFile = File(...)):
         uploads_dir.mkdir(parents=True, exist_ok=True)
 
         original_name = Path(file.filename or "audio.wav").name
-        extension = Path(original_name).suffix or ".wav"
+        extension = (Path(original_name).suffix or ".wav").lower()
+        allowed_extensions = {
+            item.strip().lower()
+            for item in settings.allowed_upload_extensions.split(",")
+            if item.strip()
+        }
+        if extension not in allowed_extensions:
+            raise HTTPException(
+                status_code=415, detail="Unsupported audio file extension"
+            )
         saved_name = f"{uuid4().hex}{extension}"
         saved_path = uploads_dir / saved_name
 
-        file_bytes = await file.read()
-        saved_path.write_bytes(file_bytes)
+        total_bytes = 0
+        chunk_size = 1024 * 1024
+
+        with saved_path.open("wb") as output_file:
+            while True:
+                chunk = await file.read(chunk_size)
+                if not chunk:
+                    break
+                total_bytes += len(chunk)
+                if total_bytes > settings.max_upload_size_bytes:
+                    output_file.close()
+                    saved_path.unlink(missing_ok=True)
+                    raise HTTPException(status_code=413, detail="File too large")
+                output_file.write(chunk)
+
+        await file.close()
 
         return {
             "audio_path": str(saved_path),
             "original_filename": original_name,
         }
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.exception(f"Upload audio error: {repr(e)}")
-        raise HTTPException(status_code=500, detail=repr(e))
+        request_id = uuid4().hex
+        logger.exception(f"Upload audio error request_id={request_id}: {repr(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal server error. request_id={request_id}",
+        )
+
+
+@app.get("/api/meeting/{meeting_id}/status")
+async def get_processing_status(meeting_id: int):
+    status = get_job_status(meeting_id)
+
+    if status is None:
+        raise HTTPException(status_code=404, detail="Meeting job status not found")
+
+    return status
 
 
 @app.get("/api/meeting/{meeting_id}/transcript", response_model=TranscriptResponse)
@@ -167,6 +259,12 @@ async def get_transcript(meeting_id: int, db: Session = Depends(get_db)):
     Returns all transcript segments with speaker labels and timestamps
     """
     try:
+        if pipeline is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Processing pipeline dependencies are not available",
+            )
+
         logger.info(f"Fetching transcript for meeting {meeting_id}")
 
         transcripts = pipeline.get_transcript(meeting_id, db)
@@ -189,8 +287,12 @@ async def get_transcript(meeting_id: int, db: Session = Depends(get_db)):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error fetching transcript: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        request_id = uuid4().hex
+        logger.error(f"Error fetching transcript request_id={request_id}: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal server error. request_id={request_id}",
+        )
 
 
 @app.get("/api/meeting/{meeting_id}/analysis", response_model=AnalysisResponse)
@@ -201,6 +303,12 @@ async def get_analysis(meeting_id: int, db: Session = Depends(get_db)):
     Returns summary, keywords, technical terms, and action items
     """
     try:
+        if pipeline is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Processing pipeline dependencies are not available",
+            )
+
         logger.info(f"Fetching analysis for meeting {meeting_id}")
 
         analysis = pipeline.get_analysis(meeting_id, db)
@@ -222,19 +330,36 @@ async def get_analysis(meeting_id: int, db: Session = Depends(get_db)):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error fetching analysis: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        request_id = uuid4().hex
+        logger.error(f"Error fetching analysis request_id={request_id}: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal server error. request_id={request_id}",
+        )
 
 
 @app.on_event("startup")
 async def startup_event():
     """Startup event"""
+    ensure_runtime_dirs()
+    load_job_statuses(recover_interrupted=True)
+    cleanup_expired_job_statuses()
+    cleanup_expired_job_statuses()
+
     try:
         wait_for_database()
+    except Exception as e:
+        logger.warning(f"Database connectivity check skipped: {repr(e)}")
+
+    try:
         ensure_bigint_meeting_id()
+    except Exception as e:
+        logger.warning(f"Database migration step skipped: {repr(e)}")
+
+    try:
         Base.metadata.create_all(bind=engine)
     except Exception as e:
-        logger.warning(f"Database bootstrap skipped: {repr(e)}")
+        logger.warning(f"Database schema initialization failed: {repr(e)}")
 
     try:
         ensure_ffmpeg_on_path(log=True)
@@ -252,6 +377,7 @@ async def startup_event():
 @app.on_event("shutdown")
 async def shutdown_event():
     """Shutdown event"""
+    cleanup_expired_job_statuses()
     logger.info("AudioMind AI Service Shutting Down...")
 
 

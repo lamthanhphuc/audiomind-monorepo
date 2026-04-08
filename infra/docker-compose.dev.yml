@@ -1,23 +1,155 @@
-version: "3.9"
-
 services:
   meeting-api:
-    build: ../demoRecordAUDIOMID/meeting-service
-    env_file: .env
+    build:
+      context: ../demoRecordAUDIOMID
+      dockerfile: meeting-service/Dockerfile
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://db:5432/${POSTGRES_DB}
+      - SPRING_DATASOURCE_USERNAME=${POSTGRES_USER}
+      - SPRING_DATASOURCE_PASSWORD=${POSTGRES_PASSWORD}
+      - SPRING_DATASOURCE_DRIVER_CLASS_NAME=org.postgresql.Driver
+      - SPRING_JPA_HIBERNATE_DIALECT=org.hibernate.dialect.PostgreSQLDialect
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-http://127.0.0.1:5173,http://localhost:5173}
+    depends_on:
+      - db
+    ports:
+      - "8081:8081"
 
   processing-api:
-    build: ../demoRecordAUDIOMID/processing-service
-    env_file: .env
+    build:
+      context: ../demoRecordAUDIOMID
+      dockerfile: processing-service/Dockerfile
+    environment:
+      - AUDIOMIND_AI_API_BASE_URL=http://ai-api:8000
+      - AUDIOMIND_MEETING_API_BASE_URL=http://meeting-api:8081
+      - REDIS_HOST=redis
+      - REDIS_DB=2
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-http://127.0.0.1:5173,http://localhost:5173}
+    depends_on:
+      - meeting-api
+      - ai-api
+    ports:
+      - "8082:8082"
 
   ai-api:
     build: ../demoRecordAUDIOMID/ai-service
-    env_file: .env
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-audiomind}:${POSTGRES_PASSWORD:-audiomind}@db:5432/${POSTGRES_DB:-audiomind}
+      - AI_PROVIDER=ollama
+      - OLLAMA_BASE_URL=http://ollama-service:11434
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen2.5:3b-instruct}
+      - HUGGINGFACE_TOKEN=${HUGGINGFACE_TOKEN:-}
+      - ENABLE_SPEAKER_DIARIZATION=${ENABLE_SPEAKER_DIARIZATION:-false}
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-http://127.0.0.1:5173,http://localhost:5173}
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - JOB_STATE_REDIS_URL=redis://redis:6379/2
+    depends_on:
+      - db
+      - ollama-service
+      - redis
+    volumes:
+      - model_cache:/app/models
+      - uploads:/app/uploads
+      - job_status:/app/storage
+    ports:
+      - "8000:8000"
+
+  celery-worker:
+    build: ../demoRecordAUDIOMID/ai-service
+    command: celery -A app.celery_app.celery_app worker --loglevel=INFO --concurrency=2
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-audiomind}:${POSTGRES_PASSWORD:-audiomind}@db:5432/${POSTGRES_DB:-audiomind}
+      - AI_PROVIDER=ollama
+      - OLLAMA_BASE_URL=http://ollama-service:11434
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen2.5:3b-instruct}
+      - HUGGINGFACE_TOKEN=${HUGGINGFACE_TOKEN:-}
+      - ENABLE_SPEAKER_DIARIZATION=${ENABLE_SPEAKER_DIARIZATION:-false}
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - JOB_STATE_REDIS_URL=redis://redis:6379/2
+    depends_on:
+      - ai-api
+      - db
+      - redis
+      - ollama-service
+    volumes:
+      - model_cache:/app/models
+      - uploads:/app/uploads
+      - job_status:/app/storage
+
+  whisper-service:
+    build: ../demoRecordAUDIOMID/whisper-service
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    volumes:
+      - model_cache:/app/models
+      - uploads:/app/uploads
+    ports:
+      - "8011:8011"
+
+  diarization-service:
+    build: ../demoRecordAUDIOMID/diarization-service
+    environment:
+      - HUGGINGFACE_TOKEN=${HUGGINGFACE_TOKEN:-}
+    volumes:
+      - model_cache:/app/models
+      - uploads:/app/uploads
+    ports:
+      - "8012:8012"
+
+  ollama-service:
+    image: ollama/ollama:0.5.1
+    container_name: ollama-service
+    volumes:
+      - ollama_cache:/root/.ollama
+    ports:
+      - "11434:11434"
+    command: ["serve"]
+
+  processing-service:
+    build: ../demoRecordAUDIOMID/ai-processing-service
+    depends_on:
+      - whisper-service
+      - diarization-service
+      - ollama-service
+    environment:
+      - WHISPER_SERVICE_URL=http://whisper-service:8011
+      - DIARIZATION_SERVICE_URL=http://diarization-service:8012
+      - OLLAMA_BASE_URL=http://ollama-service:11434
+      - OLLAMA_MODEL=qwen2.5:3b
+    volumes:
+      - uploads:/app/uploads
+    ports:
+      - "8010:8010"
 
   web:
-    build: ../FE-Audiomind
+    build:
+      context: ..
+      dockerfile: FE-Audiomind/Dockerfile
+    ports:
+      - "8080:80"
 
   db:
-    image: postgres:15
+    image: postgres:15.7
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB:-audiomind}
+      - POSTGRES_USER=${POSTGRES_USER:-audiomind}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-audiomind}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
 
   redis:
-    image: redis:7
+    image: redis:7.2.5-alpine
+    ports:
+      - "6379:6379"
+
+volumes:
+  model_cache:
+  uploads:
+  job_status:
+  ollama_cache:
+  postgres_data:

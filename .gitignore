@@ -36,14 +36,36 @@ Thumbs.db
 # Environment files
 .env
 .env.*
+.env.local
 !.env.example
 
 # Temp artifacts
 **/temp/
 **/.openapi-baseline/
 **/uploads/
+tmp/
+tmp-*
+*.tmp
+
+# Audio / binary
+*.wav
+*.mp3
+*.bin
+
+# Database
+*.db
+
+# Test output
+**/test-results/
+coverage/
 
 # Local service artifacts
 demoRecordAUDIOMID/uploads/
 demoRecordAUDIOMID/ai-service/storage/
 FE-Audiomind/dist/
+FE-Audiomind/playwright-report/
+.tmp-runtime/
+stress-invalid.txt
+CODEBASE_REVIEW.md
+storage/job-status.json
+*.last-run.json

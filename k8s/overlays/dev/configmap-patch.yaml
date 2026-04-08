@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: audiomind-config
+  namespace: audiomind
+data:
+  CORS_ALLOWED_ORIGINS: http://127.0.0.1:5173,http://localhost:5173
+  ENABLE_SPEAKER_DIARIZATION: "false"
+  OLLAMA_MODEL: qwen2.5:3b-instruct

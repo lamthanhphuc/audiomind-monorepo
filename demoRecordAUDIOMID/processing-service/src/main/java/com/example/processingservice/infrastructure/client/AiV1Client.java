@@ -2,6 +2,9 @@ package com.example.processingservice.infrastructure.client;
 
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.ParameterizedTypeReference;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestTemplate;
@@ -22,12 +25,18 @@ public class AiV1Client {
         Map<String, Object> body = new HashMap<>();
         body.put("meeting_id", meetingId);
 
-        ResponseEntity<Map> response = restTemplate.postForEntity(
-                aiApiBaseUrl + "/api/v1/process",
-                body,
-                Map.class
+        ResponseEntity<Map<String, Object>> response = restTemplate.exchange(
+            aiApiBaseUrl + "/api/v1/process",
+            HttpMethod.POST,
+            new HttpEntity<>(body),
+            new ParameterizedTypeReference<>() {
+            }
         );
 
-        return response.getBody();
+        Map<String, Object> responseBody = response.getBody();
+        if (responseBody == null) {
+            throw new IllegalStateException("AI v1 service returned empty body for meetingId=" + meetingId);
+        }
+        return responseBody;
     }
 }

@@ -539,8 +539,9 @@ TEXT:
             return result
 
         except Exception as e:
-            logger.error(f"AI analysis error (Ollama-only mode): {e}")
-            raise RuntimeError(f"Ollama analysis failed: {e}") from e
+            logger.warning(f"AI analysis fallback activated due to Ollama error: {e}")
+            fallback = self._local_analysis(transcript)
+            return self._ensure_analysis_completeness(transcript, fallback)
 
     def _analyze_with_ollama(self, prompt: str) -> Dict:
         system_prompt = "Bạn là trợ lý phân tích biên bản họp. Hãy trả về đúng một object JSON hợp lệ và không thêm gì khác. Tất cả nội dung trong các value phải bằng tiếng Việt, trừ tên riêng và thuật ngữ kỹ thuật cần giữ nguyên."

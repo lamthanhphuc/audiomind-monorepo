@@ -1,0 +1,34 @@
+groups:
+  - name: audiomind-processing-alerts
+    rules:
+      - alert: HighJobFailedRate
+        expr: |
+          (
+            sum(rate(jobs_total{status="FAILED"}[5m]))
+            /
+            clamp_min(sum(rate(jobs_total[5m])), 0.001)
+          ) > 0.10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Job failed rate is above 10% over 5m"
+          description: "FAILED jobs exceed 10% of total jobs over the last 5 minutes"
+
+      - alert: JobsRunningTooLong
+        expr: max_over_time(jobs_running[5m]) > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Jobs running continuously for more than 5 minutes"
+          description: "jobs_running stayed above zero for over 5 minutes"
+
+      - alert: CircuitBreakerOpenTooLong
+        expr: resilience4j_circuitbreaker_state{name="ai-service",state="open"} == 1
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "AI service circuit breaker OPEN for more than 1 minute"
+          description: "Resilience4j circuit breaker ai-service remains OPEN for over 1 minute"

@@ -35,6 +35,8 @@ python-dotenv==1.0.0
 loguru==0.7.2
 setuptools==68.2.2
 tenacity==8.2.3
+celery==5.4.0
+redis==5.0.8
 
 # HTTP Client
 httpx==0.26.0

@@ -1,17 +1,22 @@
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
-import Ajv from "ajv";
+import Ajv2020 from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
 
 const schemaPath = path.resolve("packages/contracts/config.schema.json");
 const schema = JSON.parse(fs.readFileSync(schemaPath, "utf-8"));
 
-const ajv = new Ajv({ allErrors: true, strict: false });
+const ajv = new Ajv2020({ allErrors: true, strict: false });
 addFormats(ajv);
 const validate = ajv.compile(schema);
 
-const config = process.env;
+const schemaProps = Object.keys(schema.properties || {});
+const config = Object.fromEntries(
+  schemaProps
+    .map((name) => [name, process.env[name]])
+    .filter(([, value]) => value !== undefined)
+);
 const valid = validate(config);
 
 if (!valid) {

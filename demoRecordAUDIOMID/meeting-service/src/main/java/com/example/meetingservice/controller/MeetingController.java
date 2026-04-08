@@ -21,7 +21,7 @@ import java.nio.file.Paths;
 import java.util.List;
 import java.util.Objects;
 
-@CrossOrigin(origins = "http://localhost:5173")
+@CrossOrigin(origins = "${CORS_ALLOWED_ORIGINS:http://localhost:5173}")
 @RestController
 @RequestMapping("/meetings")
 @RequiredArgsConstructor
@@ -41,7 +41,14 @@ public class MeetingController {
 
         String originalName = Objects.requireNonNullElse(file.getOriginalFilename(), "audio-upload.bin");
         String cleanedFileName = StringUtils.cleanPath(originalName);
+        if (cleanedFileName.contains("..")) {
+            throw new IOException("Invalid file name");
+        }
+
         Path targetFile = uploadPath.resolve(cleanedFileName).normalize();
+        if (!targetFile.startsWith(uploadPath)) {
+            throw new IOException("Invalid upload path");
+        }
 
         file.transferTo(targetFile.toFile());
 

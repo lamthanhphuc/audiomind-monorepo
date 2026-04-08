@@ -42,6 +42,16 @@ class ProcessingPipeline:
     def _ensure_models_loaded(self):
         """Load heavy models only when needed."""
         runtime_device = get_runtime_device()
+        preferred_device = (settings.device or "auto").strip().lower()
+
+        if preferred_device == "cuda" and runtime_device != "cuda":
+            logger.warning(
+                "Configured DEVICE=cuda but CUDA is unavailable. Falling back to CPU."
+            )
+
+        logger.info(
+            f"Runtime device selected for models: {runtime_device} (preferred={preferred_device})"
+        )
 
         if self.speech_recognizer is None:
             self.speech_recognizer = SpeechRecognizer(

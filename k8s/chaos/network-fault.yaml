@@ -1,0 +1,23 @@
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: processing-api-chaos-fault
+  namespace: audiomind
+spec:
+  hosts:
+    - processing-api
+  http:
+    - fault:
+        delay:
+          percentage:
+            value: 50
+          fixedDelay: 3s
+        abort:
+          percentage:
+            value: 10
+          httpStatus: 503
+      route:
+        - destination:
+            host: processing-api
+            port:
+              number: 8082
