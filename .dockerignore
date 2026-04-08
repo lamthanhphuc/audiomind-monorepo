@@ -1,0 +1,9 @@
+node_modules
+**/node_modules
+**/dist
+**/target
+**/.git
+**/.vscode
+**/.idea
+**/playwright-report
+**/test-results
