@@ -1,6 +1,17 @@
 server:
   port: 8082
 
+spring:
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      database: ${REDIS_DB:2}
+  servlet:
+    multipart:
+      max-file-size: 512MB
+      max-request-size: 512MB
+
 audiomind:
   ai-api:
     base-url: ${AUDIOMIND_AI_API_BASE_URL:http://localhost:8000}
@@ -14,3 +25,24 @@ ai:
 meeting:
   service:
     url: ${AUDIOMIND_MEETING_API_BASE_URL:http://localhost:8081}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,metrics,prometheus
+
+resilience4j:
+  retry:
+    instances:
+      ai-service:
+        max-attempts: 3
+        wait-duration: 1s
+        enable-exponential-backoff: true
+        exponential-backoff-multiplier: 2
+  circuitbreaker:
+    instances:
+      ai-service:
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 10s
+        sliding-window-size: 10

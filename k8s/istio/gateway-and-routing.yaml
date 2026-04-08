@@ -1,0 +1,147 @@
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: audiomind-gateway
+  namespace: audiomind
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+    - port:
+        number: 80
+        name: http
+        protocol: HTTP
+      hosts:
+        - "*"
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: meeting-api-virtualservice
+  namespace: audiomind
+spec:
+  hosts:
+    - "*"
+  gateways:
+    - audiomind-gateway
+  http:
+    - match:
+        - uri:
+            prefix: /api/meeting
+      retries:
+        attempts: 3
+        perTryTimeout: 3s
+        retryOn: connect-failure,refused-stream,5xx,gateway-error
+      timeout: 10s
+      route:
+        - destination:
+            host: meeting-api
+            port:
+              number: 8081
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: processing-api-virtualservice
+  namespace: audiomind
+spec:
+  hosts:
+    - "*"
+  gateways:
+    - audiomind-gateway
+  http:
+    - match:
+        - uri:
+            prefix: /api/processing
+      retries:
+        attempts: 3
+        perTryTimeout: 5s
+        retryOn: connect-failure,refused-stream,5xx,gateway-error
+      timeout: 20s
+      route:
+        - destination:
+            host: processing-api
+            port:
+              number: 8082
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: ai-api-virtualservice
+  namespace: audiomind
+spec:
+  hosts:
+    - "*"
+  gateways:
+    - audiomind-gateway
+  http:
+    - match:
+        - uri:
+            prefix: /api/ai
+      retries:
+        attempts: 2
+        perTryTimeout: 8s
+        retryOn: connect-failure,refused-stream,5xx,gateway-error
+      timeout: 30s
+      route:
+        - destination:
+            host: ai-api
+            port:
+              number: 8000
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: meeting-api-destinationrule
+  namespace: audiomind
+spec:
+  host: meeting-api
+  trafficPolicy:
+    connectionPool:
+      tcp:
+        maxConnections: 100
+      http:
+        http1MaxPendingRequests: 100
+        maxRequestsPerConnection: 20
+    outlierDetection:
+      consecutive5xxErrors: 5
+      interval: 10s
+      baseEjectionTime: 30s
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: processing-api-destinationrule
+  namespace: audiomind
+spec:
+  host: processing-api
+  trafficPolicy:
+    connectionPool:
+      tcp:
+        maxConnections: 200
+      http:
+        http1MaxPendingRequests: 200
+        maxRequestsPerConnection: 30
+    outlierDetection:
+      consecutive5xxErrors: 5
+      interval: 10s
+      baseEjectionTime: 30s
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: ai-api-destinationrule
+  namespace: audiomind
+spec:
+  host: ai-api
+  trafficPolicy:
+    connectionPool:
+      tcp:
+        maxConnections: 100
+      http:
+        http1MaxPendingRequests: 100
+        maxRequestsPerConnection: 10
+    outlierDetection:
+      consecutive5xxErrors: 3
+      interval: 10s
+      baseEjectionTime: 45s
