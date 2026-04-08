@@ -1,0 +1,42 @@
+name: Smoke Test E2E
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+
+jobs:
+  smoke-test:
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Start stack
+        shell: pwsh
+        run: |
+          docker compose -f infra/docker-compose.dev.yml up -d --build
+
+      - name: Run smoke script
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/smoke-e2e.ps1 -AudioFile stress-large-180s.wav -AiBaseUrl http://localhost:8000 -ProcessingBaseUrl http://localhost:8082 -PollIntervalSeconds 2 -TimeoutSeconds 120
+
+      - name: Upload smoke artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-test-report
+          path: |
+            logs/smoke-test-report.md
+            logs/smoke-*.log
+
+      - name: Teardown stack
+        if: always()
+        shell: pwsh
+        run: |
+          docker compose -f infra/docker-compose.dev.yml down -v
