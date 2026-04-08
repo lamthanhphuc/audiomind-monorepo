@@ -1,6 +1,6 @@
 services:
   db:
-    image: postgres:15
+    image: postgres:15.7
     container_name: postgres
     restart: always
     environment:
@@ -12,11 +12,19 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
+  redis:
+    image: redis:7.2.5-alpine
+    container_name: ai-redis
+    restart: always
+    ports:
+      - "6379:6379"
+
   api:
     build: .
     container_name: ai-service-gpu
     depends_on:
       - db
+      - redis
     environment:
       DATABASE_URL: postgresql://user:pass@postgres:5432/mydb
       HUGGINGFACE_TOKEN: ${HUGGINGFACE_TOKEN}
@@ -24,9 +32,41 @@ services:
       OLLAMA_BASE_URL: http://host.docker.internal:11434
       OLLAMA_MODEL: qwen2.5:3b-instruct
       OLLAMA_TIMEOUT_SECONDS: 300
-      DEVICE: cuda   
+      DEVICE: cuda
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
     ports:
       - "8001:8000"
+    volumes:
+      - ai_storage:/app/storage
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: [gpu]
+              count: all
+    runtime: nvidia
+
+  worker:
+    build: .
+    container_name: ai-service-worker
+    depends_on:
+      - db
+      - redis
+    command: celery -A app.celery_app.celery_app worker --loglevel=INFO --concurrency=2
+    environment:
+      DATABASE_URL: postgresql://user:pass@postgres:5432/mydb
+      HUGGINGFACE_TOKEN: ${HUGGINGFACE_TOKEN}
+      AI_PROVIDER: ollama
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+      OLLAMA_MODEL: qwen2.5:3b-instruct
+      OLLAMA_TIMEOUT_SECONDS: 300
+      DEVICE: cuda
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+    volumes:
+      - ai_storage:/app/storage
     deploy:
       resources:
         reservations:
@@ -38,3 +78,4 @@ services:
 
 volumes:
   postgres_data:
+  ai_storage:

@@ -26,6 +26,8 @@ class MeetingAnalysis(BaseModel):
 class ProcessRequest(BaseModel):
     meeting_id: int
     audio_path: str
+    file_id: Optional[str] = None
+    trace_id: Optional[str] = None
     topic: Optional[str] = None
     glossary_terms: Optional[List[str]] = None
     language: Optional[str] = "vi"
