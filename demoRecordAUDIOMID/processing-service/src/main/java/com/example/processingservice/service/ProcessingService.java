@@ -2,85 +2,253 @@ package com.example.processingservice.service;
 
 import com.example.processingservice.client.AIServiceClient;
 import com.example.processingservice.client.MeetingServiceClient;
+import com.example.processingservice.controller.dto.ProcessStartResponse;
+import com.example.processingservice.controller.dto.ProcessingStatusResponse;
+import jakarta.annotation.PostConstruct;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import lombok.RequiredArgsConstructor;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import org.springframework.web.multipart.MultipartFile;
 
-import java.time.LocalDateTime;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.format.DateTimeParseException;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 @Service
 @RequiredArgsConstructor
 public class ProcessingService {
 
+    private static final Logger log = LoggerFactory.getLogger(ProcessingService.class);
+
     private final AIServiceClient aiServiceClient;
     private final MeetingServiceClient meetingServiceClient;
+    private final JobStateStore jobStateStore;
+    private final MeterRegistry meterRegistry;
 
-    private final Map<Long, String> statusByMeeting = new ConcurrentHashMap<>();
-    private final Map<Long, String> errorByMeeting = new ConcurrentHashMap<>();
-    private final Map<Long, LocalDateTime> updatedAtByMeeting = new ConcurrentHashMap<>();
+    private final AtomicInteger runningGauge = new AtomicInteger(0);
+    private final Map<Long, Boolean> runningJobs = new ConcurrentHashMap<>();
+    private final Map<Long, Boolean> terminalJobs = new ConcurrentHashMap<>();
 
-    public Map<String, Object> startProcessing(Long meetingId) {
-        return startProcessing(meetingId, null, null);
+    @PostConstruct
+    void initMetrics() {
+        meterRegistry.gauge("jobs_running", runningGauge);
     }
 
-    public Map<String, Object> startProcessing(Long meetingId, String topic, List<String> glossaryTerms) {
-        statusByMeeting.put(meetingId, "PENDING");
-        errorByMeeting.remove(meetingId);
-        updatedAtByMeeting.put(meetingId, LocalDateTime.now());
-
-        CompletableFuture.runAsync(() -> {
-            try {
-                statusByMeeting.put(meetingId, "RUNNING");
-                updatedAtByMeeting.put(meetingId, LocalDateTime.now());
-
-                processMeeting(meetingId, topic, glossaryTerms);
-
-                statusByMeeting.put(meetingId, "DONE");
-                updatedAtByMeeting.put(meetingId, LocalDateTime.now());
-            } catch (Exception e) {
-                statusByMeeting.put(meetingId, "FAILED");
-                errorByMeeting.put(meetingId, e.getMessage());
-                updatedAtByMeeting.put(meetingId, LocalDateTime.now());
-            }
-        });
-
-        return getProcessingStatus(meetingId);
+    public ProcessStartResponse startProcessing(Long meetingId) {
+        return startProcessing(meetingId, null, null, null, null, "vi", null);
     }
 
-    public Map<String, Object> processMeeting(Long meetingId, String topic, List<String> glossaryTerms) {
-        Map<String, Object> meeting = meetingServiceClient.getMeetingById(meetingId);
-        Object audioPathObj = meeting.get("audioPath");
-
-        if (audioPathObj == null || String.valueOf(audioPathObj).isBlank()) {
-            throw new IllegalArgumentException("Meeting has no audioPath: " + meetingId);
+    public ProcessStartResponse startProcessing(
+            Long meetingId,
+            String audioPath,
+            String fileId,
+            String topic,
+            List<String> glossaryTerms,
+            String language,
+            String traceId
+    ) {
+        String resolvedFileId = resolveFileId(fileId, audioPath, meetingId);
+        JobStateStore.IdempotencyClaim claim = jobStateStore.claimIdempotency(resolvedFileId, meetingId);
+        if (!claim.owner()) {
+            Long existingJobId = claim.jobId();
+            log.info("[traceId={}] [jobId={}] idempotency hit for fileId={}", traceId, existingJobId, resolvedFileId);
+            ProcessingStatusResponse existing = getProcessingStatus(existingJobId, traceId);
+            return new ProcessStartResponse(existing.meetingId(), existing.status(), existing.error(), existing.updatedAt());
         }
 
-        return aiServiceClient.processAudio(
-            meetingId,
-            String.valueOf(audioPathObj),
-            topic,
-            glossaryTerms
+        jobStateStore.upsertJobState(meetingId, "QUEUED", resolvedFileId, null, null, traceId);
+        incrementJobsTotal("QUEUED");
+        log.info("[traceId={}] [jobId={}] state set to QUEUED", traceId, meetingId);
+
+        try {
+            processMeeting(meetingId, audioPath, resolvedFileId, topic, glossaryTerms, language, traceId);
+        } catch (Exception ex) {
+            jobStateStore.upsertJobState(meetingId, "FAILED", resolvedFileId, null, ex.getMessage(), traceId);
+            if (!terminalJobs.containsKey(meetingId)) {
+                terminalJobs.put(meetingId, Boolean.TRUE);
+                incrementJobsTotal("FAILED");
+            }
+            throw ex;
+        }
+
+        ProcessingStatusResponse status = getProcessingStatus(meetingId, traceId);
+        return new ProcessStartResponse(status.meetingId(), status.status(), status.error(), status.updatedAt());
+    }
+
+    public Map<String, Object> processMeeting(
+            Long meetingId,
+            String audioPath,
+            String fileId,
+            String topic,
+            List<String> glossaryTerms,
+            String language,
+            String traceId
+    ) {
+        String resolvedAudioPath = audioPath;
+        if (resolvedAudioPath == null || resolvedAudioPath.isBlank()) {
+            Map<String, Object> meeting = meetingServiceClient.getMeetingById(meetingId, traceId);
+            Object audioPathObj = meeting.get("audioPath");
+            if (audioPathObj == null || String.valueOf(audioPathObj).isBlank()) {
+                throw new IllegalArgumentException("Meeting has no audioPath: " + meetingId);
+            }
+            resolvedAudioPath = String.valueOf(audioPathObj);
+        }
+
+        Map<String, Object> aiResponse = aiServiceClient.processAudio(
+                meetingId,
+                resolvedAudioPath,
+                fileId,
+                topic,
+                glossaryTerms,
+                language,
+                traceId
+        );
+        log.info("[traceId={}] [jobId={}] enqueue accepted by ai-service", traceId, meetingId);
+        return aiResponse;
+    }
+
+    public Map<String, Object> uploadAudio(MultipartFile file, String traceId) {
+        return aiServiceClient.uploadAudio(file, traceId);
+    }
+
+    public ProcessingStatusResponse getProcessingStatus(Long meetingId, String traceId) {
+        Map<String, Object> state = jobStateStore.getJobState(meetingId).orElse(null);
+        if (state == null) {
+            return new ProcessingStatusResponse(meetingId, "NOT_FOUND", null, null);
+        }
+
+        String status = normalizeStatus(state.get("status"));
+        String error = state.get("error") == null ? null : String.valueOf(state.get("error"));
+        String updatedAt = state.get("updatedAt") == null ? null : String.valueOf(state.get("updatedAt"));
+
+        updateMetricsForState(meetingId, status, state);
+        log.info("[traceId={}] [jobId={}] status read from redis={}", traceId, meetingId, status);
+
+        return new ProcessingStatusResponse(meetingId, status, error, updatedAt);
+    }
+
+    public Map<String, Object> getTranscript(Long meetingId, String traceId) {
+        Map<String, Object> state = jobStateStore.getJobState(meetingId).orElse(null);
+        if (state == null) {
+            return Map.of("meeting_id", meetingId, "status", "NOT_FOUND", "transcripts", List.of());
+        }
+
+        Map<String, Object> result = extractResult(state);
+        Object transcripts = result.getOrDefault("transcripts", new ArrayList<>());
+        return Map.of(
+                "meeting_id", meetingId,
+                "status", normalizeStatus(state.get("status")),
+                "transcripts", transcripts
         );
     }
 
-    public Map<String, Object> getProcessingStatus(Long meetingId) {
-        Map<String, Object> result = new HashMap<>();
-        result.put("meetingId", meetingId);
-        result.put("status", statusByMeeting.getOrDefault(meetingId, "NOT_FOUND"));
-        result.put("error", errorByMeeting.get(meetingId));
-        result.put("updatedAt", updatedAtByMeeting.get(meetingId));
-        return result;
+    public Map<String, Object> getAnalysis(Long meetingId, String traceId) {
+        Map<String, Object> state = jobStateStore.getJobState(meetingId).orElse(null);
+        if (state == null) {
+            return Map.of("meeting_id", meetingId, "status", "NOT_FOUND");
+        }
+
+        Map<String, Object> result = extractResult(state);
+        Map<String, Object> analysis = new HashMap<>();
+        Object analysisObj = result.get("analysis");
+        if (analysisObj instanceof Map<?, ?> mapObj) {
+            for (Map.Entry<?, ?> entry : mapObj.entrySet()) {
+                analysis.put(String.valueOf(entry.getKey()), entry.getValue());
+            }
+        }
+
+        Map<String, Object> response = new HashMap<>();
+        response.put("meeting_id", meetingId);
+        response.put("status", normalizeStatus(state.get("status")));
+        response.putAll(analysis);
+        return response;
     }
 
-    public Map<String, Object> getTranscript(Long meetingId) {
-        return aiServiceClient.getTranscript(meetingId);
+    private String normalizeStatus(Object value) {
+        if (value == null) {
+            return "UNKNOWN";
+        }
+        String normalized = String.valueOf(value).trim().toUpperCase();
+        if (normalized.equals("PENDING")) {
+            return "QUEUED";
+        }
+        return normalized;
     }
 
-    public Map<String, Object> getAnalysis(Long meetingId) {
-        return aiServiceClient.getAnalysis(meetingId);
+    private String resolveFileId(String fileId, String audioPath, Long meetingId) {
+        if (fileId != null && !fileId.isBlank()) {
+            return fileId;
+        }
+        if (audioPath != null && !audioPath.isBlank()) {
+            return audioPath;
+        }
+        return "legacy-meeting:" + meetingId;
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> extractResult(Map<String, Object> state) {
+        Object result = state.get("result");
+        if (result instanceof Map<?, ?> resultMap) {
+            Map<String, Object> value = new HashMap<>();
+            for (Map.Entry<?, ?> entry : resultMap.entrySet()) {
+                value.put(String.valueOf(entry.getKey()), entry.getValue());
+            }
+            return value;
+        }
+        return Map.of();
+    }
+
+    private void updateMetricsForState(Long meetingId, String status, Map<String, Object> state) {
+        if ("RUNNING".equals(status)) {
+            if (!runningJobs.containsKey(meetingId)) {
+                runningJobs.put(meetingId, Boolean.TRUE);
+                runningGauge.set(runningJobs.size());
+            }
+            return;
+        }
+
+        if ("COMPLETED".equals(status) || "FAILED".equals(status)) {
+            if (runningJobs.remove(meetingId) != null) {
+                runningGauge.set(runningJobs.size());
+            }
+
+            if (!terminalJobs.containsKey(meetingId)) {
+                terminalJobs.put(meetingId, Boolean.TRUE);
+                incrementJobsTotal(status);
+                recordDuration(state);
+            }
+        }
+    }
+
+    private void incrementJobsTotal(String status) {
+        Counter.builder("jobs_total")
+                .tag("status", status)
+                .register(meterRegistry)
+                .increment();
+    }
+
+    private void recordDuration(Map<String, Object> state) {
+        String createdAt = state.get("createdAt") == null ? null : String.valueOf(state.get("createdAt"));
+        String updatedAt = state.get("updatedAt") == null ? null : String.valueOf(state.get("updatedAt"));
+        if (createdAt == null || updatedAt == null) {
+            return;
+        }
+        try {
+            Duration duration = Duration.between(Instant.parse(createdAt), Instant.parse(updatedAt));
+            if (!duration.isNegative()) {
+                Timer.builder("job_duration_seconds").register(meterRegistry).record(duration);
+            }
+        } catch (DateTimeParseException ignored) {
+        }
     }
 }
