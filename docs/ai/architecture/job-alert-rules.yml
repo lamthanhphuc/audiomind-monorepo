@@ -1,0 +1,20 @@
+groups:
+  - name: audiomind-job-alerts
+    rules:
+      - alert: HighFailedJobs
+        expr: increase(job_failed_total[5m]) > 5
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Job failures exceed threshold"
+          description: "job_failed_total increased by more than 5 in 5 minutes"
+
+      - alert: StuckRunningJobs
+        expr: job_running_gauge > 0 and histogram_quantile(0.95, sum(rate(job_duration_seconds_bucket[5m])) by (le)) > 60
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Jobs are running longer than 60 seconds"
+          description: "P95 job duration is above 60s while jobs are still running"
