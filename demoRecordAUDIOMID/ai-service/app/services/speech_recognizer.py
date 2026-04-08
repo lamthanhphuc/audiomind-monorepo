@@ -2,6 +2,7 @@ import whisper
 from typing import List, Dict, Optional
 from loguru import logger
 import numpy as np
+from pathlib import Path
 
 from app.ffmpeg_utils import ensure_ffmpeg_on_path
 
@@ -13,7 +14,7 @@ class SpeechRecognizer:
 
     def __init__(
         self,
-        model_name: str = "large-v3",
+        model_name: str = "base",
         device: str = "cpu",
         no_speech_threshold: float = 0.7,
         logprob_threshold: float = -0.8,
@@ -34,8 +35,22 @@ class SpeechRecognizer:
         self.cpu_chunk_duration_seconds = cpu_chunk_duration_seconds
         self.gpu_chunk_duration_seconds = gpu_chunk_duration_seconds
 
+        model_cache_dir = Path("/app/models")
+        model_cache_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            # Keep permissive write access for containerized local/CI execution.
+            model_cache_dir.chmod(0o775)
+        except OSError as permission_error:
+            logger.warning(
+                f"Could not change permissions for model cache directory {model_cache_dir}: {permission_error}"
+            )
+
         logger.info(f"Loading Whisper model: {model_name} on {device}")
-        self.model = whisper.load_model(model_name, device=device)
+        self.model = whisper.load_model(
+            model_name,
+            device=device,
+            download_root="/app/models",
+        )
         logger.info("Whisper model loaded successfully")
 
     def _get_chunk_duration_seconds(self) -> int:
@@ -57,20 +72,48 @@ class SpeechRecognizer:
         no_speech_threshold: float,
         logprob_threshold: float,
     ) -> Dict:
-        return self.model.transcribe(
-            chunk_audio,
-            language=language,
-            task="transcribe",
-            word_timestamps=False,
-            initial_prompt=initial_prompt,
-            temperature=temperature,
-            beam_size=beam_size,
-            best_of=best_of,
-            condition_on_previous_text=False,
-            no_speech_threshold=no_speech_threshold,
-            logprob_threshold=logprob_threshold,
-            verbose=False,
-        )
+        safe_beam_size = 1
+        safe_best_of = 1
+
+        try:
+            return self.model.transcribe(
+                chunk_audio,
+                language=language,
+                task="transcribe",
+                word_timestamps=False,
+                initial_prompt=initial_prompt,
+                temperature=temperature,
+                beam_size=safe_beam_size,
+                best_of=safe_best_of,
+                condition_on_previous_text=False,
+                no_speech_threshold=no_speech_threshold,
+                logprob_threshold=logprob_threshold,
+                verbose=False,
+            )
+        except RuntimeError as runtime_error:
+            # Some Whisper decoding paths can fail on specific chunks with beam search.
+            # Retry with conservative greedy decoding to keep real processing resilient.
+            error_message = str(runtime_error)
+            if "size of tensor a" not in error_message:
+                raise
+
+            logger.warning(
+                "Whisper chunk decoding failed with beam search; retrying with greedy fallback."
+            )
+            return self.model.transcribe(
+                chunk_audio,
+                language=language,
+                task="transcribe",
+                word_timestamps=False,
+                initial_prompt=None,
+                temperature=0.0,
+                beam_size=safe_beam_size,
+                best_of=safe_best_of,
+                condition_on_previous_text=False,
+                no_speech_threshold=no_speech_threshold,
+                logprob_threshold=logprob_threshold,
+                verbose=False,
+            )
 
     def _transcribe_long_audio(
         self,
@@ -156,8 +199,8 @@ class SpeechRecognizer:
     Các từ thường dùng: chào mừng, sinh viên, bài giảng, dự án, báo cáo.
     """,
         temperature: float = 0.0,
-        beam_size: int = 8,
-        best_of: int = 8,
+        beam_size: int = 1,
+        best_of: int = 1,
         condition_on_previous_text: bool = False,
         no_speech_threshold: Optional[float] = None,
         logprob_threshold: Optional[float] = None,

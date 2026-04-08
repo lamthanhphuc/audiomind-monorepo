@@ -1,89 +1,75 @@
-"""
-Test script for AI Service
-"""
+from datetime import datetime
 
-import requests
-import pytest
+from fastapi.testclient import TestClient
 
-BASE_URL = "http://localhost:8000"
-
-
-def test_health():
-    """Test health endpoint"""
-    print("Testing health endpoint...")
-    try:
-        response = requests.get(f"{BASE_URL}/health", timeout=5)
-    except requests.RequestException as exc:
-        pytest.skip(f"AI service is not reachable at {BASE_URL}: {exc}")
-
-    print(f"Status: {response.status_code}")
-    print(f"Response: {response.json()}\n")
-    assert response.status_code == 200
+from app.database import get_db
+from app.main import app
+import app.main as main_module
 
 
-def process_meeting(audio_path: str):
-    """Test process endpoint"""
-    print(f"Testing process endpoint with audio: {audio_path}")
-
-    payload = {"audio_path": audio_path}
-
-    response = requests.post(f"{BASE_URL}/api/process", json=payload)
-
-    print(f"Status: {response.status_code}")
-    print(f"Response: {response.json()}\n")
-
-    if response.status_code == 200:
-        result = response.json()
-        return result.get("meeting_id")
-
-    return None
+class DummyAnalysis:
+    def __init__(self):
+        self.summary = "Day la summary"
+        self.keywords = ["a", "b"]
+        self.technical_terms = ["API"]
+        self.action_items = [{"task": "Follow up", "owner": None, "deadline": None}]
+        self.created_at = datetime.utcnow()
 
 
-def get_transcript(meeting_id: int):
-    """Test get transcript endpoint"""
-    print(f"Testing get transcript for meeting {meeting_id}...")
-
-    response = requests.get(f"{BASE_URL}/api/meeting/{meeting_id}/transcript")
-
-    print(f"Status: {response.status_code}")
-
-    if response.status_code == 200:
-        result = response.json()
-        print(f"Transcript segments: {len(result.get('transcripts', []))}")
-        print(f"First segment: {result.get('transcripts', [{}])[0]}\n")
-    else:
-        print(f"Error: {response.text}\n")
+class DummyTranscript:
+    def __init__(self):
+        self.speaker = "SPEAKER_1"
+        self.start_time = 0.0
+        self.end_time = 1.0
+        self.text = "Xin chao"
 
 
-def get_analysis(meeting_id: int):
-    """Test get analysis endpoint"""
-    print(f"Testing get analysis for meeting {meeting_id}...")
+class DummyPipeline:
+    def process_meeting(self, **kwargs):
+        return {"status": "completed"}
 
-    response = requests.get(f"{BASE_URL}/api/meeting/{meeting_id}/analysis")
+    def get_transcript(self, meeting_id, db):
+        return [DummyTranscript()]
 
-    print(f"Status: {response.status_code}")
-
-    if response.status_code == 200:
-        result = response.json()
-        print(f"Summary: {result.get('summary', '')[:100]}...")
-        print(f"Keywords: {result.get('keywords', [])}")
-        print(f"Technical terms: {result.get('technical_terms', [])}")
-        print(f"Action items: {len(result.get('action_items', []))}\n")
-    else:
-        print(f"Error: {response.text}\n")
+    def get_analysis(self, meeting_id, db):
+        return DummyAnalysis()
 
 
-if __name__ == "__main__":
-    # Test health
-    test_health()
+def _override_db():
+    yield object()
 
-    # Test processing (update with your actual audio path)
-    # audio_path = "uploads/test_meeting.wav"
-    # meeting_id = process_meeting(audio_path)
 
-    # If you have an existing meeting_id, uncomment and use:
-    # meeting_id = 1
-    # get_transcript(meeting_id)
-    # get_analysis(meeting_id)
+def test_endpoints_async_flow(monkeypatch):
+    monkeypatch.setattr(main_module, "pipeline", DummyPipeline())
+    app.dependency_overrides[get_db] = _override_db
 
-    print("Tests completed!")
+    client = TestClient(app)
+
+    health = client.get("/health")
+    assert health.status_code == 200
+
+    process = client.post(
+        "/api/process",
+        json={
+            "meeting_id": 1001,
+            "audio_path": "/app/uploads/test.mp3",
+            "language": "vi",
+        },
+    )
+    assert process.status_code == 200
+    payload = process.json()
+    assert payload["status"] == "queued"
+
+    status = client.get("/api/meeting/1001/status")
+    assert status.status_code == 200
+    assert status.json()["status"] in {"QUEUED", "RUNNING", "COMPLETED"}
+
+    transcript = client.get("/api/meeting/1001/transcript")
+    assert transcript.status_code == 200
+    assert len(transcript.json()["transcripts"]) == 1
+
+    analysis = client.get("/api/meeting/1001/analysis")
+    assert analysis.status_code == 200
+    assert analysis.json()["summary"] == "Day la summary"
+
+    app.dependency_overrides.clear()
