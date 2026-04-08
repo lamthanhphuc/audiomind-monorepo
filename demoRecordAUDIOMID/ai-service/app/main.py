@@ -14,7 +14,6 @@ from app.database import (
     Base,
     wait_for_database,
     ensure_bigint_meeting_id,
-    SessionLocal,
 )
 from app.schemas import (
     ProcessRequest,
@@ -78,7 +77,11 @@ app.add_middleware(
 
 @app.middleware("http")
 async def inject_trace_headers(request: Request, call_next) -> Response:
-    trace_id = request.headers.get("x-trace-id") or request.headers.get("x-request-id") or uuid4().hex
+    trace_id = (
+        request.headers.get("x-trace-id")
+        or request.headers.get("x-request-id")
+        or uuid4().hex
+    )
     request_id = request.headers.get("x-request-id") or trace_id
     request.state.trace_id = trace_id
     request.state.request_id = request_id
@@ -168,7 +171,9 @@ async def process_audio(
         raise
     except Exception as e:
         request_id = uuid4().hex
-        logger.exception(f"Unexpected processing error request_id={request_id}: {repr(e)}")
+        logger.exception(
+            f"Unexpected processing error request_id={request_id}: {repr(e)}"
+        )
         raise HTTPException(
             status_code=500,
             detail=f"Internal server error. request_id={request_id}",
@@ -198,7 +203,9 @@ async def upload_audio(file: UploadFile = File(...)):
             if item.strip()
         }
         if extension not in allowed_extensions:
-            raise HTTPException(status_code=415, detail="Unsupported audio file extension")
+            raise HTTPException(
+                status_code=415, detail="Unsupported audio file extension"
+            )
         saved_name = f"{uuid4().hex}{extension}"
         saved_path = uploads_dir / saved_name
 

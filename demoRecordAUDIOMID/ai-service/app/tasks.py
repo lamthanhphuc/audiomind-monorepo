@@ -8,7 +8,9 @@ try:
     from app.pipeline import ProcessingPipeline
 except Exception as pipeline_import_error:
     ProcessingPipeline = None
-    logger.warning(f"Pipeline modules unavailable in worker: {repr(pipeline_import_error)}")
+    logger.warning(
+        f"Pipeline modules unavailable in worker: {repr(pipeline_import_error)}"
+    )
 
 pipeline = ProcessingPipeline() if ProcessingPipeline is not None else None
 
@@ -59,9 +61,9 @@ def process_meeting(payload: dict) -> None:
                 "keywords": analysis.keywords,
                 "technical_terms": analysis.technical_terms,
                 "action_items": analysis.action_items,
-                "created_at": analysis.created_at.isoformat()
-                if analysis.created_at
-                else None,
+                "created_at": (
+                    analysis.created_at.isoformat() if analysis.created_at else None
+                ),
             }
 
         set_job_status(

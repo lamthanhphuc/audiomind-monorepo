@@ -40,7 +40,22 @@ def _override_db():
 
 
 def test_endpoints_async_flow(monkeypatch):
+    job_statuses = {}
+
+    def _set_status(meeting_id, status, **kwargs):
+        job_statuses[meeting_id] = {
+            "meeting_id": meeting_id,
+            "status": status,
+            **kwargs,
+        }
+
+    def _get_status(meeting_id):
+        return job_statuses.get(meeting_id)
+
     monkeypatch.setattr(main_module, "pipeline", DummyPipeline())
+    monkeypatch.setattr(main_module.process_meeting, "delay", lambda payload: None)
+    monkeypatch.setattr(main_module, "set_job_status", _set_status)
+    monkeypatch.setattr(main_module, "get_job_status", _get_status)
     app.dependency_overrides[get_db] = _override_db
 
     client = TestClient(app)

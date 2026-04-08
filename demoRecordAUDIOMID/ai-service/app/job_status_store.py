@@ -15,7 +15,9 @@ _redis_client: redis.Redis | None = None
 def _get_client() -> redis.Redis:
     global _redis_client
     if _redis_client is None:
-        _redis_client = redis.from_url(settings.job_state_redis_url, decode_responses=True)
+        _redis_client = redis.from_url(
+            settings.job_state_redis_url, decode_responses=True
+        )
     return _redis_client
 
 
@@ -94,9 +96,13 @@ def set_job_status(
         else:
             state.setdefault("result", None)
 
-        client.set(key, json.dumps(state, ensure_ascii=True), ex=settings.job_state_ttl_seconds)
+        client.set(
+            key, json.dumps(state, ensure_ascii=True), ex=settings.job_state_ttl_seconds
+        )
     except Exception as redis_error:
-        logger.warning(f"Could not set Redis job state for {meeting_id}: {repr(redis_error)}")
+        logger.warning(
+            f"Could not set Redis job state for {meeting_id}: {repr(redis_error)}"
+        )
 
 
 def get_job_status(meeting_id: int) -> dict | None:
@@ -109,5 +115,7 @@ def get_job_status(meeting_id: int) -> dict | None:
             return parsed
         return None
     except Exception as redis_error:
-        logger.warning(f"Could not load Redis job state for {meeting_id}: {repr(redis_error)}")
+        logger.warning(
+            f"Could not load Redis job state for {meeting_id}: {repr(redis_error)}"
+        )
         return None
