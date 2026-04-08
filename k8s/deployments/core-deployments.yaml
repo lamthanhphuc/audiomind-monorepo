@@ -1,0 +1,511 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: meeting-api-deployment
+  namespace: audiomind
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: meeting-api
+  template:
+    metadata:
+      labels:
+        app: meeting-api
+    spec:
+      containers:
+        - name: meeting-api
+          image: audiomind/meeting-api:0.1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8081
+          env:
+            - name: SPRING_DATASOURCE_URL
+              value: jdbc:postgresql://db:5432/audiomind
+            - name: OTEL_SERVICE_NAME
+              value: meeting-api
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://jaeger:4318
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: http/protobuf
+            - name: SPRING_DATASOURCE_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: audiomind-secrets
+                  key: POSTGRES_USER
+            - name: SPRING_DATASOURCE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: audiomind-secrets
+                  key: POSTGRES_PASSWORD
+            - name: CORS_ALLOWED_ORIGINS
+              valueFrom:
+                configMapKeyRef:
+                  name: audiomind-config
+                  key: CORS_ALLOWED_ORIGINS
+          resources:
+            requests:
+              cpu: 200m
+              memory: 384Mi
+            limits:
+              cpu: 500m
+              memory: 768Mi
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8081
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8081
+            initialDelaySeconds: 45
+            periodSeconds: 15
+            timeoutSeconds: 2
+            failureThreshold: 5
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: processing-api-deployment
+  namespace: audiomind
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: processing-api
+  template:
+    metadata:
+      labels:
+        app: processing-api
+    spec:
+      containers:
+        - name: processing-api
+          image: audiomind/processing-api:0.1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8082
+          env:
+            - name: AUDIOMIND_AI_API_BASE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: audiomind-config
+                  key: AUDIOMIND_AI_API_BASE_URL
+            - name: OTEL_SERVICE_NAME
+              value: processing-api
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://jaeger:4318
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: http/protobuf
+            - name: AUDIOMIND_MEETING_API_BASE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: audiomind-config
+                  key: AUDIOMIND_MEETING_API_BASE_URL
+            - name: CORS_ALLOWED_ORIGINS
+              valueFrom:
+                configMapKeyRef:
+                  name: audiomind-config
+                  key: CORS_ALLOWED_ORIGINS
+          resources:
+            requests:
+              cpu: 200m
+              memory: 384Mi
+            limits:
+              cpu: 700m
+              memory: 1Gi
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8082
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8082
+            initialDelaySeconds: 45
+            periodSeconds: 15
+            timeoutSeconds: 2
+            failureThreshold: 5
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ai-api-deployment
+  namespace: audiomind
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ai-api
+  template:
+    metadata:
+      labels:
+        app: ai-api
+    spec:
+      containers:
+        - name: ai-api
+          image: audiomind/ai-api:0.1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: audiomind-secrets
+                  key: DATABASE_URL
+            - name: OTEL_SERVICE_NAME
+              value: ai-api
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://jaeger:4318
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: http/protobuf
+            - name: AI_PROVIDER
+              value: ollama
+            - name: OLLAMA_BASE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: audiomind-config
+                  key: OLLAMA_BASE_URL
+            - name: OLLAMA_MODEL
+              valueFrom:
+                configMapKeyRef:
+                  name: audiomind-config
+                  key: OLLAMA_MODEL
+            - name: HUGGINGFACE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: audiomind-secrets
+                  key: HUGGINGFACE_TOKEN
+            - name: ENABLE_SPEAKER_DIARIZATION
+              valueFrom:
+                configMapKeyRef:
+                  name: audiomind-config
+                  key: ENABLE_SPEAKER_DIARIZATION
+            - name: CORS_ALLOWED_ORIGINS
+              valueFrom:
+                configMapKeyRef:
+                  name: audiomind-config
+                  key: CORS_ALLOWED_ORIGINS
+          volumeMounts:
+            - name: model-cache
+              mountPath: /app/models
+            - name: uploads
+              mountPath: /app/uploads
+          resources:
+            requests:
+              cpu: 300m
+              memory: 1Gi
+            limits:
+              cpu: 1500m
+              memory: 3Gi
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 25
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 8
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 60
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 5
+      volumes:
+        - name: model-cache
+          persistentVolumeClaim:
+            claimName: model-cache-pvc
+        - name: uploads
+          persistentVolumeClaim:
+            claimName: uploads-pvc
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: whisper-service-deployment
+  namespace: audiomind
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: whisper-service
+  template:
+    metadata:
+      labels:
+        app: whisper-service
+    spec:
+      containers:
+        - name: whisper-service
+          image: audiomind/whisper-service:0.1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8011
+          volumeMounts:
+            - name: model-cache
+              mountPath: /app/models
+            - name: uploads
+              mountPath: /app/uploads
+          resources:
+            requests:
+              cpu: 400m
+              memory: 1Gi
+            limits:
+              cpu: 2000m
+              memory: 4Gi
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8011
+            initialDelaySeconds: 25
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8011
+            initialDelaySeconds: 60
+            periodSeconds: 20
+      volumes:
+        - name: model-cache
+          persistentVolumeClaim:
+            claimName: model-cache-pvc
+        - name: uploads
+          persistentVolumeClaim:
+            claimName: uploads-pvc
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: diarization-service-deployment
+  namespace: audiomind
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: diarization-service
+  template:
+    metadata:
+      labels:
+        app: diarization-service
+    spec:
+      containers:
+        - name: diarization-service
+          image: audiomind/diarization-service:0.1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8012
+          env:
+            - name: HUGGINGFACE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: audiomind-secrets
+                  key: HUGGINGFACE_TOKEN
+          volumeMounts:
+            - name: model-cache
+              mountPath: /app/models
+            - name: uploads
+              mountPath: /app/uploads
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: 800m
+              memory: 2Gi
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8012
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8012
+            initialDelaySeconds: 45
+            periodSeconds: 15
+      volumes:
+        - name: model-cache
+          persistentVolumeClaim:
+            claimName: model-cache-pvc
+        - name: uploads
+          persistentVolumeClaim:
+            claimName: uploads-pvc
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ai-processing-service-deployment
+  namespace: audiomind
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ai-processing-service
+  template:
+    metadata:
+      labels:
+        app: ai-processing-service
+    spec:
+      containers:
+        - name: ai-processing-service
+          image: audiomind/ai-processing-service:0.1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8010
+          env:
+            - name: WHISPER_SERVICE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: audiomind-config
+                  key: WHISPER_SERVICE_URL
+            - name: DIARIZATION_SERVICE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: audiomind-config
+                  key: DIARIZATION_SERVICE_URL
+            - name: OLLAMA_BASE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: audiomind-config
+                  key: OLLAMA_BASE_URL
+            - name: OLLAMA_MODEL
+              valueFrom:
+                configMapKeyRef:
+                  name: audiomind-config
+                  key: OLLAMA_MODEL
+          volumeMounts:
+            - name: uploads
+              mountPath: /app/uploads
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: 1000m
+              memory: 2Gi
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8010
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8010
+            initialDelaySeconds: 45
+            periodSeconds: 15
+      volumes:
+        - name: uploads
+          persistentVolumeClaim:
+            claimName: uploads-pvc
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ollama-service-deployment
+  namespace: audiomind
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ollama-service
+  template:
+    metadata:
+      labels:
+        app: ollama-service
+    spec:
+      containers:
+        - name: ollama-service
+          image: ollama/ollama:0.9.6
+          imagePullPolicy: IfNotPresent
+          command: ["serve"]
+          ports:
+            - containerPort: 11434
+          volumeMounts:
+            - name: ollama-cache
+              mountPath: /root/.ollama
+          resources:
+            requests:
+              cpu: 300m
+              memory: 1Gi
+            limits:
+              cpu: 1500m
+              memory: 4Gi
+      volumes:
+        - name: ollama-cache
+          persistentVolumeClaim:
+            claimName: ollama-cache-pvc
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: db-deployment
+  namespace: audiomind
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: db
+  template:
+    metadata:
+      labels:
+        app: db
+    spec:
+      containers:
+        - name: db
+          image: postgres:15.8
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              valueFrom:
+                configMapKeyRef:
+                  name: audiomind-config
+                  key: POSTGRES_DB
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: audiomind-secrets
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: audiomind-secrets
+                  key: POSTGRES_PASSWORD
+          volumeMounts:
+            - name: postgres-data
+              mountPath: /var/lib/postgresql/data
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: 1000m
+              memory: 2Gi
+          readinessProbe:
+            exec:
+              command: ["/bin/sh", "-c", "pg_isready -U $POSTGRES_USER -d $POSTGRES_DB"]
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["/bin/sh", "-c", "pg_isready -U $POSTGRES_USER -d $POSTGRES_DB"]
+            initialDelaySeconds: 30
+            periodSeconds: 15
+      volumes:
+        - name: postgres-data
+          persistentVolumeClaim:
+            claimName: postgres-data-pvc

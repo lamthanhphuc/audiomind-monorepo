@@ -1,0 +1,103 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: meeting-api
+  namespace: audiomind
+spec:
+  selector:
+    app: meeting-api
+  ports:
+    - name: http
+      port: 8081
+      targetPort: 8081
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: processing-api
+  namespace: audiomind
+spec:
+  selector:
+    app: processing-api
+  ports:
+    - name: http
+      port: 8082
+      targetPort: 8082
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ai-api
+  namespace: audiomind
+spec:
+  selector:
+    app: ai-api
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: whisper-service
+  namespace: audiomind
+spec:
+  selector:
+    app: whisper-service
+  ports:
+    - name: http
+      port: 8011
+      targetPort: 8011
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: diarization-service
+  namespace: audiomind
+spec:
+  selector:
+    app: diarization-service
+  ports:
+    - name: http
+      port: 8012
+      targetPort: 8012
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ai-processing-service
+  namespace: audiomind
+spec:
+  selector:
+    app: ai-processing-service
+  ports:
+    - name: http
+      port: 8010
+      targetPort: 8010
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ollama-service
+  namespace: audiomind
+spec:
+  selector:
+    app: ollama-service
+  ports:
+    - name: http
+      port: 11434
+      targetPort: 11434
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: db
+  namespace: audiomind
+spec:
+  selector:
+    app: db
+  ports:
+    - name: db
+      port: 5432
+      targetPort: 5432
