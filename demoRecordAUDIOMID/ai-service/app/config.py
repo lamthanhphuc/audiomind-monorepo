@@ -8,7 +8,7 @@ ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
 
 class Settings(BaseSettings):
     # Database
-    database_url: str = "postgresql://user:pass@postgres:5432/mydb"
+    database_url: str = "postgresql://postgres:postgres@db:5432/audiomind"
 
     # OpenAI
     openai_api_key: str = ""
@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     ai_provider: str = "ollama"  # Ollama-only mode
 
     # Ollama (local LLM)
-    ollama_base_url: str = "http://host.docker.internal:11434"
+    ollama_base_url: str = "http://ollama-service:11434"
     ollama_model: str = "qwen2.5:3b-instruct"
     ollama_timeout_seconds: int = 300
 
@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     # Server
     host: str = "0.0.0.0"
     port: int = 8000
+    cors_allowed_origins: str = "http://localhost:5173"
+    max_upload_size_bytes: int = 524288000
+    allowed_upload_extensions: str = ".wav,.mp3,.m4a,.aac,.flac,.ogg,.webm,.mp4"
 
     # Storage
     audio_storage_path: str = "./storage/audio"
@@ -35,7 +38,7 @@ class Settings(BaseSettings):
 
     # Model Settings
     whisper_model: str = "base"
-    device: str = "cpu"  # or cuda
+    device: str = "auto"  # auto | cpu | cuda
     enable_speaker_diarization: bool = False
     lazy_load_models: bool = True
     whisper_no_speech_threshold: float = 0.7
@@ -46,6 +49,15 @@ class Settings(BaseSettings):
     # Processing
     max_chunk_duration: int = 30
     vad_threshold: float = 0.5
+    job_status_ttl_hours: int = 168
+    job_state_redis_url: str = "redis://redis:6379/2"
+    job_state_ttl_seconds: int = 3600
+
+    # Async processing
+    celery_broker_url: str = "redis://redis:6379/0"
+    celery_result_backend: str = "redis://redis:6379/1"
+    celery_task_queue: str = "audio_processing"
+    celery_task_time_limit_seconds: int = 3600
 
     class Config:
         env_file = str(ENV_FILE)
@@ -58,4 +70,13 @@ def get_settings() -> Settings:
 
 
 def get_runtime_device() -> str:
+    preferred = (get_settings().device or "auto").strip().lower()
+
+    if preferred == "cpu":
+        return "cpu"
+
+    if preferred == "cuda":
+        return "cuda" if torch.cuda.is_available() else "cpu"
+
+    # auto: prefer GPU when available, else fallback to CPU.
     return "cuda" if torch.cuda.is_available() else "cpu"
