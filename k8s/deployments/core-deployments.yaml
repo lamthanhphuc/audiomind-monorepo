@@ -45,11 +45,11 @@ spec:
                   key: CORS_ALLOWED_ORIGINS
           resources:
             requests:
-              cpu: 200m
-              memory: 384Mi
+              cpu: 100m
+              memory: 192Mi
             limits:
-              cpu: 500m
-              memory: 768Mi
+              cpu: 300m
+              memory: 512Mi
           readinessProbe:
             httpGet:
               path: /health
@@ -105,6 +105,12 @@ spec:
                 configMapKeyRef:
                   name: audiomind-config
                   key: AUDIOMIND_MEETING_API_BASE_URL
+            - name: REDIS_HOST
+              value: redis
+            - name: REDIS_PORT
+              value: "6379"
+            - name: REDIS_DB
+              value: "2"
             - name: CORS_ALLOWED_ORIGINS
               valueFrom:
                 configMapKeyRef:
@@ -129,6 +135,82 @@ spec:
             httpGet:
               path: /health
               port: 8082
+            initialDelaySeconds: 45
+            periodSeconds: 15
+            timeoutSeconds: 2
+            failureThreshold: 5
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: user-api-deployment
+  namespace: audiomind
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: user-api
+  template:
+    metadata:
+      labels:
+        app: user-api
+    spec:
+      containers:
+        - name: user-api
+          image: audiomind/user-api:0.1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8083
+          env:
+            - name: SPRING_DATASOURCE_URL
+              value: jdbc:postgresql://db:5432/audiomind
+            - name: SPRING_DATASOURCE_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: audiomind-secrets
+                  key: POSTGRES_USER
+            - name: SPRING_DATASOURCE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: audiomind-secrets
+                  key: POSTGRES_PASSWORD
+            - name: REDIS_HOST
+              value: redis
+            - name: REDIS_PORT
+              value: "6379"
+            - name: REDIS_DB
+              value: "3"
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: jwt-secret
+                  key: JWT_SECRET
+            - name: CORS_ALLOWED_ORIGINS
+              valueFrom:
+                configMapKeyRef:
+                  name: audiomind-config
+                  key: CORS_ALLOWED_ORIGINS
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 768Mi
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8083
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8083
             initialDelaySeconds: 45
             periodSeconds: 15
             timeoutSeconds: 2
@@ -222,6 +304,100 @@ spec:
             periodSeconds: 20
             timeoutSeconds: 3
             failureThreshold: 5
+      volumes:
+        - name: model-cache
+          persistentVolumeClaim:
+            claimName: model-cache-pvc
+        - name: uploads
+          persistentVolumeClaim:
+            claimName: uploads-pvc
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: celery-worker-deployment
+  namespace: audiomind
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: celery-worker
+  template:
+    metadata:
+      labels:
+        app: celery-worker
+    spec:
+      containers:
+        - name: celery-worker
+          image: audiomind/ai-api:0.1.0
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c", "celery -A app.celery_app.celery_app worker --loglevel=INFO --concurrency=${CELERY_CONCURRENCY} --prefetch-multiplier=${CELERY_PREFETCH_MULTIPLIER}"]
+          ports:
+            - containerPort: 8080
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: audiomind-secrets
+                  key: DATABASE_URL
+            - name: AI_PROVIDER
+              value: ollama
+            - name: OLLAMA_BASE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: audiomind-config
+                  key: OLLAMA_BASE_URL
+            - name: OLLAMA_MODEL
+              valueFrom:
+                configMapKeyRef:
+                  name: audiomind-config
+                  key: OLLAMA_MODEL
+            - name: HUGGINGFACE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: audiomind-secrets
+                  key: HUGGINGFACE_TOKEN
+            - name: ENABLE_SPEAKER_DIARIZATION
+              valueFrom:
+                configMapKeyRef:
+                  name: audiomind-config
+                  key: ENABLE_SPEAKER_DIARIZATION
+            - name: CELERY_BROKER_URL
+              value: redis://redis:6379/0
+            - name: CELERY_RESULT_BACKEND
+              value: redis://redis:6379/1
+            - name: JOB_STATE_REDIS_URL
+              value: redis://redis:6379/2
+            - name: CELERY_CONCURRENCY
+              value: "4"
+            - name: CELERY_PREFETCH_MULTIPLIER
+              value: "1"
+            - name: WORKER_HEALTH_PORT
+              value: "8080"
+          volumeMounts:
+            - name: model-cache
+              mountPath: /app/models
+            - name: uploads
+              mountPath: /app/uploads
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: 1000m
+              memory: 2Gi
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
       volumes:
         - name: model-cache
           persistentVolumeClaim:
@@ -430,7 +606,7 @@ spec:
         - name: ollama-service
           image: ollama/ollama:0.9.6
           imagePullPolicy: IfNotPresent
-          command: ["serve"]
+          command: ["ollama", "serve"]
           ports:
             - containerPort: 11434
           volumeMounts:
@@ -509,3 +685,55 @@ spec:
         - name: postgres-data
           persistentVolumeClaim:
             claimName: postgres-data-pvc
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+  namespace: audiomind
+spec:
+  serviceName: redis
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7.2.5-alpine
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 6379
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 1Gi
+          volumeMounts:
+            - name: redis-data
+              mountPath: /data
+          readinessProbe:
+            tcpSocket:
+              port: 6379
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 6379
+            initialDelaySeconds: 15
+            periodSeconds: 15
+  volumeClaimTemplates:
+    - metadata:
+        name: redis-data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 10Gi
