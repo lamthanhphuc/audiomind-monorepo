@@ -2,6 +2,7 @@ import type { AiAnalysis, TranscriptResponse } from '../types'
 import type { paths as MeetingPaths } from '../../../packages/api-clients/meeting'
 import type { paths as ProcessingPaths } from '../../../packages/api-clients/processing'
 import { API_BASE, MEETING_API_BASE, PROCESSING_API_BASE } from './config'
+import { getAccessToken } from './auth'
 
 type CreateMeetingResponse =
   MeetingPaths['/api/v1/meetings']['post']['responses'][200]['content']['application/json']
@@ -34,6 +35,12 @@ const createTraceId = (): string => {
 
 const withTraceHeaders = (headers?: HeadersInit): Headers => {
   const merged = new Headers(headers ?? {})
+
+  const accessToken = getAccessToken()
+  if (accessToken && !merged.has('Authorization')) {
+    merged.set('Authorization', `Bearer ${accessToken}`)
+  }
+
   if (!merged.has('x-trace-id')) {
     merged.set('x-trace-id', createTraceId())
   }
