@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { getAnalysis, getProcessingStatus, getTranscript, processAudio, uploadAudio } from './services/api'
+import { clearAccessToken, getAccessToken, login, setAccessToken } from './services/auth'
 
 type ResultView = {
   meetingId: number
@@ -62,13 +63,46 @@ export default function App() {
   const [error, setError] = useState('')
   const [status, setStatus] = useState('idle')
   const [result, setResult] = useState<ResultView | null>(null)
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
+  const [authError, setAuthError] = useState('')
+  const [isAuthenticated, setIsAuthenticated] = useState(false)
   const abortControllerRef = useRef<AbortController | null>(null)
 
   useEffect(() => {
+    setIsAuthenticated(Boolean(getAccessToken()))
     return () => {
       abortControllerRef.current?.abort()
     }
   }, [])
+
+  const handleLogin = async () => {
+    if (!username.trim() || !password) {
+      setAuthError('Vui lòng nhập username và mật khẩu')
+      return
+    }
+
+    try {
+      setAuthError('')
+      const auth = await login({
+        username: username.trim(),
+        password,
+      })
+      setAccessToken(auth.accessToken)
+      setIsAuthenticated(true)
+    } catch (loginError) {
+      setAuthError(loginError instanceof Error ? loginError.message : 'Đăng nhập thất bại')
+    }
+  }
+
+  const handleLogout = () => {
+    clearAccessToken()
+    setIsAuthenticated(false)
+    setResult(null)
+    setStatus('idle')
+    setError('')
+    setPassword('')
+  }
 
   const transcriptText = useMemo(() => result?.transcript || '(empty)', [result])
   const summaryText = useMemo(() => result?.summary || '(empty)', [result])
@@ -135,10 +169,38 @@ export default function App() {
     abortControllerRef.current?.abort()
   }
 
+  if (!isAuthenticated) {
+    return (
+      <main style={{ maxWidth: 480, margin: '40px auto', fontFamily: 'Segoe UI, sans-serif', padding: 16 }}>
+        <h1>AudioMind Login</h1>
+        <p>Đăng nhập để sử dụng API thật.</p>
+        <div style={{ display: 'grid', gap: 12, marginTop: 16 }}>
+          <input
+            type="text"
+            placeholder="Username"
+            value={username}
+            onChange={(event) => setUsername(event.target.value)}
+          />
+          <input
+            type="password"
+            placeholder="Password"
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+          />
+          <button type="button" onClick={handleLogin}>Đăng nhập</button>
+        </div>
+        {authError && <p style={{ color: 'crimson', marginTop: 12 }}>{authError}</p>}
+      </main>
+    )
+  }
+
   return (
     <main style={{ maxWidth: 720, margin: '40px auto', fontFamily: 'Segoe UI, sans-serif', padding: 16 }}>
       <h1>AudioMind Production Flow</h1>
       <p>Flow: upload - processing - transcript - summary</p>
+      <button type="button" onClick={handleLogout} style={{ marginBottom: 16 }}>
+        Đăng xuất
+      </button>
 
       <div style={{ display: 'grid', gap: 12, marginBottom: 16 }}>
         <input
