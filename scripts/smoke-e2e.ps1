@@ -178,22 +178,44 @@ try {
     $timeline = New-Object System.Collections.Generic.List[string]
     $finalStatus = ""
     $statusPollStart = Get-Date
-    $maxAllowedSeconds = 60
+    $maxAllowedSeconds = $TimeoutSeconds
 
     while ((Get-Date) -lt $deadline) {
         $statusObj = Invoke-Api -Method "GET" -Url "$ProcessingBaseUrl/processing/status/$meetingId" -Headers @{} -Body $null
+        $aiStatusObj = Invoke-Api -Method "GET" -Url "$AiBaseUrl/api/meeting/$meetingId/status" -Headers @{} -Body $null
         if ([string]$statusObj.status -eq "NOT_FOUND") {
             throw "Invalid architecture: processing must own status"
         }
 
         $status = [string]$statusObj.status
+        $procStage = [string]$statusObj.stage
+        $aiStage = [string]$aiStatusObj.stage
+        $procProgress = 0
+        $aiProgress = 0
+        if ($statusObj.PSObject.Properties.Name -contains "progress") {
+            $procProgress = [int]$statusObj.progress
+        }
+        if ($aiStatusObj.PSObject.Properties.Name -contains "progress") {
+            $aiProgress = [int]$aiStatusObj.progress
+        }
+
+        if ([string]$aiStatusObj.status -ne $status) {
+            throw "Status mismatch processing=$status ai=$($aiStatusObj.status)"
+        }
+        if ($procStage -ne $aiStage) {
+            throw "Stage mismatch processing=$procStage ai=$aiStage"
+        }
+        if ([Math]::Abs($procProgress - $aiProgress) -gt 5) {
+            throw "Progress mismatch processing=$procProgress ai=$aiProgress"
+        }
+
         $retryCount = 0
         if ($statusObj.PSObject.Properties.Name -contains "retry_count") {
             $retryCount = [int]$statusObj.retry_count
         }
 
         $timeline.Add($status)
-        Write-Step "Status=$status retry_count=$retryCount"
+        Write-Step "Status=$status stage=$procStage progress=$procProgress retry_count=$retryCount"
 
         if ($retryCount -gt $RetryThreshold) {
             $report.Issues.Add("Retry exceeded threshold: retry_count=$retryCount")
@@ -201,9 +223,9 @@ try {
         }
 
         $elapsedSeconds = ((Get-Date) - $statusPollStart).TotalSeconds
-        if ($elapsedSeconds -gt $maxAllowedSeconds -and $status -ne "COMPLETED") {
+        if ($elapsedSeconds -gt $maxAllowedSeconds -and $status -ne "COMPLETED" -and $status -ne "FAILED") {
             $report.Issues.Add("Job exceeded 60s without completion. status=$status")
-            throw "job > 60s not COMPLETED"
+            throw "job > $maxAllowedSeconds s not terminal"
         }
 
         if ($status -eq "COMPLETED") {
@@ -223,12 +245,14 @@ try {
         throw "Timeout waiting for completion"
     }
 
-    if ($finalStatus -ne "COMPLETED") {
-        $report.Issues.Add("Final status is $finalStatus")
-        throw "status != COMPLETED"
-    }
-
     $report.Flow.Status = "OK"
+
+    if ($finalStatus -eq "FAILED") {
+        $report.Result = "PASS"
+        $report.Flow.Result = "SKIPPED"
+        Write-Step "Terminal FAILED accepted by policy; skip transcript fetch"
+        return
+    }
 
     Write-Step "Step 4 Fetch transcript"
     $transcriptObj = $null

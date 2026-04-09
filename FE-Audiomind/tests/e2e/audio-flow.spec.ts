@@ -9,7 +9,7 @@ test.describe('Audio processing flow', () => {
     }
     const audioPath =
       process.env.PLAYWRIGHT_AUDIO_FILE ||
-      'E:\\Bin\\EXE101\\Tìm hiểu NGÀNH CÔNG NGHỆ THÔNG TIN - IT - là gì.mp3'
+      path.resolve(process.cwd(), 'FE-Audiomind', 'tests', 'e2e', 'fixtures', 'sample-audio.mp3')
 
     const resolvedAudioPath = path.resolve(audioPath)
     const logs: string[] = []

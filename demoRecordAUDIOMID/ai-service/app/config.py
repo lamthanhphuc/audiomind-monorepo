@@ -1,12 +1,16 @@
 from pydantic_settings import BaseSettings
+from pydantic import model_validator
 from functools import lru_cache
 from pathlib import Path
+from urllib.parse import urlparse
 import torch
 
 ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
 
 
 class Settings(BaseSettings):
+    app_env: str = "development"
+
     # Database
     database_url: str = "postgresql://postgres:postgres@db:5432/audiomind"
 
@@ -51,17 +55,84 @@ class Settings(BaseSettings):
     vad_threshold: float = 0.5
     job_status_ttl_hours: int = 168
     job_state_redis_url: str = "redis://redis:6379/2"
-    job_state_ttl_seconds: int = 3600
+    job_state_ttl_seconds: int = 86400
+    chunk_state_ttl_seconds: int = 3600
+    redis_max_connections: int = 10
 
     # Async processing
     celery_broker_url: str = "redis://redis:6379/0"
     celery_result_backend: str = "redis://redis:6379/1"
     celery_task_queue: str = "audio_processing"
     celery_task_time_limit_seconds: int = 3600
+    celery_task_soft_time_limit_seconds: int = 3300
+    celery_chunk_max_retries: int = 5
+    celery_main_max_retries: int = 5
+    celery_retry_backoff_max_seconds: int = 32
+    celery_retry_jitter: bool = True
+    celery_prefetch_multiplier: int = 1
+    celery_concurrency: int = 4
+
+    # Worker monitor
+    timeout_monitor_interval_seconds: int = 60
+    timeout_monitor_threshold_seconds: int = 7200
+    chunk_processing_stale_seconds: int = 180
+    worker_health_port: int = 8080
 
     class Config:
         env_file = str(ENV_FILE)
         case_sensitive = False
+
+    @model_validator(mode="after")
+    def validate_production_settings(self) -> "Settings":
+        env = (self.app_env or "").strip().lower()
+        if env not in {"prod", "production"}:
+            return self
+
+        def _is_local(value: str | None) -> bool:
+            if not value:
+                return True
+            parsed = urlparse(value)
+            host = (parsed.hostname or "").strip().lower()
+            raw = value.strip().lower()
+            return (
+                host in {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
+                or "localhost" in raw
+            )
+
+        if (
+            _is_local(self.database_url)
+            or "postgres:postgres@" in self.database_url.lower()
+        ):
+            raise ValueError(
+                "Invalid production database_url: localhost/default credentials are not allowed"
+            )
+
+        if _is_local(self.ollama_base_url):
+            raise ValueError(
+                "Invalid production ollama_base_url: localhost is not allowed"
+            )
+
+        if "localhost" in (self.cors_allowed_origins or "").lower():
+            raise ValueError(
+                "Invalid production cors_allowed_origins: localhost is not allowed"
+            )
+
+        if (self.ai_provider or "").strip().lower() == "openai" and not (
+            self.openai_api_key or ""
+        ).strip():
+            raise ValueError(
+                "Invalid production openai_api_key: empty secret is not allowed when ai_provider=openai"
+            )
+
+        if (
+            self.enable_speaker_diarization
+            and not (self.huggingface_token or "").strip()
+        ):
+            raise ValueError(
+                "Invalid production huggingface_token: empty secret is not allowed when diarization is enabled"
+            )
+
+        return self
 
 
 @lru_cache()

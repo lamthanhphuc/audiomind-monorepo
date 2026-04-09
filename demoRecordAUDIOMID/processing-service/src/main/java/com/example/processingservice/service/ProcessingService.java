@@ -11,6 +11,7 @@ import io.micrometer.core.instrument.Timer;
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -21,7 +22,6 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
 @Service
@@ -36,8 +36,6 @@ public class ProcessingService {
     private final MeterRegistry meterRegistry;
 
     private final AtomicInteger runningGauge = new AtomicInteger(0);
-    private final Map<Long, Boolean> runningJobs = new ConcurrentHashMap<>();
-    private final Map<Long, Boolean> terminalJobs = new ConcurrentHashMap<>();
 
     @PostConstruct
     void initMetrics() {
@@ -57,32 +55,31 @@ public class ProcessingService {
             String language,
             String traceId
     ) {
-        String resolvedFileId = resolveFileId(fileId, audioPath, meetingId);
-        JobStateStore.IdempotencyClaim claim = jobStateStore.claimIdempotency(resolvedFileId, meetingId);
-        if (!claim.owner()) {
-            Long existingJobId = claim.jobId();
-            log.info("[traceId={}] [jobId={}] idempotency hit for fileId={}", traceId, existingJobId, resolvedFileId);
-            ProcessingStatusResponse existing = getProcessingStatus(existingJobId, traceId);
-            return new ProcessStartResponse(existing.meetingId(), existing.status(), existing.error(), existing.updatedAt());
-        }
-
-        jobStateStore.upsertJobState(meetingId, "QUEUED", resolvedFileId, null, null, traceId);
-        incrementJobsTotal("QUEUED");
-        log.info("[traceId={}] [jobId={}] state set to QUEUED", traceId, meetingId);
-
-        try {
-            processMeeting(meetingId, audioPath, resolvedFileId, topic, glossaryTerms, language, traceId);
-        } catch (Exception ex) {
-            jobStateStore.upsertJobState(meetingId, "FAILED", resolvedFileId, null, ex.getMessage(), traceId);
-            if (!terminalJobs.containsKey(meetingId)) {
-                terminalJobs.put(meetingId, Boolean.TRUE);
-                incrementJobsTotal("FAILED");
+        try (MDC.MDCCloseable ignored = MDC.putCloseable("jobId", String.valueOf(meetingId))) {
+            String resolvedFileId = resolveFileId(fileId, audioPath, meetingId);
+            JobStateStore.IdempotencyClaim claim = jobStateStore.claimIdempotency(resolvedFileId, meetingId);
+            if (!claim.owner()) {
+                Long existingJobId = claim.jobId();
+                log.info("[traceId={}] [jobId={}] idempotency hit for fileId={}", traceId, existingJobId, resolvedFileId);
+                ProcessingStatusResponse existing = getProcessingStatus(existingJobId, traceId);
+                return new ProcessStartResponse(existing.meetingId(), existing.status(), existing.error(), existing.updatedAt());
             }
-            throw ex;
-        }
 
-        ProcessingStatusResponse status = getProcessingStatus(meetingId, traceId);
-        return new ProcessStartResponse(status.meetingId(), status.status(), status.error(), status.updatedAt());
+            jobStateStore.upsertJobState(meetingId, "QUEUED", resolvedFileId, null, null, traceId);
+            incrementJobsTotal("QUEUED");
+            log.info("[traceId={}] [jobId={}] state set to QUEUED", traceId, meetingId);
+
+            try {
+                processMeeting(meetingId, audioPath, resolvedFileId, topic, glossaryTerms, language, traceId);
+            } catch (Exception ex) {
+                jobStateStore.upsertJobState(meetingId, "FAILED", resolvedFileId, null, ex.getMessage(), traceId);
+                incrementJobsTotal("FAILED");
+                throw ex;
+            }
+
+            ProcessingStatusResponse status = getProcessingStatus(meetingId, traceId);
+            return new ProcessStartResponse(status.meetingId(), status.status(), status.error(), status.updatedAt());
+        }
     }
 
     public Map<String, Object> processMeeting(
@@ -122,19 +119,23 @@ public class ProcessingService {
     }
 
     public ProcessingStatusResponse getProcessingStatus(Long meetingId, String traceId) {
-        Map<String, Object> state = jobStateStore.getJobState(meetingId).orElse(null);
-        if (state == null) {
-            return new ProcessingStatusResponse(meetingId, "NOT_FOUND", null, null);
+        try (MDC.MDCCloseable ignored = MDC.putCloseable("jobId", String.valueOf(meetingId))) {
+            Map<String, Object> state = jobStateStore.getJobState(meetingId).orElse(null);
+            if (state == null) {
+                return new ProcessingStatusResponse(meetingId, "NOT_FOUND", 0, "unknown", null, null);
+            }
+
+            String status = normalizeStatus(state.get("status"));
+            Integer progress = normalizeProgress(state.get("progress"));
+            String stage = state.get("stage") == null ? "unknown" : String.valueOf(state.get("stage"));
+            String error = state.get("error") == null ? null : String.valueOf(state.get("error"));
+            String updatedAt = state.get("updatedAt") == null ? null : String.valueOf(state.get("updatedAt"));
+
+            updateMetricsForState(meetingId, status, state);
+            log.info("[traceId={}] [jobId={}] status read from redis={}", traceId, meetingId, status);
+
+            return new ProcessingStatusResponse(meetingId, status, progress, stage, error, updatedAt);
         }
-
-        String status = normalizeStatus(state.get("status"));
-        String error = state.get("error") == null ? null : String.valueOf(state.get("error"));
-        String updatedAt = state.get("updatedAt") == null ? null : String.valueOf(state.get("updatedAt"));
-
-        updateMetricsForState(meetingId, status, state);
-        log.info("[traceId={}] [jobId={}] status read from redis={}", traceId, meetingId, status);
-
-        return new ProcessingStatusResponse(meetingId, status, error, updatedAt);
     }
 
     public Map<String, Object> getTranscript(Long meetingId, String traceId) {
@@ -185,6 +186,24 @@ public class ProcessingService {
         return normalized;
     }
 
+    private Integer normalizeProgress(Object value) {
+        if (value == null) {
+            return 0;
+        }
+        try {
+            int parsed = Integer.parseInt(String.valueOf(value));
+            if (parsed < 0) {
+                return 0;
+            }
+            if (parsed > 100) {
+                return 100;
+            }
+            return parsed;
+        } catch (NumberFormatException ex) {
+            return 0;
+        }
+    }
+
     private String resolveFileId(String fileId, String audioPath, Long meetingId) {
         if (fileId != null && !fileId.isBlank()) {
             return fileId;
@@ -210,23 +229,14 @@ public class ProcessingService {
 
     private void updateMetricsForState(Long meetingId, String status, Map<String, Object> state) {
         if ("RUNNING".equals(status)) {
-            if (!runningJobs.containsKey(meetingId)) {
-                runningJobs.put(meetingId, Boolean.TRUE);
-                runningGauge.set(runningJobs.size());
-            }
+            runningGauge.set(1);
             return;
         }
 
-        if ("COMPLETED".equals(status) || "FAILED".equals(status)) {
-            if (runningJobs.remove(meetingId) != null) {
-                runningGauge.set(runningJobs.size());
-            }
+        runningGauge.set(0);
 
-            if (!terminalJobs.containsKey(meetingId)) {
-                terminalJobs.put(meetingId, Boolean.TRUE);
-                incrementJobsTotal(status);
-                recordDuration(state);
-            }
+        if ("COMPLETED".equals(status)) {
+            recordDuration(state);
         }
     }
 

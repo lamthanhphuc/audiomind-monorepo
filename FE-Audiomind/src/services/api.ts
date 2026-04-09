@@ -1,10 +1,8 @@
 import type { AiAnalysis, TranscriptResponse } from '../types'
 import type { paths as MeetingPaths } from '../../../packages/api-clients/meeting'
 import type { paths as ProcessingPaths } from '../../../packages/api-clients/processing'
-import { API_BASE } from './config'
-
-const MEETING_API_BASE_URL = import.meta.env.VITE_MEETING_API_BASE_URL || 'http://localhost:8081'
-const PROCESSING_API_BASE_URL = import.meta.env.VITE_PROCESSING_API_BASE_URL || 'http://localhost:8082'
+import { API_BASE, MEETING_API_BASE, PROCESSING_API_BASE } from './config'
+import { getAccessToken } from './auth'
 
 type CreateMeetingResponse =
   MeetingPaths['/api/v1/meetings']['post']['responses'][200]['content']['application/json']
@@ -37,6 +35,12 @@ const createTraceId = (): string => {
 
 const withTraceHeaders = (headers?: HeadersInit): Headers => {
   const merged = new Headers(headers ?? {})
+
+  const accessToken = getAccessToken()
+  if (accessToken && !merged.has('Authorization')) {
+    merged.set('Authorization', `Bearer ${accessToken}`)
+  }
+
   if (!merged.has('x-trace-id')) {
     merged.set('x-trace-id', createTraceId())
   }
@@ -132,14 +136,14 @@ export const getProcessingStatus = async (meetingId: number): Promise<{
 }
 
 export const createMeeting = async (): Promise<CreateMeetingResponse> => {
-  return fetchJson<CreateMeetingResponse>(`${MEETING_API_BASE_URL}/api/v1/meetings`, {
+  return fetchJson<CreateMeetingResponse>(`${MEETING_API_BASE}/api/v1/meetings`, {
     method: 'POST',
   })
 }
 
 export const processMeeting = async (meetingId: string) => {
   const body: CreateJobRequest = { meeting_id: meetingId }
-  return fetchJson(`${PROCESSING_API_BASE_URL}/api/v1/jobs`, {
+  return fetchJson(`${PROCESSING_API_BASE}/api/v1/jobs`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -147,5 +151,5 @@ export const processMeeting = async (meetingId: string) => {
 }
 
 export const getMeeting = async (meetingId: string): Promise<GetMeetingResponse> => {
-  return fetchJson<GetMeetingResponse>(`${MEETING_API_BASE_URL}/api/v1/meetings/${meetingId}`)
+  return fetchJson<GetMeetingResponse>(`${MEETING_API_BASE}/api/v1/meetings/${meetingId}`)
 }
