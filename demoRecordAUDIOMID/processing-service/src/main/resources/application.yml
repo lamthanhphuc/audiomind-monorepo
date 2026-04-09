@@ -21,6 +21,8 @@ audiomind:
 ai:
   service:
     url: ${AUDIOMIND_AI_API_BASE_URL:http://localhost:8000}
+    connect-timeout-ms: ${AI_SERVICE_CONNECT_TIMEOUT_MS:10000}
+    read-timeout-ms: ${AI_SERVICE_READ_TIMEOUT_MS:180000}
 
 meeting:
   service:
@@ -36,13 +38,13 @@ resilience4j:
   retry:
     instances:
       ai-service:
-        max-attempts: 3
-        wait-duration: 1s
+        max-attempts: 4
+        wait-duration: 2s
         enable-exponential-backoff: true
         exponential-backoff-multiplier: 2
   circuitbreaker:
     instances:
       ai-service:
-        failure-rate-threshold: 50
+        failure-rate-threshold: 25
         wait-duration-in-open-state: 10s
         sliding-window-size: 10

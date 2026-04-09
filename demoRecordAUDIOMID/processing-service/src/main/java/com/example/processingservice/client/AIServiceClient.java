@@ -15,6 +15,7 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
+import org.springframework.web.client.RestClientException;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
 import org.springframework.web.multipart.MultipartFile;
@@ -159,6 +160,23 @@ public class AIServiceClient {
             }
         );
         return requireBody(response, "uploadAudio", 0L);
+    }
+
+    public void health() {
+        try {
+            ResponseEntity<Map<String, Object>> response = restTemplate.exchange(
+                    aiUrl + "/health",
+                    HttpMethod.GET,
+                    null,
+                    new ParameterizedTypeReference<>() {
+                    }
+            );
+            if (!response.getStatusCode().is2xxSuccessful()) {
+                throw new IllegalStateException("AI health endpoint returned non-2xx");
+            }
+        } catch (RestClientException ex) {
+            throw new IllegalStateException("AI health check failed", ex);
+        }
     }
 
     private String resolveTraceId(String traceId) {

@@ -4,12 +4,14 @@ import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.connection.DataType;
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;
 import java.time.Instant;
 import java.lang.reflect.Type;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
@@ -79,7 +81,28 @@ public class JobStateStore {
     }
 
     public Optional<Map<String, Object>> getJobState(Long jobId) {
-        String json = redisTemplate.opsForValue().get(jobKey(jobId));
+        String key = jobKey(jobId);
+        DataType type = redisTemplate.type(key);
+        if (type == null || DataType.NONE.equals(type)) {
+            return Optional.empty();
+        }
+
+        if (DataType.HASH.equals(type)) {
+            Map<Object, Object> entries = redisTemplate.opsForHash().entries(key);
+            if (entries == null || entries.isEmpty()) {
+                return Optional.empty();
+            }
+
+            Map<String, Object> mapped = new HashMap<>();
+            for (Map.Entry<Object, Object> entry : entries.entrySet()) {
+                String field = String.valueOf(entry.getKey());
+                String value = entry.getValue() == null ? null : String.valueOf(entry.getValue());
+                mapped.put(field, decodeHashValue(field, value));
+            }
+            return Optional.of(mapped);
+        }
+
+        String json = redisTemplate.opsForValue().get(key);
         if (json == null || json.isBlank()) {
             return Optional.empty();
         }
@@ -92,7 +115,49 @@ public class JobStateStore {
     }
 
     public void writeJobState(Long jobId, Map<String, Object> state) {
-        redisTemplate.opsForValue().set(jobKey(jobId), gson.toJson(state), TTL);
+        Map<String, String> hash = new HashMap<>();
+        for (Map.Entry<String, Object> entry : state.entrySet()) {
+            hash.put(entry.getKey(), encodeHashValue(entry.getValue()));
+        }
+        redisTemplate.opsForHash().putAll(jobKey(jobId), hash);
+        redisTemplate.expire(jobKey(jobId), TTL);
+    }
+
+    private Object decodeHashValue(String field, String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+
+        if ("result".equals(field) || "failed_chunks".equals(field)) {
+            try {
+                return gson.fromJson(value, Object.class);
+            } catch (RuntimeException ignored) {
+                return value;
+            }
+        }
+
+        if ("progress".equals(field) || "attempts".equals(field) || "total_chunks".equals(field) || "completed_chunks".equals(field)) {
+            try {
+                return Integer.parseInt(value);
+            } catch (NumberFormatException ignored) {
+                return 0;
+            }
+        }
+
+        return value;
+    }
+
+    private String encodeHashValue(Object value) {
+        if (value == null) {
+            return "";
+        }
+        if (value instanceof String || value instanceof Number || value instanceof Boolean) {
+            return String.valueOf(value);
+        }
+        if (value instanceof Map<?, ?> || value instanceof List<?>) {
+            return gson.toJson(value);
+        }
+        return String.valueOf(value);
     }
 
     private String jobKey(Long jobId) {
