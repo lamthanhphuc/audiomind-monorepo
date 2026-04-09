@@ -5,6 +5,7 @@ WORKDIR /workspace
 COPY pom.xml ./pom.xml
 COPY meeting-service/pom.xml ./meeting-service/pom.xml
 COPY processing-service/pom.xml ./processing-service/pom.xml
+COPY user-service/pom.xml ./user-service/pom.xml
 COPY meeting-service/src ./meeting-service/src
 
 RUN mvn -f pom.xml -pl meeting-service -am clean package -DskipTests
