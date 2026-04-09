@@ -94,9 +94,15 @@ class Settings(BaseSettings):
             parsed = urlparse(value)
             host = (parsed.hostname or "").strip().lower()
             raw = value.strip().lower()
-            return host in {"localhost", "127.0.0.1", "0.0.0.0", "::1"} or "localhost" in raw
+            return (
+                host in {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
+                or "localhost" in raw
+            )
 
-        if _is_local(self.database_url) or "postgres:postgres@" in self.database_url.lower():
+        if (
+            _is_local(self.database_url)
+            or "postgres:postgres@" in self.database_url.lower()
+        ):
             raise ValueError(
                 "Invalid production database_url: localhost/default credentials are not allowed"
             )
@@ -111,12 +117,17 @@ class Settings(BaseSettings):
                 "Invalid production cors_allowed_origins: localhost is not allowed"
             )
 
-        if (self.ai_provider or "").strip().lower() == "openai" and not (self.openai_api_key or "").strip():
+        if (self.ai_provider or "").strip().lower() == "openai" and not (
+            self.openai_api_key or ""
+        ).strip():
             raise ValueError(
                 "Invalid production openai_api_key: empty secret is not allowed when ai_provider=openai"
             )
 
-        if self.enable_speaker_diarization and not (self.huggingface_token or "").strip():
+        if (
+            self.enable_speaker_diarization
+            and not (self.huggingface_token or "").strip()
+        ):
             raise ValueError(
                 "Invalid production huggingface_token: empty secret is not allowed when diarization is enabled"
             )
