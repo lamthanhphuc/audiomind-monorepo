@@ -11,13 +11,15 @@ React + Vite frontend for the AudioMind demo.
 
 ## Environment
 
-Create or update `.env`:
+Create or update `.env` (or `.env.local`):
 
-- `VITE_MEETING_SERVICE_URL` (default `http://localhost:8081`)
-- `VITE_PROCESSING_SERVICE_URL` (default `http://localhost:8082`)
-- `VITE_AI_SERVICE_URL` (default `http://localhost:8000`)
+- `VITE_MEETING_API_BASE_URL` (primary) or `VITE_MEETING_SERVICE_URL` (legacy)
+- `VITE_PROCESSING_API_BASE_URL` (primary) or `VITE_PROCESSING_SERVICE_URL` (legacy)
+- `VITE_API_BASE` (optional umbrella base URL)
+- `VITE_AI_SERVICE_URL` or `VITE_API_CPU_BASE` for direct AI endpoint wiring
 
 ## Notes
 
 - Login is mock/local only.
 - Upload audio, then run processing to fetch AI summary.
+- In production builds, missing required API base variables cause startup failure.
