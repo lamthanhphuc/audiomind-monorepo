@@ -4,10 +4,13 @@ from uuid import uuid4
 
 import httpx
 from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.responses import JSONResponse
 
 UPLOADS_DIR = Path("/app/uploads")
 WHISPER_URL = os.getenv("WHISPER_SERVICE_URL", "http://whisper-service:8011")
-DIARIZATION_URL = os.getenv("DIARIZATION_SERVICE_URL", "http://diarization-service:8012")
+DIARIZATION_URL = os.getenv(
+    "DIARIZATION_SERVICE_URL", "http://diarization-service:8012"
+)
 OLLAMA_URL = os.getenv("OLLAMA_BASE_URL", "http://ollama-service:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:3b")
 
@@ -111,8 +114,22 @@ def health() -> dict:
     return {"status": "ok", "ollama_model": OLLAMA_MODEL}
 
 
+@app.get("/ready")
+async def ready() -> dict:
+    async with httpx.AsyncClient(timeout=10) as client:
+        whisper = await client.get(f"{WHISPER_URL}/health")
+        whisper.raise_for_status()
+        diarization = await client.get(f"{DIARIZATION_URL}/health")
+        diarization.raise_for_status()
+        ollama = await client.get(f"{OLLAMA_URL}/api/tags")
+        ollama.raise_for_status()
+    return {"status": "ready", "service": "ai-processing-service"}
+
+
 @app.post("/api/v1/process")
-async def process_audio(file: UploadFile = File(...), language: str | None = None) -> dict:
+async def process_audio(
+    file: UploadFile = File(...), language: str | None = None
+) -> dict:
     ensure_runtime_dirs()
 
     file_ext = Path(file.filename or "audio.wav").suffix or ".wav"
@@ -152,4 +169,18 @@ async def process_audio(file: UploadFile = File(...), language: str | None = Non
             "summary": summary,
         }
     except httpx.HTTPError as exc:
-        raise HTTPException(status_code=502, detail=f"Upstream service error: {exc}") from exc
+        raise HTTPException(
+            status_code=502, detail=f"Upstream service error: {exc}"
+        ) from exc
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(_, exc: Exception):
+    return JSONResponse(
+        status_code=500,
+        content={
+            "code": "INTERNAL_SERVER_ERROR",
+            "message": "Unexpected server error",
+            "detail": str(exc),
+        },
+    )

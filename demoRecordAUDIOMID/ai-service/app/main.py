@@ -1,8 +1,10 @@
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 from loguru import logger
 import sys
 from pathlib import Path
@@ -28,6 +30,7 @@ from app.ffmpeg_utils import ensure_ffmpeg_on_path
 from app.job_status_store import (
     cleanup_expired_job_statuses,
     get_job_status,
+    _get_client,
     load_job_statuses,
     set_job_status,
 )
@@ -41,8 +44,8 @@ except Exception as pipeline_import_error:
 
 # Configure logging
 logger.remove()
-logger.add(sys.stderr, level="INFO")
-logger.add("logs/app.log", rotation="500 MB", level="DEBUG")
+logger.add(sys.stderr, level="INFO", serialize=True)
+logger.add("logs/app.log", rotation="500 MB", level="DEBUG", serialize=True)
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -129,6 +132,30 @@ async def health_check():
     }
 
 
+@app.get("/ready")
+async def readiness_check():
+    with engine.connect() as connection:
+        connection.execute(text("SELECT 1"))
+    _get_client().ping()
+    if pipeline is None:
+        raise HTTPException(status_code=503, detail="Pipeline dependencies unavailable")
+    return {"status": "ready", "service": "ai-service"}
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    trace_id = getattr(request.state, "trace_id", uuid4().hex)
+    logger.exception(f"Unhandled exception trace_id={trace_id}: {repr(exc)}")
+    return JSONResponse(
+        status_code=500,
+        content={
+            "code": "INTERNAL_SERVER_ERROR",
+            "message": "Unexpected server error",
+            "trace_id": trace_id,
+        },
+    )
+
+
 @app.post("/api/process", response_model=ProcessResponse)
 async def process_audio(
     request: ProcessRequest,
@@ -156,6 +183,8 @@ async def process_audio(
             "QUEUED",
             file_id=request.file_id,
             trace_id=trace_id,
+            progress=0,
+            stage="uploading",
         )
         payload = request.model_dump()
         payload["trace_id"] = trace_id
