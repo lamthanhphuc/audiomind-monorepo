@@ -410,6 +410,7 @@ class ProcessingPipeline:
         topic: Optional[str] = None,
         glossary_terms: Optional[List[str]] = None,
         language: Optional[str] = "vi",
+        precomputed_transcript_segments: Optional[List[Dict]] = None,
     ) -> Dict:
         """
         Complete processing pipeline for a meeting
@@ -451,24 +452,30 @@ class ProcessingPipeline:
 
             # Step 2: Speech-to-text
             logger.info("Step 2: Speech recognition")
-            initial_prompt = self._build_initial_prompt(
-                topic=topic, glossary_terms=glossary_terms
-            )
-            logger.info(f"Using Whisper initial prompt: {initial_prompt}")
+            if precomputed_transcript_segments is not None:
+                transcript_segments = list(precomputed_transcript_segments)
+                logger.info(
+                    f"Using precomputed transcript segments from chunk fan-out: {len(transcript_segments)}"
+                )
+            else:
+                initial_prompt = self._build_initial_prompt(
+                    topic=topic, glossary_terms=glossary_terms
+                )
+                logger.info(f"Using Whisper initial prompt: {initial_prompt}")
 
-            transcript_result = self.speech_recognizer.transcribe(
-                resolved_audio_path,
-                language=language,
-                initial_prompt=initial_prompt,
-            )
-            transcript_segments = self.speech_recognizer.format_transcript(
-                transcript_result
-            )
-            transcript_segments = self._normalize_transcript_segments(
-                transcript_segments,
-                topic=topic,
-                glossary_terms=glossary_terms,
-            )
+                transcript_result = self.speech_recognizer.transcribe(
+                    resolved_audio_path,
+                    language=language,
+                    initial_prompt=initial_prompt,
+                )
+                transcript_segments = self.speech_recognizer.format_transcript(
+                    transcript_result
+                )
+                transcript_segments = self._normalize_transcript_segments(
+                    transcript_segments,
+                    topic=topic,
+                    glossary_terms=glossary_terms,
+                )
 
             logger.info(f"Transcription complete: {len(transcript_segments)} segments")
 
