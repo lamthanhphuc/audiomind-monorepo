@@ -1,0 +1,12 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
+  - dashboards/grafana-dashboard-configmap.yaml
+  - servicemonitors/meeting-api-servicemonitor.yaml
+  - servicemonitors/processing-api-servicemonitor.yaml
+  - servicemonitors/user-api-servicemonitor.yaml
+  - servicemonitors/ai-api-servicemonitor.yaml
+  - servicemonitors/whisper-servicemonitor.yaml
+  - servicemonitors/diarization-servicemonitor.yaml
+  - servicemonitors/ai-processing-servicemonitor.yaml

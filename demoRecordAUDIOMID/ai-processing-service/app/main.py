@@ -4,7 +4,8 @@ from uuid import uuid4
 
 import httpx
 from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 UPLOADS_DIR = Path("/app/uploads")
 WHISPER_URL = os.getenv("WHISPER_SERVICE_URL", "http://whisper-service:8011")
@@ -112,6 +113,11 @@ def startup_event() -> None:
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok", "ollama_model": OLLAMA_MODEL}
+
+
+@app.get("/metrics")
+def metrics() -> Response:
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 @app.get("/ready")

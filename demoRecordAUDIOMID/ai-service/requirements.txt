@@ -40,3 +40,4 @@ redis==5.0.8
 
 # HTTP Client
 httpx==0.26.0
+prometheus-client==0.20.0

@@ -29,3 +29,9 @@ spring:
     properties:
       hibernate:
         dialect: ${SPRING_JPA_HIBERNATE_DIALECT:org.hibernate.dialect.PostgreSQLDialect}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,metrics,prometheus

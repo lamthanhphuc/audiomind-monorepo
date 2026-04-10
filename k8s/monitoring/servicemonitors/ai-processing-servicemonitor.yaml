@@ -1,0 +1,19 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: ai-processing-service
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack
+spec:
+  namespaceSelector:
+    matchNames:
+      - audiomind
+  selector:
+    matchLabels:
+      app: ai-processing-service
+      monitoring: "enabled"
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
