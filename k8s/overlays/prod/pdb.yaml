@@ -1,0 +1,54 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: user-api-pdb
+  namespace: audiomind
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: user-api
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: processing-api-pdb
+  namespace: audiomind
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: processing-api
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: meeting-api-pdb
+  namespace: audiomind
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: meeting-api
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: ai-api-pdb
+  namespace: audiomind
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: ai-api
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: celery-worker-pdb
+  namespace: audiomind
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: celery-worker
