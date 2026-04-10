@@ -8,6 +8,7 @@ resources:
   - ../../hpa/core-hpa.yaml
   - ../../observability/stack.yaml
   - sealed-secret.yaml
+  - db-secret-placeholder.yaml
   - hpa.yaml
   - pdb.yaml
   - ingress.yaml
@@ -16,3 +17,4 @@ patches:
   - path: secret-patch.yaml
   - path: replicas-patch.yaml
   - path: resource-patch.yaml
+  - path: db-managed-patch.yaml
