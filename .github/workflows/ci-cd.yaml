@@ -36,10 +36,18 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r demoRecordAUDIOMID/ai-service/requirements.txt
-          pip install -r demoRecordAUDIOMID/ai-processing-service/requirements.txt
-          pip install -r demoRecordAUDIOMID/whisper-service/requirements.txt
-          pip install -r demoRecordAUDIOMID/diarization-service/requirements.txt
+          for i in 1 2 3; do
+            pip install --retries 5 --timeout 120 -r demoRecordAUDIOMID/ai-service/requirements.txt \
+            && pip install --retries 5 --timeout 120 -r demoRecordAUDIOMID/ai-processing-service/requirements.txt \
+            && pip install --retries 5 --timeout 120 -r demoRecordAUDIOMID/whisper-service/requirements.txt \
+            && pip install --retries 5 --timeout 120 -r demoRecordAUDIOMID/diarization-service/requirements.txt \
+            && break
+            if [ "$i" -eq 3 ]; then
+              echo "pip install failed after 3 attempts"
+              exit 1
+            fi
+            echo "pip install attempt $i failed, retrying..."
+          done
 
   test:
     runs-on: ubuntu-latest
@@ -67,8 +75,16 @@ jobs:
       - name: Run Python tests
         run: |
           python -m pip install --upgrade pip
-          pip install -r demoRecordAUDIOMID/ai-service/requirements.txt
-          pip install pytest
+          for i in 1 2 3; do
+            pip install --retries 5 --timeout 120 -r demoRecordAUDIOMID/ai-service/requirements.txt \
+            && pip install --retries 5 --timeout 120 pytest \
+            && break
+            if [ "$i" -eq 3 ]; then
+              echo "pip install failed after 3 attempts"
+              exit 1
+            fi
+            echo "pip install attempt $i failed, retrying..."
+          done
           pytest demoRecordAUDIOMID/ai-service/test_api.py
 
   docker-build-push:
