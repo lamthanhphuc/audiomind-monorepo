@@ -44,7 +44,7 @@ jobs:
       - name: Run smoke script
         shell: pwsh
         run: |
-          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/smoke-e2e.ps1 -AudioFile "${{ github.workspace }}/tests/audio/it-overview.wav" -AiBaseUrl http://localhost:8000 -ProcessingBaseUrl http://localhost:8082 -PollIntervalSeconds 2 -TimeoutSeconds 120
+          ./scripts/smoke-e2e.ps1 -AudioFile "${{ github.workspace }}/tests/audio/it-overview.wav" -AiBaseUrl http://localhost:8000 -ProcessingBaseUrl http://localhost:8082 -PollIntervalSeconds 2 -TimeoutSeconds 120
 
       - name: Upload smoke artifacts
         if: always()
