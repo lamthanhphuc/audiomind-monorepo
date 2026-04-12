@@ -19,7 +19,7 @@ jobs:
       - name: Start stack
         shell: pwsh
         run: |
-          docker compose -f infra/docker-compose.dev.yml up -d --build
+          docker compose -f infra/docker-compose.dev.yml up -d --build --no-deps db redis ai-api celery-worker meeting-api processing-api
 
       - name: Setup ffmpeg
         shell: pwsh
