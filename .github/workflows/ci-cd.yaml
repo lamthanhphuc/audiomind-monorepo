@@ -98,7 +98,7 @@ jobs:
       - name: Build and push user-api image
         uses: docker/build-push-action@v6
         with:
-          context: demoRecordAUDIOMID/user-service
+          context: demoRecordAUDIOMID
           file: demoRecordAUDIOMID/user-service/Dockerfile
           push: true
           tags: |
@@ -108,7 +108,7 @@ jobs:
       - name: Build and push meeting-api image
         uses: docker/build-push-action@v6
         with:
-          context: demoRecordAUDIOMID/meeting-service
+          context: demoRecordAUDIOMID
           file: demoRecordAUDIOMID/meeting-service/Dockerfile
           push: true
           tags: |
@@ -118,7 +118,7 @@ jobs:
       - name: Build and push processing-api image
         uses: docker/build-push-action@v6
         with:
-          context: demoRecordAUDIOMID/processing-service
+          context: demoRecordAUDIOMID
           file: demoRecordAUDIOMID/processing-service/Dockerfile
           push: true
           tags: |
