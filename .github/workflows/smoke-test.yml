@@ -9,7 +9,7 @@ on:
 
 jobs:
   smoke-test:
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     timeout-minutes: 45
 
     steps:
@@ -24,7 +24,12 @@ jobs:
       - name: Setup ffmpeg
         shell: pwsh
         run: |
-          choco install ffmpeg -y --no-progress
+          if ($env:RUNNER_OS -eq "Windows") {
+            choco install ffmpeg -y --no-progress
+          } else {
+            sudo apt-get update
+            sudo apt-get install -y ffmpeg
+          }
 
       - name: Convert mp3 to wav
         shell: pwsh
