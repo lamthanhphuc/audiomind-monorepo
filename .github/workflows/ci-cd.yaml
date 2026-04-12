@@ -82,8 +82,8 @@ jobs:
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push ai-api image
         uses: docker/build-push-action@v6
@@ -92,8 +92,8 @@ jobs:
           file: demoRecordAUDIOMID/ai-service/Dockerfile
           push: true
           tags: |
-            ghcr.io/${{ secrets.DOCKER_USERNAME }}/audiomind-ai-api:${{ github.sha }}
-            ghcr.io/${{ secrets.DOCKER_USERNAME }}/audiomind-ai-api:latest
+            ghcr.io/${{ github.actor }}/audiomind-ai-api:${{ github.sha }}
+            ghcr.io/${{ github.actor }}/audiomind-ai-api:latest
 
       - name: Build and push user-api image
         uses: docker/build-push-action@v6
@@ -102,13 +102,35 @@ jobs:
           file: demoRecordAUDIOMID/user-service/Dockerfile
           push: true
           tags: |
-            ghcr.io/${{ secrets.DOCKER_USERNAME }}/audiomind-user-api:${{ github.sha }}
-            ghcr.io/${{ secrets.DOCKER_USERNAME }}/audiomind-user-api:latest
+            ghcr.io/${{ github.actor }}/audiomind-user-api:${{ github.sha }}
+            ghcr.io/${{ github.actor }}/audiomind-user-api:latest
+
+      - name: Build and push meeting-api image
+        uses: docker/build-push-action@v6
+        with:
+          context: demoRecordAUDIOMID/meeting-service
+          file: demoRecordAUDIOMID/meeting-service/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ github.actor }}/audiomind-meeting-api:${{ github.sha }}
+            ghcr.io/${{ github.actor }}/audiomind-meeting-api:latest
+
+      - name: Build and push processing-api image
+        uses: docker/build-push-action@v6
+        with:
+          context: demoRecordAUDIOMID/processing-service
+          file: demoRecordAUDIOMID/processing-service/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ github.actor }}/audiomind-processing-api:${{ github.sha }}
+            ghcr.io/${{ github.actor }}/audiomind-processing-api:latest
 
   deploy-staging:
     runs-on: ubuntu-latest
     needs: docker-build-push
     environment: staging
+    env:
+      K8S_NAMESPACE: audiomind-staging
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -124,5 +146,10 @@ jobs:
 
       - name: Deploy to staging namespace
         run: |
-          kubectl apply -k k8s/overlays/prod
-          kubectl rollout status deployment/user-api-deployment -n audiomind --timeout=120s
+          kubectl apply -k k8s/overlays/staging
+          kubectl set image deployment/user-api-deployment user-api=ghcr.io/${{ github.actor }}/audiomind-user-api:${{ github.sha }} -n ${K8S_NAMESPACE}
+          kubectl set image deployment/meeting-api-deployment meeting-api=ghcr.io/${{ github.actor }}/audiomind-meeting-api:${{ github.sha }} -n ${K8S_NAMESPACE}
+          kubectl set image deployment/processing-api-deployment processing-api=ghcr.io/${{ github.actor }}/audiomind-processing-api:${{ github.sha }} -n ${K8S_NAMESPACE}
+          kubectl rollout status deployment/user-api-deployment -n ${K8S_NAMESPACE} --timeout=120s
+          kubectl rollout status deployment/meeting-api-deployment -n ${K8S_NAMESPACE} --timeout=120s
+          kubectl rollout status deployment/processing-api-deployment -n ${K8S_NAMESPACE} --timeout=120s

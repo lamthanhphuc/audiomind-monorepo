@@ -21,10 +21,25 @@ jobs:
         run: |
           docker compose -f infra/docker-compose.dev.yml up -d --build
 
+      - name: Setup ffmpeg
+        shell: pwsh
+        run: |
+          choco install ffmpeg -y --no-progress
+
+      - name: Convert mp3 to wav
+        shell: pwsh
+        run: |
+          $inputPath = "${{ github.workspace }}/tests/audio/it-overview.mp3"
+          $outputPath = "${{ github.workspace }}/tests/audio/it-overview.wav"
+          if (-not (Test-Path -LiteralPath $inputPath)) {
+            throw "Input audio file not found: $inputPath"
+          }
+          ffmpeg -y -i "$inputPath" "$outputPath"
+
       - name: Run smoke script
         shell: pwsh
         run: |
-          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/smoke-e2e.ps1 -AudioFile stress-large-180s.wav -AiBaseUrl http://localhost:8000 -ProcessingBaseUrl http://localhost:8082 -PollIntervalSeconds 2 -TimeoutSeconds 120
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/smoke-e2e.ps1 -AudioFile "${{ github.workspace }}/tests/audio/it-overview.wav" -AiBaseUrl http://localhost:8000 -ProcessingBaseUrl http://localhost:8082 -PollIntervalSeconds 2 -TimeoutSeconds 120
 
       - name: Upload smoke artifacts
         if: always()

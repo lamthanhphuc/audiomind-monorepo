@@ -6,6 +6,7 @@ import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -14,6 +15,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
@@ -58,5 +60,53 @@ class MeetingServiceTest {
         List<Meeting> result = meetingService.findRecentMeetings();
         assertEquals(1, result.size());
         assertEquals(1L, result.getFirst().getId());
+    }
+
+    @Test
+    void findById_shouldReturnMeetingWhenPresent() {
+        Meeting found = new Meeting();
+        found.setId(42L);
+        found.setTitle("Demo meeting");
+
+        when(meetingRepository.findById(42L)).thenReturn(Optional.of(found));
+
+        Meeting result = meetingService.findById(42L);
+
+        assertEquals(42L, result.getId());
+        assertEquals("Demo meeting", result.getTitle());
+    }
+
+    @Test
+    void saveMeeting_shouldSetCreatedAtBeforePersist() {
+        Meeting saved = new Meeting();
+        saved.setId(11L);
+
+        when(meetingRepository.save(any(Meeting.class))).thenReturn(saved);
+
+        meetingService.saveMeeting("Planning", "uploads/p.wav");
+
+        ArgumentCaptor<Meeting> captor = ArgumentCaptor.forClass(Meeting.class);
+        verify(meetingRepository).save(captor.capture());
+
+        Meeting persisted = captor.getValue();
+        assertEquals("Planning", persisted.getTitle());
+        assertEquals("uploads/p.wav", persisted.getAudioPath());
+        assertTrue(persisted.getCreatedAt() != null);
+    }
+
+    @Test
+    void findRecentMeetings_shouldPreserveRepositoryOrder() {
+        Meeting first = new Meeting();
+        first.setId(5L);
+        Meeting second = new Meeting();
+        second.setId(4L);
+
+        when(meetingRepository.findTop20ByOrderByIdDesc()).thenReturn(List.of(first, second));
+
+        List<Meeting> result = meetingService.findRecentMeetings();
+
+        assertEquals(2, result.size());
+        assertEquals(5L, result.get(0).getId());
+        assertEquals(4L, result.get(1).getId());
     }
 }

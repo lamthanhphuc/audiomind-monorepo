@@ -15,7 +15,7 @@
     "stress:k6": "k6 run stress-tests/k6-10-jobs.js",
     "chaos:test": "bash ./scripts/chaos-test.sh",
     "lint": "eslint . --ext .ts,.tsx,.js,.jsx --no-error-on-unmatched-pattern",
-    "test": "jest --passWithNoTests --testPathIgnorePatterns=FE-Audiomind/tests/e2e",
+    "test": "jest --passWithNoTests --testPathIgnorePatterns=FE-Audiomind",
     "validate:config:node": "node packages/tooling/config-validation/validate-config.mjs",
     "generate:client": "openapi-typescript ./packages/contracts/meeting-api.yaml -o ./packages/api-clients/meeting.ts && openapi-typescript ./packages/contracts/processing-api.yaml -o ./packages/api-clients/processing.ts && openapi-typescript ./packages/contracts/ai-api.yaml -o ./packages/api-clients/ai.ts",
     "typecheck:client": "tsc --noEmit -p tsconfig.generated.json",

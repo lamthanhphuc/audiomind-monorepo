@@ -1,4 +1,4 @@
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import model_validator
 from functools import lru_cache
 from pathlib import Path
@@ -9,6 +9,12 @@ ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
 
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=str(ENV_FILE),
+        case_sensitive=False,
+        extra="ignore",
+    )
+
     app_env: str = "development"
 
     # Database
@@ -77,10 +83,6 @@ class Settings(BaseSettings):
     timeout_monitor_threshold_seconds: int = 7200
     chunk_processing_stale_seconds: int = 180
     worker_health_port: int = 8080
-
-    class Config:
-        env_file = str(ENV_FILE)
-        case_sensitive = False
 
     @model_validator(mode="after")
     def validate_production_settings(self) -> "Settings":
