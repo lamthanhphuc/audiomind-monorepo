@@ -52,7 +52,7 @@ function Invoke-Json {
         $args += @("-d", $Body)
     }
 
-    $raw = & curl.exe @args
+    $raw = & curl @args
     if ($LASTEXITCODE -ne 0) {
         throw "curl failed for $Method $Url"
     }
@@ -139,11 +139,7 @@ try {
     }
 
     Write-Step "Step 1 Upload file: $AudioFile"
-    $uploadRaw = & curl.exe -sS -F "file=@$AudioFile" "$ProcessingBaseUrl/processing/upload"
-    if ($LASTEXITCODE -ne 0) {
-        throw "Upload request failed"
-    }
-    $upload = $uploadRaw | ConvertFrom-Json
+    $upload = Invoke-RestMethod -Method Post -Uri "$ProcessingBaseUrl/processing/upload" -Form @{ file = Get-Item -LiteralPath $AudioFile }
     if (-not $upload.audio_path) {
         throw "Upload response missing audio_path"
     }
