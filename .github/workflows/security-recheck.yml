@@ -86,6 +86,11 @@ jobs:
           cd FE-Audiomind
           npm run test:coverage
 
+      - name: Install Playwright browsers
+        run: |
+          cd FE-Audiomind
+          npx playwright install --with-deps chromium
+
       - name: FE e2e (integration)
         run: |
           cd FE-Audiomind
