@@ -1,6 +1,9 @@
 name: security-recheck
 
 on:
+  workflow_dispatch:
+  push:
+    branches: [production-ready]
   pull_request:
     branches: [main, master]
 

@@ -1,6 +1,10 @@
 name: Contract Check
 
 on:
+  workflow_dispatch:
+  push:
+    branches:
+      - production-ready
   pull_request:
     paths:
       - "packages/contracts/**"
