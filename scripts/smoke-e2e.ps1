@@ -303,15 +303,15 @@ catch {
 
     Write-Step "Auto debug: collect logs and runtime evidence"
 
-    $workerLogs = (& cmd /c "docker logs --tail 200 $($resolved.worker) 2>&1") | Out-String
-    $aiLogs = (& cmd /c "docker logs --tail 200 $($resolved.ai) 2>&1") | Out-String
-    $processingLogs = (& cmd /c "docker logs --tail 200 $($resolved.processing) 2>&1") | Out-String
+    $workerLogs = (& docker logs --tail 200 $resolved.worker 2>&1) | Out-String
+    $aiLogs = (& docker logs --tail 200 $resolved.ai 2>&1) | Out-String
+    $processingLogs = (& docker logs --tail 200 $resolved.processing 2>&1) | Out-String
 
-    $redisKeys = (& cmd /c "docker exec $($resolved.redis) redis-cli --raw KEYS *job* 2>&1") | Out-String
+    $redisKeys = (& docker exec $resolved.redis redis-cli --raw KEYS *job* 2>&1) | Out-String
     $firstKey = ($redisKeys -split "`r?`n" | Where-Object { $_ -and $_ -notmatch "^\(error\)" } | Select-Object -First 1)
     $ttlValue = "N/A"
     if ($firstKey) {
-        $ttlValue = ((& cmd /c "docker exec $($resolved.redis) redis-cli --raw TTL $firstKey 2>&1") | Out-String).Trim()
+        $ttlValue = ((& docker exec $resolved.redis redis-cli --raw TTL $firstKey 2>&1) | Out-String).Trim()
     }
 
     if ($workerLogs -notmatch "received|task|celery") {
