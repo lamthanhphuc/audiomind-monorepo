@@ -101,7 +101,13 @@ async def inject_trace_headers(request: Request, call_next) -> Response:
 
 def ensure_runtime_dirs() -> None:
     """Create writable runtime directories for mounted volumes in containers."""
-    for runtime_dir in (Path("/app/models"), Path("/app/uploads"), Path("./storage")):
+    for runtime_dir in (
+        Path("/app/models"),
+        Path("/app/uploads"),
+        Path("/app/storage"),
+        Path("/app/storage/uploads"),
+        Path("./storage"),
+    ):
         runtime_dir.mkdir(parents=True, exist_ok=True)
         try:
             runtime_dir.chmod(0o775)
@@ -109,6 +115,23 @@ def ensure_runtime_dirs() -> None:
             logger.warning(
                 f"Could not update permissions for {runtime_dir}: {permission_error}"
             )
+
+
+def resolve_upload_dir() -> Path:
+    """Pick the first writable upload directory shared across API and worker containers."""
+    candidates = (Path("/app/uploads"), Path("/app/storage/uploads"), Path("./storage/uploads"))
+    for upload_dir in candidates:
+        try:
+            upload_dir.mkdir(parents=True, exist_ok=True)
+            probe_file = upload_dir / ".write_probe"
+            with probe_file.open("wb") as probe:
+                probe.write(b"ok")
+            probe_file.unlink(missing_ok=True)
+            return upload_dir
+        except OSError as permission_error:
+            logger.warning(f"Upload dir not writable ({upload_dir}): {permission_error}")
+
+    raise RuntimeError("No writable upload directory is available")
 
 
 @app.get("/")
@@ -227,8 +250,7 @@ async def process_mock_v1(_: dict):
 @app.post("/api/upload-audio")
 async def upload_audio(file: UploadFile = File(...)):
     try:
-        uploads_dir = Path("/app/uploads")
-        uploads_dir.mkdir(parents=True, exist_ok=True)
+        uploads_dir = resolve_upload_dir()
 
         original_name = Path(file.filename or "audio.wav").name
         extension = (Path(original_name).suffix or ".wav").lower()
