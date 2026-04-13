@@ -92,6 +92,8 @@ jobs:
           npx playwright install --with-deps chromium
 
       - name: FE e2e (integration)
+        env:
+          PLAYWRIGHT_REAL_BACKEND: "1"
         run: |
           cd FE-Audiomind
           npx playwright test --retries=1
