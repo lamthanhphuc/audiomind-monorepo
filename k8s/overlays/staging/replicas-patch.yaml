@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: meeting-api-deployment
-  namespace: audiomind-staging
+  namespace: audiomind
 spec:
   replicas: 2
 ---
@@ -10,7 +10,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: processing-api-deployment
-  namespace: audiomind-staging
+  namespace: audiomind
 spec:
   replicas: 2
 ---
@@ -18,7 +18,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: ai-api-deployment
-  namespace: audiomind-staging
+  namespace: audiomind
 spec:
   replicas: 2
 ---
@@ -26,6 +26,6 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: ai-processing-service-deployment
-  namespace: audiomind-staging
+  namespace: audiomind
 spec:
   replicas: 2

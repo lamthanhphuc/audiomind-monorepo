@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: user-api-deployment
-  namespace: audiomind-staging
+  namespace: audiomind
 spec:
   template:
     spec:
@@ -29,6 +29,6 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: db-deployment
-  namespace: audiomind-staging
+  namespace: audiomind
 spec:
   replicas: 0
