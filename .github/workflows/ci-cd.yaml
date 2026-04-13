@@ -162,7 +162,7 @@ jobs:
 
       - name: Deploy to staging namespace
         run: |
-          kubectl apply -k k8s/overlays/staging
+          kubectl kustomize k8s/overlays/staging --load-restrictor=LoadRestrictionsNone | kubectl apply -f -
           kubectl set image deployment/user-api-deployment user-api=ghcr.io/${{ github.actor }}/audiomind-user-api:${{ github.sha }} -n ${K8S_NAMESPACE}
           kubectl set image deployment/meeting-api-deployment meeting-api=ghcr.io/${{ github.actor }}/audiomind-meeting-api:${{ github.sha }} -n ${K8S_NAMESPACE}
           kubectl set image deployment/processing-api-deployment processing-api=ghcr.io/${{ github.actor }}/audiomind-processing-api:${{ github.sha }} -n ${K8S_NAMESPACE}
