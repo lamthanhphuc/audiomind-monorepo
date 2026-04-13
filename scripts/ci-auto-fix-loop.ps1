@@ -444,6 +444,12 @@ while ($true) {
             $category = Classify-RunFailure -LogText $normalizedLog
             $errorHash = Get-StringHash -InputText "$failedWorkflow|$category|$normalizedLog"
 
+            if ($category -eq 'secret_missing') {
+                Write-LoopLog -Level 'WARN' -Category 'secret_missing' -Message "Missing secret detected for workflow='$failedWorkflow'. Waiting for operator action."
+                Start-Sleep -Seconds $PollSeconds
+                continue
+            }
+
             if ($blockedErrorHashes.ContainsKey($errorHash)) {
                 Write-LoopLog -Level 'WARN' -Category 'blocked' -Message "Error hash already blocked=$errorHash workflow='$failedWorkflow'."
                 Start-Sleep -Seconds $PollSeconds
@@ -461,12 +467,6 @@ while ($true) {
             if ($fixCount -gt 5) {
                 $blockedErrorHashes[$errorHash] = $true
                 Write-LoopLog -Level 'WARN' -Category 'blocked' -Message "Marked blocked after >5 attempts hash=$errorHash workflow='$failedWorkflow'."
-                Start-Sleep -Seconds $PollSeconds
-                continue
-            }
-
-            if ($category -eq 'secret_missing') {
-                Write-LoopLog -Level 'WARN' -Category 'secret_missing' -Message "Missing secret detected for workflow='$failedWorkflow'. Waiting for operator action."
                 Start-Sleep -Seconds $PollSeconds
                 continue
             }
