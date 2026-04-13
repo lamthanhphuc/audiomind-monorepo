@@ -84,6 +84,26 @@ function Invoke-Api {
     return Invoke-RestMethod -Method $Method -Uri $Url -Headers $Headers -ContentType $ContentType -Body $jsonBody
 }
 
+function Wait-ApiReady {
+    param(
+        [string]$Url,
+        [int]$TimeoutSec = 120
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    while ((Get-Date) -lt $deadline) {
+        try {
+            $null = Invoke-Api -Method "GET" -Url $Url -Headers @{} -Body $null
+            return
+        }
+        catch {
+        }
+        Start-Sleep -Seconds $PollIntervalSeconds
+    }
+
+    throw "Health endpoint not ready before timeout: $Url"
+}
+
 $report = [ordered]@{
     Result = "FAIL"
     Flow = [ordered]@{
@@ -128,11 +148,11 @@ if ($missing.Count -gt 0) {
 Write-Step "Required containers found: ai=$($resolved.ai), redis=$($resolved.redis), worker=$($resolved.worker), processing=$($resolved.processing)"
 
 try {
-    $null = Invoke-Api -Method "GET" -Url "$AiBaseUrl/health" -Headers @{} -Body $null
+    Wait-ApiReady -Url "$AiBaseUrl/health" -TimeoutSec $TimeoutSeconds
 
-    $null = Invoke-Api -Method "GET" -Url "$ProcessingBaseUrl/health" -Headers @{} -Body $null
+    Wait-ApiReady -Url "$ProcessingBaseUrl/health" -TimeoutSec $TimeoutSeconds
 
-    $null = Invoke-Api -Method "GET" -Url "$ProcessingBaseUrl/actuator/health" -Headers @{} -Body $null
+    Wait-ApiReady -Url "$ProcessingBaseUrl/actuator/health" -TimeoutSec $TimeoutSeconds
 
     if (-not (Test-Path -LiteralPath $AudioFile)) {
         throw "Audio file not found: $AudioFile"
