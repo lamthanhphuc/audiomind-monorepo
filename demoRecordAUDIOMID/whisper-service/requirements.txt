@@ -4,6 +4,6 @@ python-multipart>=0.0.22
 setuptools>=78.1.1
 uvicorn[standard]==0.30.6
 numpy==1.26.4
-triton>=2.0.0,<3
+triton>=2.0.0
 more-itertools
 prometheus-client==0.20.0

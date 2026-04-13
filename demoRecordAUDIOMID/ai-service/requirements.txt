@@ -17,7 +17,7 @@ numpy==1.24.3
 
 # Speech Recognition
 tiktoken==0.5.2
-triton>=2.0.0,<3
+triton>=2.0.0
 more-itertools
 
 # Speaker Diarization
