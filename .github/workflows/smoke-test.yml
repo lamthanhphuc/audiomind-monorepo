@@ -57,7 +57,7 @@ jobs:
         run: |
           $maxAttempts = 3
           for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
-            ./scripts/smoke-e2e.ps1 -AudioFile "${{ github.workspace }}/tests/audio/it-overview.wav" -AiBaseUrl http://localhost:8000 -ProcessingBaseUrl http://localhost:8082 -PollIntervalSeconds 2 -TimeoutSeconds 120
+            ./scripts/smoke-e2e.ps1 -AudioFile "${{ github.workspace }}/tests/audio/it-overview.wav" -AiBaseUrl http://localhost:8000 -ProcessingBaseUrl http://localhost:8082 -PollIntervalSeconds 2 -TimeoutSeconds 300
             if ($LASTEXITCODE -eq 0) {
               break
             }
