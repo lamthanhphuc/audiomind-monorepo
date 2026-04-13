@@ -5,6 +5,7 @@ import json
 import re
 import httpx
 import unicodedata
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 
 class AIAnalyzer:
@@ -134,43 +135,52 @@ class AIAnalyzer:
             ):
                 if phrase_key not in selected_seen:
                     selected_seen.add(phrase_key)
-                    selected_keys.append(phrase_key)
+                """Retry transient HTTP/runtime failures when calling Ollama endpoints."""
+                @retry(
+                    stop=stop_after_attempt(3),
+                    wait=wait_exponential(multiplier=1, min=1, max=8),
+                    retry=retry_if_exception_type((httpx.HTTPError, httpx.TimeoutException, ValueError)),
+                    reraise=True,
+                )
+                def _execute_call() -> str:
+                    with httpx.Client(timeout=self.timeout_seconds) as client:
+                        chat_response = client.post(
+                            f"{self.ollama_base_url}/api/chat", json=chat_payload
+                        )
+                        if chat_response.status_code != 404:
+                            chat_response.raise_for_status()
+                            chat_body = chat_response.json()
+                            content = (chat_body.get("message", {}) or {}).get("content", "")
+                            if content:
+                                return content.strip()
 
-        # 2) Match single-token whitelist entries (excluding stopwords).
-        single_token_whitelist = {
-            key: value for key, value in whitelist_map.items() if " " not in key
-        }
-        token_candidates: Set[str] = set()
-        for value in normalized_terms.union(normalized_keywords):
-            token_candidates.add(value)
-            token_candidates.update(value.split())
+                        logger.warning(
+                            "Ollama /api/chat unavailable; falling back to Ollama /api/generate compatibility endpoint"
+                        )
 
-        for token in token_candidates:
-            if token in self.STOPWORDS:
-                continue
-            if token in single_token_whitelist and token not in selected_seen:
-                selected_seen.add(token)
-                selected_keys.append(token)
+                        generate_payload = {
+                            "model": self.model,
+                            "stream": False,
+                            "prompt": f"{system_prompt}\n\n{prompt}",
+                            "options": chat_payload.get("options", {}),
+                        }
+                        if expect_json:
+                            generate_payload["format"] = "json"
 
-        # 3) Fallback when model returns empty/noisy technical terms:
-        # whitelist + regex phrase candidates + intersection with keywords.
-        if not selected_keys:
-            regex_candidates = self._extract_candidate_phrases_by_regex(transcript)
-            keyword_intersection = normalized_keywords.intersection(
-                whitelist_map.keys()
-            )
+                        generate_response = client.post(
+                            f"{self.ollama_base_url}/api/generate",
+                            json=generate_payload,
+                        )
+                        generate_response.raise_for_status()
+                        generate_body = generate_response.json()
+                        content = (generate_body.get("response", "") or "").strip()
+                        if not content:
+                            raise ValueError(
+                                f"Empty response from Ollama generate API: {generate_body}"
+                            )
+                        return content
 
-            for phrase_key in whitelist_order:
-                if phrase_key in keyword_intersection or phrase_key in regex_candidates:
-                    if phrase_key not in selected_seen:
-                        selected_seen.add(phrase_key)
-                        selected_keys.append(phrase_key)
-
-        return [whitelist_map[key] for key in selected_keys[:12]]
-
-    def _chunk_transcript(self, transcript: str, max_chars: int = 2000):
-        chunks = []
-        current = ""
+                return _execute_call()
 
         for line in transcript.split("\n"):
             if len(current) + len(line) < max_chars:
