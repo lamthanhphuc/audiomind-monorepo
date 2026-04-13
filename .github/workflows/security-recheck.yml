@@ -76,6 +76,11 @@ jobs:
           cd FE-Audiomind
           npm ci
 
+      - name: FE install optional rollup binary fallback
+        run: |
+          cd FE-Audiomind
+          npm ls @rollup/rollup-linux-x64-gnu >/dev/null 2>&1 || npm i @rollup/rollup-linux-x64-gnu --no-save
+
       - name: FE unit coverage
         run: |
           cd FE-Audiomind
