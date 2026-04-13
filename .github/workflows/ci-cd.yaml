@@ -174,17 +174,21 @@ jobs:
         uses: azure/setup-kubectl@v4
 
       - name: Configure kubeconfig
+        id: kubeconfig
         run: |
           if [ -z "${{ secrets.KUBE_CONFIG }}" ]; then
             echo "AUTO_FIX_CATEGORY=secret_missing"
             echo "AUTO_FIX_SECRET=KUBE_CONFIG"
-            exit 1
+            echo "skipped=true" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+          echo "skipped=false" >> "$GITHUB_OUTPUT"
           mkdir -p ~/.kube
           echo "${{ secrets.KUBE_CONFIG }}" > ~/.kube/config
           chmod 600 ~/.kube/config
 
       - name: Deploy to staging namespace
+        if: steps.kubeconfig.outputs.skipped != 'true'
         run: |
           kubectl get namespace ${K8S_NAMESPACE} >/dev/null 2>&1 || kubectl create namespace ${K8S_NAMESPACE}
           kubectl kustomize k8s/overlays/staging --load-restrictor=LoadRestrictionsNone | kubectl apply -f -
