@@ -1,0 +1,52 @@
+name: CI Auto-Fix Loop
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Run in dry-run mode (no commit/push/trigger/cancel)
+        required: false
+        default: 'true'
+      poll_seconds:
+        description: Poll interval in seconds
+        required: false
+        default: '30'
+  schedule:
+    - cron: '*/15 * * * *'
+
+concurrency:
+  group: ci-autofix-production-ready
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  run-loop:
+    runs-on: ubuntu-latest
+    timeout-minutes: 14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup GitHub CLI
+        run: gh --version
+
+      - name: Preflight auth and repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh auth status
+          gh repo view
+
+      - name: Run CI auto-fix loop window
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'true' }}
+        run: |
+          $poll = [int]('${{ github.event.inputs.poll_seconds || '30' }}')
+          ./scripts/ci-auto-fix-loop.ps1 -Branch production-ready -PollSeconds $poll

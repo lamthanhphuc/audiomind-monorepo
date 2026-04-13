@@ -34,10 +34,28 @@ jobs:
           test -d packages/contracts || (echo "packages/contracts missing" && exit 1)
 
       - name: Install deps
-        run: npm ci
+        run: |
+          for i in 1 2 3; do
+            npm ci && break
+            if [ "$i" -eq 3 ]; then
+              echo "npm ci failed after 3 attempts"
+              exit 1
+            fi
+            echo "npm ci attempt $i failed, retrying..."
+            sleep $((i * 5))
+          done
 
       - name: Fetch main branch
-        run: git fetch origin main
+        run: |
+          for i in 1 2 3; do
+            git fetch origin main && break
+            if [ "$i" -eq 3 ]; then
+              echo "git fetch origin main failed after 3 attempts"
+              exit 1
+            fi
+            echo "git fetch attempt $i failed, retrying..."
+            sleep $((i * 5))
+          done
 
       - name: Validate schema
         run: npm run validate:schema

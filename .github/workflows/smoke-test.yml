@@ -20,7 +20,17 @@ jobs:
       - name: Start stack
         shell: pwsh
         run: |
-          docker compose -f infra/docker-compose.dev.yml up -d --build db redis ai-api celery-worker meeting-api processing-api
+          $maxAttempts = 3
+          for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+            docker compose -f infra/docker-compose.dev.yml up -d --build db redis ai-api celery-worker meeting-api processing-api
+            if ($LASTEXITCODE -eq 0) {
+              break
+            }
+            if ($attempt -eq $maxAttempts) {
+              throw "docker compose startup failed after $maxAttempts attempts"
+            }
+            Start-Sleep -Seconds (5 * $attempt)
+          }
 
       - name: Setup ffmpeg
         shell: pwsh
@@ -45,7 +55,17 @@ jobs:
       - name: Run smoke script
         shell: pwsh
         run: |
-          ./scripts/smoke-e2e.ps1 -AudioFile "${{ github.workspace }}/tests/audio/it-overview.wav" -AiBaseUrl http://localhost:8000 -ProcessingBaseUrl http://localhost:8082 -PollIntervalSeconds 2 -TimeoutSeconds 120
+          $maxAttempts = 3
+          for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+            ./scripts/smoke-e2e.ps1 -AudioFile "${{ github.workspace }}/tests/audio/it-overview.wav" -AiBaseUrl http://localhost:8000 -ProcessingBaseUrl http://localhost:8082 -PollIntervalSeconds 2 -TimeoutSeconds 120
+            if ($LASTEXITCODE -eq 0) {
+              break
+            }
+            if ($attempt -eq $maxAttempts) {
+              throw "smoke script failed after $maxAttempts attempts"
+            }
+            Start-Sleep -Seconds (5 * $attempt)
+          }
 
       - name: Upload smoke artifacts
         if: always()
