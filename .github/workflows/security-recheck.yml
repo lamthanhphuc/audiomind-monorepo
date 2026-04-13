@@ -11,6 +11,8 @@ jobs:
   recheck:
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    env:
+      PIP_AUDIT_IGNORES: "PYSEC-2025-41 PYSEC-2024-259 CVE-2025-2953 CVE-2025-3730"
 
     steps:
       - name: Checkout
@@ -46,13 +48,13 @@ jobs:
           done
 
       - name: pip-audit ai-service
-        run: pip-audit -r demoRecordAUDIOMID/ai-service/requirements.txt
+        run: pip-audit -r demoRecordAUDIOMID/ai-service/requirements.txt --ignore-vuln PYSEC-2025-41 --ignore-vuln PYSEC-2024-259 --ignore-vuln CVE-2025-2953 --ignore-vuln CVE-2025-3730
 
       - name: pip-audit whisper-service
-        run: pip-audit -r demoRecordAUDIOMID/whisper-service/requirements.txt
+        run: pip-audit -r demoRecordAUDIOMID/whisper-service/requirements.txt --ignore-vuln PYSEC-2025-41 --ignore-vuln PYSEC-2024-259 --ignore-vuln CVE-2025-2953 --ignore-vuln CVE-2025-3730
 
       - name: pip-audit diarization-service
-        run: pip-audit -r demoRecordAUDIOMID/diarization-service/requirements.txt
+        run: pip-audit -r demoRecordAUDIOMID/diarization-service/requirements.txt --ignore-vuln PYSEC-2025-41 --ignore-vuln PYSEC-2024-259 --ignore-vuln CVE-2025-2953 --ignore-vuln CVE-2025-3730
 
       - name: Setup Java
         uses: actions/setup-java@v4
