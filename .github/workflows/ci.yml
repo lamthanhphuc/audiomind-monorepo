@@ -80,6 +80,35 @@ jobs:
           pip install pytest
           pytest demoRecordAUDIOMID/ai-service
 
+      - name: Setup E2E test account
+        shell: pwsh
+        env:
+          E2E_USERNAME: ${{ secrets.E2E_USERNAME }}
+          E2E_PASSWORD: ${{ secrets.E2E_PASSWORD }}
+          E2E_USER_SERVICE_BASE_URL: http://localhost:8083
+        run: |
+          if (-not $env:E2E_USERNAME -or -not $env:E2E_PASSWORD) {
+            Write-Host "Skipping setup-e2e-account: missing E2E secrets"
+            exit 0
+          }
+          ./scripts/setup-e2e-account.ps1
+
+      - name: Run FE E2E (real-backend, gated)
+        env:
+          PLAYWRIGHT_REAL_BACKEND: '1'
+          E2E_USERNAME: ${{ secrets.E2E_USERNAME }}
+          E2E_PASSWORD: ${{ secrets.E2E_PASSWORD }}
+          PLAYWRIGHT_BASE_URL: http://127.0.0.1:5173
+        run: |
+          if [ -z "$E2E_USERNAME" ] || [ -z "$E2E_PASSWORD" ]; then
+            echo "Skipping E2E: missing E2E secrets"
+          elif curl --silent --fail http://localhost:8082/health > /dev/null; then
+            cd FE-Audiomind
+            npm run test:e2e:ci
+          else
+            echo "Skipping E2E: processing backend not ready on http://localhost:8082/health"
+          fi
+
   contract-check:
     runs-on: ubuntu-latest
 
