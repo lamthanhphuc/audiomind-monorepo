@@ -178,16 +178,18 @@ export default function App() {
           <input
             type="text"
             placeholder="Username"
+            data-testid="e2e-login-username"
             value={username}
             onChange={(event) => setUsername(event.target.value)}
           />
           <input
             type="password"
             placeholder="Password"
+            data-testid="e2e-login-password"
             value={password}
             onChange={(event) => setPassword(event.target.value)}
           />
-          <button type="button" onClick={handleLogin}>Đăng nhập</button>
+          <button type="button" data-testid="e2e-login-submit" onClick={handleLogin}>Đăng nhập</button>
         </div>
         {authError && <p style={{ color: 'crimson', marginTop: 12 }}>{authError}</p>}
       </main>
@@ -206,10 +208,11 @@ export default function App() {
         <input
           type="file"
           accept="audio/*"
+          data-testid="e2e-upload-input"
           onChange={(event) => setSelectedFile(event.target.files?.[0] || null)}
           disabled={busy}
         />
-        <button onClick={handleProcess} disabled={busy || !selectedFile}>
+        <button data-testid="e2e-process-submit" onClick={handleProcess} disabled={busy || !selectedFile}>
           Phân tích file
         </button>
         {busy && (
@@ -219,15 +222,15 @@ export default function App() {
         )}
       </div>
 
-      <p><strong>Status:</strong> {status}</p>
+      <p data-testid="e2e-status"><strong>Status:</strong> {status}</p>
       {error && <p style={{ color: 'crimson' }}>{error}</p>}
 
       {result && (
         <section style={{ border: '1px solid #ddd', borderRadius: 8, padding: 16 }}>
           <p><strong>ID:</strong> {result.meetingId}</p>
           <p><strong>Status:</strong> {result.status}</p>
-          <p><strong>Transcript:</strong> {transcriptText}</p>
-          <p><strong>Summary:</strong> {summaryText}</p>
+          <p data-testid="e2e-transcript"><strong>Transcript:</strong> {transcriptText}</p>
+          <p data-testid="e2e-summary"><strong>Summary:</strong> {summaryText}</p>
         </section>
       )}
     </main>

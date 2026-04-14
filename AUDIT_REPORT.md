@@ -3,10 +3,10 @@
 **Analyzed By:** AI Assistant
 
 ## 1. Executive Summary
-- **Overall Health Score:** 8.8/10
+- **Overall Health Score:** 9.2/10
 - **Critical Blockers:**
   - None verified in current remediation scope.
-- **Recommended First Fix:** Align frontend UI flow with Playwright E2E assumptions (upload control + audio processing path) or update test selectors/flow to match the current UI contract.
+- **Recommended First Fix:** Provide E2E credentials (`E2E_USERNAME`, `E2E_PASSWORD`) in CI/local secure environment and rerun Playwright real-backend flow to clear the final unresolved warning.
 - **Repository Discovery (Directory/Stack/Entry Points):**
   - Top-level directories discovered (excluding ignored build/cache folders): `.github`, `.husky`, `.vscode`, `demoRecordAUDIOMID`, `docs`, `FE-Audiomind`, `infra`, `k8s`, `packages`, `scripts`, `tests`, `stress-tests`, `logs`, `storage`, `tmp-smoke-artifacts`.
   - Tech stack: Java Spring Boot (meeting/processing/user services), Python FastAPI + Celery (ai/whisper/diarization/ai-processing services), React + Vite + TypeScript (frontend), OpenAPI contracts in `packages/contracts`.
@@ -21,12 +21,10 @@ No open CRITICAL findings after this remediation pass.
 ### 🟡 WARNING (Logic Flaws / Edge Cases)
 | File | Line(s) | Issue | Impact | Suggested Fix |
 |------|---------|-------|--------|---------------|
-| FE-Audiomind/tests/e2e/audio-flow.spec.ts | 34 | [NEEDS HUMAN REVIEW] E2E can run with `PLAYWRIGHT_REAL_BACKEND=1`, but fails because upload control is not rendered in the current UI flow. | End-to-end regression remains unverified for the user-facing audio upload path. | Reconcile UI implementation and E2E scenario (restore upload flow UI or update test flow/selectors to current contract), then re-run E2E. |
+| FE-Audiomind/tests/e2e/audio-flow.spec.ts | 1-130 | [ENVIRONMENT_BLOCKED] E2E flow has been updated to login-first with stable `data-testid` selectors and correct endpoint waits, but real-backend run is blocked in this environment due missing `E2E_USERNAME`/`E2E_PASSWORD`. | End-to-end regression cannot be fully verified until real account credentials are provisioned. | Inject `E2E_USERNAME` and `E2E_PASSWORD` securely, then rerun `npm run test:e2e:ci` with `PLAYWRIGHT_REAL_BACKEND=1`. |
 
 ### 🔵 SUGGESTION (Code Quality / Performance)
-| File | Line(s) | Issue | Suggested Fix |
-|------|---------|-------|---------------|
-| demoRecordAUDIOMID/ai-service/app/main.py; demoRecordAUDIOMID/whisper-service/app/main.py; demoRecordAUDIOMID/diarization-service/app/main.py | 404, 439; 47; 68 | FastAPI `@app.on_event` is deprecated and currently emits warnings in tests. | Migrate startup/shutdown behavior to lifespan handlers (long-term improvement; optional in this remediation pass). |
+No open suggestions in current remediation scope.
 
 ## 3. Test Results / Test Plan
 - *Environment prerequisites assumed: Java 21, Python 3.11+, Node 20+, Docker (for some integration tests). Report any missing components.*
@@ -111,11 +109,12 @@ collected 5 items
 
 FE E2E (`npm run test:e2e:ci` with `PLAYWRIGHT_REAL_BACKEND=1`):
 ```text
-1 failed
-Error: Upload control not found. Current UI may still be vertical-slice mode in App.tsx and does not render upload components.
-at FE-Audiomind/tests/e2e/audio-flow.spec.ts:34
-Summary: 0 passed, 1 failed, 0 skipped
-Classification: NEEDS_HUMAN_REVIEW (test-flow/UI contract mismatch)
+Not executed in this pass (ENVIRONMENT_BLOCKED)
+Prechecks:
+- Backend health: PASS (`http://localhost:8082/health`)
+- Audio fixture: PASS (auto-created `FE-Audiomind/tests/e2e/fixtures/sample-audio.wav` if missing)
+- Credentials: FAIL (`E2E_USERNAME`, `E2E_PASSWORD` missing)
+Classification: ENVIRONMENT_BLOCKED
 ```
 
 - **Missing Coverage Recommendations:**
@@ -138,7 +137,8 @@ Classification: NEEDS_HUMAN_REVIEW (test-flow/UI contract mismatch)
 - 2026-04-14: Added ai-processing-service test suite for global exception sanitization and production startup configuration validation.
 - 2026-04-14: Enforced production fail-fast startup policy for database/bootstrap failures in ai-service.
 - 2026-04-14: Improved `jobs_running` metric to track active job count instead of binary status.
+- 2026-04-14: Migrated FastAPI startup/shutdown handlers to lifespan across `ai-service`, `whisper-service`, `diarization-service`, and `ai-processing-service`; pytest passing in all four services.
 
 ## 4. Conclusion & Action Items
 - [ ] Resolve FE E2E/UI mismatch for upload flow and re-run Playwright CI test.
-- [ ] (Optional) Migrate FastAPI startup/shutdown handlers to lifespan API to remove deprecation warnings.
+- [ ] Provide secure E2E credentials (`E2E_USERNAME`, `E2E_PASSWORD`) and rerun Playwright real-backend test.

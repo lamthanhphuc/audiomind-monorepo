@@ -1,5 +1,6 @@
 from pathlib import Path
 import logging
+from contextlib import asynccontextmanager
 
 import librosa
 from fastapi import FastAPI, HTTPException
@@ -62,12 +63,15 @@ class DiarizationRuntime:
 
 
 runtime = DiarizationRuntime()
-app = FastAPI(title="diarization-service", version="1.0.0")
 
 
-@app.on_event("startup")
-def startup_event() -> None:
+@asynccontextmanager
+async def lifespan(_: FastAPI):
     runtime.ensure_dirs()
+    yield
+
+
+app = FastAPI(title="diarization-service", version="1.0.0", lifespan=lifespan)
 
 
 @app.get("/health")

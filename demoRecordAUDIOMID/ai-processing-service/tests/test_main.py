@@ -45,7 +45,7 @@ def test_validate_runtime_configuration_passes_with_required_prod_env(monkeypatc
     MODULE.validate_runtime_configuration()
 
 
-def test_startup_event_calls_runtime_hooks(monkeypatch):
+def test_lifespan_calls_runtime_hooks(monkeypatch):
     called = {"dirs": False, "validation": False}
 
     def fake_dirs() -> None:
@@ -57,7 +57,11 @@ def test_startup_event_calls_runtime_hooks(monkeypatch):
     monkeypatch.setattr(MODULE, "ensure_runtime_dirs", fake_dirs)
     monkeypatch.setattr(MODULE, "validate_runtime_configuration", fake_validation)
 
-    MODULE.startup_event()
+    async def _run_lifespan() -> None:
+        async with MODULE.lifespan(MODULE.app):
+            return
+
+    asyncio.run(_run_lifespan())
 
     assert called["dirs"]
     assert called["validation"]

@@ -1,5 +1,6 @@
 import os
 import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
 from uuid import uuid4
 
@@ -16,7 +17,16 @@ DIARIZATION_URL = os.getenv(
 OLLAMA_URL = os.getenv("OLLAMA_BASE_URL", "http://ollama-service:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:3b")
 
-app = FastAPI(title="processing-service", version="1.0.0")
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    ensure_runtime_dirs()
+    validate_runtime_configuration()
+    yield
+
+
+app = FastAPI(title="processing-service", version="1.0.0", lifespan=lifespan)
 logger = logging.getLogger(__name__)
 
 
@@ -118,12 +128,6 @@ async def summarize_with_ollama(conversation_text: str) -> str:
         response.raise_for_status()
         body = response.json()
         return (body.get("response", "") or "").strip()
-
-
-@app.on_event("startup")
-def startup_event() -> None:
-    ensure_runtime_dirs()
-    validate_runtime_configuration()
 
 
 @app.get("/health")

@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 from loguru import logger
 import sys
+from contextlib import asynccontextmanager
 from pathlib import Path
 from uuid import uuid4
 
@@ -48,11 +49,59 @@ logger.remove()
 logger.add(sys.stderr, level="INFO", serialize=True)
 logger.add("logs/app.log", rotation="500 MB", level="DEBUG", serialize=True)
 
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    """Manage startup and shutdown lifecycle."""
+    ensure_runtime_dirs()
+    load_job_statuses(recover_interrupted=True)
+    cleanup_expired_job_statuses()
+    is_production = (settings.app_env or "").strip().lower() in {"prod", "production"}
+
+    try:
+        wait_for_database()
+    except Exception as e:
+        if is_production:
+            raise RuntimeError("Database connectivity check failed during production startup") from e
+        logger.warning(f"Database connectivity check skipped: {repr(e)}")
+
+    try:
+        ensure_bigint_meeting_id()
+    except Exception as e:
+        if is_production:
+            raise RuntimeError("Database migration step failed during production startup") from e
+        logger.warning(f"Database migration step skipped: {repr(e)}")
+
+    try:
+        Base.metadata.create_all(bind=engine)
+    except Exception as e:
+        if is_production:
+            raise RuntimeError("Database schema initialization failed during production startup") from e
+        logger.warning(f"Database schema initialization failed: {repr(e)}")
+
+    try:
+        ensure_ffmpeg_on_path(log=True)
+    except Exception as e:
+        # Keep service up; requests that need ffmpeg will return a clear error.
+        logger.warning(f"FFmpeg bootstrap warning: {repr(e)}")
+
+    logger.info("=" * 50)
+    logger.info("AudioMind AI Service Starting...")
+    logger.info(f"Whisper Model: {settings.whisper_model}")
+    logger.info(f"Device: {get_runtime_device()}")
+    logger.info("=" * 50)
+
+    yield
+
+    cleanup_expired_job_statuses()
+    logger.info("AudioMind AI Service Shutting Down...")
+
+
 # Initialize FastAPI app
 app = FastAPI(
     title="AudioMind AI Service",
     description="AI-powered audio processing service for meeting transcription and analysis",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 # Initialize pipeline
@@ -399,55 +448,6 @@ async def get_analysis(meeting_id: int, db: Session = Depends(get_db)):
             status_code=500,
             detail=f"Internal server error. request_id={request_id}",
         )
-
-
-@app.on_event("startup")
-async def startup_event():
-    """Startup event"""
-    ensure_runtime_dirs()
-    load_job_statuses(recover_interrupted=True)
-    cleanup_expired_job_statuses()
-    is_production = (settings.app_env or "").strip().lower() in {"prod", "production"}
-
-    try:
-        wait_for_database()
-    except Exception as e:
-        if is_production:
-            raise RuntimeError("Database connectivity check failed during production startup") from e
-        logger.warning(f"Database connectivity check skipped: {repr(e)}")
-
-    try:
-        ensure_bigint_meeting_id()
-    except Exception as e:
-        if is_production:
-            raise RuntimeError("Database migration step failed during production startup") from e
-        logger.warning(f"Database migration step skipped: {repr(e)}")
-
-    try:
-        Base.metadata.create_all(bind=engine)
-    except Exception as e:
-        if is_production:
-            raise RuntimeError("Database schema initialization failed during production startup") from e
-        logger.warning(f"Database schema initialization failed: {repr(e)}")
-
-    try:
-        ensure_ffmpeg_on_path(log=True)
-    except Exception as e:
-        # Keep service up; requests that need ffmpeg will return a clear error.
-        logger.warning(f"FFmpeg bootstrap warning: {repr(e)}")
-
-    logger.info("=" * 50)
-    logger.info("AudioMind AI Service Starting...")
-    logger.info(f"Whisper Model: {settings.whisper_model}")
-    logger.info(f"Device: {get_runtime_device()}")
-    logger.info("=" * 50)
-
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Shutdown event"""
-    cleanup_expired_job_statuses()
-    logger.info("AudioMind AI Service Shutting Down...")
 
 
 if __name__ == "__main__":

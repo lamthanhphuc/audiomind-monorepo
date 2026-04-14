@@ -1,5 +1,6 @@
 from pathlib import Path
 import logging
+from contextlib import asynccontextmanager
 
 import torch
 import whisper
@@ -41,12 +42,15 @@ class WhisperRuntime:
 
 
 runtime = WhisperRuntime()
-app = FastAPI(title="whisper-service", version="1.0.0")
 
 
-@app.on_event("startup")
-def startup_event() -> None:
+@asynccontextmanager
+async def lifespan(_: FastAPI):
     runtime.ensure_ready()
+    yield
+
+
+app = FastAPI(title="whisper-service", version="1.0.0", lifespan=lifespan)
 
 
 @app.get("/health")
