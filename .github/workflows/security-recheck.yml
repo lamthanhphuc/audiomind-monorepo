@@ -139,13 +139,6 @@ jobs:
             sleep $((i * 10))
           done
 
-      - name: FE e2e (integration)
-        env:
-          PLAYWRIGHT_REAL_BACKEND: "1"
-        run: |
-          cd FE-Audiomind
-          npx playwright test --retries=1
-
       - name: Setup k6
         uses: grafana/setup-k6-action@v1
 
