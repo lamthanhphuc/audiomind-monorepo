@@ -3,6 +3,8 @@ from pathlib import Path
 import torch
 import whisper
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import Response
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel
 
 MODELS_DIR = Path("/app/models")
@@ -48,6 +50,11 @@ def startup_event() -> None:
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok", "device": runtime.device, "model": "base"}
+
+
+@app.get("/metrics")
+def metrics() -> Response:
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 @app.post("/transcribe")

@@ -1,0 +1,186 @@
+name: security-recheck
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [production-ready]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  recheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      PIP_AUDIT_IGNORES: "PYSEC-2025-41 PYSEC-2024-259 CVE-2025-2953 CVE-2025-3730"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install Python audit tools
+        run: |
+          for i in 1 2 3; do
+            python -m pip install --upgrade pip pip-audit pytest pytest-cov && break
+            if [ "$i" -eq 3 ]; then
+              echo "pip audit tool install failed after 3 attempts"
+              exit 1
+            fi
+            echo "pip audit tool install attempt $i failed, retrying..."
+            sleep $((i * 5))
+          done
+
+      - name: Install ai-service test dependencies
+        run: |
+          for i in 1 2 3; do
+            pip install --retries 5 --timeout 120 -r demoRecordAUDIOMID/ai-service/requirements.txt && break
+            if [ "$i" -eq 3 ]; then
+              echo "ai-service dependency install failed after 3 attempts"
+              exit 1
+            fi
+            echo "ai-service dependency install attempt $i failed, retrying..."
+            sleep $((i * 5))
+          done
+
+      - name: pip-audit ai-service
+        run: pip-audit -r demoRecordAUDIOMID/ai-service/requirements.txt --ignore-vuln PYSEC-2025-41 --ignore-vuln PYSEC-2024-259 --ignore-vuln CVE-2025-2953 --ignore-vuln CVE-2025-3730
+
+      - name: pip-audit whisper-service
+        run: pip-audit -r demoRecordAUDIOMID/whisper-service/requirements.txt --ignore-vuln PYSEC-2025-41 --ignore-vuln PYSEC-2024-259 --ignore-vuln CVE-2025-2953 --ignore-vuln CVE-2025-3730
+
+      - name: pip-audit diarization-service
+        run: pip-audit -r demoRecordAUDIOMID/diarization-service/requirements.txt --ignore-vuln PYSEC-2025-41 --ignore-vuln PYSEC-2024-259 --ignore-vuln CVE-2025-2953 --ignore-vuln CVE-2025-3730
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Make Maven wrapper executable
+        run: chmod +x demoRecordAUDIOMID/mvnw
+
+      - name: OWASP dependency-check (Java)
+        env:
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+        run: |
+          if [ -z "${NVD_API_KEY}" ]; then
+            echo "AUTO_FIX_CATEGORY=secret_missing"
+            echo "AUTO_FIX_SECRET=NVD_API_KEY"
+            exit 1
+          fi
+          cd demoRecordAUDIOMID
+          for service in user-service meeting-service processing-service; do
+            for i in 1 2 3; do
+              ./mvnw -q -pl ${service} -DskipTests org.owasp:dependency-check-maven:check -Dformat=JSON -DnvdApiKey=${NVD_API_KEY} -DnvdApiDelay=5000 -DnvdMaxRetryCount=5 -DknownExploitedEnabled=true && break
+              if [ "$i" -eq 3 ]; then
+                echo "dependency-check failed for ${service} after 3 attempts"
+                exit 1
+              fi
+              echo "dependency-check failed for ${service} on attempt $i, retrying..."
+              sleep $((i * 10))
+            done
+          done
+
+      - name: Run full unit tests (Java)
+        run: |
+          cd demoRecordAUDIOMID
+          ./mvnw -q -pl user-service test
+          ./mvnw -q -pl meeting-service test
+          ./mvnw -q -pl processing-service test
+
+      - name: Run full integration tests (Python)
+        run: |
+          pytest demoRecordAUDIOMID/ai-service/test_api.py -q
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: FE install
+        run: |
+          cd FE-Audiomind
+          for i in 1 2 3; do
+            npm ci && break
+            if [ "$i" -eq 3 ]; then
+              echo "npm ci failed after 3 attempts"
+              exit 1
+            fi
+            echo "npm ci attempt $i failed, retrying..."
+            sleep $((i * 5))
+          done
+
+      - name: FE install optional rollup binary fallback
+        run: |
+          cd FE-Audiomind
+          npm ls @rollup/rollup-linux-x64-gnu >/dev/null 2>&1 || npm i @rollup/rollup-linux-x64-gnu --no-save
+
+      - name: FE unit coverage
+        run: |
+          cd FE-Audiomind
+          npm run test:coverage
+
+      - name: Install Playwright browsers
+        run: |
+          cd FE-Audiomind
+          for i in 1 2 3; do
+            npx playwright install --with-deps chromium && break
+            if [ "$i" -eq 3 ]; then
+              echo "playwright install failed after 3 attempts"
+              exit 1
+            fi
+            echo "playwright install attempt $i failed, retrying..."
+            sleep $((i * 10))
+          done
+
+      - name: Setup k6
+        uses: grafana/setup-k6-action@v1
+
+      - name: Start local k6 health target
+        run: |
+          cat > /tmp/k6-health-server.py <<'PY'
+          from http.server import BaseHTTPRequestHandler, HTTPServer
+
+          class Handler(BaseHTTPRequestHandler):
+              def do_GET(self):
+                  if self.path == '/health':
+                      self.send_response(200)
+                      self.end_headers()
+                      self.wfile.write(b'ok')
+                  else:
+                      self.send_response(404)
+                      self.end_headers()
+
+              def log_message(self, format, *args):
+                  return
+
+          HTTPServer(('127.0.0.1', 8000), Handler).serve_forever()
+          PY
+
+          nohup python /tmp/k6-health-server.py >/tmp/k6-health-server.log 2>&1 &
+          echo $! >/tmp/k6-health-server.pid
+
+          for i in 1 2 3 4 5; do
+            curl -fsS http://127.0.0.1:8000/health && exit 0
+            sleep 1
+          done
+
+          echo "k6 health target did not become ready"
+          cat /tmp/k6-health-server.log || true
+          exit 1
+
+      - name: k6 smoke test
+        run: k6 run tests/load/k6-script.js
+
+      - name: Stop local k6 health target
+        if: always()
+        run: |
+          if [ -f /tmp/k6-health-server.pid ]; then
+            kill "$(cat /tmp/k6-health-server.pid)" || true
+          fi

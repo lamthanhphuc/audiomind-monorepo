@@ -13,10 +13,20 @@ spec:
       labels:
         app: meeting-api
     spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: meeting-api
           image: audiomind/meeting-api:0.1.0
           imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           ports:
             - containerPort: 8081
           env:
@@ -82,10 +92,20 @@ spec:
       labels:
         app: processing-api
     spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: processing-api
           image: audiomind/processing-api:0.1.0
           imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           ports:
             - containerPort: 8082
           env:
@@ -157,10 +177,20 @@ spec:
       labels:
         app: user-api
     spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: user-api
           image: audiomind/user-api:0.1.0
           imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           ports:
             - containerPort: 8083
           env:
@@ -231,10 +261,20 @@ spec:
       labels:
         app: ai-api
     spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: ai-api
           image: audiomind/ai-api:0.1.0
           imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           ports:
             - containerPort: 8000
           env:
@@ -327,10 +367,20 @@ spec:
       labels:
         app: celery-worker
     spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: celery-worker
           image: audiomind/ai-api:0.1.0
           imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           command: ["sh", "-c", "celery -A app.celery_app.celery_app worker --loglevel=INFO --concurrency=${CELERY_CONCURRENCY} --prefetch-multiplier=${CELERY_PREFETCH_MULTIPLIER}"]
           ports:
             - containerPort: 8080
@@ -421,10 +471,20 @@ spec:
       labels:
         app: whisper-service
     spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: whisper-service
           image: audiomind/whisper-service:0.1.0
           imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           ports:
             - containerPort: 8011
           volumeMounts:
@@ -474,10 +534,20 @@ spec:
       labels:
         app: diarization-service
     spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: diarization-service
           image: audiomind/diarization-service:0.1.0
           imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           ports:
             - containerPort: 8012
           env:
@@ -533,10 +603,20 @@ spec:
       labels:
         app: ai-processing-service
     spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: ai-processing-service
           image: audiomind/ai-processing-service:0.1.0
           imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           ports:
             - containerPort: 8010
           env:

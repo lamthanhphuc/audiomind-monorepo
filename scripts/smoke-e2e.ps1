@@ -52,7 +52,7 @@ function Invoke-Json {
         $args += @("-d", $Body)
     }
 
-    $raw = & curl.exe @args
+    $raw = & curl @args
     if ($LASTEXITCODE -ne 0) {
         throw "curl failed for $Method $Url"
     }
@@ -82,6 +82,26 @@ function Invoke-Api {
 
     $jsonBody = $Body | ConvertTo-Json -Depth 8
     return Invoke-RestMethod -Method $Method -Uri $Url -Headers $Headers -ContentType $ContentType -Body $jsonBody
+}
+
+function Wait-ApiReady {
+    param(
+        [string]$Url,
+        [int]$TimeoutSec = 120
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    while ((Get-Date) -lt $deadline) {
+        try {
+            $null = Invoke-Api -Method "GET" -Url $Url -Headers @{} -Body $null
+            return
+        }
+        catch {
+        }
+        Start-Sleep -Seconds $PollIntervalSeconds
+    }
+
+    throw "Health endpoint not ready before timeout: $Url"
 }
 
 $report = [ordered]@{
@@ -128,22 +148,18 @@ if ($missing.Count -gt 0) {
 Write-Step "Required containers found: ai=$($resolved.ai), redis=$($resolved.redis), worker=$($resolved.worker), processing=$($resolved.processing)"
 
 try {
-    $null = Invoke-Api -Method "GET" -Url "$AiBaseUrl/health" -Headers @{} -Body $null
+    Wait-ApiReady -Url "$AiBaseUrl/health" -TimeoutSec $TimeoutSeconds
 
-    $null = Invoke-Api -Method "GET" -Url "$ProcessingBaseUrl/health" -Headers @{} -Body $null
+    Wait-ApiReady -Url "$ProcessingBaseUrl/health" -TimeoutSec $TimeoutSeconds
 
-    $null = Invoke-Api -Method "GET" -Url "$ProcessingBaseUrl/actuator/health" -Headers @{} -Body $null
+    Wait-ApiReady -Url "$ProcessingBaseUrl/actuator/health" -TimeoutSec $TimeoutSeconds
 
     if (-not (Test-Path -LiteralPath $AudioFile)) {
         throw "Audio file not found: $AudioFile"
     }
 
     Write-Step "Step 1 Upload file: $AudioFile"
-    $uploadRaw = & curl.exe -sS -F "file=@$AudioFile" "$ProcessingBaseUrl/processing/upload"
-    if ($LASTEXITCODE -ne 0) {
-        throw "Upload request failed"
-    }
-    $upload = $uploadRaw | ConvertFrom-Json
+    $upload = Invoke-RestMethod -Method Post -Uri "$ProcessingBaseUrl/processing/upload" -Form @{ file = Get-Item -LiteralPath $AudioFile }
     if (-not $upload.audio_path) {
         throw "Upload response missing audio_path"
     }
@@ -303,15 +319,15 @@ catch {
 
     Write-Step "Auto debug: collect logs and runtime evidence"
 
-    $workerLogs = (& cmd /c "docker logs --tail 200 $($resolved.worker) 2>&1") | Out-String
-    $aiLogs = (& cmd /c "docker logs --tail 200 $($resolved.ai) 2>&1") | Out-String
-    $processingLogs = (& cmd /c "docker logs --tail 200 $($resolved.processing) 2>&1") | Out-String
+    $workerLogs = (& docker logs --tail 200 $resolved.worker 2>&1) | Out-String
+    $aiLogs = (& docker logs --tail 200 $resolved.ai 2>&1) | Out-String
+    $processingLogs = (& docker logs --tail 200 $resolved.processing 2>&1) | Out-String
 
-    $redisKeys = (& cmd /c "docker exec $($resolved.redis) redis-cli --raw KEYS *job* 2>&1") | Out-String
+    $redisKeys = (& docker exec $resolved.redis redis-cli --raw KEYS *job* 2>&1) | Out-String
     $firstKey = ($redisKeys -split "`r?`n" | Where-Object { $_ -and $_ -notmatch "^\(error\)" } | Select-Object -First 1)
     $ttlValue = "N/A"
     if ($firstKey) {
-        $ttlValue = ((& cmd /c "docker exec $($resolved.redis) redis-cli --raw TTL $firstKey 2>&1") | Out-String).Trim()
+        $ttlValue = ((& docker exec $resolved.redis redis-cli --raw TTL $firstKey 2>&1) | Out-String).Trim()
     }
 
     if ($workerLogs -notmatch "received|task|celery") {

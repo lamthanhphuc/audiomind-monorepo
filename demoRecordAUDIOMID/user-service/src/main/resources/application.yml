@@ -4,8 +4,8 @@ server:
 spring:
   datasource:
     url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/audiomind}
-    username: ${SPRING_DATASOURCE_USERNAME:audiomind}
-    password: ${SPRING_DATASOURCE_PASSWORD:audiomind}
+    username: ${SPRING_DATASOURCE_USERNAME}
+    password: ${SPRING_DATASOURCE_PASSWORD}
     driver-class-name: ${SPRING_DATASOURCE_DRIVER_CLASS_NAME:org.postgresql.Driver}
   data:
     redis:
@@ -30,7 +30,7 @@ management:
 app:
   security:
     jwt:
-      secret: ${JWT_SECRET:replace-this-secret-with-at-least-32-bytes}
+      secret: ${JWT_SECRET}
       access-expiration-seconds: ${JWT_ACCESS_EXPIRATION_SECONDS:86400}
 
 cors:

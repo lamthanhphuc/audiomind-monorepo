@@ -10,10 +10,13 @@ server:
 
 spring:
   datasource:
-    url: ${SPRING_DATASOURCE_URL:jdbc:h2:mem:audiomind;MODE=PostgreSQL;DB_CLOSE_DELAY=-1;DATABASE_TO_UPPER=false}
-    username: ${SPRING_DATASOURCE_USERNAME:sa}
-    password: ${SPRING_DATASOURCE_PASSWORD:}
-    driver-class-name: ${SPRING_DATASOURCE_DRIVER_CLASS_NAME:org.h2.Driver}
+    url: ${SPRING_DATASOURCE_URL}
+    username: ${SPRING_DATASOURCE_USERNAME}
+    password: ${SPRING_DATASOURCE_PASSWORD}
+    driver-class-name: ${SPRING_DATASOURCE_DRIVER_CLASS_NAME:org.postgresql.Driver}
+  sql:
+    init:
+      mode: always
 
   servlet:
     multipart:
@@ -22,7 +25,13 @@ spring:
 
   jpa:
     hibernate:
-      ddl-auto: update
+      ddl-auto: validate
     properties:
       hibernate:
-        dialect: ${SPRING_JPA_HIBERNATE_DIALECT:org.hibernate.dialect.H2Dialect}
+        dialect: ${SPRING_JPA_HIBERNATE_DIALECT:org.hibernate.dialect.PostgreSQLDialect}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,metrics,prometheus

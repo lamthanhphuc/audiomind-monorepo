@@ -1,0 +1,200 @@
+name: CI/CD Pipeline
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - production-ready
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Build Java services
+        working-directory: demoRecordAUDIOMID
+        run: |
+          for i in 1 2 3; do
+            mvn -B -U clean compile -DskipTests && break
+            if [ "$i" -eq 3 ]; then
+              echo "mvn compile failed after 3 attempts"
+              exit 1
+            fi
+            echo "mvn compile attempt $i failed, retrying..."
+            sleep 10
+          done
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          for i in 1 2 3; do
+            pip install --retries 5 --timeout 120 -r demoRecordAUDIOMID/ai-service/requirements.txt \
+            && pip install --retries 5 --timeout 120 -r demoRecordAUDIOMID/ai-processing-service/requirements.txt \
+            && pip install --retries 5 --timeout 120 -r demoRecordAUDIOMID/whisper-service/requirements.txt \
+            && pip install --retries 5 --timeout 120 -r demoRecordAUDIOMID/diarization-service/requirements.txt \
+            && break
+            if [ "$i" -eq 3 ]; then
+              echo "pip install failed after 3 attempts"
+              exit 1
+            fi
+            echo "pip install attempt $i failed, retrying..."
+          done
+
+  test:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Run Java tests
+        working-directory: demoRecordAUDIOMID
+        run: |
+          for i in 1 2 3; do
+            mvn -B -U test && break
+            if [ "$i" -eq 3 ]; then
+              echo "mvn test failed after 3 attempts"
+              exit 1
+            fi
+            echo "mvn test attempt $i failed, retrying..."
+            sleep 10
+          done
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run Python tests
+        run: |
+          python -m pip install --upgrade pip
+          for i in 1 2 3; do
+            pip install --retries 5 --timeout 120 -r demoRecordAUDIOMID/ai-service/requirements.txt \
+            && pip install --retries 5 --timeout 120 pytest \
+            && break
+            if [ "$i" -eq 3 ]; then
+              echo "pip install failed after 3 attempts"
+              exit 1
+            fi
+            echo "pip install attempt $i failed, retrying..."
+          done
+          pytest demoRecordAUDIOMID/ai-service/test_api.py
+
+  docker-build-push:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push ai-api image
+        uses: docker/build-push-action@v6
+        with:
+          context: demoRecordAUDIOMID/ai-service
+          file: demoRecordAUDIOMID/ai-service/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ github.actor }}/audiomind-ai-api:${{ github.sha }}
+            ghcr.io/${{ github.actor }}/audiomind-ai-api:latest
+
+      - name: Build and push user-api image
+        uses: docker/build-push-action@v6
+        with:
+          context: demoRecordAUDIOMID
+          file: demoRecordAUDIOMID/user-service/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ github.actor }}/audiomind-user-api:${{ github.sha }}
+            ghcr.io/${{ github.actor }}/audiomind-user-api:latest
+
+      - name: Build and push meeting-api image
+        uses: docker/build-push-action@v6
+        with:
+          context: demoRecordAUDIOMID
+          file: demoRecordAUDIOMID/meeting-service/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ github.actor }}/audiomind-meeting-api:${{ github.sha }}
+            ghcr.io/${{ github.actor }}/audiomind-meeting-api:latest
+
+      - name: Build and push processing-api image
+        uses: docker/build-push-action@v6
+        with:
+          context: demoRecordAUDIOMID
+          file: demoRecordAUDIOMID/processing-service/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ github.actor }}/audiomind-processing-api:${{ github.sha }}
+            ghcr.io/${{ github.actor }}/audiomind-processing-api:latest
+
+  deploy-staging:
+    runs-on: ubuntu-latest
+    needs: docker-build-push
+    environment: staging
+    env:
+      K8S_NAMESPACE: audiomind-staging
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Configure kubeconfig
+        id: kubeconfig
+        run: |
+          if [ -z "${{ secrets.KUBE_CONFIG }}" ]; then
+            echo "AUTO_FIX_CATEGORY=secret_missing"
+            echo "AUTO_FIX_SECRET=KUBE_CONFIG"
+            echo "skipped=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "skipped=false" >> "$GITHUB_OUTPUT"
+          mkdir -p ~/.kube
+          echo "${{ secrets.KUBE_CONFIG }}" > ~/.kube/config
+          chmod 600 ~/.kube/config
+
+      - name: Deploy to staging namespace
+        if: steps.kubeconfig.outputs.skipped != 'true'
+        run: |
+          kubectl get namespace ${K8S_NAMESPACE} >/dev/null 2>&1 || kubectl create namespace ${K8S_NAMESPACE}
+          kubectl kustomize k8s/overlays/staging --load-restrictor=LoadRestrictionsNone | kubectl apply -f -
+          kubectl set image deployment/user-api-deployment user-api=ghcr.io/${{ github.actor }}/audiomind-user-api:${{ github.sha }} -n ${K8S_NAMESPACE}
+          kubectl set image deployment/meeting-api-deployment meeting-api=ghcr.io/${{ github.actor }}/audiomind-meeting-api:${{ github.sha }} -n ${K8S_NAMESPACE}
+          kubectl set image deployment/processing-api-deployment processing-api=ghcr.io/${{ github.actor }}/audiomind-processing-api:${{ github.sha }} -n ${K8S_NAMESPACE}
+          kubectl rollout status deployment/user-api-deployment -n ${K8S_NAMESPACE} --timeout=120s
+          kubectl rollout status deployment/meeting-api-deployment -n ${K8S_NAMESPACE} --timeout=120s
+          kubectl rollout status deployment/processing-api-deployment -n ${K8S_NAMESPACE} --timeout=120s

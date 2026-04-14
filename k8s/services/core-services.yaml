@@ -3,6 +3,9 @@ kind: Service
 metadata:
   name: meeting-api
   namespace: audiomind
+  labels:
+    monitoring: "enabled"
+    app: meeting-api
 spec:
   selector:
     app: meeting-api
@@ -16,6 +19,9 @@ kind: Service
 metadata:
   name: processing-api
   namespace: audiomind
+  labels:
+    monitoring: "enabled"
+    app: processing-api
 spec:
   selector:
     app: processing-api
@@ -29,6 +35,9 @@ kind: Service
 metadata:
   name: user-api
   namespace: audiomind
+  labels:
+    monitoring: "enabled"
+    app: user-api
 spec:
   selector:
     app: user-api
@@ -42,6 +51,9 @@ kind: Service
 metadata:
   name: ai-api
   namespace: audiomind
+  labels:
+    monitoring: "enabled"
+    app: ai-api
 spec:
   selector:
     app: ai-api
@@ -55,6 +67,9 @@ kind: Service
 metadata:
   name: whisper-service
   namespace: audiomind
+  labels:
+    monitoring: "enabled"
+    app: whisper-service
 spec:
   selector:
     app: whisper-service
@@ -68,6 +83,9 @@ kind: Service
 metadata:
   name: diarization-service
   namespace: audiomind
+  labels:
+    monitoring: "enabled"
+    app: diarization-service
 spec:
   selector:
     app: diarization-service
@@ -81,6 +99,9 @@ kind: Service
 metadata:
   name: ai-processing-service
   namespace: audiomind
+  labels:
+    monitoring: "enabled"
+    app: ai-processing-service
 spec:
   selector:
     app: ai-processing-service

@@ -1,5 +1,9 @@
-fastapi==0.115.0
+fastapi>=0.109.1
+starlette>=0.47.2
+python-multipart>=0.0.22
+setuptools>=78.1.1
 uvicorn[standard]==0.30.6
 librosa==0.10.2.post1
 soundfile==0.12.1
 numpy==1.26.4
+prometheus-client==0.20.0

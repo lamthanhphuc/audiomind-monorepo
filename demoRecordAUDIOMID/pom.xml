@@ -37,6 +37,10 @@
 	</scm>
 	<properties>
 		<java.version>21</java.version>
+		<dependency-check.version>9.0.10</dependency-check.version>
+		<dependency-check.autoUpdate>true</dependency-check.autoUpdate>
+		<dependency-check.nvd.maxRetryCount>3</dependency-check.nvd.maxRetryCount>
+		<dependency-check.nvd.apiDelay>2000</dependency-check.nvd.apiDelay>
 	</properties>
 	<dependencies>
 		<dependency>
@@ -70,6 +74,26 @@
 	<build>
 		<plugins>
 			<plugin>
+				<groupId>org.jacoco</groupId>
+				<artifactId>jacoco-maven-plugin</artifactId>
+				<version>0.8.12</version>
+				<executions>
+					<execution>
+						<id>prepare-agent</id>
+						<goals>
+							<goal>prepare-agent</goal>
+						</goals>
+					</execution>
+					<execution>
+						<id>report</id>
+						<phase>verify</phase>
+						<goals>
+							<goal>report</goal>
+						</goals>
+					</execution>
+				</executions>
+			</plugin>
+			<plugin>
 				<groupId>org.apache.maven.plugins</groupId>
 				<artifactId>maven-compiler-plugin</artifactId>
 				<configuration>
@@ -91,6 +115,24 @@
 							<artifactId>lombok</artifactId>
 						</exclude>
 					</excludes>
+				</configuration>
+			</plugin>
+			<plugin>
+				<groupId>org.owasp</groupId>
+				<artifactId>dependency-check-maven</artifactId>
+				<version>${dependency-check.version}</version>
+				<configuration>
+					<nvdApiKey>${env.NVD_API_KEY}</nvdApiKey>
+					<nvdMaxRetryCount>${dependency-check.nvd.maxRetryCount}</nvdMaxRetryCount>
+					<nvdApiDelay>${dependency-check.nvd.apiDelay}</nvdApiDelay>
+					<autoUpdate>${dependency-check.autoUpdate}</autoUpdate>
+					<dataDirectory>${maven.multiModuleProjectDirectory}/.dependency-check-cache</dataDirectory>
+					<formats>
+						<format>HTML</format>
+						<format>JSON</format>
+					</formats>
+					<skipTestScope>true</skipTestScope>
+					<failOnError>false</failOnError>
 				</configuration>
 			</plugin>
 		</plugins>

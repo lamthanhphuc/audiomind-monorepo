@@ -27,6 +27,7 @@ ENV/
 
 # Environment Variables
 .env
+.env.local
 
 # Storage
 storage/

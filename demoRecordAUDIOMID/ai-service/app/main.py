@@ -1,8 +1,11 @@
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from starlette.requests import Request
 from starlette.responses import Response
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 from loguru import logger
 import sys
 from pathlib import Path
@@ -28,6 +31,7 @@ from app.ffmpeg_utils import ensure_ffmpeg_on_path
 from app.job_status_store import (
     cleanup_expired_job_statuses,
     get_job_status,
+    _get_client,
     load_job_statuses,
     set_job_status,
 )
@@ -41,8 +45,8 @@ except Exception as pipeline_import_error:
 
 # Configure logging
 logger.remove()
-logger.add(sys.stderr, level="INFO")
-logger.add("logs/app.log", rotation="500 MB", level="DEBUG")
+logger.add(sys.stderr, level="INFO", serialize=True)
+logger.add("logs/app.log", rotation="500 MB", level="DEBUG", serialize=True)
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -97,7 +101,13 @@ async def inject_trace_headers(request: Request, call_next) -> Response:
 
 def ensure_runtime_dirs() -> None:
     """Create writable runtime directories for mounted volumes in containers."""
-    for runtime_dir in (Path("/app/models"), Path("/app/uploads"), Path("./storage")):
+    for runtime_dir in (
+        Path("/app/models"),
+        Path("/app/uploads"),
+        Path("/app/storage"),
+        Path("/app/storage/uploads"),
+        Path("./storage"),
+    ):
         runtime_dir.mkdir(parents=True, exist_ok=True)
         try:
             runtime_dir.chmod(0o775)
@@ -105,6 +115,29 @@ def ensure_runtime_dirs() -> None:
             logger.warning(
                 f"Could not update permissions for {runtime_dir}: {permission_error}"
             )
+
+
+def resolve_upload_dir() -> Path:
+    """Pick the first writable upload directory shared across API and worker containers."""
+    candidates = (
+        Path("/app/uploads"),
+        Path("/app/storage/uploads"),
+        Path("./storage/uploads"),
+    )
+    for upload_dir in candidates:
+        try:
+            upload_dir.mkdir(parents=True, exist_ok=True)
+            probe_file = upload_dir / ".write_probe"
+            with probe_file.open("wb") as probe:
+                probe.write(b"ok")
+            probe_file.unlink(missing_ok=True)
+            return upload_dir
+        except OSError as permission_error:
+            logger.warning(
+                f"Upload dir not writable ({upload_dir}): {permission_error}"
+            )
+
+    raise RuntimeError("No writable upload directory is available")
 
 
 @app.get("/")
@@ -127,6 +160,35 @@ async def health_check():
         "lazy_load_models": settings.lazy_load_models,
         "enable_speaker_diarization": settings.enable_speaker_diarization,
     }
+
+
+@app.get("/metrics")
+async def metrics() -> Response:
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+
+@app.get("/ready")
+async def readiness_check():
+    with engine.connect() as connection:
+        connection.execute(text("SELECT 1"))
+    _get_client().ping()
+    if pipeline is None:
+        raise HTTPException(status_code=503, detail="Pipeline dependencies unavailable")
+    return {"status": "ready", "service": "ai-service"}
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    trace_id = getattr(request.state, "trace_id", uuid4().hex)
+    logger.exception(f"Unhandled exception trace_id={trace_id}: {repr(exc)}")
+    return JSONResponse(
+        status_code=500,
+        content={
+            "code": "INTERNAL_SERVER_ERROR",
+            "message": "Unexpected server error",
+            "trace_id": trace_id,
+        },
+    )
 
 
 @app.post("/api/process", response_model=ProcessResponse)
@@ -156,6 +218,8 @@ async def process_audio(
             "QUEUED",
             file_id=request.file_id,
             trace_id=trace_id,
+            progress=0,
+            stage="uploading",
         )
         payload = request.model_dump()
         payload["trace_id"] = trace_id
@@ -192,8 +256,7 @@ async def process_mock_v1(_: dict):
 @app.post("/api/upload-audio")
 async def upload_audio(file: UploadFile = File(...)):
     try:
-        uploads_dir = Path("/app/uploads")
-        uploads_dir.mkdir(parents=True, exist_ok=True)
+        uploads_dir = resolve_upload_dir()
 
         original_name = Path(file.filename or "audio.wav").name
         extension = (Path(original_name).suffix or ".wav").lower()

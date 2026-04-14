@@ -190,6 +190,62 @@ class SpeechRecognizer:
             "language": detected_language,
         }
 
+    def load_audio_samples(self, audio_path: str) -> np.ndarray:
+        return whisper.load_audio(audio_path)
+
+    def build_chunk_windows(self, audio_samples: np.ndarray) -> List[Dict[str, int]]:
+        sample_rate = whisper.audio.SAMPLE_RATE
+        chunk_seconds = self._get_chunk_duration_seconds()
+        chunk_samples = chunk_seconds * sample_rate
+
+        windows: List[Dict[str, int]] = []
+        for chunk_idx, start in enumerate(range(0, len(audio_samples), chunk_samples)):
+            end = min(start + chunk_samples, len(audio_samples))
+            windows.append(
+                {
+                    "index": chunk_idx,
+                    "start": start,
+                    "end": end,
+                    "chunk_seconds": chunk_seconds,
+                }
+            )
+
+        return windows
+
+    def transcribe_chunk_window(
+        self,
+        audio_samples: np.ndarray,
+        start: int,
+        end: int,
+        language: Optional[str],
+        initial_prompt: Optional[str],
+        temperature: float = 0.0,
+        beam_size: int = 1,
+        best_of: int = 1,
+        no_speech_threshold: Optional[float] = None,
+        logprob_threshold: Optional[float] = None,
+    ) -> Dict:
+        effective_no_speech_threshold = (
+            self.no_speech_threshold
+            if no_speech_threshold is None
+            else no_speech_threshold
+        )
+        effective_logprob_threshold = (
+            self.logprob_threshold if logprob_threshold is None else logprob_threshold
+        )
+
+        chunk_audio = audio_samples[start:end]
+        return self._transcribe_chunk(
+            chunk_audio=chunk_audio,
+            language=language,
+            initial_prompt=initial_prompt,
+            temperature=temperature,
+            beam_size=beam_size,
+            best_of=best_of,
+            no_speech_threshold=effective_no_speech_threshold,
+            logprob_threshold=effective_logprob_threshold,
+        )
+
     def transcribe(
         self,
         audio_path: str,

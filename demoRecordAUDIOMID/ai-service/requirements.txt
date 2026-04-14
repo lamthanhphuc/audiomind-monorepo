@@ -1,7 +1,8 @@
 # FastAPI Framework
-fastapi==0.109.0
+fastapi>=0.109.1
+starlette>=0.47.2
 uvicorn[standard]==0.27.0
-python-multipart==0.0.6
+python-multipart>=0.0.22
 
 # Database
 sqlalchemy==2.0.25
@@ -16,10 +17,13 @@ numpy==1.24.3
 
 # Speech Recognition
 tiktoken==0.5.2
+triton>=2.0.0
+more-itertools
 
 # Speaker Diarization
 pyannote.audio==3.1.1
 pyannote.core==5.0.0
+torch>=2.6.0
 huggingface-hub==0.24.6
 
 # Voice Activity Detection
@@ -33,10 +37,11 @@ pydantic==2.5.3
 pydantic-settings==2.1.0
 python-dotenv==1.0.0
 loguru==0.7.2
-setuptools==68.2.2
+setuptools>=78.1.1
 tenacity==8.2.3
 celery==5.4.0
 redis==5.0.8
 
 # HTTP Client
 httpx==0.26.0
+prometheus-client==0.20.0

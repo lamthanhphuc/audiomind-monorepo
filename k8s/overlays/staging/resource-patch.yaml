@@ -1,0 +1,89 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ai-api-deployment
+  namespace: audiomind
+spec:
+  template:
+    spec:
+      containers:
+        - name: ai-api
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "2Gi"
+              cpu: "2"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: processing-api-deployment
+  namespace: audiomind
+spec:
+  template:
+    spec:
+      containers:
+        - name: processing-api
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "2Gi"
+              cpu: "2"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: meeting-api-deployment
+  namespace: audiomind
+spec:
+  template:
+    spec:
+      containers:
+        - name: meeting-api
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "2Gi"
+              cpu: "2"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: user-api-deployment
+  namespace: audiomind
+spec:
+  template:
+    spec:
+      containers:
+        - name: user-api
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "2Gi"
+              cpu: "2"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: celery-worker-deployment
+  namespace: audiomind
+spec:
+  template:
+    spec:
+      containers:
+        - name: celery-worker
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "2Gi"
+              cpu: "2"

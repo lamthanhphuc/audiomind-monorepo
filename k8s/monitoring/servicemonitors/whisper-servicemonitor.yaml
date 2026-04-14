@@ -1,0 +1,19 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: whisper-service
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack
+spec:
+  namespaceSelector:
+    matchNames:
+      - audiomind
+  selector:
+    matchLabels:
+      app: whisper-service
+      monitoring: "enabled"
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s

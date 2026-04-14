@@ -1,0 +1,47 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: audiomind-api-ingress
+  namespace: audiomind-staging
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+    # Replace placeholders below with real production TLS and DNS configuration.
+spec:
+  tls:
+    - hosts:
+        - api.audiomind.example.com
+      secretName: audiomind-tls-placeholder
+  rules:
+    - host: api.audiomind.example.com
+      http:
+        paths:
+          - path: /api/users
+            pathType: Prefix
+            backend:
+              service:
+                name: user-api
+                port:
+                  number: 8083
+          - path: /api/meetings
+            pathType: Prefix
+            backend:
+              service:
+                name: meeting-api
+                port:
+                  number: 8081
+          - path: /api/processing
+            pathType: Prefix
+            backend:
+              service:
+                name: processing-api
+                port:
+                  number: 8082
+          - path: /api/ai
+            pathType: Prefix
+            backend:
+              service:
+                name: ai-api
+                port:
+                  number: 8000

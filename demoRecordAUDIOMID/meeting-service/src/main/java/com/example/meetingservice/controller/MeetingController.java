@@ -13,11 +13,14 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.util.StringUtils;
+import org.springframework.web.server.ResponseStatusException;
+import org.springframework.http.HttpStatus;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.Set;
 import java.util.List;
 import java.util.Objects;
 
@@ -27,6 +30,9 @@ import java.util.Objects;
 @RequiredArgsConstructor
 public class MeetingController {
 
+    private static final long MAX_UPLOAD_BYTES = 100L * 1024L * 1024L;
+    private static final Set<String> ALLOWED_EXTENSIONS = Set.of(".wav", ".mp3", ".m4a", ".ogg", ".aac", ".flac", ".webm", ".mp4");
+
     private final MeetingService meetingService;
 
     private final String uploadDir = "uploads/";
@@ -34,23 +40,43 @@ public class MeetingController {
     @PostMapping("/upload")
     public Meeting upload(
             @RequestParam String title,
-            @RequestParam MultipartFile file) throws IOException {
+            @RequestParam MultipartFile file) {
+
+        if (file.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "File is empty");
+        }
+        if (file.getSize() > MAX_UPLOAD_BYTES) {
+            throw new ResponseStatusException(HttpStatus.PAYLOAD_TOO_LARGE, "File exceeds 100MB limit");
+        }
 
         Path uploadPath = Paths.get(System.getProperty("user.dir"), uploadDir).toAbsolutePath().normalize();
-        Files.createDirectories(uploadPath);
+        try {
+            Files.createDirectories(uploadPath);
+        } catch (IOException createError) {
+            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Unable to prepare upload directory", createError);
+        }
 
         String originalName = Objects.requireNonNullElse(file.getOriginalFilename(), "audio-upload.bin");
         String cleanedFileName = StringUtils.cleanPath(originalName);
+        String extension = StringUtils.getFilenameExtension(cleanedFileName);
+        String normalizedExtension = extension == null ? "" : "." + extension.toLowerCase();
+        if (!ALLOWED_EXTENSIONS.contains(normalizedExtension)) {
+            throw new ResponseStatusException(HttpStatus.UNSUPPORTED_MEDIA_TYPE, "Unsupported file type");
+        }
         if (cleanedFileName.contains("..")) {
-            throw new IOException("Invalid file name");
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid file name");
         }
 
         Path targetFile = uploadPath.resolve(cleanedFileName).normalize();
         if (!targetFile.startsWith(uploadPath)) {
-            throw new IOException("Invalid upload path");
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid upload path");
         }
 
-        file.transferTo(targetFile.toFile());
+        try {
+            file.transferTo(targetFile.toFile());
+        } catch (IOException transferError) {
+            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Unable to persist uploaded file", transferError);
+        }
 
         return meetingService.saveMeeting(title, targetFile.toString());
     }

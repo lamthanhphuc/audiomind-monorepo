@@ -13,8 +13,11 @@ import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.retry.annotation.Backoff;
+import org.springframework.retry.annotation.Retryable;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
+import org.springframework.web.client.RestClientException;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
 import org.springframework.web.multipart.MultipartFile;
@@ -42,6 +45,11 @@ public class AIServiceClient {
 
     @Retry(name = "ai-service")
     @CircuitBreaker(name = "ai-service")
+    @Retryable(
+        retryFor = { RestClientException.class, IllegalStateException.class },
+        maxAttempts = 3,
+        backoff = @Backoff(delay = 1000, multiplier = 2.0)
+    )
     public Map<String, Object> processAudio(
             Long meetingId,
             String audioPath,
@@ -89,6 +97,11 @@ public class AIServiceClient {
 
     @Retry(name = "ai-service")
     @CircuitBreaker(name = "ai-service")
+    @Retryable(
+        retryFor = { RestClientException.class, IllegalStateException.class },
+        maxAttempts = 3,
+        backoff = @Backoff(delay = 1000, multiplier = 2.0)
+    )
     public Map<String, Object> getTranscript(Long meetingId, String traceId) {
         HttpHeaders headers = new HttpHeaders();
         String resolvedTraceId = resolveTraceId(traceId);
@@ -104,8 +117,13 @@ public class AIServiceClient {
         return requireBody(response, "getTranscript", meetingId);
     }
 
-        @Retry(name = "ai-service")
-        @CircuitBreaker(name = "ai-service")
+    @Retry(name = "ai-service")
+    @CircuitBreaker(name = "ai-service")
+    @Retryable(
+        retryFor = { RestClientException.class, IllegalStateException.class },
+        maxAttempts = 3,
+        backoff = @Backoff(delay = 1000, multiplier = 2.0)
+    )
     public Map<String, Object> getAnalysis(Long meetingId, String traceId) {
         HttpHeaders headers = new HttpHeaders();
         String resolvedTraceId = resolveTraceId(traceId);
@@ -123,6 +141,11 @@ public class AIServiceClient {
 
     @Retry(name = "ai-service")
     @CircuitBreaker(name = "ai-service")
+    @Retryable(
+        retryFor = { RestClientException.class, IllegalStateException.class },
+        maxAttempts = 3,
+        backoff = @Backoff(delay = 1000, multiplier = 2.0)
+    )
     public Map<String, Object> getStatus(Long meetingId, String traceId) {
         HttpHeaders headers = new HttpHeaders();
         String resolvedTraceId = resolveTraceId(traceId);
@@ -141,6 +164,11 @@ public class AIServiceClient {
 
     @Retry(name = "ai-service")
     @CircuitBreaker(name = "ai-service")
+    @Retryable(
+        retryFor = { RestClientException.class, IllegalStateException.class },
+        maxAttempts = 3,
+        backoff = @Backoff(delay = 1000, multiplier = 2.0)
+    )
     public Map<String, Object> uploadAudio(MultipartFile file, String traceId) {
         HttpHeaders headers = new HttpHeaders();
         String resolvedTraceId = resolveTraceId(traceId);
@@ -159,6 +187,23 @@ public class AIServiceClient {
             }
         );
         return requireBody(response, "uploadAudio", 0L);
+    }
+
+    public void health() {
+        try {
+            ResponseEntity<Map<String, Object>> response = restTemplate.exchange(
+                    aiUrl + "/health",
+                    HttpMethod.GET,
+                    null,
+                    new ParameterizedTypeReference<>() {
+                    }
+            );
+            if (!response.getStatusCode().is2xxSuccessful()) {
+                throw new IllegalStateException("AI health endpoint returned non-2xx");
+            }
+        } catch (RestClientException ex) {
+            throw new IllegalStateException("AI health check failed", ex);
+        }
     }
 
     private String resolveTraceId(String traceId) {

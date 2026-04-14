@@ -51,6 +51,7 @@ tmp-*
 *.wav
 *.mp3
 *.bin
+!tests/audio/it-overview.mp3
 
 # Database
 *.db

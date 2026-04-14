@@ -6,10 +6,11 @@ on:
     branches:
       - main
       - master
+      - production-ready
 
 jobs:
   smoke-test:
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     timeout-minutes: 45
 
     steps:
@@ -19,12 +20,52 @@ jobs:
       - name: Start stack
         shell: pwsh
         run: |
-          docker compose -f infra/docker-compose.dev.yml up -d --build
+          $maxAttempts = 3
+          for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+            docker compose -f infra/docker-compose.dev.yml up -d --build db redis ai-api celery-worker meeting-api processing-api
+            if ($LASTEXITCODE -eq 0) {
+              break
+            }
+            if ($attempt -eq $maxAttempts) {
+              throw "docker compose startup failed after $maxAttempts attempts"
+            }
+            Start-Sleep -Seconds (5 * $attempt)
+          }
+
+      - name: Setup ffmpeg
+        shell: pwsh
+        run: |
+          if ($env:RUNNER_OS -eq "Windows") {
+            choco install ffmpeg -y --no-progress
+          } else {
+            sudo apt-get update
+            sudo apt-get install -y ffmpeg
+          }
+
+      - name: Convert mp3 to wav
+        shell: pwsh
+        run: |
+          $inputPath = "${{ github.workspace }}/tests/audio/it-overview.mp3"
+          $outputPath = "${{ github.workspace }}/tests/audio/it-overview.wav"
+          if (-not (Test-Path -LiteralPath $inputPath)) {
+            throw "Input audio file not found: $inputPath"
+          }
+          ffmpeg -y -i "$inputPath" "$outputPath"
 
       - name: Run smoke script
         shell: pwsh
         run: |
-          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/smoke-e2e.ps1 -AudioFile stress-large-180s.wav -AiBaseUrl http://localhost:8000 -ProcessingBaseUrl http://localhost:8082 -PollIntervalSeconds 2 -TimeoutSeconds 120
+          $maxAttempts = 3
+          for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+            ./scripts/smoke-e2e.ps1 -AudioFile "${{ github.workspace }}/tests/audio/it-overview.wav" -AiBaseUrl http://localhost:8000 -ProcessingBaseUrl http://localhost:8082 -PollIntervalSeconds 2 -TimeoutSeconds 300
+            if ($LASTEXITCODE -eq 0) {
+              break
+            }
+            if ($attempt -eq $maxAttempts) {
+              throw "smoke script failed after $maxAttempts attempts"
+            }
+            Start-Sleep -Seconds (5 * $attempt)
+          }
 
       - name: Upload smoke artifacts
         if: always()

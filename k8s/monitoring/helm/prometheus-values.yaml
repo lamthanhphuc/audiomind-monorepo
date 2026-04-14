@@ -1,0 +1,35 @@
+# Placeholder values for kube-prometheus-stack.
+# Replace domains, storage classes, and credentials before production apply.
+grafana:
+  enabled: true
+  adminUser: admin
+  adminPassword: REPLACE_ME
+  service:
+    type: ClusterIP
+  persistence:
+    enabled: true
+    size: 10Gi
+
+prometheus:
+  prometheusSpec:
+    serviceMonitorSelectorNilUsesHelmValues: false
+    serviceMonitorNamespaceSelector: {}
+    retention: 15d
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 30Gi
+
+alertmanager:
+  enabled: true
+  alertmanagerSpec:
+    storage:
+      volumeClaimTemplate:
+        spec:
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 10Gi

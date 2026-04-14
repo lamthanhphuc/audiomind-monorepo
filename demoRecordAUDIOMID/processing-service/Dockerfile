@@ -5,6 +5,7 @@ WORKDIR /workspace
 COPY pom.xml ./pom.xml
 COPY processing-service/pom.xml ./processing-service/pom.xml
 COPY meeting-service/pom.xml ./meeting-service/pom.xml
+COPY user-service/pom.xml ./user-service/pom.xml
 COPY processing-service/src ./processing-service/src
 
 RUN mvn -f pom.xml -pl processing-service -am clean package -DskipTests
@@ -13,7 +14,11 @@ FROM eclipse-temurin:21-jre
 
 WORKDIR /app
 
-COPY --from=build /workspace/processing-service/target/processing-service-0.0.1-SNAPSHOT.jar app.jar
+RUN groupadd -g 10001 app && useradd -u 10001 -g app -m app
+
+COPY --from=build --chown=10001:10001 /workspace/processing-service/target/processing-service-0.0.1-SNAPSHOT.jar app.jar
+
+USER 10001
 
 EXPOSE 8080
 
