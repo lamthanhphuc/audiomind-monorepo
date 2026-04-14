@@ -142,5 +142,45 @@ jobs:
       - name: Setup k6
         uses: grafana/setup-k6-action@v1
 
+      - name: Start local k6 health target
+        run: |
+          cat > /tmp/k6-health-server.py <<'PY'
+          from http.server import BaseHTTPRequestHandler, HTTPServer
+
+          class Handler(BaseHTTPRequestHandler):
+              def do_GET(self):
+                  if self.path == '/health':
+                      self.send_response(200)
+                      self.end_headers()
+                      self.wfile.write(b'ok')
+                  else:
+                      self.send_response(404)
+                      self.end_headers()
+
+              def log_message(self, format, *args):
+                  return
+
+          HTTPServer(('127.0.0.1', 8000), Handler).serve_forever()
+          PY
+
+          nohup python /tmp/k6-health-server.py >/tmp/k6-health-server.log 2>&1 &
+          echo $! >/tmp/k6-health-server.pid
+
+          for i in 1 2 3 4 5; do
+            curl -fsS http://127.0.0.1:8000/health && exit 0
+            sleep 1
+          done
+
+          echo "k6 health target did not become ready"
+          cat /tmp/k6-health-server.log || true
+          exit 1
+
       - name: k6 smoke test
         run: k6 run tests/load/k6-script.js
+
+      - name: Stop local k6 health target
+        if: always()
+        run: |
+          if [ -f /tmp/k6-health-server.pid ]; then
+            kill "$(cat /tmp/k6-health-server.pid)" || true
+          fi
