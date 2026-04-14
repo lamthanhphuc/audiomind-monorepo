@@ -2,8 +2,9 @@ import importlib.util
 import json
 from pathlib import Path
 
-
-MODULE_PATH = Path(__file__).resolve().parents[1] / "app" / "services" / "ai_analyzer.py"
+MODULE_PATH = (
+    Path(__file__).resolve().parents[1] / "app" / "services" / "ai_analyzer.py"
+)
 SPEC = importlib.util.spec_from_file_location("ai_analyzer", MODULE_PATH)
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
@@ -13,7 +14,9 @@ AIAnalyzer = MODULE.AIAnalyzer
 def test_sanitize_technical_terms_prefers_whitelist_phrases():
     analyzer = AIAnalyzer(api_key="", provider="ollama")
 
-    transcript = "Nhom ban ve cong nghe thong tin va lap trinh API cho he thong thong tin."
+    transcript = (
+        "Nhom ban ve cong nghe thong tin va lap trinh API cho he thong thong tin."
+    )
     technical_terms = ["Công nghệ thông tin", "API"]
     keywords = ["hệ thống thông tin", "api"]
 

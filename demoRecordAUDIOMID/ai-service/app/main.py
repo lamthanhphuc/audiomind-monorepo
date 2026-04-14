@@ -119,7 +119,11 @@ def ensure_runtime_dirs() -> None:
 
 def resolve_upload_dir() -> Path:
     """Pick the first writable upload directory shared across API and worker containers."""
-    candidates = (Path("/app/uploads"), Path("/app/storage/uploads"), Path("./storage/uploads"))
+    candidates = (
+        Path("/app/uploads"),
+        Path("/app/storage/uploads"),
+        Path("./storage/uploads"),
+    )
     for upload_dir in candidates:
         try:
             upload_dir.mkdir(parents=True, exist_ok=True)
@@ -129,7 +133,9 @@ def resolve_upload_dir() -> Path:
             probe_file.unlink(missing_ok=True)
             return upload_dir
         except OSError as permission_error:
-            logger.warning(f"Upload dir not writable ({upload_dir}): {permission_error}")
+            logger.warning(
+                f"Upload dir not writable ({upload_dir}): {permission_error}"
+            )
 
     raise RuntimeError("No writable upload directory is available")
 

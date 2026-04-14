@@ -5,7 +5,12 @@ import json
 import re
 import httpx
 import unicodedata
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_exponential,
+    retry_if_exception_type,
+)
 
 
 class AIAnalyzer:
@@ -121,7 +126,6 @@ class AIAnalyzer:
         }
         normalized_transcript = self._normalize_text(transcript)
 
-        selected_keys: List[str] = []
         selected_seen: Set[str] = set()
 
         # 1) Match phrase whitelist first.
@@ -135,65 +139,43 @@ class AIAnalyzer:
             ):
                 if phrase_key not in selected_seen:
                     selected_seen.add(phrase_key)
-                """Retry transient HTTP/runtime failures when calling Ollama endpoints."""
-                @retry(
-                    stop=stop_after_attempt(3),
-                    wait=wait_exponential(multiplier=1, min=1, max=8),
-                    retry=retry_if_exception_type((httpx.HTTPError, httpx.TimeoutException, ValueError)),
-                    reraise=True,
-                )
-                def _execute_call() -> str:
-                    with httpx.Client(timeout=self.timeout_seconds) as client:
-                        chat_response = client.post(
-                            f"{self.ollama_base_url}/api/chat", json=chat_payload
-                        )
-                        if chat_response.status_code != 404:
-                            chat_response.raise_for_status()
-                            chat_body = chat_response.json()
-                            content = (chat_body.get("message", {}) or {}).get("content", "")
-                            if content:
-                                return content.strip()
 
-                        logger.warning(
-                            "Ollama /api/chat unavailable; falling back to Ollama /api/generate compatibility endpoint"
-                        )
+        # 2) Collect one-word whitelist matches (acronyms/short terms).
+        for key in normalized_terms | normalized_keywords:
+            if " " in key:
+                continue
+            if key in whitelist_map and (
+                self._phrase_in_text(key, normalized_transcript)
+                or key in normalized_terms
+                or key in normalized_keywords
+            ):
+                selected_seen.add(key)
 
-                        generate_payload = {
-                            "model": self.model,
-                            "stream": False,
-                            "prompt": f"{system_prompt}\n\n{prompt}",
-                            "options": chat_payload.get("options", {}),
-                        }
-                        if expect_json:
-                            generate_payload["format"] = "json"
+        # 3) Add transcript candidates that are in whitelist.
+        for candidate in self._extract_candidate_phrases_by_regex(transcript):
+            if candidate in whitelist_map:
+                selected_seen.add(candidate)
 
-                        generate_response = client.post(
-                            f"{self.ollama_base_url}/api/generate",
-                            json=generate_payload,
-                        )
-                        generate_response.raise_for_status()
-                        generate_body = generate_response.json()
-                        content = (generate_body.get("response", "") or "").strip()
-                        if not content:
-                            raise ValueError(
-                                f"Empty response from Ollama generate API: {generate_body}"
-                            )
-                        return content
+        # Keep whitelist ordering stable and deterministic.
+        ordered = [key for key in whitelist_order if key in selected_seen]
+        return [whitelist_map[key] for key in ordered]
 
-                return _execute_call()
+    def _chunk_transcript(self, transcript: str, max_chars: int = 2500) -> List[str]:
+        chunks: List[str] = []
+        current = ""
 
-        for line in transcript.split("\n"):
-            if len(current) + len(line) < max_chars:
+        for line in str(transcript or "").split("\n"):
+            if len(current) + len(line) + 1 < max_chars:
                 current += line + "\n"
             else:
                 if current.strip():
-                    chunks.append(current)
+                    chunks.append(current.strip())
                 current = line + "\n"
 
         if current.strip():
-            chunks.append(current)
+            chunks.append(current.strip())
 
-        return chunks
+        return chunks if chunks else [str(transcript or "")]
 
     def _extract_json_object(self, text: str) -> str:
         text = (text or "").strip()
@@ -611,6 +593,14 @@ TEXT:
             )
             return self._loads_json_safe(repaired_content)
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=8),
+        retry=retry_if_exception_type(
+            (httpx.HTTPError, httpx.TimeoutException, ValueError)
+        ),
+        reraise=True,
+    )
     def _call_ollama(
         self,
         prompt: str,
@@ -618,6 +608,7 @@ TEXT:
         chat_payload: Dict,
         expect_json: bool,
     ) -> str:
+        """Retry transient HTTP/runtime failures when calling Ollama endpoints."""
         with httpx.Client(timeout=self.timeout_seconds) as client:
             chat_response = client.post(
                 f"{self.ollama_base_url}/api/chat", json=chat_payload
