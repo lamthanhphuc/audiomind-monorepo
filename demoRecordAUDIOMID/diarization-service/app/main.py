@@ -1,4 +1,5 @@
 from pathlib import Path
+import logging
 
 import librosa
 from fastapi import FastAPI, HTTPException
@@ -8,6 +9,7 @@ from pydantic import BaseModel
 
 MODELS_DIR = Path("/app/models")
 UPLOADS_DIR = Path("/app/uploads")
+logger = logging.getLogger(__name__)
 
 
 class DiarizeRequest(BaseModel):
@@ -21,8 +23,8 @@ class DiarizationRuntime:
         for target in (MODELS_DIR, UPLOADS_DIR):
             try:
                 target.chmod(0o775)
-            except OSError:
-                pass
+            except OSError as permission_error:
+                logger.warning("Could not update permissions for %s: %s", target, permission_error)
 
     def diarize_lightweight(self, audio_path: str) -> list[dict]:
         y, sr = librosa.load(audio_path, sr=None, mono=True)

@@ -20,6 +20,7 @@ import org.springframework.web.client.RestTemplate;
 import org.springframework.web.client.RestClientException;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
+import org.springframework.util.StringUtils;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
@@ -40,7 +41,7 @@ public class AIServiceClient {
     private String aiUrl;
 
     public Map<String, Object> processAudio(Long meetingId, String audioPath) {
-        return processAudio(meetingId, audioPath, null, null, null, "vi", null);
+        return processAudio(meetingId, audioPath, null, null, null, "vi", null, null);
     }
 
     @Retry(name = "ai-service")
@@ -57,7 +58,8 @@ public class AIServiceClient {
             String topic,
             List<String> glossaryTerms,
             String language,
-            String traceId) {
+            String traceId,
+            String authorization) {
 
         Map<String, Object> request = new HashMap<>();
 
@@ -81,6 +83,9 @@ public class AIServiceClient {
         String resolvedTraceId = resolveTraceId(traceId);
         headers.add("x-trace-id", resolvedTraceId);
         headers.add("x-request-id", resolvedTraceId);
+        if (StringUtils.hasText(authorization)) {
+            headers.add(HttpHeaders.AUTHORIZATION, authorization);
+        }
         log.info("[traceId={}] [jobId={}] enqueue request sent to ai-service", resolvedTraceId, meetingId);
 
         ResponseEntity<Map<String, Object>> response =
@@ -169,11 +174,14 @@ public class AIServiceClient {
         maxAttempts = 3,
         backoff = @Backoff(delay = 1000, multiplier = 2.0)
     )
-    public Map<String, Object> uploadAudio(MultipartFile file, String traceId) {
+    public Map<String, Object> uploadAudio(MultipartFile file, String traceId, String authorization) {
         HttpHeaders headers = new HttpHeaders();
         String resolvedTraceId = resolveTraceId(traceId);
         headers.add("x-trace-id", resolvedTraceId);
         headers.add("x-request-id", resolvedTraceId);
+        if (StringUtils.hasText(authorization)) {
+            headers.add(HttpHeaders.AUTHORIZATION, authorization);
+        }
         headers.setContentType(MediaType.MULTIPART_FORM_DATA);
 
         MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();

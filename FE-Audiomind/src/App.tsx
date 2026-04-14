@@ -88,7 +88,7 @@ export default function App() {
         username: username.trim(),
         password,
       })
-      setAccessToken(auth.accessToken)
+      setAccessToken(auth.accessToken, auth.expiresInSeconds)
       setIsAuthenticated(true)
     } catch (loginError) {
       setAuthError(loginError instanceof Error ? loginError.message : 'Đăng nhập thất bại')

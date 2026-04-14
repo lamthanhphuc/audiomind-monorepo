@@ -3,6 +3,8 @@ package com.example.processingservice.service;
 import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
 import lombok.RequiredArgsConstructor;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
+import org.springframework.data.redis.core.script.RedisScript;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.connection.DataType;
 import org.springframework.stereotype.Component;
@@ -22,6 +24,60 @@ public class JobStateStore {
     private static final Duration TTL = Duration.ofSeconds(3600);
     private static final Type MAP_TYPE = new TypeToken<Map<String, Object>>() {
     }.getType();
+        private static final RedisScript<Long> UPSERT_JOB_STATE_SCRIPT = new DefaultRedisScript<>(
+            "local key = KEYS[1]\n"
+                + "local next_status = string.upper(ARGV[1])\n"
+                + "local current_status = string.upper(redis.call('HGET', key, 'status') or 'UNKNOWN')\n"
+                + "local function is_terminal(value)\n"
+                + "  return value == 'COMPLETED' or value == 'FAILED'\n"
+                + "end\n"
+                + "local function is_allowed(current, next)\n"
+                + "  if current == next then\n"
+                + "    return true\n"
+                + "  end\n"
+                + "  if current == 'UNKNOWN' then\n"
+                + "    return true\n"
+                + "  end\n"
+                + "  if is_terminal(current) then\n"
+                + "    return false\n"
+                + "  end\n"
+                + "  if current == 'PENDING' then\n"
+                + "    return next == 'QUEUED'\n"
+                + "  end\n"
+                + "  if current == 'QUEUED' then\n"
+                + "    return next == 'RUNNING' or next == 'RETRYING' or next == 'COMPLETED' or next == 'FAILED'\n"
+                + "  end\n"
+                + "  if current == 'RUNNING' then\n"
+                + "    return next == 'RETRYING' or next == 'COMPLETED' or next == 'FAILED'\n"
+                + "  end\n"
+                + "  if current == 'RETRYING' then\n"
+                + "    return next == 'RUNNING' or next == 'COMPLETED' or next == 'FAILED'\n"
+                + "  end\n"
+                + "  return false\n"
+                + "end\n"
+                + "if not is_allowed(current_status, next_status) then\n"
+                + "  return 0\n"
+                + "end\n"
+                + "local existing_created = redis.call('HGET', key, 'createdAt')\n"
+                + "local created_at = existing_created\n"
+                + "if not created_at or created_at == '' then\n"
+                + "  created_at = ARGV[7]\n"
+                + "end\n"
+                + "redis.call('HSET', key, 'jobId', ARGV[9], 'fileId', ARGV[2], 'status', next_status, 'traceId', ARGV[5], 'createdAt', created_at, 'updatedAt', ARGV[6])\n"
+                + "if ARGV[3] == '' then\n"
+                + "  redis.call('HDEL', key, 'result')\n"
+                + "else\n"
+                + "  redis.call('HSET', key, 'result', ARGV[3])\n"
+                + "end\n"
+                + "if ARGV[4] == '' then\n"
+                + "  redis.call('HDEL', key, 'error')\n"
+                + "else\n"
+                + "  redis.call('HSET', key, 'error', ARGV[4])\n"
+                + "end\n"
+                + "redis.call('EXPIRE', key, tonumber(ARGV[8]))\n"
+                + "return 1\n",
+            Long.class
+        );
 
     private final StringRedisTemplate redisTemplate;
     private final Gson gson = new Gson();
@@ -65,19 +121,52 @@ public class JobStateStore {
             String traceId
     ) {
         Map<String, Object> state = getJobState(jobId).orElseGet(HashMap::new);
-        if (!state.containsKey("createdAt")) {
-            state.put("createdAt", Instant.now().toString());
+        String nextStatus = normalizeStatus(status);
+            String now = Instant.now().toString();
+            String createdAt = state.containsKey("createdAt")
+                ? String.valueOf(state.get("createdAt"))
+                : now;
+            String resolvedFileId = (fileId == null || fileId.isBlank())
+                ? String.valueOf(state.getOrDefault("fileId", ""))
+                : fileId;
+            String resolvedTraceId = (traceId == null || traceId.isBlank())
+                ? String.valueOf(state.getOrDefault("traceId", ""))
+                : traceId;
+            String serializedResult = result == null ? "" : gson.toJson(result);
+            String sanitizedError = (error == null || error.isBlank()) ? "" : error;
+
+            Long updated = redisTemplate.execute(
+                UPSERT_JOB_STATE_SCRIPT,
+                List.of(jobKey(jobId)),
+                nextStatus,
+                resolvedFileId,
+                serializedResult,
+                sanitizedError,
+                resolvedTraceId,
+                now,
+                createdAt,
+                String.valueOf(TTL.getSeconds()),
+                String.valueOf(jobId)
+            );
+
+            if (!Long.valueOf(1L).equals(updated)) {
+                return;
+            }
+    }
+
+    private boolean isTerminal(String status) {
+        return "COMPLETED".equals(status) || "FAILED".equals(status);
+    }
+
+    private String normalizeStatus(Object value) {
+        if (value == null) {
+            return "UNKNOWN";
         }
-
-        state.put("jobId", String.valueOf(jobId));
-        state.put("fileId", fileId);
-        state.put("status", status == null ? "UNKNOWN" : status.toUpperCase());
-        state.put("traceId", traceId);
-        state.put("result", result);
-        state.put("error", (error == null || error.isBlank()) ? null : error);
-        state.put("updatedAt", Instant.now().toString());
-
-        writeJobState(jobId, state);
+        String normalized = String.valueOf(value).trim().toUpperCase();
+        if (normalized.isBlank()) {
+            return "UNKNOWN";
+        }
+        return normalized;
     }
 
     public Optional<Map<String, Object>> getJobState(Long jobId) {

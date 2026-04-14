@@ -21,5 +21,7 @@ public class Meeting {
 
     private String audioPath;
 
+    private Long ownerUserId;
+
     private LocalDateTime createdAt;
 }

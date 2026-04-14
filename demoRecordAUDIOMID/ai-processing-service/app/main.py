@@ -1,4 +1,5 @@
 import os
+import logging
 from pathlib import Path
 from uuid import uuid4
 
@@ -16,14 +17,28 @@ OLLAMA_URL = os.getenv("OLLAMA_BASE_URL", "http://ollama-service:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:3b")
 
 app = FastAPI(title="processing-service", version="1.0.0")
+logger = logging.getLogger(__name__)
 
 
 def ensure_runtime_dirs() -> None:
     UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
     try:
         UPLOADS_DIR.chmod(0o775)
-    except OSError:
-        pass
+    except OSError as permission_error:
+        logger.warning("Could not update permissions for %s: %s", UPLOADS_DIR, permission_error)
+
+
+def validate_runtime_configuration() -> None:
+    environment = os.getenv("APP_ENV", "development").lower()
+    if environment != "production":
+        return
+
+    required = ["WHISPER_SERVICE_URL", "DIARIZATION_SERVICE_URL", "OLLAMA_BASE_URL"]
+    missing = [name for name in required if not os.getenv(name)]
+    if missing:
+        raise RuntimeError(
+            "Missing required production environment variables: " + ", ".join(missing)
+        )
 
 
 def overlap(a_start: float, a_end: float, b_start: float, b_end: float) -> float:
@@ -108,6 +123,7 @@ async def summarize_with_ollama(conversation_text: str) -> str:
 @app.on_event("startup")
 def startup_event() -> None:
     ensure_runtime_dirs()
+    validate_runtime_configuration()
 
 
 @app.get("/health")
@@ -182,11 +198,14 @@ async def process_audio(
 
 @app.exception_handler(Exception)
 async def global_exception_handler(_, exc: Exception):
+    trace_id = uuid4().hex
+    # Keep full details in logs while returning a safe client-facing message.
+    logger.error("Unhandled exception trace_id=%s: %r", trace_id, exc)
     return JSONResponse(
         status_code=500,
         content={
             "code": "INTERNAL_SERVER_ERROR",
             "message": "Unexpected server error",
-            "detail": str(exc),
+            "trace_id": trace_id,
         },
     )

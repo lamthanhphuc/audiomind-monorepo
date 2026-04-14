@@ -17,11 +17,16 @@ public class MeetingService {
     private final MeetingRepository meetingRepository;
 
     public Meeting saveMeeting(String title, String audioPath){
+        return saveMeeting(title, audioPath, null);
+    }
+
+    public Meeting saveMeeting(String title, String audioPath, Long ownerUserId){
 
         Meeting meeting = new Meeting();
 
         meeting.setTitle(title);
         meeting.setAudioPath(audioPath);
+        meeting.setOwnerUserId(ownerUserId);
         meeting.setCreatedAt(LocalDateTime.now());
 
         return meetingRepository.save(meeting);
@@ -32,7 +37,16 @@ public class MeetingService {
                 .orElseThrow(() -> new NoSuchElementException("Meeting not found: " + id));
     }
 
+    public Meeting findByIdForOwner(Long id, Long ownerUserId) {
+        return meetingRepository.findByIdAndOwnerUserId(id, ownerUserId)
+                .orElseThrow(() -> new NoSuchElementException("Meeting not found: " + id));
+    }
+
     public List<Meeting> findRecentMeetings() {
         return meetingRepository.findTop20ByOrderByIdDesc();
+    }
+
+    public List<Meeting> findRecentMeetingsForOwner(Long ownerUserId) {
+        return meetingRepository.findTop20ByOwnerUserIdOrderByIdDesc(ownerUserId);
     }
 }

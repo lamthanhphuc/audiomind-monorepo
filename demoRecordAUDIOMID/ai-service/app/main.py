@@ -407,21 +407,27 @@ async def startup_event():
     ensure_runtime_dirs()
     load_job_statuses(recover_interrupted=True)
     cleanup_expired_job_statuses()
-    cleanup_expired_job_statuses()
+    is_production = (settings.app_env or "").strip().lower() in {"prod", "production"}
 
     try:
         wait_for_database()
     except Exception as e:
+        if is_production:
+            raise RuntimeError("Database connectivity check failed during production startup") from e
         logger.warning(f"Database connectivity check skipped: {repr(e)}")
 
     try:
         ensure_bigint_meeting_id()
     except Exception as e:
+        if is_production:
+            raise RuntimeError("Database migration step failed during production startup") from e
         logger.warning(f"Database migration step skipped: {repr(e)}")
 
     try:
         Base.metadata.create_all(bind=engine)
     except Exception as e:
+        if is_production:
+            raise RuntimeError("Database schema initialization failed during production startup") from e
         logger.warning(f"Database schema initialization failed: {repr(e)}")
 
     try:
