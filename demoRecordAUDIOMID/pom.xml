@@ -37,6 +37,7 @@
 	</scm>
 	<properties>
 		<java.version>21</java.version>
+		<flyway.version>10.22.0</flyway.version>
 		<dependency-check.version>9.0.10</dependency-check.version>
 		<dependency-check.autoUpdate>true</dependency-check.autoUpdate>
 		<dependency-check.nvd.maxRetryCount>3</dependency-check.nvd.maxRetryCount>

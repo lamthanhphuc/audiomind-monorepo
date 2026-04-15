@@ -20,6 +20,9 @@ spring:
         dialect: ${SPRING_JPA_HIBERNATE_DIALECT:org.hibernate.dialect.PostgreSQLDialect}
   flyway:
     enabled: true
+    baseline-on-migrate: true
+    baseline-version: 0
+    table: flyway_schema_history_user
 
 management:
   endpoints:

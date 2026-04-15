@@ -16,7 +16,7 @@ spring:
     driver-class-name: ${SPRING_DATASOURCE_DRIVER_CLASS_NAME:org.postgresql.Driver}
   sql:
     init:
-      mode: always
+      mode: never
 
   servlet:
     multipart:
@@ -29,6 +29,11 @@ spring:
     properties:
       hibernate:
         dialect: ${SPRING_JPA_HIBERNATE_DIALECT:org.hibernate.dialect.PostgreSQLDialect}
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+    baseline-version: 0
+    table: flyway_schema_history_meeting
 
 management:
   endpoints:

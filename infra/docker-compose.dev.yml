@@ -4,11 +4,12 @@ services:
       context: ../demoRecordAUDIOMID
       dockerfile: meeting-service/Dockerfile
     environment:
-      - SPRING_DATASOURCE_URL=jdbc:postgresql://db:5432/${POSTGRES_DB}
-      - SPRING_DATASOURCE_USERNAME=${POSTGRES_USER}
-      - SPRING_DATASOURCE_PASSWORD=${POSTGRES_PASSWORD}
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://db:5432/${POSTGRES_DB:-audiomind}
+      - SPRING_DATASOURCE_USERNAME=${POSTGRES_USER:-audiomind}
+      - SPRING_DATASOURCE_PASSWORD=${POSTGRES_PASSWORD:-audiomind}
       - SPRING_DATASOURCE_DRIVER_CLASS_NAME=org.postgresql.Driver
       - SPRING_JPA_HIBERNATE_DIALECT=org.hibernate.dialect.PostgreSQLDialect
+      - JWT_SECRET=replace-this-secret-with-at-least-32-bytes
       - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-http://127.0.0.1:5173,http://localhost:5173}
     depends_on:
       - db
@@ -24,6 +25,7 @@ services:
       - AUDIOMIND_MEETING_API_BASE_URL=http://meeting-api:8081
       - REDIS_HOST=redis
       - REDIS_DB=2
+      - JWT_SECRET=replace-this-secret-with-at-least-32-bytes
       - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-http://127.0.0.1:5173,http://localhost:5173}
     depends_on:
       - meeting-api
@@ -36,9 +38,9 @@ services:
       context: ../demoRecordAUDIOMID
       dockerfile: user-service/Dockerfile
     environment:
-      - SPRING_DATASOURCE_URL=jdbc:postgresql://db:5432/${POSTGRES_DB}
-      - SPRING_DATASOURCE_USERNAME=${POSTGRES_USER}
-      - SPRING_DATASOURCE_PASSWORD=${POSTGRES_PASSWORD}
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://db:5432/${POSTGRES_DB:-audiomind}
+      - SPRING_DATASOURCE_USERNAME=${POSTGRES_USER:-audiomind}
+      - SPRING_DATASOURCE_PASSWORD=${POSTGRES_PASSWORD:-audiomind}
       - SPRING_DATASOURCE_DRIVER_CLASS_NAME=org.postgresql.Driver
       - SPRING_JPA_HIBERNATE_DIALECT=org.hibernate.dialect.PostgreSQLDialect
       - REDIS_HOST=redis
