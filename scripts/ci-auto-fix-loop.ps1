@@ -240,7 +240,7 @@ function Get-CheckRunsForCommit {
             conclusion   = [string]$check.conclusion
             headSha      = [string]$check.head_sha
             createdAt    = [string]$check.started_at
-            updatedAt    = [string]$check.completed_at
+            updatedAt    = if ($check.completed_at) { [string]$check.completed_at } else { [string]$check.started_at }
             url          = [string]$check.details_url
             workflowName = [string]$check.name
         }
@@ -269,7 +269,22 @@ function Get-WorkflowStatusSummary {
                 }
                 $itemName -eq $name
             } |
-            Sort-Object -Property @{ Expression = { [datetime]$_.updatedAt }; Descending = $true } |
+            Sort-Object -Property @{ Expression = {
+                    $dateText = ''
+                    try { $dateText = [string]$_.updatedAt } catch { $dateText = '' }
+                    if (-not $dateText) {
+                        try { $dateText = [string]$_.createdAt } catch { $dateText = '' }
+                    }
+                    if (-not $dateText) {
+                        return [datetime]::MinValue
+                    }
+                    try {
+                        return [datetime]$dateText
+                    }
+                    catch {
+                        return [datetime]::MinValue
+                    }
+                }; Descending = $true } |
             Select-Object -First 1
 
         if ($null -eq $match) {
