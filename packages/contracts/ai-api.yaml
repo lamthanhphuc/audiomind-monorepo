@@ -3,10 +3,105 @@ info:
   title: AI API
   version: 0.1.0
 paths:
+  /api/process:
+    post:
+      summary: Queue processing job in AI service
+      operationId: processMeeting
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProcessRequestV2"
+      responses:
+        "200":
+          description: Processing request accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProcessResponse"
+  /api/upload-audio:
+    post:
+      summary: Upload audio content for AI processing
+      operationId: uploadAudio
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - file
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        "200":
+          description: Uploaded audio metadata
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UploadResponse"
+  /api/meeting/{meeting_id}/status:
+    get:
+      summary: Get job status by meeting id
+      operationId: getMeetingStatus
+      parameters:
+        - in: path
+          name: meeting_id
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: Current job status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusResponse"
+  /api/meeting/{meeting_id}/transcript:
+    get:
+      summary: Get transcript by meeting id
+      operationId: getMeetingTranscript
+      parameters:
+        - in: path
+          name: meeting_id
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: Transcript payload
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TranscriptResponse"
+  /api/meeting/{meeting_id}/analysis:
+    get:
+      summary: Get analysis by meeting id
+      operationId: getMeetingAnalysis
+      parameters:
+        - in: path
+          name: meeting_id
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: Analysis payload
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnalysisResponse"
   /api/v1/process:
     post:
       summary: Process meeting in AI service
       operationId: processMeetingV1
+      deprecated: true
       requestBody:
         required: true
         content:
@@ -33,6 +128,37 @@ components:
       properties:
         meeting_id:
           type: string
+    ProcessRequestV2:
+      type: object
+      properties:
+        meeting_id:
+          type: integer
+          format: int64
+        audio_path:
+          type: string
+        file_id:
+          type: string
+        topic:
+          type: string
+        glossary_terms:
+          type: array
+          items:
+            type: string
+        language:
+          type: string
+    ProcessResponse:
+      type: object
+      required:
+        - meeting_id
+        - status
+      properties:
+        meeting_id:
+          type: integer
+          format: int64
+        status:
+          type: string
+        message:
+          type: string
     ProcessResult:
       type: object
       required:
@@ -42,4 +168,61 @@ components:
         transcript:
           type: string
         summary:
+          type: string
+    UploadResponse:
+      type: object
+      required:
+        - audio_path
+        - original_filename
+      properties:
+        audio_path:
+          type: string
+        original_filename:
+          type: string
+    StatusResponse:
+      type: object
+      required:
+        - jobId
+        - status
+      properties:
+        jobId:
+          type: string
+        status:
+          type: string
+        progress:
+          type: integer
+        stage:
+          type: string
+        error:
+          type: string
+          nullable: true
+    TranscriptResponse:
+      type: object
+      required:
+        - meeting_id
+        - transcripts
+      properties:
+        meeting_id:
+          type: integer
+          format: int64
+        transcripts:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+    AnalysisResponse:
+      type: object
+      required:
+        - meeting_id
+      properties:
+        meeting_id:
+          type: integer
+          format: int64
+      additionalProperties: true
+    ErrorResponse:
+      type: object
+      required:
+        - detail
+      properties:
+        detail:
           type: string

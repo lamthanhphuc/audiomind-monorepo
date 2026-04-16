@@ -132,7 +132,21 @@ export const getProcessingStatus = async (meetingId: number): Promise<{
   error?: string | null
   updated_at?: string
 }> => {
-  return fetchJson(`${API_BASE}/processing/status/${meetingId}`)
+  const raw = await fetchJson<{
+    meeting_id?: number
+    meetingId?: number
+    status?: string
+    error?: string | null
+    updated_at?: string
+    updatedAt?: string
+  }>(`${API_BASE}/processing/status/${meetingId}`)
+
+  return {
+    meeting_id: raw.meeting_id ?? raw.meetingId ?? meetingId,
+    status: raw.status ?? 'UNKNOWN',
+    error: raw.error,
+    updated_at: raw.updated_at ?? raw.updatedAt,
+  }
 }
 
 export const createMeeting = async (): Promise<CreateMeetingResponse> => {

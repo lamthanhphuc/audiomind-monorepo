@@ -5,6 +5,7 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
+import jakarta.persistence.Column;
 import lombok.Data;
 
 import java.time.LocalDateTime;
@@ -19,7 +20,12 @@ public class Meeting {
 
     private String title;
 
+    @Column(name = "audio_path")
     private String audioPath;
 
+    @Column(name = "owner_user_id")
+    private Long ownerUserId;
+
+    @Column(name = "created_at")
     private LocalDateTime createdAt;
 }

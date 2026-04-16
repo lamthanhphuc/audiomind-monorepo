@@ -20,6 +20,7 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestPart;
 import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.multipart.MultipartFile;
+import org.springframework.http.HttpHeaders;
 
 import java.util.List;
 import java.util.Map;
@@ -36,15 +37,17 @@ public class ProcessingController {
     @PostMapping("/upload")
     public Map<String, Object> upload(
             @RequestPart("file") MultipartFile file,
-            @RequestHeader(value = "x-trace-id", required = false) String traceId) {
-        return processingService.uploadAudio(file, ensureTraceId(traceId));
+            @RequestHeader(value = "x-trace-id", required = false) String traceId,
+            @RequestHeader(HttpHeaders.AUTHORIZATION) String authorization) {
+        return processingService.uploadAudio(file, ensureTraceId(traceId), authorization);
     }
 
     @PostMapping("/start")
     public ProcessStartResponse process(
             @RequestBody(required = false) ProcessStartRequest request,
             @RequestParam(required = false) String meetingId,
-            @RequestHeader(value = "x-trace-id", required = false) String traceId) {
+            @RequestHeader(value = "x-trace-id", required = false) String traceId,
+            @RequestHeader(HttpHeaders.AUTHORIZATION) String authorization) {
         Long resolvedMeetingId = request != null && request.meeting_id() != null
                 ? request.meeting_id()
                 : parseMeetingId(meetingId);
@@ -56,7 +59,8 @@ public class ProcessingController {
                 request == null ? null : request.topic(),
                 request == null ? null : request.glossary_terms(),
                 request == null ? null : request.language(),
-                ensureTraceId(traceId)
+                ensureTraceId(traceId),
+                authorization
         );
     }
 
@@ -66,43 +70,49 @@ public class ProcessingController {
             @RequestParam(required = false) String fileId,
             @RequestParam(required = false) String topic,
             @RequestParam(name = "glossary_terms", required = false) List<String> glossaryTerms,
-            @RequestHeader(value = "x-trace-id", required = false) String traceId) {
-        return processingService.startProcessing(meetingId, null, fileId, topic, glossaryTerms, "vi", ensureTraceId(traceId));
+            @RequestHeader(value = "x-trace-id", required = false) String traceId,
+            @RequestHeader(HttpHeaders.AUTHORIZATION) String authorization) {
+        return processingService.startProcessing(meetingId, null, fileId, topic, glossaryTerms, "vi", ensureTraceId(traceId), authorization);
     }
 
     @GetMapping("/status/{jobId}")
     public ProcessingStatusResponse statusByJob(
             @PathVariable Long jobId,
-            @RequestHeader(value = "x-trace-id", required = false) String traceId) {
-        return processingService.getProcessingStatus(jobId, ensureTraceId(traceId));
+            @RequestHeader(value = "x-trace-id", required = false) String traceId,
+            @RequestHeader(HttpHeaders.AUTHORIZATION) String authorization) {
+        return processingService.getProcessingStatus(jobId, ensureTraceId(traceId), authorization);
     }
 
     @GetMapping("/{meetingId}/status")
     public ProcessingStatusResponse status(
             @PathVariable Long meetingId,
-            @RequestHeader(value = "x-trace-id", required = false) String traceId) {
-        return processingService.getProcessingStatus(meetingId, ensureTraceId(traceId));
+            @RequestHeader(value = "x-trace-id", required = false) String traceId,
+            @RequestHeader(HttpHeaders.AUTHORIZATION) String authorization) {
+        return processingService.getProcessingStatus(meetingId, ensureTraceId(traceId), authorization);
     }
 
     @GetMapping("/transcript/{jobId}")
     public Map<String, Object> transcriptByJob(
             @PathVariable Long jobId,
-            @RequestHeader(value = "x-trace-id", required = false) String traceId) {
-        return processingService.getTranscript(jobId, ensureTraceId(traceId));
+            @RequestHeader(value = "x-trace-id", required = false) String traceId,
+            @RequestHeader(HttpHeaders.AUTHORIZATION) String authorization) {
+        return processingService.getTranscript(jobId, ensureTraceId(traceId), authorization);
     }
 
     @GetMapping("/{meetingId}/transcript")
     public TranscriptResponse transcript(
             @PathVariable Long meetingId,
-            @RequestHeader(value = "x-trace-id", required = false) String traceId) {
-        return new TranscriptResponse(meetingId, processingService.getTranscript(meetingId, ensureTraceId(traceId)));
+            @RequestHeader(value = "x-trace-id", required = false) String traceId,
+            @RequestHeader(HttpHeaders.AUTHORIZATION) String authorization) {
+        return new TranscriptResponse(meetingId, processingService.getTranscript(meetingId, ensureTraceId(traceId), authorization));
     }
 
     @GetMapping("/{meetingId}/analysis")
     public AnalysisResponse analysis(
             @PathVariable Long meetingId,
-            @RequestHeader(value = "x-trace-id", required = false) String traceId) {
-        return new AnalysisResponse(meetingId, processingService.getAnalysis(meetingId, ensureTraceId(traceId)));
+            @RequestHeader(value = "x-trace-id", required = false) String traceId,
+            @RequestHeader(HttpHeaders.AUTHORIZATION) String authorization) {
+        return new AnalysisResponse(meetingId, processingService.getAnalysis(meetingId, ensureTraceId(traceId), authorization));
     }
 
     private Long parseMeetingId(String meetingId) {

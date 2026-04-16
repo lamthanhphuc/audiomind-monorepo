@@ -11,6 +11,7 @@ import org.springframework.retry.annotation.Backoff;
 import org.springframework.retry.annotation.Retryable;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
+import org.springframework.util.StringUtils;
 
 import java.util.Map;
 import java.util.UUID;
@@ -29,11 +30,14 @@ public class MeetingServiceClient {
             maxAttempts = 3,
             backoff = @Backoff(delay = 1000, multiplier = 2)
         )
-    public Map<String, Object> getMeetingById(Long meetingId, String traceId) {
+    public Map<String, Object> getMeetingById(Long meetingId, String traceId, String authorization) {
         HttpHeaders headers = new HttpHeaders();
         String resolvedTraceId = resolveTraceId(traceId);
         headers.add("x-trace-id", resolvedTraceId);
         headers.add("x-request-id", resolvedTraceId);
+        if (StringUtils.hasText(authorization)) {
+            headers.add(HttpHeaders.AUTHORIZATION, authorization);
+        }
 
         ResponseEntity<Map<String, Object>> response = restTemplate.exchange(
                 meetingServiceUrl + "/meetings/" + meetingId,

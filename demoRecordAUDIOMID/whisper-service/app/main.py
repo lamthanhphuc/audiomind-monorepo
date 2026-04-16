@@ -1,4 +1,6 @@
 from pathlib import Path
+import logging
+from contextlib import asynccontextmanager
 
 import torch
 import whisper
@@ -9,6 +11,7 @@ from pydantic import BaseModel
 
 MODELS_DIR = Path("/app/models")
 UPLOADS_DIR = Path("/app/uploads")
+logger = logging.getLogger(__name__)
 
 
 class TranscribeRequest(BaseModel):
@@ -27,8 +30,8 @@ class WhisperRuntime:
         for target in (MODELS_DIR, UPLOADS_DIR):
             try:
                 target.chmod(0o775)
-            except OSError:
-                pass
+            except OSError as permission_error:
+                logger.warning("Could not update permissions for %s: %s", target, permission_error)
 
         if self.model is None:
             self.model = whisper.load_model(
@@ -39,12 +42,15 @@ class WhisperRuntime:
 
 
 runtime = WhisperRuntime()
-app = FastAPI(title="whisper-service", version="1.0.0")
 
 
-@app.on_event("startup")
-def startup_event() -> None:
+@asynccontextmanager
+async def lifespan(_: FastAPI):
     runtime.ensure_ready()
+    yield
+
+
+app = FastAPI(title="whisper-service", version="1.0.0", lifespan=lifespan)
 
 
 @app.get("/health")

@@ -4,6 +4,91 @@
  */
 
 export interface paths {
+    "/api/process": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Queue processing job in AI service */
+        post: operations["processMeeting"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/upload-audio": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Upload audio content for AI processing */
+        post: operations["uploadAudio"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/meeting/{meeting_id}/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get job status by meeting id */
+        get: operations["getMeetingStatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/meeting/{meeting_id}/transcript": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get transcript by meeting id */
+        get: operations["getMeetingTranscript"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/meeting/{meeting_id}/analysis": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get analysis by meeting id */
+        get: operations["getMeetingAnalysis"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/process": {
         parameters: {
             query?: never;
@@ -13,7 +98,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Process meeting in AI service */
+        /**
+         * Process meeting in AI service
+         * @deprecated
+         */
         post: operations["processMeetingV1"];
         delete?: never;
         options?: never;
@@ -62,9 +150,51 @@ export interface components {
         ProcessRequest: {
             meeting_id?: string;
         };
+        ProcessRequestV2: {
+            /** Format: int64 */
+            meeting_id?: number;
+            audio_path?: string;
+            file_id?: string;
+            topic?: string;
+            glossary_terms?: string[];
+            language?: string;
+        };
+        ProcessResponse: {
+            /** Format: int64 */
+            meeting_id: number;
+            status: string;
+            message?: string;
+        };
         ProcessResult: {
             transcript: string;
             summary: string;
+        };
+        UploadResponse: {
+            audio_path: string;
+            original_filename: string;
+        };
+        StatusResponse: {
+            jobId: string;
+            status: string;
+            progress?: number;
+            stage?: string;
+            error?: string | null;
+        };
+        TranscriptResponse: {
+            /** Format: int64 */
+            meeting_id: number;
+            transcripts: {
+                [key: string]: unknown;
+            }[];
+        };
+        AnalysisResponse: {
+            /** Format: int64 */
+            meeting_id: number;
+        } & {
+            [key: string]: unknown;
+        };
+        ErrorResponse: {
+            detail: string;
         };
     };
     responses: never;
@@ -75,6 +205,123 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    processMeeting: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProcessRequestV2"];
+            };
+        };
+        responses: {
+            /** @description Processing request accepted */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProcessResponse"];
+                };
+            };
+        };
+    };
+    uploadAudio: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": {
+                    /** Format: binary */
+                    file: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Uploaded audio metadata */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UploadResponse"];
+                };
+            };
+        };
+    };
+    getMeetingStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                meeting_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current job status */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StatusResponse"];
+                };
+            };
+        };
+    };
+    getMeetingTranscript: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                meeting_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Transcript payload */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TranscriptResponse"];
+                };
+            };
+        };
+    };
+    getMeetingAnalysis: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                meeting_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Analysis payload */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AnalysisResponse"];
+                };
+            };
+        };
+    };
     processMeetingV1: {
         parameters: {
             query?: never;

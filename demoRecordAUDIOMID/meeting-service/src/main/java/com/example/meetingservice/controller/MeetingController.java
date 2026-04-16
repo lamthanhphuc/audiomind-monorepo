@@ -1,6 +1,7 @@
 package com.example.meetingservice.controller;
 
 import com.example.meetingservice.entity.Meeting;
+import com.example.meetingservice.security.UserPrincipal;
 import com.example.meetingservice.service.MeetingService;
 import lombok.RequiredArgsConstructor;
 
@@ -23,6 +24,7 @@ import java.nio.file.Paths;
 import java.util.Set;
 import java.util.List;
 import java.util.Objects;
+import org.springframework.security.core.Authentication;
 
 @CrossOrigin(origins = "${CORS_ALLOWED_ORIGINS:http://localhost:5173}")
 @RestController
@@ -40,7 +42,8 @@ public class MeetingController {
     @PostMapping("/upload")
     public Meeting upload(
             @RequestParam String title,
-            @RequestParam MultipartFile file) {
+            @RequestParam MultipartFile file,
+            Authentication authentication) {
 
         if (file.isEmpty()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "File is empty");
@@ -78,16 +81,26 @@ public class MeetingController {
             throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Unable to persist uploaded file", transferError);
         }
 
-        return meetingService.saveMeeting(title, targetFile.toString());
+        UserPrincipal principal = requirePrincipal(authentication);
+        return meetingService.saveMeeting(title, targetFile.toString(), principal.userId());
     }
 
     @GetMapping("/{id}")
-    public Meeting getById(@PathVariable Long id) {
-        return meetingService.findById(id);
+    public Meeting getById(@PathVariable Long id, Authentication authentication) {
+        UserPrincipal principal = requirePrincipal(authentication);
+        return meetingService.findByIdForOwner(id, principal.userId());
     }
 
     @GetMapping
-    public List<Meeting> getRecentMeetings() {
-        return meetingService.findRecentMeetings();
+    public List<Meeting> getRecentMeetings(Authentication authentication) {
+        UserPrincipal principal = requirePrincipal(authentication);
+        return meetingService.findRecentMeetingsForOwner(principal.userId());
+    }
+
+    private UserPrincipal requirePrincipal(Authentication authentication) {
+        if (authentication == null || !(authentication.getPrincipal() instanceof UserPrincipal principal)) {
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Unauthorized");
+        }
+        return principal;
     }
 }

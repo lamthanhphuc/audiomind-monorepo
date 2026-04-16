@@ -42,6 +42,13 @@ def _monitor_loop() -> None:
             if elapsed <= threshold_seconds:
                 continue
 
+            latest = get_job_status(job_id)
+            if not latest:
+                continue
+            latest_status = str(latest.get("status") or "UNKNOWN").upper()
+            if latest_status not in {"RUNNING", "RETRYING"}:
+                continue
+
             trace_id = state.get("traceId")
             logger.bind(traceId=trace_id, jobId=str(job_id)).warning(
                 "Timeout monitor forcing FAILED due to stale RUNNING state"

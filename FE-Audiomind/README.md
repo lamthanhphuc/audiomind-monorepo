@@ -23,3 +23,29 @@ Create or update `.env` (or `.env.local`):
 - Login is mock/local only.
 - Upload audio, then run processing to fetch AI summary.
 - In production builds, missing required API base variables cause startup failure.
+
+## E2E Prerequisites (Local/CI)
+
+Before running Playwright against real backend, ensure an E2E account exists in `user-service`.
+
+PowerShell (Windows):
+
+```powershell
+$env:E2E_USERNAME='e2e_test_user'
+$env:E2E_PASSWORD='Test@123456'
+pwsh ../scripts/setup-e2e-account.ps1
+```
+
+Then run E2E:
+
+```powershell
+$env:PLAYWRIGHT_REAL_BACKEND='1'
+npm run test:e2e:ci
+```
+
+Notes:
+- `setup-e2e-account.ps1` defaults to `http://localhost:8083` for `user-service`.
+- Override user-service base URL with `E2E_USER_SERVICE_BASE_URL` if your environment differs.
+- The script is idempotent: if the account already exists, it still exits successfully.
+
+For database inspection options, see [docs/database-access.md](../docs/database-access.md).

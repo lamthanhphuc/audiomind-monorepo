@@ -19,17 +19,45 @@ export type AuthResponse = {
 
 const USER_API_BASE = resolveUserApiBase()
 const TOKEN_STORAGE_KEY = 'audiomind.access_token'
+const TOKEN_EXPIRY_STORAGE_KEY = 'audiomind.access_token_expiry'
 
-export const getAccessToken = (): string | null => {
-  return localStorage.getItem(TOKEN_STORAGE_KEY)
+const getExpiryTimestamp = (): number | null => {
+  const raw = localStorage.getItem(TOKEN_EXPIRY_STORAGE_KEY)
+  if (!raw) {
+    return null
+  }
+  const parsed = Number(raw)
+  return Number.isFinite(parsed) ? parsed : null
 }
 
-export const setAccessToken = (token: string): void => {
+export const getAccessToken = (): string | null => {
+  const token = localStorage.getItem(TOKEN_STORAGE_KEY)
+  if (!token) {
+    return null
+  }
+
+  const expiry = getExpiryTimestamp()
+  if (expiry !== null && Date.now() >= expiry) {
+    clearAccessToken()
+    return null
+  }
+
+  return token
+}
+
+export const setAccessToken = (token: string, expiresInSeconds?: number): void => {
   localStorage.setItem(TOKEN_STORAGE_KEY, token)
+  if (typeof expiresInSeconds === 'number' && Number.isFinite(expiresInSeconds) && expiresInSeconds > 0) {
+    const expiry = Date.now() + Math.floor(expiresInSeconds * 1000)
+    localStorage.setItem(TOKEN_EXPIRY_STORAGE_KEY, String(expiry))
+  } else {
+    localStorage.removeItem(TOKEN_EXPIRY_STORAGE_KEY)
+  }
 }
 
 export const clearAccessToken = (): void => {
   localStorage.removeItem(TOKEN_STORAGE_KEY)
+  localStorage.removeItem(TOKEN_EXPIRY_STORAGE_KEY)
 }
 
 export const login = async (payload: LoginRequest): Promise<AuthResponse> => {
