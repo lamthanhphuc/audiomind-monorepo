@@ -42,10 +42,18 @@ try {
 }
 catch {
     $exception = $_.Exception
+    $response = $null
 
-    if ($null -ne $exception.Response) {
-        $statusCode = [int]$exception.Response.StatusCode
-        $statusDescription = $exception.Response.ReasonPhrase
+    if ($exception.PSObject.Properties.Match('Response').Count -gt 0) {
+        $response = $exception.Response
+    }
+    elseif ($null -ne $exception.InnerException -and $exception.InnerException.PSObject.Properties.Match('Response').Count -gt 0) {
+        $response = $exception.InnerException.Response
+    }
+
+    if ($null -ne $response) {
+        $statusCode = [int]$response.StatusCode
+        $statusDescription = $response.ReasonPhrase
 
         # API responded (including 400/409). Treat as success for idempotent account setup.
         Write-Warning "[setup-e2e-account] API returned HTTP $statusCode $statusDescription. Treating as success (idempotent ensure-exists behavior)."
