@@ -3,6 +3,106 @@ info:
   title: Processing API
   version: 0.1.0
 paths:
+  /processing/upload:
+    post:
+      summary: Upload audio file for processing
+      operationId: uploadAudio
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - file
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        "200":
+          description: Uploaded file metadata
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UploadResponse"
+  /processing/start:
+    post:
+      summary: Start processing for a meeting
+      operationId: startProcessing
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProcessStartRequest"
+      parameters:
+        - in: query
+          name: meetingId
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Processing status after enqueue/start
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProcessingStartResponse"
+  /processing/status/{jobId}:
+    get:
+      summary: Get processing status by meeting/job identifier
+      operationId: getProcessingStatus
+      parameters:
+        - in: path
+          name: jobId
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: Processing status payload
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProcessingStatusResponse"
+  /processing/transcript/{jobId}:
+    get:
+      summary: Get transcript payload by meeting/job identifier
+      operationId: getProcessingTranscript
+      parameters:
+        - in: path
+          name: jobId
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: Transcript payload
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TranscriptPayload"
+  /processing/{meetingId}/analysis:
+    get:
+      summary: Get analysis payload by meeting identifier
+      operationId: getProcessingAnalysis
+      parameters:
+        - in: path
+          name: meetingId
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: Analysis payload
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnalysisPayload"
   /api/v1/jobs:
     post:
       summary: Create processing job
@@ -49,3 +149,100 @@ components:
           type: string
         summary:
           type: string
+    UploadResponse:
+      type: object
+      required:
+        - audio_path
+        - original_filename
+      properties:
+        audio_path:
+          type: string
+        original_filename:
+          type: string
+    ProcessStartRequest:
+      type: object
+      properties:
+        meeting_id:
+          type: integer
+          format: int64
+        audio_path:
+          type: string
+        file_id:
+          type: string
+        topic:
+          type: string
+        glossary_terms:
+          type: array
+          items:
+            type: string
+        language:
+          type: string
+    ProcessingStartResponse:
+      type: object
+      required:
+        - meetingId
+        - status
+      properties:
+        meetingId:
+          type: integer
+          format: int64
+        status:
+          type: string
+        error:
+          type: string
+          nullable: true
+        updatedAt:
+          type: string
+          nullable: true
+    ProcessingStatusResponse:
+      type: object
+      required:
+        - meetingId
+        - status
+        - progress
+        - stage
+      properties:
+        meetingId:
+          type: integer
+          format: int64
+        status:
+          type: string
+        progress:
+          type: integer
+        stage:
+          type: string
+        error:
+          type: string
+          nullable: true
+        updatedAt:
+          type: string
+          nullable: true
+    TranscriptPayload:
+      type: object
+      required:
+        - meeting_id
+        - status
+        - transcripts
+      properties:
+        meeting_id:
+          type: integer
+          format: int64
+        status:
+          type: string
+        transcripts:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+    AnalysisPayload:
+      type: object
+      required:
+        - meeting_id
+        - status
+      properties:
+        meeting_id:
+          type: integer
+          format: int64
+        status:
+          type: string
+      additionalProperties: true

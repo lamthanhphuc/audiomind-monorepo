@@ -2,6 +2,9 @@ param(
     [string]$AudioFile = "D:\Bin\EXE101\Thu_muc_moi\smoke-short-12s.wav",
     [string]$AiBaseUrl = "http://localhost:8000",
     [string]$ProcessingBaseUrl = "http://localhost:8082",
+    [string]$UserServiceBaseUrl = "http://localhost:8083",
+    [string]$E2EUsername = "e2e_test_user",
+    [string]$E2EPassword = "Test@123456",
     [int]$PollIntervalSeconds = 2,
     [int]$TimeoutSeconds = 120,
     [int]$RetryThreshold = 3
@@ -104,6 +107,26 @@ function Wait-ApiReady {
     throw "Health endpoint not ready before timeout: $Url"
 }
 
+function Get-ProcessingAuthHeaders {
+    param(
+        [string]$BaseUrl,
+        [string]$Username,
+        [string]$Password
+    )
+
+    $loginBody = @{
+        username = $Username
+        password = $Password
+    }
+
+    $response = Invoke-Api -Method "POST" -Url "$BaseUrl/api/users/login" -Headers @{} -Body $loginBody
+    if ($null -eq $response -or -not $response.accessToken) {
+        throw "Login response missing accessToken from user-service"
+    }
+
+    return @{ Authorization = "Bearer $($response.accessToken)" }
+}
+
 $report = [ordered]@{
     Result = "FAIL"
     Flow = [ordered]@{
@@ -154,12 +177,17 @@ try {
 
     Wait-ApiReady -Url "$ProcessingBaseUrl/actuator/health" -TimeoutSec $TimeoutSeconds
 
+    Wait-ApiReady -Url "$UserServiceBaseUrl/actuator/health" -TimeoutSec $TimeoutSeconds
+
+    Write-Step "Step 0 Acquire JWT from user-service"
+    $processingHeaders = Get-ProcessingAuthHeaders -BaseUrl $UserServiceBaseUrl -Username $E2EUsername -Password $E2EPassword
+
     if (-not (Test-Path -LiteralPath $AudioFile)) {
         throw "Audio file not found: $AudioFile"
     }
 
     Write-Step "Step 1 Upload file: $AudioFile"
-    $upload = Invoke-RestMethod -Method Post -Uri "$ProcessingBaseUrl/processing/upload" -Form @{ file = Get-Item -LiteralPath $AudioFile }
+    $upload = Invoke-RestMethod -Method Post -Uri "$ProcessingBaseUrl/processing/upload" -Headers $processingHeaders -Form @{ file = Get-Item -LiteralPath $AudioFile }
     if (-not $upload.audio_path) {
         throw "Upload response missing audio_path"
     }
@@ -176,7 +204,7 @@ try {
     }
 
     Write-Step "Step 2 Start processing with meeting_id=$meetingId"
-    $process = Invoke-Api -Method "POST" -Url "$ProcessingBaseUrl/processing/start" -Headers @{} -Body $processBody
+    $process = Invoke-Api -Method "POST" -Url "$ProcessingBaseUrl/processing/start" -Headers $processingHeaders -Body $processBody
     $processMeetingId = $null
     if ($process.PSObject.Properties.Name -contains "meeting_id") {
         $processMeetingId = [int]$process.meeting_id
@@ -197,7 +225,7 @@ try {
     $maxAllowedSeconds = $TimeoutSeconds
 
     while ((Get-Date) -lt $deadline) {
-        $statusObj = Invoke-Api -Method "GET" -Url "$ProcessingBaseUrl/processing/status/$meetingId" -Headers @{} -Body $null
+        $statusObj = Invoke-Api -Method "GET" -Url "$ProcessingBaseUrl/processing/status/$meetingId" -Headers $processingHeaders -Body $null
         $aiStatusObj = Invoke-Api -Method "GET" -Url "$AiBaseUrl/api/meeting/$meetingId/status" -Headers @{} -Body $null
         if ([string]$statusObj.status -eq "NOT_FOUND") {
             throw "Invalid architecture: processing must own status"
@@ -275,7 +303,7 @@ try {
     $transcriptDeadline = (Get-Date).AddSeconds(30)
     while ((Get-Date) -lt $transcriptDeadline) {
         try {
-            $transcriptObj = Invoke-Api -Method "GET" -Url "$ProcessingBaseUrl/processing/transcript/$meetingId" -Headers @{} -Body $null
+            $transcriptObj = Invoke-Api -Method "GET" -Url "$ProcessingBaseUrl/processing/transcript/$meetingId" -Headers $processingHeaders -Body $null
             break
         }
         catch {

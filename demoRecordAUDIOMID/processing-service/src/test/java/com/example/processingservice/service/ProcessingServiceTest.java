@@ -3,6 +3,7 @@ package com.example.processingservice.service;
 import com.example.processingservice.client.AIServiceClient;
 import com.example.processingservice.client.MeetingServiceClient;
 import com.example.processingservice.controller.dto.ProcessingStatusResponse;
+import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.util.HashMap;
 import java.util.List;
@@ -32,14 +33,17 @@ class ProcessingServiceTest {
     private JobStateStore jobStateStore;
 
     private ProcessingService processingService;
+    private SimpleMeterRegistry meterRegistry;
 
     @BeforeEach
     void setUp() {
+        meterRegistry = new SimpleMeterRegistry();
         processingService = new ProcessingService(
                 aiServiceClient,
                 meetingServiceClient,
                 jobStateStore,
-                new SimpleMeterRegistry());
+            meterRegistry);
+        processingService.initMetrics();
     }
 
     @Test
@@ -107,5 +111,31 @@ class ProcessingServiceTest {
         assertEquals("QUEUED", response.get("status"));
         assertEquals("ok", response.get("summary"));
         assertEquals("positive", response.get("sentiment"));
+    }
+
+    @Test
+    void getProcessingStatus_shouldTrackRunningGaugeByActiveJobs() {
+        Map<String, Object> runningA = new HashMap<>();
+        runningA.put("status", "RUNNING");
+        runningA.put("updatedAt", "2026-04-09T00:00:00Z");
+
+        Map<String, Object> runningB = new HashMap<>();
+        runningB.put("status", "RUNNING");
+        runningB.put("updatedAt", "2026-04-09T00:01:00Z");
+
+        Map<String, Object> completedA = new HashMap<>();
+        completedA.put("status", "COMPLETED");
+        completedA.put("createdAt", "2026-04-09T00:00:00Z");
+        completedA.put("updatedAt", "2026-04-09T00:02:00Z");
+
+        when(jobStateStore.getJobState(1L)).thenReturn(Optional.of(runningA), Optional.of(completedA));
+        when(jobStateStore.getJobState(2L)).thenReturn(Optional.of(runningB));
+
+        processingService.getProcessingStatus(1L, "trace-a");
+        processingService.getProcessingStatus(2L, "trace-b");
+        processingService.getProcessingStatus(1L, "trace-c");
+
+        Gauge gauge = meterRegistry.find("jobs_running").gauge();
+        assertEquals(1.0, gauge == null ? 0.0 : gauge.value());
     }
 }

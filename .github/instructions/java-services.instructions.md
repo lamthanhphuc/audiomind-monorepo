@@ -29,3 +29,10 @@ applyTo:
   - `npm run check:openapi`
   - `npm run validate:schema`
 - Follow breaking-change rules documented in docs/architecture/contract-breaking-rules.md.
+
+## Database Migrations (Flyway)
+- When changing JPA entities or database schema, add/update Flyway migration scripts in the same service change.
+- Keep `spring.jpa.hibernate.ddl-auto` at `validate` for runtime safety; do not rely on `update` to mutate production schema.
+- Write idempotent migration SQL to support shared or previously initialized environments.
+- Use service-scoped Flyway history table configuration when multiple services share one PostgreSQL database.
+- Detailed migration conventions and anti-patterns are documented in .github/instructions/database-migrations.instructions.md.

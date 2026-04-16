@@ -19,9 +19,12 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
 @Service
@@ -36,6 +39,7 @@ public class ProcessingService {
     private final MeterRegistry meterRegistry;
 
     private final AtomicInteger runningGauge = new AtomicInteger(0);
+    private final Set<Long> activeJobs = Collections.newSetFromMap(new ConcurrentHashMap<>());
 
     @PostConstruct
     void initMetrics() {
@@ -43,7 +47,7 @@ public class ProcessingService {
     }
 
     public ProcessStartResponse startProcessing(Long meetingId) {
-        return startProcessing(meetingId, null, null, null, null, "vi", null);
+        return startProcessing(meetingId, null, null, null, null, "vi", null, null);
     }
 
     public ProcessStartResponse startProcessing(
@@ -54,6 +58,19 @@ public class ProcessingService {
             List<String> glossaryTerms,
             String language,
             String traceId
+    ) {
+        return startProcessing(meetingId, audioPath, fileId, topic, glossaryTerms, language, traceId, null);
+    }
+
+    public ProcessStartResponse startProcessing(
+            Long meetingId,
+            String audioPath,
+            String fileId,
+            String topic,
+            List<String> glossaryTerms,
+            String language,
+            String traceId,
+            String authorization
     ) {
         try (MDC.MDCCloseable ignored = MDC.putCloseable("jobId", String.valueOf(meetingId))) {
             String resolvedFileId = resolveFileId(fileId, audioPath, meetingId);
@@ -70,7 +87,7 @@ public class ProcessingService {
             log.info("[traceId={}] [jobId={}] state set to QUEUED", traceId, meetingId);
 
             try {
-                processMeeting(meetingId, audioPath, resolvedFileId, topic, glossaryTerms, language, traceId);
+                processMeeting(meetingId, audioPath, resolvedFileId, topic, glossaryTerms, language, traceId, authorization);
             } catch (Exception ex) {
                 jobStateStore.upsertJobState(meetingId, "FAILED", resolvedFileId, null, ex.getMessage(), traceId);
                 incrementJobsTotal("FAILED");
@@ -91,9 +108,22 @@ public class ProcessingService {
             String language,
             String traceId
     ) {
+        return processMeeting(meetingId, audioPath, fileId, topic, glossaryTerms, language, traceId, null);
+    }
+
+    public Map<String, Object> processMeeting(
+            Long meetingId,
+            String audioPath,
+            String fileId,
+            String topic,
+            List<String> glossaryTerms,
+            String language,
+            String traceId,
+            String authorization
+    ) {
         String resolvedAudioPath = audioPath;
         if (resolvedAudioPath == null || resolvedAudioPath.isBlank()) {
-            Map<String, Object> meeting = meetingServiceClient.getMeetingById(meetingId, traceId);
+            Map<String, Object> meeting = meetingServiceClient.getMeetingById(meetingId, traceId, authorization);
             Object audioPathObj = meeting.get("audioPath");
             if (audioPathObj == null || String.valueOf(audioPathObj).isBlank()) {
                 throw new IllegalArgumentException("Meeting has no audioPath: " + meetingId);
@@ -108,17 +138,26 @@ public class ProcessingService {
                 topic,
                 glossaryTerms,
                 language,
-                traceId
+                traceId,
+                authorization
         );
         log.info("[traceId={}] [jobId={}] enqueue accepted by ai-service", traceId, meetingId);
         return aiResponse;
     }
 
     public Map<String, Object> uploadAudio(MultipartFile file, String traceId) {
-        return aiServiceClient.uploadAudio(file, traceId);
+        return uploadAudio(file, traceId, null);
+    }
+
+    public Map<String, Object> uploadAudio(MultipartFile file, String traceId, String authorization) {
+        return aiServiceClient.uploadAudio(file, traceId, authorization);
     }
 
     public ProcessingStatusResponse getProcessingStatus(Long meetingId, String traceId) {
+        return getProcessingStatus(meetingId, traceId, null);
+    }
+
+    public ProcessingStatusResponse getProcessingStatus(Long meetingId, String traceId, String authorization) {
         try (MDC.MDCCloseable ignored = MDC.putCloseable("jobId", String.valueOf(meetingId))) {
             Map<String, Object> state = jobStateStore.getJobState(meetingId).orElse(null);
             if (state == null) {
@@ -139,6 +178,10 @@ public class ProcessingService {
     }
 
     public Map<String, Object> getTranscript(Long meetingId, String traceId) {
+        return getTranscript(meetingId, traceId, null);
+    }
+
+    public Map<String, Object> getTranscript(Long meetingId, String traceId, String authorization) {
         Map<String, Object> state = jobStateStore.getJobState(meetingId).orElse(null);
         if (state == null) {
             return Map.of("meeting_id", meetingId, "status", "NOT_FOUND", "transcripts", List.of());
@@ -154,6 +197,10 @@ public class ProcessingService {
     }
 
     public Map<String, Object> getAnalysis(Long meetingId, String traceId) {
+        return getAnalysis(meetingId, traceId, null);
+    }
+
+    public Map<String, Object> getAnalysis(Long meetingId, String traceId, String authorization) {
         Map<String, Object> state = jobStateStore.getJobState(meetingId).orElse(null);
         if (state == null) {
             return Map.of("meeting_id", meetingId, "status", "NOT_FOUND");
@@ -229,11 +276,13 @@ public class ProcessingService {
 
     private void updateMetricsForState(Long meetingId, String status, Map<String, Object> state) {
         if ("RUNNING".equals(status)) {
-            runningGauge.set(1);
+            activeJobs.add(meetingId);
+            runningGauge.set(activeJobs.size());
             return;
         }
 
-        runningGauge.set(0);
+        activeJobs.remove(meetingId);
+        runningGauge.set(activeJobs.size());
 
         if ("COMPLETED".equals(status)) {
             recordDuration(state);
@@ -259,6 +308,7 @@ public class ProcessingService {
                 Timer.builder("job_duration_seconds").register(meterRegistry).record(duration);
             }
         } catch (DateTimeParseException ignored) {
+            log.debug("Unable to parse job duration timestamps createdAt={} updatedAt={}", createdAt, updatedAt);
         }
     }
 }

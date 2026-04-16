@@ -54,6 +54,28 @@ def _normalize_status(value: str | None) -> str:
     return (value or "UNKNOWN").upper()
 
 
+def _is_terminal(status: str) -> bool:
+    return status in {"COMPLETED", "FAILED"}
+
+
+def _is_allowed_transition(current: str, nxt: str) -> bool:
+    if current == nxt:
+        return True
+    if current == "UNKNOWN":
+        return True
+    if _is_terminal(current):
+        return False
+    if current == "PENDING":
+        return nxt == "QUEUED"
+    if current == "QUEUED":
+        return nxt in {"RUNNING", "RETRYING", "COMPLETED", "FAILED"}
+    if current == "RUNNING":
+        return nxt in {"RETRYING", "COMPLETED", "FAILED"}
+    if current == "RETRYING":
+        return nxt in {"RUNNING", "COMPLETED", "FAILED"}
+    return False
+
+
 def _to_int(value: str | None, default: int = 0) -> int:
     try:
         if value is None or value == "":
@@ -99,56 +121,80 @@ def set_job_status(
 
     try:
         client = _get_client()
-        existing = _safe_job_hash(client, key)
-        created_at = existing.get("createdAt", _now_iso())
+        for _ in range(5):
+            pipeline = client.pipeline()
+            try:
+                pipeline.watch(key)
+                existing = _safe_job_hash_readonly(client, key)
+                existing_status = _normalize_status(existing.get("status"))
+                created_at = existing.get("createdAt", _now_iso())
 
-        safe_status = _normalize_status(status)
-        if safe_status in {"COMPLETED"}:
-            progress = 100 if progress is None else min(100, max(0, int(progress)))
-            stage = stage or "completed"
-        elif safe_status in {"FAILED"}:
-            stage = stage or "failed"
+                safe_status = _normalize_status(status)
+                if not _is_allowed_transition(existing_status, safe_status):
+                    logger.debug(
+                        f"Ignoring invalid transition for job state job={meeting_id} current={existing_status} next={safe_status}"
+                    )
+                    return
 
-        if progress is not None:
-            progress = min(100, max(0, int(progress)))
+                if safe_status in {"COMPLETED"}:
+                    progress = (
+                        100 if progress is None else min(100, max(0, int(progress)))
+                    )
+                    stage = stage or "completed"
+                elif safe_status in {"FAILED"}:
+                    stage = stage or "failed"
 
-        state_updates: dict[str, str] = {
-            "jobId": str(meeting_id),
-            "status": safe_status,
-            "createdAt": created_at,
-            "updatedAt": _now_iso(),
-            "fileId": file_id if file_id else existing.get("fileId") or "",
-            "traceId": trace_id if trace_id else existing.get("traceId") or "",
-            "error": error or "",
-        }
+                if progress is not None:
+                    progress = min(100, max(0, int(progress)))
 
-        if progress is not None:
-            state_updates["progress"] = str(progress)
-        elif "progress" not in existing:
-            state_updates["progress"] = "0"
+                state_updates: dict[str, str] = {
+                    "jobId": str(meeting_id),
+                    "status": safe_status,
+                    "createdAt": created_at,
+                    "updatedAt": _now_iso(),
+                    "fileId": file_id if file_id else existing.get("fileId") or "",
+                    "traceId": trace_id if trace_id else existing.get("traceId") or "",
+                    "error": error or "",
+                }
 
-        if stage is not None:
-            state_updates["stage"] = stage
-        elif "stage" not in existing:
-            state_updates["stage"] = "uploading"
+                if progress is not None:
+                    state_updates["progress"] = str(progress)
+                elif "progress" not in existing:
+                    state_updates["progress"] = "0"
 
-        if result is not None:
-            state_updates["result"] = _json_dump(result)
+                if stage is not None:
+                    state_updates["stage"] = stage
+                elif "stage" not in existing:
+                    state_updates["stage"] = "uploading"
 
-        if failed_chunks is not None:
-            state_updates["failed_chunks"] = _json_dump(failed_chunks)
+                if result is not None:
+                    state_updates["result"] = _json_dump(result)
 
-        if attempts is not None:
-            state_updates["attempts"] = str(max(0, attempts))
+                if failed_chunks is not None:
+                    state_updates["failed_chunks"] = _json_dump(failed_chunks)
 
-        if total_chunks is not None:
-            state_updates["total_chunks"] = str(max(0, total_chunks))
+                if attempts is not None:
+                    state_updates["attempts"] = str(max(0, attempts))
 
-        if completed_chunks is not None:
-            state_updates["completed_chunks"] = str(max(0, completed_chunks))
+                if total_chunks is not None:
+                    state_updates["total_chunks"] = str(max(0, total_chunks))
 
-        client.hset(key, mapping=state_updates)
-        client.expire(key, settings.job_state_ttl_seconds)
+                if completed_chunks is not None:
+                    state_updates["completed_chunks"] = str(max(0, completed_chunks))
+
+                pipeline.multi()
+                pipeline.hset(key, mapping=state_updates)
+                pipeline.expire(key, settings.job_state_ttl_seconds)
+                pipeline.execute()
+                return
+            except redis.WatchError:
+                continue
+            finally:
+                pipeline.reset()
+
+        logger.warning(
+            f"Could not set Redis job state for {meeting_id}: CAS retries exhausted"
+        )
     except Exception as redis_error:
         logger.warning(
             f"Could not set Redis job state for {meeting_id}: {repr(redis_error)}"
@@ -323,4 +369,38 @@ def _safe_job_hash(client: redis.Redis, key: str) -> dict[str, str]:
 
     # Unknown type: clear corrupted key and start fresh.
     client.delete(key)
+    return {}
+
+
+def _safe_job_hash_readonly(client: redis.Redis, key: str) -> dict[str, str]:
+    key_type = client.type(key)
+    if key_type in ("none", b"none"):
+        return {}
+    if key_type in ("hash", b"hash"):
+        return client.hgetall(key)
+    if key_type in ("string", b"string"):
+        legacy_raw = client.get(key)
+        legacy_state = _json_load(legacy_raw, {})
+        if isinstance(legacy_state, dict):
+            return {
+                "jobId": str(legacy_state.get("jobId", "")),
+                "status": _normalize_status(legacy_state.get("status")),
+                "progress": str(_to_int(str(legacy_state.get("progress", "0")), 0)),
+                "stage": str(legacy_state.get("stage", "uploading")),
+                "error": str(legacy_state.get("error") or ""),
+                "createdAt": str(legacy_state.get("createdAt") or _now_iso()),
+                "updatedAt": str(legacy_state.get("updatedAt") or _now_iso()),
+                "fileId": str(legacy_state.get("fileId") or ""),
+                "traceId": str(legacy_state.get("traceId") or ""),
+                "attempts": str(_to_int(str(legacy_state.get("attempts", "0")), 0)),
+                "total_chunks": str(
+                    _to_int(str(legacy_state.get("total_chunks", "0")), 0)
+                ),
+                "completed_chunks": str(
+                    _to_int(str(legacy_state.get("completed_chunks", "0")), 0)
+                ),
+                "failed_chunks": _json_dump(legacy_state.get("failed_chunks", [])),
+                "result": _json_dump(legacy_state.get("result", {})),
+            }
+        return {}
     return {}
