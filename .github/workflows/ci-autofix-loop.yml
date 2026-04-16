@@ -11,16 +11,33 @@ on:
         description: Poll interval in seconds
         required: false
         default: '30'
+      target_branch:
+        description: Branch to open fix PR into
+        required: false
+        default: 'main'
+      source_branch:
+        description: Source branch used for restoration recipes
+        required: false
+        default: 'production-ready'
+      lock_timeout_minutes:
+        description: Lock staleness timeout in minutes
+        required: false
+        default: '30'
+      enable_auto_merge:
+        description: Enable auto-merge on the created PR
+        required: false
+        default: 'false'
   schedule:
     - cron: '*/15 * * * *'
 
 concurrency:
-  group: ci-autofix-production-ready
+  group: ci-autofix-${{ github.event.inputs.target_branch || 'main' }}
   cancel-in-progress: false
 
 permissions:
   contents: write
   actions: write
+  pull-requests: write
 
 jobs:
   run-loop:
@@ -42,11 +59,20 @@ jobs:
           gh auth status
           gh repo view
 
-      - name: Run CI auto-fix loop window
+      - name: Run post-merge CI auto-fix iteration
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
           DRY_RUN: ${{ github.event.inputs.dry_run || 'true' }}
         run: |
           $poll = [int]('${{ github.event.inputs.poll_seconds || '30' }}')
-          ./scripts/ci-auto-fix-loop.ps1 -Branch production-ready -PollSeconds $poll
+          $lockTimeout = [int]('${{ github.event.inputs.lock_timeout_minutes || '30' }}')
+          $target = '${{ github.event.inputs.target_branch || 'main' }}'
+          $source = '${{ github.event.inputs.source_branch || 'production-ready' }}'
+          $enableAutoMerge = '${{ github.event.inputs.enable_auto_merge || 'false' }}'
+          if ($enableAutoMerge -eq 'true') {
+            ./scripts/ci-fix/ci-fix-iteration.ps1 -TargetBranch $target -SourceBranch $source -PollSeconds $poll -LockTimeoutMinutes $lockTimeout -EnableAutoMerge
+          }
+          else {
+            ./scripts/ci-fix/ci-fix-iteration.ps1 -TargetBranch $target -SourceBranch $source -PollSeconds $poll -LockTimeoutMinutes $lockTimeout
+          }

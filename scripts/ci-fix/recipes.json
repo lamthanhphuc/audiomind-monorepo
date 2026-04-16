@@ -1,0 +1,29 @@
+{
+  "recipes": [
+    {
+      "name": "lockfile-conflict",
+      "errorPattern": "Merge conflict in package-lock.json",
+      "actions": [
+        { "type": "command", "cmd": "npm", "args": ["install"] },
+        { "type": "git", "cmd": "add", "args": ["package-lock.json"] },
+        { "type": "commit", "message": "auto-fix(merge): resolve lockfile conflict" }
+      ]
+    },
+    {
+      "name": "missing-workflow",
+      "errorPattern": "Workflow does not exist on main",
+      "actions": [
+        { "type": "checkout-file", "source": "origin/production-ready", "path": ".github/workflows/${workflow}.yml" },
+        { "type": "git", "cmd": "add", "args": [".github/workflows/${workflow}.yml"] },
+        { "type": "commit", "message": "auto-fix(merge): restore workflow ${workflow}" }
+      ]
+    },
+    {
+      "name": "secret-missing",
+      "errorPattern": "Secret not available",
+      "actions": [
+        { "type": "handoff", "reason": "Secret missing; manual intervention required." }
+      ]
+    }
+  ]
+}

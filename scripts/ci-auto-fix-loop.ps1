@@ -1,54 +1,54 @@
-param(
-    [string]$Branch = 'production-ready',
-    [int]$PollSeconds = 30,
-    [int]$InProgressTimeoutMinutes = 30,
-    [int]$QueuedTimeoutMinutes = 5,
-    [int]$MaxInfraRetries = 2,
-    [switch]$DryRun
-)
-
-$ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
 
-$envDryRun = $env:DRY_RUN
-if (-not $PSBoundParameters.ContainsKey('DryRun') -and $envDryRun) {
-    $DryRun = @('1', 'true', 'yes', 'on') -contains $envDryRun.ToLowerInvariant()
-}
-$isDryRun = [bool]$DryRun
-
-$repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
-Set-Location $repoRoot
-
-$logDirectory = Join-Path $repoRoot 'logs'
-$logPath = Join-Path $logDirectory 'auto-fix-loop.log'
-New-Item -ItemType Directory -Path $logDirectory -Force | Out-Null
-if (-not (Test-Path -LiteralPath $logPath)) {
-    New-Item -ItemType File -Path $logPath -Force | Out-Null
-}
-
-$requiredWorkflows = @('CI/CD Pipeline', 'Smoke Test E2E', 'Contract Check', 'security-recheck')
-$dispatchableWorkflowFileByName = @{
-    'CI/CD Pipeline'  = 'ci-cd.yaml'
-    'Smoke Test E2E'  = 'smoke-test.yml'
-    'Contract Check'  = 'contract-check.yml'
+$script:DefaultRequiredWorkflows = @('CI', 'Smoke Test E2E', 'Contract Check', 'security-recheck')
+$script:DispatchableWorkflowFileByName = @{
+    'CI'               = 'ci.yml'
+    'Smoke Test E2E'   = 'smoke-test.yml'
+    'Contract Check'   = 'contract-check.yml'
     'security-recheck' = 'security-recheck.yml'
 }
 
-$allowedPaths = @('.github/workflows/', 'scripts/', 'infra/', 'k8s/overlays/')
-$infraRetryCounter = @{}
-$errorFixCounter = @{}
-$blockedErrorHashes = @{}
-
-function Write-LoopLog {
+function New-CiFixContext {
     param(
+        [string]$RepoRoot,
+        [bool]$IsDryRun,
+        [string]$LogPath = ''
+    )
+
+    if (-not $RepoRoot) {
+        $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+    }
+
+    $logDir = Join-Path $RepoRoot 'logs/ci-fix'
+    New-Item -ItemType Directory -Path $logDir -Force | Out-Null
+
+    if (-not $LogPath) {
+        $LogPath = Join-Path $logDir 'post-merge-auto-fix.log'
+    }
+
+    if (-not (Test-Path -LiteralPath $LogPath)) {
+        New-Item -ItemType File -Path $LogPath -Force | Out-Null
+    }
+
+    return [pscustomobject]@{
+        RepoRoot = $RepoRoot
+        IsDryRun = $IsDryRun
+        LogPath  = $LogPath
+    }
+}
+
+function Write-CiFixLog {
+    param(
+        [pscustomobject]$Context,
         [string]$Level,
         [string]$Message,
         [string]$Category = 'general'
     )
 
-    $timestamp = (Get-Date).ToString('s')
-    $line = "[$timestamp] [$Level] [mode=$isDryRun] [category=$Category] $Message"
-    Add-Content -Path $logPath -Value $line
+    $timestamp = (Get-Date).ToUniversalTime().ToString('s')
+    $line = "[$timestamp] [$Level] [dry_run=$($Context.IsDryRun)] [category=$Category] $Message"
+    Add-Content -Path $Context.LogPath -Value $line
     Write-Host $line
 }
 
@@ -66,8 +66,9 @@ function Get-StringHash {
     }
 }
 
-function Invoke-Gh {
+function Invoke-GhCommand {
     param(
+        [pscustomobject]$Context,
         [string[]]$Arguments,
         [int]$MaxAttempts = 3
     )
@@ -75,15 +76,13 @@ function Invoke-Gh {
     for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
         $output = & gh @Arguments 2>&1
         $exitCode = $LASTEXITCODE
-        Start-Sleep -Seconds 2
-
         if ($exitCode -eq 0) {
             return ($output | Out-String)
         }
 
         $text = ($output | Out-String)
         if ($text -match 'rate limit|API rate limit exceeded|secondary rate limit') {
-            Write-LoopLog -Level 'WARN' -Category 'rate_limit' -Message "Rate limit hit for gh $($Arguments -join ' '), sleeping 60s (attempt $attempt/$MaxAttempts)."
+            Write-CiFixLog -Context $Context -Level 'WARN' -Category 'rate_limit' -Message "Rate limit for gh $($Arguments -join ' ') on attempt $attempt/$MaxAttempts; backing off 60s."
             Start-Sleep -Seconds 60
             continue
         }
@@ -92,28 +91,118 @@ function Invoke-Gh {
             throw "gh $($Arguments -join ' ') failed after $MaxAttempts attempts. Output: $text"
         }
 
-        Start-Sleep -Seconds (5 * $attempt)
+        Start-Sleep -Seconds (3 * $attempt)
     }
 
-    throw 'Unexpected gh invocation failure.'
+    throw 'Unexpected gh command failure.'
 }
 
-function Get-CurrentBranch {
-    $branch = (& git branch --show-current 2>&1 | Out-String).Trim()
-    if ($LASTEXITCODE -ne 0) {
-        throw "Unable to determine current branch: $branch"
+function Get-GhTokenScopes {
+    param([string]$AuthStatusText)
+
+    $scopeLine = ($AuthStatusText -split "`r?`n" | Where-Object { $_ -match 'Token scopes:' } | Select-Object -First 1)
+    if (-not $scopeLine) {
+        return @()
     }
-    return $branch
+
+    $match = [regex]::Match($scopeLine, "Token scopes:\s*'(?<scopes>.+)'$")
+    if (-not $match.Success) {
+        return @()
+    }
+
+    return @($match.Groups['scopes'].Value -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 }
 
-function Get-Runs {
+function Get-GhApiScopes {
+    param([pscustomobject]$Context)
+
+    try {
+        $raw = Invoke-GhCommand -Context $Context -Arguments @('api', '-i', 'user')
+        $headerLine = ($raw -split "`r?`n" | Where-Object { $_ -match '^X-Oauth-Scopes:' } | Select-Object -First 1)
+        if (-not $headerLine) {
+            return @()
+        }
+
+        $scopeText = ($headerLine -replace '^X-Oauth-Scopes:\s*', '').Trim()
+        if (-not $scopeText) {
+            return @()
+        }
+
+        return @($scopeText -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    }
+    catch {
+        Write-CiFixLog -Context $Context -Level 'WARN' -Category 'preflight' -Message "Unable to parse API scopes: $($_.Exception.Message)"
+        return @()
+    }
+}
+
+function Invoke-GitCommand {
     param(
-        [int]$Limit = 20,
-        [string[]]$Fields = @('databaseId', 'workflowName', 'status', 'conclusion', 'headSha', 'createdAt', 'updatedAt')
+        [pscustomobject]$Context,
+        [string[]]$Arguments,
+        [switch]$AllowFailure
     )
 
-    $jsonFields = ($Fields -join ',')
-    $json = Invoke-Gh -Arguments @('run', 'list', '--branch', $Branch, '--limit', "$Limit", '--json', $jsonFields)
+    $output = & git @Arguments 2>&1
+    $exitCode = $LASTEXITCODE
+    if (-not $AllowFailure -and $exitCode -ne 0) {
+        throw "git $($Arguments -join ' ') failed. Output: $($output | Out-String)"
+    }
+
+    return [pscustomobject]@{
+        ExitCode = $exitCode
+        Output   = ($output | Out-String)
+    }
+}
+
+function Get-LatestMergeCommitSha {
+    param(
+        [pscustomobject]$Context,
+        [string]$TargetBranch = 'main'
+    )
+
+    Invoke-GitCommand -Context $Context -Arguments @('fetch', 'origin', $TargetBranch) | Out-Null
+    $result = Invoke-GitCommand -Context $Context -Arguments @('log', "origin/$TargetBranch", '--merges', '-n', '1', '--pretty=format:%H')
+    $sha = $result.Output.Trim()
+    if (-not $sha) {
+        throw "No merge commit found on origin/$TargetBranch"
+    }
+    return $sha
+}
+
+function Get-RequiredWorkflowNames {
+    param(
+        [pscustomobject]$Context,
+        [string]$Owner,
+        [string]$Repo,
+        [string]$TargetBranch = 'main'
+    )
+
+    try {
+        $json = Invoke-GhCommand -Context $Context -Arguments @('api', "repos/$Owner/$Repo/branches/$TargetBranch/protection")
+        $protection = $json | ConvertFrom-Json
+        $contexts = @($protection.required_status_checks.contexts)
+        if (@($contexts).Count -gt 0) {
+            return @($contexts)
+        }
+    }
+    catch {
+        Write-CiFixLog -Context $Context -Level 'WARN' -Category 'required_checks' -Message "Falling back to default workflow list: $($_.Exception.Message)"
+    }
+
+    return $script:DefaultRequiredWorkflows
+}
+
+function Get-WorkflowRuns {
+    param(
+        [pscustomobject]$Context,
+        [string]$Branch,
+        [string]$CommitSha,
+        [int]$Limit = 100
+    )
+
+    $jsonFields = 'databaseId,workflowName,status,conclusion,headSha,createdAt,updatedAt,url'
+    $json = Invoke-GhCommand -Context $Context -Arguments @('run', 'list', '--branch', $Branch, '--commit', $CommitSha, '--limit', "$Limit", '--json', $jsonFields)
     $runs = $json | ConvertFrom-Json
     if ($null -eq $runs) {
         return @()
@@ -121,110 +210,142 @@ function Get-Runs {
     return @($runs)
 }
 
-function Select-LatestHeadSha {
-    $fastRuns = Get-Runs -Limit 1 -Fields @('headSha', 'createdAt', 'updatedAt')
-    if (@($fastRuns).Count -eq 0) {
-        return $null
+function Get-CheckRunsForCommit {
+    param(
+        [pscustomobject]$Context,
+        [string]$Owner,
+        [string]$Repo,
+        [string]$CommitSha
+    )
+
+    $json = Invoke-GhCommand -Context $Context -Arguments @('api', "repos/$Owner/$Repo/commits/$CommitSha/check-runs")
+    $payload = $json | ConvertFrom-Json
+    if ($null -eq $payload -or $null -eq $payload.check_runs) {
+        return @()
     }
 
-    $fastSha = $fastRuns[0].headSha
-    $allRuns = Get-Runs -Limit 100 -Fields @('headSha', 'createdAt', 'updatedAt')
-    if (@($allRuns).Count -eq 0) {
-        return $fastSha
-    }
+    $result = @()
+    foreach ($check in @($payload.check_runs)) {
+        $runId = ''
+        $detailsUrl = [string]$check.details_url
+        if ($detailsUrl -match '/actions/runs/(\d+)') {
+            $runId = $Matches[1]
+        }
 
-    $latest = $allRuns |
-        Sort-Object -Property @{ Expression = { [datetime]$_.createdAt }; Descending = $true }, @{ Expression = { [datetime]$_.updatedAt }; Descending = $true } |
-        Select-Object -First 1
-
-    if ($latest.headSha -ne $fastSha) {
-        Write-LoopLog -Level 'WARN' -Category 'latest_sha' -Message "Fast-path SHA ($fastSha) differs from tie-safe SHA ($($latest.headSha)); using tie-safe result."
-    }
-
-    return $latest.headSha
-}
-
-function Get-WorkflowRunsForHeadSha {
-    param([string]$HeadSha)
-
-    $runs = Get-Runs -Limit 100
-    $forHead = @($runs | Where-Object { $_.headSha -eq $HeadSha })
-
-    $result = @{}
-    foreach ($workflowName in $requiredWorkflows) {
-        $latestPerWorkflow = $forHead |
-            Where-Object { $_.workflowName -eq $workflowName } |
-            Sort-Object -Property @{ Expression = { [datetime]$_.createdAt }; Descending = $true }, @{ Expression = { [datetime]$_.updatedAt }; Descending = $true } |
-            Select-Object -First 1
-
-        $result[$workflowName] = $latestPerWorkflow
+        $result += [pscustomobject]@{
+            databaseId   = $runId
+            checkRunId   = [string]$check.id
+            name         = [string]$check.name
+            status       = [string]$check.status
+            conclusion   = [string]$check.conclusion
+            headSha      = [string]$check.head_sha
+            createdAt    = [string]$check.started_at
+            updatedAt    = [string]$check.completed_at
+            url          = [string]$check.details_url
+            workflowName = [string]$check.name
+        }
     }
 
     return $result
 }
 
-function Get-RunAgeMinutes {
-    param([object]$Run)
-
-    if ($null -eq $Run) {
-        return 0
-    }
-
-    $createdAt = [datetime]$Run.createdAt
-    return [int]([datetime]::UtcNow - $createdAt.ToUniversalTime()).TotalMinutes
-}
-
-function Trigger-Workflow {
+function Get-WorkflowStatusSummary {
     param(
-        [string]$WorkflowName,
-        [string]$Reason,
-        [string]$HeadSha,
-        [string]$RunId = ''
+        [pscustomobject]$Context,
+        [object[]]$Runs,
+        [string[]]$RequiredWorkflowNames
     )
 
-    $workflowFile = $dispatchableWorkflowFileByName[$WorkflowName]
-    if (-not $workflowFile) {
-        Write-LoopLog -Level 'WARN' -Category 'dispatch' -Message "Workflow '$WorkflowName' is not dispatchable. reason=$Reason"
-        return
-    }
+    $failed = @()
+    $pending = @()
 
-    $retryKey = "$HeadSha|$WorkflowName|$Reason"
-    if (-not $infraRetryCounter.ContainsKey($retryKey)) {
-        $infraRetryCounter[$retryKey] = 0
-    }
+    foreach ($name in $RequiredWorkflowNames) {
+        $match = $Runs |
+            Where-Object {
+                $itemName = ''
+                try { $itemName = [string]$_.workflowName } catch { $itemName = '' }
+                if (-not $itemName) {
+                    try { $itemName = [string]$_.name } catch { $itemName = '' }
+                }
+                $itemName -eq $name
+            } |
+            Sort-Object -Property @{ Expression = { [datetime]$_.updatedAt }; Descending = $true } |
+            Select-Object -First 1
 
-    if ($infraRetryCounter[$retryKey] -ge $MaxInfraRetries) {
-        Write-LoopLog -Level 'WARN' -Category 'infra_timeout' -Message "Retry cap reached for $retryKey."
-        return
-    }
-
-    $infraRetryCounter[$retryKey] = [int]$infraRetryCounter[$retryKey] + 1
-    $attempt = $infraRetryCounter[$retryKey]
-
-    if ($isDryRun) {
-        Write-LoopLog -Level 'INFO' -Category 'dry_run' -Message "DRY_RUN: would cancel run '$RunId' and dispatch '$workflowFile' for reason=$Reason attempt=$attempt/$MaxInfraRetries."
-        return
-    }
-
-    if ($RunId) {
-        try {
-            Invoke-Gh -Arguments @('run', 'cancel', $RunId) | Out-Null
-            Write-LoopLog -Level 'INFO' -Category 'infra_timeout' -Message "Canceled run $RunId for workflow '$WorkflowName'."
+        if ($null -eq $match) {
+            $pending += [pscustomobject]@{ WorkflowName = $name; Reason = 'missing_run' }
+            continue
         }
-        catch {
-            Write-LoopLog -Level 'WARN' -Category 'infra_timeout' -Message "Failed to cancel run ${RunId}: $($_.Exception.Message)"
+
+        $status = "$($match.status)"
+        $conclusion = "$($match.conclusion)"
+
+        if ($status -ne 'completed') {
+            $pending += $match
+            continue
+        }
+
+        if (@('failure', 'timed_out', 'cancelled') -contains $conclusion) {
+            $failed += $match
         }
     }
 
-    Invoke-Gh -Arguments @('workflow', 'run', $workflowFile, '--ref', $Branch) | Out-Null
-    Write-LoopLog -Level 'INFO' -Category 'infra_timeout' -Message "Re-dispatched '$WorkflowName' via '$workflowFile' reason=$Reason attempt=$attempt/$MaxInfraRetries."
+    return [pscustomobject]@{
+        Failed  = @($failed)
+        Pending = @($pending)
+    }
 }
 
-function Classify-RunFailure {
+function Get-FailedRunLog {
+    param(
+        [pscustomobject]$Context,
+        [string]$RunId
+    )
+
+    try {
+        return Invoke-GhCommand -Context $Context -Arguments @('run', 'view', $RunId, '--log-failed')
+    }
+    catch {
+        Write-CiFixLog -Context $Context -Level 'WARN' -Category 'log' -Message "Falling back to full log for run $RunId."
+        return Invoke-GhCommand -Context $Context -Arguments @('run', 'view', $RunId, '--log')
+    }
+}
+
+function Get-MissingWorkflowFileFromLog {
     param([string]$LogText)
 
-    if ($LogText -match 'KUBE_CONFIG|NVD_API_KEY|AUTO_FIX_SECRET|secret_missing') {
-        return 'secret_missing'
+    $workflowMatches = [regex]::Matches($LogText, '\.github/workflows/([A-Za-z0-9_.-]+\.ya?ml)')
+    if ($workflowMatches.Count -eq 0) {
+        return $null
+    }
+
+    return $workflowMatches[0].Groups[1].Value
+}
+
+function Get-MissingWorkflowNameFromLog {
+    param([string]$LogText)
+
+    $missingFile = Get-MissingWorkflowFileFromLog -LogText $LogText
+    if (-not $missingFile) {
+        return $null
+    }
+
+    return [System.IO.Path]::GetFileNameWithoutExtension($missingFile)
+}
+
+function Get-RunFailureCategory {
+    param([string]$LogText)
+
+    if ($LogText -match 'Merge conflict in package-lock\.json|CONFLICT \(content\): Merge conflict in package-lock\.json') {
+        return 'lockfile-conflict'
+    }
+
+    if ($LogText -match 'Workflow does not exist|workflow file was not found|Could not find workflow') {
+        return 'missing-workflow'
+    }
+
+    if ($LogText -match 'Secret not available|secret_missing|AUTO_FIX_SECRET|NVD_API_KEY|KUBE_CONFIG') {
+        return 'secret-missing'
     }
 
     if ($LogText -match 'timed out|timeout|waiting for a runner|no available runner|The operation was canceled|context deadline exceeded') {
@@ -242,272 +363,448 @@ function Classify-RunFailure {
     return 'unsupported'
 }
 
-function Update-FileWithTransform {
+function Resolve-RecipeTemplate {
     param(
-        [string]$RelativePath,
-        [scriptblock]$Transform
+        [string]$Value,
+        [hashtable]$Variables
     )
 
-    $fullPath = Join-Path $repoRoot $RelativePath
-    if (-not (Test-Path -LiteralPath $fullPath)) {
-        return $false
+    if ($null -eq $Value) {
+        return $null
     }
 
-    $before = Get-Content -Path $fullPath -Raw
-    $after = & $Transform $before
-    if ($after -eq $before) {
-        return $false
+    $resolved = $Value
+    foreach ($key in $Variables.Keys) {
+        $resolved = $resolved.Replace("`${$key}", [string]$Variables[$key])
     }
-
-    Set-Content -Path $fullPath -Value $after -NoNewline
-    return $true
+    return $resolved
 }
 
-function Apply-FixRecipe {
+function Get-RecipeSet {
+    param([pscustomobject]$Context)
+
+    $path = Join-Path $Context.RepoRoot 'scripts/ci-fix/recipes.json'
+    if (-not (Test-Path -LiteralPath $path)) {
+        throw "Recipe configuration not found: $path"
+    }
+
+    $raw = Get-Content -Path $path -Raw
+    $config = $raw | ConvertFrom-Json
+    if ($null -eq $config -or $null -eq $config.recipes) {
+        throw "Invalid recipe configuration: $path"
+    }
+
+    return @($config.recipes)
+}
+
+function Invoke-RecipeByName {
     param(
-        [string]$WorkflowName,
-        [string]$Category
+        [pscustomobject]$Context,
+        [string]$RecipeName,
+        [string]$SourceBranch,
+        [hashtable]$Variables
     )
 
-    $summary = @()
+    $recipes = Get-RecipeSet -Context $Context
+    $recipe = @($recipes | Where-Object { $_.name -eq $RecipeName } | Select-Object -First 1)
+    if (@($recipe).Count -eq 0) {
+        return [pscustomobject]@{ Changed = $false; Message = "No recipe found for $RecipeName"; Handoff = $false }
+    }
 
-    if ($Category -eq 'flaky_test' -and $WorkflowName -eq 'Contract Check') {
-        $updated = Update-FileWithTransform -RelativePath '.github/workflows/contract-check.yml' -Transform {
-            param($content)
-            if ($content -match 'npm ci attempt') {
-                return $content
+    $selected = $recipe[0]
+    $changed = $false
+
+    foreach ($action in @($selected.actions)) {
+        $type = [string]$action.type
+        switch ($type) {
+            'command' {
+                $cmd = Resolve-RecipeTemplate -Value ([string]$action.cmd) -Variables $Variables
+                $actionArgs = @()
+                foreach ($arg in @($action.args)) {
+                    $actionArgs += Resolve-RecipeTemplate -Value ([string]$arg) -Variables $Variables
+                }
+
+                if ($Context.IsDryRun) {
+                    Write-CiFixLog -Context $Context -Level 'INFO' -Category 'dry_run' -Message "DRY_RUN: command $cmd $($actionArgs -join ' ')"
+                }
+                else {
+                    & $cmd @actionArgs
+                    if ($LASTEXITCODE -ne 0) {
+                        throw "Command action failed: $cmd $($actionArgs -join ' ')"
+                    }
+                }
+                $changed = $true
             }
-            return $content
-        }
-        if ($updated) {
-            $summary += 'contract-check retry hardening'
+            'git' {
+                $gitCmd = Resolve-RecipeTemplate -Value ([string]$action.cmd) -Variables $Variables
+                $gitArgs = @($gitCmd)
+                foreach ($arg in @($action.args)) {
+                    $gitArgs += Resolve-RecipeTemplate -Value ([string]$arg) -Variables $Variables
+                }
+
+                if ($Context.IsDryRun) {
+                    Write-CiFixLog -Context $Context -Level 'INFO' -Category 'dry_run' -Message "DRY_RUN: git $($gitArgs -join ' ')"
+                }
+                else {
+                    Invoke-GitCommand -Context $Context -Arguments $gitArgs | Out-Null
+                }
+                $changed = $true
+            }
+            'checkout-file' {
+                $sourceRef = Resolve-RecipeTemplate -Value ([string]$action.source) -Variables $Variables
+                if ($sourceRef -eq 'origin/production-ready') {
+                    $sourceRef = "origin/$SourceBranch"
+                }
+                $checkoutPath = Resolve-RecipeTemplate -Value ([string]$action.path) -Variables $Variables
+
+                if ($Context.IsDryRun) {
+                    Write-CiFixLog -Context $Context -Level 'INFO' -Category 'dry_run' -Message "DRY_RUN: git checkout $sourceRef -- $checkoutPath"
+                }
+                else {
+                    Invoke-GitCommand -Context $Context -Arguments @('checkout', $sourceRef, '--', $checkoutPath) | Out-Null
+                }
+                $changed = $true
+            }
+            'commit' {
+                $message = Resolve-RecipeTemplate -Value ([string]$action.message) -Variables $Variables
+                if ($Context.IsDryRun) {
+                    Write-CiFixLog -Context $Context -Level 'INFO' -Category 'dry_run' -Message "DRY_RUN: git commit -m $message"
+                }
+                else {
+                    Invoke-GitCommand -Context $Context -Arguments @('commit', '-m', $message) | Out-Null
+                }
+                $changed = $true
+            }
+            'handoff' {
+                $reason = Resolve-RecipeTemplate -Value ([string]$action.reason) -Variables $Variables
+                return [pscustomobject]@{ Changed = $false; Message = $reason; Handoff = $true }
+            }
+            default {
+                return [pscustomobject]@{ Changed = $false; Message = "Unsupported action type: $type"; Handoff = $true }
+            }
         }
     }
 
-    return [pscustomobject]@{
-        Changed = (@($summary).Count -gt 0)
-        Summary = ($summary -join ', ')
-    }
+    return [pscustomobject]@{ Changed = $changed; Message = "Applied recipe $RecipeName"; Handoff = $false }
 }
 
-function Assert-AllowedChangedFiles {
-    $changedFiles = & git diff --name-only
-    if ($LASTEXITCODE -ne 0) {
-        throw 'Unable to list changed files.'
-    }
-
-    $invalidFiles = @()
-    foreach ($file in @($changedFiles)) {
-        $normalized = ($file -replace '\\', '/')
-        $isAllowed = $false
-        foreach ($prefix in $allowedPaths) {
-            if ($normalized.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
-                $isAllowed = $true
-                break
-            }
-        }
-        if (-not $isAllowed) {
-            $invalidFiles += $normalized
-        }
-    }
-
-    if (@($invalidFiles).Count -gt 0) {
-        throw "Out-of-scope file changes detected: $($invalidFiles -join ', ')"
-    }
-}
-
-function Commit-And-PushFix {
+function Invoke-MergeFixRecipe {
     param(
-        [string]$WorkflowName,
+        [pscustomobject]$Context,
         [string]$Category,
-        [string]$Summary
+        [string]$SourceBranch,
+        [string]$NormalizedLog
     )
 
-    if ($isDryRun) {
-        Write-LoopLog -Level 'INFO' -Category 'dry_run' -Message "DRY_RUN: would git pull --rebase, commit, and push for workflow='$WorkflowName' category='$Category' summary='$Summary'."
-        return $false
+    $variables = @{}
+    $missingWorkflow = Get-MissingWorkflowNameFromLog -LogText $NormalizedLog
+    if ($missingWorkflow) {
+        $variables['workflow'] = $missingWorkflow
     }
 
-    & git pull --rebase origin $Branch | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        Write-LoopLog -Level 'WARN' -Category 'git_rebase' -Message "Rebase failed before commit. Skipping this fix attempt."
-        return $false
-    }
-
-    & git diff --quiet
-    if ($LASTEXITCODE -eq 0) {
-        Write-LoopLog -Level 'INFO' -Category 'git' -Message 'No effective changes detected; skipping commit.'
-        return $false
-    }
-
-    Assert-AllowedChangedFiles
-
-    & git add .github/workflows scripts infra k8s/overlays
-    if ($LASTEXITCODE -ne 0) {
-        throw 'git add failed.'
-    }
-
-    $message = "auto: fix $WorkflowName - $Category"
-    & git commit -m $message | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        throw 'git commit failed.'
-    }
-
-    & git push origin $Branch | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        throw 'git push failed.'
-    }
-
-    $commit = (& git rev-parse --short HEAD | Out-String).Trim()
-    Write-LoopLog -Level 'INFO' -Category 'git' -Message "Committed and pushed $commit message='$message' summary='$Summary'."
-    return $true
+    return Invoke-RecipeByName -Context $Context -RecipeName $Category -SourceBranch $SourceBranch -Variables $variables
 }
 
-Write-LoopLog -Level 'INFO' -Message "Starting auto-fix loop on branch '$Branch'. PollSeconds=$PollSeconds InProgressTimeoutMinutes=$InProgressTimeoutMinutes QueuedTimeoutMinutes=$QueuedTimeoutMinutes MaxInfraRetries=$MaxInfraRetries"
+function Push-CurrentBranch {
+    param(
+        [pscustomobject]$Context,
+        [string]$BranchName,
+        [switch]$ForceWithLease
+    )
 
-while ($true) {
-    try {
-        $currentBranch = Get-CurrentBranch
-        if ($currentBranch -ne $Branch) {
-            throw "Branch guard failed. Current='$currentBranch', expected='$Branch'."
+    if ($Context.IsDryRun) {
+        Write-CiFixLog -Context $Context -Level 'INFO' -Category 'dry_run' -Message "DRY_RUN: would push branch $BranchName"
+        return
+    }
+
+    $pushArgs = @('push', '-u', 'origin', $BranchName)
+    if ($ForceWithLease) {
+        $pushArgs = @('push', '--force-with-lease', '-u', 'origin', $BranchName)
+    }
+
+    Invoke-GitCommand -Context $Context -Arguments $pushArgs | Out-Null
+}
+
+function Invoke-DispatchWorkflowRun {
+    param(
+        [pscustomobject]$Context,
+        [string]$WorkflowName,
+        [string]$RefBranch
+    )
+
+    $workflowFile = $script:DispatchableWorkflowFileByName[$WorkflowName]
+    if (-not $workflowFile) {
+        Write-CiFixLog -Context $Context -Level 'WARN' -Category 'dispatch' -Message "Workflow $WorkflowName is not dispatchable."
+        return
+    }
+
+    if ($Context.IsDryRun) {
+        Write-CiFixLog -Context $Context -Level 'INFO' -Category 'dry_run' -Message "DRY_RUN: would dispatch $workflowFile on $RefBranch"
+        return
+    }
+
+    Invoke-GhCommand -Context $Context -Arguments @('workflow', 'run', $workflowFile, '--ref', $RefBranch) | Out-Null
+}
+
+function Wait-RequiredWorkflows {
+    param(
+        [pscustomobject]$Context,
+        [string]$Branch,
+        [string]$CommitSha,
+        [string[]]$RequiredWorkflowNames,
+        [int]$PollSeconds = 20,
+        [int]$TimeoutMinutes = 30
+    )
+
+    $start = Get-Date
+    while ($true) {
+        $runs = Get-WorkflowRuns -Context $Context -Branch $Branch -CommitSha $CommitSha
+        $summary = Get-WorkflowStatusSummary -Context $Context -Runs $runs -RequiredWorkflowNames $RequiredWorkflowNames
+
+        if (@($summary.Pending).Count -eq 0) {
+            return $summary
         }
 
-        $latestHeadSha = Select-LatestHeadSha
-        if (-not $latestHeadSha) {
-            Write-LoopLog -Level 'WARN' -Category 'poll' -Message 'No workflow runs found yet. Sleeping before next poll.'
-            Start-Sleep -Seconds $PollSeconds
-            continue
-        }
-
-        $workflowRunsByName = Get-WorkflowRunsForHeadSha -HeadSha $latestHeadSha
-        Write-LoopLog -Level 'INFO' -Category 'poll' -Message "Selected latest headSha=$latestHeadSha"
-
-        $allSuccess = $true
-        $hasPending = $false
-        $failedCandidates = @()
-
-        foreach ($workflowName in $requiredWorkflows) {
-            $run = $workflowRunsByName[$workflowName]
-            if ($null -eq $run) {
-                $allSuccess = $false
-                $hasPending = $true
-                Write-LoopLog -Level 'WARN' -Category 'poll' -Message "Workflow '$workflowName' has no run for headSha=$latestHeadSha"
-                Trigger-Workflow -WorkflowName $workflowName -Reason 'missing_run' -HeadSha $latestHeadSha
-                continue
-            }
-
-            $status = "$($run.status)"
-            $conclusion = "$($run.conclusion)"
-            $runId = "$($run.databaseId)"
-            $ageMinutes = Get-RunAgeMinutes -Run $run
-            Write-LoopLog -Level 'INFO' -Category 'poll' -Message "Workflow '$workflowName' run=$runId status=$status conclusion=$conclusion age=${ageMinutes}m"
-
-            if ($status -ne 'completed') {
-                $allSuccess = $false
-                $hasPending = $true
-
-                if ($status -eq 'queued' -and $ageMinutes -gt $QueuedTimeoutMinutes) {
-                    Trigger-Workflow -WorkflowName $workflowName -Reason 'queued_stuck' -HeadSha $latestHeadSha -RunId $runId
-                }
-
-                if ($status -eq 'in_progress' -and $ageMinutes -gt $InProgressTimeoutMinutes) {
-                    Trigger-Workflow -WorkflowName $workflowName -Reason 'infra_timeout' -HeadSha $latestHeadSha -RunId $runId
-                }
-
-                continue
-            }
-
-            if ($conclusion -ne 'success') {
-                $allSuccess = $false
-                if ($conclusion -eq 'failure') {
-                    $failedCandidates += $run
-                }
-            }
-        }
-
-        if ($allSuccess) {
-            Write-LoopLog -Level 'INFO' -Category 'success' -Message "All required workflows are success on latest headSha=$latestHeadSha. Exiting loop."
-            break
-        }
-
-        if (@($failedCandidates).Count -gt 0) {
-            $failedRun = $failedCandidates |
-                Sort-Object -Property @{ Expression = { [datetime]$_.updatedAt }; Descending = $true } |
-                Select-Object -First 1
-
-            $failedRunId = "$($failedRun.databaseId)"
-            $failedWorkflow = "$($failedRun.workflowName)"
-            Write-LoopLog -Level 'WARN' -Category 'failure' -Message "Handling failed run id=$failedRunId workflow='$failedWorkflow'"
-
-            $failedLog = Invoke-Gh -Arguments @('run', 'view', $failedRunId, '--log-failed')
-            $normalizedLog = (($failedLog -split "`r?`n") | Where-Object { $_.Trim().Length -gt 0 } | Select-Object -First 200) -join "`n"
-            $category = Classify-RunFailure -LogText $normalizedLog
-            $errorHash = Get-StringHash -InputText "$failedWorkflow|$category|$normalizedLog"
-
-            if ($category -eq 'secret_missing') {
-                Write-LoopLog -Level 'WARN' -Category 'secret_missing' -Message "Missing secret detected for workflow='$failedWorkflow'. Waiting for operator action."
-                Start-Sleep -Seconds $PollSeconds
-                continue
-            }
-
-            if ($blockedErrorHashes.ContainsKey($errorHash)) {
-                Write-LoopLog -Level 'WARN' -Category 'blocked' -Message "Error hash already blocked=$errorHash workflow='$failedWorkflow'."
-                Start-Sleep -Seconds $PollSeconds
-                continue
-            }
-
-            if (-not $errorFixCounter.ContainsKey($errorHash)) {
-                $errorFixCounter[$errorHash] = 0
-            }
-
-            $errorFixCounter[$errorHash] = [int]$errorFixCounter[$errorHash] + 1
-            $fixCount = $errorFixCounter[$errorHash]
-            Write-LoopLog -Level 'INFO' -Category $category -Message "Classified failure workflow='$failedWorkflow' run=$failedRunId hash=$errorHash count=$fixCount"
-
-            if ($fixCount -gt 5) {
-                $blockedErrorHashes[$errorHash] = $true
-                Write-LoopLog -Level 'WARN' -Category 'blocked' -Message "Marked blocked after >5 attempts hash=$errorHash workflow='$failedWorkflow'."
-                Start-Sleep -Seconds $PollSeconds
-                continue
-            }
-
-            if ($category -eq 'infra_timeout') {
-                Trigger-Workflow -WorkflowName $failedWorkflow -Reason 'infra_timeout_failure' -HeadSha $latestHeadSha -RunId $failedRunId
-                continue
-            }
-
-            $recipeResult = Apply-FixRecipe -WorkflowName $failedWorkflow -Category $category
-            if (-not $recipeResult.Changed) {
-                Write-LoopLog -Level 'WARN' -Category $category -Message "No code recipe changes produced for workflow='$failedWorkflow'."
-                if ($category -eq 'flaky_test') {
-                    $backoffSeconds = [Math]::Min(60, [Math]::Pow(2, [Math]::Min($fixCount, 6)))
-                    Write-LoopLog -Level 'INFO' -Category 'flaky_test' -Message "Applying backoff=$backoffSeconds seconds before re-dispatch."
-                    Start-Sleep -Seconds $backoffSeconds
-                    Trigger-Workflow -WorkflowName $failedWorkflow -Reason 'flaky_retry' -HeadSha $latestHeadSha -RunId $failedRunId
-                    continue
-                }
-                Start-Sleep -Seconds $PollSeconds
-                continue
-            }
-
-            $committed = Commit-And-PushFix -WorkflowName $failedWorkflow -Category $category -Summary $recipeResult.Summary
-            if ($committed) {
-                Write-LoopLog -Level 'INFO' -Category 'repoll' -Message 'Fix committed; re-polling immediately.'
-                continue
-            }
-        }
-
-        if ($hasPending) {
-            Write-LoopLog -Level 'INFO' -Category 'poll' -Message "Pending workflows detected. Sleeping $PollSeconds seconds before next poll."
-        }
-        else {
-            Write-LoopLog -Level 'INFO' -Category 'poll' -Message "No actionable failures found. Sleeping $PollSeconds seconds."
+        $elapsed = (Get-Date) - $start
+        if ($elapsed.TotalMinutes -ge $TimeoutMinutes) {
+            Write-CiFixLog -Context $Context -Level 'WARN' -Category 'poll' -Message "Timeout while waiting required workflows on $Branch/$CommitSha"
+            return $summary
         }
 
         Start-Sleep -Seconds $PollSeconds
+    }
+}
+
+function Sync-BranchWithLatestMain {
+    param(
+        [pscustomobject]$Context,
+        [string]$TemporaryBranch,
+        [string]$TargetBranch = 'main'
+    )
+
+    Invoke-GitCommand -Context $Context -Arguments @('fetch', 'origin', $TargetBranch) | Out-Null
+    $headBefore = (Invoke-GitCommand -Context $Context -Arguments @('rev-parse', 'HEAD')).Output.Trim()
+    $baseBefore = (Invoke-GitCommand -Context $Context -Arguments @('merge-base', 'HEAD', "origin/$TargetBranch")).Output.Trim()
+    $targetHead = (Invoke-GitCommand -Context $Context -Arguments @('rev-parse', "origin/$TargetBranch")).Output.Trim()
+
+    if ($baseBefore -eq $targetHead) {
+        return $false
+    }
+
+    if ($Context.IsDryRun) {
+        Write-CiFixLog -Context $Context -Level 'INFO' -Category 'dry_run' -Message "DRY_RUN: would rebase $TemporaryBranch onto origin/$TargetBranch"
+        return $true
+    }
+
+    Invoke-GitCommand -Context $Context -Arguments @('rebase', "origin/$TargetBranch") | Out-Null
+    $headAfter = (Invoke-GitCommand -Context $Context -Arguments @('rev-parse', 'HEAD')).Output.Trim()
+    $rebased = ($headAfter -ne $headBefore)
+    if ($rebased) {
+        Push-CurrentBranch -Context $Context -BranchName $TemporaryBranch -ForceWithLease
+    }
+
+    return $rebased
+}
+
+function Write-MarkdownReport {
+    param(
+        [pscustomobject]$Context,
+        [string]$RelativePath,
+        [string]$Content
+    )
+
+    $fullPath = Join-Path $Context.RepoRoot $RelativePath
+    $parent = Split-Path -Parent $fullPath
+    New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    Set-Content -Path $fullPath -Value $Content
+}
+
+function Invoke-PreflightChecks {
+    param(
+        [pscustomobject]$Context,
+        [string]$Owner,
+        [string]$Repo,
+        [string]$TargetBranch = 'main'
+    )
+
+    $failures = @()
+
+    $authResult = & gh auth status 2>&1 | Out-String
+    if ($LASTEXITCODE -ne 0) {
+        $failures += 'gh auth status failed'
+    }
+
+    $actualScopes = Get-GhApiScopes -Context $Context
+    if (@($actualScopes).Count -eq 0) {
+        $actualScopes = Get-GhTokenScopes -AuthStatusText $authResult
+    }
+    $requiredScopes = @('repo', 'workflow', 'read:org')
+
+    foreach ($scope in $requiredScopes) {
+        $hasScope = $actualScopes -contains $scope
+        if (-not $hasScope -and $scope -eq 'read:org') {
+            # admin:org is a superset and satisfies read access for org metadata.
+            $hasScope = $actualScopes -contains 'admin:org'
+        }
+
+        if (-not $hasScope) {
+            $failures += "missing scope: $scope"
+        }
+    }
+
+    try {
+        Invoke-GhCommand -Context $Context -Arguments @('api', "repos/$Owner/$Repo/branches/$TargetBranch/protection") | Out-Null
     }
     catch {
-        Write-LoopLog -Level 'ERROR' -Category 'loop' -Message "Unhandled loop error: $($_.Exception.Message) | stack=$($_.ScriptStackTrace)"
-        Start-Sleep -Seconds $PollSeconds
+        $failures += "cannot access branch protection for ${TargetBranch}: $($_.Exception.Message)"
     }
+
+    if (@($failures).Count -gt 0) {
+        $body = @(
+            '# Preflight Failure'
+            ''
+            "- Time (UTC): $((Get-Date).ToUniversalTime().ToString('s'))"
+            "- Branch: $TargetBranch"
+            "- Failures:"
+        )
+        foreach ($item in $failures) {
+            $body += "  - $item"
+        }
+
+        Write-MarkdownReport -Context $Context -RelativePath 'logs/ci-fix/preflight-failure.md' -Content ($body -join "`n")
+        throw "Preflight failed: $($failures -join '; ')"
+    }
+}
+
+function New-MergeLock {
+    param(
+        [pscustomobject]$Context,
+        [string]$MergeSha,
+        [int]$TimeoutMinutes = 30,
+        [string]$RunId = ''
+    )
+
+    $lockDir = Join-Path $Context.RepoRoot 'logs/ci-fix/active-jobs'
+    New-Item -ItemType Directory -Path $lockDir -Force | Out-Null
+    $lockPath = Join-Path $lockDir "$MergeSha.lock"
+
+    if (Test-Path -LiteralPath $lockPath) {
+        $existingRaw = Get-Content -Path $lockPath -Raw
+        $existing = $null
+        try {
+            $existing = $existingRaw | ConvertFrom-Json
+        }
+        catch {
+            $existing = $null
+        }
+
+        if ($existing -and $existing.timestampUtc) {
+            $age = (Get-Date).ToUniversalTime() - ([datetime]$existing.timestampUtc)
+            if ($age.TotalMinutes -le $TimeoutMinutes) {
+                return [pscustomobject]@{
+                    Acquired = $false
+                    LockPath = $lockPath
+                    Message  = 'already processing'
+                }
+            }
+        }
+    }
+
+    $payload = [pscustomobject]@{
+        mergeSha     = $MergeSha
+        timestampUtc = (Get-Date).ToUniversalTime().ToString('o')
+        runId        = $RunId
+        actor        = $env:GITHUB_ACTOR
+        machine      = $env:RUNNER_NAME
+    }
+
+    $payload | ConvertTo-Json | Set-Content -Path $lockPath
+    return [pscustomobject]@{
+        Acquired = $true
+        LockPath = $lockPath
+        Message  = 'lock acquired'
+    }
+}
+
+function Remove-MergeLock {
+    param([string]$LockPath)
+
+    if ($LockPath -and (Test-Path -LiteralPath $LockPath)) {
+        Remove-Item -Path $LockPath -Force
+    }
+}
+
+function New-TemporaryFixBranch {
+    param(
+        [pscustomobject]$Context,
+        [string]$TargetBranch = 'main',
+        [string]$Prefix = 'auto-fix/merge'
+    )
+
+    $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMddHHmmss')
+    $name = "$Prefix-$stamp"
+
+    Invoke-GitCommand -Context $Context -Arguments @('checkout', $TargetBranch) | Out-Null
+    Invoke-GitCommand -Context $Context -Arguments @('pull', '--ff-only', 'origin', $TargetBranch) | Out-Null
+    Invoke-GitCommand -Context $Context -Arguments @('checkout', '-b', $name) | Out-Null
+    return $name
+}
+
+function New-OrUpdatePullRequest {
+    param(
+        [pscustomobject]$Context,
+        [string]$TargetBranch,
+        [string]$HeadBranch,
+        [string]$MergeSha,
+        [string]$BodyPath
+    )
+
+    if ($Context.IsDryRun) {
+        Write-CiFixLog -Context $Context -Level 'INFO' -Category 'dry_run' -Message "DRY_RUN: would create/update PR from $HeadBranch to $TargetBranch"
+        return $null
+    }
+
+    $existing = Invoke-GhCommand -Context $Context -Arguments @('pr', 'list', '--base', $TargetBranch, '--head', $HeadBranch, '--json', 'number')
+    $items = $existing | ConvertFrom-Json
+    if (@($items).Count -gt 0) {
+        return [int]$items[0].number
+    }
+
+    $title = "auto-fix: post-merge CI for $MergeSha"
+    $result = Invoke-GhCommand -Context $Context -Arguments @('pr', 'create', '--base', $TargetBranch, '--head', $HeadBranch, '--title', $title, '--body-file', $BodyPath)
+    $match = [regex]::Match($result, '/pull/(\d+)')
+    if (-not $match.Success) {
+        throw 'Unable to parse PR number from gh pr create output.'
+    }
+
+    return [int]$match.Groups[1].Value
+}
+
+function Enable-PullRequestAutoMerge {
+    param(
+        [pscustomobject]$Context,
+        [int]$PullRequestNumber,
+        [string]$MergeMethod = 'squash'
+    )
+
+    if ($Context.IsDryRun -or $PullRequestNumber -le 0) {
+        return
+    }
+
+    $methodFlag = "--$MergeMethod"
+    Invoke-GhCommand -Context $Context -Arguments @('pr', 'merge', "$PullRequestNumber", '--auto', $methodFlag) | Out-Null
+}
+
+function Close-PullRequestWithComment {
+    param(
+        [pscustomobject]$Context,
+        [int]$PullRequestNumber,
+        [string]$Comment
+    )
+
+    if ($Context.IsDryRun -or $PullRequestNumber -le 0) {
+        return
+    }
+
+    Invoke-GhCommand -Context $Context -Arguments @('pr', 'close', "$PullRequestNumber", '--comment', $Comment) | Out-Null
 }
