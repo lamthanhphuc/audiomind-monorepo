@@ -49,6 +49,7 @@ logger.remove()
 logger.add(sys.stderr, level="INFO", serialize=True)
 logger.add("logs/app.log", rotation="500 MB", level="DEBUG", serialize=True)
 
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     """Manage startup and shutdown lifecycle."""
@@ -61,21 +62,27 @@ async def lifespan(_: FastAPI):
         wait_for_database()
     except Exception as e:
         if is_production:
-            raise RuntimeError("Database connectivity check failed during production startup") from e
+            raise RuntimeError(
+                "Database connectivity check failed during production startup"
+            ) from e
         logger.warning(f"Database connectivity check skipped: {repr(e)}")
 
     try:
         ensure_bigint_meeting_id()
     except Exception as e:
         if is_production:
-            raise RuntimeError("Database migration step failed during production startup") from e
+            raise RuntimeError(
+                "Database migration step failed during production startup"
+            ) from e
         logger.warning(f"Database migration step skipped: {repr(e)}")
 
     try:
         Base.metadata.create_all(bind=engine)
     except Exception as e:
         if is_production:
-            raise RuntimeError("Database schema initialization failed during production startup") from e
+            raise RuntimeError(
+                "Database schema initialization failed during production startup"
+            ) from e
         logger.warning(f"Database schema initialization failed: {repr(e)}")
 
     try:

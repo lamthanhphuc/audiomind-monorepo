@@ -137,7 +137,9 @@ def set_job_status(
                     return
 
                 if safe_status in {"COMPLETED"}:
-                    progress = 100 if progress is None else min(100, max(0, int(progress)))
+                    progress = (
+                        100 if progress is None else min(100, max(0, int(progress)))
+                    )
                     stage = stage or "completed"
                 elif safe_status in {"FAILED"}:
                     stage = stage or "failed"

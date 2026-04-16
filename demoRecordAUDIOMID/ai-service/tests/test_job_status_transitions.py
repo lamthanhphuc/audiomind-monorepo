@@ -1,7 +1,6 @@
 import importlib.util
 from pathlib import Path
 
-
 MODULE_PATH = Path(__file__).resolve().parents[1] / "app" / "job_status_store.py"
 SPEC = importlib.util.spec_from_file_location("job_status_store", MODULE_PATH)
 MODULE = importlib.util.module_from_spec(SPEC)
