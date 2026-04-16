@@ -22,7 +22,7 @@ jobs:
         run: |
           $maxAttempts = 3
           for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
-            docker compose -f infra/docker-compose.dev.yml up -d --build db redis ai-api celery-worker meeting-api processing-api
+            docker compose -f infra/docker-compose.dev.yml up -d --build db redis user-api ai-api celery-worker meeting-api processing-api
             if ($LASTEXITCODE -eq 0) {
               break
             }
@@ -31,6 +31,15 @@ jobs:
             }
             Start-Sleep -Seconds (5 * $attempt)
           }
+
+      - name: Setup smoke E2E account
+        shell: pwsh
+        env:
+          E2E_USER_SERVICE_BASE_URL: http://localhost:8083
+          E2E_USERNAME: ${{ secrets.E2E_USERNAME || 'e2e_test_user' }}
+          E2E_PASSWORD: ${{ secrets.E2E_PASSWORD || 'Test@123456' }}
+        run: |
+          ./scripts/setup-e2e-account.ps1
 
       - name: Setup ffmpeg
         shell: pwsh
@@ -54,10 +63,13 @@ jobs:
 
       - name: Run smoke script
         shell: pwsh
+        env:
+          E2E_USERNAME: ${{ secrets.E2E_USERNAME || 'e2e_test_user' }}
+          E2E_PASSWORD: ${{ secrets.E2E_PASSWORD || 'Test@123456' }}
         run: |
           $maxAttempts = 3
           for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
-            ./scripts/smoke-e2e.ps1 -AudioFile "${{ github.workspace }}/tests/audio/it-overview.wav" -AiBaseUrl http://localhost:8000 -ProcessingBaseUrl http://localhost:8082 -PollIntervalSeconds 2 -TimeoutSeconds 300
+            ./scripts/smoke-e2e.ps1 -AudioFile "${{ github.workspace }}/tests/audio/it-overview.wav" -AiBaseUrl http://localhost:8000 -ProcessingBaseUrl http://localhost:8082 -UserServiceBaseUrl http://localhost:8083 -E2EUsername "$env:E2E_USERNAME" -E2EPassword "$env:E2E_PASSWORD" -PollIntervalSeconds 2 -TimeoutSeconds 300
             if ($LASTEXITCODE -eq 0) {
               break
             }

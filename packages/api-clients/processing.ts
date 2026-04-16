@@ -4,6 +4,91 @@
  */
 
 export interface paths {
+    "/processing/upload": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Upload audio file for processing */
+        post: operations["uploadAudio"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/processing/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Start processing for a meeting */
+        post: operations["startProcessing"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/processing/status/{jobId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get processing status by meeting/job identifier */
+        get: operations["getProcessingStatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/processing/transcript/{jobId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get transcript payload by meeting/job identifier */
+        get: operations["getProcessingTranscript"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/processing/{meetingId}/analysis": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get analysis payload by meeting identifier */
+        get: operations["getProcessingAnalysis"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/jobs": {
         parameters: {
             query?: never;
@@ -68,6 +153,50 @@ export interface components {
             transcript?: string;
             summary?: string;
         };
+        UploadResponse: {
+            audio_path: string;
+            original_filename: string;
+        };
+        ProcessStartRequest: {
+            /** Format: int64 */
+            meeting_id?: number;
+            audio_path?: string;
+            file_id?: string;
+            topic?: string;
+            glossary_terms?: string[];
+            language?: string;
+        };
+        ProcessingStartResponse: {
+            /** Format: int64 */
+            meetingId: number;
+            status: string;
+            error?: string | null;
+            updatedAt?: string | null;
+        };
+        ProcessingStatusResponse: {
+            /** Format: int64 */
+            meetingId: number;
+            status: string;
+            progress: number;
+            stage: string;
+            error?: string | null;
+            updatedAt?: string | null;
+        };
+        TranscriptPayload: {
+            /** Format: int64 */
+            meeting_id: number;
+            status: string;
+            transcripts: {
+                [key: string]: unknown;
+            }[];
+        };
+        AnalysisPayload: {
+            /** Format: int64 */
+            meeting_id: number;
+            status: string;
+        } & {
+            [key: string]: unknown;
+        };
     };
     responses: never;
     parameters: never;
@@ -77,6 +206,125 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    uploadAudio: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": {
+                    /** Format: binary */
+                    file: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Uploaded file metadata */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UploadResponse"];
+                };
+            };
+        };
+    };
+    startProcessing: {
+        parameters: {
+            query?: {
+                meetingId?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["ProcessStartRequest"];
+            };
+        };
+        responses: {
+            /** @description Processing status after enqueue/start */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProcessingStartResponse"];
+                };
+            };
+        };
+    };
+    getProcessingStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                jobId: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Processing status payload */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProcessingStatusResponse"];
+                };
+            };
+        };
+    };
+    getProcessingTranscript: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                jobId: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Transcript payload */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TranscriptPayload"];
+                };
+            };
+        };
+    };
+    getProcessingAnalysis: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                meetingId: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Analysis payload */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AnalysisPayload"];
+                };
+            };
+        };
+    };
     createProcessingJob: {
         parameters: {
             query?: never;
