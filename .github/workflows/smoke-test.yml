@@ -39,6 +39,15 @@ jobs:
           E2E_USERNAME: ${{ secrets.E2E_USERNAME || 'e2e_test_user' }}
           E2E_PASSWORD: ${{ secrets.E2E_PASSWORD || 'Test@123456' }}
         run: |
+          $deadline = (Get-Date).AddMinutes(3)
+          while ((Get-Date) -lt $deadline) {
+            try {
+              Invoke-RestMethod -Method Get -Uri "http://localhost:8083/actuator/health" -TimeoutSec 5 | Out-Null
+              break
+            } catch {
+              Start-Sleep -Seconds 5
+            }
+          }
           ./scripts/setup-e2e-account.ps1
 
       - name: Setup ffmpeg

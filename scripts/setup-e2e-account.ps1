@@ -32,35 +32,44 @@ $payload = @{
 Write-Host "[setup-e2e-account] Ensuring account exists at: $registerUrl"
 Write-Host "[setup-e2e-account] Username: $username"
 
-try {
-    $response = Invoke-RestMethod -Method Post -Uri $registerUrl -ContentType 'application/json' -Body $payload -TimeoutSec 20
-    Write-Host "[setup-e2e-account] Registration request completed successfully."
-    if ($null -ne $response) {
-        Write-Host "[setup-e2e-account] Response: $($response | ConvertTo-Json -Compress)"
-    }
-    exit 0
-}
-catch {
-    $exception = $_.Exception
-    $response = $null
-
-    if ($exception.PSObject.Properties.Match('Response').Count -gt 0) {
-        $response = $exception.Response
-    }
-    elseif ($null -ne $exception.InnerException -and $exception.InnerException.PSObject.Properties.Match('Response').Count -gt 0) {
-        $response = $exception.InnerException.Response
-    }
-
-    if ($null -ne $response) {
-        $statusCode = [int]$response.StatusCode
-        $statusDescription = $response.ReasonPhrase
-
-        # API responded (including 400/409). Treat as success for idempotent account setup.
-        Write-Warning "[setup-e2e-account] API returned HTTP $statusCode $statusDescription. Treating as success (idempotent ensure-exists behavior)."
+$maxAttempts = 6
+for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+    try {
+        $response = Invoke-RestMethod -Method Post -Uri $registerUrl -ContentType 'application/json' -Body $payload -TimeoutSec 20
+        Write-Host "[setup-e2e-account] Registration request completed successfully."
+        if ($null -ne $response) {
+            Write-Host "[setup-e2e-account] Response: $($response | ConvertTo-Json -Compress)"
+        }
         exit 0
     }
+    catch {
+        $exception = $_.Exception
+        $response = $null
 
-    # Transport-level issue means we could not verify account existence.
-    Write-Error "[setup-e2e-account] Failed to reach user-service: $($exception.Message)"
-    exit 1
+        if ($exception.PSObject.Properties.Match('Response').Count -gt 0) {
+            $response = $exception.Response
+        }
+        elseif ($null -ne $exception.InnerException -and $exception.InnerException.PSObject.Properties.Match('Response').Count -gt 0) {
+            $response = $exception.InnerException.Response
+        }
+
+        if ($null -ne $response) {
+            $statusCode = [int]$response.StatusCode
+            $statusDescription = $response.ReasonPhrase
+
+            # API responded (including 400/409). Treat as success for idempotent account setup.
+            Write-Warning "[setup-e2e-account] API returned HTTP $statusCode $statusDescription. Treating as success (idempotent ensure-exists behavior)."
+            exit 0
+        }
+
+        if ($attempt -lt $maxAttempts) {
+            Write-Warning "[setup-e2e-account] Attempt $attempt/$maxAttempts failed to reach user-service: $($exception.Message). Retrying..."
+            Start-Sleep -Seconds (5 * $attempt)
+            continue
+        }
+
+        # Transport-level issue means we could not verify account existence.
+        Write-Error "[setup-e2e-account] Failed to reach user-service: $($exception.Message)"
+        exit 1
+    }
 }
