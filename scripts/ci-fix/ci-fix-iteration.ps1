@@ -58,16 +58,28 @@ try {
     $lockPath = $lockResult.LockPath
     Write-CiFixLog -Context $context -Level 'INFO' -Category 'lock' -Message "Acquired lock for mergeSha=$mergeSha path=$lockPath"
 
-    Invoke-PreflightChecks -Context $context -Owner $repoInfo.Owner -Repo $repoInfo.Repo -TargetBranch $TargetBranch
-    Write-CiFixLog -Context $context -Level 'INFO' -Category 'preflight' -Message 'Preflight checks passed.'
+    try {
+        Invoke-PreflightChecks -Context $context -Owner $repoInfo.Owner -Repo $repoInfo.Repo -TargetBranch $TargetBranch
+        Write-CiFixLog -Context $context -Level 'INFO' -Category 'preflight' -Message 'Preflight checks passed.'
+    }
+    catch {
+        $configError = "Configuration error during preflight: $($_.Exception.Message)"
+        Write-CiFixLog -Context $context -Level 'ERROR' -Category 'config_error' -Message $configError
+        throw $configError
+    }
 
     $requiredWorkflows = Get-RequiredWorkflowNames -Context $context -Owner $repoInfo.Owner -Repo $repoInfo.Repo -TargetBranch $TargetBranch
+    if (@($requiredWorkflows).Count -eq 0) {
+        $configError = 'Configuration error: no required workflows resolved for the target branch.'
+        Write-CiFixLog -Context $context -Level 'ERROR' -Category 'config_error' -Message $configError
+        throw $configError
+    }
     Write-CiFixLog -Context $context -Level 'INFO' -Category 'required_checks' -Message "Required checks: $($requiredWorkflows -join ', ')"
 
     $mainRuns = Get-CheckRunsForCommit -Context $context -Owner $repoInfo.Owner -Repo $repoInfo.Repo -CommitSha $mergeSha
     $mainSummary = Get-WorkflowStatusSummary -Context $context -Runs $mainRuns -RequiredWorkflowNames $requiredWorkflows
     if (@($mainSummary.Failed).Count -eq 0 -and @($mainSummary.Pending).Count -eq 0) {
-        Write-CiFixLog -Context $context -Level 'INFO' -Category 'success' -Message "All required workflows already green for mergeSha=$mergeSha"
+        Write-CiFixLog -Context $context -Level 'INFO' -Category 'success' -Message 'All required workflows are green. Exiting.'
         exit 0
     }
 
