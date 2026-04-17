@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.7-labs
 FROM maven:3.9.9-eclipse-temurin-21 AS build
 
 WORKDIR /workspace
@@ -8,7 +9,8 @@ COPY processing-service/pom.xml ./processing-service/pom.xml
 COPY user-service/pom.xml ./user-service/pom.xml
 COPY meeting-service/src ./meeting-service/src
 
-RUN mvn -f pom.xml -pl meeting-service -am clean package -DskipTests
+RUN --mount=type=cache,target=/root/.m2 \
+    mvn -f pom.xml -pl meeting-service -am clean package -DskipTests
 
 FROM eclipse-temurin:21-jre
 

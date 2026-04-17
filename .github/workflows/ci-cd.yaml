@@ -106,63 +106,269 @@ jobs:
           done
           pytest demoRecordAUDIOMID/ai-service/test_api.py
 
-  docker-build-push:
+  prepare-matrix:
     runs-on: ubuntu-latest
     needs: test
+    outputs:
+      matrix: ${{ steps.generate.outputs.matrix }}
+      has_changes: ${{ steps.generate.outputs.has_changes }}
+      changed_images: ${{ steps.generate.outputs.changed_images }}
+      deploy_user_api: ${{ steps.generate.outputs.deploy_user_api }}
+      deploy_meeting_api: ${{ steps.generate.outputs.deploy_meeting_api }}
+      deploy_processing_api: ${{ steps.generate.outputs.deploy_processing_api }}
+      deploy_ai_api: ${{ steps.generate.outputs.deploy_ai_api }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Detect changed paths
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            ai-api:
+              - 'demoRecordAUDIOMID/ai-service/**'
+            user-api:
+              - 'demoRecordAUDIOMID/user-service/**'
+            meeting-api:
+              - 'demoRecordAUDIOMID/meeting-service/**'
+            processing-api:
+              - 'demoRecordAUDIOMID/processing-service/**'
+            whisper-service:
+              - 'demoRecordAUDIOMID/whisper-service/**'
+            diarization-service:
+              - 'demoRecordAUDIOMID/diarization-service/**'
+            ai-processing-service:
+              - 'demoRecordAUDIOMID/ai-processing-service/**'
+            web:
+              - 'FE-Audiomind/**'
+              - 'packages/**'
+              - 'package.json'
+              - 'package-lock.json'
+            shared:
+              - '.github/workflows/**'
+              - 'infra/docker-compose.dev.yml'
+              - '.dockerignore'
+              - 'demoRecordAUDIOMID/pom.xml'
+
+      - name: Generate build matrix
+        id: generate
+        run: |
+          set -euo pipefail
+
+          add_service() {
+            name="$1"
+            context="$2"
+            dockerfile="$3"
+            image="$4"
+            deploy_target="$5"
+
+            if [ "$first" = "true" ]; then
+              first="false"
+            else
+              services_json+=" ,"
+            fi
+
+            services_json+="{\"name\":\"${name}\",\"context\":\"${context}\",\"dockerfile\":\"${dockerfile}\",\"image\":\"${image}\",\"deploy_target\":${deploy_target}}"
+
+            if [ -z "$changed_images" ]; then
+              changed_images="${image}"
+            else
+              changed_images="${changed_images},${image}"
+            fi
+          }
+
+          first="true"
+          services_json=""
+          changed_images=""
+
+          build_all="${{ steps.filter.outputs.shared }}"
+
+          if [ "$build_all" = "true" ] || [ "${{ steps.filter.outputs['ai-api'] }}" = "true" ]; then
+            add_service "ai-api" "demoRecordAUDIOMID/ai-service" "demoRecordAUDIOMID/ai-service/Dockerfile" "audiomind-ai-api" true
+          fi
+          if [ "$build_all" = "true" ] || [ "${{ steps.filter.outputs['user-api'] }}" = "true" ]; then
+            add_service "user-api" "demoRecordAUDIOMID" "demoRecordAUDIOMID/user-service/Dockerfile" "audiomind-user-api" true
+          fi
+          if [ "$build_all" = "true" ] || [ "${{ steps.filter.outputs['meeting-api'] }}" = "true" ]; then
+            add_service "meeting-api" "demoRecordAUDIOMID" "demoRecordAUDIOMID/meeting-service/Dockerfile" "audiomind-meeting-api" true
+          fi
+          if [ "$build_all" = "true" ] || [ "${{ steps.filter.outputs['processing-api'] }}" = "true" ]; then
+            add_service "processing-api" "demoRecordAUDIOMID" "demoRecordAUDIOMID/processing-service/Dockerfile" "audiomind-processing-api" true
+          fi
+          if [ "$build_all" = "true" ] || [ "${{ steps.filter.outputs['whisper-service'] }}" = "true" ]; then
+            add_service "whisper-service" "demoRecordAUDIOMID/whisper-service" "demoRecordAUDIOMID/whisper-service/Dockerfile" "audiomind-whisper-service" false
+          fi
+          if [ "$build_all" = "true" ] || [ "${{ steps.filter.outputs['diarization-service'] }}" = "true" ]; then
+            add_service "diarization-service" "demoRecordAUDIOMID/diarization-service" "demoRecordAUDIOMID/diarization-service/Dockerfile" "audiomind-diarization-service" false
+          fi
+          if [ "$build_all" = "true" ] || [ "${{ steps.filter.outputs['ai-processing-service'] }}" = "true" ]; then
+            add_service "ai-processing-service" "demoRecordAUDIOMID/ai-processing-service" "demoRecordAUDIOMID/ai-processing-service/Dockerfile" "audiomind-ai-processing-service" false
+          fi
+          if [ "$build_all" = "true" ] || [ "${{ steps.filter.outputs.web }}" = "true" ]; then
+            add_service "web" "." "FE-Audiomind/Dockerfile" "audiomind-web" false
+          fi
+
+          if [ -z "$services_json" ]; then
+            matrix='{"service":[{"name":"none","context":".","dockerfile":".","image":"none","deploy_target":false}]}'
+            has_changes="false"
+            changed_images=""
+            deploy_user_api="false"
+            deploy_meeting_api="false"
+            deploy_processing_api="false"
+            deploy_ai_api="false"
+          else
+            matrix="{\"service\":[${services_json}]}"
+            has_changes="true"
+            deploy_user_api="${{ steps.filter.outputs['user-api'] }}"
+            deploy_meeting_api="${{ steps.filter.outputs['meeting-api'] }}"
+            deploy_processing_api="${{ steps.filter.outputs['processing-api'] }}"
+            deploy_ai_api="${{ steps.filter.outputs['ai-api'] }}"
+            if [ "$build_all" = "true" ]; then
+              deploy_user_api="true"
+              deploy_meeting_api="true"
+              deploy_processing_api="true"
+              deploy_ai_api="true"
+            fi
+          fi
+
+          {
+            echo "matrix=${matrix}"
+            echo "has_changes=${has_changes}"
+            echo "changed_images=${changed_images}"
+            echo "deploy_user_api=${deploy_user_api}"
+            echo "deploy_meeting_api=${deploy_meeting_api}"
+            echo "deploy_processing_api=${deploy_processing_api}"
+            echo "deploy_ai_api=${deploy_ai_api}"
+          } >> "$GITHUB_OUTPUT"
+
+  build-and-push:
+    runs-on: ubuntu-latest
+    needs: prepare-matrix
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix: ${{ fromJson(needs.prepare-matrix.outputs.matrix) }}
+    steps:
+      - name: Skip when no services changed
+        if: matrix.service.name == 'none'
+        run: echo "No changed services detected. Skipping build and push."
+
+      - name: Checkout
+        if: matrix.service.name != 'none'
+        uses: actions/checkout@v4
+
+      - name: Setup Docker Buildx
+        if: matrix.service.name != 'none'
+        uses: docker/setup-buildx-action@v3
+
       - name: Login to GHCR
+        if: matrix.service.name != 'none'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push ai-api image
-        uses: docker/build-push-action@v6
-        with:
-          context: demoRecordAUDIOMID/ai-service
-          file: demoRecordAUDIOMID/ai-service/Dockerfile
-          push: true
-          tags: |
-            ghcr.io/${{ github.actor }}/audiomind-ai-api:${{ github.sha }}
-            ghcr.io/${{ github.actor }}/audiomind-ai-api:latest
+      - name: Prepare image metadata
+        if: matrix.service.name != 'none'
+        id: meta
+        run: |
+          set -euo pipefail
+          ref_slug="${GITHUB_REF_NAME//\//-}"
+          sha_tag="ghcr.io/${{ github.actor }}/${{ matrix.service.image }}:sha-${GITHUB_SHA}"
+          latest_tag="ghcr.io/${{ github.actor }}/${{ matrix.service.image }}:latest"
+          temp_tag="local/${{ matrix.service.name }}:smoke-${GITHUB_SHA}"
 
-      - name: Build and push user-api image
-        uses: docker/build-push-action@v6
-        with:
-          context: demoRecordAUDIOMID
-          file: demoRecordAUDIOMID/user-service/Dockerfile
-          push: true
-          tags: |
-            ghcr.io/${{ github.actor }}/audiomind-user-api:${{ github.sha }}
-            ghcr.io/${{ github.actor }}/audiomind-user-api:latest
+          push_latest="false"
+          if [ "${GITHUB_REF_NAME}" = "main" ] || [ "${GITHUB_REF_NAME}" = "production-ready" ]; then
+            push_latest="true"
+          fi
 
-      - name: Build and push meeting-api image
-        uses: docker/build-push-action@v6
-        with:
-          context: demoRecordAUDIOMID
-          file: demoRecordAUDIOMID/meeting-service/Dockerfile
-          push: true
-          tags: |
-            ghcr.io/${{ github.actor }}/audiomind-meeting-api:${{ github.sha }}
-            ghcr.io/${{ github.actor }}/audiomind-meeting-api:latest
+          {
+            echo "ref_slug=${ref_slug}"
+            echo "sha_tag=${sha_tag}"
+            echo "latest_tag=${latest_tag}"
+            echo "temp_tag=${temp_tag}"
+            echo "push_latest=${push_latest}"
+          } >> "$GITHUB_OUTPUT"
 
-      - name: Build and push processing-api image
+      - name: Prepare cache sources
+        if: matrix.service.name != 'none'
+        id: cache
+        run: |
+          set -euo pipefail
+          scope="${{ matrix.service.name }}-${{ steps.meta.outputs.ref_slug }}"
+          cache_from="type=gha,scope=${scope}"
+
+          if [ "${GITHUB_REF_NAME}" = "main" ]; then
+            cache_from="${cache_from}"$'\n'"type=gha,scope=${{ matrix.service.name }}-production-ready"
+          fi
+
+          {
+            echo "scope=${scope}"
+            echo "cache_from<<EOF"
+            echo "${cache_from}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build image for smoke test
+        if: matrix.service.name != 'none'
         uses: docker/build-push-action@v6
         with:
-          context: demoRecordAUDIOMID
-          file: demoRecordAUDIOMID/processing-service/Dockerfile
-          push: true
-          tags: |
-            ghcr.io/${{ github.actor }}/audiomind-processing-api:${{ github.sha }}
-            ghcr.io/${{ github.actor }}/audiomind-processing-api:latest
+          context: ${{ matrix.service.context }}
+          file: ${{ matrix.service.dockerfile }}
+          load: true
+          push: false
+          tags: ${{ steps.meta.outputs.temp_tag }}
+          cache-from: ${{ steps.cache.outputs.cache_from }}
+          cache-to: type=gha,scope=${{ steps.cache.outputs.scope }},mode=max
+
+      - name: Run image smoke test
+        if: matrix.service.name != 'none'
+        run: |
+          set -euo pipefail
+          temp_image="${{ steps.meta.outputs.temp_tag }}"
+          service="${{ matrix.service.name }}"
+
+          case "$service" in
+            ai-api|whisper-service|diarization-service|ai-processing-service)
+              docker run --rm --entrypoint python "$temp_image" --version
+              ;;
+            user-api|meeting-api|processing-api)
+              docker run --rm --entrypoint java "$temp_image" -version
+              ;;
+            web)
+              docker run --rm --entrypoint nginx "$temp_image" -t
+              ;;
+            *)
+              echo "Unknown service '$service' for smoke test."
+              exit 1
+              ;;
+          esac
+
+      - name: Push image tags
+        if: matrix.service.name != 'none'
+        run: |
+          set -euo pipefail
+          temp_tag="${{ steps.meta.outputs.temp_tag }}"
+          sha_tag="${{ steps.meta.outputs.sha_tag }}"
+
+          docker tag "$temp_tag" "$sha_tag"
+          docker push "$sha_tag"
+
+          if [ "${{ steps.meta.outputs.push_latest }}" = "true" ]; then
+            latest_tag="${{ steps.meta.outputs.latest_tag }}"
+            docker tag "$temp_tag" "$latest_tag"
+            docker push "$latest_tag"
+          fi
 
   deploy-staging:
     runs-on: ubuntu-latest
-    needs: docker-build-push
+    needs:
+      - prepare-matrix
+      - build-and-push
+    if: needs.prepare-matrix.outputs.has_changes == 'true'
     environment: staging
     env:
       K8S_NAMESPACE: audiomind-staging
@@ -190,11 +396,30 @@ jobs:
       - name: Deploy to staging namespace
         if: steps.kubeconfig.outputs.skipped != 'true'
         run: |
+          set -euo pipefail
           kubectl get namespace ${K8S_NAMESPACE} >/dev/null 2>&1 || kubectl create namespace ${K8S_NAMESPACE}
           kubectl kustomize k8s/overlays/staging --load-restrictor=LoadRestrictionsNone | kubectl apply -f -
-          kubectl set image deployment/user-api-deployment user-api=ghcr.io/${{ github.actor }}/audiomind-user-api:${{ github.sha }} -n ${K8S_NAMESPACE}
-          kubectl set image deployment/meeting-api-deployment meeting-api=ghcr.io/${{ github.actor }}/audiomind-meeting-api:${{ github.sha }} -n ${K8S_NAMESPACE}
-          kubectl set image deployment/processing-api-deployment processing-api=ghcr.io/${{ github.actor }}/audiomind-processing-api:${{ github.sha }} -n ${K8S_NAMESPACE}
-          kubectl rollout status deployment/user-api-deployment -n ${K8S_NAMESPACE} --timeout=120s
-          kubectl rollout status deployment/meeting-api-deployment -n ${K8S_NAMESPACE} --timeout=120s
-          kubectl rollout status deployment/processing-api-deployment -n ${K8S_NAMESPACE} --timeout=120s
+
+          if [ "${{ needs.prepare-matrix.outputs.deploy_user_api }}" = "true" ]; then
+            kubectl set image deployment/user-api-deployment user-api=ghcr.io/${{ github.actor }}/audiomind-user-api:sha-${{ github.sha }} -n ${K8S_NAMESPACE}
+            kubectl rollout status deployment/user-api-deployment -n ${K8S_NAMESPACE} --timeout=120s
+          fi
+
+          if [ "${{ needs.prepare-matrix.outputs.deploy_meeting_api }}" = "true" ]; then
+            kubectl set image deployment/meeting-api-deployment meeting-api=ghcr.io/${{ github.actor }}/audiomind-meeting-api:sha-${{ github.sha }} -n ${K8S_NAMESPACE}
+            kubectl rollout status deployment/meeting-api-deployment -n ${K8S_NAMESPACE} --timeout=120s
+          fi
+
+          if [ "${{ needs.prepare-matrix.outputs.deploy_processing_api }}" = "true" ]; then
+            kubectl set image deployment/processing-api-deployment processing-api=ghcr.io/${{ github.actor }}/audiomind-processing-api:sha-${{ github.sha }} -n ${K8S_NAMESPACE}
+            kubectl rollout status deployment/processing-api-deployment -n ${K8S_NAMESPACE} --timeout=120s
+          fi
+
+          if [ "${{ needs.prepare-matrix.outputs.deploy_ai_api }}" = "true" ]; then
+            if kubectl get deployment ai-api-deployment -n ${K8S_NAMESPACE} >/dev/null 2>&1; then
+              kubectl set image deployment/ai-api-deployment ai-api=ghcr.io/${{ github.actor }}/audiomind-ai-api:sha-${{ github.sha }} -n ${K8S_NAMESPACE}
+              kubectl rollout status deployment/ai-api-deployment -n ${K8S_NAMESPACE} --timeout=120s
+            else
+              echo "ai-api-deployment not found in namespace ${K8S_NAMESPACE}, skipping ai-api rollout."
+            fi
+          fi
