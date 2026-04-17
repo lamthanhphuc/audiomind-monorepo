@@ -7,3 +7,9 @@ node_modules
 **/.idea
 **/playwright-report
 **/test-results
+**/logs
+**/uploads
+**/storage
+**/*.wav
+**/*.mp3
+**/*.m4a

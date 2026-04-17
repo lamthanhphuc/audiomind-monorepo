@@ -1,0 +1,62 @@
+name: Docker Build Push Legacy
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  docker-build-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push ai-api image
+        uses: docker/build-push-action@v6
+        with:
+          context: demoRecordAUDIOMID/ai-service
+          file: demoRecordAUDIOMID/ai-service/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ github.actor }}/audiomind-ai-api:sha-${{ github.sha }}
+            ghcr.io/${{ github.actor }}/audiomind-ai-api:latest
+
+      - name: Build and push user-api image
+        uses: docker/build-push-action@v6
+        with:
+          context: demoRecordAUDIOMID
+          file: demoRecordAUDIOMID/user-service/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ github.actor }}/audiomind-user-api:sha-${{ github.sha }}
+            ghcr.io/${{ github.actor }}/audiomind-user-api:latest
+
+      - name: Build and push meeting-api image
+        uses: docker/build-push-action@v6
+        with:
+          context: demoRecordAUDIOMID
+          file: demoRecordAUDIOMID/meeting-service/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ github.actor }}/audiomind-meeting-api:sha-${{ github.sha }}
+            ghcr.io/${{ github.actor }}/audiomind-meeting-api:latest
+
+      - name: Build and push processing-api image
+        uses: docker/build-push-action@v6
+        with:
+          context: demoRecordAUDIOMID
+          file: demoRecordAUDIOMID/processing-service/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ github.actor }}/audiomind-processing-api:sha-${{ github.sha }}
+            ghcr.io/${{ github.actor }}/audiomind-processing-api:latest
