@@ -9,7 +9,7 @@ COPY FE-Audiomind ./FE-Audiomind
 COPY packages ./packages
 
 WORKDIR /workspace/FE-Audiomind
-RUN npm run build
+RUN npm run build-only
 
 FROM nginx:1.27-alpine
 
