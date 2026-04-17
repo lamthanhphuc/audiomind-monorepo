@@ -2,7 +2,8 @@ FROM node:20 AS build
 
 WORKDIR /workspace/FE-Audiomind
 COPY FE-Audiomind/package*.json ./
-RUN npm install
+RUN rm -rf node_modules \
+	&& npm ci
 
 WORKDIR /workspace
 COPY FE-Audiomind ./FE-Audiomind
