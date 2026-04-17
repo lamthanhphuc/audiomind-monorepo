@@ -2,7 +2,7 @@ FROM node:20 AS build
 
 WORKDIR /workspace/FE-Audiomind
 COPY FE-Audiomind/package*.json ./
-RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi
+RUN npm install
 
 WORKDIR /workspace
 COPY FE-Audiomind ./FE-Audiomind
