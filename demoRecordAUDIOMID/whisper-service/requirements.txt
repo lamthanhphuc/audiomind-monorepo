@@ -1,7 +1,6 @@
 fastapi>=0.109.1
 starlette>=0.47.2
 python-multipart>=0.0.22
-setuptools>=78.1.1
 uvicorn[standard]==0.30.6
 numpy==1.26.4
 triton>=2.0.0
