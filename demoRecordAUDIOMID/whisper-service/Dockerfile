@@ -7,10 +7,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel \
+RUN pip install --no-cache-dir --upgrade pip setuptools==68.2.2 wheel \
     && pip install --no-cache-dir torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu \
     && pip install --no-cache-dir -r requirements.txt \
-    && pip install --no-cache-dir openai-whisper==20231117
+    && pip install --no-cache-dir setuptools==68.2.2 \
+    && pip install --no-cache-dir --no-build-isolation openai-whisper==20231117
 
 COPY app ./app
 
