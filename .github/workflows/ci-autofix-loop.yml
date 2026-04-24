@@ -54,7 +54,7 @@ jobs:
 
       - name: Preflight auth and repository
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
           gh auth status
           gh repo view
@@ -62,7 +62,7 @@ jobs:
       - name: Run post-merge CI auto-fix iteration
         shell: pwsh
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
           DRY_RUN: ${{ github.event.inputs.dry_run || 'true' }}
         run: |
           $poll = [int]('${{ github.event.inputs.poll_seconds || '30' }}')
