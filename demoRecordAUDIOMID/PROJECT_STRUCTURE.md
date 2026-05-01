@@ -55,6 +55,7 @@ demoRecordAUDIOMID/
 │   │       ├── speech_recognizer.py    # Whisper STT
 │   │       ├── speaker_diarizer.py     # Pyannote diarization
 │   │       └── ai_analyzer.py          # LLM analysis (Ollama)
+│   │       └── stt_adapter.py          # STT adapter (Deepgram / Whisper)
 │   │
 │   ├── alembic/                        # Database migrations
 │   │   ├── versions/
@@ -82,6 +83,8 @@ demoRecordAUDIOMID/
 │   ├── SETUP.md                        # Setup instructions
 │   └── INTEGRATION.md                  # Integration guide
 │
+├── realtime-gateway/                   # WebSocket/gRPC Gateway for realtime ingest & broadcast
+├── glossary-service/                   # Glossary CRUD, versioning, cache invalidation
 ├── FE-Audiomind/                       # Vite React frontend
 │   ├── src/
 │   ├── public/
@@ -121,6 +124,13 @@ demoRecordAUDIOMID/
 - Ollama (LLM runtime)
 - Celery + Redis
 - PostgreSQL
+
+**realtime-gateway**
+- WebSocket gateway for browser-facing realtime transcript/keyword push
+- gRPC client for STT adapters (bidirectional streaming)
+
+**glossary-service**
+- CRUD for glossary terms, versioning, and distribution to pipeline consumers
 
 ### Frontend
 - Vite

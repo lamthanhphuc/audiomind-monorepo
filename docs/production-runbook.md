@@ -63,10 +63,53 @@ Communication:
 - Monitor `/api/users/me` and auth error rates until stable.
 
 ## 4. Escalation and contacts
-Cap nhat thong tin lien he truoc khi cutover production.
+Cap nhat thong tin lien he truoc khi cutover production. Thay the cac placeholder duoi day voi thong tin on-call thuc te.
 
-- On-call engineer: `CAN QUYET DINH` (`CAN QUYET DINH`)
-- Platform lead: `CAN QUYET DINH` (`CAN QUYET DINH`)
-- Database owner: `CAN QUYET DINH` (`CAN QUYET DINH`)
-- Security contact: `CAN QUYET DINH` (`CAN QUYET DINH`)
-- Incident channel: `CAN QUYET DINH`
+- On-call engineer: `oncall@audiomind.example.com` (PagerDuty/Slack)
+- Platform lead: `platform-lead@audiomind.example.com`
+- Database owner: `db-owner@audiomind.example.com`
+- Security contact: `security@audiomind.example.com`
+- Incident channel: `#audiomind-incidents` (Slack)
+
+## 5. Realtime Feature (enable/disable)
+
+This section explains how to enable, disable, and rollback the realtime WebSocket feature (keyword highlight).
+
+Enable realtime (staging/production):
+
+1. Ensure feature flag is available in the runtime config or environment store for the target environment.
+  - Example env var: `VITE_REALTIME_WS_ENABLED=true` (frontend)
+  - Example backend flag: `REALTIME_WS_ENABLED=true`
+
+2. Update the environment secret/ConfigMap and perform a rollout restart for the frontend and gateway services:
+
+```bash
+kubectl set env deployment/fe-audiomind VITE_REALTIME_WS_ENABLED=true -n audiomind
+kubectl rollout restart deployment/fe-audiomind -n audiomind
+kubectl set env deployment/realtime-gateway REALTIME_WS_ENABLED=true -n audiomind
+kubectl rollout restart deployment/realtime-gateway -n audiomind
+```
+
+3. Monitor metrics (ws_connected, event_lag_ms, error_rate) and logs. Follow Canary plan in docs/next-steps-manual-guide.md.
+
+Disable realtime (rollback to polling):
+
+1. Flip feature flags off:
+
+```bash
+kubectl set env deployment/fe-audiomind VITE_REALTIME_WS_ENABLED=false -n audiomind
+kubectl set env deployment/realtime-gateway REALTIME_WS_ENABLED=false -n audiomind
+kubectl rollout restart deployment/fe-audiomind -n audiomind
+kubectl rollout restart deployment/realtime-gateway -n audiomind
+```
+
+2. No code deploy is required for rollback if the system is implemented to fall back to polling when the feature flag is off.
+
+3. If a rollback to a previous image is required for any component:
+
+```bash
+kubectl rollout undo deployment/realtime-gateway -n audiomind
+kubectl rollout undo deployment/processing-api-deployment -n audiomind
+```
+
+4. Communicate status to on-call and product stakeholders via the incident channel.
