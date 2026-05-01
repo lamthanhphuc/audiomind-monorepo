@@ -23,6 +23,9 @@ public class Meeting {
     @Column(name = "audio_path")
     private String audioPath;
 
+    @Column(name = "original_file_name")
+    private String originalFileName;
+
     @Column(name = "owner_user_id")
     private Long ownerUserId;
 

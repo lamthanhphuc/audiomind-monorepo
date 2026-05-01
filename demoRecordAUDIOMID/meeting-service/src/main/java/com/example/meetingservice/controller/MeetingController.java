@@ -24,6 +24,7 @@ import java.nio.file.Paths;
 import java.util.Set;
 import java.util.List;
 import java.util.Objects;
+import java.util.UUID;
 import org.springframework.security.core.Authentication;
 
 @CrossOrigin(origins = "${CORS_ALLOWED_ORIGINS:http://localhost:5173}")
@@ -70,7 +71,8 @@ public class MeetingController {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid file name");
         }
 
-        Path targetFile = uploadPath.resolve(cleanedFileName).normalize();
+        String storedFileName = UUID.randomUUID().toString() + normalizedExtension;
+        Path targetFile = uploadPath.resolve(storedFileName).normalize();
         if (!targetFile.startsWith(uploadPath)) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid upload path");
         }
@@ -82,7 +84,7 @@ public class MeetingController {
         }
 
         UserPrincipal principal = requirePrincipal(authentication);
-        return meetingService.saveMeeting(title, targetFile.toString(), principal.userId());
+        return meetingService.saveMeeting(title, targetFile.toString(), principal.userId(), cleanedFileName);
     }
 
     @GetMapping("/{id}")

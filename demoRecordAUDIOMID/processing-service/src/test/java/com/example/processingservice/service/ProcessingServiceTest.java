@@ -14,10 +14,16 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.client.HttpClientErrorException;
+import org.springframework.web.server.ResponseStatusException;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
@@ -34,6 +40,7 @@ class ProcessingServiceTest {
 
     private ProcessingService processingService;
     private SimpleMeterRegistry meterRegistry;
+    private static final String AUTH_HEADER = "Bearer test-token";
 
     @BeforeEach
     void setUp() {
@@ -44,13 +51,16 @@ class ProcessingServiceTest {
                 jobStateStore,
             meterRegistry);
         processingService.initMetrics();
+
+        when(meetingServiceClient.getMeetingById(anyLong(), anyString(), anyString()))
+            .thenReturn(Map.of("id", 1L));
     }
 
     @Test
     void getProcessingStatus_shouldReturnNotFoundWhenStateMissing() {
         when(jobStateStore.getJobState(101L)).thenReturn(Optional.empty());
 
-        ProcessingStatusResponse response = processingService.getProcessingStatus(101L, "trace-1");
+        ProcessingStatusResponse response = processingService.getProcessingStatus(101L, "trace-1", AUTH_HEADER);
 
         assertEquals("NOT_FOUND", response.status());
         assertNull(response.error());
@@ -65,7 +75,7 @@ class ProcessingServiceTest {
 
         when(jobStateStore.getJobState(202L)).thenReturn(Optional.of(state));
 
-        ProcessingStatusResponse response = processingService.getProcessingStatus(202L, "trace-2");
+        ProcessingStatusResponse response = processingService.getProcessingStatus(202L, "trace-2", AUTH_HEADER);
 
         assertEquals("QUEUED", response.status());
         assertEquals("2026-04-08T00:00:00Z", response.updatedAt());
@@ -80,7 +90,7 @@ class ProcessingServiceTest {
 
         when(jobStateStore.getJobState(303L)).thenReturn(Optional.of(state));
 
-        ProcessingStatusResponse response = processingService.getProcessingStatus(303L, "trace-3");
+        ProcessingStatusResponse response = processingService.getProcessingStatus(303L, "trace-3", AUTH_HEADER);
 
         assertEquals("RUNNING", response.status());
         assertEquals(100, response.progress());
@@ -91,7 +101,7 @@ class ProcessingServiceTest {
     void getTranscript_shouldReturnNotFoundWhenStateMissing() {
         when(jobStateStore.getJobState(404L)).thenReturn(Optional.empty());
 
-        Map<String, Object> response = processingService.getTranscript(404L, "trace-4");
+        Map<String, Object> response = processingService.getTranscript(404L, "trace-4", AUTH_HEADER);
 
         assertEquals("NOT_FOUND", response.get("status"));
         assertTrue(response.get("transcripts") instanceof List<?>);
@@ -106,7 +116,7 @@ class ProcessingServiceTest {
 
         when(jobStateStore.getJobState(505L)).thenReturn(Optional.of(state));
 
-        Map<String, Object> response = processingService.getAnalysis(505L, "trace-5");
+        Map<String, Object> response = processingService.getAnalysis(505L, "trace-5", AUTH_HEADER);
 
         assertEquals("QUEUED", response.get("status"));
         assertEquals("ok", response.get("summary"));
@@ -131,11 +141,24 @@ class ProcessingServiceTest {
         when(jobStateStore.getJobState(1L)).thenReturn(Optional.of(runningA), Optional.of(completedA));
         when(jobStateStore.getJobState(2L)).thenReturn(Optional.of(runningB));
 
-        processingService.getProcessingStatus(1L, "trace-a");
-        processingService.getProcessingStatus(2L, "trace-b");
-        processingService.getProcessingStatus(1L, "trace-c");
+        processingService.getProcessingStatus(1L, "trace-a", AUTH_HEADER);
+        processingService.getProcessingStatus(2L, "trace-b", AUTH_HEADER);
+        processingService.getProcessingStatus(1L, "trace-c", AUTH_HEADER);
 
         Gauge gauge = meterRegistry.find("jobs_running").gauge();
         assertEquals(1.0, gauge == null ? 0.0 : gauge.value());
+    }
+
+    @Test
+    void getTranscript_shouldRejectForbiddenMeetingAccess() {
+        when(meetingServiceClient.getMeetingById(909L, "trace-9", AUTH_HEADER))
+                .thenThrow(new HttpClientErrorException(HttpStatus.FORBIDDEN));
+
+        ResponseStatusException ex = assertThrows(
+                ResponseStatusException.class,
+                () -> processingService.getTranscript(909L, "trace-9", AUTH_HEADER)
+        );
+
+        assertEquals(HttpStatus.FORBIDDEN, ex.getStatusCode());
     }
 }

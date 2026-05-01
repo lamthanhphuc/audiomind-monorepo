@@ -24,6 +24,12 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     openai_model: str = "gpt-4o"
 
+    # Deepgram
+    deepgram_api_key: str = ""
+    deepgram_model: str = "nova-2"
+    deepgram_base_url: str = "https://api.deepgram.com/v1/listen"
+    deepgram_timeout_seconds: int = 30
+
     # LLM Provider
     ai_provider: str = "ollama"  # Ollama-only mode
 
@@ -64,6 +70,7 @@ class Settings(BaseSettings):
     job_state_ttl_seconds: int = 86400
     chunk_state_ttl_seconds: int = 3600
     redis_max_connections: int = 10
+    glossary_cache_ttl_seconds: int = 300
 
     # Async processing
     celery_broker_url: str = "redis://redis:6379/0"

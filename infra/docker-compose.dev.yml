@@ -9,10 +9,12 @@ services:
       - SPRING_DATASOURCE_PASSWORD=${POSTGRES_PASSWORD:-audiomind}
       - SPRING_DATASOURCE_DRIVER_CLASS_NAME=org.postgresql.Driver
       - SPRING_JPA_HIBERNATE_DIALECT=org.hibernate.dialect.PostgreSQLDialect
-      - JWT_SECRET=replace-this-secret-with-at-least-32-bytes
+      - JWT_SECRET=${JWT_SECRET}
       - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-http://127.0.0.1:5173,http://localhost:5173}
     depends_on:
       - db
+    volumes:
+      - uploads:/app/uploads
     ports:
       - "8081:8081"
 
@@ -25,7 +27,7 @@ services:
       - AUDIOMIND_MEETING_API_BASE_URL=http://meeting-api:8081
       - REDIS_HOST=redis
       - REDIS_DB=2
-      - JWT_SECRET=replace-this-secret-with-at-least-32-bytes
+      - JWT_SECRET=${JWT_SECRET}
       - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-http://127.0.0.1:5173,http://localhost:5173}
     depends_on:
       - meeting-api
@@ -46,7 +48,7 @@ services:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - REDIS_DB=3
-      - JWT_SECRET=${JWT_SECRET:-replace-this-secret-with-at-least-32-bytes}
+      - JWT_SECRET=${JWT_SECRET}
       - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-http://127.0.0.1:5173,http://localhost:5173,http://localhost:3000,http://localhost:8080}
     depends_on:
       - db

@@ -270,42 +270,16 @@ class ProcessingPipeline:
         self,
         topic: Optional[str] = None,
         glossary_terms: Optional[List[str]] = None,
+        topic_defaults: Optional[Dict[str, List[str]]] = None,
     ) -> str:
         """Build a concise prompt to bias Whisper toward domain terms."""
         topic_key = (topic or "").strip().lower()
-        topic_defaults: Dict[str, List[str]] = {
-            "engineering": [
-                "model",
-                "module",
-                "API",
-                "Docker",
-                "Kubernetes",
-                "SQL",
-                "AWS",
-                "IAM",
-                "S3",
-                "EC2",
-                "RDS",
-                "VPC",
-                "EKS",
-                "CloudWatch",
-                "Lambda",
-                "DevOps",
-            ],
-            "finance": [
-                "invoice",
-                "balance sheet",
-                "VAT",
-                "reconciliation",
-                "cash flow",
-            ],
-            "hr": ["onboarding", "payroll", "KPI", "OKR", "headcount"],
-        }
+        defaults = topic_defaults or {}
 
         merged_terms = []
         seen = set()
 
-        for term in topic_defaults.get(topic_key, []):
+        for term in defaults.get(topic_key, []):
             key = term.lower()
             if key not in seen:
                 seen.add(key)
@@ -335,32 +309,11 @@ class ProcessingPipeline:
         self,
         topic: Optional[str] = None,
         glossary_terms: Optional[List[str]] = None,
+        glossary_normalization_map: Optional[Dict[str, str]] = None,
     ) -> Dict[str, str]:
-        """Common Vietnamese phonetic variants mapped to canonical technical terms."""
-        topic_key = (topic or "").strip().lower()
-
-        normalization_map: Dict[str, str] = {
-            r"\bmo\s*đun\b": "module",
-            r"\bmô\s*đun\b": "module",
-            r"\bmô\s*đen\b": "model",
-            r"\bê\s*pi\s*ai\b": "API",
-            r"\bđốc\s*cơ\b": "Docker",
-            r"\bxì\s*kiu\s*eo\b": "SQL",
-            r"\bxì\s*kiu\s*él\b": "SQL",
-            r"\bi\s*w\s*s\b": "AWS",
-            r"\biw\.?s\b": "AWS",
-            r"\bay\s*đắp\b": "AWS",
-            r"\bờ\s*quai\s*ét\s*chờ\b": "CloudWatch",
-            r"\bđép\s*ốp\b": "DevOps",
-        }
-
-        if topic_key == "finance":
-            normalization_map.update(
-                {
-                    r"\bin\s*voi\s*xe\b": "invoice",
-                    r"\bva\s*ti\b": "VAT",
-                }
-            )
+        """Build normalization map from glossary service plus explicit request terms."""
+        _ = topic  # Topic-specific defaults are now supplied by glossary service.
+        normalization_map: Dict[str, str] = dict(glossary_normalization_map or {})
 
         for term in glossary_terms or []:
             clean = str(term).strip()
@@ -379,10 +332,13 @@ class ProcessingPipeline:
         segments: List[Dict],
         topic: Optional[str] = None,
         glossary_terms: Optional[List[str]] = None,
+        glossary_normalization_map: Optional[Dict[str, str]] = None,
     ) -> List[Dict]:
         """Normalize common misrecognized terms while preserving timestamps/speakers."""
         replacements = self._build_normalization_map(
-            topic=topic, glossary_terms=glossary_terms
+            topic=topic,
+            glossary_terms=glossary_terms,
+            glossary_normalization_map=glossary_normalization_map,
         )
         normalized = []
 
@@ -409,6 +365,7 @@ class ProcessingPipeline:
         db: Session,
         topic: Optional[str] = None,
         glossary_terms: Optional[List[str]] = None,
+        glossary_context: Optional[Dict] = None,
         language: Optional[str] = "vi",
         precomputed_transcript_segments: Optional[List[Dict]] = None,
     ) -> Dict:
@@ -436,6 +393,8 @@ class ProcessingPipeline:
             runtime_device = get_runtime_device()
             self._ensure_models_loaded()
             resolved_audio_path = self._resolve_audio_path(audio_path)
+            glossary_context = glossary_context or {}
+            effective_glossary_terms = glossary_context.get("terms") or glossary_terms
 
             self._record_baseline_snapshot(meeting_id, runtime_device)
             if meeting_id == BASELINE_MEETING_ID:
@@ -459,7 +418,9 @@ class ProcessingPipeline:
                 )
             else:
                 initial_prompt = self._build_initial_prompt(
-                    topic=topic, glossary_terms=glossary_terms
+                    topic=topic,
+                    glossary_terms=effective_glossary_terms,
+                    topic_defaults=glossary_context.get("topic_defaults"),
                 )
                 logger.info(f"Using Whisper initial prompt: {initial_prompt}")
 
@@ -474,7 +435,10 @@ class ProcessingPipeline:
                 transcript_segments = self._normalize_transcript_segments(
                     transcript_segments,
                     topic=topic,
-                    glossary_terms=glossary_terms,
+                    glossary_terms=effective_glossary_terms,
+                    glossary_normalization_map=glossary_context.get(
+                        "normalization_map"
+                    ),
                 )
 
             logger.info(f"Transcription complete: {len(transcript_segments)} segments")
@@ -522,7 +486,13 @@ class ProcessingPipeline:
 
             # Step 6: Save to database
             logger.info("Step 6: Saving to database")
-            self._save_results(meeting_id, aligned_segments, analysis_result, db)
+            self._save_results(
+                meeting_id,
+                aligned_segments,
+                analysis_result,
+                db,
+                glossary_context=glossary_context,
+            )
 
             logger.info(f"Processing complete for meeting {meeting_id}")
 
@@ -547,6 +517,7 @@ class ProcessingPipeline:
         aligned_segments: List[Dict],
         analysis_result: Dict,
         db: Session,
+        glossary_context: Optional[Dict] = None,
     ):
         """
         Save processing results to database
@@ -609,6 +580,9 @@ class ProcessingPipeline:
                 keywords=clean_keywords,
                 technical_terms=clean_technical_terms,
                 action_items=clean_analysis.get("action_items", []),
+                glossary_domain=(glossary_context or {}).get("domain"),
+                glossary_version_id=(glossary_context or {}).get("version_id"),
+                glossary_version_hash=(glossary_context or {}).get("version_hash"),
             )
             db.add(analysis)
 

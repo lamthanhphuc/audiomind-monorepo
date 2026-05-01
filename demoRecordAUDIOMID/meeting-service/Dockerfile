@@ -16,12 +16,22 @@ FROM eclipse-temurin:21-jre
 
 WORKDIR /app
 
-RUN groupadd -g 10001 app && useradd -u 10001 -g app -m app
+RUN apt-get update && apt-get install -y --no-install-recommends gosu \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN groupadd -g 10001 app && useradd -u 10001 -g app -m app \
+    && mkdir -p /app/uploads \
+    && chown -R 10001:10001 /app
 
 COPY --from=build --chown=10001:10001 /workspace/meeting-service/target/meeting-service-0.0.1-SNAPSHOT.jar app.jar
 
-USER 10001
+COPY meeting-service/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
+USER root
+
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 
 EXPOSE 8080
 
-ENTRYPOINT ["java", "-jar", "/app/app.jar"]
+CMD ["java", "-jar", "/app/app.jar"]

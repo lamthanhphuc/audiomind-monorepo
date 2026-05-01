@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import Dict, List, Optional
 from datetime import datetime
 
 
@@ -23,6 +23,44 @@ class MeetingAnalysis(BaseModel):
     action_items: List[ActionItem]
 
 
+class GlossaryReference(BaseModel):
+    glossary_id: int
+    domain: Optional[str] = None
+    version_hash: Optional[str] = None
+
+
+class GlossaryEntryCreate(BaseModel):
+    term: str
+    domain: Optional[str] = None
+    normalized: Optional[str] = None
+
+
+class GlossaryEntryUpdate(BaseModel):
+    term: Optional[str] = None
+    domain: Optional[str] = None
+    normalized: Optional[str] = None
+
+
+class GlossaryEntryResponse(BaseModel):
+    id: int
+    term: str
+    domain: Optional[str] = None
+    normalized: Optional[str] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class GlossarySnapshotResponse(BaseModel):
+    domain: Optional[str] = None
+    version_hash: str
+    version_id: Optional[int] = None
+    terms: List[str]
+    topic_defaults: Dict[str, List[str]]
+    normalization_map: Dict[str, str]
+
+
 class ProcessRequest(BaseModel):
     meeting_id: int
     audio_path: str
@@ -30,6 +68,7 @@ class ProcessRequest(BaseModel):
     trace_id: Optional[str] = None
     topic: Optional[str] = None
     glossary_terms: Optional[List[str]] = None
+    glossary_ref: Optional[GlossaryReference] = None
     language: Optional[str] = "vi"
 
 

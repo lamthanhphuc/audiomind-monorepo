@@ -17,7 +17,35 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Check E2E secrets
+        id: check-e2e-secrets
+        shell: pwsh
+        env:
+          E2E_USERNAME: ${{ secrets.E2E_USERNAME }}
+          E2E_PASSWORD: ${{ secrets.E2E_PASSWORD }}
+        run: |
+          $missing = @()
+          if ([string]::IsNullOrWhiteSpace($env:E2E_USERNAME)) {
+            $missing += "E2E_USERNAME"
+          }
+          if ([string]::IsNullOrWhiteSpace($env:E2E_PASSWORD)) {
+            $missing += "E2E_PASSWORD"
+          }
+          if ($missing.Count -gt 0) {
+            Write-Host "ENVIRONMENT_BLOCKED: Missing required secrets: $($missing -join ', ')"
+            "skip_e2e=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          } else {
+            "skip_e2e=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          }
+
+      - name: Report environment blocked
+        if: steps.check-e2e-secrets.outputs.skip_e2e == 'true'
+        shell: pwsh
+        run: |
+          Write-Host "ENVIRONMENT_BLOCKED: Smoke test skipped because required E2E secrets are missing."
+
       - name: Start stack
+        if: steps.check-e2e-secrets.outputs.skip_e2e != 'true'
         shell: pwsh
         run: |
           $maxAttempts = 3
@@ -33,11 +61,12 @@ jobs:
           }
 
       - name: Setup smoke E2E account
+        if: steps.check-e2e-secrets.outputs.skip_e2e != 'true'
         shell: pwsh
         env:
           E2E_USER_SERVICE_BASE_URL: http://localhost:8083
-          E2E_USERNAME: ${{ secrets.E2E_USERNAME || 'e2e_test_user' }}
-          E2E_PASSWORD: ${{ secrets.E2E_PASSWORD || 'Test@123456' }}
+          E2E_USERNAME: ${{ secrets.E2E_USERNAME }}
+          E2E_PASSWORD: ${{ secrets.E2E_PASSWORD }}
         run: |
           $deadline = (Get-Date).AddMinutes(3)
           while ((Get-Date) -lt $deadline) {
@@ -51,6 +80,7 @@ jobs:
           ./scripts/setup-e2e-account.ps1
 
       - name: Setup ffmpeg
+        if: steps.check-e2e-secrets.outputs.skip_e2e != 'true'
         shell: pwsh
         run: |
           if ($env:RUNNER_OS -eq "Windows") {
@@ -61,6 +91,7 @@ jobs:
           }
 
       - name: Convert mp3 to wav
+        if: steps.check-e2e-secrets.outputs.skip_e2e != 'true'
         shell: pwsh
         run: |
           $inputPath = "${{ github.workspace }}/tests/audio/it-overview.mp3"
@@ -71,10 +102,11 @@ jobs:
           ffmpeg -y -i "$inputPath" "$outputPath"
 
       - name: Run smoke script
+        if: steps.check-e2e-secrets.outputs.skip_e2e != 'true'
         shell: pwsh
         env:
-          E2E_USERNAME: ${{ secrets.E2E_USERNAME || 'e2e_test_user' }}
-          E2E_PASSWORD: ${{ secrets.E2E_PASSWORD || 'Test@123456' }}
+          E2E_USERNAME: ${{ secrets.E2E_USERNAME }}
+          E2E_PASSWORD: ${{ secrets.E2E_PASSWORD }}
         run: |
           $maxAttempts = 3
           for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
@@ -89,7 +121,7 @@ jobs:
           }
 
       - name: Upload smoke artifacts
-        if: always()
+        if: always() && steps.check-e2e-secrets.outputs.skip_e2e != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: smoke-test-report
@@ -98,7 +130,7 @@ jobs:
             logs/smoke-*.log
 
       - name: Teardown stack
-        if: always()
+        if: always() && steps.check-e2e-secrets.outputs.skip_e2e != 'true'
         shell: pwsh
         run: |
           docker compose -f infra/docker-compose.dev.yml down -v

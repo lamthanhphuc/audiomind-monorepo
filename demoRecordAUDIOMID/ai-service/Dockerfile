@@ -7,6 +7,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     build-essential \
     python3-dev \
+    gosu \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
@@ -24,7 +25,12 @@ RUN mkdir -p storage/audio storage/temp logs
 RUN groupadd --gid 10001 app && useradd --uid 10001 --gid 10001 --create-home app \
     && chown -R 10001:10001 /app
 
-USER 10001
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
+USER root
+
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 
 EXPOSE 8000
 

@@ -63,10 +63,10 @@ Communication:
 - Monitor `/api/users/me` and auth error rates until stable.
 
 ## 4. Escalation and contacts
-Replace placeholders with real values before production cutover.
+Cap nhat thong tin lien he truoc khi cutover production.
 
-- On-call engineer: `REPLACE_ONCALL_NAME` (`REPLACE_PHONE`)
-- Platform lead: `REPLACE_PLATFORM_LEAD` (`REPLACE_PHONE`)
-- Database owner: `REPLACE_DB_OWNER` (`REPLACE_PHONE`)
-- Security contact: `REPLACE_SECURITY_CONTACT` (`REPLACE_PHONE`)
-- Incident channel: `REPLACE_CHAT_CHANNEL`
+- On-call engineer: `CAN QUYET DINH` (`CAN QUYET DINH`)
+- Platform lead: `CAN QUYET DINH` (`CAN QUYET DINH`)
+- Database owner: `CAN QUYET DINH` (`CAN QUYET DINH`)
+- Security contact: `CAN QUYET DINH` (`CAN QUYET DINH`)
+- Incident channel: `CAN QUYET DINH`
