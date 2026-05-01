@@ -28,7 +28,14 @@ class _FakeWebSocketModule:
     def __init__(self, messages):
         self.messages = messages
 
-    async def connect(self, url, extra_headers=None, open_timeout=None, close_timeout=None, ping_interval=None):
+    async def connect(
+        self,
+        url,
+        extra_headers=None,
+        open_timeout=None,
+        close_timeout=None,
+        ping_interval=None,
+    ):
         websocket = _FakeWebSocket(self.messages)
         _FakeWebSocketModule.last_connection = {
             "url": url,
@@ -48,9 +55,7 @@ def test_deepgram_adapter_matches_protocol_and_transcribes(monkeypatch):
         json.dumps(
             {
                 "channel": {
-                    "alternatives": [
-                        {"transcript": "xin chao", "confidence": 0.9}
-                    ]
+                    "alternatives": [{"transcript": "xin chao", "confidence": 0.9}]
                 },
                 "is_final": False,
             }
@@ -66,7 +71,9 @@ def test_deepgram_adapter_matches_protocol_and_transcribes(monkeypatch):
             }
         ),
     ]
-    monkeypatch.setattr(stt_module, "websockets", _FakeWebSocketModule(websocket_messages))
+    monkeypatch.setattr(
+        stt_module, "websockets", _FakeWebSocketModule(websocket_messages)
+    )
 
     adapter = DeepgramSTTAdapter(
         api_key="dg-test-key",

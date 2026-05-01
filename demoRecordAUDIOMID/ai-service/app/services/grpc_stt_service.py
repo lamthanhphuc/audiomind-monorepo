@@ -111,7 +111,9 @@ class AiStreamServicer(ai__stream__pb2__grpc.AiStreamServiceServicer):
                         ]
 
                     for partial_event in partial_events:
-                        emitted_at_ms = int(partial_event.get("ts_ms") or audio_chunk.ts_ms)
+                        emitted_at_ms = int(
+                            partial_event.get("ts_ms") or audio_chunk.ts_ms
+                        )
                         response = realtime__events__pb2.StreamEnvelope(
                             event_id=str(uuid4()),
                             event_type="transcript.partial",

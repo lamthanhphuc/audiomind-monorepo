@@ -181,7 +181,9 @@ class DeepgramSTTAdapter:
         if websocket is None:
             return []
 
-        timeout_seconds = self.timeout_seconds if drain_timeout is None else drain_timeout
+        timeout_seconds = (
+            self.timeout_seconds if drain_timeout is None else drain_timeout
+        )
         deadline = asyncio.get_running_loop().time() + timeout_seconds
         events: list[dict[str, Any]] = []
 
@@ -191,7 +193,9 @@ class DeepgramSTTAdapter:
                 break
 
             try:
-                raw_message = await asyncio.wait_for(websocket.recv(), timeout=remaining)
+                raw_message = await asyncio.wait_for(
+                    websocket.recv(), timeout=remaining
+                )
             except (asyncio.TimeoutError, TimeoutError):
                 break
             except Exception as exc:
