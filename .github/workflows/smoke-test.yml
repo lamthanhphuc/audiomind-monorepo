@@ -60,6 +60,14 @@ jobs:
             Start-Sleep -Seconds (5 * $attempt)
           }
 
+        - name: Debug - Collect service logs on failure
+          if: failure()
+          shell: pwsh
+          run: |
+            docker compose -f infra/docker-compose.dev.yml ps
+            docker compose -f infra/docker-compose.dev.yml logs user-api --tail 500
+            docker compose -f infra/docker-compose.dev.yml logs db --tail 100
+
       - name: Setup smoke E2E account
         if: steps.check-e2e-secrets.outputs.skip_e2e != 'true'
         shell: pwsh
