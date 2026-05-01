@@ -7,7 +7,8 @@ Python FastAPI service for audio processing, speech recognition, speaker diariza
 - 🎤 Speech-to-Text (Whisper)
 - 👥 Speaker Diarization (pyannote.audio)
 - 🔊 Voice Activity Detection (Silero VAD)
-- 🤖 AI Meeting Analysis (GPT-4)
+- 🤖 AI Meeting Analysis (Ollama)
+- ⚡ Realtime STT adapter (Deepgram)
 - 📊 Structured Meeting Notes
 
 ## Architecture
@@ -26,7 +27,11 @@ AI Service (Port 8000)
 │   └── pyannote.audio
 │
 ├── AI Analysis
-│   └── OpenAI GPT-4
+│   └── Ollama (local/runtime configurable)
+│
+├── Realtime Streaming
+│   ├── gRPC StreamAudio
+│   └── Deepgram STT adapter
 │
 └── Database
     └── PostgreSQL
@@ -81,6 +86,16 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 See `.env.example` for all configuration options.
 
+### Required/Important Environment Variables
+
+- `DATABASE_URL`
+- `OLLAMA_BASE_URL`
+- `OLLAMA_MODEL`
+- `DEEPGRAM_API_KEY` (required for Deepgram realtime STT adapter)
+- `DEEPGRAM_MODEL` (optional, default defined in app config)
+- `DEEPGRAM_BASE_URL` (optional, default Deepgram listen endpoint)
+- `DEEPGRAM_TIMEOUT_SECONDS` (optional timeout tuning)
+
 ### Runtime Modes (CPU vs GPU)
 
 - **GPU mode** (`torch.cuda.is_available() == true`):
@@ -120,9 +135,26 @@ When output repeats short text (e.g. "Chuyên là..."):
      - reduce CPU chunk size (e.g. `20-30s`)
 4. Reprocess and compare before/after at same timestamp window.
 
+## Realtime Streaming
+
+The service includes gRPC streaming support for realtime transcription and keyword flows.
+
+- gRPC service definition is in `packages/contracts/ai-stream.proto`.
+- Bidirectional streaming RPC: `StreamAudio(stream StreamEnvelope) returns (stream StreamEnvelope)`.
+- Realtime event payloads are defined in `packages/contracts/realtime-events.proto`.
+
+Typical flow:
+1. Client/gateway opens `StreamAudio` stream.
+2. Client sends `audio_chunk` envelopes incrementally.
+3. Service emits `transcript_partial` and related events as they are available.
+4. Upstream gateway broadcasts to frontend WebSocket clients.
+
+For local integration testing, keep `DEEPGRAM_API_KEY` configured before starting the gRPC streaming path.
+
 ## Models
 
 - **Whisper**: large-v3
 - **Speaker Diarization**: pyannote/speaker-diarization-3.1
 - **VAD**: silero-vad
-- **LLM**: GPT-4/GPT-4o
+- **LLM**: Ollama runtime models (for example `qwen2.5:3b-instruct`)
+- **Realtime STT**: Deepgram adapter (configurable model/base URL)

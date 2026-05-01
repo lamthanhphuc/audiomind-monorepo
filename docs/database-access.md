@@ -2,34 +2,46 @@
 
 This guide provides quick ways to inspect service databases in local development.
 
-## 1) Connection Profiles (MySQL dev profile)
+## 1) Connection Profile (PostgreSQL default)
 
-- user-service: `userdb` on port `3306`
-- meeting-service: `meetingdb` on port `3307`
-- processing-service: `processingdb` on port `3308`
+- shared PostgreSQL service: `db` on port `5432`
+- database name: `audiomind` (default from `infra/docker-compose.dev.yml`)
+- username/password defaults: `audiomind` / `audiomind` (override via env)
 
 Notes:
 - Credentials vary by local setup. Do not commit passwords or secrets.
-- In this repository's default Docker Compose stack (`infra/docker-compose.dev.yml`), services currently use PostgreSQL via shared `db:5432`. Use this MySQL profile only when your environment provides per-service MySQL instances.
+- In this repository's default Docker Compose stack (`infra/docker-compose.dev.yml`), services use PostgreSQL via shared `db:5432`.
 
 ## 2) Option A: Docker CLI
 
 ```bash
-docker exec -it <mysql-container-name> mysql -u root -p
+docker exec -it <postgres-container-name> psql -U audiomind -d audiomind
 ```
 
 Examples (common naming convention):
-- `user-mysql`
-- `meeting-mysql`
-- `processing-mysql`
+- `db`
+- `audiomind-db-1` (compose-generated name in some environments)
 
-## 3) Option B: GUI Tools (DBeaver / MySQL Workbench)
+Useful psql checks:
+
+```sql
+\dt
+SELECT current_database(), current_user;
+```
+
+## 3) Option B: GUI Tools (DBeaver / pgAdmin)
 
 Use these parameters:
 - Host: `localhost`
-- Port: service-specific (`3306`, `3307`, `3308`)
-- Database: `userdb` / `meetingdb` / `processingdb`
+- Port: `5432`
+- Database: `audiomind`
 - Username/Password: from your runtime config or environment variables
+
+Reference connection URI format:
+
+```text
+postgresql://<POSTGRES_USER>:<POSTGRES_PASSWORD>@localhost:5432/<POSTGRES_DB>
+```
 
 ## 4) Option C: Quick Script
 
@@ -49,7 +61,7 @@ Optional parameters:
 
 Auto-detect behavior:
 - If a PostgreSQL container (for example `db`) is running, script uses `psql`.
-- Otherwise script falls back to MySQL mode.
+- Otherwise script can fall back to MySQL mode only for non-default/custom environments.
 
 Optional container name overrides:
 - `DB_INSPECT_USER_CONTAINER`
