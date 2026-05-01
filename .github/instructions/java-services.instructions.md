@@ -36,3 +36,8 @@ applyTo:
 - Write idempotent migration SQL to support shared or previously initialized environments.
 - Use service-scoped Flyway history table configuration when multiple services share one PostgreSQL database.
 - Detailed migration conventions and anti-patterns are documented in .github/instructions/database-migrations.instructions.md.
+
+## Regression Prevention
+- Before committing Java service changes, run `mvn -B test` in the touched service directory and fix any failures before pushing.
+- When changing a public method signature in a service class, update every call site and the corresponding tests in the same change.
+- Do not change a public method's return type or parameters without verifying the full service call chain and test coverage.

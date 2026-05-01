@@ -100,26 +100,39 @@ class AiStreamServicer(ai__stream__pb2__grpc.AiStreamServiceServicer):
                         ts_ms=audio_chunk.ts_ms,
                     )
 
-                    # Emit a partial transcript event (simplified - in production, would tie to actual STT output)
-                    response = realtime__events__pb2.StreamEnvelope(
-                        event_id=str(uuid4()),
-                        event_type="transcript.partial",
-                        trace_id=request.trace_id or "",
-                        emitted_at_ms=audio_chunk.ts_ms,
-                    )
-                    response.transcript_partial.CopyFrom(
-                        realtime__events__pb2.TranscriptPartialEvent(
-                            meeting_id=meeting_id,
-                            segment_id=str(uuid4()),
-                            start_time=audio_chunk.ts_ms / 1000.0,
-                            end_time=(audio_chunk.ts_ms + 100) / 1000.0,
-                            speaker="unknown",
-                            text="[processing...]",
-                            language="vi",
-                            version_hash="",
+                    partial_events = self.stt_adapter.drain_partial_events(session_id)
+                    if not partial_events:
+                        partial_events = [
+                            {
+                                "text": "[processing...]",
+                                "ts_ms": audio_chunk.ts_ms,
+                                "confidence": None,
+                            }
+                        ]
+
+                    for partial_event in partial_events:
+                        emitted_at_ms = int(
+                            partial_event.get("ts_ms") or audio_chunk.ts_ms
                         )
-                    )
-                    yield response
+                        response = realtime__events__pb2.StreamEnvelope(
+                            event_id=str(uuid4()),
+                            event_type="transcript.partial",
+                            trace_id=request.trace_id or "",
+                            emitted_at_ms=emitted_at_ms,
+                        )
+                        response.transcript_partial.CopyFrom(
+                            realtime__events__pb2.TranscriptPartialEvent(
+                                meeting_id=meeting_id,
+                                segment_id=str(uuid4()),
+                                start_time=emitted_at_ms / 1000.0,
+                                end_time=emitted_at_ms / 1000.0,
+                                speaker=str(partial_event.get("speaker") or "unknown"),
+                                text=str(partial_event.get("text") or "").strip(),
+                                language="vi",
+                                version_hash="",
+                            )
+                        )
+                        yield response
 
             # Close session when stream ends
             if session_id:

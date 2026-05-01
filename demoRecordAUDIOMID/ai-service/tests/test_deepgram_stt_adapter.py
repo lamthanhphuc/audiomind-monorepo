@@ -1,54 +1,79 @@
 import asyncio
+import json
 
 from app.services.stt_adapter import DeepgramSTTAdapter, STTStreamAdapter
 
 
-class _FakeResponse:
-    def __init__(self, payload):
-        self._payload = payload
+class _FakeWebSocket:
+    def __init__(self, messages):
+        self.sent_messages = []
+        self.messages = list(messages)
+        self.closed = False
 
-    def raise_for_status(self):
-        return None
+    async def send(self, payload):
+        self.sent_messages.append(payload)
 
-    def json(self):
-        return self._payload
+    async def recv(self):
+        if self.messages:
+            return self.messages.pop(0)
+        raise asyncio.TimeoutError
+
+    async def close(self):
+        self.closed = True
 
 
-class _FakeAsyncClient:
-    last_request = None
+class _FakeWebSocketModule:
+    last_connection = None
 
-    def __init__(self, timeout=None):
-        self.timeout = timeout
+    def __init__(self, messages):
+        self.messages = messages
 
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, exc_type, exc, tb):
-        return None
-
-    async def post(self, url, params=None, content=None, headers=None):
-        _FakeAsyncClient.last_request = {
+    async def connect(
+        self,
+        url,
+        extra_headers=None,
+        open_timeout=None,
+        close_timeout=None,
+        ping_interval=None,
+    ):
+        websocket = _FakeWebSocket(self.messages)
+        _FakeWebSocketModule.last_connection = {
             "url": url,
-            "params": params,
-            "content": content,
-            "headers": headers,
-            "timeout": self.timeout,
+            "extra_headers": extra_headers,
+            "open_timeout": open_timeout,
+            "close_timeout": close_timeout,
+            "ping_interval": ping_interval,
+            "websocket": websocket,
         }
-        return _FakeResponse(
-            {
-                "results": {
-                    "channels": [
-                        {"alternatives": [{"transcript": "xin chao audiomind"}]}
-                    ]
-                }
-            }
-        )
+        return websocket
 
 
 def test_deepgram_adapter_matches_protocol_and_transcribes(monkeypatch):
     from app.services import stt_adapter as stt_module
 
-    monkeypatch.setattr(stt_module.httpx, "AsyncClient", _FakeAsyncClient)
+    websocket_messages = [
+        json.dumps(
+            {
+                "channel": {
+                    "alternatives": [{"transcript": "xin chao", "confidence": 0.9}]
+                },
+                "is_final": False,
+            }
+        ),
+        json.dumps(
+            {
+                "channel": {
+                    "alternatives": [
+                        {"transcript": "xin chao audiomind", "confidence": 0.97}
+                    ]
+                },
+                "is_final": True,
+            }
+        ),
+    ]
+    monkeypatch.setattr(
+        stt_module, "websockets", _FakeWebSocketModule(websocket_messages)
+    )
 
     adapter = DeepgramSTTAdapter(
         api_key="dg-test-key",
@@ -70,10 +95,11 @@ def test_deepgram_adapter_matches_protocol_and_transcribes(monkeypatch):
     session_id = asyncio.run(run_flow())
 
     assert adapter.get_transcript(session_id) == "xin chao audiomind"
-    assert _FakeAsyncClient.last_request["url"] == "https://api.deepgram.com/v1/listen"
-    assert _FakeAsyncClient.last_request["params"]["language"] == "vi"
-    assert _FakeAsyncClient.last_request["params"]["model"] == "nova-2"
-    assert _FakeAsyncClient.last_request["content"] == b"abcdef"
-    assert (
-        _FakeAsyncClient.last_request["headers"]["Authorization"] == "Token dg-test-key"
-    )
+    assert adapter.get_raw_response(session_id)["closed"] is True
+
+    connection = _FakeWebSocketModule.last_connection
+    assert connection["url"].startswith("wss://api.deepgram.com/v1/listen")
+    assert "language=vi" in connection["url"]
+    assert "model=nova-2" in connection["url"]
+    assert connection["extra_headers"] == [("Authorization", "Token dg-test-key")]
+    assert connection["websocket"].sent_messages == [b"abc", b"def"]

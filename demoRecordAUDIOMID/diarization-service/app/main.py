@@ -61,6 +61,70 @@ class DiarizationRuntime:
 
         return segments
 
+    def diarize_incremental(
+        self,
+        audio_path: str,
+        window_seconds: float = 15.0,
+        hop_seconds: float = 5.0,
+    ) -> list[dict]:
+        y, sr = librosa.load(audio_path, sr=None, mono=True)
+        duration = float(librosa.get_duration(y=y, sr=sr))
+
+        if len(y) == 0:
+            return []
+
+        window_samples = max(int(window_seconds * sr), 1)
+        hop_samples = max(int(hop_seconds * sr), 1)
+        segments: list[dict] = []
+        last_emitted_end = 0.0
+        speaker_index = 1
+
+        for window_start in range(0, len(y), hop_samples):
+            window_end = min(window_start + window_samples, len(y))
+            window_audio = y[window_start:window_end]
+            if len(window_audio) == 0:
+                continue
+
+            intervals = librosa.effects.split(window_audio, top_db=28)
+            if len(intervals) == 0:
+                continue
+
+            for interval in intervals:
+                start = round(float((window_start + interval[0]) / sr), 2)
+                end = round(float((window_start + interval[1]) / sr), 2)
+                if end <= start:
+                    continue
+
+                if end <= last_emitted_end + 0.05:
+                    continue
+
+                if start < last_emitted_end:
+                    start = round(last_emitted_end, 2)
+
+                if end <= start:
+                    continue
+
+                segments.append(
+                    {
+                        "speaker": f"SPEAKER_{speaker_index}",
+                        "start": start,
+                        "end": end,
+                    }
+                )
+                speaker_index = 2 if speaker_index == 1 else 1
+                last_emitted_end = end
+
+        if not segments:
+            return [
+                {
+                    "speaker": "SPEAKER_1",
+                    "start": 0.0,
+                    "end": round(duration, 2),
+                }
+            ]
+
+        return segments
+
 
 runtime = DiarizationRuntime()
 
@@ -78,7 +142,7 @@ app = FastAPI(title="diarization-service", version="1.0.0", lifespan=lifespan)
 def health() -> dict:
     return {
         "status": "ok",
-        "mode": "lightweight-local",
+        "mode": "incremental-window",
     }
 
 
@@ -95,5 +159,5 @@ def diarize(payload: DiarizeRequest) -> dict:
     if not audio_file.exists():
         raise HTTPException(status_code=404, detail=f"Audio not found: {payload.audio_path}")
 
-    segments = runtime.diarize_lightweight(str(audio_file))
-    return {"segments": segments, "mode": "lightweight"}
+    segments = runtime.diarize_incremental(str(audio_file))
+    return {"segments": segments, "mode": "incremental-window"}

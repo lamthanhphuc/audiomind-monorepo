@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { getAnalysis, getProcessingStatus, getTranscript, processAudio, uploadAudio } from './services/api'
 import { clearAccessToken, getAccessToken, login, setAccessToken } from './services/auth'
+import { REALTIME_WS_ENABLED } from './services/config'
 import { RealtimeMeetingView } from './components/RealtimeMeetingView'
 
 type ResultView = {
@@ -74,8 +75,7 @@ export default function App() {
   const [realtimeToken] = useState<string>('')
   const abortControllerRef = useRef<AbortController | null>(null)
 
-  // Check feature flag for realtime mode
-  const isRealtimeEnabled = process.env.REACT_APP_REALTIME_WS_ENABLED === 'true'
+  const isRealtimeEnabled = REALTIME_WS_ENABLED
 
   useEffect(() => {
     setIsAuthenticated(Boolean(getAccessToken()))

@@ -47,6 +47,36 @@ def test_diarize_lightweight_alternates_speakers_and_skips_invalid(monkeypatch):
     ]
 
 
+def test_diarize_incremental_merges_overlapping_windows(monkeypatch):
+    main = load_module()
+
+    monkeypatch.setattr(main.librosa, "load", lambda *_args, **_kwargs: (np.ones(40000), 16000))
+    monkeypatch.setattr(main.librosa, "get_duration", lambda **_kwargs: 2.5)
+
+    split_calls = []
+
+    def fake_split(window_audio, top_db=28):
+        split_calls.append(len(window_audio))
+        if len(split_calls) == 1:
+            return np.array([[0, 8000]])
+        if len(split_calls) == 2:
+            return np.array([[2000, 12000]])
+        return np.array([])
+
+    monkeypatch.setattr(main.librosa.effects, "split", fake_split)
+
+    segments = main.runtime.diarize_incremental(
+        "dummy.wav",
+        window_seconds=1.0,
+        hop_seconds=0.5,
+    )
+
+    assert segments == [
+        {"speaker": "SPEAKER_1", "start": 0.0, "end": 0.5},
+        {"speaker": "SPEAKER_2", "start": 0.62, "end": 1.25},
+    ]
+
+
 def test_diarize_endpoint_returns_404_when_file_missing():
     main = load_module()
     payload = main.DiarizeRequest(audio_path="/tmp/does-not-exist.wav")
