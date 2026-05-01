@@ -1,0 +1,25 @@
+syntax = "proto3";
+
+package audiomind.ai;
+
+import "realtime-events.proto";
+
+service AiStreamService {
+  rpc ProcessMeeting(ProcessMeetingRequest) returns (ProcessMeetingResponse);
+  rpc StreamAudio(stream audiomind.realtime.StreamEnvelope) returns (stream audiomind.realtime.StreamEnvelope);
+}
+
+message ProcessMeetingRequest {
+  int64 meeting_id = 1;
+  string audio_path = 2;
+  string language = 3;
+  string topic = 4;
+  string glossary_version = 5;
+  string trace_id = 6;
+}
+
+message ProcessMeetingResponse {
+  int64 meeting_id = 1;
+  string status = 2;
+  string message = 3;
+}

@@ -1,7 +1,7 @@
 # AudioMind Project - Complete Directory Structure
 
 ```
-demoRecord/
+demoRecordAUDIOMID/
 │
 ├── meeting-service/                    # Spring Boot - Meeting Management
 │   ├── src/
@@ -54,7 +54,7 @@ demoRecord/
 │   │       ├── audio_processor.py      # Audio preprocessing
 │   │       ├── speech_recognizer.py    # Whisper STT
 │   │       ├── speaker_diarizer.py     # Pyannote diarization
-│   │       └── ai_analyzer.py          # OpenAI analysis
+│   │       └── ai_analyzer.py          # LLM analysis (Ollama)
 │   │
 │   ├── alembic/                        # Database migrations
 │   │   ├── versions/
@@ -82,11 +82,8 @@ demoRecord/
 │   ├── SETUP.md                        # Setup instructions
 │   └── INTEGRATION.md                  # Integration guide
 │
-├── frontend/                           # Next.js Frontend (to be created)
+├── FE-Audiomind/                       # Vite React frontend
 │   ├── src/
-│   │   ├── app/
-│   │   ├── components/
-│   │   └── lib/
 │   ├── public/
 │   └── package.json
 │
@@ -100,7 +97,7 @@ demoRecord/
 - **processing-service**: 8082
 - **ai-service**: 8000
 - **PostgreSQL**: 5432
-- **Frontend**: 3000 (when implemented)
+- **Frontend**: 5173 (dev), 8080 (docker)
 
 ## Technology Stack
 
@@ -120,15 +117,14 @@ demoRecord/
 **ai-service (Python/FastAPI)**
 - FastAPI
 - SQLAlchemy
-- OpenAI Whisper
-- Pyannote.audio
-- OpenAI GPT-4
+- Whisper + Pyannote.audio
+- Ollama (LLM runtime)
+- Celery + Redis
 - PostgreSQL
 
-### Frontend (Future)
-- Next.js 14
+### Frontend
+- Vite
 - React 18
-- TailwindCSS
 - TypeScript
 
 ## Database Schema
@@ -141,6 +137,8 @@ CREATE TABLE meeting (
     id BIGSERIAL PRIMARY KEY,
     title VARCHAR(255),
     audio_path VARCHAR(500),
+   original_file_name VARCHAR(255),
+   owner_user_id BIGINT,
     created_at TIMESTAMP
 );
 
@@ -232,6 +230,11 @@ cd ai-service
 # Configure .env first!
 start.bat  # Windows
 ./start.sh # Linux/Mac
+
+# Terminal 4: FE-Audiomind
+cd ../FE-Audiomind
+npm install
+npm run dev
 ```
 
 ### 3. Test the System
@@ -267,18 +270,17 @@ curl http://localhost:8082/processing/1/analysis
    - Add new endpoints in `main.py`
    - Create migration: `alembic revision --autogenerate -m "description"`
 
-3. **Frontend (Future)**
-   - Add components in `components/`
-   - Add pages in `app/`
-   - Connect to backend APIs
+3. **Frontend (Hien tai)**
+   - Add components trong `src/`
+   - Ket noi API backend qua `src/services`
 
 ## Deployment
 
 ### Docker Deployment
 
 ```bash
-# Build all services
-docker-compose up --build
+# Build dev stack
+docker compose -f infra/docker-compose.dev.yml up -d --build
 
 # Or individual services
 cd ai-service

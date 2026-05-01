@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 from loguru import logger
 import sys
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 from uuid import uuid4
@@ -26,6 +27,10 @@ from app.schemas import (
     AnalysisResponse,
     TranscriptSegment,
     ActionItem,
+    GlossaryEntryCreate,
+    GlossaryEntryUpdate,
+    GlossaryEntryResponse,
+    GlossarySnapshotResponse,
 )
 from app.config import get_settings, get_runtime_device
 from app.ffmpeg_utils import ensure_ffmpeg_on_path
@@ -37,6 +42,10 @@ from app.job_status_store import (
     set_job_status,
 )
 from app.tasks import process_meeting
+from app.services.glossary_repository import GlossaryRepository
+from app.services.glossary_service import GlossaryService
+from app.services.stt_adapter import DeepgramSTTAdapter
+from app.services.grpc_stt_service import AiStreamServicer, create_grpc_server
 
 try:
     from app.pipeline import ProcessingPipeline
@@ -97,7 +106,41 @@ async def lifespan(_: FastAPI):
     logger.info(f"Device: {get_runtime_device()}")
     logger.info("=" * 50)
 
+    # Start gRPC server in a background thread
+    grpc_server = None
+    grpc_thread = None
+    try:
+        if stt_adapter:
+            servicer = AiStreamServicer(stt_adapter)
+            grpc_server = create_grpc_server(
+                servicer,
+                host="0.0.0.0",
+                port=50051,
+                max_workers=10,
+            )
+
+            def run_grpc_server():
+                logger.info("Starting gRPC server on port 50051...")
+                grpc_server.start()
+                logger.info("gRPC server started successfully")
+                grpc_server.wait_for_termination()
+
+            grpc_thread = threading.Thread(target=run_grpc_server, daemon=True)
+            grpc_thread.start()
+            logger.info("gRPC server thread started (daemon)")
+    except Exception as e:
+        logger.warning(f"gRPC server startup failed: {repr(e)}")
+
     yield
+
+    # Shutdown gRPC server
+    if grpc_server:
+        try:
+            logger.info("Shutting down gRPC server...")
+            grpc_server.stop(grace=5)
+            logger.info("gRPC server stopped")
+        except Exception as e:
+            logger.warning(f"Error during gRPC server shutdown: {repr(e)}")
 
     cleanup_expired_job_statuses()
     logger.info("AudioMind AI Service Shutting Down...")
@@ -114,6 +157,23 @@ app = FastAPI(
 # Initialize pipeline
 pipeline = ProcessingPipeline() if ProcessingPipeline is not None else None
 settings = get_settings()
+stt_adapter = (
+    DeepgramSTTAdapter(
+        api_key=settings.deepgram_api_key,
+        model=settings.deepgram_model,
+        base_url=settings.deepgram_base_url,
+        timeout_seconds=settings.deepgram_timeout_seconds,
+    )
+    if settings.deepgram_api_key
+    else None
+)
+
+
+def _glossary_service(db: Session) -> GlossaryService:
+    return GlossaryService(
+        GlossaryRepository(db),
+        cache_ttl_seconds=settings.glossary_cache_ttl_seconds,
+    )
 
 
 def _resolve_cors_origins() -> list[str]:
@@ -455,6 +515,58 @@ async def get_analysis(meeting_id: int, db: Session = Depends(get_db)):
             status_code=500,
             detail=f"Internal server error. request_id={request_id}",
         )
+
+
+@app.get("/api/glossary", response_model=list[GlossaryEntryResponse])
+def list_glossary_entries(domain: str | None = None, db: Session = Depends(get_db)):
+    service = _glossary_service(db)
+    return service.list_entries(domain)
+
+
+@app.get("/api/glossary/snapshot", response_model=GlossarySnapshotResponse)
+def get_glossary_snapshot(domain: str | None = None, db: Session = Depends(get_db)):
+    service = _glossary_service(db)
+    snapshot = service.get_snapshot(domain)
+    return GlossarySnapshotResponse(
+        domain=domain,
+        version_hash=snapshot.version_hash,
+        version_id=snapshot.version_id,
+        terms=snapshot.terms,
+        topic_defaults=snapshot.topic_defaults,
+        normalization_map=snapshot.normalization_map,
+    )
+
+
+@app.post("/api/glossary", response_model=GlossaryEntryResponse)
+def create_glossary_entry(payload: GlossaryEntryCreate, db: Session = Depends(get_db)):
+    service = _glossary_service(db)
+    entry = service.create_entry(payload)
+    service.invalidate(entry.domain)
+    return entry
+
+
+@app.put("/api/glossary/{entry_id}", response_model=GlossaryEntryResponse)
+def update_glossary_entry(
+    entry_id: int, payload: GlossaryEntryUpdate, db: Session = Depends(get_db)
+):
+    service = _glossary_service(db)
+    try:
+        entry = service.update_entry(entry_id, payload)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    service.invalidate(entry.domain)
+    return entry
+
+
+@app.delete("/api/glossary/{entry_id}")
+def delete_glossary_entry(entry_id: int, db: Session = Depends(get_db)):
+    service = _glossary_service(db)
+    try:
+        entry = service.delete_entry(entry_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    service.invalidate(entry.domain)
+    return {"deleted": True, "id": entry_id}
 
 
 if __name__ == "__main__":

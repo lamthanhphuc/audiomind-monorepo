@@ -5,46 +5,48 @@ Accepted
 
 ## Context
 He thong gom:
-- meeting-api (metadata, lifecycle)
-- processing-api (orchestration)
-- ai-api (AI pipeline)
+- meeting-service (metadata, lifecycle)
+- processing-service (orchestration)
+- ai-service (AI pipeline + celery)
+- whisper-service, diarization-service (STT/diarization)
 
 Yeu cau:
-- scale AI doc lap
-- maintain de
-- AI agent doc/trace de
+- Scale AI doc lap, tach tai nguyen GPU/CPU
+- Duy tri boundary ro rang giua cac service
+- Trace end-to-end cho chuoi xu ly meeting
 
 ## Decision
 Chon:
-- Modular Monorepo
-- Clean Architecture per service
+- Modular Monorepo cho toan bo service
+- Clean Architecture per service (controller -> service -> repository)
+- Contract tap trung trong packages/contracts
 
 ## Consequences
 
 ### Positive
-- Boundary ro rang
-- Contract centralized
-- AI agent trace end-to-end de
+- Boundary ro rang, de quan ly quyen truy cap
+- Contract centralized, giam drift
+- Trace end-to-end de dong bo log/metrics
 
 ### Negative
-- Can enforce CI manh
+- Can enforce CI/quality gate manh
 - Setup ban dau phuc tap hon
 
 ## Rules
 
-1. Khong cross-database access
+1. Khong cross-database access giua service.
 2. Giao tiep chi qua:
    - OpenAPI (sync)
    - Event schema (async)
-3. Moi service tuan thu clean layers
+3. Moi service tuan thu clean layers, controller khong nhung business rules.
 
 ## Alternatives Considered
 
 ### Monolith
-- Khong scale tot AI pipeline
+- Khong scale tot AI pipeline va GPU workload.
 
 ### Multi-repo
-- Drift contract + kho trace
+- Contract drift, kho dong bo trace.
 
 ## References
 - /docs/architecture/*

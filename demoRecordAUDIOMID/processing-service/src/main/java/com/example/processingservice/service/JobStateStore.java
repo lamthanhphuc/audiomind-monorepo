@@ -3,6 +3,7 @@ package com.example.processingservice.service;
 import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.data.redis.core.script.RedisScript;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -21,7 +22,6 @@ import java.util.Optional;
 @RequiredArgsConstructor
 public class JobStateStore {
 
-    private static final Duration TTL = Duration.ofSeconds(3600);
     private static final Type MAP_TYPE = new TypeToken<Map<String, Object>>() {
     }.getType();
         private static final RedisScript<Long> UPSERT_JOB_STATE_SCRIPT = new DefaultRedisScript<>(
@@ -48,10 +48,19 @@ public class JobStateStore {
                 + "    return next == 'RUNNING' or next == 'RETRYING' or next == 'COMPLETED' or next == 'FAILED'\n"
                 + "  end\n"
                 + "  if current == 'RUNNING' then\n"
-                + "    return next == 'RETRYING' or next == 'COMPLETED' or next == 'FAILED'\n"
+                + "    return next == 'RETRYING' or next == 'COMPLETED' or next == 'FAILED' or next == 'PARTIAL' or next == 'DEGRADED' or next == 'RECONNECTING'\n"
+                + "  end\n"
+                + "  if current == 'PARTIAL' then\n"
+                + "    return next == 'RUNNING' or next == 'RECONNECTING' or next == 'DEGRADED' or next == 'COMPLETED' or next == 'FAILED'\n"
+                + "  end\n"
+                + "  if current == 'DEGRADED' then\n"
+                + "    return next == 'RUNNING' or next == 'PARTIAL' or next == 'RECONNECTING' or next == 'COMPLETED' or next == 'FAILED'\n"
+                + "  end\n"
+                + "  if current == 'RECONNECTING' then\n"
+                + "    return next == 'RUNNING' or next == 'PARTIAL' or next == 'DEGRADED' or next == 'COMPLETED' or next == 'FAILED'\n"
                 + "  end\n"
                 + "  if current == 'RETRYING' then\n"
-                + "    return next == 'RUNNING' or next == 'COMPLETED' or next == 'FAILED'\n"
+                + "    return next == 'RUNNING' or next == 'COMPLETED' or next == 'FAILED' or next == 'PARTIAL' or next == 'DEGRADED' or next == 'RECONNECTING'\n"
                 + "  end\n"
                 + "  return false\n"
                 + "end\n"
@@ -82,6 +91,9 @@ public class JobStateStore {
     private final StringRedisTemplate redisTemplate;
     private final Gson gson = new Gson();
 
+    @Value("${processing.job-state-ttl-seconds:21600}")
+    private long jobStateTtlSeconds;
+
     public record IdempotencyClaim(Long jobId, boolean owner) {
     }
 
@@ -98,12 +110,12 @@ public class JobStateStore {
     }
 
     public boolean createIdempotencyMapping(String fileId, Long jobId) {
-        Boolean created = redisTemplate.opsForValue().setIfAbsent(idempotencyKey(fileId), String.valueOf(jobId), TTL);
+        Boolean created = redisTemplate.opsForValue().setIfAbsent(idempotencyKey(fileId), String.valueOf(jobId), jobStateTtl());
         return Boolean.TRUE.equals(created);
     }
 
     public IdempotencyClaim claimIdempotency(String fileId, Long requestedJobId) {
-        Boolean created = redisTemplate.opsForValue().setIfAbsent(idempotencyKey(fileId), String.valueOf(requestedJobId), TTL);
+        Boolean created = redisTemplate.opsForValue().setIfAbsent(idempotencyKey(fileId), String.valueOf(requestedJobId), jobStateTtl());
         if (Boolean.TRUE.equals(created)) {
             return new IdempotencyClaim(requestedJobId, true);
         }
@@ -145,7 +157,7 @@ public class JobStateStore {
                 resolvedTraceId,
                 now,
                 createdAt,
-                String.valueOf(TTL.getSeconds()),
+                String.valueOf(jobStateTtlSeconds),
                 String.valueOf(jobId)
             );
 
@@ -209,7 +221,11 @@ public class JobStateStore {
             hash.put(entry.getKey(), encodeHashValue(entry.getValue()));
         }
         redisTemplate.opsForHash().putAll(jobKey(jobId), hash);
-        redisTemplate.expire(jobKey(jobId), TTL);
+        redisTemplate.expire(jobKey(jobId), jobStateTtl());
+    }
+
+    private Duration jobStateTtl() {
+        return Duration.ofSeconds(jobStateTtlSeconds);
     }
 
     private Object decodeHashValue(String field, String value) {

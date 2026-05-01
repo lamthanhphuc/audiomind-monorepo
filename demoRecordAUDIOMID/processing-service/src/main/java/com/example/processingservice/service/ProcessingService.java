@@ -12,8 +12,11 @@ import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
+import org.springframework.web.client.HttpStatusCodeException;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -78,7 +81,7 @@ public class ProcessingService {
             if (!claim.owner()) {
                 Long existingJobId = claim.jobId();
                 log.info("[traceId={}] [jobId={}] idempotency hit for fileId={}", traceId, existingJobId, resolvedFileId);
-                ProcessingStatusResponse existing = getProcessingStatus(existingJobId, traceId);
+                ProcessingStatusResponse existing = getProcessingStatus(existingJobId, traceId, authorization);
                 return new ProcessStartResponse(existing.meetingId(), existing.status(), existing.error(), existing.updatedAt());
             }
 
@@ -94,7 +97,7 @@ public class ProcessingService {
                 throw ex;
             }
 
-            ProcessingStatusResponse status = getProcessingStatus(meetingId, traceId);
+            ProcessingStatusResponse status = getProcessingStatus(meetingId, traceId, authorization);
             return new ProcessStartResponse(status.meetingId(), status.status(), status.error(), status.updatedAt());
         }
     }
@@ -153,12 +156,32 @@ public class ProcessingService {
         return aiServiceClient.uploadAudio(file, traceId, authorization);
     }
 
+    /**
+     * Upload audio file asynchronously to avoid blocking the request thread on large uploads.
+     * Returns a CompletableFuture that completes when upload finishes.
+     */
+    public java.util.concurrent.CompletableFuture<Map<String, Object>> uploadAudioAsync(
+            MultipartFile file, String traceId, String authorization) {
+        return java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+            try {
+                log.info("[traceId={}] Starting async audio upload, file size: {} bytes", traceId, file.getSize());
+                Map<String, Object> result = uploadAudio(file, traceId, authorization);
+                log.info("[traceId={}] Async audio upload completed", traceId);
+                return result;
+            } catch (Exception e) {
+                log.error("[traceId={}] Async audio upload failed: {}", traceId, e.getMessage(), e);
+                throw new RuntimeException("Audio upload failed: " + e.getMessage(), e);
+            }
+        });
+    }
+
     public ProcessingStatusResponse getProcessingStatus(Long meetingId, String traceId) {
         return getProcessingStatus(meetingId, traceId, null);
     }
 
     public ProcessingStatusResponse getProcessingStatus(Long meetingId, String traceId, String authorization) {
         try (MDC.MDCCloseable ignored = MDC.putCloseable("jobId", String.valueOf(meetingId))) {
+            assertMeetingAccess(meetingId, traceId, authorization);
             Map<String, Object> state = jobStateStore.getJobState(meetingId).orElse(null);
             if (state == null) {
                 return new ProcessingStatusResponse(meetingId, "NOT_FOUND", 0, "unknown", null, null);
@@ -182,6 +205,7 @@ public class ProcessingService {
     }
 
     public Map<String, Object> getTranscript(Long meetingId, String traceId, String authorization) {
+        assertMeetingAccess(meetingId, traceId, authorization);
         Map<String, Object> state = jobStateStore.getJobState(meetingId).orElse(null);
         if (state == null) {
             return Map.of("meeting_id", meetingId, "status", "NOT_FOUND", "transcripts", List.of());
@@ -201,6 +225,7 @@ public class ProcessingService {
     }
 
     public Map<String, Object> getAnalysis(Long meetingId, String traceId, String authorization) {
+        assertMeetingAccess(meetingId, traceId, authorization);
         Map<String, Object> state = jobStateStore.getJobState(meetingId).orElse(null);
         if (state == null) {
             return Map.of("meeting_id", meetingId, "status", "NOT_FOUND");
@@ -259,6 +284,24 @@ public class ProcessingService {
             return audioPath;
         }
         return "legacy-meeting:" + meetingId;
+    }
+
+    private void assertMeetingAccess(Long meetingId, String traceId, String authorization) {
+        if (authorization == null || authorization.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Missing authorization");
+        }
+        try {
+            meetingServiceClient.getMeetingById(meetingId, traceId, authorization);
+        } catch (HttpStatusCodeException ex) {
+            int status = ex.getStatusCode().value();
+            if (status == HttpStatus.FORBIDDEN.value()) {
+                throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Forbidden");
+            }
+            if (status == HttpStatus.NOT_FOUND.value()) {
+                throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Meeting not found");
+            }
+            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "Meeting service error");
+        }
     }
 
     @SuppressWarnings("unchecked")

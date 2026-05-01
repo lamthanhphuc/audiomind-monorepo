@@ -1,6 +1,7 @@
-import { readdirSync } from "node:fs";
-import { execSync } from "node:child_process";
+import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import Ajv from "ajv/dist/2020.js";
+import addFormats from "ajv-formats";
 
 const contractsDir = join("packages", "contracts");
 const schemaFiles = readdirSync(contractsDir)
@@ -12,11 +13,19 @@ if (schemaFiles.length === 0) {
   process.exit(0);
 }
 
+const ajv = new Ajv({ allErrors: true });
+addFormats(ajv);
+
 for (const schemaPath of schemaFiles) {
   console.log(`Validating ${schemaPath}`);
-  execSync(`npx ajv compile --spec=draft2020 -c ajv-formats -s \"${schemaPath}\"`, {
-    stdio: "inherit",
-  });
+  const schema = JSON.parse(readFileSync(schemaPath, "utf-8"));
+  try {
+    ajv.compile(schema);
+  } catch (error) {
+    console.error(`Schema validation failed for ${schemaPath}`);
+    console.error(error);
+    process.exit(1);
+  }
 }
 
 console.log(`Validated ${schemaFiles.length} schema file(s).`);

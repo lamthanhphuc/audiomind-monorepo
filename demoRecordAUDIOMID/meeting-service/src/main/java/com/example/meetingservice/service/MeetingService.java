@@ -21,12 +21,17 @@ public class MeetingService {
     }
 
     public Meeting saveMeeting(String title, String audioPath, Long ownerUserId){
+        return saveMeeting(title, audioPath, ownerUserId, null);
+    }
+
+    public Meeting saveMeeting(String title, String audioPath, Long ownerUserId, String originalFileName){
 
         Meeting meeting = new Meeting();
 
         meeting.setTitle(title);
         meeting.setAudioPath(audioPath);
         meeting.setOwnerUserId(ownerUserId);
+        meeting.setOriginalFileName(originalFileName);
         meeting.setCreatedAt(LocalDateTime.now());
 
         return meetingRepository.save(meeting);

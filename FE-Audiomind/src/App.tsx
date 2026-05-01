@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { getAnalysis, getProcessingStatus, getTranscript, processAudio, uploadAudio } from './services/api'
 import { clearAccessToken, getAccessToken, login, setAccessToken } from './services/auth'
+import { RealtimeMeetingView } from './components/RealtimeMeetingView'
 
 type ResultView = {
   meetingId: number
@@ -67,7 +68,14 @@ export default function App() {
   const [password, setPassword] = useState('')
   const [authError, setAuthError] = useState('')
   const [isAuthenticated, setIsAuthenticated] = useState(false)
+  const [viewMode, setViewMode] = useState<'batch' | 'realtime'>('batch')
+  const [realtimeMeetingId, setRealtimeMeetingId] = useState<number | null>(null)
+  const [realtimeUserId, setRealtimeUserId] = useState<number | null>(null)
+  const [realtimeToken] = useState<string>('')
   const abortControllerRef = useRef<AbortController | null>(null)
+
+  // Check feature flag for realtime mode
+  const isRealtimeEnabled = process.env.REACT_APP_REALTIME_WS_ENABLED === 'true'
 
   useEffect(() => {
     setIsAuthenticated(Boolean(getAccessToken()))
@@ -196,6 +204,27 @@ export default function App() {
     )
   }
 
+  // Show realtime view if enabled and mode is realtime
+  if (isRealtimeEnabled && viewMode === 'realtime' && realtimeMeetingId && realtimeUserId) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
+        <div style={{ padding: '12px 20px', borderBottom: '1px solid #e2e8f0', background: '#f8fafc' }}>
+          <button onClick={() => setViewMode('batch')} style={{ marginRight: 8 }}>
+            ← Back to Batch Mode
+          </button>
+          <button onClick={handleLogout} style={{ float: 'right' }}>
+            Đăng xuất
+          </button>
+        </div>
+        <RealtimeMeetingView
+          meetingId={realtimeMeetingId}
+          userId={realtimeUserId}
+          token={realtimeToken}
+        />
+      </div>
+    )
+  }
+
   return (
     <main style={{ maxWidth: 720, margin: '40px auto', fontFamily: 'Segoe UI, sans-serif', padding: 16 }}>
       <h1>AudioMind Production Flow</h1>
@@ -203,6 +232,46 @@ export default function App() {
       <button type="button" onClick={handleLogout} style={{ marginBottom: 16 }}>
         Đăng xuất
       </button>
+
+      {isRealtimeEnabled && (
+        <div style={{ marginBottom: 16, padding: 12, background: '#e0e7ff', borderRadius: 8 }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={viewMode === 'realtime'}
+              onChange={(e) => {
+                setViewMode(e.target.checked ? 'realtime' : 'batch')
+                if (e.target.checked && realtimeMeetingId) {
+                  // Keep existing realtime session
+                } else {
+                  setRealtimeMeetingId(null)
+                }
+              }}
+            />
+            Realtime Mode (Beta)
+          </label>
+          {viewMode === 'realtime' && !realtimeMeetingId && (
+            <div style={{ marginTop: 12, display: 'grid', gap: 8 }}>
+              <input
+                type="number"
+                placeholder="Meeting ID"
+                onChange={(e) => setRealtimeMeetingId(Number(e.target.value) || null)}
+              />
+              <input
+                type="number"
+                placeholder="User ID"
+                onChange={(e) => setRealtimeUserId(Number(e.target.value) || null)}
+              />
+              <button
+                onClick={() => realtimeMeetingId && realtimeUserId && setViewMode('realtime')}
+                disabled={!realtimeMeetingId || !realtimeUserId}
+              >
+                Join Meeting
+              </button>
+            </div>
+          )}
+        </div>
+      )}
 
       <div style={{ display: 'grid', gap: 12, marginBottom: 16 }}>
         <input

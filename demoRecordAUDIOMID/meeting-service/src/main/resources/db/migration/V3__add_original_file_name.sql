@@ -1,0 +1,1 @@
+ALTER TABLE meeting ADD COLUMN IF NOT EXISTS original_file_name VARCHAR(255);
