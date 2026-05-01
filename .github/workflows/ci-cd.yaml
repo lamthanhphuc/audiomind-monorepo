@@ -47,10 +47,10 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           for i in 1 2 3; do
-            pip install --retries 5 --timeout 120 -r demoRecordAUDIOMID/ai-service/requirements.txt \
-            && pip install --retries 5 --timeout 120 -r demoRecordAUDIOMID/ai-processing-service/requirements.txt \
-            && pip install --retries 5 --timeout 120 -r demoRecordAUDIOMID/whisper-service/requirements.txt \
-            && pip install --retries 5 --timeout 120 -r demoRecordAUDIOMID/diarization-service/requirements.txt \
+            pip install --retries 5 --timeout 120 -r demoRecordAUDIOMID/ai-service/requirements.txt -c demoRecordAUDIOMID/ai-service/constraints.txt \
+            && pip install --retries 5 --timeout 120 -r demoRecordAUDIOMID/ai-processing-service/requirements.txt -c demoRecordAUDIOMID/ai-service/constraints.txt \
+            && pip install --retries 5 --timeout 120 -r demoRecordAUDIOMID/whisper-service/requirements.txt -c demoRecordAUDIOMID/ai-service/constraints.txt \
+            && pip install --retries 5 --timeout 120 -r demoRecordAUDIOMID/diarization-service/requirements.txt -c demoRecordAUDIOMID/ai-service/constraints.txt \
             && break
             if [ "$i" -eq 3 ]; then
               echo "pip install failed after 3 attempts"
@@ -95,7 +95,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           for i in 1 2 3; do
-            pip install --retries 5 --timeout 120 -r demoRecordAUDIOMID/ai-service/requirements.txt \
+            pip install --retries 5 --timeout 120 -r demoRecordAUDIOMID/ai-service/requirements.txt -c demoRecordAUDIOMID/ai-service/constraints.txt \
             && pip install --retries 5 --timeout 120 pytest \
             && break
             if [ "$i" -eq 3 ]; then
