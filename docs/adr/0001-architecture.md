@@ -20,6 +20,7 @@ Chon:
 - Modular Monorepo cho toan bo service
 - Clean Architecture per service (controller -> service -> repository)
 - Contract tap trung trong packages/contracts
+- Giao tiep service-to-service uu tien gRPC (binary, streaming) cho low-latency path; browser-facing APIs use REST + WebSocket for realtime push
 
 ## Consequences
 
