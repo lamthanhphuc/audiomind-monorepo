@@ -29,6 +29,8 @@ class Settings(BaseSettings):
     deepgram_model: str = "nova-2"
     deepgram_base_url: str = "https://api.deepgram.com/v1/listen"
     deepgram_timeout_seconds: int = 30
+    deepgram_simplify_streaming_url: bool = False
+    deepgram_debug_raw_messages: bool = False
 
     # LLM Provider
     ai_provider: str = "ollama"  # Ollama-only mode
@@ -71,6 +73,29 @@ class Settings(BaseSettings):
     chunk_state_ttl_seconds: int = 3600
     redis_max_connections: int = 10
     glossary_cache_ttl_seconds: int = 300
+
+    # Deepgram STT hardening
+    stt_audio_queue_max_items: int = 64
+    stt_audio_queue_max_bytes: int = 8 * 1024 * 1024
+    stt_recv_queue_max_items: int = 256
+    stt_recv_queue_max_bytes: int = 4 * 1024 * 1024
+    stt_persist_queue_max_items: int = 512
+    stt_persist_queue_max_bytes: int = 16 * 1024 * 1024
+    stt_enqueue_timeout_seconds: float = 2.0
+    stt_gap_timeout_seconds: float = 1.0
+    stt_recv_drain_timeout_seconds: float = 1.0
+    stt_transient_retry_base_seconds: float = 0.25
+    stt_transient_retry_cap_seconds: float = 2.0
+    stt_reconnect_budget: int = 2
+    stt_reconnect_window_seconds: float = 60.0
+    stt_reconnect_cooldown_seconds: float = 60.0
+    stt_queue_pressure_ratio: float = 0.85
+    stt_overload_policy: str = "drop_newest"
+    stt_watchdog_interval_seconds: float = 5.0
+    stt_recv_stall_seconds: float = 30.0
+    stt_persist_stall_seconds: float = 30.0
+    stt_half_open_stall_seconds: float = 15.0
+    stt_shutdown_grace_seconds: float = 15.0
 
     # Async processing
     celery_broker_url: str = "redis://redis:6379/0"

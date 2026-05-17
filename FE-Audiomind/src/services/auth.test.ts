@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { clearAccessToken, getAccessToken, login, setAccessToken } from './auth'
+import { clearAccessToken, getAccessToken, getCurrentUserId, login, parseJwt, setAccessToken } from './auth'
 
 const originalFetch = global.fetch
 
@@ -13,6 +13,14 @@ afterEach(() => {
 })
 
 describe('auth service', () => {
+  it('parses JWT payloads', () => {
+    const payload = { sub: '42', username: 'demo' }
+    const encodedPayload = btoa(JSON.stringify(payload)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
+    const token = `header.${encodedPayload}.signature`
+
+    expect(parseJwt(token)).toEqual(payload)
+  })
+
   it('stores and clears access token in localStorage', () => {
     setAccessToken('token-abc')
     expect(getAccessToken()).toBe('token-abc')
@@ -44,6 +52,16 @@ describe('auth service', () => {
     expect(getAccessToken()).toBe('token-valid')
 
     vi.useRealTimers()
+  })
+
+  it('extracts current user id from JWT subject', () => {
+    const payload = { sub: '123', username: 'demo' }
+    const encodedPayload = btoa(JSON.stringify(payload)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
+    const token = `header.${encodedPayload}.signature`
+
+    setAccessToken(token)
+
+    expect(getCurrentUserId()).toBe('123')
   })
 
   it('returns auth response on successful login', async () => {

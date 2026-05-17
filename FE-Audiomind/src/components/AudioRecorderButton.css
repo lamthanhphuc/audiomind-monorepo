@@ -1,0 +1,113 @@
+.audio-recorder-widget {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 1rem;
+  border-radius: 1.25rem;
+  background: linear-gradient(180deg, rgba(15, 23, 42, 0.04), rgba(15, 23, 42, 0.08));
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  box-shadow: 0 20px 45px rgba(15, 23, 42, 0.08);
+}
+
+.audio-recorder-button {
+  width: 5.5rem;
+  height: 5.5rem;
+  border: none;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: #f8fafc;
+  background: linear-gradient(135deg, #0f172a, #334155);
+  box-shadow: 0 16px 35px rgba(15, 23, 42, 0.25);
+  transition: transform 160ms ease, box-shadow 160ms ease, background 160ms ease;
+}
+
+.audio-recorder-button:hover:not(:disabled) {
+  transform: translateY(-1px) scale(1.01);
+  box-shadow: 0 20px 40px rgba(15, 23, 42, 0.28);
+}
+
+.audio-recorder-button:disabled {
+  cursor: wait;
+  opacity: 0.8;
+}
+
+.audio-recorder-button--recording {
+  background: linear-gradient(135deg, #b91c1c, #ef4444);
+  animation: audioRecorderPulse 1.2s ease-in-out infinite;
+}
+
+.audio-recorder-button--paused {
+  background: linear-gradient(135deg, #b45309, #f59e0b);
+  animation: audioRecorderBlink 1s steps(2, end) infinite;
+}
+
+.audio-recorder-button--error {
+  background: linear-gradient(135deg, #7f1d1d, #dc2626);
+}
+
+.audio-recorder-button__icon {
+  font-size: 1.8rem;
+  line-height: 1;
+}
+
+.audio-recorder-widget__meta {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
+  text-align: center;
+}
+
+.audio-recorder-widget__status {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.audio-recorder-widget__hint {
+  font-size: 0.85rem;
+  color: #475569;
+}
+
+.audio-recorder-widget__error {
+  max-width: 28rem;
+  padding: 0.75rem 1rem;
+  border-radius: 0.75rem;
+  background: #fee2e2;
+  color: #991b1b;
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
+.audio-recorder-widget__timer {
+  padding: 0.35rem 0.75rem;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.08);
+  color: #0f172a;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.08em;
+}
+
+@keyframes audioRecorderPulse {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.04);
+  }
+}
+
+@keyframes audioRecorderBlink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.72;
+  }
+}

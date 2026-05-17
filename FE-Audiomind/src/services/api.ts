@@ -167,3 +167,70 @@ export const processMeeting = async (meetingId: string) => {
 export const getMeeting = async (meetingId: string): Promise<GetMeetingResponse> => {
   return fetchJson<GetMeetingResponse>(`${MEETING_API_BASE}/api/v1/meetings/${meetingId}`)
 }
+
+/**
+ * Returns standard auth + trace headers for API calls.
+ * Use this when calling APIs outside of fetchJson (e.g. WebSocket, direct fetch).
+ */
+export const getAuthHeaders = (): Record<string, string> => {
+  const headers: Record<string, string> = {}
+  const accessToken = getAccessToken()
+  if (accessToken) {
+    headers['Authorization'] = `Bearer ${accessToken}`
+  }
+  headers['x-trace-id'] = createTraceId()
+  headers['x-request-id'] = headers['x-trace-id']
+  return headers
+}
+
+/**
+ * Upload file to meeting-api which creates a Meeting record AND saves the file.
+ * Returns the persisted Meeting entity with id and audioPath.
+ */
+export const uploadToMeetingApi = async (
+  title: string, file: File
+): Promise<{ id: number; audioPath: string; title: string }> => {
+  const body = new FormData()
+  body.append('title', title)
+  body.append('file', file)
+  // Do NOT set Content-Type manually — browser auto-adds multipart boundary
+  return fetchJson<{ id: number; audioPath: string; title: string }>(
+    `${MEETING_API_BASE}/meetings/upload`,
+    { method: 'POST', body }
+  )
+}
+
+/**
+ * Start processing for an existing meeting by its ID.
+ */
+export const startProcessingByPath = async (meetingId: number) => {
+  return fetchJson<Record<string, unknown>>(
+    `${PROCESSING_API_BASE}/processing/start/${meetingId}`,
+    { method: 'POST' }
+  )
+}
+
+/**
+ * Poll with automatic retry on transient errors (network, 5xx).
+ * Throws immediately on 4xx (client errors like 401, 404) — no retry.
+ */
+export const pollWithRetry = async (
+  meetingId: number,
+  retries = 3,
+  delay = 2000
+): Promise<ReturnType<typeof getProcessingStatus>> => {
+  for (let i = 0; i < retries; i++) {
+    try {
+      return await getProcessingStatus(meetingId)
+    } catch (error) {
+      // Don't retry 4xx client errors
+      if (error instanceof ApiError && error.status >= 400 && error.status < 500) {
+        throw error
+      }
+      if (i === retries - 1) throw error
+      console.warn(`Polling failed, retrying in ${delay}ms...`, error)
+      await new Promise(resolve => setTimeout(resolve, delay))
+    }
+  }
+  throw new Error('Unreachable')
+}

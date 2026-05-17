@@ -23,8 +23,6 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestPart;
 import org.springframework.web.server.ResponseStatusException;
-import org.springframework.web.context.request.async.DeferredResult;
-import java.util.concurrent.CompletableFuture;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.util.List;
@@ -40,23 +38,11 @@ public class ProcessingController {
     private final ProcessingService processingService;
 
     @PostMapping("/upload")
-    public DeferredResult<Map<String, Object>> upload(
+    public Map<String, Object> upload(
             @RequestPart("file") MultipartFile file,
             @RequestHeader(value = "x-trace-id", required = false) String traceId,
             @RequestHeader(HttpHeaders.AUTHORIZATION) String authorization) {
-        DeferredResult<Map<String, Object>> result = new DeferredResult<>(30000L); // 30 second timeout
-        
-        processingService.uploadAudioAsync(file, ensureTraceId(traceId), authorization)
-                .thenAccept(result::setResult)
-                .exceptionally(ex -> {
-                    result.setErrorResult(new ResponseStatusException(
-                            HttpStatus.INTERNAL_SERVER_ERROR,
-                            "Upload failed: " + ex.getMessage()
-                    ));
-                    return null;
-                });
-        
-        return result;
+        return processingService.uploadAudio(file, ensureTraceId(traceId), authorization);
     }
 
     @PostMapping("/start")

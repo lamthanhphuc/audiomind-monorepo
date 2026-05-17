@@ -1,3 +1,10 @@
+# ============================================================================
+# ⚠️  STANDALONE DEV ONLY — DO NOT USE FOR INTEGRATION TESTING
+# For full-stack orchestration, use: infra/docker-compose.dev.yml
+# This file creates isolated containers (ai-service-gpu, ai-redis) that
+# cannot communicate with meeting-api, processing-api, or the shared redis.
+# ============================================================================
+
 services:
   db:
     image: postgres:15.7

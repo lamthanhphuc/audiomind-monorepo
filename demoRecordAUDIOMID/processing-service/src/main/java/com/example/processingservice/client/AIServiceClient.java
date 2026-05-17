@@ -24,6 +24,8 @@ import org.springframework.util.StringUtils;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
+import java.util.Arrays;
+import java.util.HexFormat;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -197,6 +199,56 @@ public class AIServiceClient {
         return requireBody(response, "uploadAudio", 0L);
     }
 
+    @Retry(name = "ai-service")
+    @CircuitBreaker(name = "ai-service")
+    @Retryable(
+        retryFor = { RestClientException.class, IllegalStateException.class },
+        maxAttempts = 3,
+        backoff = @Backoff(delay = 1000, multiplier = 2.0)
+    )
+    public Map<String, Object> streamAudioChunk(
+            Long meetingId,
+            byte[] audioChunk,
+            Long seq,
+            String language,
+            boolean isFinal,
+            String traceId,
+            String authorization) {
+
+        HttpHeaders headers = new HttpHeaders();
+        String resolvedTraceId = resolveTraceId(traceId);
+        headers.add("x-trace-id", resolvedTraceId);
+        headers.add("x-request-id", resolvedTraceId);
+        if (StringUtils.hasText(authorization)) {
+            headers.add(HttpHeaders.AUTHORIZATION, authorization);
+        }
+        headers.setContentType(MediaType.MULTIPART_FORM_DATA);
+
+        MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
+        body.add("meeting_id", String.valueOf(meetingId));
+        body.add("audio_chunk", toNamedResource(audioChunk, meetingId, seq));
+        body.add("seq", String.valueOf(seq == null ? 0L : seq));
+        body.add("language", StringUtils.hasText(language) ? language : "vi");
+        body.add("is_final", String.valueOf(isFinal));
+        log.info(
+            "AUDIO HASH PROCESSING_OUT meetingId={} seq={} size={} first16hex={}",
+            meetingId,
+                seq,
+                audioChunk == null ? 0 : audioChunk.length,
+                first16Hex(audioChunk)
+        );
+
+        ResponseEntity<Map<String, Object>> response = restTemplate.exchange(
+                aiUrl + "/api/v1/stt/stream",
+                HttpMethod.POST,
+                new HttpEntity<>(body, headers),
+                new ParameterizedTypeReference<>() {
+                }
+        );
+
+        return requireBody(response, "streamAudioChunk", meetingId);
+    }
+
     public void health() {
         try {
             ResponseEntity<Map<String, Object>> response = restTemplate.exchange(
@@ -235,7 +287,7 @@ public class AIServiceClient {
                 @Override
                 public String getFilename() {
                     if (file.getOriginalFilename() == null || file.getOriginalFilename().isBlank()) {
-                        return "audio.wav";
+                        return "audio.webm";
                     }
                     return file.getOriginalFilename();
                 }
@@ -243,5 +295,29 @@ public class AIServiceClient {
         } catch (IOException e) {
             throw new IllegalStateException("Unable to read upload payload", e);
         }
+    }
+
+    private ByteArrayResource toNamedResource(byte[] audioChunk, Long meetingId, Long seq) {
+        // Avoid unnecessary copy - use the original array
+        // If audioChunk is empty, use empty array
+        final byte[] payload = audioChunk == null ? new byte[0] : audioChunk;
+        return new ByteArrayResource(payload) {
+            @Override
+            public String getFilename() {
+                long resolvedSeq = seq == null ? 0L : seq;
+                return "meeting-" + meetingId + "-seq-" + resolvedSeq + ".webm";
+            }
+
+            @Override
+            public long contentLength() {
+                // Override to return correct content length without creating additional copies
+                return payload.length;
+            }
+        };
+    }
+
+    private String first16Hex(byte[] audioBytes) {
+        byte[] payload = audioBytes == null ? new byte[0] : audioBytes;
+        return HexFormat.of().formatHex(Arrays.copyOfRange(payload, 0, Math.min(16, payload.length)));
     }
 }

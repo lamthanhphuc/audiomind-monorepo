@@ -1,5 +1,25 @@
 server:
   port: 8082
+  tomcat:
+    # WebSocket buffer sizes - 512MB to handle large transcripts
+    web-socket-max-text-message-size: 536870912 # 512MB
+    web-socket-max-binary-message-size: 536870912 # 512MB
+    # HTTP buffer sizes
+    max-http-form-post-size: 536870912 # 512MB
+    max-http-header-size: 16384 # 16KB header size
+    max-swallow-size: 536870912 # 512MB
+    # Connection timeouts
+    connection-timeout: 60000ms # 60 seconds
+  compression:
+    enabled: true
+    min-response-size: 1024
+
+logging:
+  level:
+    root: WARN
+    com.example.processingservice.security.JwtAuthenticationFilter: DEBUG
+    com.example.processingservice.interfaces.websocket: DEBUG
+    org.springframework.security: DEBUG
 
 spring:
   data:

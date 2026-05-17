@@ -9,11 +9,14 @@ from sqlalchemy.orm import Session
 from app.services.audio_processor import AudioProcessor
 from app.services.speech_recognizer import SpeechRecognizer
 from app.services.ai_analyzer import AIAnalyzer
-from app.models import Transcript, Analysis
+from app.models import Transcript, TranscriptFragment, Analysis
+from app.services.stt_persistence import (
+    TranscriptFragmentInput,
+    TranscriptPersistenceRepository,
+)
 from app.config import get_settings, get_runtime_device
 
 settings = get_settings()
-BASELINE_MEETING_ID = 1774519878
 
 
 class ProcessingPipeline:
@@ -397,8 +400,6 @@ class ProcessingPipeline:
             effective_glossary_terms = glossary_context.get("terms") or glossary_terms
 
             self._record_baseline_snapshot(meeting_id, runtime_device)
-            if meeting_id == BASELINE_MEETING_ID:
-                logger.info(f"Baseline test meeting detected: {BASELINE_MEETING_ID}")
 
             # Step 1: Load audio
             logger.info("Step 1: Loading audio")
@@ -552,15 +553,32 @@ class ProcessingPipeline:
                 return str(value)
 
             # Save transcripts
+            transcript_repository = TranscriptPersistenceRepository(db)
             for segment in aligned_segments:
-                transcript = Transcript(
+                fragment_input = TranscriptFragmentInput(
                     meeting_id=meeting_id,
+                    seq=(
+                        int(_to_builtin(segment.get("seq", 0)))
+                        if segment.get("seq") is not None
+                        else len(transcript_repository.list_fragments(meeting_id)) + 1
+                    ),
                     speaker=str(segment.get("speaker", "UNKNOWN")),
                     start_time=float(_to_builtin(segment.get("start", 0.0))),
                     end_time=float(_to_builtin(segment.get("end", 0.0))),
                     text=str(segment.get("text", "")),
+                    event_id=(
+                        str(segment.get("event_id"))
+                        if segment.get("event_id")
+                        else None
+                    ),
+                    is_final=bool(segment.get("is_final", False)),
+                    confidence=(
+                        float(_to_builtin(segment.get("confidence")))
+                        if segment.get("confidence") is not None
+                        else None
+                    ),
                 )
-                db.add(transcript)
+                transcript_repository.append_fragment(fragment_input)
 
             # Save analysis
             clean_analysis = _to_builtin(analysis_result or {})
@@ -609,6 +627,19 @@ class ProcessingPipeline:
         Returns:
             List of transcript segments
         """
+        fragment_rows = (
+            db.query(TranscriptFragment)
+            .filter(TranscriptFragment.meeting_id == meeting_id)
+            .order_by(
+                TranscriptFragment.seq.asc(),
+                TranscriptFragment.version.asc(),
+                TranscriptFragment.created_at.asc(),
+            )
+            .all()
+        )
+        if fragment_rows:
+            return fragment_rows
+
         transcripts = (
             db.query(Transcript)
             .filter(Transcript.meeting_id == meeting_id)

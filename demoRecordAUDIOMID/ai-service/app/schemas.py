@@ -96,3 +96,12 @@ class AnalysisResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class SttStreamResponse(BaseModel):
+    transcript: str
+    is_final: bool
+    confidence: Optional[float] = None
+    segment_id: Optional[str] = None
+    start_time: Optional[float] = None
+    end_time: Optional[float] = None

@@ -10,7 +10,7 @@ services:
       - SPRING_DATASOURCE_DRIVER_CLASS_NAME=org.postgresql.Driver
       - SPRING_JPA_HIBERNATE_DIALECT=org.hibernate.dialect.PostgreSQLDialect
       - JWT_SECRET=${JWT_SECRET}
-      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-http://127.0.0.1:5173,http://localhost:5173}
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-http://127.0.0.1:5173,http://localhost:5173,http://127.0.0.1:8080,http://localhost:8080}
     depends_on:
       - db
     volumes:
@@ -22,16 +22,20 @@ services:
     build:
       context: ../demoRecordAUDIOMID
       dockerfile: processing-service/Dockerfile
+    container_name: processing-api
     environment:
+      - JAVA_TOOL_OPTIONS=-Xmx1024m -Xms512m -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/tmp/heapdump.hprof -Xlog:gc*:file=/tmp/gc.log:time,level,tags
       - AUDIOMIND_AI_API_BASE_URL=http://ai-api:8000
       - AUDIOMIND_MEETING_API_BASE_URL=http://meeting-api:8081
       - REDIS_HOST=redis
       - REDIS_DB=2
       - JWT_SECRET=${JWT_SECRET}
-      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-http://127.0.0.1:5173,http://localhost:5173}
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-http://127.0.0.1:5173,http://localhost:5173,http://127.0.0.1:8080,http://localhost:8080}
     depends_on:
       - meeting-api
       - ai-api
+    volumes:
+      - uploads:/app/uploads
     ports:
       - "8082:8082"
 
@@ -49,7 +53,7 @@ services:
       - REDIS_PORT=6379
       - REDIS_DB=3
       - JWT_SECRET=${JWT_SECRET}
-      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-http://127.0.0.1:5173,http://localhost:5173,http://localhost:3000,http://localhost:8080}
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-http://127.0.0.1:5173,http://localhost:5173,http://localhost:3000,http://127.0.0.1:8080,http://localhost:8080}
     depends_on:
       - db
       - redis
@@ -58,14 +62,23 @@ services:
 
   ai-api:
     build: ../demoRecordAUDIOMID/ai-service
+    container_name: ai-api
+    env_file:
+      - ../demoRecordAUDIOMID/ai-service/.env
     environment:
+      - DEEPGRAM_MODEL=nova-2
+      - DEEPGRAM_BASE_URL=${DEEPGRAM_BASE_URL:-https://api.deepgram.com/v1/listen}
+      # Diagnostic only; keep false for normal dev/prod behavior.
+      - DEEPGRAM_SIMPLIFY_STREAMING_URL=${DEEPGRAM_SIMPLIFY_STREAMING_URL:-false}
+      # Diagnostic only; logs capped raw Deepgram text frames when true.
+      - DEEPGRAM_DEBUG_RAW_MESSAGES=${DEEPGRAM_DEBUG_RAW_MESSAGES:-false}
       - DATABASE_URL=postgresql://${POSTGRES_USER:-audiomind}:${POSTGRES_PASSWORD:-audiomind}@db:5432/${POSTGRES_DB:-audiomind}
       - AI_PROVIDER=ollama
       - OLLAMA_BASE_URL=http://ollama-service:11434
       - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen2.5:3b-instruct}
       - HUGGINGFACE_TOKEN=${HUGGINGFACE_TOKEN:-}
       - ENABLE_SPEAKER_DIARIZATION=${ENABLE_SPEAKER_DIARIZATION:-false}
-      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-http://127.0.0.1:5173,http://localhost:5173}
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-http://127.0.0.1:5173,http://localhost:5173,http://127.0.0.1:8080,http://localhost:8080}
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/1
       - JOB_STATE_REDIS_URL=redis://redis:6379/2
@@ -82,8 +95,10 @@ services:
 
   celery-worker:
     build: ../demoRecordAUDIOMID/ai-service
+    container_name: celery-worker
     command: sh -c "celery -A app.celery_app.celery_app worker --loglevel=INFO --concurrency=${CELERY_CONCURRENCY:-4} --prefetch-multiplier=${CELERY_PREFETCH_MULTIPLIER:-1}"
     environment:
+      - DEEPGRAM_API_KEY=${DEEPGRAM_API_KEY:-}
       - DATABASE_URL=postgresql://${POSTGRES_USER:-audiomind}:${POSTGRES_PASSWORD:-audiomind}@db:5432/${POSTGRES_DB:-audiomind}
       - AI_PROVIDER=ollama
       - OLLAMA_BASE_URL=http://ollama-service:11434
@@ -158,6 +173,16 @@ services:
     build:
       context: ..
       dockerfile: FE-Audiomind/Dockerfile
+      args:
+        VITE_MEETING_API_BASE_URL: http://localhost:8081
+        VITE_PROCESSING_API_BASE_URL: http://localhost:8082
+        VITE_USER_API_BASE_URL: http://localhost:8083
+        VITE_API_BASE: http://localhost:8082
+        VITE_API_CPU_BASE: http://localhost:8000
+        VITE_API_GPU_BASE: http://localhost:8001
+        VITE_AI_SERVICE_URL: http://localhost:8000
+        VITE_REALTIME_WS_ENABLED: "true"
+        VITE_REALTIME_WS_BASE_URL: ws://localhost:8082/ws/meetings
     ports:
       - "8080:80"
 
