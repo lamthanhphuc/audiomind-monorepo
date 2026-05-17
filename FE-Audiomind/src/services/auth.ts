@@ -21,6 +21,38 @@ const USER_API_BASE = resolveUserApiBase()
 const TOKEN_STORAGE_KEY = 'audiomind.access_token'
 const TOKEN_EXPIRY_STORAGE_KEY = 'audiomind.access_token_expiry'
 
+const decodeBase64Url = (value: string): string | null => {
+  try {
+    const normalized = value.replace(/-/g, '+').replace(/_/g, '/')
+    const padding = normalized.length % 4 === 0 ? '' : '='.repeat(4 - (normalized.length % 4))
+    return atob(`${normalized}${padding}`)
+  } catch {
+    return null
+  }
+}
+
+export const parseJwt = (token: string): Record<string, any> | null => {
+  if (!token || typeof token !== 'string') {
+    return null
+  }
+
+  const parts = token.split('.')
+  if (parts.length < 2) {
+    return null
+  }
+
+  const payload = decodeBase64Url(parts[1])
+  if (!payload) {
+    return null
+  }
+
+  try {
+    return JSON.parse(payload) as Record<string, any>
+  } catch {
+    return null
+  }
+}
+
 const getExpiryTimestamp = (): number | null => {
   const raw = localStorage.getItem(TOKEN_EXPIRY_STORAGE_KEY)
   if (!raw) {
@@ -43,6 +75,26 @@ export const getAccessToken = (): string | null => {
   }
 
   return token
+}
+
+export const getCurrentUserId = (): string | null => {
+  const token = getAccessToken()
+  if (!token) {
+    return null
+  }
+
+  const payload = parseJwt(token)
+  if (!payload) {
+    return null
+  }
+
+  const candidate = payload.userId ?? payload.user_id ?? payload.sub
+  if (candidate === null || candidate === undefined) {
+    return null
+  }
+
+  const normalized = String(candidate).trim()
+  return normalized.length > 0 ? normalized : null
 }
 
 export const setAccessToken = (token: string, expiresInSeconds?: number): void => {

@@ -1595,6 +1595,56 @@ body {
   color: white;
 }
 
+/* --- Accessibility overrides for the current shell --- */
+body {
+  background: linear-gradient(180deg, #f5f7fa 0%, #eef2f7 100%);
+  color: #1a1a2e;
+}
+
+#root {
+  min-height: 100vh;
+  color: #1a1a2e;
+  background: transparent;
+}
+
+main {
+  color: #1a1a2e;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+input,
+select,
+textarea {
+  background: #ffffff;
+  color: #1a1a2e;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: #64748b;
+}
+
+button {
+  color: #1f2937;
+}
+
+button:not(:disabled):hover {
+  filter: brightness(0.98);
+}
+
+.error-banner {
+  border: 1px solid #fca5a5;
+  box-shadow: 0 12px 28px rgba(153, 27, 27, 0.12);
+}
+
 .assistant {
   background: linear-gradient(160deg, #1c1f2c, #10121b);
   border-radius: 24px;

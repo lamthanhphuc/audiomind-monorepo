@@ -1,17 +1,21 @@
-from fastapi import FastAPI, Depends, HTTPException, UploadFile, File
-from fastapi.responses import JSONResponse
+from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from loguru import logger
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+from sqlalchemy import text
+from sqlalchemy.orm import Session
 from starlette.requests import Request
 from starlette.responses import Response
-from sqlalchemy.orm import Session
-from sqlalchemy import text
-from loguru import logger
-import sys
+from dataclasses import dataclass
+import asyncio
+import numpy as np
 import threading
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from uuid import uuid4
+import sys
 
 from app.database import (
     get_db,
@@ -27,24 +31,27 @@ from app.schemas import (
     AnalysisResponse,
     TranscriptSegment,
     ActionItem,
-    GlossaryEntryCreate,
-    GlossaryEntryUpdate,
-    GlossaryEntryResponse,
-    GlossarySnapshotResponse,
+    SttStreamResponse,
 )
 from app.config import get_settings, get_runtime_device
 from app.ffmpeg_utils import ensure_ffmpeg_on_path
 from app.job_status_store import (
     cleanup_expired_job_statuses,
-    get_job_status,
     _get_client,
+    get_job_status,
     load_job_statuses,
     set_job_status,
 )
 from app.tasks import process_meeting
 from app.services.glossary_repository import GlossaryRepository
 from app.services.glossary_service import GlossaryService
-from app.services.stt_adapter import DeepgramSTTAdapter
+from app.services.stt_adapter import (
+    DeepgramSTTAdapter,
+    is_terminal_error,
+    is_transient_error,
+)
+from app.services.stt_session_actor import MeetingSessionActor, MeetingSessionState
+from app.services.stt_persistence import TranscriptPersistenceRepository
 from app.services.grpc_stt_service import AiStreamServicer, create_grpc_server
 
 try:
@@ -97,95 +104,415 @@ async def lifespan(_: FastAPI):
     try:
         ensure_ffmpeg_on_path(log=True)
     except Exception as e:
-        # Keep service up; requests that need ffmpeg will return a clear error.
         logger.warning(f"FFmpeg bootstrap warning: {repr(e)}")
 
     logger.info("=" * 50)
     logger.info("AudioMind AI Service Starting...")
     logger.info(f"Whisper Model: {settings.whisper_model}")
     logger.info(f"Device: {get_runtime_device()}")
+    logger.info(
+        "STT CONFIG api_key_exists={} model={} base_url={}",
+        bool(settings.deepgram_api_key),
+        settings.deepgram_model,
+        settings.deepgram_base_url,
+    )
     logger.info("=" * 50)
 
-    # Start gRPC server in a background thread
     grpc_server = None
     grpc_thread = None
     try:
+        stt_adapter = _get_stt_adapter()
         if stt_adapter:
             servicer = AiStreamServicer(stt_adapter)
-            grpc_server = create_grpc_server(
-                servicer,
-                host="0.0.0.0",
-                port=50051,
-                max_workers=10,
-            )
-
-            def run_grpc_server():
-                logger.info("Starting gRPC server on port 50051...")
-                grpc_server.start()
-                logger.info("gRPC server started successfully")
-                grpc_server.wait_for_termination()
-
-            grpc_thread = threading.Thread(target=run_grpc_server, daemon=True)
+            grpc_server = create_grpc_server(servicer)
+            grpc_thread = threading.Thread(target=grpc_server.start, daemon=True)
             grpc_thread.start()
-            logger.info("gRPC server thread started (daemon)")
     except Exception as e:
-        logger.warning(f"gRPC server startup failed: {repr(e)}")
-
+        logger.warning(f"Failed to start gRPC server: {repr(e)}")
     yield
 
-    # Shutdown gRPC server
+    await _shutdown_all_stt_actors()
     if grpc_server:
         try:
-            logger.info("Shutting down gRPC server...")
             grpc_server.stop(grace=5)
-            logger.info("gRPC server stopped")
         except Exception as e:
             logger.warning(f"Error during gRPC server shutdown: {repr(e)}")
-
     cleanup_expired_job_statuses()
     logger.info("AudioMind AI Service Shutting Down...")
 
 
-# Initialize FastAPI app
-app = FastAPI(
-    title="AudioMind AI Service",
-    description="AI-powered audio processing service for meeting transcription and analysis",
-    version="1.0.0",
-    lifespan=lifespan,
-)
+def _extract_latest_transcript_event(
+    events: list[dict[str, object]],
+    fallback_transcript: str = "",
+) -> tuple[str, bool, float | None]:
+    transcript = fallback_transcript
+    is_final = False
+    confidence: float | None = None
 
-# Initialize pipeline
-pipeline = ProcessingPipeline() if ProcessingPipeline is not None else None
+    for event in reversed(events):
+        text = str(event.get("text") or "").strip()
+        if text:
+            transcript = text
+            is_final = bool(event.get("is_final"))
+            confidence_value = event.get("confidence")
+            if isinstance(confidence_value, (int, float)):
+                confidence = float(confidence_value)
+            break
+
+    return transcript, is_final, confidence
+
+
+async def _close_stt_session(meeting_id: int) -> None:
+    actor = _stt_stream_sessions.pop(_normalize_meeting_key(meeting_id), None)
+    if actor is None:
+        return
+
+    try:
+        await actor.shutdown()
+    finally:
+        if actor.session_id:
+            actor.adapter.get_raw_response(actor.session_id)
+        _clear_stream_retry_guard(_normalize_meeting_key(meeting_id))
+
+
+async def _retire_stt_actor(
+    meeting_key: str, actor: MeetingSessionActor, *, clear_retry_guard: bool = False
+) -> None:
+    async with _stt_stream_registry_lock:
+        if _stt_stream_sessions.get(meeting_key) is actor:
+            _stt_stream_sessions.pop(meeting_key, None)
+
+    try:
+        await actor.shutdown(grace_seconds=settings.stt_shutdown_grace_seconds)
+    except Exception as exc:
+        logger.warning(
+            "STT_ACTOR_RETIREMENT_ERROR meeting_id={} error={}",
+            meeting_key,
+            repr(exc),
+        )
+    finally:
+        if clear_retry_guard:
+            _clear_stream_retry_guard(meeting_key)
+
+
+def _default_retry_guard_snapshot() -> dict[str, object]:
+    return {
+        "cooldown_until": 0.0,
+        "requires_new_stream": False,
+        "last_terminal_close_code": None,
+        "last_terminal_close_reason": None,
+        "last_terminal_close_error": None,
+    }
+
+
+def _retry_guard_snapshot_from_actor(actor: MeetingSessionActor) -> dict[str, object]:
+    snapshot = _default_retry_guard_snapshot()
+    snapshot_getter = getattr(actor, "retry_guard_snapshot", None)
+    if not callable(snapshot_getter):
+        return snapshot
+
+    try:
+        candidate = snapshot_getter()
+    except Exception as exc:
+        logger.warning(
+            "STT_RETRY_GUARD_SNAPSHOT_FAILED meeting_id={} error={}",
+            getattr(actor, "meeting_key", None),
+            repr(exc),
+        )
+        return snapshot
+
+    if isinstance(candidate, dict):
+        snapshot.update(candidate)
+    return snapshot
+
+
 settings = get_settings()
-stt_adapter = (
-    DeepgramSTTAdapter(
+
+app = FastAPI(lifespan=lifespan)
+
+_stt_adapter: DeepgramSTTAdapter | None = None
+_stt_stream_sessions: dict[str, MeetingSessionActor] = {}
+_stt_stream_registry_lock = asyncio.Lock()
+_stt_stream_retry_guards: dict[str, "MeetingStreamRetryGuard"] = {}
+_stt_finalized_responses: dict[str, tuple[SttStreamResponse, float]] = {}
+_STT_FINALIZED_RESPONSE_TTL_SECONDS = 300.0
+
+
+@dataclass
+class MeetingStreamRetryGuard:
+    cooldown_until: float = 0.0
+    requires_new_stream: bool = False
+    last_seq: int = 0
+    last_seen_at: float = 0.0
+    last_terminal_seq: int = 0
+    last_terminal_close_code: str | None = None
+    last_terminal_close_reason: str | None = None
+    last_terminal_close_error: str | None = None
+
+
+def _normalize_meeting_key(meeting_id: int | str) -> str:
+    return str(meeting_id).strip()
+
+
+def _normalize_stt_language(language: str | None) -> str:
+    value = (language or "vi").strip()
+    return value or "vi"
+
+
+def _is_webm_header_chunk(chunk_bytes: bytes) -> bool:
+    return bytes(chunk_bytes[:4]) == bytes.fromhex("1a45dfa3")
+
+
+def _get_stream_retry_guard(meeting_key: str) -> MeetingStreamRetryGuard:
+    guard = _stt_stream_retry_guards.get(meeting_key)
+    if guard is None:
+        guard = MeetingStreamRetryGuard()
+        _stt_stream_retry_guards[meeting_key] = guard
+    return guard
+
+
+def _clear_stream_retry_guard(meeting_key: str) -> None:
+    _stt_stream_retry_guards.pop(meeting_key, None)
+
+
+def _update_stream_retry_guard_from_actor(
+    meeting_key: str, actor: MeetingSessionActor
+) -> None:
+    snapshot = _retry_guard_snapshot_from_actor(actor)
+    guard = _get_stream_retry_guard(meeting_key)
+    guard.cooldown_until = max(
+        guard.cooldown_until, float(snapshot.get("cooldown_until") or 0.0)
+    )
+    guard.requires_new_stream = bool(
+        snapshot.get("requires_new_stream") or guard.requires_new_stream
+    )
+    guard.last_terminal_close_code = snapshot.get("last_terminal_close_code")
+    guard.last_terminal_close_reason = snapshot.get("last_terminal_close_reason")
+    guard.last_terminal_close_error = snapshot.get("last_terminal_close_error")
+    guard.last_terminal_seq = max(
+        guard.last_terminal_seq, int(getattr(actor, "_last_ack_seq", 0) or 0)
+    )
+
+
+def _describe_terminal_error(exc: BaseException) -> tuple[str | None, str | None, str]:
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        code = getattr(current, "code", None)
+        reason = getattr(current, "reason", None)
+        if code is not None or reason is not None:
+            return (
+                None if code is None else str(code),
+                None if reason is None else str(reason),
+                type(current).__name__,
+            )
+        current = current.__cause__ or current.__context__
+    return None, None, type(exc).__name__
+
+
+def _purge_stt_finalized_responses() -> None:
+    now = time.time()
+    expired_keys = [
+        meeting_key
+        for meeting_key, (_, stored_at) in _stt_finalized_responses.items()
+        if now - stored_at > _STT_FINALIZED_RESPONSE_TTL_SECONDS
+    ]
+    for meeting_key in expired_keys:
+        _stt_finalized_responses.pop(meeting_key, None)
+
+
+def _get_cached_final_response(meeting_key: str) -> SttStreamResponse | None:
+    _purge_stt_finalized_responses()
+    cached_entry = _stt_finalized_responses.get(meeting_key)
+    if cached_entry is None:
+        return None
+    return cached_entry[0]
+
+
+def _store_final_response(meeting_key: str, response: SttStreamResponse) -> None:
+    _stt_finalized_responses[meeting_key] = (response, time.time())
+
+
+def _stt_registry_summary() -> dict[str, int]:
+    summary: dict[str, int] = {}
+    for actor in _stt_stream_sessions.values():
+        summary[actor.state.value] = summary.get(actor.state.value, 0) + 1
+    summary["total"] = len(_stt_stream_sessions)
+    summary["cooldown"] = sum(
+        1
+        for guard in _stt_stream_retry_guards.values()
+        if guard.cooldown_until > time.time()
+    )
+    return summary
+
+
+async def _cleanup_stale_stt_actors() -> None:
+    async with _stt_stream_registry_lock:
+        stale_keys = [
+            meeting_key
+            for meeting_key, actor in _stt_stream_sessions.items()
+            if actor.state in {MeetingSessionState.CLOSED, MeetingSessionState.FAILED}
+        ]
+        for meeting_key in stale_keys:
+            _stt_stream_sessions.pop(meeting_key, None)
+
+
+async def _get_or_create_stt_actor(
+    meeting_key: str,
+    normalized_language: str,
+    *,
+    seq: int | None = None,
+    chunk_bytes: bytes | None = None,
+) -> MeetingSessionActor:
+    await _cleanup_stale_stt_actors()
+    guard = _get_stream_retry_guard(meeting_key)
+    now = time.time()
+    if guard.cooldown_until > now:
+        retry_after_seconds = max(1, int(guard.cooldown_until - now + 0.999))
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "meeting_id": meeting_key,
+                "seq": seq,
+                "reason": "reconnect cooldown active",
+                "retry_after_seconds": retry_after_seconds,
+            },
+            headers={"Retry-After": str(retry_after_seconds)},
+        )
+
+    if guard.requires_new_stream:
+        can_restart = (
+            seq == 1 and chunk_bytes is not None and _is_webm_header_chunk(chunk_bytes)
+        )
+        if can_restart:
+            _clear_stream_retry_guard(meeting_key)
+        else:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "meeting_id": meeting_key,
+                    "seq": seq,
+                    "reason": "new recording lifecycle required",
+                },
+            )
+
+    async with _stt_stream_registry_lock:
+        existing_actor = _stt_stream_sessions.get(meeting_key)
+        if existing_actor is not None and existing_actor.state not in {
+            MeetingSessionState.CLOSED,
+            MeetingSessionState.FAILED,
+        }:
+            return existing_actor
+
+        stt_adapter = _get_stt_adapter()
+        if stt_adapter is None:
+            raise RuntimeError("Deepgram STT adapter is unavailable")
+
+        actor = await MeetingSessionActor.create(
+            meeting_key=meeting_key,
+            language=normalized_language,
+            adapter=stt_adapter,
+        )
+        _stt_stream_sessions[meeting_key] = actor
+        return actor
+
+
+async def _shutdown_all_stt_actors() -> None:
+    async with _stt_stream_registry_lock:
+        actors = list(_stt_stream_sessions.items())
+        _stt_stream_sessions.clear()
+
+    for meeting_key, actor in actors:
+        try:
+            logger.info(
+                "STT_SHUTDOWN_DRAIN_BEGIN meeting_id={} session_id={}",
+                meeting_key,
+                actor.session_id,
+            )
+            await actor.shutdown(grace_seconds=settings.stt_shutdown_grace_seconds)
+            logger.info(
+                "STT_SHUTDOWN_DRAIN_END meeting_id={} session_id={}",
+                meeting_key,
+                actor.session_id,
+            )
+        except Exception as exc:
+            logger.warning(
+                "STT_SHUTDOWN_DRAIN_END meeting_id={} error={}",
+                meeting_key,
+                repr(exc),
+            )
+
+
+def _get_stt_adapter() -> DeepgramSTTAdapter | None:
+    global _stt_adapter
+
+    if _stt_adapter is not None:
+        return _stt_adapter
+
+    if not (settings.deepgram_api_key or "").strip():
+        return None
+
+    _stt_adapter = DeepgramSTTAdapter(
         api_key=settings.deepgram_api_key,
         model=settings.deepgram_model,
         base_url=settings.deepgram_base_url,
         timeout_seconds=settings.deepgram_timeout_seconds,
+        simplify_streaming_url=settings.deepgram_simplify_streaming_url,
+        debug_raw_messages=settings.deepgram_debug_raw_messages,
     )
-    if settings.deepgram_api_key
-    else None
-)
+    return _stt_adapter
+
+
+def _transcribe_locally(
+    chunk_bytes: bytes, normalized_language: str, is_final: bool
+) -> SttStreamResponse:
+    recognizer = (
+        getattr(pipeline, "speech_recognizer", None) if pipeline is not None else None
+    )
+    if recognizer is None:
+        raise RuntimeError("Processing pipeline dependencies are not available")
+
+    audio = np.frombuffer(chunk_bytes, dtype=np.int16)
+    result = recognizer.transcribe_segment(
+        audio, sr=16000, language=normalized_language
+    )
+    transcript = (
+        recognizer.get_full_text(result)
+        if hasattr(recognizer, "get_full_text")
+        else str(result)
+    )
+    confidence: float | None = None
+    if isinstance(result, dict):
+        segments = result.get("segments") or []
+        if segments:
+            first_segment = segments[0]
+            if isinstance(first_segment, dict):
+                confidence_value = first_segment.get("confidence")
+                if isinstance(confidence_value, (int, float)):
+                    confidence = float(confidence_value)
+
+    return SttStreamResponse(
+        transcript=transcript,
+        is_final=is_final,
+        confidence=confidence,
+    )
+
+
+pipeline = ProcessingPipeline() if ProcessingPipeline is not None else None
+
+
+def _resolve_cors_origins() -> list[str]:
+    raw_origins = (settings.cors_allowed_origins or "").split(",")
+    return [origin.strip() for origin in raw_origins if origin.strip()]
 
 
 def _glossary_service(db: Session) -> GlossaryService:
     return GlossaryService(
-        GlossaryRepository(db),
-        cache_ttl_seconds=settings.glossary_cache_ttl_seconds,
+        GlossaryRepository(db), cache_ttl_seconds=settings.glossary_cache_ttl_seconds
     )
 
 
-def _resolve_cors_origins() -> list[str]:
-    raw = (settings.cors_allowed_origins or "").strip()
-    if not raw:
-        return ["http://localhost:5173"]
-
-    values = [item.strip() for item in raw.split(",") if item.strip()]
-    return values or ["http://localhost:5173"]
-
-
-# CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_resolve_cors_origins(),
@@ -256,6 +583,155 @@ def resolve_upload_dir() -> Path:
     raise RuntimeError("No writable upload directory is available")
 
 
+@app.get("/api/meeting/{meeting_id}/transcript", response_model=TranscriptResponse)
+async def get_transcript(meeting_id: int, db: Session = Depends(get_db)):
+    """
+    Get transcript for a meeting
+
+    Returns all transcript segments with speaker labels and timestamps
+    """
+    try:
+        logger.info(f"Fetching transcript for meeting {meeting_id}")
+
+        fragment_segments = []
+        try:
+            fragment_repository = TranscriptPersistenceRepository(db)
+            fragment_segments = (
+                fragment_repository.assemble_visible_transcript_segments(meeting_id)
+            )
+        except AttributeError:
+            fragment_segments = []
+
+        if fragment_segments:
+            logger.info(
+                "STT_TRANSCRIPT_GET meeting_id={} source={} rows={}",
+                meeting_id,
+                "transcript_fragments_visible",
+                len(fragment_segments),
+            )
+            return TranscriptResponse(
+                meeting_id=meeting_id,
+                transcripts=[
+                    TranscriptSegment(
+                        speaker=str(segment.get("speaker") or "system"),
+                        start_time=float(segment.get("start_time") or 0.0),
+                        end_time=float(segment.get("end_time") or 0.0),
+                        text=str(segment.get("text") or ""),
+                    )
+                    for segment in fragment_segments
+                    if str(segment.get("text") or "").strip()
+                ],
+            )
+
+        if pipeline is None:
+            logger.info(
+                "STT_TRANSCRIPT_GET meeting_id={} source={} rows={}",
+                meeting_id,
+                "none",
+                0,
+            )
+            raise HTTPException(
+                status_code=404,
+                detail="No transcript found for meeting; no speech was detected or no transcript fragments were persisted",
+            )
+
+        transcripts = pipeline.get_transcript(meeting_id, db)
+
+        if not transcripts:
+            logger.info(
+                "STT_TRANSCRIPT_GET meeting_id={} source={} rows={}",
+                meeting_id,
+                "none",
+                0,
+            )
+            raise HTTPException(
+                status_code=404,
+                detail="No transcript found for meeting; no speech was detected or no transcript fragments were persisted",
+            )
+
+        logger.info(
+            "STT_TRANSCRIPT_GET meeting_id={} source={} rows={}",
+            meeting_id,
+            "transcripts",
+            len(transcripts),
+        )
+
+        segments = [
+            TranscriptSegment(
+                speaker=t.speaker,
+                start_time=t.start_time,
+                end_time=t.end_time,
+                text=t.text,
+            )
+            for t in transcripts
+        ]
+
+        return TranscriptResponse(meeting_id=meeting_id, transcripts=segments)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        request_id = uuid4().hex
+        logger.error(f"Error fetching transcript request_id={request_id}: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal server error. request_id={request_id}",
+        )
+
+
+@app.get("/api/meeting/{meeting_id}/status")
+async def get_processing_status(meeting_id: int):
+    status = get_job_status(meeting_id)
+
+    if status is None:
+        raise HTTPException(status_code=404, detail="Meeting job status not found")
+
+    return status
+
+
+@app.get("/api/meeting/{meeting_id}/analysis", response_model=AnalysisResponse)
+async def get_analysis(meeting_id: int, db: Session = Depends(get_db)):
+    """
+    Get AI analysis for a meeting
+
+    Returns summary, keywords, technical terms, and action items
+    """
+    try:
+        if pipeline is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Processing pipeline dependencies are not available",
+            )
+
+        logger.info(f"Fetching analysis for meeting {meeting_id}")
+
+        analysis = pipeline.get_analysis(meeting_id, db)
+
+        if not analysis:
+            raise HTTPException(status_code=404, detail="Analysis not found")
+
+        action_items = [ActionItem(**item) for item in analysis.action_items]
+
+        return AnalysisResponse(
+            meeting_id=meeting_id,
+            summary=analysis.summary,
+            keywords=analysis.keywords,
+            technical_terms=analysis.technical_terms,
+            action_items=action_items,
+            created_at=analysis.created_at,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        request_id = uuid4().hex
+        logger.error(f"Error fetching analysis request_id={request_id}: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal server error. request_id={request_id}",
+        )
+
+
 @app.get("/")
 async def root():
     """Root endpoint"""
@@ -269,12 +745,14 @@ async def root():
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
+    await _cleanup_stale_stt_actors()
     return {
         "status": "healthy",
         "whisper_model": settings.whisper_model,
         "device": get_runtime_device(),
         "lazy_load_models": settings.lazy_load_models,
         "enable_speaker_diarization": settings.enable_speaker_diarization,
+        "stt_actor_registry": _stt_registry_summary(),
     }
 
 
@@ -285,12 +763,17 @@ async def metrics() -> Response:
 
 @app.get("/ready")
 async def readiness_check():
+    await _cleanup_stale_stt_actors()
     with engine.connect() as connection:
         connection.execute(text("SELECT 1"))
     _get_client().ping()
     if pipeline is None:
         raise HTTPException(status_code=503, detail="Pipeline dependencies unavailable")
-    return {"status": "ready", "service": "ai-service"}
+    return {
+        "status": "ready",
+        "service": "ai-service",
+        "stt_actor_registry": _stt_registry_summary(),
+    }
 
 
 @app.exception_handler(Exception)
@@ -420,156 +903,282 @@ async def upload_audio(file: UploadFile = File(...)):
         )
 
 
-@app.get("/api/meeting/{meeting_id}/status")
-async def get_processing_status(meeting_id: int):
-    status = get_job_status(meeting_id)
+@app.post("/api/stt/stream")
+async def open_stt_session(payload: dict = Body(default_factory=dict)):
+    meeting_id = payload.get("meeting_id")
+    if meeting_id is None:
+        raise HTTPException(status_code=400, detail="meeting_id is required")
 
-    if status is None:
-        raise HTTPException(status_code=404, detail="Meeting job status not found")
+    language = _normalize_stt_language(payload.get("language"))
+    actor = await _get_or_create_stt_actor(_normalize_meeting_key(meeting_id), language)
 
-    return status
-
-
-@app.get("/api/meeting/{meeting_id}/transcript", response_model=TranscriptResponse)
-async def get_transcript(meeting_id: int, db: Session = Depends(get_db)):
-    """
-    Get transcript for a meeting
-
-    Returns all transcript segments with speaker labels and timestamps
-    """
-    try:
-        if pipeline is None:
-            raise HTTPException(
-                status_code=503,
-                detail="Processing pipeline dependencies are not available",
-            )
-
-        logger.info(f"Fetching transcript for meeting {meeting_id}")
-
-        transcripts = pipeline.get_transcript(meeting_id, db)
-
-        if not transcripts:
-            raise HTTPException(status_code=404, detail="Transcript not found")
-
-        segments = [
-            TranscriptSegment(
-                speaker=t.speaker,
-                start_time=t.start_time,
-                end_time=t.end_time,
-                text=t.text,
-            )
-            for t in transcripts
-        ]
-
-        return TranscriptResponse(meeting_id=meeting_id, transcripts=segments)
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        request_id = uuid4().hex
-        logger.error(f"Error fetching transcript request_id={request_id}: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Internal server error. request_id={request_id}",
-        )
+    return {
+        "session_id": actor.session_id,
+        "status": "opened",
+        "meeting_id": meeting_id,
+        "language": actor.language,
+    }
 
 
-@app.get("/api/meeting/{meeting_id}/analysis", response_model=AnalysisResponse)
-async def get_analysis(meeting_id: int, db: Session = Depends(get_db)):
-    """
-    Get AI analysis for a meeting
-
-    Returns summary, keywords, technical terms, and action items
-    """
-    try:
-        if pipeline is None:
-            raise HTTPException(
-                status_code=503,
-                detail="Processing pipeline dependencies are not available",
-            )
-
-        logger.info(f"Fetching analysis for meeting {meeting_id}")
-
-        analysis = pipeline.get_analysis(meeting_id, db)
-
-        if not analysis:
-            raise HTTPException(status_code=404, detail="Analysis not found")
-
-        action_items = [ActionItem(**item) for item in analysis.action_items]
-
-        return AnalysisResponse(
-            meeting_id=meeting_id,
-            summary=analysis.summary,
-            keywords=analysis.keywords,
-            technical_terms=analysis.technical_terms,
-            action_items=action_items,
-            created_at=analysis.created_at,
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        request_id = uuid4().hex
-        logger.error(f"Error fetching analysis request_id={request_id}: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Internal server error. request_id={request_id}",
-        )
-
-
-@app.get("/api/glossary", response_model=list[GlossaryEntryResponse])
-def list_glossary_entries(domain: str | None = None, db: Session = Depends(get_db)):
-    service = _glossary_service(db)
-    return service.list_entries(domain)
-
-
-@app.get("/api/glossary/snapshot", response_model=GlossarySnapshotResponse)
-def get_glossary_snapshot(domain: str | None = None, db: Session = Depends(get_db)):
-    service = _glossary_service(db)
-    snapshot = service.get_snapshot(domain)
-    return GlossarySnapshotResponse(
-        domain=domain,
-        version_hash=snapshot.version_hash,
-        version_id=snapshot.version_id,
-        terms=snapshot.terms,
-        topic_defaults=snapshot.topic_defaults,
-        normalization_map=snapshot.normalization_map,
-    )
-
-
-@app.post("/api/glossary", response_model=GlossaryEntryResponse)
-def create_glossary_entry(payload: GlossaryEntryCreate, db: Session = Depends(get_db)):
-    service = _glossary_service(db)
-    entry = service.create_entry(payload)
-    service.invalidate(entry.domain)
-    return entry
-
-
-@app.put("/api/glossary/{entry_id}", response_model=GlossaryEntryResponse)
-def update_glossary_entry(
-    entry_id: int, payload: GlossaryEntryUpdate, db: Session = Depends(get_db)
+@app.post("/api/v1/stt/stream", response_model=SttStreamResponse)
+async def stream_stt_chunk(
+    meeting_id: int = Form(...),
+    audio_chunk: UploadFile = File(...),
+    seq: int = Form(...),
+    language: str = Form(default="vi"),
+    is_final: bool = Form(default=False),
 ):
-    service = _glossary_service(db)
+    normalized_language = _normalize_stt_language(language)
+    chunk_bytes = await audio_chunk.read()
+    logger.info(
+        "stream_stt_chunk received meeting_id={} seq={} byteLength={}",
+        meeting_id,
+        seq,
+        len(chunk_bytes),
+    )
+    logger.info(
+        "WEBM_HEADER_CHECK seq={} first4hex={} matches_ebml={}",
+        seq,
+        chunk_bytes[:4].hex(),
+        bool(chunk_bytes[:4] == bytes.fromhex("1a45dfa3")),
+    )
+    await audio_chunk.close()
+
+    if not chunk_bytes and not is_final:
+        raise HTTPException(status_code=400, detail="audio_chunk is empty")
+
+    meeting_key = _normalize_meeting_key(meeting_id)
+    now = time.time()
+    guard = _get_stream_retry_guard(meeting_key)
+    previous_seq = guard.last_seq
+    previous_seen_at = guard.last_seen_at
+    guard.last_seq = max(guard.last_seq, int(seq))
+    guard.last_seen_at = now
+
+    if previous_seq > 0:
+        gap_ms = max(0, int((now - previous_seen_at) * 1000.0))
+        if seq > previous_seq + 1 or gap_ms >= 1000:
+            logger.warning(
+                "STT_AUDIO_GAP meeting_id={} previous_seq={} next_seq={} gap_ms={}",
+                meeting_key,
+                previous_seq,
+                seq,
+                gap_ms,
+            )
+
+    if guard.cooldown_until > now:
+        retry_after_seconds = max(1, int(guard.cooldown_until - now + 0.999))
+        logger.warning(
+            "STT_RECONNECT_COOLDOWN meeting_id={} seq={} cooldown_until={} now={}",
+            meeting_key,
+            seq,
+            guard.cooldown_until,
+            now,
+        )
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "meeting_id": meeting_key,
+                "seq": seq,
+                "reason": "reconnect cooldown active",
+                "retry_after_seconds": retry_after_seconds,
+            },
+            headers={"Retry-After": str(retry_after_seconds)},
+        )
+
+    if guard.requires_new_stream and not (
+        seq == 1 and _is_webm_header_chunk(chunk_bytes)
+    ):
+        logger.warning(
+            "STT_RECONNECT_BLOCKED_WEBM_CONTINUATION meeting_id={} seq={} last_ack_seq={} reason={}",
+            meeting_key,
+            seq,
+            guard.last_terminal_seq,
+            guard.last_terminal_close_error
+            or "new stream required after terminal websocket close",
+        )
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "meeting_id": meeting_key,
+                "seq": seq,
+                "reason": "new recording lifecycle required",
+            },
+        )
+
+    if seq == 1 and _is_webm_header_chunk(chunk_bytes) and guard.requires_new_stream:
+        _clear_stream_retry_guard(meeting_key)
+        guard = _get_stream_retry_guard(meeting_key)
+
+    cached_response = _get_cached_final_response(meeting_key)
+    if cached_response is not None:
+        logger.info(
+            "STT_FINALIZATION_REPLAY meeting_id={} seq={} is_final={} reason=cached_final_response",
+            meeting_key,
+            seq,
+            is_final,
+        )
+        if is_final:
+            return cached_response
+        raise HTTPException(status_code=409, detail="Meeting already finalized")
+
     try:
-        entry = service.update_entry(entry_id, payload)
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    service.invalidate(entry.domain)
-    return entry
+        actor = await _get_or_create_stt_actor(
+            meeting_key,
+            normalized_language,
+            seq=seq,
+            chunk_bytes=chunk_bytes,
+        )
+    except Exception as exc:
+        if (
+            "unavailable" in str(exc).lower()
+            and pipeline is not None
+            and getattr(pipeline, "speech_recognizer", None) is not None
+        ):
+            logger.info(
+                "STT_LOCAL_FALLBACK meeting_id={} seq={} reason=deepgram_unavailable",
+                meeting_key,
+                seq,
+            )
+            return _transcribe_locally(chunk_bytes, normalized_language, is_final)
+        logger.exception("Failed to create STT session: {}", repr(exc))
+        raise HTTPException(
+            status_code=503,
+            detail=f"Failed to initialize STT: {repr(exc)}",
+        ) from exc
 
-
-@app.delete("/api/glossary/{entry_id}")
-def delete_glossary_entry(entry_id: int, db: Session = Depends(get_db)):
-    service = _glossary_service(db)
     try:
-        entry = service.delete_entry(entry_id)
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    service.invalidate(entry.domain)
-    return {"deleted": True, "id": entry_id}
+        if is_final:
+            logger.info(
+                "STT_SESSION_STATE meeting_id={} session_id={} seq={} action=finalize",
+                meeting_key,
+                actor.session_id,
+                seq,
+            )
+            response = await actor.finalize(seq=int(seq), ts_ms=int(seq))
+        else:
+            logger.info(
+                "STT_SESSION_STATE meeting_id={} session_id={} transition=ACTIVE->ACTIVE seq={} action=submit",
+                meeting_key,
+                actor.session_id,
+                seq,
+            )
+            response = await actor.submit_chunk(
+                seq=int(seq),
+                pcm_chunk=chunk_bytes,
+                ts_ms=int(seq),
+                is_final=False,
+            )
+    except Exception as exc:
+        if is_terminal_error(exc) or not is_transient_error(exc):
+            code, reason, error_name = _describe_terminal_error(exc)
+            logger.warning(
+                "STT_TERMINAL_FAILURE meeting_id={} session_id={} seq={} code={} reason={} error={}",
+                meeting_key,
+                actor.session_id,
+                seq,
+                code,
+                reason,
+                error_name,
+            )
+            snapshot = _retry_guard_snapshot_from_actor(actor)
+            guard.cooldown_until = max(
+                guard.cooldown_until, float(snapshot.get("cooldown_until") or 0.0)
+            )
+            guard.requires_new_stream = bool(
+                snapshot.get("requires_new_stream") or guard.requires_new_stream
+            )
+            guard.last_terminal_close_code = snapshot.get("last_terminal_close_code")
+            guard.last_terminal_close_reason = snapshot.get(
+                "last_terminal_close_reason"
+            )
+            guard.last_terminal_close_error = (
+                snapshot.get("last_terminal_close_error") or error_name
+            )
+            guard.last_terminal_seq = max(guard.last_terminal_seq, int(seq))
+            if int(seq) > 1:
+                guard.requires_new_stream = True
+                guard.cooldown_until = max(
+                    guard.cooldown_until,
+                    time.time() + settings.stt_reconnect_cooldown_seconds,
+                )
+                logger.warning(
+                    "STT_RECONNECT_BLOCKED_WEBM_CONTINUATION meeting_id={} seq={} last_ack_seq={} reason={}",
+                    meeting_key,
+                    seq,
+                    guard.last_terminal_seq,
+                    guard.last_terminal_close_error or error_name,
+                )
+            elif not _is_webm_header_chunk(chunk_bytes):
+                guard.requires_new_stream = True
+            _update_stream_retry_guard_from_actor(meeting_key, actor)
+            await _retire_stt_actor(meeting_key, actor)
+            logger.warning(
+                "STT_TERMINAL_FAILURE meeting_id={} session_id={} seq={} error={}",
+                meeting_key,
+                actor.session_id,
+                seq,
+                repr(exc),
+            )
+            status_code = (
+                409
+                if guard.requires_new_stream
+                else 429 if guard.cooldown_until > time.time() else 502
+            )
+            detail = {
+                "meeting_id": meeting_key,
+                "seq": seq,
+                "reason": (
+                    "new recording lifecycle required"
+                    if guard.requires_new_stream
+                    else (
+                        "reconnect cooldown active"
+                        if guard.cooldown_until > time.time()
+                        else f"STT stream failed: {repr(exc)}"
+                    )
+                ),
+                "retry_after_seconds": (
+                    max(1, int(guard.cooldown_until - time.time() + 0.999))
+                    if guard.cooldown_until > time.time()
+                    else None
+                ),
+            }
+            headers = None
+            if guard.cooldown_until > time.time():
+                headers = {
+                    "Retry-After": str(
+                        max(1, int(guard.cooldown_until - time.time() + 0.999))
+                    )
+                }
+            raise HTTPException(
+                status_code=status_code,
+                detail=detail,
+                headers=headers,
+            ) from exc
 
+        logger.warning(
+            "STT_TRANSIENT_RETRY meeting_id={} session_id={} seq={} error={}",
+            meeting_key,
+            actor.session_id,
+            seq,
+            repr(exc),
+        )
+        raise HTTPException(
+            status_code=502,
+            detail=f"STT stream failed for meeting_id={meeting_id}: {repr(exc)}",
+        ) from exc
 
-if __name__ == "__main__":
-    import uvicorn
+    if is_final:
+        _store_final_response(meeting_key, response)
+        _stt_stream_sessions.pop(meeting_key, None)
+        _clear_stream_retry_guard(meeting_key)
+        logger.info(
+            "STT_FINALIZATION_END meeting_id={} session_id={} seq={} transcript_length={}",
+            meeting_key,
+            actor.session_id,
+            seq,
+            len(response.transcript),
+        )
+        return response
 
-    uvicorn.run("app.main:app", host=settings.host, port=settings.port, reload=True)
+    return response

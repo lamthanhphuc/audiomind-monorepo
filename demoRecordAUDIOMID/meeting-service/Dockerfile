@@ -26,7 +26,8 @@ RUN groupadd -g 10001 app && useradd -u 10001 -g app -m app \
 COPY --from=build --chown=10001:10001 /workspace/meeting-service/target/meeting-service-0.0.1-SNAPSHOT.jar app.jar
 
 COPY meeting-service/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+RUN sed -i 's/\r$//' /usr/local/bin/docker-entrypoint.sh \
+    && chmod +x /usr/local/bin/docker-entrypoint.sh
 
 USER root
 

@@ -18,7 +18,23 @@ Create or update `.env` (or `.env.local`):
 - `VITE_API_BASE` (optional umbrella base URL)
 - `VITE_AI_SERVICE_URL` or `VITE_API_CPU_BASE` for direct AI endpoint wiring
 - `VITE_REALTIME_WS_ENABLED` (`true` to enable realtime WebSocket flow; `false` for polling fallback)
-- `VITE_REALTIME_WS_BASE_URL` (optional explicit WebSocket base URL)
+- `VITE_REALTIME_WS_BASE_URL` (optional explicit WebSocket base URL; defaults to `ws://localhost:8082/ws/meetings`)
+
+## Docker Build Environment Variables
+
+When building the Docker image, provide these build args:
+
+- `VITE_MEETING_API_BASE_URL`
+- `VITE_PROCESSING_API_BASE_URL`
+- `VITE_USER_API_BASE_URL`
+- `VITE_API_BASE`
+- `VITE_API_CPU_BASE`
+- `VITE_API_GPU_BASE`
+- `VITE_AI_SERVICE_URL`
+- `VITE_REALTIME_WS_ENABLED`
+- `VITE_REALTIME_WS_BASE_URL` (optional)
+
+For local Docker builds, the dev compose file supplies localhost defaults for these values.
 
 ## Notes
 
@@ -44,7 +60,7 @@ VITE_REALTIME_WS_ENABLED=false
 Optional explicit WS base URL example:
 
 ```bash
-VITE_REALTIME_WS_BASE_URL=ws://localhost:8082/ws
+VITE_REALTIME_WS_BASE_URL=ws://localhost:8082/ws/meetings
 ```
 
 ## E2E Prerequisites (Local/CI)

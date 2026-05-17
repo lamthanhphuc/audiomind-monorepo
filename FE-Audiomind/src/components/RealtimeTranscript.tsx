@@ -1,14 +1,22 @@
-import React, { useEffect, useRef } from 'react';
-import type { TranscriptSegment } from '../hooks/useRealtimeMeetingStream';
-import './RealtimeTranscript.css';
+import React, { useEffect, useRef } from 'react'
+import type { TranscriptSegment } from '../hooks/useRealtimeMeetingStream'
+import './RealtimeTranscript.css'
 
 interface RealtimeTranscriptProps {
-  segments: TranscriptSegment[];
-  isPaused?: boolean;
-  onPauseToggle?: (paused: boolean) => void;
-  highlightKeywords?: string[];
-  maxHeight?: string;
+  segments: TranscriptSegment[]
+  isPaused?: boolean
+  onPauseToggle?: (paused: boolean) => void
+  highlightKeywords?: string[]
+  maxHeight?: string
 }
+
+const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+const escapeHtml = (value: string): string => value
+  .replace(/&/g, '&amp;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;')
+  .replace(/'/g, '&#39;')
 
 export const RealtimeTranscript: React.FC<RealtimeTranscriptProps> = ({
   segments,
@@ -17,33 +25,57 @@ export const RealtimeTranscript: React.FC<RealtimeTranscriptProps> = ({
   highlightKeywords = [],
   maxHeight = '400px',
 }) => {
-  const scrollContainerRef = useRef<HTMLDivElement>(null);
-  const lastSegmentRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null)
+  const animationFrameRef = useRef<number | null>(null)
 
-  // Auto-scroll to latest message when new segments arrive
   useEffect(() => {
-    if (!isPaused && lastSegmentRef.current) {
-      lastSegmentRef.current.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    if (isPaused || segments.length === 0) {
+      return
     }
-  }, [segments, isPaused]);
+
+    if (animationFrameRef.current !== null) {
+      cancelAnimationFrame(animationFrameRef.current)
+    }
+
+    animationFrameRef.current = requestAnimationFrame(() => {
+      const container = scrollContainerRef.current
+      if (!container) {
+        return
+      }
+
+      container.scrollTop = container.scrollHeight
+    })
+
+    return () => {
+      if (animationFrameRef.current !== null) {
+        cancelAnimationFrame(animationFrameRef.current)
+      }
+    }
+  }, [segments, isPaused])
 
   const highlightText = (text: string, keywords: string[]) => {
-    if (keywords.length === 0) return text;
+    if (keywords.length === 0) {
+      return escapeHtml(text)
+    }
 
-    let highlighted = text;
+    let highlighted = escapeHtml(text)
     keywords.forEach((keyword) => {
-      const regex = new RegExp(`(${keyword})`, 'gi');
-      highlighted = highlighted.replace(regex, '<span class="keyword-highlight">$1</span>');
-    });
-    return highlighted;
-  };
+      const safeKeyword = escapeRegExp(keyword)
+      if (!safeKeyword) {
+        return
+      }
+      const regex = new RegExp(`(${safeKeyword})`, 'gi')
+      highlighted = highlighted.replace(regex, '<span class="keyword-highlight">$1</span>')
+    })
+    return highlighted
+  }
 
   if (segments.length === 0) {
     return (
       <div className="realtime-transcript-empty">
         <p>Waiting for transcript...</p>
       </div>
-    );
+    )
   }
 
   return (
@@ -66,38 +98,49 @@ export const RealtimeTranscript: React.FC<RealtimeTranscriptProps> = ({
         style={{ maxHeight }}
         ref={scrollContainerRef}
       >
-        {segments.map((segment, index) => (
-          <div
-            key={segment.id}
-            className="transcript-segment"
-            ref={index === segments.length - 1 ? lastSegmentRef : undefined}
-          >
-            <div className="segment-speaker">{segment.speaker}</div>
-            <div className="segment-text">
-              <div
-                dangerouslySetInnerHTML={{
-                  __html: highlightText(segment.text, highlightKeywords),
-                }}
-              />
-              {segment.confidence && segment.confidence < 0.9 && (
-                <span className="confidence-badge">
-                  {Math.round(segment.confidence * 100)}%
-                </span>
-              )}
+        {segments.map((segment) => {
+          const startMs = segment.start ?? segment.timestamp ?? 0
+          const endMs = segment.end ?? startMs
+          const timestampLabel = endMs > startMs
+            ? `${formatTimestamp(startMs)} - ${formatTimestamp(endMs)}`
+            : formatTimestamp(startMs)
+
+          return (
+            <div
+              key={segment.id}
+              className="transcript-segment"
+            >
+              <div className="segment-speaker">{segment.speaker}</div>
+              <div className="segment-text">
+                {segment.text && segment.text.trim().length > 0 ? (
+                  <div
+                    dangerouslySetInnerHTML={{
+                      __html: highlightText(segment.text, highlightKeywords),
+                    }}
+                  />
+                ) : (
+                  <div className="listening-placeholder">Đang lắng nghe...</div>
+                )}
+                {segment.confidence !== undefined && segment.confidence < 0.9 && (
+                  <span className="confidence-badge">
+                    {Math.round(segment.confidence * 100)}%
+                  </span>
+                )}
+              </div>
+              <div className="segment-timestamp">
+                {timestampLabel}
+              </div>
             </div>
-            <div className="segment-timestamp">
-              {formatTimestamp(segment.timestamp)}
-            </div>
-          </div>
-        ))}
+          )
+        })}
       </div>
     </div>
-  );
-};
+  )
+}
 
-function formatTimestamp(ms: number): string {
-  const totalSeconds = Math.floor(ms / 1000);
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+function formatTimestamp(secondsValue: number): string {
+  const totalSeconds = Math.max(0, Math.floor(secondsValue))
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  return `${minutes}:${seconds.toString().padStart(2, '0')}`
 }

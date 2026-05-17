@@ -1,0 +1,64 @@
+package com.example.processingservice.client;
+
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
+import java.util.Map;
+import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.json.MappingJackson2HttpMessageConverter;
+import org.springframework.web.client.RestTemplate;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+class AIServiceClientTest {
+
+    @Test
+    void streamAudioChunk_shouldLogProcessingOutWithMeetingIdAndSeq() {
+        RestTemplate restTemplate = mock(RestTemplate.class);
+        AIServiceClient client = new AIServiceClient(restTemplate);
+        org.springframework.test.util.ReflectionTestUtils.setField(client, "aiUrl", "http://ai-service");
+
+        ResponseEntity<Map<String, Object>> response = new ResponseEntity<>(Map.of("transcript", "ok"), HttpStatus.OK);
+        when(restTemplate.exchange(
+                any(String.class),
+                eq(HttpMethod.POST),
+                any(HttpEntity.class),
+                any(org.springframework.core.ParameterizedTypeReference.class)
+        )).thenReturn(response);
+
+        Logger logger = (Logger) org.slf4j.LoggerFactory.getLogger(AIServiceClient.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+
+        try {
+            Map<String, Object> body = client.streamAudioChunk(9L, new byte[] {0x01, 0x02, 0x03}, 4L, "vi", false, null, null);
+            assertEquals("ok", body.get("transcript"));
+        } finally {
+            logger.detachAppender(appender);
+        }
+
+        verify(restTemplate).exchange(
+                eq("http://ai-service/api/v1/stt/stream"),
+                eq(HttpMethod.POST),
+                any(HttpEntity.class),
+                any(org.springframework.core.ParameterizedTypeReference.class)
+        );
+
+        boolean sawLog = appender.list.stream().anyMatch(event ->
+                event.getFormattedMessage().contains("AUDIO HASH PROCESSING_OUT meetingId=9 seq=4 size=3 first16hex=010203")
+        );
+        assertTrue(sawLog);
+    }
+}

@@ -87,7 +87,8 @@ class AiStreamServicer(ai__stream__pb2__grpc.AiStreamServiceServicer):
                     if session_id is None:
                         session_id = await self.stt_adapter.open_session(
                             meeting_id=meeting_id,
-                            language="vi",  # TODO: get from first envelope or request
+                            # The stream envelope does not carry language metadata yet.
+                            language="vi",
                         )
                         logger.info(
                             f"Opened STT session {session_id} for meeting {meeting_id}"

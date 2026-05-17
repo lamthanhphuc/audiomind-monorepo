@@ -6,8 +6,10 @@ from sqlalchemy import (
     Text,
     DateTime,
     Float,
+    Boolean,
     ForeignKey,
     JSON,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
 from datetime import datetime
@@ -27,6 +29,38 @@ class Transcript(Base):
 
     # Relationship
     analysis = relationship("Analysis", back_populates="transcript", uselist=False)
+
+
+class TranscriptFragment(Base):
+    __tablename__ = "transcript_fragments"
+    __table_args__ = (
+        UniqueConstraint("dedupe_key", name="uq_transcript_fragments_dedupe_key"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    meeting_id = Column(BigInteger, nullable=False, index=True)
+    seq = Column(Integer, nullable=False, index=True)
+    version = Column(Integer, nullable=False, default=1)
+    event_id = Column(String(64), nullable=True, index=True)
+    speaker = Column(String(50), nullable=True)
+    start_time = Column(Float)
+    end_time = Column(Float)
+    text = Column(Text)
+    normalized_text = Column(String(2048), nullable=False)
+    is_final = Column(Boolean, default=False, nullable=False)
+    confidence = Column(Float, nullable=True)
+    dedupe_key = Column(String(128), nullable=False, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class TranscriptCheckpoint(Base):
+    __tablename__ = "transcript_checkpoints"
+
+    meeting_id = Column(BigInteger, primary_key=True, index=True)
+    last_ack_seq = Column(Integer, nullable=False, default=0)
+    last_persisted_seq = Column(Integer, nullable=False, default=0)
+    last_finalized_seq = Column(Integer, nullable=False, default=0)
+    updated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
 
 class Analysis(Base):

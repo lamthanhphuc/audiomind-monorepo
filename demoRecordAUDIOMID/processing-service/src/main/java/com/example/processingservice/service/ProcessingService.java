@@ -126,12 +126,21 @@ public class ProcessingService {
     ) {
         String resolvedAudioPath = audioPath;
         if (resolvedAudioPath == null || resolvedAudioPath.isBlank()) {
-            Map<String, Object> meeting = meetingServiceClient.getMeetingById(meetingId, traceId, authorization);
-            Object audioPathObj = meeting.get("audioPath");
-            if (audioPathObj == null || String.valueOf(audioPathObj).isBlank()) {
-                throw new IllegalArgumentException("Meeting has no audioPath: " + meetingId);
+            try {
+                Map<String, Object> meeting = meetingServiceClient.getMeetingById(meetingId, traceId, authorization);
+                Object audioPathObj = meeting.get("audioPath");
+                if (audioPathObj == null || String.valueOf(audioPathObj).isBlank()) {
+                    throw new IllegalArgumentException("Meeting has no audioPath: " + meetingId);
+                }
+                resolvedAudioPath = String.valueOf(audioPathObj);
+            } catch (Exception ex) {
+                if (audioPath == null || audioPath.isBlank()) {
+                    log.warn("[traceId={}] [jobId={}] Meeting {} not found and no audioPath provided", traceId, meetingId, meetingId);
+                    throw new IllegalArgumentException("Meeting not found and audioPath is required for meetingId: " + meetingId, ex);
+                }
+                resolvedAudioPath = audioPath;
+                log.info("[traceId={}] [jobId={}] Meeting {} not found, proceeding with provided audioPath", traceId, meetingId, meetingId);
             }
-            resolvedAudioPath = String.valueOf(audioPathObj);
         }
 
         Map<String, Object> aiResponse = aiServiceClient.processAudio(

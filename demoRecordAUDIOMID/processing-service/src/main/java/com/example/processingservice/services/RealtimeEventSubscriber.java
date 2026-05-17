@@ -93,9 +93,14 @@ public class RealtimeEventSubscriber {
                     } else {
                         unregisterSession(meetingId, session);
                     }
-                } catch (IOException e) {
-                    log.warn("Failed to send message to session: {}", e.getMessage());
-                    unregisterSession(meetingId, session);
+                } catch (Exception e) {
+                    // Protect the broadcast loop from any unexpected runtime exception
+                    log.warn("Failed to send message to session (unregistering): {}", e.getMessage(), e);
+                    try {
+                        unregisterSession(meetingId, session);
+                    } catch (Exception ex) {
+                        log.debug("Error unregistering session after send failure: {}", ex.getMessage());
+                    }
                 }
             }
         } catch (JsonProcessingException e) {
