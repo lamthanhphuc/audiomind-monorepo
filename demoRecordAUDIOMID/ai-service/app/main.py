@@ -38,6 +38,7 @@ from app.ffmpeg_utils import ensure_ffmpeg_on_path
 from app.job_status_store import (
     cleanup_expired_job_statuses,
     _get_client,
+    get_job_status,
     load_job_statuses,
     set_job_status,
 )
@@ -592,10 +593,15 @@ async def get_transcript(meeting_id: int, db: Session = Depends(get_db)):
     try:
         logger.info(f"Fetching transcript for meeting {meeting_id}")
 
-        fragment_repository = TranscriptPersistenceRepository(db)
-        fragment_segments = fragment_repository.assemble_visible_transcript_segments(
-            meeting_id
-        )
+        fragment_segments = []
+        try:
+            fragment_repository = TranscriptPersistenceRepository(db)
+            fragment_segments = (
+                fragment_repository.assemble_visible_transcript_segments(meeting_id)
+            )
+        except AttributeError:
+            fragment_segments = []
+
         if fragment_segments:
             logger.info(
                 "STT_TRANSCRIPT_GET meeting_id={} source={} rows={}",
@@ -671,6 +677,16 @@ async def get_transcript(meeting_id: int, db: Session = Depends(get_db)):
             status_code=500,
             detail=f"Internal server error. request_id={request_id}",
         )
+
+
+@app.get("/api/meeting/{meeting_id}/status")
+async def get_processing_status(meeting_id: int):
+    status = get_job_status(meeting_id)
+
+    if status is None:
+        raise HTTPException(status_code=404, detail="Meeting job status not found")
+
+    return status
 
 
 @app.get("/api/meeting/{meeting_id}/analysis", response_model=AnalysisResponse)
