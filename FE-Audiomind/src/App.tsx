@@ -6,6 +6,7 @@ import { AudioRecorderButton } from './components/AudioRecorderButton'
 import { RealtimeTranscript } from './components/RealtimeTranscript'
 import { useAudioRecorder } from './hooks/useAudioRecorder'
 import { useRealtimeMeetingStream } from './hooks/useRealtimeMeetingStream'
+import { mergeTranscriptSegments, normalizePersistedTranscriptSegments } from './utils/transcript'
 
 type ResultView = {
   meetingId: number
@@ -201,7 +202,11 @@ export default function App() {
         getAnalysis(meetingId),
       ])
 
-      const mergedTranscript = (transcript.transcripts || [])
+      const mergedTranscriptSegments = mergeTranscriptSegments(
+        normalizePersistedTranscriptSegments(transcript.transcripts || []),
+      )
+
+      const mergedTranscript = mergedTranscriptSegments
         .map((segment) => `${segment.speaker}: ${segment.text}`)
         .join(' ')
         .trim()

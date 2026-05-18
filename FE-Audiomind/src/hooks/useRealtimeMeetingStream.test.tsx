@@ -2,6 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createRoot } from 'react-dom/client'
 import { act } from 'react-dom/test-utils'
 import { useRealtimeMeetingStream } from './useRealtimeMeetingStream'
+import {
+  mergeTranscriptSegments,
+  normalizePersistedTranscriptSegments,
+  normalizeTranscriptEvent,
+} from '../utils/transcript'
 
 class MockWebSocket {
   static instances: MockWebSocket[] = []
@@ -297,6 +302,138 @@ describe('useRealtimeMeetingStream', () => {
       end: 3.1,
       language: 'vi',
       isFinal: true,
+    })
+  })
+
+  it('replaces progressive partial updates for the same segment instead of appending', async () => {
+    const socket = MockWebSocket.instances[0]
+
+    act(() => {
+      socket.open()
+      socket.receive({
+        type: 'session.ready',
+        meetingId: 88,
+        authenticated: true,
+        activeConnections: 1,
+      })
+    })
+
+    await flush()
+
+    act(() => {
+      socket.receive({
+        type: 'transcript.partial',
+        segmentId: 'meeting-2-start-7.810',
+        speaker: 'Speaker 1',
+        startTime: 7.81,
+        endTime: 8.12,
+        text: 'Xin chào',
+        language: 'vi',
+      })
+      socket.receive({
+        type: 'transcript.partial',
+        segmentId: 'meeting-2-start-7.810',
+        speaker: 'Speaker 1',
+        startTime: 7.81,
+        endTime: 8.48,
+        text: 'Xin chào Audiomind',
+        language: 'vi',
+      })
+    })
+
+    await flush()
+
+    expect(latest?.transcripts).toHaveLength(1)
+    expect(latest?.transcripts[0]).toMatchObject({
+      id: 'meeting-2-start-7.810',
+      mergeKey: 'segment:meeting-2-start-7.810',
+      text: 'Xin chào Audiomind',
+      start: 7.81,
+      end: 8.48,
+      isFinal: false,
+    })
+  })
+
+  it('keeps the final transcript when a later partial arrives for the same segment', async () => {
+    const socket = MockWebSocket.instances[0]
+
+    act(() => {
+      socket.open()
+      socket.receive({
+        type: 'session.ready',
+        meetingId: 88,
+        authenticated: true,
+        activeConnections: 1,
+      })
+    })
+
+    await flush()
+
+    act(() => {
+      socket.receive({
+        type: 'transcript.final',
+        segmentId: 'meeting-2-start-18.940',
+        speaker: 'Speaker 2',
+        startTime: 18.94,
+        endTime: 20.12,
+        text: 'Đây là câu hoàn chỉnh',
+        language: 'vi',
+        isFinal: true,
+      })
+      socket.receive({
+        type: 'transcript.partial',
+        segmentId: 'meeting-2-start-18.940',
+        speaker: 'Speaker 2',
+        startTime: 18.94,
+        endTime: 19.1,
+        text: 'Đây là câu',
+        language: 'vi',
+      })
+    })
+
+    await flush()
+
+    expect(latest?.transcripts).toHaveLength(1)
+    expect(latest?.transcripts[0]).toMatchObject({
+      id: 'meeting-2-start-18.940',
+      text: 'Đây là câu hoàn chỉnh',
+      start: 18.94,
+      end: 20.12,
+      isFinal: true,
+    })
+  })
+
+  it('merges persisted transcript rows into an existing realtime segment without duplicates', () => {
+    const realtimeSegment = normalizeTranscriptEvent({
+      type: 'transcript.partial',
+      segmentId: 'meeting-2-start-7.810',
+      speaker: 'Speaker 1',
+      startTime: 7.81,
+      endTime: 8.12,
+      text: 'Xin chào',
+      language: 'vi',
+    }, 'transcript.partial')
+
+    const persistedSegments = normalizePersistedTranscriptSegments([
+      {
+        speaker: 'Speaker 1',
+        start_time: 7.81,
+        end_time: 8.48,
+        text: 'Xin chào Audiomind',
+      },
+    ])
+
+    const merged = mergeTranscriptSegments([
+      ...(realtimeSegment ? [realtimeSegment] : []),
+      ...persistedSegments,
+    ])
+
+    expect(merged).toHaveLength(1)
+    expect(merged[0]).toMatchObject({
+      id: 'meeting-2-start-7.810',
+      text: 'Xin chào Audiomind',
+      start: 7.81,
+      end: 8.48,
     })
   })
 
