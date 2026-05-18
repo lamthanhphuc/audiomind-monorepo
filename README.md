@@ -37,6 +37,7 @@ Create the local infra environment file from the committed template:
 
 ```bash
 copy infra\.env.example infra\.env
+copy demoRecordAUDIOMID\ai-service\.env.example demoRecordAUDIOMID\ai-service\.env
 ```
 
 Edit `infra/.env` before starting the stack. The most important values are:
