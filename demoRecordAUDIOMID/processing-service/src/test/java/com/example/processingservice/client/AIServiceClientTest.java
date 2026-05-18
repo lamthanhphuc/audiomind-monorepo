@@ -3,17 +3,21 @@ package com.example.processingservice.client;
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
+import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.json.MappingJackson2HttpMessageConverter;
 import org.springframework.web.client.RestTemplate;
+import org.springframework.web.client.HttpClientErrorException;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
@@ -61,4 +65,36 @@ class AIServiceClientTest {
         );
         assertTrue(sawLog);
     }
+
+        @Test
+        void streamAudioChunk_shouldReturnNullForFinalizationReplayConflict() {
+        RestTemplate restTemplate = mock(RestTemplate.class);
+        AIServiceClient client = new AIServiceClient(restTemplate);
+        org.springframework.test.util.ReflectionTestUtils.setField(client, "aiUrl", "http://ai-service");
+
+        HttpClientErrorException conflict = HttpClientErrorException.create(
+            HttpStatus.CONFLICT,
+            "Conflict",
+            HttpHeaders.EMPTY,
+            "{\"detail\":\"Meeting already finalized\"}".getBytes(StandardCharsets.UTF_8),
+            StandardCharsets.UTF_8
+        );
+
+        when(restTemplate.exchange(
+            any(String.class),
+            eq(HttpMethod.POST),
+            any(HttpEntity.class),
+            any(org.springframework.core.ParameterizedTypeReference.class)
+        )).thenThrow(conflict);
+
+        Map<String, Object> body = client.streamAudioChunk(9L, new byte[] {0x01, 0x02, 0x03}, 4L, "vi", false, null, null);
+
+        assertNull(body);
+        verify(restTemplate).exchange(
+            eq("http://ai-service/api/v1/stt/stream"),
+            eq(HttpMethod.POST),
+            any(HttpEntity.class),
+            any(org.springframework.core.ParameterizedTypeReference.class)
+        );
+        }
 }

@@ -45,7 +45,12 @@ export function AudioRecorderButton({
       completionEmittedRef.current = false
     }
 
-    if (recorder.state === 'stopped' && !completionEmittedRef.current && recorder.audioChunks.length > 0) {
+    if (
+      recorder.state === 'stopped' &&
+      !completionEmittedRef.current &&
+      recorder.audioChunks.length > 0 &&
+      emittedChunkCountRef.current >= recorder.audioChunks.length
+    ) {
       completionEmittedRef.current = true
       onRecordingComplete?.(new Blob(recorder.audioChunks, { type: RECORDING_MIME_TYPE }))
     }
