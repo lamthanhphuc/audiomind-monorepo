@@ -1,5 +1,5 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import model_validator
+from pydantic import AliasChoices, Field, model_validator
 from functools import lru_cache
 from pathlib import Path
 from urllib.parse import urlparse
@@ -96,6 +96,17 @@ class Settings(BaseSettings):
     stt_persist_stall_seconds: float = 30.0
     stt_half_open_stall_seconds: float = 15.0
     stt_shutdown_grace_seconds: float = 15.0
+    stt_ownership_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices(
+            "STT_ENABLE_DISTRIBUTED_OWNERSHIP",
+            "STT_OWNERSHIP_ENABLED",
+        ),
+    )
+    stt_ownership_redis_url: str = ""
+    stt_replica_id: str = ""
+    stt_ownership_lease_ttl_seconds: float = 30.0
+    stt_ownership_cooldown_ttl_seconds: float = 300.0
 
     # Async processing
     celery_broker_url: str = "redis://redis:6379/0"
