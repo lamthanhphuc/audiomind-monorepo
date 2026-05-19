@@ -2,6 +2,12 @@
 
 Phase 3 adds distributed ownership for realtime STT sessions so a meeting stream is processed by one ai-service replica at a time. This protects the Deepgram session, transcript persistence, and finalization path when ai-service is scaled horizontally.
 
+## Realtime Transcript Behavior
+
+During recording, the live preview may appear as progressive text. After stop, the frontend hydrates persisted transcript fragments from the processing transcript endpoint, and the final transcript should render multiple segments with timestamps. The UI should not render an aggregate final result as a fake single `0:00` segment.
+
+Hydration retries are intentional because transcript finalization and persistence can race the UI stop action. When the Redis-backed job-state batch is missing or empty, the processing endpoint should fall back to visible fragments from ai-service. If no fragments exist yet, the UI should stay in a waiting or no-transcript state instead of manufacturing a segment.
+
 ## Why Sticky Routing Is Still Recommended
 
 Sticky routing is still recommended because realtime STT streams are stateful and latency-sensitive. Keeping a meeting on the same ai-service replica avoids unnecessary Redis lease checks on every chunk, reduces cross-replica conflict responses, and keeps in-memory sequence caches, retry guards, and finalization state hot on the owning process.
@@ -19,7 +25,15 @@ Each active meeting STT stream acquires a Redis lease before creating a `Meeting
 
 Only the owner with the matching lease can enqueue audio, receive transcript events, persist fragments, finalize, and close the upstream STT session. Actor watchdog and processing paths refresh the lease. If refresh or validation fails, the actor marks ownership as lost, fails pending chunk/finalization waiters, and avoids closing a session it no longer owns.
 
+Redis must be reachable when distributed ownership is enabled because lease acquire, renew, release, and cooldown lookups all depend on it.
+
 When another replica receives a chunk for an already-owned meeting, it returns a conflict instead of processing the stream. Shared Redis cooldown state also prevents rapid reconnect loops from moving between replicas and bypassing the local retry guard.
+
+Useful Redis debug command:
+
+```bash
+docker compose -f infra/docker-compose.dev.yml exec redis redis-cli keys "stt:*"
+```
 
 ## Environment Variables
 
