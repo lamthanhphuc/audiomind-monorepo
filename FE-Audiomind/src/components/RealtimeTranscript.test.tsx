@@ -92,4 +92,26 @@ describe('RealtimeTranscript', () => {
     expect(container.textContent).toContain('Waiting for transcript...')
     expect(container.querySelector('.segment-count')).toBeNull()
   })
+
+  it('ignores persisted aggregate rows without meaningful timing or segment identity', () => {
+    const hydratedSegments = mergeTranscriptSegments(
+      normalizePersistedTranscriptSegments([
+        {
+          speaker: 'Speaker 0',
+          text: 'Tổng hợp nhưng không có thời gian',
+          start_time: 0,
+          end_time: 0,
+        },
+      ]),
+    )
+
+    act(() => {
+      root.render(<RealtimeTranscript segments={hydratedSegments} />)
+    })
+
+    expect(hydratedSegments).toHaveLength(0)
+    expect(container.textContent).toContain('Waiting for transcript...')
+    expect(container.querySelector('.segment-count')).toBeNull()
+    expect(container.querySelectorAll('.transcript-segment')).toHaveLength(0)
+  })
 })
