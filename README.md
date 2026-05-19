@@ -131,6 +131,14 @@ docker compose -f infra/docker-compose.dev.yml config --quiet
 
 The AI service uses Redis-backed ownership to keep multiple `ai-api` replicas from processing the same meeting stream at the same time. Sticky routing is still recommended for local and production deployments.
 
+## Realtime Transcript Finalization
+
+During recording, the live preview may appear as progressive text. After stop, the frontend hydrates persisted transcript fragments and the final transcript should render multiple segments with timestamps. The UI should not collapse the final result into a fake single `0:00` segment.
+
+## Post-Stop Hydration
+
+After stop, the FE calls the processing transcript endpoint for the meeting and retries hydration briefly so transcript finalization and persistence can complete. If the Redis job-state batch is missing or empty, the processing endpoint falls back to visible fragments from ai-service. If no fragments exist yet, the UI should stay in a waiting or no-transcript state instead of inventing a segment.
+
 Useful Redis debug command:
 
 ```bash
@@ -149,10 +157,11 @@ Expected ownership logs include:
 2. Log in or register
 3. Create or join a meeting
 4. Start realtime transcript capture
-5. Speak briefly
-6. Stop recording
-7. Refresh the meeting page
-8. Verify the transcript is still available
+5. Record 20 to 40 seconds of speech
+6. Stop recording and wait for hydration
+7. Confirm the console shows fragments greater than 0
+8. Confirm the UI shows multiple segments with timestamps that are not all `0:00`
+9. Refresh the page and confirm the transcript remains available
 
 ## Troubleshooting
 
@@ -160,6 +169,9 @@ Expected ownership logs include:
 - Docker entrypoint `no such file or directory`: rebuild the image and confirm `.gitattributes` keeps entrypoint scripts on LF line endings
 - Stale `ai-api` or `celery-worker` image: rebuild `ai-api celery-worker`
 - Redis unavailable: check the Redis container and `STT_OWNERSHIP_REDIS_URL`
+- If the UI shows Waiting for transcript after stop: check browser console hydration logs, GET `/processing/transcript/{meetingId}`, and ai-api logs for `STT_FRAGMENT_VISIBLE_OUTPUT` rows
+- If the UI shows one segment at `0:00`: check whether the endpoint returns one aggregate row without `start_time` and `end_time`; expected responses contain multiple transcript fragments with timestamps
+- If Deepgram returns `text_len=0`: likely no speech was detected, the mic volume was too low, the wrong input device was selected, or the audio quality was poor
 - Port conflict: stop the other service or change the mapped port before restarting Compose
 - npm module type warning: usually non-blocking unless lint or tests fail
 
