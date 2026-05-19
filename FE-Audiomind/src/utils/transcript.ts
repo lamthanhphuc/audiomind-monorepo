@@ -232,6 +232,14 @@ export const normalizeTranscriptEvent = (
 export const normalizePersistedTranscriptSegments = (segments: TranscriptSource[]): TranscriptSegment[] => {
   return segments
     .map((segment) => {
+      const explicitId = toStringValue(segment.segment_id, segment.segmentId, segment.id)
+      const hasMeaningfulTiming =
+        toNumber(segment.start_time, segment.start) > 0 || toNumber(segment.end_time, segment.end) > 0
+
+      if (!hasMeaningfulTiming && !explicitId) {
+        return null
+      }
+
       const normalized = normalizeTranscriptEvent({
         speaker: segment.speaker,
         text: segment.text,
