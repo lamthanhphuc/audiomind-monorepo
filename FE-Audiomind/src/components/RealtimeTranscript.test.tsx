@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createRoot } from 'react-dom/client'
 import { act } from 'react-dom/test-utils'
 import { RealtimeTranscript } from './RealtimeTranscript'
+import { mergeTranscriptSegments, normalizePersistedTranscriptSegments } from '../utils/transcript'
 
 describe('RealtimeTranscript', () => {
   let container: HTMLDivElement
@@ -51,5 +52,44 @@ describe('RealtimeTranscript', () => {
 
     const timestamps = Array.from(container.querySelectorAll('.segment-timestamp')).map((node) => node.textContent)
     expect(timestamps).toEqual(['0:07 - 0:12', '0:18'])
+  })
+
+  it('renders multiple rows from hydrated persisted fragments', () => {
+    const hydratedSegments = mergeTranscriptSegments(
+      normalizePersistedTranscriptSegments([
+        {
+          speaker: 'Speaker 1',
+          start_time: 7.81,
+          end_time: 8.48,
+          text: 'Xin chào Audiomind',
+        },
+        {
+          speaker: 'Speaker 2',
+          start_time: 18.94,
+          end_time: 19.4,
+          text: 'Đây là câu hoàn chỉnh',
+        },
+      ]),
+    )
+
+    act(() => {
+      root.render(<RealtimeTranscript segments={hydratedSegments} />)
+    })
+
+    expect(container.querySelector('.segment-count')?.textContent).toBe('2 segments')
+    const transcriptRows = Array.from(container.querySelectorAll('.transcript-segment'))
+    expect(transcriptRows).toHaveLength(2)
+
+    const timestamps = Array.from(container.querySelectorAll('.segment-timestamp')).map((node) => node.textContent)
+    expect(timestamps).toEqual(['0:07 - 0:08', '0:18 - 0:19'])
+  })
+
+  it('shows the waiting state when hydration returns no fragments', () => {
+    act(() => {
+      root.render(<RealtimeTranscript segments={[]} />)
+    })
+
+    expect(container.textContent).toContain('Waiting for transcript...')
+    expect(container.querySelector('.segment-count')).toBeNull()
   })
 })

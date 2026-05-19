@@ -33,7 +33,7 @@ const toStringValue = (...values: unknown[]): string => {
   return ''
 }
 
-const isLikelySequenceId = (value: string): boolean => /^seq-\d+$/i.test(value) || /^\d+$/.test(value)
+const isLikelySequenceId = (value: string): boolean => /^seq-\d+$/i.test(value) || /^-?\d+$/.test(value)
 
 const resolveTiming = (data: TranscriptSource): { start: number; end: number } | null => {
   const start = toNumber(data.startTime, data.start_time, data.start)
@@ -202,6 +202,15 @@ export const normalizeTranscriptEvent = (
   }
 
   const timing = resolveTiming(data)
+  const explicitId = toStringValue(data.segmentId, data.segment_id, data.id)
+  const seq = toNumber(data.seq)
+  const hasRealSegmentId = Boolean(explicitId) && !isLikelySequenceId(explicitId)
+  const isAggregateSentinel = seq === -1 || explicitId === '-1'
+
+  if (isAggregateSentinel && !hasRealSegmentId && timing === null) {
+    return null
+  }
+
   const start = timing?.start ?? toNumber(data.startTime, data.start_time, data.timestamp)
   const end = timing?.end ?? toNumber(data.endTime, data.end_time, start)
   const isFinal = messageType === 'transcript.final' || Boolean(data.isFinal || data.is_final)

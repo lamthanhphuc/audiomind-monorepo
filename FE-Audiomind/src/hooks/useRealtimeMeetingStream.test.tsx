@@ -437,6 +437,95 @@ describe('useRealtimeMeetingStream', () => {
     })
   })
 
+  it('ignores aggregate seq=-1 finals without real segment timing so rows stay separate', async () => {
+    const socket = MockWebSocket.instances[0]
+
+    act(() => {
+      socket.open()
+      socket.receive({
+        type: 'session.ready',
+        meetingId: 88,
+        authenticated: true,
+        activeConnections: 1,
+      })
+    })
+
+    await flush()
+
+    act(() => {
+      socket.receive({
+        type: 'transcript.partial',
+        segmentId: 'meeting-2-start-7.810',
+        speaker: 'Speaker 1',
+        startTime: 7.81,
+        endTime: 8.12,
+        text: 'Xin chào',
+        language: 'vi',
+      })
+      socket.receive({
+        type: 'transcript.partial',
+        segmentId: 'meeting-2-start-18.940',
+        speaker: 'Speaker 2',
+        startTime: 18.94,
+        endTime: 19.4,
+        text: 'Đây là câu hoàn chỉnh',
+        language: 'vi',
+      })
+      socket.receive({
+        type: 'transcript.final',
+        seq: -1,
+        segmentId: '-1',
+        speaker: '',
+        text: 'Xin chào Đây là câu hoàn chỉnh',
+        language: 'vi',
+        isFinal: true,
+      })
+    })
+
+    await flush()
+
+    expect(latest?.transcripts).toHaveLength(2)
+    expect(latest?.transcripts.map((segment) => segment.text)).toEqual([
+      'Xin chào',
+      'Đây là câu hoàn chỉnh',
+    ])
+  })
+
+  it('allows seq=-1 finals with a real segment id and timing to replace the partial', () => {
+    const partial = normalizeTranscriptEvent({
+      type: 'transcript.partial',
+      seq: -1,
+      segmentId: 'meeting-2-start-7.810',
+      speaker: 'Speaker 1',
+      startTime: 7.81,
+      endTime: 8.12,
+      text: 'Xin chào',
+      language: 'vi',
+    }, 'transcript.partial')
+
+    const finalSegment = normalizeTranscriptEvent({
+      type: 'transcript.final',
+      seq: -1,
+      segmentId: 'meeting-2-start-7.810',
+      speaker: 'Speaker 1',
+      startTime: 7.81,
+      endTime: 8.48,
+      text: 'Xin chào Audiomind',
+      language: 'vi',
+      isFinal: true,
+    }, 'transcript.final')
+
+    expect(partial).not.toBeNull()
+    expect(finalSegment).not.toBeNull()
+    expect(finalSegment).toMatchObject({
+      id: 'meeting-2-start-7.810',
+      text: 'Xin chào Audiomind',
+      start: 7.81,
+      end: 8.48,
+      isFinal: true,
+    })
+  })
+
   it('keeps distinct utterances as separate rows', async () => {
     const socket = MockWebSocket.instances[0]
 
