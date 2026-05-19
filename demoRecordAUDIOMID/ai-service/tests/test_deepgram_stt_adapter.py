@@ -207,6 +207,58 @@ def test_deepgram_results_payload_logs_text_len_and_parses(monkeypatch):
     assert len("xin chao tu deepgram") in results_logs[0][1]
 
 
+def test_deepgram_empty_results_payload_logs_diagnostics(monkeypatch):
+    from app.services import stt_adapter as stt_module
+
+    logged = []
+    monkeypatch.setattr(
+        stt_module,
+        "logger",
+        SimpleNamespace(
+            info=lambda message, *args: logged.append((message, args)),
+            warning=lambda *args, **kwargs: None,
+            exception=lambda *args, **kwargs: None,
+        ),
+    )
+
+    adapter = DeepgramSTTAdapter(api_key="dg-test-key")
+    session = SimpleNamespace(
+        session_id="session-1",
+        metadata_events=0,
+        results_events=3,
+        speech_started_events=0,
+        utterance_end_events=0,
+        other_events=0,
+    )
+
+    event = adapter._parse_transcript_message(
+        {
+            "type": "Results",
+            "channel": {
+                "alternatives": [
+                    {
+                        "transcript": "",
+                        "confidence": 0.0,
+                    }
+                ]
+            },
+            "speech_final": False,
+            "is_final": False,
+        },
+        ts_ms=99,
+        session=session,
+    )
+
+    assert event is None
+    empty_logs = [item for item in logged if item[0].startswith("DG EMPTY RESULTS")]
+    assert empty_logs
+    assert empty_logs[0][1][0] == "session-1"
+    assert empty_logs[0][1][1] == 99
+    assert empty_logs[0][1][5] == 0
+    assert empty_logs[0][1][6] == 1
+    assert empty_logs[0][1][7] == 4
+
+
 def test_deepgram_results_payload_extracts_timing_and_segment_identity():
     adapter = DeepgramSTTAdapter(api_key="dg-test-key")
 
