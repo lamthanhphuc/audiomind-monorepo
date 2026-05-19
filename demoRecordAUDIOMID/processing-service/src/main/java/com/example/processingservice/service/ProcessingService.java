@@ -216,16 +216,43 @@ public class ProcessingService {
     public Map<String, Object> getTranscript(Long meetingId, String traceId, String authorization) {
         assertMeetingAccess(meetingId, traceId, authorization);
         Map<String, Object> state = jobStateStore.getJobState(meetingId).orElse(null);
-        if (state == null) {
-            return Map.of("meeting_id", meetingId, "status", "NOT_FOUND", "transcripts", List.of());
+
+        String stateStatus = state == null ? "NOT_FOUND" : normalizeStatus(state.get("status"));
+        List<Map<String, Object>> batchTranscripts = extractTranscriptRowsFromState(state);
+        if (!batchTranscripts.isEmpty()) {
+            return Map.of(
+                    "meeting_id", meetingId,
+                    "status", stateStatus,
+                    "transcripts", batchTranscripts
+            );
         }
 
-        Map<String, Object> result = extractResult(state);
-        Object transcripts = result.getOrDefault("transcripts", new ArrayList<>());
+        log.info(
+                "[traceId={}] [jobId={}] transcript job-state missing_or_empty status={} -> fallback to ai-service transcript",
+                traceId,
+                meetingId,
+                stateStatus
+        );
+
+        List<Map<String, Object>> aiTranscripts = fetchTranscriptRowsFromAiService(meetingId, traceId);
+        if (!aiTranscripts.isEmpty()) {
+            String responseStatus = "NOT_FOUND".equals(stateStatus) ? "COMPLETED" : stateStatus;
+            return Map.of(
+                    "meeting_id", meetingId,
+                    "status", responseStatus,
+                    "transcripts", aiTranscripts
+            );
+        }
+
+        log.info(
+                "[traceId={}] [jobId={}] transcript fallback empty/no transcript",
+                traceId,
+                meetingId
+        );
         return Map.of(
                 "meeting_id", meetingId,
-                "status", normalizeStatus(state.get("status")),
-                "transcripts", transcripts
+                "status", stateStatus,
+                "transcripts", List.of()
         );
     }
 
@@ -324,6 +351,75 @@ public class ProcessingService {
             return value;
         }
         return Map.of();
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<Map<String, Object>> extractTranscriptRowsFromState(Map<String, Object> state) {
+        if (state == null) {
+            return List.of();
+        }
+        Map<String, Object> result = extractResult(state);
+        Object transcripts = result.get("transcripts");
+        return normalizeTranscriptRows(transcripts);
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<Map<String, Object>> normalizeTranscriptRows(Object transcripts) {
+        if (!(transcripts instanceof List<?> list) || list.isEmpty()) {
+            return List.of();
+        }
+
+        List<Map<String, Object>> rows = new ArrayList<>();
+        for (Object item : list) {
+            if (!(item instanceof Map<?, ?> mapItem)) {
+                continue;
+            }
+            Map<String, Object> normalized = new HashMap<>();
+            for (Map.Entry<?, ?> entry : mapItem.entrySet()) {
+                normalized.put(String.valueOf(entry.getKey()), entry.getValue());
+            }
+            rows.add(normalized);
+        }
+        return rows;
+    }
+
+    private List<Map<String, Object>> fetchTranscriptRowsFromAiService(Long meetingId, String traceId) {
+        try {
+            Map<String, Object> aiResponse = aiServiceClient.getTranscript(meetingId, traceId);
+            List<Map<String, Object>> rows = normalizeTranscriptRows(aiResponse.get("transcripts"));
+            log.info(
+                    "[traceId={}] [jobId={}] ai-service transcript fallback rows={}",
+                    traceId,
+                    meetingId,
+                    rows.size()
+            );
+            return rows;
+        } catch (HttpStatusCodeException ex) {
+            if (ex.getStatusCode().value() == HttpStatus.NOT_FOUND.value()) {
+                log.info(
+                        "[traceId={}] [jobId={}] ai-service transcript fallback returned 404/no transcript",
+                        traceId,
+                        meetingId
+                );
+                return List.of();
+            }
+            log.warn(
+                    "[traceId={}] [jobId={}] ai-service transcript fallback failed status={} body={}",
+                    traceId,
+                    meetingId,
+                    ex.getStatusCode().value(),
+                    ex.getResponseBodyAsString()
+            );
+            return List.of();
+        } catch (Exception ex) {
+            log.warn(
+                    "[traceId={}] [jobId={}] ai-service transcript fallback failed error={}",
+                    traceId,
+                    meetingId,
+                    ex.getMessage()
+            );
+            return List.of();
+        }
     }
 
     private void updateMetricsForState(Long meetingId, String status, Map<String, Object> state) {

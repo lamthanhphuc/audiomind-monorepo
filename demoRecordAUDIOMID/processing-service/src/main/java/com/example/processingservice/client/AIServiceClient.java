@@ -12,11 +12,13 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.retry.annotation.Backoff;
 import org.springframework.retry.annotation.Retryable;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
+import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestClientException;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
@@ -238,15 +240,26 @@ public class AIServiceClient {
                 first16Hex(audioChunk)
         );
 
-        ResponseEntity<Map<String, Object>> response = restTemplate.exchange(
-                aiUrl + "/api/v1/stt/stream",
-                HttpMethod.POST,
-                new HttpEntity<>(body, headers),
-                new ParameterizedTypeReference<>() {
-                }
-        );
-
-        return requireBody(response, "streamAudioChunk", meetingId);
+        try {
+            ResponseEntity<Map<String, Object>> response = restTemplate.exchange(
+                    aiUrl + "/api/v1/stt/stream",
+                    HttpMethod.POST,
+                    new HttpEntity<>(body, headers),
+                    new ParameterizedTypeReference<>() {
+                    }
+            );
+            return requireBody(response, "streamAudioChunk", meetingId);
+        } catch (HttpClientErrorException ex) {
+            if (isFinalizationReplayConflict(ex)) {
+                log.info(
+                        "AI service reported finalization replay for meetingId={} seq={} as a terminal no-op",
+                        meetingId,
+                        seq
+                );
+                return null;
+            }
+            throw ex;
+        }
     }
 
     public void health() {
@@ -279,6 +292,15 @@ public class AIServiceClient {
             throw new IllegalStateException("AI service returned empty body for " + operation + " (meetingId=" + meetingId + ")");
         }
         return body;
+    }
+
+    private boolean isFinalizationReplayConflict(HttpClientErrorException exception) {
+        if (!HttpStatus.CONFLICT.equals(exception.getStatusCode())) {
+            return false;
+        }
+
+        String responseBody = exception.getResponseBodyAsString();
+        return responseBody.contains("cached_final_response") || responseBody.contains("Meeting already finalized");
     }
 
     private ByteArrayResource toNamedResource(MultipartFile file) {

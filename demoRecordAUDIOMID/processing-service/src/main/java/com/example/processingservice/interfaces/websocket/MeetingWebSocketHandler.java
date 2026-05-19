@@ -165,6 +165,16 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
 
         // Handle stream stop request - finalize STT BEFORE closing session
         if ("stream.stop".equals(type)) {
+            if (Boolean.TRUE.equals(session.getAttributes().get(FINALIZED_ATTR))) {
+                log.info("Ignoring duplicate stream.stop for meetingId={} because STT finalization already started", meetingId);
+                try {
+                    session.close(CloseStatus.NORMAL.withReason("Stream stopped by client"));
+                } catch (Exception e) {
+                    log.warn("Error closing session after duplicate stream.stop for meetingId={}: {}", meetingId, e.getMessage());
+                }
+                return;
+            }
+
             log.info("Received stream.stop for meetingId={}, finalizing STT session now", meetingId);
             finalizeSttSession(session, meetingId, true);
             try {
@@ -202,6 +212,14 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
             return;
         }
 
+        if (Boolean.TRUE.equals(session.getAttributes().get(FINALIZED_ATTR))) {
+            log.info(
+                    "Skipping audio chunk for meetingId={} because STT finalization already started or completed",
+                    meetingId
+            );
+            return;
+        }
+
         ByteBuffer payloadBuffer = message.getPayload().asReadOnlyBuffer();
         byte[] audioBytes = new byte[payloadBuffer.remaining()];
         payloadBuffer.get(audioBytes);
@@ -229,6 +247,15 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                     null,
                     authorization
             );
+
+            if (transcript == null) {
+                log.info(
+                        "Skipping audio chunk for meetingId={} seq={} because ai-service reported a terminal finalization replay",
+                        meetingId,
+                        lastSeq
+                );
+                return;
+            }
 
             // Mark that we've successfully sent audio to the AI service for this session
             try {
@@ -353,6 +380,11 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
         String language = getStringAttribute(session, LANGUAGE_ATTR);
         String authorization = getStringAttribute(session, "authorization");
 
+        if (Boolean.TRUE.equals(session.getAttributes().get(FINALIZED_ATTR))) {
+            log.info("Skipping duplicate STT finalization for meetingId={} because finalization already started", meetingId);
+            return;
+        }
+
         // Mark this session as finalized to avoid double-finalization
         try {
             session.getAttributes().put(FINALIZED_ATTR, Boolean.TRUE);
@@ -397,6 +429,11 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                     null,
                     authorization
             );
+
+                    if (transcript == null) {
+                    log.info("Skipping duplicate finalization for meetingId={} because ai-service already finalized it", meetingId);
+                    return;
+                    }
 
             Long finalSeq = getLongAttribute(session, LAST_AUDIO_SEQ_ATTR);
             Map<String, Object> transcriptEvent = buildTranscriptEvent(

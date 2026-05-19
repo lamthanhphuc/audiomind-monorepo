@@ -1,0 +1,2 @@
+demoRecordAUDIOMID/ai-service/docker-entrypoint.sh text eol=lf
+demoRecordAUDIOMID/meeting-service/docker-entrypoint.sh text eol=lf

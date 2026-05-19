@@ -18,6 +18,15 @@ class STTMetricState(str, Enum):
     FAILED = "FAILED"
 
 
+class STTOwnershipEvent(str, Enum):
+    ACQUIRED = "acquired"
+    ACQUIRE_CONFLICT = "acquire_conflict"
+    LOST = "lost"
+    RELEASED = "released"
+    RELEASE_SKIPPED = "release_skipped"
+    COOLDOWN_HIT = "cooldown_hit"
+
+
 _STT_ACTOR_COUNT = Gauge(
     "ai_stt_actor_count",
     "Number of active STT actors.",
@@ -104,6 +113,11 @@ _STT_TRANSITIONS = Counter(
     "Total actor state transitions.",
     ["from_state", "to_state"],
 )
+_STT_OWNERSHIP_EVENTS = Counter(
+    "ai_stt_ownership_events_total",
+    "Total STT ownership events with bounded event labels.",
+    ["event"],
+)
 
 
 @dataclass(slots=True)
@@ -182,6 +196,14 @@ class STTMetrics:
 
     def observe_shutdown_drain_ms(self, value: float) -> None:
         _STT_SHUTDOWN_DRAIN_TIME_MS.observe(max(0.0, float(value)))
+
+    def ownership_event(self, event: str) -> None:
+        bounded_event = (
+            event
+            if event in STTOwnershipEvent._value2member_map_
+            else STTOwnershipEvent.LOST.value
+        )
+        _STT_OWNERSHIP_EVENTS.labels(event=bounded_event).inc()
 
 
 stt_metrics = STTMetrics()

@@ -6,6 +6,8 @@ import { AudioRecorderButton } from './components/AudioRecorderButton'
 import { RealtimeTranscript } from './components/RealtimeTranscript'
 import { useAudioRecorder } from './hooks/useAudioRecorder'
 import { useRealtimeMeetingStream } from './hooks/useRealtimeMeetingStream'
+import type { TranscriptSegment } from './hooks/useRealtimeMeetingStream'
+import { mergeTranscriptSegments, normalizePersistedTranscriptSegments } from './utils/transcript'
 
 type ResultView = {
   meetingId: number
@@ -13,6 +15,10 @@ type ResultView = {
   transcript: string
   summary: string
 }
+
+const HYDRATION_INITIAL_DELAY_MS = 1500
+const HYDRATION_RETRY_DELAY_MS = 1500
+const HYDRATION_MAX_ATTEMPTS = 10
 
 const waitWithSignal = (delayMs: number, signal: AbortSignal): Promise<void> => {
   return new Promise((resolve, reject) => {
@@ -78,6 +84,47 @@ const pollUntilCompleted = async (
   throw new Error('Processing timeout exceeded')
 }
 
+export const hydrateLiveTranscriptSegments = async (
+  meetingId: number,
+  fetchTranscript: typeof getTranscript = getTranscript,
+): Promise<TranscriptSegment[]> => {
+  console.info('[Realtime] Post-stop transcript hydration started', { meetingId })
+
+  await new Promise((resolve) => setTimeout(resolve, HYDRATION_INITIAL_DELAY_MS))
+
+  for (let attempt = 1; attempt <= HYDRATION_MAX_ATTEMPTS; attempt += 1) {
+    const transcript = await fetchTranscript(meetingId)
+    const hydratedSegments = mergeTranscriptSegments(
+      normalizePersistedTranscriptSegments(transcript.transcripts || []),
+    )
+
+    console.info('[Realtime] Post-stop transcript hydration attempt', {
+      meetingId,
+      attempt,
+      fragments: hydratedSegments.length,
+    })
+
+    if (hydratedSegments.length > 0) {
+      console.info('[Realtime] Post-stop transcript hydration completed', {
+        meetingId,
+        attempts: attempt,
+        persistedFragments: hydratedSegments.length,
+      })
+      return hydratedSegments
+    }
+
+    if (attempt < HYDRATION_MAX_ATTEMPTS) {
+      await new Promise((resolve) => setTimeout(resolve, HYDRATION_RETRY_DELAY_MS))
+    }
+  }
+
+  console.info('[Realtime] Post-stop transcript hydration exhausted', {
+    meetingId,
+    attempts: HYDRATION_MAX_ATTEMPTS,
+  })
+  return []
+}
+
 export default function App() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [busy, setBusy] = useState(false)
@@ -94,6 +141,7 @@ export default function App() {
   const [viewMode, setViewMode] = useState<'batch' | 'realtime'>('batch')
   const [joinMeetingIdInput, setJoinMeetingIdInput] = useState('')
   const [showJoinOtherMeeting, setShowJoinOtherMeeting] = useState(false)
+  const [hydratedLiveTranscriptSegments, setHydratedLiveTranscriptSegments] = useState<TranscriptSegment[] | null>(null)
   const abortControllerRef = useRef<AbortController | null>(null)
   const liveMeetingIdRef = useRef<number | null>(null)
 
@@ -156,6 +204,7 @@ export default function App() {
     setResult(null)
     setLiveMeetingId(null)
     liveMeetingIdRef.current = null
+    setHydratedLiveTranscriptSegments(null)
     setStatus('idle')
     setErrorMessage(null)
     setLiveError(null)
@@ -170,6 +219,13 @@ export default function App() {
   const summaryText = useMemo(() => result?.summary || '(empty)', [result])
   const liveTranscriptKeywords = useMemo(() => realtimeStream.keywords.map((keyword) => keyword.keyword), [realtimeStream.keywords])
   const liveModeActive = isRealtimeEnabled && viewMode === 'realtime' && realtimeUserId !== null
+  const liveTranscriptSegments = hydratedLiveTranscriptSegments ?? realtimeStream.transcripts
+
+  useEffect(() => {
+    if (viewMode !== 'realtime' || liveMeetingId === null) {
+      setHydratedLiveTranscriptSegments(null)
+    }
+  }, [liveMeetingId, viewMode])
 
   const handleProcess = async () => {
     if (!selectedFile) {
@@ -201,7 +257,11 @@ export default function App() {
         getAnalysis(meetingId),
       ])
 
-      const mergedTranscript = (transcript.transcripts || [])
+      const mergedTranscriptSegments = mergeTranscriptSegments(
+        normalizePersistedTranscriptSegments(transcript.transcripts || []),
+      )
+
+      const mergedTranscript = mergedTranscriptSegments
         .map((segment) => `${segment.speaker}: ${segment.text}`)
         .join(' ')
         .trim()
@@ -251,6 +311,7 @@ export default function App() {
     }
 
     setLiveError(null)
+    setHydratedLiveTranscriptSegments(null)
     setLiveMeetingId(parsedMeetingId)
     liveMeetingIdRef.current = parsedMeetingId
     setShowJoinOtherMeeting(false)
@@ -260,6 +321,7 @@ export default function App() {
   const handlePrepareLiveMeeting = async () => {
     setLiveError(null)
     setLiveStatusMessage('Đang tạo meeting mới...')
+    setHydratedLiveTranscriptSegments(null)
 
     try {
       const bootstrapFile = createLiveMeetingBootstrapFile()
@@ -300,14 +362,22 @@ export default function App() {
       if (realtimeStream?.stopStream) {
         realtimeStream.stopStream()
       }
-      // Wait briefly to allow final transcript to arrive
-      await new Promise((resolve) => setTimeout(resolve, 1500))
+
+      const activeMeetingId = liveMeetingIdRef.current
+      if (activeMeetingId) {
+        const hydratedSegments = await hydrateLiveTranscriptSegments(activeMeetingId)
+        setHydratedLiveTranscriptSegments(hydratedSegments)
+      } else {
+        setHydratedLiveTranscriptSegments([])
+      }
+
       // Close connection gracefully
       if (realtimeStream?.disconnect) {
         realtimeStream.disconnect()
       }
     } catch (err) {
       console.error('Error during finalization after recording stop:', err)
+      setHydratedLiveTranscriptSegments([])
     }
   }
 
@@ -488,7 +558,7 @@ export default function App() {
 
           <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 280px', gap: 16 }}>
             <RealtimeTranscript
-              segments={realtimeStream.transcripts}
+              segments={liveTranscriptSegments}
               highlightKeywords={liveTranscriptKeywords}
               maxHeight="620px"
             />

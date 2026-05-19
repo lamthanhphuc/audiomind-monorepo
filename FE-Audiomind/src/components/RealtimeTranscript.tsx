@@ -1,5 +1,6 @@
 import React, { useEffect, useRef } from 'react'
 import type { TranscriptSegment } from '../hooks/useRealtimeMeetingStream'
+import { formatTranscriptTimestamp } from '../utils/transcript'
 import './RealtimeTranscript.css'
 
 interface RealtimeTranscriptProps {
@@ -99,15 +100,15 @@ export const RealtimeTranscript: React.FC<RealtimeTranscriptProps> = ({
         ref={scrollContainerRef}
       >
         {segments.map((segment) => {
-          const startMs = segment.start ?? segment.timestamp ?? 0
-          const endMs = segment.end ?? startMs
-          const timestampLabel = endMs > startMs
-            ? `${formatTimestamp(startMs)} - ${formatTimestamp(endMs)}`
-            : formatTimestamp(startMs)
+          const startSeconds = segment.start ?? segment.timestamp ?? 0
+          const endSeconds = segment.end ?? startSeconds
+          const timestampLabel = endSeconds > startSeconds
+            ? `${formatTranscriptTimestamp(startSeconds)} - ${formatTranscriptTimestamp(endSeconds)}`
+            : formatTranscriptTimestamp(startSeconds)
 
           return (
             <div
-              key={segment.id}
+              key={segment.mergeKey ?? segment.id}
               className="transcript-segment"
             >
               <div className="segment-speaker">{segment.speaker}</div>
@@ -136,11 +137,4 @@ export const RealtimeTranscript: React.FC<RealtimeTranscriptProps> = ({
       </div>
     </div>
   )
-}
-
-function formatTimestamp(secondsValue: number): string {
-  const totalSeconds = Math.max(0, Math.floor(secondsValue))
-  const minutes = Math.floor(totalSeconds / 60)
-  const seconds = totalSeconds % 60
-  return `${minutes}:${seconds.toString().padStart(2, '0')}`
 }

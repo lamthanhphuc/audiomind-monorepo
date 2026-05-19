@@ -300,6 +300,53 @@ class MeetingWebSocketHandlerTest {
     }
 
     @Test
+    void handleBinaryMessage_shouldIgnoreChunksAfterFinalizationStarts() throws Exception {
+        attributes.put("meetingId", 341L);
+        attributes.put("authenticated", true);
+        attributes.put("language", "vi");
+        attributes.put("authorization", "Bearer test-token");
+        attributes.put("lastAudioSeq", 10L);
+        attributes.put("FINALIZED_ATTR", Boolean.TRUE);
+
+        handler.handleBinaryMessage(session, new BinaryMessage(ByteBuffer.wrap(new byte[] {1, 2, 3, 4})));
+
+        verifyNoInteractions(aiServiceClient);
+        verifyNoInteractions(realtimeEventSubscriber);
+    }
+
+    @Test
+    void handleBinaryMessage_shouldTreatFinalizationReplayAsTerminalNoOp() throws Exception {
+        attributes.put("meetingId", 342L);
+        attributes.put("authenticated", true);
+        attributes.put("language", "vi");
+        attributes.put("authorization", "Bearer test-token");
+        attributes.put("lastAudioSeq", 11L);
+
+        when(aiServiceClient.streamAudioChunk(
+            eq(342L),
+            argThat(bytes -> bytes != null && bytes.length == 4),
+            eq(11L),
+            eq("vi"),
+            eq(false),
+            isNull(),
+            eq("Bearer test-token")
+        )).thenReturn(null);
+
+        handler.handleBinaryMessage(session, new BinaryMessage(ByteBuffer.wrap(new byte[] {5, 6, 7, 8})));
+
+        verify(aiServiceClient).streamAudioChunk(
+            eq(342L),
+            argThat(bytes -> bytes != null && bytes.length == 4),
+            eq(11L),
+            eq("vi"),
+            eq(false),
+            isNull(),
+            eq("Bearer test-token")
+        );
+        verifyNoInteractions(realtimeEventSubscriber);
+    }
+
+    @Test
     void handleTextMessage_streamStop_shouldFinalizeImmediately() throws Exception {
         attributes.put("meetingId", 35L);
         attributes.put("authenticated", true);

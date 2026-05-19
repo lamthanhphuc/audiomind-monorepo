@@ -254,4 +254,58 @@ describe('AudioRecorderButton', () => {
 
     expect(completeSpy).toHaveBeenCalledOnce()
   })
+
+  it('waits for the final chunk to emit before reporting completion', async () => {
+    const callOrder: string[] = []
+    chunkSpy = vi.fn(() => {
+      callOrder.push('chunk')
+    })
+    completeSpy = vi.fn(() => {
+      callOrder.push('complete')
+    })
+
+    recorder = {
+      ...recorder!,
+      state: 'stopped',
+      audioChunks: [],
+    }
+
+    act(() => {
+      root.render(
+        <AudioRecorderButton
+          recorder={recorder!}
+          onBeforeStartRecording={beforeStartSpy}
+          onChunkReady={chunkSpy}
+          onRecordingComplete={completeSpy}
+        />,
+      )
+    })
+
+    await flush()
+
+    expect(chunkSpy).not.toHaveBeenCalled()
+    expect(completeSpy).not.toHaveBeenCalled()
+
+    recorder = {
+      ...recorder,
+      audioChunks: [new Blob(['chunk-final'])],
+    }
+
+    act(() => {
+      root.render(
+        <AudioRecorderButton
+          recorder={recorder!}
+          onBeforeStartRecording={beforeStartSpy}
+          onChunkReady={chunkSpy}
+          onRecordingComplete={completeSpy}
+        />,
+      )
+    })
+
+    await flush()
+
+    expect(chunkSpy).toHaveBeenCalledOnce()
+    expect(completeSpy).toHaveBeenCalledOnce()
+    expect(callOrder).toEqual(['chunk', 'complete'])
+  })
 })

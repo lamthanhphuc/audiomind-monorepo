@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { getAccessToken } from '../services/auth'
 import { REALTIME_WS_BASE_URL } from '../services/config'
+import { normalizeTranscriptEvent, upsertTranscriptSegment } from '../utils/transcript'
 
 export interface TranscriptSegment {
   id: string
+  mergeKey?: string
   speaker: string
   text: string
   start: number
@@ -84,52 +86,6 @@ const toStringValue = (...values: unknown[]): string => {
   }
 
   return ''
-}
-
-const isLikelySequenceId = (value: string): boolean => /^seq-\d+$/i.test(value) || /^\d+$/.test(value)
-
-const normalizeSegmentText = (value: string): string => value.replace(/\s+/g, ' ').trim().toLowerCase()
-
-const resolveTranscriptTiming = (data: Record<string, unknown>): { start: number; end: number } | null => {
-  const start = toNumber(data.startTime, data.start_time, data.start)
-  const end = toNumber(data.endTime, data.end_time, data.end)
-  const duration = toNumber(data.duration, data.duration_ms, data.durationMs)
-
-  const resolvedEnd = end > 0 ? end : start > 0 && duration > 0 ? start + duration : 0
-  if (start <= 0 && resolvedEnd <= 0) {
-    return null
-  }
-
-  return {
-    start,
-    end: resolvedEnd > 0 ? resolvedEnd : start,
-  }
-}
-
-const resolveTranscriptSegmentId = (data: Record<string, unknown>): string => {
-  const explicitId = toStringValue(data.segmentId, data.segment_id, data.id)
-  const timing = resolveTranscriptTiming(data)
-  const speaker = normalizeSegmentText(toStringValue(data.speaker))
-
-  if (explicitId && !isLikelySequenceId(explicitId)) {
-    return explicitId
-  }
-
-  if (timing) {
-    const speakerPart = speaker ? `-${speaker}` : ''
-    return `time-${timing.start.toFixed(3)}${speakerPart}`
-  }
-
-  if (explicitId) {
-    return explicitId
-  }
-
-  const seq = toNumber(data.seq)
-  if (seq > 0) {
-    return `seq-${seq}`
-  }
-
-  return `seg-${Date.now()}`
 }
 
 const readBlobAsArrayBuffer = async (blob: Blob): Promise<ArrayBuffer> => {
@@ -335,52 +291,15 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
             }
             case 'transcript.partial':
             case 'transcript.final': {
-              const text = toStringValue(data.text)
-              if (text.trim().length === 0) {
+              const nextSegment = normalizeTranscriptEvent(data, messageType)
+              if (!nextSegment) {
                 break
               }
 
-              const timing = resolveTranscriptTiming(data)
-              const start = timing?.start ?? toNumber(data.startTime, data.start_time, data.timestamp)
-              const end = timing?.end ?? toNumber(data.endTime, data.end_time, start)
-              const segmentId = resolveTranscriptSegmentId(data)
-              const nextSegment: TranscriptSegment = {
-                id: segmentId,
-                speaker: toStringValue(data.speaker),
-                text,
-                start,
-                end,
-                timestamp: start,
-                confidence: typeof data.confidence === 'number' ? data.confidence : undefined,
-                language: toStringValue(data.language) || undefined,
-                isFinal: messageType === 'transcript.final' || Boolean(data.isFinal || data.is_final),
-              }
-
-              let visibleSegment = nextSegment
               setTranscripts((current) => {
-                const existingIndex = current.findIndex((item) => item.id === segmentId)
-                if (existingIndex < 0) {
-                  visibleSegment = nextSegment
-                  return [...current, nextSegment]
-                }
-
-                const existing = current[existingIndex]
-                const mergedSegment: TranscriptSegment = {
-                  ...existing,
-                  ...nextSegment,
-                  speaker: nextSegment.speaker.trim().length > 0 ? nextSegment.speaker : existing.speaker,
-                  start: Number.isFinite(start) && start > 0 ? start : existing.start,
-                  end: Number.isFinite(end) && end >= start ? end : existing.end,
-                  timestamp: Number.isFinite(start) && start > 0 ? start : existing.timestamp,
-                  isFinal: Boolean(existing.isFinal || nextSegment.isFinal),
-                }
-
-                visibleSegment = mergedSegment
-                const updated = [...current]
-                updated[existingIndex] = mergedSegment
-                return updated
+                return upsertTranscriptSegment(current, nextSegment).segments
               })
-              onTranscript?.(visibleSegment)
+              onTranscript?.(nextSegment)
               break
             }
             case 'keyword.hit': {

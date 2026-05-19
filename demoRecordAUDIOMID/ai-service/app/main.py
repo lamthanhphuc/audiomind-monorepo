@@ -34,6 +34,7 @@ from app.schemas import (
     SttStreamResponse,
 )
 from app.config import get_settings, get_runtime_device
+from app.metrics import stt_metrics
 from app.ffmpeg_utils import ensure_ffmpeg_on_path
 from app.job_status_store import (
     cleanup_expired_job_statuses,
@@ -53,6 +54,11 @@ from app.services.stt_adapter import (
 from app.services.stt_session_actor import MeetingSessionActor, MeetingSessionState
 from app.services.stt_persistence import TranscriptPersistenceRepository
 from app.services.grpc_stt_service import AiStreamServicer, create_grpc_server
+from app.services.stt_ownership import (
+    SttLease,
+    SttOwnershipLost,
+    get_stt_ownership_manager,
+)
 
 try:
     from app.pipeline import ProcessingPipeline
@@ -368,7 +374,29 @@ async def _get_or_create_stt_actor(
     await _cleanup_stale_stt_actors()
     guard = _get_stream_retry_guard(meeting_key)
     now = time.time()
+    stt_adapter = _get_stt_adapter()
+    if stt_adapter is None:
+        raise RuntimeError("Deepgram STT adapter is unavailable")
+
+    ownership_manager = get_stt_ownership_manager()
+    shared_cooldown_until = 0.0
+    if ownership_manager is not None:
+        try:
+            shared_cooldown_until = ownership_manager.get_cooldown_until(meeting_key)
+        except Exception as exc:
+            logger.warning(
+                "STT_OWNERSHIP_COOLDOWN_READ_ERROR meeting_id={} error={}",
+                meeting_key,
+                repr(exc),
+            )
+            raise HTTPException(
+                status_code=503,
+                detail="STT ownership store is unavailable",
+            ) from exc
+        guard.cooldown_until = max(guard.cooldown_until, shared_cooldown_until)
+
     if guard.cooldown_until > now:
+        stt_metrics.ownership_event("cooldown_hit")
         retry_after_seconds = max(1, int(guard.cooldown_until - now + 0.999))
         raise HTTPException(
             status_code=429,
@@ -403,18 +431,61 @@ async def _get_or_create_stt_actor(
             MeetingSessionState.CLOSED,
             MeetingSessionState.FAILED,
         }:
-            return existing_actor
+            if not existing_actor._owns_meeting():
+                _stt_stream_sessions.pop(meeting_key, None)
+                asyncio.create_task(_retire_stt_actor(meeting_key, existing_actor))
+            else:
+                return existing_actor
 
-        stt_adapter = _get_stt_adapter()
-        if stt_adapter is None:
-            raise RuntimeError("Deepgram STT adapter is unavailable")
+        lease: SttLease | None = None
+        if ownership_manager is not None:
+            try:
+                lease = ownership_manager.acquire(meeting_key)
+            except Exception as exc:
+                logger.warning(
+                    "STT_OWNERSHIP_ACQUIRE_ERROR meeting_id={} error={}",
+                    meeting_key,
+                    repr(exc),
+                )
+                raise HTTPException(
+                    status_code=503,
+                    detail="STT ownership store is unavailable",
+                ) from exc
+            if lease is None:
+                stt_metrics.ownership_event("acquire_conflict")
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "meeting_id": meeting_key,
+                        "seq": seq,
+                        "reason": "meeting STT stream is already owned by another replica",
+                    },
+                )
 
-        actor = await MeetingSessionActor.create(
-            meeting_key=meeting_key,
-            language=normalized_language,
-            adapter=stt_adapter,
-        )
+        try:
+            actor = await MeetingSessionActor.create(
+                meeting_key=meeting_key,
+                language=normalized_language,
+                adapter=stt_adapter,
+                lease=lease,
+                ownership_manager=ownership_manager,
+            )
+        except Exception:
+            if lease is not None and ownership_manager is not None:
+                try:
+                    ownership_manager.release(lease)
+                except Exception:
+                    pass
+            raise
         _stt_stream_sessions[meeting_key] = actor
+        logger.info(
+            "STT_OWNERSHIP_ACQUIRED meeting_id={} owner_id={} fencing_token={}",
+            meeting_key,
+            lease.owner_id if lease is not None else None,
+            lease.fencing_token if lease is not None else 0,
+        )
+        if lease is not None:
+            stt_metrics.ownership_event("acquired")
         return actor
 
 
@@ -1029,6 +1100,8 @@ async def stream_stt_chunk(
             seq=seq,
             chunk_bytes=chunk_bytes,
         )
+    except HTTPException:
+        raise
     except Exception as exc:
         if (
             "unavailable" in str(exc).lower()
@@ -1102,6 +1175,10 @@ async def stream_stt_chunk(
                     guard.cooldown_until,
                     time.time() + settings.stt_reconnect_cooldown_seconds,
                 )
+                if getattr(actor, "ownership_manager", None) is not None:
+                    actor.ownership_manager.set_cooldown_until(
+                        meeting_key, guard.cooldown_until
+                    )
                 logger.warning(
                     "STT_RECONNECT_BLOCKED_WEBM_CONTINUATION meeting_id={} seq={} last_ack_seq={} reason={}",
                     meeting_key,
@@ -1122,19 +1199,23 @@ async def stream_stt_chunk(
             )
             status_code = (
                 409
-                if guard.requires_new_stream
+                if guard.requires_new_stream or isinstance(exc, SttOwnershipLost)
                 else 429 if guard.cooldown_until > time.time() else 502
             )
             detail = {
                 "meeting_id": meeting_key,
                 "seq": seq,
                 "reason": (
-                    "new recording lifecycle required"
-                    if guard.requires_new_stream
+                    "meeting STT ownership lost"
+                    if isinstance(exc, SttOwnershipLost)
                     else (
-                        "reconnect cooldown active"
-                        if guard.cooldown_until > time.time()
-                        else f"STT stream failed: {repr(exc)}"
+                        "new recording lifecycle required"
+                        if guard.requires_new_stream
+                        else (
+                            "reconnect cooldown active"
+                            if guard.cooldown_until > time.time()
+                            else f"STT stream failed: {repr(exc)}"
+                        )
                     )
                 ),
                 "retry_after_seconds": (

@@ -26,6 +26,11 @@ from app.services.stt_persistence import (
     TranscriptPersistenceRepository,
     build_fragment_dedupe_key,
 )
+from app.services.stt_ownership import (
+    SttLease,
+    SttOwnershipLost,
+    SttOwnershipManager,
+)
 
 
 class MeetingSessionState(str, Enum):
@@ -245,12 +250,17 @@ class MeetingSessionActor:
         language: str,
         adapter: DeepgramSTTAdapter,
         db_session_factory: Callable[[], Any] = SessionLocal,
+        lease: SttLease | None = None,
+        ownership_manager: SttOwnershipManager | None = None,
     ):
         settings = get_settings()
         self.meeting_key = str(meeting_key)
         self.language = (language or "vi").strip() or "vi"
         self.adapter = adapter
         self.db_session_factory = db_session_factory
+        self.lease = lease
+        self.ownership_manager = ownership_manager
+        self.fencing_token = lease.fencing_token if lease is not None else 0
         self.session_id: str | None = None
         self.state = MeetingSessionState.CREATED
         self._state_lock = asyncio.Lock()
@@ -355,6 +365,7 @@ class MeetingSessionActor:
                 "persist": self._persist_queue.qsize(),
             },
             "websocket_state": "open" if self.session_id else "closed",
+            "fencing_token": self.fencing_token,
         }
         context.update(extra)
         return context
@@ -391,9 +402,16 @@ class MeetingSessionActor:
         language: str,
         adapter: DeepgramSTTAdapter,
         db_session_factory: Callable[[], Any] = SessionLocal,
+        lease: SttLease | None = None,
+        ownership_manager: SttOwnershipManager | None = None,
     ) -> "MeetingSessionActor":
         actor = cls(
-            meeting_key, language, adapter, db_session_factory=db_session_factory
+            meeting_key,
+            language,
+            adapter,
+            db_session_factory=db_session_factory,
+            lease=lease,
+            ownership_manager=ownership_manager,
         )
         await actor._connect_session()
         actor._send_task = asyncio.create_task(
@@ -430,6 +448,8 @@ class MeetingSessionActor:
             "persist_queue": self._persist_queue.qsize(),
             "last_activity_at": self._last_activity_at,
             "watchdog_started_at": self._watchdog_started_at,
+            "fencing_token": self.fencing_token,
+            "owner_id": self.lease.owner_id if self.lease is not None else None,
         }
 
     def retry_guard_snapshot(self) -> dict[str, Any]:
@@ -455,6 +475,8 @@ class MeetingSessionActor:
 
     async def _watchdog_tick(self) -> None:
         if self.state in {MeetingSessionState.CLOSED, MeetingSessionState.FAILED}:
+            return
+        if not self._refresh_or_mark_ownership_lost("watchdog"):
             return
 
         self._record_queue_metrics()
@@ -576,6 +598,8 @@ class MeetingSessionActor:
         if bool(is_final) and (int(seq) < 0 or not pcm_chunk):
             return await self.finalize(seq=seq, ts_ms=ts_ms)
 
+        self._assert_owns_meeting("submit")
+
         if self.state == MeetingSessionState.FAILED:
             if not await self._retry_failed_session():
                 raise RuntimeError(
@@ -624,6 +648,7 @@ class MeetingSessionActor:
             self._pending_futures.pop(seq, None)
 
     async def finalize(self, seq: int, ts_ms: int = 0) -> SttStreamResponse:
+        self._assert_owns_meeting("finalize")
         if self._final_response is not None:
             return self._final_response
         if seq in self._response_cache:
@@ -734,7 +759,8 @@ class MeetingSessionActor:
 
         if self.session_id is not None:
             try:
-                await self.adapter.close_session(self.session_id)
+                if self._owns_meeting():
+                    await self.adapter.close_session(self.session_id)
             except Exception as exc:
                 logger.warning(
                     "STT_SHUTDOWN_CLOSE_ERROR meeting_id={} session_id={} error={}",
@@ -742,6 +768,7 @@ class MeetingSessionActor:
                     self.session_id,
                     repr(exc),
                 )
+        self._release_lease()
         try:
             await asyncio.wait_for(
                 asyncio.gather(*tasks, return_exceptions=True), timeout=grace_seconds
@@ -782,6 +809,7 @@ class MeetingSessionActor:
         )
 
     async def _enqueue_audio(self, audio: AudioEnvelope) -> None:
+        self._assert_owns_meeting("enqueue_audio")
         try:
             logger.info(
                 "STT_QUEUE_PRESSURE {}",
@@ -804,6 +832,7 @@ class MeetingSessionActor:
             raise RuntimeError(str(exc)) from exc
 
     async def _enqueue_recv(self, recv: RecvEnvelope) -> None:
+        self._assert_owns_meeting("enqueue_recv")
         try:
             await self._recv_queue.put(
                 recv, timeout_seconds=self.ENQUEUE_TIMEOUT_SECONDS
@@ -823,6 +852,7 @@ class MeetingSessionActor:
             raise RuntimeError(str(exc)) from exc
 
     async def _enqueue_persist(self, persist: PersistEnvelope) -> None:
+        self._assert_owns_meeting("enqueue_persist")
         try:
             await self._persist_queue.put(
                 persist, timeout_seconds=self.ENQUEUE_TIMEOUT_SECONDS
@@ -892,12 +922,14 @@ class MeetingSessionActor:
                 await self._process_audio(audio)
 
     async def _process_audio(self, audio: AudioEnvelope) -> None:
+        self._assert_owns_meeting("send")
         if self.session_id is None:
             raise RuntimeError("STT session is not connected")
 
         send_attempt = 0
         try:
             while True:
+                self._assert_owns_meeting("send_attempt")
                 send_attempt += 1
                 try:
                     logger.info(
@@ -971,6 +1003,7 @@ class MeetingSessionActor:
             return False
         if len(self._reconnect_history) >= self.RECONNECT_BUDGET:
             self._cooldown_until = now + self.RECONNECT_COOLDOWN_SECONDS
+            self._set_shared_cooldown(self._cooldown_until)
             return False
 
         stt_metrics.reconnect_attempt()
@@ -998,6 +1031,7 @@ class MeetingSessionActor:
             self._cooldown_until = max(
                 self._cooldown_until, now + self.RECONNECT_COOLDOWN_SECONDS
             )
+            self._set_shared_cooldown(self._cooldown_until)
             try:
                 await self._transition(
                     MeetingSessionState.FAILED, "failed_reconnect_failed"
@@ -1034,6 +1068,7 @@ class MeetingSessionActor:
             self._cooldown_until = max(
                 self._cooldown_until, now + self.RECONNECT_COOLDOWN_SECONDS
             )
+            self._set_shared_cooldown(self._cooldown_until)
             logger.warning(
                 "STT_RECONNECT_BLOCKED_WEBM_CONTINUATION meeting_id={} seq={} last_ack_seq={} reason={}",
                 self.meeting_key,
@@ -1064,6 +1099,7 @@ class MeetingSessionActor:
         if len(self._reconnect_history) >= self.RECONNECT_BUDGET:
             stt_metrics.reconnect_budget_exhausted()
             self._cooldown_until = now + self.RECONNECT_COOLDOWN_SECONDS
+            self._set_shared_cooldown(self._cooldown_until)
             self._requires_new_stream = True
             logger.warning(
                 "STT_RECONNECT_COOLDOWN meeting_id={} reason=budget_exhausted cooldown_until={}",
@@ -1144,6 +1180,7 @@ class MeetingSessionActor:
             )
             while True:
                 recv = await self._recv_queue.get()
+                self._assert_owns_meeting("recv")
                 self._record_queue_metrics()
                 if self.session_id is None:
                     raise RuntimeError("STT session is not connected")
@@ -1199,6 +1236,7 @@ class MeetingSessionActor:
             repository = TranscriptPersistenceRepository(db)
             while True:
                 persist = await self._persist_queue.get()
+                self._assert_owns_meeting("persist")
                 self._record_queue_metrics()
                 persist_started = time.perf_counter()
                 dedupe_key = self._build_persist_dedupe_key(persist)
@@ -1450,3 +1488,102 @@ class MeetingSessionActor:
 
     def _next_expected_seq(self) -> int:
         return self._last_ack_seq + 1
+
+    def _owns_meeting(self) -> bool:
+        if self.lease is None or self.ownership_manager is None:
+            return True
+        try:
+            return self.ownership_manager.validate(self.lease)
+        except Exception as exc:
+            logger.warning(
+                "STT_OWNERSHIP_VALIDATE_ERROR meeting_id={} fencing_token={} error={}",
+                self.meeting_key,
+                self.fencing_token,
+                repr(exc),
+            )
+            return False
+
+    def _refresh_or_mark_ownership_lost(self, operation: str) -> bool:
+        if self.lease is None or self.ownership_manager is None:
+            return True
+        try:
+            if self.ownership_manager.refresh(self.lease):
+                return True
+        except Exception as exc:
+            logger.warning(
+                "STT_OWNERSHIP_REFRESH_ERROR meeting_id={} operation={} fencing_token={} error={}",
+                self.meeting_key,
+                operation,
+                self.fencing_token,
+                repr(exc),
+            )
+        self._mark_ownership_lost(operation)
+        return False
+
+    def _assert_owns_meeting(self, operation: str) -> None:
+        if self._refresh_or_mark_ownership_lost(operation):
+            return
+        raise SttOwnershipLost(
+            f"STT ownership lost for meeting {self.meeting_key} during {operation}"
+        )
+
+    def _mark_ownership_lost(self, operation: str) -> None:
+        exc = SttOwnershipLost(
+            f"STT ownership lost for meeting {self.meeting_key} during {operation}"
+        )
+        logger.warning(
+            "STT_OWNERSHIP_LOST meeting_id={} operation={} fencing_token={}",
+            self.meeting_key,
+            operation,
+            self.fencing_token,
+        )
+        stt_metrics.ownership_event("lost")
+        if self.state not in {MeetingSessionState.CLOSED, MeetingSessionState.FAILED}:
+            try:
+                self.state = MeetingSessionState.FAILED
+                self._record_state_metrics(self.state)
+            except Exception:
+                pass
+        self._cancel_pending_futures(exc)
+        if (
+            self._finalization_future is not None
+            and not self._finalization_future.done()
+        ):
+            self._finalization_future.set_exception(exc)
+
+    def _release_lease(self) -> None:
+        if self.lease is None or self.ownership_manager is None:
+            return
+        try:
+            released = self.ownership_manager.release(self.lease)
+        except Exception as exc:
+            logger.warning(
+                "STT_OWNERSHIP_RELEASE_ERROR meeting_id={} fencing_token={} error={}",
+                self.meeting_key,
+                self.fencing_token,
+                repr(exc),
+            )
+            return
+        if not released:
+            stt_metrics.ownership_event("release_skipped")
+            logger.warning(
+                "STT_OWNERSHIP_RELEASE_SKIPPED meeting_id={} fencing_token={} reason=lease_mismatch",
+                self.meeting_key,
+                self.fencing_token,
+            )
+        else:
+            stt_metrics.ownership_event("released")
+
+    def _set_shared_cooldown(self, cooldown_until: float) -> None:
+        if self.ownership_manager is None:
+            return
+        try:
+            self.ownership_manager.set_cooldown_until(
+                self.meeting_key, float(cooldown_until)
+            )
+        except Exception as exc:
+            logger.warning(
+                "STT_OWNERSHIP_COOLDOWN_WRITE_ERROR meeting_id={} error={}",
+                self.meeting_key,
+                repr(exc),
+            )
