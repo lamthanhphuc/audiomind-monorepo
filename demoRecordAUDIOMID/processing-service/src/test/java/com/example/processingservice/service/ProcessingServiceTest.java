@@ -24,6 +24,8 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
@@ -102,6 +104,132 @@ class ProcessingServiceTest {
         when(jobStateStore.getJobState(404L)).thenReturn(Optional.empty());
 
         Map<String, Object> response = processingService.getTranscript(404L, "trace-4", AUTH_HEADER);
+
+        assertEquals("NOT_FOUND", response.get("status"));
+        assertTrue(response.get("transcripts") instanceof List<?>);
+        assertEquals(0, ((List<?>) response.get("transcripts")).size());
+    }
+
+    @Test
+    void getTranscript_shouldReturnBatchTranscriptWhenAvailable() {
+        Map<String, Object> transcriptRow = new HashMap<>();
+        transcriptRow.put("speaker", "SPEAKER_00");
+        transcriptRow.put("text", "batch transcript");
+        transcriptRow.put("start_time", 1.25d);
+        transcriptRow.put("end_time", 2.75d);
+
+        Map<String, Object> state = new HashMap<>();
+        state.put("status", "COMPLETED");
+        state.put("result", Map.of("transcripts", List.of(transcriptRow)));
+
+        when(jobStateStore.getJobState(777L)).thenReturn(Optional.of(state));
+
+        Map<String, Object> response = processingService.getTranscript(777L, "trace-batch", AUTH_HEADER);
+
+        assertEquals("COMPLETED", response.get("status"));
+        List<?> transcripts = (List<?>) response.get("transcripts");
+        assertEquals(1, transcripts.size());
+        Map<?, ?> row = (Map<?, ?>) transcripts.get(0);
+        assertEquals("batch transcript", row.get("text"));
+        assertEquals(1.25d, row.get("start_time"));
+
+        verify(aiServiceClient, never()).getTranscript(anyLong(), anyString());
+    }
+
+    @Test
+    void getTranscript_shouldFallbackToAiWhenJobStateMissing() {
+        when(jobStateStore.getJobState(888L)).thenReturn(Optional.empty());
+        when(aiServiceClient.getTranscript(888L, "trace-fallback")).thenReturn(Map.of(
+                "meeting_id", 888L,
+                "transcripts", List.of(
+                        Map.of(
+                                "speaker", "SPEAKER_00",
+                                "text", "first row",
+                                "start_time", 0.0d,
+                                "end_time", 3.5d,
+                                "segment_id", "seg-1",
+                                "is_final", true
+                        ),
+                        Map.of(
+                                "speaker", "SPEAKER_01",
+                                "text", "second row",
+                                "start_time", 3.5d,
+                                "end_time", 7.2d,
+                                "segment_id", "seg-2",
+                                "is_final", true
+                        )
+                )
+        ));
+
+        Map<String, Object> response = processingService.getTranscript(888L, "trace-fallback", AUTH_HEADER);
+
+        assertEquals("COMPLETED", response.get("status"));
+        List<?> transcripts = (List<?>) response.get("transcripts");
+        assertEquals(2, transcripts.size());
+
+        Map<?, ?> first = (Map<?, ?>) transcripts.get(0);
+        assertEquals("first row", first.get("text"));
+        assertEquals(0.0d, first.get("start_time"));
+        assertEquals(3.5d, first.get("end_time"));
+        assertEquals("seg-1", first.get("segment_id"));
+        assertEquals(true, first.get("is_final"));
+
+        Map<?, ?> second = (Map<?, ?>) transcripts.get(1);
+        assertEquals("second row", second.get("text"));
+        assertEquals(3.5d, second.get("start_time"));
+        assertEquals(7.2d, second.get("end_time"));
+        assertEquals("seg-2", second.get("segment_id"));
+    }
+
+    @Test
+    void getTranscript_shouldFallbackToAiWhenJobStateTranscriptEmpty() {
+        Map<String, Object> state = new HashMap<>();
+        state.put("status", "COMPLETED");
+        state.put("result", Map.of("transcripts", List.of()));
+        when(jobStateStore.getJobState(889L)).thenReturn(Optional.of(state));
+        when(aiServiceClient.getTranscript(889L, "trace-empty-state")).thenReturn(Map.of(
+                "meeting_id", 889L,
+                "transcripts", List.of(
+                        Map.of(
+                                "speaker", "SPEAKER_00",
+                                "text", "hydrated row",
+                                "start_time", 1.0d,
+                                "end_time", 2.0d
+                        )
+                )
+        ));
+
+        Map<String, Object> response = processingService.getTranscript(889L, "trace-empty-state", AUTH_HEADER);
+
+        List<?> transcripts = (List<?>) response.get("transcripts");
+        assertEquals(1, transcripts.size());
+        assertEquals("COMPLETED", response.get("status"));
+        Map<?, ?> row = (Map<?, ?>) transcripts.get(0);
+        assertEquals("hydrated row", row.get("text"));
+    }
+
+    @Test
+    void getTranscript_shouldReturnEmptyWhenAiFallbackReturnsNoFragments() {
+        when(jobStateStore.getJobState(890L)).thenReturn(Optional.empty());
+        when(aiServiceClient.getTranscript(890L, "trace-no-fragments")).thenReturn(Map.of(
+                "meeting_id", 890L,
+                "transcripts", List.of()
+        ));
+
+        Map<String, Object> response = processingService.getTranscript(890L, "trace-no-fragments", AUTH_HEADER);
+
+        assertEquals("NOT_FOUND", response.get("status"));
+        assertTrue(response.get("transcripts") instanceof List<?>);
+        assertEquals(0, ((List<?>) response.get("transcripts")).size());
+    }
+
+    @Test
+    void getTranscript_shouldReturnEmptyWhenAiFallbackReturns404() {
+        when(jobStateStore.getJobState(891L)).thenReturn(Optional.empty());
+        when(aiServiceClient.getTranscript(891L, "trace-ai-404"))
+                .thenThrow(new HttpClientErrorException(HttpStatus.NOT_FOUND));
+
+        Map<String, Object> response = processingService.getTranscript(891L, "trace-ai-404", AUTH_HEADER);
 
         assertEquals("NOT_FOUND", response.get("status"));
         assertTrue(response.get("transcripts") instanceof List<?>);
