@@ -516,6 +516,19 @@ class DeepgramSTTAdapter:
                 list(payload.keys()),
             )
 
+            if not transcript:
+                logger.info(
+                    "DG EMPTY RESULTS session_id={} meeting_ts_ms={} event_type={} is_final={} speech_final={} text_len={} alternatives_count={} event_count={}",
+                    session.session_id if session is not None else None,
+                    ts_ms,
+                    payload.get("type"),
+                    bool(payload.get("is_final")),
+                    bool(payload.get("speech_final")),
+                    len(transcript),
+                    self._count_alternatives(payload),
+                    session.results_events if session is not None else None,
+                )
+
         # If payload contains metadata, emit a concise metadata event log
         try:
             if (
@@ -630,6 +643,19 @@ class DeepgramSTTAdapter:
             return bool(channel.get("alternatives"))
 
         return False
+
+    def _count_alternatives(self, payload: dict[str, Any]) -> int:
+        results = payload.get("results")
+        if isinstance(results, dict):
+            channels = results.get("channels") or []
+            if channels and isinstance(channels[0], dict):
+                return len(channels[0].get("alternatives") or [])
+
+        channel = payload.get("channel")
+        if isinstance(channel, dict):
+            return len(channel.get("alternatives") or [])
+
+        return 0
 
     def _extract_transcript(self, payload: dict[str, Any]) -> tuple[str, float | None]:
         channels: list[dict[str, Any]] = []

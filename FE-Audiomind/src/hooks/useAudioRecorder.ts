@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { AUDIO_DEBUG_ENABLED } from '../services/config'
 
 export type AudioRecorderState = 'idle' | 'requesting-permission' | 'recording' | 'paused' | 'stopped' | 'error'
 
@@ -52,6 +53,7 @@ export const useAudioRecorder = (): UseAudioRecorderReturn => {
   const accumulatedMsRef = useRef(0)
   const mountedRef = useRef(true)
   const recorderMimeLoggedRef = useRef(false)
+  const audioChunkCountRef = useRef(0)
 
   const stopDurationTimer = useCallback(() => {
     if (durationTimerRef.current !== null) {
@@ -120,6 +122,7 @@ export const useAudioRecorder = (): UseAudioRecorderReturn => {
     resetSessionState()
     setState('requesting-permission')
     recorderMimeLoggedRef.current = false
+    audioChunkCountRef.current = 0
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
@@ -133,6 +136,24 @@ export const useAudioRecorder = (): UseAudioRecorderReturn => {
       streamRef.current = stream
 
       recorder.ondataavailable = (event) => {
+        audioChunkCountRef.current += 1
+        const chunkCount = audioChunkCountRef.current
+
+        if (AUDIO_DEBUG_ENABLED) {
+          try {
+            // eslint-disable-next-line no-console
+            console.info('[AudioRecorder] chunk diagnostics', {
+              size: event.data.size,
+              mimeType: event.data.type || recorder.mimeType || RECORDER_MIME_TYPE,
+              recorderState: recorder.state,
+              chunkSequence: chunkCount,
+              bufferedChunks: chunkCount,
+            })
+          } catch {
+            // ignore debug logging failures
+          }
+        }
+
         if (event.data.size > 0 && mountedRef.current) {
           setAudioChunks((currentChunks) => [...currentChunks, event.data])
         }

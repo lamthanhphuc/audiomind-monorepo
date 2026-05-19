@@ -47,3 +47,7 @@ export const REALTIME_WS_ENABLED = resolveBooleanEnv(
 	['VITE_REALTIME_WS_ENABLED', 'REACT_APP_REALTIME_WS_ENABLED'],
 	import.meta.env.MODE === 'staging',
 )
+export const AUDIO_DEBUG_ENABLED = resolveBooleanEnv(
+	['VITE_AUDIO_DEBUG', 'REACT_APP_AUDIO_DEBUG'],
+	false,
+)
