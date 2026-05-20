@@ -16,7 +16,7 @@ RUN if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
 
 COPY requirements.txt constraints.txt ./
 
-RUN pip install --no-cache-dir --upgrade pip setuptools==68.2.2 wheel \
+RUN pip install --no-cache-dir --upgrade pip setuptools==80.9.0 wheel \
     && pip install --no-cache-dir torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 \
         --index-url https://download.pytorch.org/whl/cu121 \
     && pip install --no-cache-dir --no-deps --no-build-isolation openai-whisper==20231117 \
