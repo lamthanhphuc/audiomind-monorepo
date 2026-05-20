@@ -1,0 +1,25 @@
+{
+  "recommendations": [
+    "GitHub.copilot",
+    "GitHub.copilot-chat",
+    "eamodio.gitlens",
+    "github.vscode-github-actions",
+    "editorconfig.editorconfig",
+    "usernamehw.errorlens",
+    "ms-azuretools.vscode-docker",
+    "redhat.vscode-yaml",
+    "mikestead.dotenv",
+    "dbaeumer.vscode-eslint",
+    "vitest.explorer",
+    "ms-playwright.playwright",
+    "vscjava.vscode-java-pack",
+    "vmware.vscode-boot-dev-pack",
+    "ms-python.python",
+    "ms-python.vscode-pylance",
+    "charliermarsh.ruff",
+    "ms-python.black-formatter",
+    "humao.rest-client",
+    "DavidAnson.vscode-markdownlint",
+    "yzhang.markdown-all-in-one"
+  ]
+}
