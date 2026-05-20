@@ -47,6 +47,7 @@ Edit `infra/.env` before starting the stack. The most important values are:
 - Redis values if you need to override the defaults
 - STT ownership settings such as `STT_ENABLE_DISTRIBUTED_OWNERSHIP`
 - AI/STT provider keys if your local setup needs them
+- Provider selection values for MVP defaults (`STT_PROVIDER`, `ANALYSIS_PROVIDER`)
 
 If you run the AI service outside Docker, also copy its local template:
 
@@ -61,6 +62,15 @@ copy demoRecordAUDIOMID\ai-service\.env.example demoRecordAUDIOMID\ai-service\.e
 - `infra/.env.example` is not auto-loaded by Compose; you must create `infra/.env` yourself.
 - `STT_ENABLE_DISTRIBUTED_OWNERSHIP=true` enables Redis-backed STT ownership so multiple `ai-api` replicas do not claim the same meeting stream.
 - Redis must be reachable when distributed STT ownership is enabled.
+- Current MVP defaults:
+  - `STT_PROVIDER=deepgram`
+  - `ANALYSIS_PROVIDER=openai`
+  - `DEEPGRAM_REALTIME_MODEL=nova-2`
+  - `DEEPGRAM_BATCH_MODEL=nova-2`
+  - `DEEPGRAM_LANGUAGE=vi`
+  - `LOCAL_WHISPER_ENABLED=false`
+  - `OLLAMA_ENABLED=false`
+- Keep all real API keys in local `.env` files only; commit placeholders only in `.env.example`.
 - `.gitattributes` forces LF for Docker entrypoint scripts to prevent Windows CRLF runtime failures.
 
 ## Run With Docker

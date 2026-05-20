@@ -23,17 +23,26 @@ class Settings(BaseSettings):
     # OpenAI
     openai_api_key: str = ""
     openai_model: str = "gpt-4o"
+    openai_analysis_model: str = ""
+    openai_summary_model: str = ""
 
     # Deepgram
     deepgram_api_key: str = ""
     deepgram_model: str = "nova-2"
+    deepgram_realtime_model: str = "nova-2"
+    deepgram_batch_model: str = "nova-2"
+    deepgram_language: str = "vi"
     deepgram_base_url: str = "https://api.deepgram.com/v1/listen"
     deepgram_timeout_seconds: int = 30
     deepgram_simplify_streaming_url: bool = False
     deepgram_debug_raw_messages: bool = False
 
-    # LLM Provider
+    # Provider selection (MVP defaults)
+    stt_provider: str = "deepgram"
+    analysis_provider: str = "openai"
     ai_provider: str = "ollama"  # Ollama-only mode
+    local_whisper_enabled: bool = False
+    ollama_enabled: bool = False
 
     # Ollama (local LLM)
     ollama_base_url: str = "http://ollama-service:11434"
@@ -126,6 +135,23 @@ class Settings(BaseSettings):
     timeout_monitor_threshold_seconds: int = 7200
     chunk_processing_stale_seconds: int = 180
     worker_health_port: int = 8080
+
+    @model_validator(mode="after")
+    def normalize_provider_settings(self) -> "Settings":
+        self.stt_provider = (self.stt_provider or "deepgram").strip().lower()
+        if self.stt_provider not in {"deepgram", "local_whisper"}:
+            self.stt_provider = "deepgram"
+
+        self.analysis_provider = (self.analysis_provider or "openai").strip().lower()
+        if self.analysis_provider not in {"openai", "ollama", "local"}:
+            self.analysis_provider = "openai"
+
+        # Backward-compatible normalization for legacy variable usage.
+        self.ai_provider = (self.ai_provider or "ollama").strip().lower()
+        if self.ai_provider not in {"openai", "ollama", "local"}:
+            self.ai_provider = "ollama"
+
+        return self
 
     @model_validator(mode="after")
     def validate_production_settings(self) -> "Settings":
