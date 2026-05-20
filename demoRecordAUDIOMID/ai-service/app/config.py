@@ -26,6 +26,11 @@ class Settings(BaseSettings):
     openai_analysis_model: str = ""
     openai_summary_model: str = ""
 
+    # Gemini
+    gemini_api_key: str = ""
+    gemini_analysis_model: str = "gemini-2.5-flash"
+    gemini_summary_model: str = "gemini-2.5-flash"
+
     # Deepgram
     deepgram_api_key: str = ""
     deepgram_model: str = "nova-2"
@@ -143,7 +148,7 @@ class Settings(BaseSettings):
             self.stt_provider = "deepgram"
 
         self.analysis_provider = (self.analysis_provider or "openai").strip().lower()
-        if self.analysis_provider not in {"openai", "ollama", "local"}:
+        if self.analysis_provider not in {"openai", "gemini", "ollama", "local"}:
             self.analysis_provider = "openai"
 
         # Backward-compatible normalization for legacy variable usage.
@@ -186,6 +191,22 @@ class Settings(BaseSettings):
         if "localhost" in (self.cors_allowed_origins or "").lower():
             raise ValueError(
                 "Invalid production cors_allowed_origins: localhost is not allowed"
+            )
+
+        if (
+            self.analysis_provider == "openai"
+            and not (self.openai_api_key or "").strip()
+        ):
+            raise ValueError(
+                "Invalid production openai_api_key: empty secret is not allowed when analysis_provider=openai"
+            )
+
+        if (
+            self.analysis_provider == "gemini"
+            and not (self.gemini_api_key or "").strip()
+        ):
+            raise ValueError(
+                "Invalid production gemini_api_key: empty secret is not allowed when analysis_provider=gemini"
             )
 
         if (self.ai_provider or "").strip().lower() == "openai" and not (

@@ -70,6 +70,11 @@ copy demoRecordAUDIOMID\ai-service\.env.example demoRecordAUDIOMID\ai-service\.e
   - `DEEPGRAM_LANGUAGE=vi`
   - `LOCAL_WHISPER_ENABLED=false`
   - `OLLAMA_ENABLED=false`
+- Gemini free-tier analysis is supported through:
+  - `ANALYSIS_PROVIDER=gemini`
+  - `GEMINI_API_KEY=your-gemini-api-key`
+  - `GEMINI_ANALYSIS_MODEL=gemini-2.5-flash`
+  - `GEMINI_SUMMARY_MODEL=gemini-2.5-flash`
 - Keep all real API keys in local `.env` files only; commit placeholders only in `.env.example`.
 - `.gitattributes` forces LF for Docker entrypoint scripts to prevent Windows CRLF runtime failures.
 

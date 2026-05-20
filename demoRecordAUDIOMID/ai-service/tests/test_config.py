@@ -15,6 +15,9 @@ def test_provider_defaults_load_for_mvp():
 
     assert settings.stt_provider == "deepgram"
     assert settings.analysis_provider == "openai"
+    assert settings.gemini_api_key == ""
+    assert settings.gemini_analysis_model == "gemini-2.5-flash"
+    assert settings.gemini_summary_model == "gemini-2.5-flash"
     assert settings.deepgram_realtime_model == "nova-2"
     assert settings.deepgram_batch_model == "nova-2"
     assert settings.deepgram_language == "vi"
@@ -30,3 +33,17 @@ def test_invalid_provider_values_normalize_to_safe_defaults(monkeypatch):
 
     assert settings.stt_provider == "deepgram"
     assert settings.analysis_provider == "openai"
+
+
+def test_gemini_provider_values_load_from_env(monkeypatch):
+    monkeypatch.setenv("ANALYSIS_PROVIDER", "gemini")
+    monkeypatch.setenv("GEMINI_API_KEY", "test-gemini-key")
+    monkeypatch.setenv("GEMINI_ANALYSIS_MODEL", "gemini-2.5-flash")
+    monkeypatch.setenv("GEMINI_SUMMARY_MODEL", "gemini-2.5-flash")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.analysis_provider == "gemini"
+    assert settings.gemini_api_key == "test-gemini-key"
+    assert settings.gemini_analysis_model == "gemini-2.5-flash"
+    assert settings.gemini_summary_model == "gemini-2.5-flash"

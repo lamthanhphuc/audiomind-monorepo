@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.services.audio_processor import AudioProcessor
 from app.services.speech_recognizer import SpeechRecognizer
-from app.services.ai_analyzer import AIAnalyzer
+from app.services.analysis_factory import build_analysis_analyzer
 from app.models import Transcript, TranscriptFragment, Analysis
 from app.services.stt_persistence import (
     TranscriptFragmentInput,
@@ -67,13 +67,7 @@ class ProcessingPipeline:
             )
 
         if self.ai_analyzer is None:
-            self.ai_analyzer = AIAnalyzer(
-                api_key=settings.openai_api_key,
-                model=settings.ollama_model,
-                provider="ollama",
-                ollama_base_url=settings.ollama_base_url,
-                timeout_seconds=settings.ollama_timeout_seconds,
-            )
+            self.ai_analyzer = build_analysis_analyzer(settings)
 
         diarization_enabled = self._should_enable_diarization(runtime_device)
         if diarization_enabled and self.speaker_diarizer is None:
@@ -582,13 +576,20 @@ class ProcessingPipeline:
 
             # Save analysis
             clean_analysis = _to_builtin(analysis_result or {})
+            transcript_text = "\n".join(
+                str(segment.get("text", "")) for segment in aligned_segments
+            )
+            if self.ai_analyzer is not None:
+                clean_analysis = self.ai_analyzer.prepare_analysis_for_storage(
+                    transcript=transcript_text,
+                    data=clean_analysis,
+                )
+
             clean_keywords = clean_analysis.get("keywords", [])
             clean_technical_terms = clean_analysis.get("technical_terms", [])
             if self.ai_analyzer is not None:
                 clean_technical_terms = self.ai_analyzer.sanitize_technical_terms(
-                    transcript="\n".join(
-                        str(segment.get("text", "")) for segment in aligned_segments
-                    ),
+                    transcript=transcript_text,
                     technical_terms=clean_technical_terms,
                     keywords=clean_keywords,
                 )
