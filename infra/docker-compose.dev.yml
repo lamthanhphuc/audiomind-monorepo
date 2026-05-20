@@ -66,6 +66,7 @@ services:
     env_file:
       - ../demoRecordAUDIOMID/ai-service/.env
     environment:
+      - JWT_SECRET=${JWT_SECRET}
       - DEEPGRAM_MODEL=nova-2
       - DEEPGRAM_BASE_URL=${DEEPGRAM_BASE_URL:-https://api.deepgram.com/v1/listen}
       # Diagnostic only; keep false for normal dev/prod behavior.
@@ -113,6 +114,7 @@ services:
     container_name: celery-worker
     command: sh -c "celery -A app.celery_app.celery_app worker --loglevel=INFO --concurrency=${CELERY_CONCURRENCY:-4} --prefetch-multiplier=${CELERY_PREFETCH_MULTIPLIER:-1}"
     environment:
+      - JWT_SECRET=${JWT_SECRET}
       - DEEPGRAM_API_KEY=${DEEPGRAM_API_KEY:-}
       - DATABASE_URL=postgresql://${POSTGRES_USER:-audiomind}:${POSTGRES_PASSWORD:-audiomind}@db:5432/${POSTGRES_DB:-audiomind}
       - AI_PROVIDER=${AI_PROVIDER:-ollama}
