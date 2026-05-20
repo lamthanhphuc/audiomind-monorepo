@@ -1,0 +1,17 @@
+### ai-api health
+GET http://localhost:8000/health
+
+### meeting-api health
+GET http://localhost:8081/health
+
+### processing-api health
+GET http://localhost:8082/health
+
+### user-api health
+GET http://localhost:8083/health
+
+### processing transcript
+GET http://localhost:8082/processing/transcript/1
+
+### ai visible fragments
+GET http://localhost:8000/api/meeting/1/transcript

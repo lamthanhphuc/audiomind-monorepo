@@ -1,0 +1,47 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Validate: docker compose config",
+      "type": "shell",
+      "command": "docker compose -f infra/docker-compose.dev.yml config --quiet",
+      "problemMatcher": []
+    },
+    {
+      "label": "Validate: FE tests",
+      "type": "shell",
+      "command": "cd FE-Audiomind; npm test -- src/App.test.tsx src/hooks/useRealtimeMeetingStream.test.tsx src/components/RealtimeTranscript.test.tsx src/components/AudioRecorderButton.test.tsx",
+      "problemMatcher": []
+    },
+    {
+      "label": "Validate: FE build",
+      "type": "shell",
+      "command": "cd FE-Audiomind; npm run build",
+      "problemMatcher": []
+    },
+    {
+      "label": "Validate: AI lint",
+      "type": "shell",
+      "command": "ruff check demoRecordAUDIOMID/ai-service; black --check demoRecordAUDIOMID/ai-service",
+      "problemMatcher": []
+    },
+    {
+      "label": "Validate: AI tests",
+      "type": "shell",
+      "command": "python -m pytest demoRecordAUDIOMID/ai-service -q",
+      "problemMatcher": []
+    },
+    {
+      "label": "Validate: Java tests",
+      "type": "shell",
+      "command": "cd demoRecordAUDIOMID; .\\mvnw test --no-transfer-progress",
+      "problemMatcher": []
+    },
+    {
+      "label": "Validate: contracts",
+      "type": "shell",
+      "command": "npm run validate:schema; npm run check:openapi; npm run generate:client; npx tsc --noEmit -p tsconfig.generated.json",
+      "problemMatcher": []
+    }
+  ]
+}
