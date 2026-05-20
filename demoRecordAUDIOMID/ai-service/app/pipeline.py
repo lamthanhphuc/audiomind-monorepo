@@ -1,20 +1,21 @@
-from pathlib import Path, PureWindowsPath
-from typing import Dict, List, Optional
-from datetime import datetime
 import json
 import re
+from datetime import datetime
+from pathlib import Path, PureWindowsPath
+from typing import Dict, List, Optional
+
 from loguru import logger
 from sqlalchemy.orm import Session
 
+from app.config import get_runtime_device, get_settings
+from app.models import Analysis, Transcript, TranscriptFragment
+from app.services.analysis_factory import build_analysis_analyzer
 from app.services.audio_processor import AudioProcessor
 from app.services.speech_recognizer import SpeechRecognizer
-from app.services.analysis_factory import build_analysis_analyzer
-from app.models import Transcript, TranscriptFragment, Analysis
 from app.services.stt_persistence import (
     TranscriptFragmentInput,
     TranscriptPersistenceRepository,
 )
-from app.config import get_settings, get_runtime_device
 
 settings = get_settings()
 

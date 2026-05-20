@@ -1,9 +1,10 @@
-from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import AliasChoices, Field, model_validator
 from functools import lru_cache
 from pathlib import Path
 from urllib.parse import urlparse
+
 import torch
+from pydantic import AliasChoices, Field, model_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
 

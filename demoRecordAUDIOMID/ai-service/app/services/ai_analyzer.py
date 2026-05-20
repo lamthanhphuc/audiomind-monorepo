@@ -1,15 +1,16 @@
-from openai import OpenAI
-from typing import Any, List, Dict, Set, Optional
-from loguru import logger
 import json
 import re
-import httpx
 import unicodedata
+from typing import Any, Dict, List, Optional, Set
+
+import httpx
+from loguru import logger
+from openai import OpenAI
 from tenacity import (
     retry,
+    retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
-    retry_if_exception_type,
 )
 
 from app.services.analysis_errors import (

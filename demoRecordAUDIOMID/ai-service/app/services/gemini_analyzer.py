@@ -1,5 +1,5 @@
-from loguru import logger
 import httpx
+from loguru import logger
 
 from app.services.ai_analyzer import AIAnalyzer
 from app.services.analysis_errors import AnalysisConfigError, AnalysisParseError
