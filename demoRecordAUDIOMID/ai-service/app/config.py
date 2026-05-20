@@ -1,9 +1,10 @@
-from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import AliasChoices, Field, model_validator
 from functools import lru_cache
 from pathlib import Path
 from urllib.parse import urlparse
+
 import torch
+from pydantic import AliasChoices, Field, model_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
 
@@ -25,6 +26,11 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-4o"
     openai_analysis_model: str = ""
     openai_summary_model: str = ""
+
+    # Gemini
+    gemini_api_key: str = ""
+    gemini_analysis_model: str = "gemini-2.5-flash"
+    gemini_summary_model: str = "gemini-2.5-flash"
 
     # Deepgram
     deepgram_api_key: str = ""
@@ -143,7 +149,7 @@ class Settings(BaseSettings):
             self.stt_provider = "deepgram"
 
         self.analysis_provider = (self.analysis_provider or "openai").strip().lower()
-        if self.analysis_provider not in {"openai", "ollama", "local"}:
+        if self.analysis_provider not in {"openai", "gemini", "ollama", "local"}:
             self.analysis_provider = "openai"
 
         # Backward-compatible normalization for legacy variable usage.
@@ -186,6 +192,22 @@ class Settings(BaseSettings):
         if "localhost" in (self.cors_allowed_origins or "").lower():
             raise ValueError(
                 "Invalid production cors_allowed_origins: localhost is not allowed"
+            )
+
+        if (
+            self.analysis_provider == "openai"
+            and not (self.openai_api_key or "").strip()
+        ):
+            raise ValueError(
+                "Invalid production openai_api_key: empty secret is not allowed when analysis_provider=openai"
+            )
+
+        if (
+            self.analysis_provider == "gemini"
+            and not (self.gemini_api_key or "").strip()
+        ):
+            raise ValueError(
+                "Invalid production gemini_api_key: empty secret is not allowed when analysis_provider=gemini"
             )
 
         if (self.ai_provider or "").strip().lower() == "openai" and not (

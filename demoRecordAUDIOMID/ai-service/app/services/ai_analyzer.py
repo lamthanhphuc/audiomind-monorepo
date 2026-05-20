@@ -1,15 +1,24 @@
-from openai import OpenAI
-from typing import List, Dict, Set
-from loguru import logger
 import json
 import re
-import httpx
 import unicodedata
+from typing import Any, Dict, List, Optional, Set
+
+import httpx
+from loguru import logger
+from openai import OpenAI
 from tenacity import (
     retry,
+    retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
-    retry_if_exception_type,
+)
+
+from app.services.analysis_errors import (
+    AnalysisConfigError,
+    AnalysisNotImplementedError,
+    AnalysisParseError,
+    AnalysisRateLimitError,
+    AnalysisUnavailableError,
 )
 
 
@@ -52,24 +61,38 @@ class AIAnalyzer:
         self,
         api_key: str,
         model: str = "gpt-4o",
-        provider: str = "openai",
+        provider: str = "ollama",
+        summary_model: str | None = None,
         ollama_base_url: str = "http://127.0.0.1:11434",
         timeout_seconds: int = 300,
     ):
-        requested_provider = (provider or "ollama").lower()
-        if requested_provider != "ollama":
+        requested_provider = (provider or "ollama").strip().lower()
+        if requested_provider == "local":
+            requested_provider = "ollama"
+        if requested_provider not in {"ollama", "gemini", "openai"}:
             logger.warning(
-                f"AI provider '{requested_provider}' requested but Ollama-only mode is enforced."
+                f"AI provider '{requested_provider}' requested but falling back to Ollama."
             )
-        self.provider = "ollama"
+            requested_provider = "ollama"
+        self.provider = requested_provider
         self.api_key = (api_key or "").strip()
         self.client = OpenAI(api_key=self.api_key) if self.api_key else None
         self.model = model
+        self.summary_model = (summary_model or model).strip() or model
         self.ollama_base_url = (ollama_base_url or "http://127.0.0.1:11434").rstrip("/")
         self.timeout_seconds = timeout_seconds
-        logger.info(
-            f"Initialized AI Analyzer provider=ollama-only, model={model}, base_url={self.ollama_base_url}"
-        )
+        if self.provider == "gemini":
+            logger.info(
+                f"Initialized AI Analyzer provider=gemini, analysis_model={self.model}, summary_model={self.summary_model}, timeout_seconds={self.timeout_seconds}"
+            )
+        elif self.provider == "openai":
+            logger.info(
+                f"Initialized AI Analyzer provider=openai, model={self.model}, timeout_seconds={self.timeout_seconds}"
+            )
+        else:
+            logger.info(
+                f"Initialized AI Analyzer provider=ollama, model={self.model}, base_url={self.ollama_base_url}, timeout_seconds={self.timeout_seconds}"
+            )
 
     def _normalize_text(self, value: str) -> str:
         text = str(value or "").strip().lower()
@@ -195,6 +218,48 @@ class AIAnalyzer:
 
         return text.strip()
 
+    def _coerce_string_list(self, values: Any) -> List[str]:
+        normalized: List[str] = []
+        seen: Set[str] = set()
+        for item in values or []:
+            text = str(item).strip()
+            if not text:
+                continue
+            key = text.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            normalized.append(text)
+        return normalized
+
+    def _normalize_action_items(self, values: Any) -> List[Dict[str, Any]]:
+        normalized: List[Dict[str, Any]] = []
+        for item in values or []:
+            if isinstance(item, dict):
+                task = str(
+                    item.get("task")
+                    or item.get("description")
+                    or item.get("text")
+                    or ""
+                ).strip()
+                if not task:
+                    continue
+                owner = item.get("owner")
+                deadline = item.get("deadline")
+                normalized.append(
+                    {
+                        "task": task,
+                        "owner": owner if str(owner).strip() else None,
+                        "deadline": deadline if str(deadline).strip() else None,
+                    }
+                )
+                continue
+
+            task = str(item).strip()
+            if task:
+                normalized.append({"task": task, "owner": None, "deadline": None})
+        return normalized
+
     def _loads_json_safe(self, text: str) -> Dict:
         cleaned = self._extract_json_object(text)
         try:
@@ -227,6 +292,54 @@ class AIAnalyzer:
         data.setdefault("technical_terms", [])
         data.setdefault("action_items", [])
         return data
+
+    def _loads_json_strict(self, text: str) -> Dict[str, Any]:
+        cleaned = (text or "").strip()
+        try:
+            data = json.loads(cleaned)
+        except json.JSONDecodeError as exc:
+            raise AnalysisParseError(
+                f"Gemini returned invalid JSON at pos={exc.pos}: {exc.msg}",
+                provider=self.provider,
+            ) from exc
+
+        if not isinstance(data, dict):
+            raise AnalysisParseError(
+                f"Gemini returned {type(data).__name__} instead of a JSON object",
+                provider=self.provider,
+            )
+
+        return data
+
+    def _coerce_gemini_analysis(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        if not isinstance(data, dict):
+            raise AnalysisParseError(
+                f"Gemini analysis payload must be an object, got {type(data).__name__}",
+                provider=self.provider,
+            )
+
+        return {
+            "summary": str(data.get("summary", "")).strip(),
+            "key_points": self._coerce_string_list(data.get("key_points", [])),
+            "decisions": self._coerce_string_list(data.get("decisions", [])),
+            "action_items": self._normalize_action_items(data.get("action_items", [])),
+            "risks_blockers": self._coerce_string_list(data.get("risks_blockers", [])),
+            "topics": self._coerce_string_list(data.get("topics", [])),
+        }
+
+    def _metadata_to_prompt_lines(self, metadata: Optional[Dict[str, Any]]) -> str:
+        if not metadata:
+            return ""
+
+        lines = ["NGỮ CẢNH BỔ SUNG:"]
+        for key, value in metadata.items():
+            if value is None:
+                continue
+            text = str(value).strip()
+            if not text:
+                continue
+            lines.append(f"- {key}: {text}")
+        return "\n".join(lines)
 
     def _repair_json_string(self, content: str) -> str:
         candidate = (content or "").strip()
@@ -283,6 +396,14 @@ class AIAnalyzer:
         return candidate
 
     def _summarize_chunk(self, chunk: str) -> str:
+        if self.provider == "gemini":
+            return self._summarize_chunk_with_gemini(chunk)
+        if self.provider == "openai":
+            raise AnalysisNotImplementedError(
+                "OpenAI analysis provider is not implemented yet",
+                provider=self.provider,
+            )
+
         prompt = f"""
 Hãy tóm tắt đoạn nội dung cuộc họp sau bằng tiếng Việt trong 2-3 câu.
 Chỉ trả về phần tóm tắt.
@@ -294,6 +415,31 @@ NỘI DUNG:
 """
 
         return self._summarize_chunk_with_ollama(prompt)
+
+    def _summarize_chunk_with_gemini(
+        self, chunk: str, metadata: Optional[Dict[str, Any]] = None
+    ) -> str:
+        self._require_gemini_api_key()
+        system_prompt = "Bạn là trợ lý tóm tắt cuộc họp. Luôn trả lời bằng tiếng Việt, trừ tên riêng và thuật ngữ kỹ thuật cần giữ nguyên."
+        metadata_text = self._metadata_to_prompt_lines(metadata)
+        prompt = f"""
+Hãy tóm tắt đoạn nội dung cuộc họp sau bằng tiếng Việt trong 2-3 câu.
+Chỉ trả về phần tóm tắt.
+Không thêm giải thích.
+Giữ nguyên tên riêng, tên công nghệ, API, framework, thư viện, tên hàm, biến code hoặc thuật ngữ kỹ thuật nếu cần.
+
+{metadata_text}
+
+NỘI DUNG:
+{chunk}
+"""
+
+        return self._call_gemini_text(
+            prompt=prompt,
+            system_prompt=system_prompt,
+            model=self.summary_model,
+            temperature=0.2,
+        )
 
     def _summarize_chunk_with_ollama(self, prompt: str) -> str:
         system_prompt = "Bạn là trợ lý tóm tắt cuộc họp. Luôn trả lời bằng tiếng Việt, trừ tên riêng và thuật ngữ kỹ thuật cần giữ nguyên."
@@ -313,6 +459,167 @@ NỘI DUNG:
             chat_payload=payload,
             expect_json=False,
         )
+
+    def _require_gemini_api_key(self) -> None:
+        if not self.api_key:
+            raise AnalysisConfigError(
+                "GEMINI_API_KEY is required when analysis_provider=gemini",
+                provider=self.provider,
+            )
+
+    def _call_gemini_text(
+        self,
+        *,
+        prompt: str,
+        system_prompt: str,
+        model: str,
+        temperature: float,
+        response_json: bool = False,
+    ) -> str:
+        self._require_gemini_api_key()
+        payload: Dict[str, Any] = {
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [{"text": prompt}],
+                }
+            ],
+            "systemInstruction": {
+                "parts": [{"text": system_prompt}],
+            },
+            "generationConfig": {
+                "temperature": temperature,
+            },
+        }
+        if response_json:
+            payload["generationConfig"]["responseMimeType"] = "application/json"
+
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+        logger.info(
+            f"Calling Gemini model={model} response_json={response_json} transcript_chars={len(prompt)}"
+        )
+
+        try:
+            with httpx.Client(timeout=self.timeout_seconds) as client:
+                response = client.post(url, params={"key": self.api_key}, json=payload)
+        except httpx.TimeoutException as exc:
+            raise AnalysisUnavailableError(
+                "Gemini request timed out",
+                provider=self.provider,
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise AnalysisUnavailableError(
+                f"Gemini request failed: {exc}",
+                provider=self.provider,
+            ) from exc
+
+        if response.status_code == 429:
+            raise AnalysisRateLimitError(
+                "Gemini quota or rate limit exceeded",
+                provider=self.provider,
+            )
+        if response.status_code in {401, 403}:
+            raise AnalysisConfigError(
+                "Gemini API key was rejected or is missing",
+                provider=self.provider,
+            )
+        if response.status_code >= 400:
+            raise AnalysisUnavailableError(
+                f"Gemini request failed with HTTP {response.status_code}",
+                provider=self.provider,
+            )
+
+        try:
+            body = response.json()
+        except ValueError as exc:
+            raise AnalysisParseError(
+                "Gemini returned a non-JSON HTTP response",
+                provider=self.provider,
+            ) from exc
+
+        if isinstance(body, dict) and body.get("error"):
+            error_block = body.get("error")
+            error_message = (
+                error_block.get("message")
+                if isinstance(error_block, dict)
+                else str(error_block)
+            )
+            raise AnalysisUnavailableError(
+                f"Gemini API error: {error_message}",
+                provider=self.provider,
+            )
+
+        candidates = body.get("candidates") if isinstance(body, dict) else None
+        if not candidates:
+            raise AnalysisParseError(
+                "Gemini response did not include any candidates",
+                provider=self.provider,
+            )
+
+        content = (candidates[0].get("content") or {}).get("parts") or []
+        text = "".join(
+            str(part.get("text", "")) for part in content if isinstance(part, dict)
+        ).strip()
+        if not text:
+            raise AnalysisParseError(
+                "Gemini response did not include any text content",
+                provider=self.provider,
+            )
+
+        logger.info(
+            f"Gemini response parse success model={model} response_chars={len(text)}"
+        )
+        return text
+
+    def _analyze_with_gemini(
+        self, prompt: str, metadata: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        system_prompt = (
+            "Bạn là trợ lý phân tích biên bản họp. Hãy trả về đúng một object JSON hợp lệ và không thêm gì khác. "
+            "Tất cả nội dung trong các value phải bằng tiếng Việt, trừ tên riêng và thuật ngữ kỹ thuật cần giữ nguyên."
+        )
+        metadata_text = self._metadata_to_prompt_lines(metadata)
+        json_prompt = f"""
+Hãy phân tích phần tóm tắt cuộc họp sau và trả về đúng MỘT object JSON hợp lệ.
+
+YÊU CẦU:
+- Tất cả nội dung trong các value phải bằng tiếng Việt.
+- Không dùng markdown.
+- Không thêm giải thích ngoài JSON.
+- Nếu không biết thì để mảng rỗng.
+- Giữ nguyên tên riêng, tên công nghệ, API, framework, thư viện, tên hàm, biến code hoặc thuật ngữ kỹ thuật nếu cần.
+
+{metadata_text}
+
+Schema:
+{{
+  "summary": "string",
+  "key_points": ["string"],
+  "decisions": ["string"],
+  "action_items": [
+    {{
+      "task": "string",
+      "owner": null,
+      "deadline": null
+    }}
+  ],
+  "risks_blockers": ["string"],
+  "topics": ["string"]
+}}
+
+TEXT:
+{prompt}
+"""
+
+        content = self._call_gemini_text(
+            prompt=json_prompt,
+            system_prompt=system_prompt,
+            model=self.model,
+            temperature=0.1,
+            response_json=True,
+        )
+        parsed = self._loads_json_strict(content)
+        return self._coerce_gemini_analysis(parsed)
 
     def _is_usable_api_key(self) -> bool:
         if not self.api_key:
@@ -476,7 +783,58 @@ NỘI DUNG:
 
         return data
 
-    def analyze_meeting(self, transcript: str) -> Dict:
+    def prepare_analysis_for_storage(self, transcript: str, data: Dict) -> Dict:
+        if self.provider == "gemini":
+            if not isinstance(data, dict):
+                data = {}
+            legacy_payload = {
+                "summary": str(data.get("summary", "")),
+                "keywords": self._coerce_string_list(
+                    data.get("key_points") or data.get("topics") or []
+                ),
+                "technical_terms": self._coerce_string_list(data.get("topics") or []),
+                "action_items": self._normalize_action_items(
+                    data.get("action_items") or []
+                ),
+            }
+            return self._ensure_analysis_completeness(transcript, legacy_payload)
+
+        if self.provider in {"ollama", "local"}:
+            return self._ensure_analysis_completeness(transcript, data)
+
+        raise AnalysisNotImplementedError(
+            "OpenAI analysis provider is not implemented yet",
+            provider=self.provider,
+        )
+
+    def analyze_meeting(
+        self, transcript: str, metadata: Optional[Dict[str, Any]] = None
+    ) -> Dict:
+        if self.provider == "gemini":
+            logger.info(
+                f"Starting AI meeting analysis (Gemini) transcript_chars={len(transcript or '')}"
+            )
+            chunks = self._chunk_transcript(transcript)
+            logger.info(f"Split Gemini transcript into {len(chunks)} chunks")
+
+            summaries = []
+            for i, chunk in enumerate(chunks):
+                logger.info(f"Processing Gemini chunk {i+1}/{len(chunks)}")
+                summaries.append(
+                    self._summarize_chunk_with_gemini(chunk, metadata=metadata)
+                )
+
+            combined_summary = "\n".join(summaries)
+            result = self._analyze_with_gemini(combined_summary, metadata=metadata)
+            logger.info("AI analysis completed (Gemini)")
+            return result
+
+        if self.provider == "openai":
+            raise AnalysisNotImplementedError(
+                "OpenAI analysis provider is not implemented yet",
+                provider=self.provider,
+            )
+
         try:
             logger.info("Starting AI meeting analysis (chunked)")
 
