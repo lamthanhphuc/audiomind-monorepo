@@ -24,6 +24,9 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -288,5 +291,53 @@ class ProcessingServiceTest {
         );
 
         assertEquals(HttpStatus.FORBIDDEN, ex.getStatusCode());
+    }
+
+    @Test
+    void startProcessing_shouldMapAiService503ToServiceUnavailable() {
+        when(jobStateStore.claimIdempotency("legacy-meeting:1001", 1001L))
+                .thenReturn(new JobStateStore.IdempotencyClaim(1001L, true));
+        when(meetingServiceClient.getMeetingById(1001L, "trace-1001", AUTH_HEADER))
+                .thenReturn(Map.of("id", 1001L, "audioPath", "/app/uploads/a.wav"));
+        when(aiServiceClient.processAudio(1001L, "/app/uploads/a.wav", "legacy-meeting:1001", null, null, "vi", "trace-1001", AUTH_HEADER))
+                .thenThrow(new HttpClientErrorException(HttpStatus.SERVICE_UNAVAILABLE, "Service Unavailable"));
+
+        ResponseStatusException ex = assertThrows(
+                ResponseStatusException.class,
+                () -> processingService.startProcessing(1001L, null, null, null, null, "vi", "trace-1001", AUTH_HEADER)
+        );
+
+        assertEquals(HttpStatus.SERVICE_UNAVAILABLE, ex.getStatusCode());
+        assertEquals("AI service unavailable", ex.getReason());
+        verify(jobStateStore).upsertJobState(
+                eq(1001L),
+                eq("FAILED"),
+                eq("legacy-meeting:1001"),
+                isNull(),
+                anyString(),
+                eq("trace-1001")
+        );
+    }
+
+    @Test
+    void startProcessing_shouldKeepSuccessPath() {
+        when(jobStateStore.claimIdempotency("legacy-meeting:1002", 1002L))
+                .thenReturn(new JobStateStore.IdempotencyClaim(1002L, true));
+        when(meetingServiceClient.getMeetingById(1002L, "trace-1002", AUTH_HEADER))
+                .thenReturn(Map.of("id", 1002L, "audioPath", "/app/uploads/b.wav"));
+        when(aiServiceClient.processAudio(1002L, "/app/uploads/b.wav", "legacy-meeting:1002", null, null, "vi", "trace-1002", AUTH_HEADER))
+                .thenReturn(Map.of("status", "queued"));
+
+        Map<String, Object> state = new HashMap<>();
+        state.put("status", "QUEUED");
+        state.put("progress", 0);
+        state.put("stage", "unknown");
+        state.put("updatedAt", "2026-05-20T00:00:00Z");
+        when(jobStateStore.getJobState(1002L)).thenReturn(Optional.of(state));
+
+        var response = processingService.startProcessing(1002L, null, null, null, null, "vi", "trace-1002", AUTH_HEADER);
+
+        assertEquals(1002L, response.meetingId());
+        assertEquals("QUEUED", response.status());
     }
 }

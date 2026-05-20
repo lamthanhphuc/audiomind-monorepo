@@ -91,6 +91,21 @@ public class ProcessingService {
 
             try {
                 processMeeting(meetingId, audioPath, resolvedFileId, topic, glossaryTerms, language, traceId, authorization);
+            } catch (HttpStatusCodeException ex) {
+                jobStateStore.upsertJobState(meetingId, "FAILED", resolvedFileId, null, ex.getMessage(), traceId);
+                incrementJobsTotal("FAILED");
+                int downstreamStatus = ex.getStatusCode().value();
+                log.warn(
+                        "[traceId={}] [jobId={}] ai-service request failed status={} body={}",
+                        traceId,
+                        meetingId,
+                        downstreamStatus,
+                        ex.getResponseBodyAsString()
+                );
+                if (downstreamStatus == HttpStatus.SERVICE_UNAVAILABLE.value()) {
+                    throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "AI service unavailable");
+                }
+                throw ex;
             } catch (Exception ex) {
                 jobStateStore.upsertJobState(meetingId, "FAILED", resolvedFileId, null, ex.getMessage(), traceId);
                 incrementJobsTotal("FAILED");
