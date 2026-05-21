@@ -2,6 +2,28 @@
 **Date:** 2026-05-01 09:00:00 +07:00
 **Executor:** AI Assistant
 
+## Current Run: 2026-05-21 Gemini Rate-Limit Fix
+
+### Environment Summary
+- Docker: ✅
+- Docker Compose: ✅
+- Python: ✅ (Python 3.11.9)
+
+### Test Results
+
+| Suite | Command | Status | Notes |
+|-------|---------|--------|-------|
+| ai-service black check | `python -m black --check demoRecordAUDIOMID/ai-service` | PASS | 63 files left unchanged after formatting touched file |
+| ai-service pytest | `python -m pytest demoRecordAUDIOMID/ai-service/tests` | PASS | 89 tests passed |
+| ai-api / celery-worker build | `docker compose --env-file infra/.env -f infra/docker-compose.dev.yml build ai-api celery-worker` | PASS | Images built successfully |
+| ai-api / celery-worker / processing-api up | `docker compose --env-file infra/.env -f infra/docker-compose.dev.yml up -d --force-recreate ai-api celery-worker processing-api` | PASS | Containers recreated successfully |
+
+### Summary
+- Total Suites: 4
+- Passed: 4
+- Failed: 0
+- Skipped: 0
+
 ## Environment Summary
 - Docker: Not checked
 - Docker Compose: Not checked

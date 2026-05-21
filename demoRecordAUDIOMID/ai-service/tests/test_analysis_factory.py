@@ -14,6 +14,8 @@ def _build_settings(provider: str):
         gemini_api_key="test-gemini-key",
         gemini_analysis_model="gemini-2.5-flash",
         gemini_summary_model="gemini-2.5-flash",
+        gemini_max_single_request_chars=50000,
+        gemini_request_delay_seconds=15.0,
         openai_api_key="test-openai-key",
         openai_model="gpt-4o",
         openai_analysis_model="",

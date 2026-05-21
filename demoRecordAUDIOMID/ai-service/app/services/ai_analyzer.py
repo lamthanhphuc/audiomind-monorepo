@@ -1,5 +1,6 @@
 import json
 import re
+import time
 import unicodedata
 from typing import Any, Dict, List, Optional, Set
 
@@ -17,7 +18,6 @@ from app.services.analysis_errors import (
     AnalysisConfigError,
     AnalysisNotImplementedError,
     AnalysisParseError,
-    AnalysisRateLimitError,
     AnalysisUnavailableError,
 )
 
@@ -63,6 +63,8 @@ class AIAnalyzer:
         model: str = "gpt-4o",
         provider: str = "ollama",
         summary_model: str | None = None,
+        gemini_max_single_request_chars: int = 50000,
+        gemini_request_delay_seconds: float = 15.0,
         ollama_base_url: str = "http://127.0.0.1:11434",
         timeout_seconds: int = 300,
     ):
@@ -79,6 +81,12 @@ class AIAnalyzer:
         self.client = OpenAI(api_key=self.api_key) if self.api_key else None
         self.model = model
         self.summary_model = (summary_model or model).strip() or model
+        self.gemini_max_single_request_chars = max(
+            1, int(gemini_max_single_request_chars or 50000)
+        )
+        self.gemini_request_delay_seconds = max(
+            0.0, float(gemini_request_delay_seconds or 0.0)
+        )
         self.ollama_base_url = (ollama_base_url or "http://127.0.0.1:11434").rstrip("/")
         self.timeout_seconds = timeout_seconds
         if self.provider == "gemini":
@@ -199,6 +207,12 @@ class AIAnalyzer:
             chunks.append(current.strip())
 
         return chunks if chunks else [str(transcript or "")]
+
+    def _gemini_chunk_transcript(self, transcript: str) -> List[str]:
+        if len(transcript or "") <= self.gemini_max_single_request_chars:
+            return [str(transcript or "")]
+
+        return self._chunk_transcript(transcript)
 
     def _extract_json_object(self, text: str) -> str:
         text = (text or "").strip()
@@ -477,6 +491,7 @@ NỘI DUNG:
         response_json: bool = False,
     ) -> str:
         self._require_gemini_api_key()
+        retryable_statuses = {429, 500, 502, 503, 504}
         payload: Dict[str, Any] = {
             "contents": [
                 {
@@ -495,13 +510,67 @@ NỘI DUNG:
             payload["generationConfig"]["responseMimeType"] = "application/json"
 
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+        headers = {
+            "Content-Type": "application/json",
+            "x-goog-api-key": self.api_key,
+        }
         logger.info(
             f"Calling Gemini model={model} response_json={response_json} transcript_chars={len(prompt)}"
         )
 
+        def _retry_after_seconds(
+            response: httpx.Response | None, attempt: int
+        ) -> float:
+            if response is not None and response.status_code == 429:
+                headers = getattr(response, "headers", None) or {}
+                retry_after = str(headers.get("Retry-After", "")).strip()
+                if retry_after:
+                    try:
+                        return max(0.0, float(retry_after))
+                    except ValueError:
+                        pass
+                return float(30 * attempt)
+
+            return float(2**attempt)
+
         try:
             with httpx.Client(timeout=self.timeout_seconds) as client:
-                response = client.post(url, params={"key": self.api_key}, json=payload)
+                response = None
+                max_attempts = 4
+                for attempt in range(1, max_attempts + 1):
+                    response = client.post(url, headers=headers, json=payload)
+
+                    if response.status_code < 400:
+                        break
+
+                    if response.status_code in retryable_statuses and (
+                        (response.status_code == 429 and attempt < max_attempts)
+                        or (response.status_code != 429 and attempt < 3)
+                    ):
+                        wait_seconds = _retry_after_seconds(response, attempt)
+                        max_retry_attempts = (
+                            max_attempts if response.status_code == 429 else 3
+                        )
+                        logger.warning(
+                            "Gemini transient error status={} attempt={}/{}; retrying in {}s",
+                            response.status_code,
+                            attempt,
+                            max_retry_attempts,
+                            wait_seconds,
+                        )
+                        time.sleep(wait_seconds)
+                        continue
+
+                    if response.status_code in {401, 403}:
+                        raise AnalysisConfigError(
+                            "Gemini API key was rejected or is missing",
+                            provider=self.provider,
+                        )
+
+                    raise AnalysisUnavailableError(
+                        f"Gemini request failed with HTTP {response.status_code}",
+                        provider=self.provider,
+                    )
         except httpx.TimeoutException as exc:
             raise AnalysisUnavailableError(
                 "Gemini request timed out",
@@ -513,21 +582,7 @@ NỘI DUNG:
                 provider=self.provider,
             ) from exc
 
-        if response.status_code == 429:
-            raise AnalysisRateLimitError(
-                "Gemini quota or rate limit exceeded",
-                provider=self.provider,
-            )
-        if response.status_code in {401, 403}:
-            raise AnalysisConfigError(
-                "Gemini API key was rejected or is missing",
-                provider=self.provider,
-            )
-        if response.status_code >= 400:
-            raise AnalysisUnavailableError(
-                f"Gemini request failed with HTTP {response.status_code}",
-                provider=self.provider,
-            )
+        assert response is not None
 
         try:
             body = response.json()
@@ -814,8 +869,19 @@ TEXT:
             logger.info(
                 f"Starting AI meeting analysis (Gemini) transcript_chars={len(transcript or '')}"
             )
-            chunks = self._chunk_transcript(transcript)
-            logger.info(f"Split Gemini transcript into {len(chunks)} chunks")
+            transcript_text = str(transcript or "")
+            if len(transcript_text) <= self.gemini_max_single_request_chars:
+                logger.info(
+                    "Gemini transcript under threshold; using single request analysis"
+                )
+                result = self._analyze_with_gemini(transcript_text, metadata=metadata)
+                logger.info("AI analysis completed (Gemini)")
+                return result
+
+            chunks = self._gemini_chunk_transcript(transcript_text)
+            logger.info(
+                f"Split Gemini transcript into {len(chunks)} chunks threshold={self.gemini_max_single_request_chars}"
+            )
 
             summaries = []
             for i, chunk in enumerate(chunks):
@@ -823,6 +889,8 @@ TEXT:
                 summaries.append(
                     self._summarize_chunk_with_gemini(chunk, metadata=metadata)
                 )
+                if i < len(chunks) - 1 and self.gemini_request_delay_seconds > 0:
+                    time.sleep(self.gemini_request_delay_seconds)
 
             combined_summary = "\n".join(summaries)
             result = self._analyze_with_gemini(combined_summary, metadata=metadata)
