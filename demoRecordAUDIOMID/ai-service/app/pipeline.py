@@ -422,7 +422,7 @@ class ProcessingPipeline:
 
                 if not local_whisper_enabled:
                     logger.error(
-                        f"STT_PROVIDER=deepgram but LOCAL_WHISPER_ENABLED=false. Cannot continue."
+                        "STT_PROVIDER=deepgram but LOCAL_WHISPER_ENABLED=false. Cannot continue."
                     )
                     raise RuntimeError(
                         f"Deepgram batch failed and fallback disabled: {repr(e)}"

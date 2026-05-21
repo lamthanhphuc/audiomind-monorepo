@@ -902,8 +902,7 @@ class DeepgramSTTAdapter:
             alternative = alternatives[0]
             transcript_text = alternative.get("transcript", "").strip()
 
-            # Extract word-level timing for segment alignment
-            words = alternative.get("words", [])
+            # Extract utterance-level timing for segment alignment
             utterances = results.get("utterances", [])
 
             if utterances:
