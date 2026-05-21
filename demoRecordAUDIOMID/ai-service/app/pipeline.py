@@ -12,6 +12,7 @@ from app.models import Analysis, Transcript, TranscriptFragment
 from app.services.analysis_factory import build_analysis_analyzer
 from app.services.audio_processor import AudioProcessor
 from app.services.speech_recognizer import SpeechRecognizer
+from app.services.stt_adapter import DeepgramSTTAdapter
 from app.services.stt_persistence import (
     TranscriptFragmentInput,
     TranscriptPersistenceRepository,
@@ -356,6 +357,104 @@ class ProcessingPipeline:
 
         return normalized
 
+    def _transcribe_with_provider_selection(
+        self,
+        audio_path: str,
+        language: Optional[str] = "vi",
+        initial_prompt: Optional[str] = None,
+    ) -> List[Dict]:
+        """
+        Select STT provider and transcribe audio.
+
+        Provider selection order:
+        1. If STT_PROVIDER=deepgram and DEEPGRAM_API_KEY exists: use Deepgram batch
+        2. If Deepgram fails and LOCAL_WHISPER_ENABLED=true: fallback to Whisper
+        3. If STT_PROVIDER=local_whisper: use Whisper
+        4. Otherwise: raise error
+
+        Args:
+            audio_path: Path to audio file
+            language: Language code (e.g., 'vi')
+            initial_prompt: Initial prompt for Whisper
+
+        Returns:
+            List of transcript segments with timing
+        """
+        stt_provider = (settings.stt_provider or "deepgram").strip().lower()
+        deepgram_api_key = (settings.deepgram_api_key or "").strip()
+        deepgram_batch_model = (
+            settings.deepgram_batch_model or "nova-2"
+        ).strip() or "nova-2"
+        deepgram_language = (
+            settings.deepgram_language or language or "vi"
+        ).strip() or "vi"
+        local_whisper_enabled = settings.local_whisper_enabled
+
+        transcript_segments = []
+
+        # Try Deepgram if configured
+        if stt_provider == "deepgram" and deepgram_api_key:
+            try:
+                logger.info(
+                    f"STT_PROVIDER_SELECTED provider=deepgram model={deepgram_batch_model} language={deepgram_language}"
+                )
+                deepgram_adapter = DeepgramSTTAdapter(
+                    api_key=deepgram_api_key,
+                    model=deepgram_batch_model,
+                    base_url=settings.deepgram_base_url,
+                    timeout_seconds=settings.deepgram_timeout_seconds,
+                )
+                result = deepgram_adapter.batch_transcribe_file(
+                    file_path=audio_path,
+                    language=deepgram_language,
+                    model=deepgram_batch_model,
+                )
+
+                transcript_segments = result.get("segments", [])
+                logger.info(
+                    f"DEEPGRAM_BATCH_SUCCESS segments={len(transcript_segments)}"
+                )
+                return transcript_segments
+            except Exception as e:
+                logger.warning(
+                    f"Deepgram batch transcription failed: {repr(e)}. Fallback decision: LOCAL_WHISPER_ENABLED={local_whisper_enabled}"
+                )
+
+                if not local_whisper_enabled:
+                    logger.error(
+                        "STT_PROVIDER=deepgram but LOCAL_WHISPER_ENABLED=false. Cannot continue."
+                    )
+                    raise RuntimeError(
+                        f"Deepgram batch failed and fallback disabled: {repr(e)}"
+                    )
+
+                # Fall through to Whisper
+
+        # Fallback to Whisper if enabled or explicitly selected
+        if stt_provider == "local_whisper" or local_whisper_enabled:
+            logger.info(
+                f"STT_PROVIDER_SELECTED provider=local_whisper model={settings.whisper_model} language={deepgram_language}"
+            )
+            self._ensure_models_loaded()
+
+            transcript_result = self.speech_recognizer.transcribe(
+                audio_path,
+                language=deepgram_language,
+                initial_prompt=initial_prompt,
+            )
+            transcript_segments = self.speech_recognizer.format_transcript(
+                transcript_result
+            )
+            logger.info(f"WHISPER_BATCH_SUCCESS segments={len(transcript_segments)}")
+            return transcript_segments
+
+        # No provider available
+        raise RuntimeError(
+            f"No STT provider available: STT_PROVIDER={stt_provider}, "
+            f"DEEPGRAM_API_KEY_PRESENT={bool(deepgram_api_key)}, "
+            f"LOCAL_WHISPER_ENABLED={local_whisper_enabled}"
+        )
+
     def process_meeting(
         self,
         audio_path: str,
@@ -418,15 +517,12 @@ class ProcessingPipeline:
                     glossary_terms=effective_glossary_terms,
                     topic_defaults=glossary_context.get("topic_defaults"),
                 )
-                logger.info(f"Using Whisper initial prompt: {initial_prompt}")
+                logger.info(f"Initial prompt for STT: {initial_prompt}")
 
-                transcript_result = self.speech_recognizer.transcribe(
-                    resolved_audio_path,
+                transcript_segments = self._transcribe_with_provider_selection(
+                    audio_path=resolved_audio_path,
                     language=language,
                     initial_prompt=initial_prompt,
-                )
-                transcript_segments = self.speech_recognizer.format_transcript(
-                    transcript_result
                 )
                 transcript_segments = self._normalize_transcript_segments(
                     transcript_segments,

@@ -16,6 +16,11 @@ try:
 except ImportError:  # pragma: no cover - import is validated by runtime tests
     websockets = None
 
+try:
+    import httpx
+except ImportError:  # pragma: no cover
+    httpx = None
+
 
 _TERMINAL_ERROR_NAME_HINTS = (
     "ConnectionClosed",
@@ -806,3 +811,135 @@ class DeepgramSTTAdapter:
             return current_text
 
         return f"{current_text} {incoming_text}".strip()
+
+    def batch_transcribe_file(
+        self, file_path: str, language: str = "vi", model: str | None = None
+    ) -> dict[str, Any]:
+        """
+        Batch transcribe audio file using Deepgram prerecorded endpoint.
+
+        Args:
+            file_path: Path to audio file (e.g., .m4a, .mp3, .wav)
+            language: Language code (e.g., 'vi')
+            model: Deepgram model to use (defaults to nova-2)
+
+        Returns:
+            Dictionary with transcription results including segments, text, timing
+
+        Raises:
+            RuntimeError: If API key is not configured or HTTP request fails
+        """
+        if httpx is None:
+            raise ImportError("httpx is required for batch transcription")
+
+        if not self.api_key:
+            raise RuntimeError(
+                "Deepgram API key is not configured; batch transcription unavailable"
+            )
+
+        api_model = (model or self.model or "nova-2").strip() or "nova-2"
+        safe_language = (language or "vi").strip() or "vi"
+
+        logger.info(
+            f"BATCH_STT_START file={file_path} model={api_model} language={safe_language}"
+        )
+
+        try:
+            with open(file_path, "rb") as f:
+                audio_data = f.read()
+        except FileNotFoundError:
+            logger.error(f"Audio file not found: {file_path}")
+            raise RuntimeError(f"Audio file not found: {file_path}")
+        except Exception as e:
+            logger.error(f"Failed to read audio file {file_path}: {repr(e)}")
+            raise
+
+        # Deepgram prerecorded endpoint
+        url = f"{self.base_url}?model={api_model}&language={safe_language}&smart_format=true&utterances=true"
+
+        headers = {
+            "Authorization": f"Token {self.api_key}",
+            "Content-Type": "audio/mpeg",  # Deepgram auto-detects format
+        }
+
+        try:
+            with httpx.Client(timeout=self.timeout_seconds) as client:
+                response = client.post(url, content=audio_data, headers=headers)
+                response.raise_for_status()
+                result = response.json()
+        except Exception as e:
+            logger.error(f"Deepgram batch request failed: {repr(e)}")
+            raise RuntimeError(f"Deepgram batch transcription failed: {repr(e)}")
+
+        # Parse Deepgram response
+        transcript_text = ""
+        segments = []
+
+        try:
+            results = result.get("results", {})
+            channels = results.get("channels", [])
+
+            if not channels:
+                logger.warning(f"No channels in Deepgram response for {file_path}")
+                return {
+                    "transcript": "",
+                    "segments": [],
+                    "raw_response": result,
+                }
+
+            # Extract transcript and timing from first channel
+            channel = channels[0]
+            alternatives = channel.get("alternatives", [])
+
+            if not alternatives:
+                logger.warning(f"No alternatives in Deepgram response for {file_path}")
+                return {
+                    "transcript": "",
+                    "segments": [],
+                    "raw_response": result,
+                }
+
+            alternative = alternatives[0]
+            transcript_text = alternative.get("transcript", "").strip()
+
+            # Extract utterance-level timing for segment alignment
+            utterances = results.get("utterances", [])
+
+            if utterances:
+                # Use utterances for cleaner segmentation
+                for utterance in utterances:
+                    start = utterance.get("start", 0.0)
+                    end = utterance.get("end", 0.0)
+                    text = utterance.get("transcript", "").strip()
+                    if text:
+                        segments.append(
+                            {
+                                "start": float(start),
+                                "end": float(end),
+                                "text": text,
+                            }
+                        )
+            else:
+                # Fallback: create single segment
+                if transcript_text:
+                    segments.append(
+                        {
+                            "start": 0.0,
+                            "end": float(alternative.get("duration", 0.0) or 0.0),
+                            "text": transcript_text,
+                        }
+                    )
+
+        except Exception as e:
+            logger.error(f"Failed to parse Deepgram response: {repr(e)}")
+            raise RuntimeError(f"Failed to parse Deepgram response: {repr(e)}")
+
+        logger.info(
+            f"BATCH_STT_COMPLETE file={file_path} segments={len(segments)} text_len={len(transcript_text)}"
+        )
+
+        return {
+            "transcript": transcript_text,
+            "segments": segments,
+            "raw_response": result,
+        }
