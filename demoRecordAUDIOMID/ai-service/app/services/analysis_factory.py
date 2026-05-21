@@ -31,6 +31,8 @@ def build_analysis_analyzer(settings):
             api_key=settings.gemini_api_key,
             analysis_model=settings.gemini_analysis_model,
             summary_model=settings.gemini_summary_model,
+            gemini_max_single_request_chars=settings.gemini_max_single_request_chars,
+            gemini_request_delay_seconds=settings.gemini_request_delay_seconds,
             timeout_seconds=settings.ollama_timeout_seconds,
         )
 

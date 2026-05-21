@@ -11,6 +11,8 @@ class GeminiAnalyzer(AIAnalyzer):
         api_key: str,
         analysis_model: str = "gemini-2.5-flash",
         summary_model: str = "gemini-2.5-flash",
+        gemini_max_single_request_chars: int = 50000,
+        gemini_request_delay_seconds: float = 15.0,
         timeout_seconds: int = 300,
     ):
         super().__init__(
@@ -18,6 +20,8 @@ class GeminiAnalyzer(AIAnalyzer):
             model=analysis_model,
             provider="gemini",
             summary_model=summary_model,
+            gemini_max_single_request_chars=gemini_max_single_request_chars,
+            gemini_request_delay_seconds=gemini_request_delay_seconds,
             timeout_seconds=timeout_seconds,
         )
 

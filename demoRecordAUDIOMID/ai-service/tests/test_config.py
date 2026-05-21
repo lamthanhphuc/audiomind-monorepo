@@ -18,6 +18,8 @@ def test_provider_defaults_load_for_mvp():
     assert settings.gemini_api_key == ""
     assert settings.gemini_analysis_model == "gemini-2.5-flash"
     assert settings.gemini_summary_model == "gemini-2.5-flash"
+    assert settings.gemini_max_single_request_chars == 50000
+    assert settings.gemini_request_delay_seconds == 15.0
     assert settings.deepgram_realtime_model == "nova-2"
     assert settings.deepgram_batch_model == "nova-2"
     assert settings.deepgram_language == "vi"
@@ -40,6 +42,8 @@ def test_gemini_provider_values_load_from_env(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "test-gemini-key")
     monkeypatch.setenv("GEMINI_ANALYSIS_MODEL", "gemini-2.5-flash")
     monkeypatch.setenv("GEMINI_SUMMARY_MODEL", "gemini-2.5-flash")
+    monkeypatch.setenv("GEMINI_MAX_SINGLE_REQUEST_CHARS", "30000")
+    monkeypatch.setenv("GEMINI_REQUEST_DELAY_SECONDS", "20")
 
     settings = Settings(_env_file=None)
 
@@ -47,3 +51,5 @@ def test_gemini_provider_values_load_from_env(monkeypatch):
     assert settings.gemini_api_key == "test-gemini-key"
     assert settings.gemini_analysis_model == "gemini-2.5-flash"
     assert settings.gemini_summary_model == "gemini-2.5-flash"
+    assert settings.gemini_max_single_request_chars == 30000
+    assert settings.gemini_request_delay_seconds == 20.0

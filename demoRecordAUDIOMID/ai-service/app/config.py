@@ -31,6 +31,8 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""
     gemini_analysis_model: str = "gemini-2.5-flash"
     gemini_summary_model: str = "gemini-2.5-flash"
+    gemini_max_single_request_chars: int = 50000
+    gemini_request_delay_seconds: float = 15.0
 
     # Deepgram
     deepgram_api_key: str = ""
