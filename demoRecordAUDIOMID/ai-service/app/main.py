@@ -1,3 +1,13 @@
+import asyncio
+import sys
+import threading
+import time
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
+from pathlib import Path
+from uuid import uuid4
+
+import numpy as np
 from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -7,58 +17,49 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 from starlette.requests import Request
 from starlette.responses import Response
-from dataclasses import dataclass
-import asyncio
-import numpy as np
-import threading
-import time
-from contextlib import asynccontextmanager
-from pathlib import Path
-from uuid import uuid4
-import sys
 
+from app.config import get_runtime_device, get_settings
 from app.database import (
-    get_db,
-    engine,
     Base,
-    wait_for_database,
+    engine,
     ensure_bigint_meeting_id,
+    get_db,
+    wait_for_database,
 )
-from app.schemas import (
-    ProcessRequest,
-    ProcessResponse,
-    TranscriptResponse,
-    AnalysisResponse,
-    TranscriptSegment,
-    ActionItem,
-    SttStreamResponse,
-)
-from app.config import get_settings, get_runtime_device
-from app.metrics import stt_metrics
 from app.ffmpeg_utils import ensure_ffmpeg_on_path
 from app.job_status_store import (
-    cleanup_expired_job_statuses,
     _get_client,
+    cleanup_expired_job_statuses,
     get_job_status,
     load_job_statuses,
     set_job_status,
 )
-from app.tasks import process_meeting
+from app.metrics import stt_metrics
+from app.schemas import (
+    ActionItem,
+    AnalysisResponse,
+    ProcessRequest,
+    ProcessResponse,
+    SttStreamResponse,
+    TranscriptResponse,
+    TranscriptSegment,
+)
 from app.services.glossary_repository import GlossaryRepository
 from app.services.glossary_service import GlossaryService
+from app.services.grpc_stt_service import AiStreamServicer, create_grpc_server
 from app.services.stt_adapter import (
     DeepgramSTTAdapter,
     is_terminal_error,
     is_transient_error,
 )
-from app.services.stt_session_actor import MeetingSessionActor, MeetingSessionState
-from app.services.stt_persistence import TranscriptPersistenceRepository
-from app.services.grpc_stt_service import AiStreamServicer, create_grpc_server
 from app.services.stt_ownership import (
     SttLease,
     SttOwnershipLost,
     get_stt_ownership_manager,
 )
+from app.services.stt_persistence import TranscriptPersistenceRepository
+from app.services.stt_session_actor import MeetingSessionActor, MeetingSessionState
+from app.tasks import process_meeting
 
 try:
     from app.pipeline import ProcessingPipeline
@@ -531,6 +532,8 @@ def _get_stt_adapter() -> DeepgramSTTAdapter | None:
         timeout_seconds=settings.deepgram_timeout_seconds,
         simplify_streaming_url=settings.deepgram_simplify_streaming_url,
         debug_raw_messages=settings.deepgram_debug_raw_messages,
+        enable_speaker_diarization=settings.enable_speaker_diarization,
+        deepgram_diarize=settings.deepgram_diarize,
     )
     return _stt_adapter
 

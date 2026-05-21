@@ -1,6 +1,7 @@
-from pydantic import BaseModel
-from typing import Dict, List, Optional
 from datetime import datetime
+from typing import Dict, List, Optional
+
+from pydantic import BaseModel
 
 
 class TranscriptSegment(BaseModel):
@@ -102,6 +103,7 @@ class SttStreamResponse(BaseModel):
     transcript: str
     is_final: bool
     confidence: Optional[float] = None
+    speaker: Optional[str] = None
     segment_id: Optional[str] = None
     start_time: Optional[float] = None
     end_time: Optional[float] = None

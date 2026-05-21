@@ -11,8 +11,8 @@ from uuid import uuid4
 from loguru import logger
 from sqlalchemy.exc import IntegrityError
 
-from app.database import SessionLocal
 from app.config import get_settings
+from app.database import SessionLocal
 from app.metrics import stt_metrics
 from app.schemas import SttStreamResponse
 from app.services.stt_adapter import (
@@ -21,15 +21,15 @@ from app.services.stt_adapter import (
     is_terminal_error,
     is_transient_error,
 )
-from app.services.stt_persistence import (
-    TranscriptFragmentInput,
-    TranscriptPersistenceRepository,
-    build_fragment_dedupe_key,
-)
 from app.services.stt_ownership import (
     SttLease,
     SttOwnershipLost,
     SttOwnershipManager,
+)
+from app.services.stt_persistence import (
+    TranscriptFragmentInput,
+    TranscriptPersistenceRepository,
+    build_fragment_dedupe_key,
 )
 
 
@@ -1428,6 +1428,7 @@ class MeetingSessionActor:
                 transcript=text,
                 is_final=bool(fragment.is_final),
                 confidence=fragment.confidence,
+                speaker=fragment.speaker,
             )
 
         if last_response is None:
