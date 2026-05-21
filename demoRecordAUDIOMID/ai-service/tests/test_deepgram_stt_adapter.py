@@ -4,7 +4,6 @@ from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 
 import pytest
-
 from app.services.stt_adapter import (
     DeepgramSTTAdapter,
     STTStreamAdapter,
@@ -116,6 +115,7 @@ def test_deepgram_adapter_matches_protocol_and_transcribes(monkeypatch):
     assert connection["url"].startswith("wss://api.deepgram.com/v1/listen")
     assert "language=vi" in connection["url"]
     assert "model=nova-2" in connection["url"]
+    assert "diarize=true" not in connection["url"]
     assert connection["extra_headers"] == [("Authorization", "Token dg-test-key")]
     assert connection["websocket"].sent_messages == [b"abc", b"def"]
 
@@ -333,6 +333,93 @@ def test_deepgram_simplified_streaming_url_disables_optional_params():
     assert query["container"] == ["webm"]
     assert "utterances" not in query
     assert "smart_format" not in query
+    assert "diarize" not in query
+
+
+def test_deepgram_realtime_diarization_url_and_final_speaker_parsing(monkeypatch):
+    from app.services import stt_adapter as stt_module
+
+    websocket_messages = [
+        json.dumps(
+            {
+                "channel": {
+                    "alternatives": [{"transcript": "xin chao", "confidence": 0.9}],
+                },
+                "is_final": False,
+            }
+        ),
+        json.dumps(
+            {
+                "channel": {
+                    "alternatives": [
+                        {
+                            "transcript": "xin chao audiomind",
+                            "confidence": 0.97,
+                            "speaker": 1,
+                        }
+                    ]
+                },
+                "is_final": True,
+            }
+        ),
+    ]
+    monkeypatch.setattr(
+        stt_module, "websockets", _FakeWebSocketModule(websocket_messages)
+    )
+
+    adapter = DeepgramSTTAdapter(
+        api_key="dg-test-key",
+        model="nova-2",
+        base_url="https://api.deepgram.com/v1/listen",
+        timeout_seconds=12,
+        enable_speaker_diarization=True,
+        deepgram_diarize=True,
+    )
+
+    async def run_flow():
+        session_id = await adapter.open_session(meeting_id=303, language="vi")
+        await adapter.push_audio_chunk(session_id, b"abc", 10)
+        await adapter.push_audio_chunk(session_id, b"def", 20)
+        await adapter.close_session(session_id)
+        return session_id
+
+    session_id = asyncio.run(run_flow())
+
+    assert adapter.get_transcript(session_id) == "xin chao audiomind"
+    connection = _FakeWebSocketModule.last_connection
+    assert "diarize=true" in connection["url"]
+
+    final_event = adapter._parse_transcript_message(
+        {
+            "channel": {
+                "alternatives": [
+                    {
+                        "transcript": "xin chao audiomind",
+                        "confidence": 0.97,
+                        "speaker": 1,
+                    }
+                ]
+            },
+            "is_final": True,
+        },
+        ts_ms=20,
+    )
+    interim_event = adapter._parse_transcript_message(
+        {
+            "channel": {
+                "alternatives": [
+                    {"transcript": "xin chao", "confidence": 0.9, "speaker": 0}
+                ]
+            },
+            "is_final": False,
+        },
+        ts_ms=10,
+    )
+
+    assert final_event is not None
+    assert final_event["speaker"] == "SPEAKER_2"
+    assert interim_event is not None
+    assert interim_event["speaker"] is None
 
 
 def test_deepgram_raw_message_preview_is_debug_gated(monkeypatch):

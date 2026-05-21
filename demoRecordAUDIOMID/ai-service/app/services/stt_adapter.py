@@ -29,6 +29,34 @@ _TERMINAL_ERROR_NAME_HINTS = (
 )
 
 
+def normalize_deepgram_speaker_label(
+    speaker: Any, default: str | None = None
+) -> str | None:
+    if speaker is None or isinstance(speaker, bool):
+        return default
+
+    if isinstance(speaker, (int, float)):
+        numeric_value = int(float(speaker))
+        if numeric_value >= 0:
+            return f"SPEAKER_{numeric_value + 1}"
+
+    raw = str(speaker).strip()
+    if not raw:
+        return default
+
+    normalized = raw.upper().replace(" ", "_")
+    if normalized.startswith("SPEAKER_"):
+        suffix = normalized.split("_", 1)[1]
+        if suffix.isdigit():
+            return f"SPEAKER_{int(suffix)}"
+        return normalized
+
+    if raw.isdigit():
+        return f"SPEAKER_{int(raw) + 1}"
+
+    return raw
+
+
 def _iter_exception_chain(exc: BaseException):
     seen: set[int] = set()
     current: BaseException | None = exc
@@ -158,6 +186,8 @@ class DeepgramSTTAdapter:
         sample_rate: int = 16000,
         simplify_streaming_url: bool = False,
         debug_raw_messages: bool = False,
+        enable_speaker_diarization: bool = False,
+        deepgram_diarize: bool = False,
     ) -> None:
         self.api_key = (api_key or "").strip()
         self.model = (model or "nova-2").strip() or "nova-2"
@@ -166,6 +196,8 @@ class DeepgramSTTAdapter:
         self.sample_rate = sample_rate
         self.simplify_streaming_url = bool(simplify_streaming_url)
         self.debug_raw_messages = bool(debug_raw_messages)
+        self.enable_speaker_diarization = bool(enable_speaker_diarization)
+        self.deepgram_diarize = bool(deepgram_diarize)
         self._sessions: dict[str, _SessionBuffer] = {}
         self._closed_responses: OrderedDict[str, dict[str, Any]] = OrderedDict()
         # Don't force an encoding; frontend sends webm/opus and Deepgram will infer from container
@@ -186,6 +218,371 @@ class DeepgramSTTAdapter:
         self._sessions[session_id] = session
         session.websocket = await self._connect_session(session, session_id)
         return session_id
+
+    def _speaker_diarization_enabled(self) -> bool:
+        return self.enable_speaker_diarization and self.deepgram_diarize
+
+    def _extract_channels(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
+        channels: list[dict[str, Any]] = []
+
+        results = payload.get("results")
+        if isinstance(results, dict):
+            channels = [
+                channel
+                for channel in results.get("channels") or []
+                if isinstance(channel, dict)
+            ]
+
+        if not channels:
+            channel = payload.get("channel")
+            if isinstance(channel, dict):
+                channels = [channel]
+
+        return channels
+
+    def _speaker_from_words(self, words: Any) -> str | None:
+        if not isinstance(words, list):
+            return None
+
+        for word in words:
+            if not isinstance(word, dict):
+                continue
+            speaker = normalize_deepgram_speaker_label(word.get("speaker"))
+            if speaker:
+                return speaker
+
+        return None
+
+    def _extract_speaker(self, payload: dict[str, Any]) -> str | None:
+        for channel in self._extract_channels(payload):
+            alternatives = channel.get("alternatives") or []
+            if not alternatives:
+                continue
+
+            alternative = alternatives[0] or {}
+            speaker = normalize_deepgram_speaker_label(alternative.get("speaker"))
+            if speaker:
+                return speaker
+
+            utterances = (
+                alternative.get("utterances") or payload.get("utterances") or []
+            )
+            if isinstance(utterances, list):
+                for utterance in utterances:
+                    if not isinstance(utterance, dict):
+                        continue
+                    speaker = normalize_deepgram_speaker_label(utterance.get("speaker"))
+                    if speaker:
+                        return speaker
+
+            speaker = self._speaker_from_words(alternative.get("words") or [])
+            if speaker:
+                return speaker
+
+        return None
+
+    def _build_segments_from_words(
+        self,
+        words: list[dict[str, Any]],
+        *,
+        fallback_text: str,
+        fallback_start: float | None,
+        fallback_end: float | None,
+        source: str,
+        default_speaker: str | None = None,
+    ) -> tuple[list[dict[str, Any]], bool]:
+        segments: list[dict[str, Any]] = []
+        current_words: list[dict[str, Any]] = []
+        current_speaker: str | None = None
+        speaker_data_found = False
+
+        def flush_segment() -> None:
+            nonlocal current_words, current_speaker
+            if not current_words:
+                return
+
+            text = " ".join(
+                str(item.get("word") or "").strip() for item in current_words
+            ).strip()
+            if not text:
+                current_words = []
+                return
+
+            start_value = self._first_float_value(
+                current_words[0].get("start"),
+                current_words[0].get("start_time"),
+                fallback_start,
+            )
+            end_value = self._first_float_value(
+                current_words[-1].get("end"),
+                current_words[-1].get("end_time"),
+                fallback_end,
+                start_value,
+            )
+            if start_value is None:
+                start_value = 0.0
+            if end_value is None:
+                end_value = start_value
+
+            confidences = [
+                float(item["confidence"])
+                for item in current_words
+                if isinstance(item.get("confidence"), (int, float))
+            ]
+            confidence = sum(confidences) / len(confidences) if confidences else None
+            speaker_label = current_speaker or default_speaker or "SPEAKER_1"
+            segments.append(
+                {
+                    "speaker": speaker_label,
+                    "start": float(start_value),
+                    "end": float(max(start_value, end_value)),
+                    "text": text,
+                    "confidence": confidence,
+                    "words": list(current_words),
+                    "source": source,
+                }
+            )
+            current_words = []
+
+        for word in words:
+            if not isinstance(word, dict):
+                continue
+
+            word_text = str(word.get("word") or "").strip()
+            if not word_text:
+                continue
+
+            speaker = normalize_deepgram_speaker_label(word.get("speaker"))
+            if speaker is not None:
+                speaker_data_found = True
+
+            if current_words and speaker is not None and speaker != current_speaker:
+                flush_segment()
+
+            if current_speaker is None:
+                current_speaker = speaker or default_speaker or "SPEAKER_1"
+            elif speaker is not None:
+                current_speaker = speaker
+
+            current_words.append(word)
+
+        flush_segment()
+
+        if not segments and fallback_text:
+            segments.append(
+                {
+                    "speaker": default_speaker or "SPEAKER_1",
+                    "start": float(fallback_start or 0.0),
+                    "end": float(fallback_end or fallback_start or 0.0),
+                    "text": fallback_text,
+                    "confidence": None,
+                    "source": source,
+                }
+            )
+
+        return segments, speaker_data_found
+
+    def _build_batch_segments(
+        self,
+        result: dict[str, Any],
+        transcript_text: str,
+        *,
+        diarization_enabled: bool,
+    ) -> tuple[list[dict[str, Any]], bool]:
+        results = result.get("results", {})
+        utterances = results.get("utterances", []) if isinstance(results, dict) else []
+        channels = self._extract_channels(result)
+        speaker_data_found = False
+        segments: list[dict[str, Any]] = []
+
+        if not diarization_enabled:
+            if utterances and isinstance(utterances, list):
+                for utterance in utterances:
+                    if not isinstance(utterance, dict):
+                        continue
+
+                    text = str(
+                        utterance.get("transcript") or utterance.get("text") or ""
+                    ).strip()
+                    if not text:
+                        continue
+
+                    start = self._first_float_value(
+                        utterance.get("start"), utterance.get("start_time")
+                    )
+                    end = self._first_float_value(
+                        utterance.get("end"), utterance.get("end_time"), start
+                    )
+                    if start is None:
+                        start = 0.0
+                    if end is None:
+                        end = start
+
+                    segments.append(
+                        {
+                            "start": float(start),
+                            "end": float(max(start, end)),
+                            "text": text,
+                        }
+                    )
+            else:
+                if transcript_text:
+                    duration = None
+                    if channels:
+                        alternatives = channels[0].get("alternatives") or []
+                        if alternatives:
+                            alternative = alternatives[0] or {}
+                            duration = self._first_float_value(
+                                alternative.get("duration"),
+                                alternative.get("end"),
+                                alternative.get("end_time"),
+                            )
+                    segments.append(
+                        {
+                            "start": 0.0,
+                            "end": float(duration or 0.0),
+                            "text": transcript_text,
+                        }
+                    )
+            return segments, False
+
+        if utterances and isinstance(utterances, list):
+            for utterance in utterances:
+                if not isinstance(utterance, dict):
+                    continue
+
+                text = str(
+                    utterance.get("transcript") or utterance.get("text") or ""
+                ).strip()
+                if not text:
+                    continue
+
+                start = self._first_float_value(
+                    utterance.get("start"), utterance.get("start_time")
+                )
+                end = self._first_float_value(
+                    utterance.get("end"), utterance.get("end_time"), start
+                )
+                if start is None:
+                    start = 0.0
+                if end is None:
+                    end = start
+
+                speaker = normalize_deepgram_speaker_label(utterance.get("speaker"))
+                words = utterance.get("words") or []
+                if speaker is None:
+                    speaker = self._speaker_from_words(words)
+                if speaker is not None:
+                    speaker_data_found = True
+
+                if speaker is None and isinstance(words, list) and words:
+                    word_segments, word_speaker_data_found = (
+                        self._build_segments_from_words(
+                            words,
+                            fallback_text=text,
+                            fallback_start=start,
+                            fallback_end=end,
+                            source="deepgram_batch",
+                        )
+                    )
+                    segments.extend(word_segments)
+                    speaker_data_found = speaker_data_found or word_speaker_data_found
+                    continue
+
+                segments.append(
+                    {
+                        "speaker": speaker or "SPEAKER_1",
+                        "start": float(start),
+                        "end": float(max(start, end)),
+                        "text": text,
+                        "confidence": self._first_float_value(
+                            utterance.get("confidence")
+                        ),
+                        "words": words if isinstance(words, list) else [],
+                        "source": "deepgram_batch",
+                    }
+                )
+
+            if not speaker_data_found and channels:
+                channel = channels[0]
+                alternatives = channel.get("alternatives") or []
+                if alternatives:
+                    alternative = alternatives[0] or {}
+                    words = alternative.get("words") or []
+                    if isinstance(words, list) and words:
+                        word_segments, word_speaker_data_found = (
+                            self._build_segments_from_words(
+                                words,
+                                fallback_text=transcript_text,
+                                fallback_start=self._first_float_value(
+                                    alternative.get("start"),
+                                    alternative.get("start_time"),
+                                ),
+                                fallback_end=self._first_float_value(
+                                    alternative.get("end"),
+                                    alternative.get("end_time"),
+                                    alternative.get("duration"),
+                                ),
+                                source="deepgram_batch",
+                            )
+                        )
+                        if word_segments:
+                            segments = word_segments
+                            speaker_data_found = word_speaker_data_found
+
+        if not segments and channels:
+            channel = channels[0]
+            alternatives = channel.get("alternatives") or []
+            if alternatives:
+                alternative = alternatives[0] or {}
+                words = alternative.get("words") or []
+                if isinstance(words, list) and words:
+                    word_segments, word_speaker_data_found = (
+                        self._build_segments_from_words(
+                            words,
+                            fallback_text=transcript_text,
+                            fallback_start=self._first_float_value(
+                                alternative.get("start"), alternative.get("start_time")
+                            ),
+                            fallback_end=self._first_float_value(
+                                alternative.get("end"),
+                                alternative.get("end_time"),
+                                alternative.get("duration"),
+                            ),
+                            source="deepgram_batch",
+                        )
+                    )
+                    segments.extend(word_segments)
+                    speaker_data_found = speaker_data_found or word_speaker_data_found
+
+        if not segments and transcript_text:
+            alternative_start = None
+            alternative_end = None
+            if channels:
+                alternatives = channels[0].get("alternatives") or []
+                if alternatives:
+                    alternative = alternatives[0] or {}
+                    alternative_start = self._first_float_value(
+                        alternative.get("start"), alternative.get("start_time")
+                    )
+                    alternative_end = self._first_float_value(
+                        alternative.get("end"),
+                        alternative.get("end_time"),
+                        alternative.get("duration"),
+                    )
+
+            segments.append(
+                {
+                    "speaker": "SPEAKER_1",
+                    "start": float(alternative_start or 0.0),
+                    "end": float(alternative_end or alternative_start or 0.0),
+                    "text": transcript_text,
+                    "confidence": None,
+                    "source": "deepgram_batch",
+                }
+            )
+
+        return segments, speaker_data_found
 
     async def push_audio_chunk(
         self,
@@ -355,6 +752,10 @@ class DeepgramSTTAdapter:
         connection_url = self._build_websocket_url(session.language)
         headers = [("Authorization", f"Token {self.api_key}")]
         safe_url = connection_url
+        if self._speaker_diarization_enabled():
+            logger.info("DIARIZATION_ENABLED provider=deepgram mode=realtime")
+        else:
+            logger.info("DIARIZATION_SKIPPED reason=disabled mode=realtime")
         logger.info(
             "DG CONNECT session_id={} meeting_id={} language={} url={}",
             session_id,
@@ -479,6 +880,8 @@ class DeepgramSTTAdapter:
                     "utterances": "true",
                 }
             )
+        if self._speaker_diarization_enabled():
+            query_pairs["diarize"] = "true"
         query = urlencode(query_pairs)
         return urlunparse(parsed._replace(query=query))
 
@@ -507,6 +910,8 @@ class DeepgramSTTAdapter:
         transcript, confidence = self._extract_transcript(payload)
         start_time, end_time = self._extract_timing(payload)
         self._record_event_count(session, payload)
+        speaker = self._extract_speaker(payload)
+        is_final = bool(payload.get("is_final") or payload.get("speech_final"))
 
         if self._is_results_payload(payload):
             logger.info(
@@ -556,7 +961,6 @@ class DeepgramSTTAdapter:
         if not transcript:
             return None
 
-        is_final = bool(payload.get("is_final") or payload.get("speech_final"))
         segment_id = self._resolve_segment_id(
             payload, session, start_time, end_time, ts_ms
         )
@@ -573,6 +977,20 @@ class DeepgramSTTAdapter:
         except Exception:
             pass
 
+        if self._speaker_diarization_enabled():
+            if is_final and speaker:
+                logger.info(
+                    "DIARIZATION_REALTIME_FINAL speaker={} text_len={}",
+                    speaker,
+                    len(transcript),
+                )
+            elif not is_final:
+                logger.info("DIARIZATION_SKIPPED reason=interim mode=realtime")
+            elif not speaker:
+                logger.info(
+                    "DIARIZATION_SKIPPED reason=missing_speaker_data mode=realtime"
+                )
+
         return {
             "text": transcript,
             "confidence": confidence,
@@ -581,6 +999,7 @@ class DeepgramSTTAdapter:
             "segment_id": segment_id,
             "start_time": start_time,
             "end_time": end_time,
+            "speaker": speaker if is_final else None,
             "raw": payload,
         }
 
@@ -839,6 +1258,12 @@ class DeepgramSTTAdapter:
 
         api_model = (model or self.model or "nova-2").strip() or "nova-2"
         safe_language = (language or "vi").strip() or "vi"
+        diarization_enabled = self._speaker_diarization_enabled()
+
+        if diarization_enabled:
+            logger.info("DIARIZATION_ENABLED provider=deepgram mode=batch")
+        else:
+            logger.info("DIARIZATION_SKIPPED reason=disabled mode=batch")
 
         logger.info(
             f"BATCH_STT_START file={file_path} model={api_model} language={safe_language}"
@@ -855,7 +1280,15 @@ class DeepgramSTTAdapter:
             raise
 
         # Deepgram prerecorded endpoint
-        url = f"{self.base_url}?model={api_model}&language={safe_language}&smart_format=true&utterances=true"
+        query_pairs = {
+            "model": api_model,
+            "language": safe_language,
+            "smart_format": "true",
+            "utterances": "true",
+        }
+        if diarization_enabled:
+            query_pairs["diarize"] = "true"
+        url = f"{self.base_url}?{urlencode(query_pairs)}"
 
         headers = {
             "Authorization": f"Token {self.api_key}",
@@ -877,7 +1310,7 @@ class DeepgramSTTAdapter:
 
         try:
             results = result.get("results", {})
-            channels = results.get("channels", [])
+            channels = results.get("channels", []) if isinstance(results, dict) else []
 
             if not channels:
                 logger.warning(f"No channels in Deepgram response for {file_path}")
@@ -902,33 +1335,78 @@ class DeepgramSTTAdapter:
             alternative = alternatives[0]
             transcript_text = alternative.get("transcript", "").strip()
 
-            # Extract utterance-level timing for segment alignment
-            utterances = results.get("utterances", [])
-
-            if utterances:
-                # Use utterances for cleaner segmentation
-                for utterance in utterances:
-                    start = utterance.get("start", 0.0)
-                    end = utterance.get("end", 0.0)
-                    text = utterance.get("transcript", "").strip()
-                    if text:
-                        segments.append(
-                            {
-                                "start": float(start),
-                                "end": float(end),
-                                "text": text,
-                            }
+            utterance_speaker_distribution: dict[str, int] = {}
+            word_speaker_distribution: dict[str, int] = {}
+            if diarization_enabled and isinstance(results, dict):
+                utterances = results.get("utterances") or []
+                if isinstance(utterances, list):
+                    for utterance in utterances:
+                        if not isinstance(utterance, dict):
+                            continue
+                        speaker = normalize_deepgram_speaker_label(
+                            utterance.get("speaker")
                         )
-            else:
-                # Fallback: create single segment
-                if transcript_text:
-                    segments.append(
-                        {
-                            "start": 0.0,
-                            "end": float(alternative.get("duration", 0.0) or 0.0),
-                            "text": transcript_text,
-                        }
-                    )
+                        if speaker:
+                            utterance_speaker_distribution[speaker] = (
+                                utterance_speaker_distribution.get(speaker, 0) + 1
+                            )
+                        words = utterance.get("words") or []
+                        if isinstance(words, list):
+                            for word in words:
+                                if not isinstance(word, dict):
+                                    continue
+                                word_speaker = normalize_deepgram_speaker_label(
+                                    word.get("speaker")
+                                )
+                                if word_speaker:
+                                    word_speaker_distribution[word_speaker] = (
+                                        word_speaker_distribution.get(word_speaker, 0)
+                                        + 1
+                                    )
+                if channels:
+                    channel_words = (
+                        (channels[0].get("alternatives") or [{}])[0] or {}
+                    ).get("words") or []
+                    if isinstance(channel_words, list):
+                        for word in channel_words:
+                            if not isinstance(word, dict):
+                                continue
+                            word_speaker = normalize_deepgram_speaker_label(
+                                word.get("speaker")
+                            )
+                            if word_speaker:
+                                word_speaker_distribution[word_speaker] = (
+                                    word_speaker_distribution.get(word_speaker, 0) + 1
+                                )
+                logger.info(
+                    "DIARIZATION_BATCH_SPEAKER_DISTRIBUTION utterance={} word={} unique_count={}",
+                    utterance_speaker_distribution,
+                    word_speaker_distribution,
+                    len(
+                        set(utterance_speaker_distribution.keys())
+                        | set(word_speaker_distribution.keys())
+                    ),
+                )
+
+            segments, speaker_data_found = self._build_batch_segments(
+                result,
+                transcript_text,
+                diarization_enabled=diarization_enabled,
+            )
+
+            if diarization_enabled and speaker_data_found:
+                speaker_labels = {
+                    str(segment.get("speaker") or "SPEAKER_1") for segment in segments
+                }
+                logger.info(
+                    "DIARIZATION_BATCH_COMPLETE speakers={} segments={}",
+                    len(speaker_labels),
+                    len(segments),
+                )
+            elif diarization_enabled:
+                logger.info(
+                    "DIARIZATION_SKIPPED reason=missing_speaker_data mode=batch"
+                )
 
         except Exception as e:
             logger.error(f"Failed to parse Deepgram response: {repr(e)}")

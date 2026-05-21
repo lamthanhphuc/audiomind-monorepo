@@ -98,6 +98,8 @@ def test_batch_deepgram_transcribe_success(monkeypatch):
         model="nova-2",
         base_url="https://api.deepgram.com/v1/listen",
         timeout_seconds=30,
+        enable_speaker_diarization=True,
+        deepgram_diarize=True,
     )
 
     # Create temp audio file
@@ -117,6 +119,153 @@ def test_batch_deepgram_transcribe_success(monkeypatch):
         assert result["segments"][0]["text"] == "xin chào từ Deepgram"
         assert result["segments"][0]["start"] == 0.0
         assert result["segments"][0]["end"] == 1.2
+        assert result["segments"][0]["speaker"] == "SPEAKER_1"
+    finally:
+        Path(temp_audio_path).unlink()
+
+
+def test_batch_deepgram_transcribe_prefers_utterance_speakers(monkeypatch):
+    """Test batch Deepgram uses utterance-level speaker labels when present."""
+
+    response_data = {
+        "results": {
+            "channels": [
+                {
+                    "alternatives": [
+                        {
+                            "transcript": "xin chào từ Deepgram",
+                            "confidence": 0.95,
+                            "duration": 2.4,
+                        }
+                    ]
+                }
+            ],
+            "utterances": [
+                {
+                    "transcript": "xin chào",
+                    "start": 0.0,
+                    "end": 1.1,
+                    "speaker": 0,
+                    "confidence": 0.96,
+                },
+                {
+                    "transcript": "từ Deepgram",
+                    "start": 1.1,
+                    "end": 2.4,
+                    "speaker": 1,
+                    "confidence": 0.94,
+                },
+            ],
+        }
+    }
+
+    monkeypatch.setattr(
+        "app.services.stt_adapter.httpx.Client",
+        lambda **kwargs: MockHTTPClient(response_data=response_data, **kwargs),
+    )
+
+    adapter = DeepgramSTTAdapter(
+        api_key="test-deepgram-key",
+        model="nova-2",
+        base_url="https://api.deepgram.com/v1/listen",
+        timeout_seconds=30,
+        enable_speaker_diarization=True,
+        deepgram_diarize=True,
+    )
+
+    with tempfile.NamedTemporaryFile(suffix=".m4a", delete=False) as f:
+        temp_audio_path = f.name
+        f.write(b"fake audio data")
+
+    try:
+        result = adapter.batch_transcribe_file(
+            file_path=temp_audio_path,
+            language="vi",
+            model="nova-2",
+        )
+
+        assert result["segments"][0]["speaker"] == "SPEAKER_1"
+        assert result["segments"][1]["speaker"] == "SPEAKER_2"
+        assert result["segments"][0]["text"] == "xin chào"
+        assert result["segments"][1]["text"] == "từ Deepgram"
+    finally:
+        Path(temp_audio_path).unlink()
+
+
+def test_batch_deepgram_transcribe_uses_word_speakers_when_utterances_missing(
+    monkeypatch,
+):
+    """Test batch Deepgram falls back to word speaker labels when utterances are not labeled."""
+
+    response_data = {
+        "results": {
+            "channels": [
+                {
+                    "alternatives": [
+                        {
+                            "transcript": "xin chào từ Deepgram",
+                            "confidence": 0.95,
+                            "duration": 2.4,
+                            "words": [
+                                {"word": "xin", "start": 0.0, "end": 0.2, "speaker": 0},
+                                {
+                                    "word": "chào",
+                                    "start": 0.2,
+                                    "end": 0.5,
+                                    "speaker": 0,
+                                },
+                                {"word": "từ", "start": 1.1, "end": 1.3, "speaker": 1},
+                                {
+                                    "word": "Deepgram",
+                                    "start": 1.3,
+                                    "end": 1.8,
+                                    "speaker": 1,
+                                },
+                            ],
+                        }
+                    ]
+                }
+            ],
+            "utterances": [
+                {
+                    "transcript": "xin chào từ Deepgram",
+                    "start": 0.0,
+                    "end": 2.4,
+                    "confidence": 0.95,
+                }
+            ],
+        }
+    }
+
+    monkeypatch.setattr(
+        "app.services.stt_adapter.httpx.Client",
+        lambda **kwargs: MockHTTPClient(response_data=response_data, **kwargs),
+    )
+
+    adapter = DeepgramSTTAdapter(
+        api_key="test-deepgram-key",
+        model="nova-2",
+        base_url="https://api.deepgram.com/v1/listen",
+        timeout_seconds=30,
+        enable_speaker_diarization=True,
+        deepgram_diarize=True,
+    )
+
+    with tempfile.NamedTemporaryFile(suffix=".m4a", delete=False) as f:
+        temp_audio_path = f.name
+        f.write(b"fake audio data")
+
+    try:
+        result = adapter.batch_transcribe_file(
+            file_path=temp_audio_path,
+            language="vi",
+            model="nova-2",
+        )
+
+        assert [segment["speaker"] for segment in result["segments"]] == [
+            "SPEAKER_1",
+            "SPEAKER_2",
+        ]
     finally:
         Path(temp_audio_path).unlink()
 
@@ -205,6 +354,8 @@ def test_batch_deepgram_url_construction(monkeypatch):
         api_key="test-deepgram-key",
         model="nova-2",
         base_url="https://api.deepgram.com/v1/listen",
+        enable_speaker_diarization=False,
+        deepgram_diarize=False,
     )
 
     with tempfile.NamedTemporaryFile(suffix=".m4a", delete=False) as f:
@@ -224,6 +375,7 @@ def test_batch_deepgram_url_construction(monkeypatch):
         assert "model=nova-2" in mock_client.last_post_url
         assert "language=vi" in mock_client.last_post_url
         assert "smart_format=true" in mock_client.last_post_url
+        assert "diarize=true" not in mock_client.last_post_url
 
         # Verify headers
         assert "Authorization" in mock_client.last_post_headers
@@ -231,6 +383,43 @@ def test_batch_deepgram_url_construction(monkeypatch):
             "Token test-deepgram-key" in mock_client.last_post_headers["Authorization"]
         )
         assert "Content-Type" in mock_client.last_post_headers
+    finally:
+        Path(temp_audio_path).unlink()
+
+
+def test_batch_deepgram_url_includes_diarize_when_enabled(monkeypatch):
+    """Test Deepgram batch endpoint URL enables diarization when configured."""
+
+    mock_client = MockHTTPClient()
+
+    def mock_client_factory(**kwargs):
+        return mock_client
+
+    monkeypatch.setattr(
+        "app.services.stt_adapter.httpx.Client",
+        mock_client_factory,
+    )
+
+    adapter = DeepgramSTTAdapter(
+        api_key="test-deepgram-key",
+        model="nova-2",
+        base_url="https://api.deepgram.com/v1/listen",
+        enable_speaker_diarization=True,
+        deepgram_diarize=True,
+    )
+
+    with tempfile.NamedTemporaryFile(suffix=".m4a", delete=False) as f:
+        temp_audio_path = f.name
+        f.write(b"fake audio data")
+
+    try:
+        adapter.batch_transcribe_file(
+            file_path=temp_audio_path,
+            language="vi",
+            model="nova-2",
+        )
+
+        assert "diarize=true" in mock_client.last_post_url
     finally:
         Path(temp_audio_path).unlink()
 
