@@ -74,6 +74,11 @@ services:
       # Diagnostic only; logs capped raw Deepgram text frames when true.
       - DEEPGRAM_DEBUG_RAW_MESSAGES=${DEEPGRAM_DEBUG_RAW_MESSAGES:-false}
       - DATABASE_URL=postgresql://${POSTGRES_USER:-audiomind}:${POSTGRES_PASSWORD:-audiomind}@db:5432/${POSTGRES_DB:-audiomind}
+      - STT_PROVIDER=${STT_PROVIDER:-deepgram}
+      - DEEPGRAM_API_KEY=${DEEPGRAM_API_KEY:-}
+      - DEEPGRAM_REALTIME_MODEL=${DEEPGRAM_REALTIME_MODEL:-nova-2}
+      - DEEPGRAM_BATCH_MODEL=${DEEPGRAM_BATCH_MODEL:-nova-2}
+      - DEEPGRAM_LANGUAGE=${DEEPGRAM_LANGUAGE:-vi}
       - AI_PROVIDER=${AI_PROVIDER:-ollama}
       - ANALYSIS_PROVIDER=${ANALYSIS_PROVIDER:-openai}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
@@ -82,7 +87,7 @@ services:
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - GEMINI_ANALYSIS_MODEL=${GEMINI_ANALYSIS_MODEL:-gemini-2.5-flash}
       - GEMINI_SUMMARY_MODEL=${GEMINI_SUMMARY_MODEL:-gemini-2.5-flash}
-      - LOCAL_WHISPER_ENABLED=${LOCAL_WHISPER_ENABLED:-false}
+      - LOCAL_WHISPER_ENABLED=${LOCAL_WHISPER_ENABLED:-true}
       - OLLAMA_ENABLED=${OLLAMA_ENABLED:-false}
       - OLLAMA_BASE_URL=http://ollama-service:11434
       - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen2.5:3b-instruct}
@@ -115,8 +120,14 @@ services:
     command: sh -c "celery -A app.celery_app.celery_app worker --loglevel=INFO --concurrency=${CELERY_CONCURRENCY:-4} --prefetch-multiplier=${CELERY_PREFETCH_MULTIPLIER:-1}"
     environment:
       - JWT_SECRET=${JWT_SECRET}
-      - DEEPGRAM_API_KEY=${DEEPGRAM_API_KEY:-}
       - DATABASE_URL=postgresql://${POSTGRES_USER:-audiomind}:${POSTGRES_PASSWORD:-audiomind}@db:5432/${POSTGRES_DB:-audiomind}
+      - STT_PROVIDER=${STT_PROVIDER:-deepgram}
+      - DEEPGRAM_API_KEY=${DEEPGRAM_API_KEY:-}
+      - DEEPGRAM_REALTIME_MODEL=${DEEPGRAM_REALTIME_MODEL:-nova-2}
+      - DEEPGRAM_BATCH_MODEL=${DEEPGRAM_BATCH_MODEL:-nova-2}
+      - DEEPGRAM_LANGUAGE=${DEEPGRAM_LANGUAGE:-vi}
+      - DEEPGRAM_BASE_URL=${DEEPGRAM_BASE_URL:-https://api.deepgram.com/v1/listen}
+      - LOCAL_WHISPER_ENABLED=${LOCAL_WHISPER_ENABLED:-true}
       - AI_PROVIDER=${AI_PROVIDER:-ollama}
       - ANALYSIS_PROVIDER=${ANALYSIS_PROVIDER:-openai}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
@@ -125,7 +136,6 @@ services:
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - GEMINI_ANALYSIS_MODEL=${GEMINI_ANALYSIS_MODEL:-gemini-2.5-flash}
       - GEMINI_SUMMARY_MODEL=${GEMINI_SUMMARY_MODEL:-gemini-2.5-flash}
-      - LOCAL_WHISPER_ENABLED=${LOCAL_WHISPER_ENABLED:-false}
       - OLLAMA_ENABLED=${OLLAMA_ENABLED:-false}
       - OLLAMA_BASE_URL=http://ollama-service:11434
       - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen2.5:3b-instruct}
