@@ -1,6 +1,6 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createRoot } from 'react-dom/client'
 import { act } from 'react-dom/test-utils'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAudioRecorder } from '../hooks/useAudioRecorder'
 import { AudioRecorderButton } from './AudioRecorderButton'
 
@@ -132,6 +132,72 @@ describe('useAudioRecorder', () => {
     expect(latestRecorder?.state).toBe('stopped')
   })
 
+  it('ignores stale chunks from a previous recording session after restart', async () => {
+    await act(async () => {
+      await latestRecorder!.startRecording()
+    })
+
+    const firstRecorder = MockMediaRecorder.instances[0]
+    const firstChunk = new Blob(['chunk-one'], { type: 'audio/webm; codecs=opus' })
+
+    act(() => {
+      firstRecorder.emitChunk(firstChunk)
+      latestRecorder!.stopRecording()
+    })
+
+    await flush()
+
+    await act(async () => {
+      await latestRecorder!.startRecording()
+    })
+
+    const secondRecorder = MockMediaRecorder.instances[1]
+    const staleChunk = new Blob(['stale-chunk'], { type: 'audio/webm; codecs=opus' })
+    const freshChunk = new Blob(['fresh-chunk'], { type: 'audio/webm; codecs=opus' })
+
+    act(() => {
+      firstRecorder.emitChunk(staleChunk)
+      secondRecorder.emitChunk(freshChunk)
+    })
+
+    await flush()
+
+    expect(latestRecorder?.audioChunks).toHaveLength(1)
+    expect(latestRecorder?.audioChunks[0]).toBe(freshChunk)
+  })
+
+  it('aborts a live session and restarts with a fresh recorder', async () => {
+    await act(async () => {
+      await latestRecorder!.startRecording()
+    })
+
+    const firstRecorder = MockMediaRecorder.instances[0]
+
+    act(() => {
+      latestRecorder!.abortRecording()
+    })
+
+    expect(latestRecorder?.state).toBe('idle')
+
+    await act(async () => {
+      await latestRecorder!.startRecording()
+    })
+
+    const secondRecorder = MockMediaRecorder.instances[1]
+    const staleChunk = new Blob(['stale-after-abort'], { type: 'audio/webm; codecs=opus' })
+    const freshChunk = new Blob(['fresh-after-abort'], { type: 'audio/webm; codecs=opus' })
+
+    act(() => {
+      firstRecorder.emitChunk(staleChunk)
+      secondRecorder.emitChunk(freshChunk)
+    })
+
+    await flush()
+
+    expect(latestRecorder?.audioChunks).toHaveLength(1)
+    expect(latestRecorder?.audioChunks[0]).toBe(freshChunk)
+  })
+
   it('reports microphone permission errors', async () => {
     Object.defineProperty(navigator, 'mediaDevices', {
       value: {
@@ -146,6 +212,16 @@ describe('useAudioRecorder', () => {
 
     expect(latestRecorder?.state).toBe('error')
     expect(latestRecorder?.errorMessage).toContain('microphone')
+  })
+
+  it('blocks recorder start when expected recording session id mismatches', async () => {
+    await act(async () => {
+      await latestRecorder!.startRecording(999)
+    })
+
+    expect(MockMediaRecorder.instances).toHaveLength(0)
+    expect(latestRecorder?.state).toBe('error')
+    expect(latestRecorder?.errorMessage).toContain('session mismatch')
   })
 })
 
@@ -174,8 +250,10 @@ describe('AudioRecorderButton', () => {
       state: 'idle',
       errorMessage: null,
       audioChunks: [],
+      recordingSessionId: 0,
       startRecording: startSpy,
       stopRecording: stopSpy,
+      abortRecording: vi.fn(),
       pauseRecording: vi.fn(),
       resumeRecording: vi.fn(),
       duration: 0,
@@ -211,12 +289,167 @@ describe('AudioRecorderButton', () => {
     expect(startSpy).toHaveBeenCalledOnce()
   })
 
+  it('waits for preflight to resolve before starting the recorder', async () => {
+    let resolvePreflight!: () => void
+    beforeStartSpy = vi.fn(() => new Promise<void>((resolve) => {
+      resolvePreflight = resolve
+    }))
+
+    act(() => {
+      root.render(
+        <AudioRecorderButton
+          recorder={recorder!}
+          onBeforeStartRecording={beforeStartSpy}
+          onChunkReady={chunkSpy}
+          onRecordingComplete={completeSpy}
+        />,
+      )
+    })
+
+    await act(async () => {
+      container.querySelector('button')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await flush()
+    })
+
+    expect(beforeStartSpy).toHaveBeenCalledOnce()
+    expect(startSpy).not.toHaveBeenCalled()
+
+    resolvePreflight()
+    await flush()
+
+    expect(startSpy).toHaveBeenCalledOnce()
+  })
+
+  it('does not start recorder when preflight fails (stale prepare)', async () => {
+    beforeStartSpy = vi.fn().mockRejectedValue(new Error('Stale realtime session prepare ignored'))
+
+    act(() => {
+      root.render(
+        <AudioRecorderButton
+          recorder={recorder!}
+          onBeforeStartRecording={beforeStartSpy}
+          onChunkReady={chunkSpy}
+          onRecordingComplete={completeSpy}
+        />,
+      )
+    })
+
+    await act(async () => {
+      container.querySelector('button')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await flush()
+    })
+
+    expect(beforeStartSpy).toHaveBeenCalledOnce()
+    expect(startSpy).not.toHaveBeenCalled()
+  })
+
+  it('passes expected session id from preflight to recorder start', async () => {
+    beforeStartSpy = vi.fn().mockResolvedValue({ expectedSessionId: 7 })
+
+    act(() => {
+      root.render(
+        <AudioRecorderButton
+          recorder={recorder!}
+          onBeforeStartRecording={beforeStartSpy}
+          onChunkReady={chunkSpy}
+          onRecordingComplete={completeSpy}
+        />,
+      )
+    })
+
+    await act(async () => {
+      container.querySelector('button')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await flush()
+    })
+
+    expect(startSpy).toHaveBeenCalledWith(7)
+  })
+
+  it('shows connecting state while startup is pending', () => {
+    act(() => {
+      root.render(
+        <AudioRecorderButton
+          recorder={recorder!}
+          lifecycleState="connecting"
+          onBeforeStartRecording={beforeStartSpy}
+          onChunkReady={chunkSpy}
+          onRecordingComplete={completeSpy}
+        />,
+      )
+    })
+
+    const button = container.querySelector('button')
+      expect(button?.disabled).toBe(true)
+    expect(button?.getAttribute('aria-label')).toBe('Đang kết nối realtime...')
+    expect(container.textContent).toContain('Đang kết nối realtime...')
+  })
+
+  it('moves from connecting to recording once startup completes', () => {
+    act(() => {
+      root.render(
+        <AudioRecorderButton
+          recorder={recorder!}
+          lifecycleState="connecting"
+          onBeforeStartRecording={beforeStartSpy}
+          onChunkReady={chunkSpy}
+          onRecordingComplete={completeSpy}
+        />,
+      )
+    })
+
+    expect(container.textContent).toContain('Đang kết nối realtime...')
+
+    recorder = {
+      ...recorder!,
+      state: 'recording',
+      duration: 3,
+    }
+
+    act(() => {
+      root.render(
+        <AudioRecorderButton
+          recorder={recorder!}
+          lifecycleState="recording"
+          onBeforeStartRecording={beforeStartSpy}
+          onChunkReady={chunkSpy}
+          onRecordingComplete={completeSpy}
+        />,
+      )
+    })
+
+    expect(container.textContent).toContain('Đang ghi âm 00:03')
+    expect(container.querySelector('button')?.disabled).toBe(false)
+  })
+
+  it('allows retry after error state', async () => {
+    act(() => {
+      root.render(
+        <AudioRecorderButton
+          recorder={recorder!}
+          lifecycleState="error"
+          onBeforeStartRecording={beforeStartSpy}
+          onChunkReady={chunkSpy}
+          onRecordingComplete={completeSpy}
+        />,
+      )
+    })
+
+    await act(async () => {
+      container.querySelector('button')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await flush()
+    })
+
+    expect(beforeStartSpy).toHaveBeenCalledOnce()
+    expect(startSpy).toHaveBeenCalledOnce()
+  })
+
   it('emits chunk and completion callbacks', async () => {
     recorder = {
       ...recorder!,
       state: 'recording',
       audioChunks: [new Blob(['chunk-a'])],
       duration: 1,
+      recordingSessionId: 1,
     }
 
     act(() => {
@@ -268,6 +501,7 @@ describe('AudioRecorderButton', () => {
       ...recorder!,
       state: 'stopped',
       audioChunks: [],
+      recordingSessionId: 1,
     }
 
     act(() => {

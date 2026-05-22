@@ -1,6 +1,6 @@
 import React, { useEffect, useRef } from 'react'
 import type { TranscriptSegment } from '../hooks/useRealtimeMeetingStream'
-import { formatTranscriptTimestamp } from '../utils/transcript'
+import { formatTranscriptTimestamp, normalizeSpeaker } from '../utils/transcript'
 import './RealtimeTranscript.css'
 
 interface RealtimeTranscriptProps {
@@ -111,7 +111,7 @@ export const RealtimeTranscript: React.FC<RealtimeTranscriptProps> = ({
               key={segment.mergeKey ?? segment.id}
               className="transcript-segment"
             >
-              <div className="segment-speaker">{segment.speaker}</div>
+              <div className="segment-speaker">{normalizeSpeaker(segment.speaker, 'SPEAKER_1')}</div>
               <div className="segment-text">
                 {segment.text && segment.text.trim().length > 0 ? (
                   <div
