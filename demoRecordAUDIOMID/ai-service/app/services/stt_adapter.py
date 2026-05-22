@@ -1044,7 +1044,11 @@ class DeepgramSTTAdapter:
                 "DG_RESULT_DEBUG meeting_id={} seq={} event_index={} is_final={} speech_final={} text_len={} words_count={} alternatives_count={} start={} end={} duration={} language={} model={}",
                 getattr(session, "meeting_id", None) if session is not None else None,
                 ts_ms,
-                getattr(session, "results_events", None) if session is not None else None,
+                (
+                    getattr(session, "results_events", None)
+                    if session is not None
+                    else None
+                ),
                 bool(payload.get("is_final")),
                 bool(payload.get("speech_final")),
                 len(transcript),
@@ -1083,7 +1087,11 @@ class DeepgramSTTAdapter:
                 logger.warning(
                     "STT_EMPTY_RESULT session_id={} meeting_id={} meeting_ts_ms={} event_type={} alternatives_count={} is_final={} speech_final={}",
                     session.session_id if session is not None else None,
-                    getattr(session, "meeting_id", None) if session is not None else None,
+                    (
+                        getattr(session, "meeting_id", None)
+                        if session is not None
+                        else None
+                    ),
                     ts_ms,
                     payload.get("type"),
                     alternatives_count,
@@ -1094,7 +1102,11 @@ class DeepgramSTTAdapter:
                     logger.warning(
                         "STT_EMPTY_RESULT_WITH_WORDS session_id={} meeting_id={} meeting_ts_ms={} words_count={} alternatives_count={}",
                         session.session_id if session is not None else None,
-                        getattr(session, "meeting_id", None) if session is not None else None,
+                        (
+                            getattr(session, "meeting_id", None)
+                            if session is not None
+                            else None
+                        ),
                         ts_ms,
                         words_count,
                         alternatives_count,

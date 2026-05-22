@@ -120,7 +120,9 @@ def test_deepgram_adapter_matches_protocol_and_transcribes(monkeypatch):
     assert connection["extra_headers"] == [("Authorization", "Token dg-test-key")]
     assert connection["websocket"].sent_messages[:2] == [b"abc", b"def"]
     assert connection["websocket"].sent_messages[2] == json.dumps({"type": "Finalize"})
-    assert connection["websocket"].sent_messages[3] == json.dumps({"type": "CloseStream"})
+    assert connection["websocket"].sent_messages[3] == json.dumps(
+        {"type": "CloseStream"}
+    )
 
 
 def test_deepgram_error_classification_helpers():
@@ -294,11 +296,22 @@ def test_deepgram_adapter_keeps_emitting_multiple_results_in_long_stream(monkeyp
     from app.services import stt_adapter as stt_module
 
     websocket_messages = [
-        json.dumps({"channel": {"alternatives": [{"transcript": "seg one"}]}, "is_final": True}),
-        json.dumps({"channel": {"alternatives": [{"transcript": "seg two"}]}, "is_final": True}),
-        json.dumps({"channel": {"alternatives": [{"transcript": "seg three"}]}, "is_final": True}),
+        json.dumps(
+            {"channel": {"alternatives": [{"transcript": "seg one"}]}, "is_final": True}
+        ),
+        json.dumps(
+            {"channel": {"alternatives": [{"transcript": "seg two"}]}, "is_final": True}
+        ),
+        json.dumps(
+            {
+                "channel": {"alternatives": [{"transcript": "seg three"}]},
+                "is_final": True,
+            }
+        ),
     ]
-    monkeypatch.setattr(stt_module, "websockets", _FakeWebSocketModule(websocket_messages))
+    monkeypatch.setattr(
+        stt_module, "websockets", _FakeWebSocketModule(websocket_messages)
+    )
 
     adapter = DeepgramSTTAdapter(api_key="dg-test-key")
 
