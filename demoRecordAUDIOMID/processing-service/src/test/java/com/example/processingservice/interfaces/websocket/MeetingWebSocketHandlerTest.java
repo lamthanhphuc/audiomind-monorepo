@@ -10,6 +10,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -27,6 +28,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.web.socket.BinaryMessage;
 import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.TextMessage;
@@ -38,6 +40,8 @@ import com.example.processingservice.security.JwtUtil;
 import com.example.processingservice.security.MeetingChannelAuthorizer;
 import com.example.processingservice.services.RealtimeEventSubscriber;
 import com.fasterxml.jackson.databind.ObjectMapper;
+
+import io.jsonwebtoken.Claims;
 
 @ExtendWith(MockitoExtension.class)
 class MeetingWebSocketHandlerTest {
@@ -74,6 +78,34 @@ class MeetingWebSocketHandlerTest {
 
         attributes = new HashMap<>();
         when(session.getAttributes()).thenReturn(attributes);
+    }
+
+    @Test
+    void handleTextMessage_shouldSnapshotSelectedRealtimeLanguageFromAuthInit() throws Exception {
+        ReflectionTestUtils.setField(handler, "deepgramLanguage", "multi");
+
+        attributes.put("meetingId", 41L);
+        when(objectMapper.readValue(any(String.class), eq(Map.class))).thenReturn(Map.of(
+                "type", "auth.init",
+                "token", "Bearer raw-token",
+                "meetingId", 41L,
+                "language", "en"
+        ));
+
+        Claims claims = org.mockito.Mockito.mock(Claims.class);
+        when(claims.getSubject()).thenReturn("99");
+        when(claims.get("username", String.class)).thenReturn("alice");
+        when(jwtUtil.parseClaims("raw-token")).thenReturn(claims);
+        when(meetingChannelAuthorizer.canJoin(99L, 41L, "Bearer raw-token")).thenReturn(true);
+        when(realtimeEventSubscriber.getActiveConnectionCount(41L)).thenReturn(1);
+        when(objectMapper.writeValueAsString(any())).thenReturn("{}");
+        when(session.isOpen()).thenReturn(true);
+        doNothing().when(session).sendMessage(any(TextMessage.class));
+
+        handler.handleTextMessage(session, new TextMessage("{}"));
+
+        assertEquals("en", attributes.get("language"));
+        verify(realtimeEventSubscriber).getActiveConnectionCount(41L);
     }
 
     @Test
