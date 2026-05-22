@@ -107,3 +107,6 @@ class SttStreamResponse(BaseModel):
     segment_id: Optional[str] = None
     start_time: Optional[float] = None
     end_time: Optional[float] = None
+    finalized: Optional[bool] = None
+    partial: Optional[bool] = None
+    reset_required: Optional[bool] = None
