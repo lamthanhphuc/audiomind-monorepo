@@ -1,0 +1,37 @@
+---
+description: Codebase layout and top architectural dependencies
+globs: *
+alwaysApply: true
+---
+
+# Fullerenes Architecture Context
+
+## Core Files You Should Know
+- `FE-Audiomind/src/hooks/useRealtimeMeetingStream.ts` (15 nodes)
+- `FE-Audiomind/src/utils/transcript.ts` (23 nodes)
+- `FE-Audiomind/src/services/auth.ts` (13 nodes)
+- `FE-Audiomind/src/services/config.ts` (4 nodes)
+- `FE-Audiomind/src/hooks/useAudioRecorder.ts` (6 nodes)
+
+## Top Functions & Classes
+- `run_flow` in `demoRecordAUDIOMID/ai-service/tests/test_stt_session_actor.py`
+- `_bind_fake_repository` in `demoRecordAUDIOMID/ai-service/tests/test_stt_session_actor.py`
+- `_transition` in `demoRecordAUDIOMID/ai-service/app/services/stt_session_actor.py`
+- `_reset_state` in `demoRecordAUDIOMID/ai-service/tests/test_stt_stream_route.py`
+- `_assert_owns_meeting` in `demoRecordAUDIOMID/ai-service/app/services/stt_session_actor.py`
+- `_record_queue_metrics` in `demoRecordAUDIOMID/ai-service/app/services/stt_session_actor.py`
+- `run_flow` in `demoRecordAUDIOMID/ai-service/tests/test_stt_stream_route.py`
+- `_get_client` in `demoRecordAUDIOMID/ai-service/app/job_status_store.py`
+- `_make_upload_file` in `demoRecordAUDIOMID/ai-service/tests/test_stt_stream_route.py`
+- `_normalize_status` in `demoRecordAUDIOMID/ai-service/app/job_status_store.py`
+
+## Main Entry Points
+- `demoRecordAUDIOMID/ai-service/app/main.py`
+- `demoRecordAUDIOMID/ai-service/app/pipeline.py`
+- `demoRecordAUDIOMID/ai-service/app/services/stt_session_actor.py`
+- `demoRecordAUDIOMID/ai-service/app/services/stt_adapter.py`
+- `demoRecordAUDIOMID/ai-service/app/services/grpc_stt_service.py`
+
+## Instructions
+- When modifying these core dependencies, heavily trace caller graphs before refactoring.
+- Run `npx fullerenes query "<question>"` to get exact context footprints.
