@@ -4,6 +4,15 @@ type TranscriptSource = Record<string, unknown>
 
 const normalizeText = (value: string): string => value.replace(/\s+/g, ' ').trim().toLowerCase()
 
+export const normalizeSpeaker = (value: string, fallbackSpeaker?: string): string => {
+  const trimmed = value.trim()
+  if (!trimmed || trimmed.toLowerCase() === 'system') {
+    return fallbackSpeaker ?? trimmed
+  }
+
+  return trimmed
+}
+
 const toNumber = (...values: unknown[]): number => {
   for (const value of values) {
     if (typeof value === 'number' && Number.isFinite(value)) {
@@ -195,6 +204,7 @@ const resolvePreferredSegment = (existing: TranscriptSegment, incoming: Transcri
 export const normalizeTranscriptEvent = (
   data: TranscriptSource,
   messageType?: string,
+  options?: { fallbackSpeaker?: string },
 ): TranscriptSegment | null => {
   const text = toStringValue(data.text, data.transcript)
   if (text.trim().length === 0) {
@@ -218,7 +228,7 @@ export const normalizeTranscriptEvent = (
   return {
     id: resolveDisplayId(data, timing),
     mergeKey: resolveMergeKey(data, timing),
-    speaker: toStringValue(data.speaker),
+    speaker: normalizeSpeaker(toStringValue(data.speaker), options?.fallbackSpeaker),
     text,
     start,
     end,
@@ -229,7 +239,10 @@ export const normalizeTranscriptEvent = (
   }
 }
 
-export const normalizePersistedTranscriptSegments = (segments: TranscriptSource[]): TranscriptSegment[] => {
+export const normalizePersistedTranscriptSegments = (
+  segments: TranscriptSource[],
+  options?: { fallbackSpeaker?: string },
+): TranscriptSegment[] => {
   return segments
     .map((segment) => {
       const explicitId = toStringValue(segment.segment_id, segment.segmentId, segment.id)
@@ -241,7 +254,7 @@ export const normalizePersistedTranscriptSegments = (segments: TranscriptSource[
       }
 
       const normalized = normalizeTranscriptEvent({
-        speaker: segment.speaker,
+        speaker: normalizeSpeaker(toStringValue(segment.speaker), options?.fallbackSpeaker),
         text: segment.text,
         startTime: segment.start_time,
         endTime: segment.end_time,
