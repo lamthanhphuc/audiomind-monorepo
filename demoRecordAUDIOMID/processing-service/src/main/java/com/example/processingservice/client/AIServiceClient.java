@@ -105,13 +105,6 @@ public class AIServiceClient {
         return requireBody(response, "processAudio", meetingId);
     }
 
-    @Retry(name = "ai-service")
-    @CircuitBreaker(name = "ai-service")
-    @Retryable(
-        retryFor = { RestClientException.class, IllegalStateException.class },
-        maxAttempts = 3,
-        backoff = @Backoff(delay = 1000, multiplier = 2.0)
-    )
     public Map<String, Object> getTranscript(Long meetingId, String traceId) {
         HttpHeaders headers = new HttpHeaders();
         String resolvedTraceId = resolveTraceId(traceId);
