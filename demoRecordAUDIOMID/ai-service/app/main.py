@@ -410,7 +410,9 @@ async def _get_or_create_stt_actor(
             headers={"Retry-After": str(retry_after_seconds)},
         )
 
-    is_finalize_signal = bool(seq == -1 and (chunk_bytes is None or len(chunk_bytes) == 0))
+    is_finalize_signal = bool(
+        seq == -1 and (chunk_bytes is None or len(chunk_bytes) == 0)
+    )
     if guard.requires_new_stream and not is_finalize_signal:
         can_restart = (
             seq == 1 and chunk_bytes is not None and _is_webm_header_chunk(chunk_bytes)
@@ -1061,8 +1063,10 @@ async def stream_stt_chunk(
             headers={"Retry-After": str(retry_after_seconds)},
         )
 
-    if (not is_final) and guard.requires_new_stream and not (
-        seq == 1 and _is_webm_header_chunk(chunk_bytes)
+    if (
+        (not is_final)
+        and guard.requires_new_stream
+        and not (seq == 1 and _is_webm_header_chunk(chunk_bytes))
     ):
         logger.warning(
             "STT_RECONNECT_BLOCKED_WEBM_CONTINUATION meeting_id={} seq={} last_ack_seq={} reason={}",
