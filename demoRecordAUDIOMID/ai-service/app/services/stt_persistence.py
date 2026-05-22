@@ -327,6 +327,7 @@ class TranscriptPersistenceRepository:
                     "start_time": float(fragment.start_time or 0.0),
                     "end_time": float(fragment.end_time or 0.0),
                     "text": fragment.text or "",
+                    "segment_id": (fragment.event_id or None),
                     "seq": int(fragment.seq or 0),
                     "version": int(fragment.version or 0),
                     "is_final": bool(fragment.is_final),

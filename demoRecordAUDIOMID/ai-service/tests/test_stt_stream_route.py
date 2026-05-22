@@ -2,9 +2,8 @@ import asyncio
 from tempfile import SpooledTemporaryFile
 from types import SimpleNamespace
 
-import pytest
-
 import app.main as main_module
+import pytest
 from app.models import Base
 from app.schemas import SttStreamResponse
 from app.services.stt_persistence import (
@@ -37,6 +36,7 @@ class FakeActor:
         self.closed = False
         self.submit_calls = []
         self.finalize_calls = []
+        self._segment_id = f"{self.meeting_key}-1.250-speaker_1-1"
         FakeActor.instances.append(self)
 
     async def submit_chunk(self, seq, pcm_chunk, ts_ms, is_final):
@@ -51,6 +51,10 @@ class FakeActor:
             transcript="Xin chao audiomind",
             is_final=is_final,
             confidence=0.97 if is_final else 0.91,
+            speaker="SPEAKER_1",
+            segment_id=self._segment_id,
+            start_time=1.25,
+            end_time=2.5 + (0.25 * max(0, int(seq) - 1)),
         )
         if is_final:
             await self.shutdown()
@@ -62,6 +66,10 @@ class FakeActor:
             transcript="Xin chao audiomind",
             is_final=True,
             confidence=0.97,
+            speaker="SPEAKER_1",
+            segment_id=self._segment_id,
+            start_time=1.25,
+            end_time=3.1,
         )
         await self.shutdown()
         return response
@@ -190,6 +198,9 @@ def test_stream_stt_chunk_closes_session_on_final(monkeypatch):
     assert response.transcript == "Xin chao audiomind"
     assert response.is_final is True
     assert response.confidence == 0.97
+    assert response.segment_id == "55-1.250-speaker_1-1"
+    assert response.start_time == 1.25
+    assert response.end_time == 3.1
     assert FakeActor.instances[0].closed is True
     assert FakeActor.instances[0].close_count == 1
     assert FakeActor.instances[0].submit_calls == []
@@ -408,6 +419,84 @@ def test_stream_stt_chunk_final_signal_uses_finalize_path_for_synthetic_empty_ch
     assert FakeActor.instances[0].close_count == 1
 
 
+def test_stream_stt_chunk_returns_segment_level_fields(monkeypatch):
+    _reset_state(monkeypatch)
+
+    async def run_flow():
+        return await main_module.stream_stt_chunk(
+            meeting_id=146,
+            audio_chunk=_make_upload_file(b"ghi"),
+            seq=1,
+            language="vi",
+            is_final=False,
+        )
+
+    response = asyncio.run(run_flow())
+
+    assert response.segment_id == "146-1.250-speaker_1-1"
+    assert response.start_time == 1.25
+    assert response.end_time == 2.5
+    assert response.speaker == "SPEAKER_1"
+    assert response.is_final is False
+
+
+def test_stream_stt_chunk_partial_end_time_changes_with_stable_segment_id(monkeypatch):
+    _reset_state(monkeypatch)
+
+    async def run_first_chunk():
+        return await main_module.stream_stt_chunk(
+            meeting_id=147,
+            audio_chunk=_make_upload_file(b"abc"),
+            seq=1,
+            language="vi",
+            is_final=False,
+        )
+
+    async def run_second_chunk():
+        return await main_module.stream_stt_chunk(
+            meeting_id=147,
+            audio_chunk=_make_upload_file(b"def"),
+            seq=2,
+            language="vi",
+            is_final=False,
+        )
+
+    first = asyncio.run(run_first_chunk())
+    second = asyncio.run(run_second_chunk())
+
+    assert first.segment_id == second.segment_id
+    assert first.end_time < second.end_time
+
+
+def test_stream_stt_chunk_final_keeps_same_segment_id_as_partial(monkeypatch):
+    _reset_state(monkeypatch)
+
+    async def run_partial():
+        return await main_module.stream_stt_chunk(
+            meeting_id=148,
+            audio_chunk=_make_upload_file(b"abc"),
+            seq=1,
+            language="vi",
+            is_final=False,
+        )
+
+    async def run_final():
+        return await main_module.stream_stt_chunk(
+            meeting_id=148,
+            audio_chunk=_make_upload_file(b"def"),
+            seq=2,
+            language="vi",
+            is_final=True,
+        )
+
+    partial = asyncio.run(run_partial())
+    final = asyncio.run(run_final())
+
+    assert partial.segment_id == final.segment_id
+    assert partial.is_final is False
+    assert final.is_final is True
+
+
 def test_stream_stt_chunk_blocked_continuation_returns_structured_reset_required(
     monkeypatch,
 ):
@@ -507,6 +596,32 @@ def test_stream_stt_chunk_uses_local_whisper_fallback(monkeypatch):
     assert response.is_final is False
     assert response.confidence == 0.88
     assert fake_recognizer.calls
+
+
+def test_get_stt_adapter_prefers_realtime_model_over_base_model(monkeypatch):
+    _reset_state(monkeypatch)
+    monkeypatch.setattr(main_module.settings, "deepgram_model", "nova-2")
+    monkeypatch.setattr(main_module.settings, "deepgram_realtime_model", "nova-3")
+    main_module._stt_adapter = None
+
+    adapter = main_module._get_stt_adapter()
+
+    assert adapter is not None
+    assert isinstance(adapter, FakeAdapter)
+    assert adapter.model == "nova-3"
+
+
+def test_get_stt_adapter_falls_back_to_base_model_when_realtime_missing(monkeypatch):
+    _reset_state(monkeypatch)
+    monkeypatch.setattr(main_module.settings, "deepgram_model", "nova-2")
+    monkeypatch.setattr(main_module.settings, "deepgram_realtime_model", "")
+    main_module._stt_adapter = None
+
+    adapter = main_module._get_stt_adapter()
+
+    assert adapter is not None
+    assert isinstance(adapter, FakeAdapter)
+    assert adapter.model == "nova-2"
 
 
 def test_get_transcript_returns_200_from_fragment_persistence(monkeypatch):

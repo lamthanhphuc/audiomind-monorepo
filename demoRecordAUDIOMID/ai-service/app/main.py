@@ -118,9 +118,11 @@ async def lifespan(_: FastAPI):
     logger.info(f"Whisper Model: {settings.whisper_model}")
     logger.info(f"Device: {get_runtime_device()}")
     logger.info(
-        "STT CONFIG api_key_exists={} model={} base_url={}",
+        "STT CONFIG api_key_exists={} realtime_model={} batch_model={} language={} base_url={}",
         bool(settings.deepgram_api_key),
-        settings.deepgram_model,
+        _resolve_realtime_model(),
+        _resolve_batch_model(),
+        _normalize_stt_language(None),
         settings.deepgram_base_url,
     )
     logger.info("=" * 50)
@@ -262,8 +264,25 @@ def _normalize_meeting_key(meeting_id: int | str) -> str:
 
 
 def _normalize_stt_language(language: str | None) -> str:
-    value = (language or "vi").strip()
-    return value or "vi"
+    default_language = (settings.deepgram_language or "vi").strip() or "vi"
+    value = (language or default_language).strip()
+    return value or default_language
+
+
+def _resolve_realtime_model() -> str:
+    return (
+        (settings.deepgram_realtime_model or "").strip()
+        or (settings.deepgram_model or "").strip()
+        or "nova-2"
+    )
+
+
+def _resolve_batch_model() -> str:
+    return (
+        (settings.deepgram_batch_model or "").strip()
+        or (settings.deepgram_model or "").strip()
+        or "nova-2"
+    )
 
 
 def _is_webm_header_chunk(chunk_bytes: bytes) -> bool:
@@ -530,9 +549,10 @@ def _get_stt_adapter() -> DeepgramSTTAdapter | None:
 
     _stt_adapter = DeepgramSTTAdapter(
         api_key=settings.deepgram_api_key,
-        model=settings.deepgram_model,
+        model=_resolve_realtime_model(),
         base_url=settings.deepgram_base_url,
         timeout_seconds=settings.deepgram_timeout_seconds,
+        endpointing=settings.deepgram_endpointing,
         simplify_streaming_url=settings.deepgram_simplify_streaming_url,
         debug_raw_messages=settings.deepgram_debug_raw_messages,
         enable_speaker_diarization=settings.enable_speaker_diarization,
@@ -690,10 +710,14 @@ async def get_transcript(meeting_id: int, db: Session = Depends(get_db)):
                 meeting_id=meeting_id,
                 transcripts=[
                     TranscriptSegment(
-                        speaker=str(segment.get("speaker") or "system"),
+                        speaker=str(segment.get("speaker") or "SPEAKER_1"),
                         start_time=float(segment.get("start_time") or 0.0),
                         end_time=float(segment.get("end_time") or 0.0),
                         text=str(segment.get("text") or ""),
+                        segment_id=(
+                            str(segment.get("segment_id") or "").strip()
+                            or f"meeting-{meeting_id}-start-{float(segment.get('start_time') or 0.0):.3f}-{str(segment.get('speaker') or 'SPEAKER_1').strip().lower().replace(' ', '_')}"
+                        ),
                     )
                     for segment in fragment_segments
                     if str(segment.get("text") or "").strip()
@@ -739,6 +763,10 @@ async def get_transcript(meeting_id: int, db: Session = Depends(get_db)):
                 start_time=t.start_time,
                 end_time=t.end_time,
                 text=t.text,
+                segment_id=(
+                    str(getattr(t, "segment_id", "") or "").strip()
+                    or f"meeting-{meeting_id}-start-{float(getattr(t, 'start_time', 0.0) or 0.0):.3f}-{str(getattr(t, 'speaker', 'SPEAKER_1') or 'SPEAKER_1').strip().lower().replace(' ', '_')}"
+                ),
             )
             for t in transcripts
         ]
@@ -1002,7 +1030,7 @@ async def stream_stt_chunk(
     meeting_id: int = Form(...),
     audio_chunk: UploadFile = File(...),
     seq: int = Form(...),
-    language: str = Form(default="vi"),
+    language: str = Form(default=""),
     is_final: bool = Form(default=False),
 ):
     normalized_language = _normalize_stt_language(language)
@@ -1018,6 +1046,13 @@ async def stream_stt_chunk(
         seq,
         chunk_bytes[:4].hex(),
         bool(chunk_bytes[:4] == bytes.fromhex("1a45dfa3")),
+    )
+    logger.info(
+        "STT_STREAM_EFFECTIVE_CONFIG meeting_id={} seq={} language={} model={}",
+        meeting_id,
+        seq,
+        normalized_language,
+        _resolve_realtime_model(),
     )
     await audio_chunk.close()
 

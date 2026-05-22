@@ -9,6 +9,7 @@ class TranscriptSegment(BaseModel):
     start_time: float
     end_time: float
     text: str
+    segment_id: Optional[str] = None
 
 
 class ActionItem(BaseModel):

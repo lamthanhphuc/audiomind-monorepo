@@ -483,3 +483,37 @@ def test_batch_deepgram_model_selection(monkeypatch):
         assert "language=vi" in mock_client.last_post_url
     finally:
         Path(temp_audio_path).unlink()
+
+
+def test_batch_deepgram_uses_adapter_model_when_explicit_model_missing(monkeypatch):
+    """Batch URL should fallback to adapter model when model arg is omitted."""
+
+    mock_client = MockHTTPClient()
+
+    def mock_client_factory(**kwargs):
+        return mock_client
+
+    monkeypatch.setattr(
+        "app.services.stt_adapter.httpx.Client",
+        mock_client_factory,
+    )
+
+    adapter = DeepgramSTTAdapter(
+        api_key="test-deepgram-key",
+        model="nova-2",
+    )
+
+    with tempfile.NamedTemporaryFile(suffix=".m4a", delete=False) as f:
+        temp_audio_path = f.name
+        f.write(b"fake audio data")
+
+    try:
+        adapter.batch_transcribe_file(
+            file_path=temp_audio_path,
+            language="vi",
+            model=None,
+        )
+        assert "model=nova-2" in mock_client.last_post_url
+        assert "language=vi" in mock_client.last_post_url
+    finally:
+        Path(temp_audio_path).unlink()
