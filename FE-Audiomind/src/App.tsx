@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { getAnalysis, getTranscript, uploadToMeetingApi, startProcessingByPath, getProcessingStatus } from './services/api'
-import { clearAccessToken, getAccessToken, getCurrentUserId, login, setAccessToken } from './services/auth'
-import { REALTIME_WS_ENABLED } from './services/config'
 import { AudioRecorderButton } from './components/AudioRecorderButton'
 import { RealtimeTranscript } from './components/RealtimeTranscript'
 import { useAudioRecorder } from './hooks/useAudioRecorder'
+import type { RealtimeSessionToken, TranscriptSegment } from './hooks/useRealtimeMeetingStream'
 import { useRealtimeMeetingStream } from './hooks/useRealtimeMeetingStream'
-import type { TranscriptSegment } from './hooks/useRealtimeMeetingStream'
+import { getAnalysis, getProcessingStatus, getTranscript, startProcessingByPath, uploadToMeetingApi } from './services/api'
+import { clearAccessToken, getAccessToken, getCurrentUserId, login, setAccessToken } from './services/auth'
+import { REALTIME_WS_ENABLED } from './services/config'
 import { mergeTranscriptSegments, normalizePersistedTranscriptSegments } from './utils/transcript'
 
 type ResultView = {
@@ -16,9 +16,91 @@ type ResultView = {
   summary: string
 }
 
+type LiveLifecycleState = 'idle' | 'connecting' | 'recording' | 'stopping' | 'stopped' | 'error'
+
+type RealtimeConnectionView = {
+  title: string
+  detail: string
+  closeReason: string | null
+  closeReasonIsError: boolean
+}
+
+export const getRealtimeConnectionView = (
+  lifecycleState: LiveLifecycleState,
+  realtimeState: string,
+  realtimeMessage: string | undefined,
+  isConnected: boolean,
+  closeReason: string,
+): RealtimeConnectionView => {
+  if (lifecycleState === 'stopped') {
+    return {
+      title: 'Hoàn tất',
+      detail: 'Đã lưu transcript',
+      closeReason: null,
+      closeReasonIsError: false,
+    }
+  }
+
+  if (lifecycleState === 'stopping') {
+    return {
+      title: 'Đang dừng',
+      detail: 'Đang dừng và lưu transcript...',
+      closeReason: null,
+      closeReasonIsError: false,
+    }
+  }
+
+  if (lifecycleState === 'recording') {
+    return {
+      title: 'Đang ghi âm',
+      detail: 'Đang lắng nghe...',
+      closeReason: null,
+      closeReasonIsError: false,
+    }
+  }
+
+  if (lifecycleState === 'connecting') {
+    return {
+      title: 'Đang kết nối',
+      detail: 'Đang kết nối realtime...',
+      closeReason: null,
+      closeReasonIsError: false,
+    }
+  }
+
+  if (lifecycleState === 'error' || realtimeState === 'error') {
+    return {
+      title: 'Lỗi',
+      detail: realtimeMessage || 'Đã xảy ra lỗi realtime',
+      closeReason: closeReason || null,
+      closeReasonIsError: true,
+    }
+  }
+
+  return {
+    title: realtimeState,
+    detail: isConnected ? 'WebSocket đang mở' : (realtimeMessage || 'Sẵn sàng tạo meeting và bắt đầu ghi âm'),
+    closeReason: null,
+    closeReasonIsError: false,
+  }
+}
+
 const HYDRATION_INITIAL_DELAY_MS = 1500
-const HYDRATION_RETRY_DELAY_MS = 1500
+const HYDRATION_RETRY_DELAY_MS = 800
 const HYDRATION_MAX_ATTEMPTS = 10
+
+export const isCurrentLiveRecordingSession = (
+  completedSessionId: number,
+  completedMeetingId: number | null,
+  currentSessionId: number,
+  currentMeetingId: number | null,
+): boolean => {
+  return (
+    completedMeetingId !== null &&
+    completedSessionId === currentSessionId &&
+    completedMeetingId === currentMeetingId
+  )
+}
 
 const waitWithSignal = (delayMs: number, signal: AbortSignal): Promise<void> => {
   return new Promise((resolve, reject) => {
@@ -87,15 +169,56 @@ const pollUntilCompleted = async (
 export const hydrateLiveTranscriptSegments = async (
   meetingId: number,
   fetchTranscript: typeof getTranscript = getTranscript,
+  sessionToken: RealtimeSessionToken | null = null,
+  isSessionActive: ((token: RealtimeSessionToken | null) => boolean) | null = null,
+  options: { backendPartial?: boolean; backendResetRequired?: boolean } = {},
 ): Promise<TranscriptSegment[]> => {
   console.info('[Realtime] Post-stop transcript hydration started', { meetingId })
 
+  const isHydrationActive = () => {
+    if (sessionToken === null || isSessionActive === null) {
+      return true
+    }
+
+    return isSessionActive(sessionToken)
+  }
+
+  if (!isHydrationActive()) {
+    console.info('[Realtime] STALE_HYDRATION_IGNORED', { meetingId, phase: 'before-wait' })
+    return []
+  }
+
   await new Promise((resolve) => setTimeout(resolve, HYDRATION_INITIAL_DELAY_MS))
 
+  if (!isHydrationActive()) {
+    console.info('[Realtime] STALE_HYDRATION_IGNORED', { meetingId, phase: 'after-initial-wait' })
+    return []
+  }
+
+  let stableCount = 0
+  let previousFragments = -1
+  const forceStableHydration = Boolean(options.backendPartial || options.backendResetRequired)
+
   for (let attempt = 1; attempt <= HYDRATION_MAX_ATTEMPTS; attempt += 1) {
-    const transcript = await fetchTranscript(meetingId)
+    let transcript
+    try {
+      transcript = await fetchTranscript(meetingId)
+    } catch (error) {
+      if (!isHydrationActive()) {
+        console.info('[Realtime] STALE_HYDRATION_IGNORED', { meetingId, attempt, phase: 'fetch-error' })
+        return []
+      }
+
+      throw error
+    }
+
+    if (!isHydrationActive()) {
+      console.info('[Realtime] STALE_HYDRATION_IGNORED', { meetingId, attempt, phase: 'post-fetch' })
+      return []
+    }
+
     const hydratedSegments = mergeTranscriptSegments(
-      normalizePersistedTranscriptSegments(transcript.transcripts || []),
+      normalizePersistedTranscriptSegments(transcript.transcripts || [], { fallbackSpeaker: 'SPEAKER_1' }),
     )
 
     console.info('[Realtime] Post-stop transcript hydration attempt', {
@@ -104,7 +227,14 @@ export const hydrateLiveTranscriptSegments = async (
       fragments: hydratedSegments.length,
     })
 
-    if (hydratedSegments.length > 0) {
+    if (hydratedSegments.length === previousFragments) {
+      stableCount += 1
+    } else {
+      stableCount = 0
+      previousFragments = hydratedSegments.length
+    }
+
+    if (!forceStableHydration && hydratedSegments.length > 0) {
       console.info('[Realtime] Post-stop transcript hydration completed', {
         meetingId,
         attempts: attempt,
@@ -113,8 +243,30 @@ export const hydrateLiveTranscriptSegments = async (
       return hydratedSegments
     }
 
+    if (forceStableHydration) {
+      console.info('[Realtime] HYDRATION_WAITING_FOR_STABLE_TRANSCRIPT', {
+        meetingId,
+        attempt,
+        fragments: hydratedSegments.length,
+        stableCount,
+      })
+      if (hydratedSegments.length > 0 && stableCount >= 1) {
+        console.info('[Realtime] HYDRATION_STABLE_COMPLETED', {
+          meetingId,
+          attempts: attempt,
+          persistedFragments: hydratedSegments.length,
+        })
+        return hydratedSegments
+      }
+    }
+
     if (attempt < HYDRATION_MAX_ATTEMPTS) {
       await new Promise((resolve) => setTimeout(resolve, HYDRATION_RETRY_DELAY_MS))
+
+      if (!isHydrationActive()) {
+        console.info('[Realtime] STALE_HYDRATION_IGNORED', { meetingId, attempt, phase: 'retry-wait' })
+        return []
+      }
     }
   }
 
@@ -133,6 +285,7 @@ export default function App() {
   const [result, setResult] = useState<ResultView | null>(null)
   const [liveMeetingId, setLiveMeetingId] = useState<number | null>(null)
   const [liveError, setLiveError] = useState<string | null>(null)
+  const [livePartialWarning, setLivePartialWarning] = useState<string | null>(null)
   const [liveStatusMessage, setLiveStatusMessage] = useState<string | null>(null)
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
@@ -142,8 +295,15 @@ export default function App() {
   const [joinMeetingIdInput, setJoinMeetingIdInput] = useState('')
   const [showJoinOtherMeeting, setShowJoinOtherMeeting] = useState(false)
   const [hydratedLiveTranscriptSegments, setHydratedLiveTranscriptSegments] = useState<TranscriptSegment[] | null>(null)
+  const [liveLifecycleState, setLiveLifecycleState] = useState<LiveLifecycleState>('idle')
+  const [activeRealtimeSessionToken, setActiveRealtimeSessionToken] = useState<RealtimeSessionToken | null>(null)
   const abortControllerRef = useRef<AbortController | null>(null)
   const liveMeetingIdRef = useRef<number | null>(null)
+  const liveRecordingSessionIdRef = useRef(0)
+  const activeRealtimeSessionTokenRef = useRef<RealtimeSessionToken | null>(null)
+  const realtimeAttemptIdRef = useRef(0)
+  const resetRecoveryInProgressRef = useRef(false)
+  const restartAfterReconnectRef = useRef(false)
 
   const isRealtimeEnabled = REALTIME_WS_ENABLED
   const currentUserId = getCurrentUserId()
@@ -152,14 +312,136 @@ export default function App() {
     ? parsedRealtimeUserId
     : null
   const realtimeToken = getAccessToken() ?? ''
-  const audioRecorder = useAudioRecorder()
+  const audioRecorder = useAudioRecorder(liveMeetingId)
   const realtimeStream = useRealtimeMeetingStream({
     meetingId: liveMeetingId,
     userId: realtimeUserId,
     token: realtimeToken,
+    sessionToken: activeRealtimeSessionToken,
     enabled: isAuthenticated && isRealtimeEnabled && viewMode === 'realtime',
     autoReconnect: true,
   })
+
+  useEffect(() => {
+    activeRealtimeSessionTokenRef.current = activeRealtimeSessionToken
+  }, [activeRealtimeSessionToken])
+
+  const isCurrentRealtimeSessionToken = (candidate: RealtimeSessionToken | null): boolean => {
+    const active = activeRealtimeSessionTokenRef.current
+    if (!candidate || !active) {
+      return false
+    }
+
+    return (
+      candidate.meetingId === active.meetingId
+      && candidate.recordingSessionId === active.recordingSessionId
+      && candidate.attemptId === active.attemptId
+      && candidate.connectionSeq === active.connectionSeq
+    )
+  }
+
+  const activateRealtimeSessionToken = (token: RealtimeSessionToken | null) => {
+    activeRealtimeSessionTokenRef.current = token
+    setActiveRealtimeSessionToken(token)
+  }
+
+  useEffect(() => {
+    if (!realtimeStream.status.resetRequired) {
+      resetRecoveryInProgressRef.current = false
+      return
+    }
+
+    if (resetRecoveryInProgressRef.current) {
+      return
+    }
+
+    if (audioRecorder.state !== 'recording' && audioRecorder.state !== 'paused') {
+      return
+    }
+
+    resetRecoveryInProgressRef.current = true
+    console.info('[Realtime] FRONTEND_RESET_RECORDER_AFTER_RESET_REQUIRED', {
+      meetingId: liveMeetingIdRef.current,
+      recorderState: audioRecorder.state,
+    })
+    realtimeStream.clearQueuedAudio?.()
+    audioRecorder.abortRecording()
+    setLivePartialWarning('Transcript có thể chưa đầy đủ')
+
+    void audioRecorder.startRecording().catch((error) => {
+      setLiveError(error instanceof Error ? error.message : 'Không thể khởi động lại ghi âm')
+    })
+  }, [audioRecorder, realtimeStream, realtimeStream.status.resetRequired])
+
+  useEffect(() => {
+    const isRealtimeRecordingActive = audioRecorder.state === 'recording' || audioRecorder.state === 'paused'
+    if (!isRealtimeRecordingActive) {
+      return
+    }
+
+    if (realtimeStream.status.state !== 'reconnecting') {
+      return
+    }
+
+    restartAfterReconnectRef.current = true
+    realtimeStream.clearQueuedAudio?.()
+    audioRecorder.abortRecording()
+    setLiveStatusMessage('WebSocket bị ngắt, đang khôi phục kết nối...')
+  }, [audioRecorder, realtimeStream, realtimeStream.status.state])
+
+  useEffect(() => {
+    if (!restartAfterReconnectRef.current) {
+      return
+    }
+
+    if (!realtimeStream.isAuthenticated) {
+      return
+    }
+
+    if (audioRecorder.state !== 'idle' || liveMeetingIdRef.current === null) {
+      return
+    }
+
+    restartAfterReconnectRef.current = false
+    setLiveStatusMessage('Đang ghi âm...')
+    setLiveError(null)
+    setLiveLifecycleState('recording')
+    void audioRecorder.startRecording().catch((error) => {
+      setLiveError(error instanceof Error ? error.message : 'Không thể khôi phục ghi âm sau khi reconnect')
+    })
+  }, [audioRecorder, realtimeStream.isAuthenticated, audioRecorder.state])
+
+  useEffect(() => {
+    if (!realtimeStream.isAuthenticated) {
+      return
+    }
+
+    if (liveLifecycleState === 'connecting') {
+      setLiveStatusMessage('Đang lắng nghe...')
+    }
+  }, [liveLifecycleState, realtimeStream.isAuthenticated])
+
+  useEffect(() => {
+    if (audioRecorder.state === 'connecting') {
+      setLiveLifecycleState('connecting')
+      return
+    }
+
+    if (audioRecorder.state === 'recording') {
+      setLiveLifecycleState('recording')
+      return
+    }
+
+    if (audioRecorder.state === 'stopped') {
+      setLiveLifecycleState('stopped')
+      return
+    }
+
+    if (audioRecorder.state === 'error') {
+      setLiveLifecycleState('error')
+      return
+    }
+  }, [audioRecorder.state])
 
   useEffect(() => {
     setIsAuthenticated(Boolean(getAccessToken()))
@@ -199,16 +481,22 @@ export default function App() {
 
   const handleLogout = () => {
     audioRecorder.stopRecording()
+    realtimeStream.disconnect(activeRealtimeSessionTokenRef.current)
+    activateRealtimeSessionToken(null)
     clearAccessToken()
     setIsAuthenticated(false)
     setResult(null)
     setLiveMeetingId(null)
     liveMeetingIdRef.current = null
+    liveRecordingSessionIdRef.current = 0
+    realtimeAttemptIdRef.current = 0
     setHydratedLiveTranscriptSegments(null)
     setStatus('idle')
     setErrorMessage(null)
     setLiveError(null)
+    setLivePartialWarning(null)
     setLiveStatusMessage(null)
+    setLiveLifecycleState('idle')
     setPassword('')
     setJoinMeetingIdInput('')
     setShowJoinOtherMeeting(false)
@@ -220,6 +508,16 @@ export default function App() {
   const liveTranscriptKeywords = useMemo(() => realtimeStream.keywords.map((keyword) => keyword.keyword), [realtimeStream.keywords])
   const liveModeActive = isRealtimeEnabled && viewMode === 'realtime' && realtimeUserId !== null
   const liveTranscriptSegments = hydratedLiveTranscriptSegments ?? realtimeStream.transcripts
+  const connectionView = useMemo(
+    () => getRealtimeConnectionView(
+      liveLifecycleState,
+      realtimeStream.status.state,
+      realtimeStream.status.message,
+      realtimeStream.isConnected,
+      realtimeStream.closeReason,
+    ),
+    [liveLifecycleState, realtimeStream.closeReason, realtimeStream.isConnected, realtimeStream.status.message, realtimeStream.status.state],
+  )
 
   useEffect(() => {
     if (viewMode !== 'realtime' || liveMeetingId === null) {
@@ -278,16 +576,16 @@ export default function App() {
       if (error instanceof DOMException && error.name === 'AbortError') {
         setErrorMessage('Processing cancelled')
       } else {
-        const message = error.status === 401 
+        const message = error.status === 401
           ? 'Phiên đăng nhập hết hạn, vui lòng đăng nhập lại'
-          : error.status === 413 
+          : error.status === 413
           ? 'File quá lớn (tối đa 200MB)'
           : error.status === 415
           ? 'Định dạng file không được hỗ trợ'
           : error.message || 'Lỗi không xác định, vui lòng thử lại'
-        
+
         setErrorMessage(message)
-        
+
         if (error.status === 401) {
           handleLogout()
         }
@@ -311,17 +609,35 @@ export default function App() {
     }
 
     setLiveError(null)
+    setLivePartialWarning(null)
     setHydratedLiveTranscriptSegments(null)
+    realtimeStream.clearQueuedAudio?.()
+    realtimeStream.disconnect(activeRealtimeSessionTokenRef.current)
+    activateRealtimeSessionToken(null)
     setLiveMeetingId(parsedMeetingId)
     liveMeetingIdRef.current = parsedMeetingId
+    liveRecordingSessionIdRef.current = 0
+    setLiveLifecycleState('idle')
     setShowJoinOtherMeeting(false)
     setViewMode('realtime')
   }
 
-  const handlePrepareLiveMeeting = async () => {
+  const handlePrepareLiveMeeting = async (): Promise<{ expectedSessionId: number }> => {
     setLiveError(null)
+    setLivePartialWarning(null)
     setLiveStatusMessage('Đang tạo meeting mới...')
     setHydratedLiveTranscriptSegments(null)
+    setLiveLifecycleState('connecting')
+    realtimeStream.clearQueuedAudio?.()
+    realtimeStream.disconnect(activeRealtimeSessionTokenRef.current)
+    audioRecorder.abortRecording()
+    setLiveMeetingId(null)
+    liveMeetingIdRef.current = null
+    const sessionId = audioRecorder.recordingSessionId + 1
+    const attemptId = realtimeAttemptIdRef.current + 1
+    realtimeAttemptIdRef.current = attemptId
+    let meetingCreated = false
+    let sessionToken: RealtimeSessionToken | null = null
 
     try {
       const bootstrapFile = createLiveMeetingBootstrapFile()
@@ -331,53 +647,213 @@ export default function App() {
         throw new Error('Meeting ID trả về không hợp lệ')
       }
 
+      if (realtimeAttemptIdRef.current !== attemptId) {
+        console.info('[Realtime] STALE_SESSION_PREPARE_IGNORED', {
+          meetingId: normalizedMeetingId,
+          attemptId,
+          recordingSessionId: sessionId,
+        })
+        throw new Error('Stale realtime session prepare ignored')
+      }
+
+      sessionToken = {
+        meetingId: normalizedMeetingId,
+        recordingSessionId: sessionId,
+        attemptId,
+        connectionSeq: 0,
+      }
+      liveRecordingSessionIdRef.current = sessionId
       setLiveMeetingId(normalizedMeetingId)
       liveMeetingIdRef.current = normalizedMeetingId
+      activateRealtimeSessionToken(sessionToken)
+      meetingCreated = true
+      // Minimal audit log for session lifecycle.
+      // eslint-disable-next-line no-console
+      console.info('[Realtime] REALTIME_START', {
+        meetingId: normalizedMeetingId,
+        sessionId,
+      })
+      setLiveStatusMessage(`Meeting ${normalizedMeetingId} đang kết nối realtime...`)
+
+      await realtimeStream.waitForSessionReady(undefined, normalizedMeetingId, sessionToken)
+
+      if (
+        !isCurrentRealtimeSessionToken(sessionToken)
+        || liveRecordingSessionIdRef.current !== sessionId
+        || liveMeetingIdRef.current !== normalizedMeetingId
+      ) {
+        throw new Error('Stale realtime session prepare ignored')
+      }
+
       setLiveStatusMessage(`Meeting ${normalizedMeetingId} sẵn sàng ghi âm`)
+      return { expectedSessionId: sessionId }
     } catch (error) {
+      if (sessionToken !== null && !isCurrentRealtimeSessionToken(sessionToken)) {
+        console.info('[Realtime] STALE_SESSION_PREPARE_IGNORED', {
+          meetingId: liveMeetingIdRef.current,
+          attemptId,
+          recordingSessionId: sessionId,
+        })
+        throw error instanceof Error ? error : new Error('Stale realtime session prepare ignored')
+      }
+
       const message = error instanceof Error ? error.message : 'Không thể tạo meeting mới'
       setLiveError(message)
       setLiveStatusMessage(null)
+      setLiveLifecycleState('error')
+      if (meetingCreated) {
+        realtimeStream.clearQueuedAudio?.()
+        realtimeStream.disconnect(sessionToken)
+        setLiveMeetingId(null)
+        liveMeetingIdRef.current = null
+      }
+      liveRecordingSessionIdRef.current = 0
       throw error
     }
   }
 
-  const handleLiveChunkReady = async (chunk: Blob) => {
+  const handleLiveChunkReady = async (chunk: Blob, sessionId: number) => {
+    const activeToken = activeRealtimeSessionTokenRef.current
     const activeMeetingId = liveMeetingIdRef.current
-    if (!activeMeetingId) {
+    if (!activeMeetingId || sessionId !== liveRecordingSessionIdRef.current || !activeToken) {
+      if (!activeMeetingId) {
+        // eslint-disable-next-line no-console
+        console.error('[Realtime] STARTUP_INVARIANT_BROKEN', {
+          reason: 'chunk_received_without_active_meeting',
+          sessionId,
+          activeSessionId: liveRecordingSessionIdRef.current,
+        })
+      }
+      // eslint-disable-next-line no-console
+      console.warn('[Realtime] REALTIME_DROP_STALE_CHUNK', {
+        currentMeetingId: activeMeetingId,
+        sessionId,
+        activeSessionId: liveRecordingSessionIdRef.current,
+      })
+      return
+    }
+
+    if (!isCurrentRealtimeSessionToken(activeToken)) {
+      // eslint-disable-next-line no-console
+      console.warn('[Realtime] REALTIME_DROP_STALE_CHUNK', {
+        currentMeetingId: activeMeetingId,
+        sessionId,
+        activeSessionId: liveRecordingSessionIdRef.current,
+        reason: 'stale_session_token',
+      })
       return
     }
 
     try {
+      // eslint-disable-next-line no-console
+      console.info('[Realtime] REALTIME_CHUNK_SEND', {
+        meetingId: activeMeetingId,
+        sessionId,
+        size: chunk.size,
+      })
       await realtimeStream.sendAudioChunk(chunk, String(activeMeetingId))
     } catch (error) {
       console.error('Failed to send audio chunk:', error)
       setLiveError(error instanceof Error ? error.message : 'Không thể gửi audio chunk')
+      setLiveLifecycleState('error')
     }
   }
 
-  const handleLiveRecordingComplete = async (fullAudio: Blob) => {
+  const handleLiveRecordingComplete = async (fullAudio: Blob, sessionId: number) => {
+    const sessionToken = activeRealtimeSessionTokenRef.current
+    const completedMeetingId = liveMeetingIdRef.current
+    if (!sessionToken || !isCurrentLiveRecordingSession(sessionId, completedMeetingId, liveRecordingSessionIdRef.current, liveMeetingIdRef.current)) {
+      // eslint-disable-next-line no-console
+      console.warn('[Realtime] REALTIME_DROP_STALE_CHUNK', {
+        currentMeetingId: completedMeetingId,
+        sessionId,
+        activeSessionId: liveRecordingSessionIdRef.current,
+      })
+      return
+    }
+
     setLiveStatusMessage(`Đã ghi âm ${Math.max(1, Math.round(fullAudio.size / 1024))} KB`)
     try {
+      if (!isCurrentRealtimeSessionToken(sessionToken)) {
+        console.info('[Realtime] STALE_SESSION_COMPLETE_IGNORED', {
+          meetingId: completedMeetingId,
+          sessionId,
+        })
+        return
+      }
+
+      setLiveLifecycleState('stopping')
+      // eslint-disable-next-line no-console
+      console.info('[Realtime] REALTIME_STOP', {
+        meetingId: liveMeetingIdRef.current,
+        sessionId,
+      })
+
       if (realtimeStream?.stopStream) {
         realtimeStream.stopStream()
       }
 
       const activeMeetingId = liveMeetingIdRef.current
       if (activeMeetingId) {
-        const hydratedSegments = await hydrateLiveTranscriptSegments(activeMeetingId)
+        const partialState = Boolean(realtimeStream.status.resetRequired || realtimeStream.status.message?.includes('chưa đầy đủ'))
+        const hydratedSegments = await hydrateLiveTranscriptSegments(
+          activeMeetingId,
+          getTranscript,
+          sessionToken,
+          isCurrentRealtimeSessionToken,
+          { backendPartial: partialState, backendResetRequired: realtimeStream.status.resetRequired },
+        )
+        if (!isCurrentRealtimeSessionToken(sessionToken) || !isCurrentLiveRecordingSession(sessionId, completedMeetingId, liveRecordingSessionIdRef.current, liveMeetingIdRef.current)) {
+          return
+        }
         setHydratedLiveTranscriptSegments(hydratedSegments)
+        if (partialState) {
+          setLivePartialWarning('Transcript có thể chưa đầy đủ')
+          console.info('[Realtime] TRANSCRIPT_PARTIAL_WARNING', {
+            meetingId: activeMeetingId,
+            fragments: hydratedSegments.length,
+          })
+        }
       } else {
+        if (!isCurrentRealtimeSessionToken(sessionToken)) {
+          return
+        }
         setHydratedLiveTranscriptSegments([])
       }
 
       // Close connection gracefully
-      if (realtimeStream?.disconnect) {
-        realtimeStream.disconnect()
+      if (
+        isCurrentLiveRecordingSession(
+          sessionId,
+          completedMeetingId,
+          liveRecordingSessionIdRef.current,
+          liveMeetingIdRef.current,
+        ) && realtimeStream?.disconnect
+      ) {
+        realtimeStream.disconnect(sessionToken)
       }
+
+      setLiveLifecycleState('stopped')
+      setLiveError(null)
+      setLiveStatusMessage('Đã dừng ghi âm')
+
+      // eslint-disable-next-line no-console
+      console.info('[Realtime] REALTIME_CLEANUP_DONE', {
+        meetingId: liveMeetingIdRef.current,
+        sessionId,
+      })
     } catch (err) {
+      if (!isCurrentRealtimeSessionToken(sessionToken)) {
+        console.info('[Realtime] STALE_HYDRATION_IGNORED', {
+          meetingId: completedMeetingId,
+          sessionId,
+        })
+        return
+      }
+
       console.error('Error during finalization after recording stop:', err)
       setHydratedLiveTranscriptSegments([])
+      setLiveLifecycleState('error')
     }
   }
 
@@ -508,7 +984,7 @@ export default function App() {
             <div>
               <h2 style={{ margin: 0 }}>Ghi âm trực tiếp</h2>
               <p style={{ margin: '6px 0 0', color: '#475569' }}>
-                {liveStatusMessage || realtimeStream.status.message || 'Sẵn sàng tạo meeting và bắt đầu ghi âm'}
+                {liveStatusMessage || connectionView.detail || 'Sẵn sàng tạo meeting và bắt đầu ghi âm'}
               </p>
             </div>
             {liveMeetingId && (
@@ -520,6 +996,7 @@ export default function App() {
 
           <AudioRecorderButton
             recorder={audioRecorder}
+            lifecycleState={liveLifecycleState}
             onBeforeStartRecording={handlePrepareLiveMeeting}
             onChunkReady={handleLiveChunkReady}
             onRecordingComplete={handleLiveRecordingComplete}
@@ -533,6 +1010,16 @@ export default function App() {
               borderRadius: 8,
             }}>
               {liveError}
+            </div>
+          )}
+          {livePartialWarning && (
+            <div style={{
+              padding: '10px 14px',
+              background: '#fef3c7',
+              color: '#92400e',
+              borderRadius: 8,
+            }}>
+              {livePartialWarning}
             </div>
           )}
 
@@ -569,14 +1056,14 @@ export default function App() {
                   Connection
                 </div>
                 <div style={{ fontSize: 18, fontWeight: 700, marginTop: 4 }}>
-                  {realtimeStream.status.state}
+                  {connectionView.title}
                 </div>
                 <div style={{ marginTop: 6, color: '#475569' }}>
-                  {realtimeStream.isConnected ? 'WebSocket đang mở' : realtimeStream.status.message || 'Chờ kết nối'}
+                  {connectionView.detail}
                 </div>
-                {realtimeStream.closeReason && (
-                  <div style={{ marginTop: 6, color: '#991b1b', fontSize: 13 }}>
-                    Close reason: {realtimeStream.closeReason}
+                {connectionView.closeReason && (
+                  <div style={{ marginTop: 6, color: connectionView.closeReasonIsError ? '#991b1b' : '#475569', fontSize: 13 }}>
+                    Close reason: {connectionView.closeReason}
                   </div>
                 )}
               </div>

@@ -4,9 +4,10 @@ import './AudioRecorderButton.css'
 
 interface AudioRecorderButtonProps {
   recorder: UseAudioRecorderReturn
-  onChunkReady?: (chunk: Blob) => void
-  onRecordingComplete?: (fullAudio: Blob) => void
-  onBeforeStartRecording?: () => Promise<void> | void
+  onChunkReady?: (chunk: Blob, sessionId: number) => void
+  onRecordingComplete?: (fullAudio: Blob, sessionId: number) => void
+  onBeforeStartRecording?: () => Promise<{ expectedSessionId?: number } | void> | { expectedSessionId?: number } | void
+  lifecycleState?: 'idle' | 'connecting' | 'recording' | 'stopping' | 'stopped' | 'error'
 }
 
 const RECORDING_MIME_TYPE = 'audio/webm; codecs=opus'
@@ -22,10 +23,12 @@ export function AudioRecorderButton({
   onChunkReady,
   onRecordingComplete,
   onBeforeStartRecording,
+  lifecycleState,
 }: AudioRecorderButtonProps) {
   const emittedChunkCountRef = useRef(0)
   const completionEmittedRef = useRef(false)
   const [isBusy, setIsBusy] = useState(false)
+  const effectiveState = lifecycleState ?? recorder.state
 
   useEffect(() => {
     if (recorder.audioChunks.length < emittedChunkCountRef.current) {
@@ -33,33 +36,36 @@ export function AudioRecorderButton({
     }
 
     if (recorder.audioChunks.length > emittedChunkCountRef.current) {
+      const sessionId = recorder.recordingSessionId
       for (let index = emittedChunkCountRef.current; index < recorder.audioChunks.length; index += 1) {
-        onChunkReady?.(recorder.audioChunks[index])
+        onChunkReady?.(recorder.audioChunks[index], sessionId)
       }
       emittedChunkCountRef.current = recorder.audioChunks.length
     }
-  }, [onChunkReady, recorder.audioChunks])
+  }, [onChunkReady, recorder.audioChunks, recorder.recordingSessionId])
 
   useEffect(() => {
-    if (recorder.state === 'recording' || recorder.state === 'paused' || recorder.state === 'requesting-permission') {
+    if (effectiveState === 'recording' || effectiveState === 'paused' || effectiveState === 'connecting') {
       completionEmittedRef.current = false
     }
 
     if (
-      recorder.state === 'stopped' &&
+      effectiveState === 'stopped' &&
       !completionEmittedRef.current &&
       recorder.audioChunks.length > 0 &&
       emittedChunkCountRef.current >= recorder.audioChunks.length
     ) {
       completionEmittedRef.current = true
-      onRecordingComplete?.(new Blob(recorder.audioChunks, { type: RECORDING_MIME_TYPE }))
+      onRecordingComplete?.(new Blob(recorder.audioChunks, { type: RECORDING_MIME_TYPE }), recorder.recordingSessionId)
     }
-  }, [onRecordingComplete, recorder.audioChunks, recorder.state])
+  }, [effectiveState, onRecordingComplete, recorder.audioChunks, recorder.recordingSessionId])
 
   const statusLabel = useMemo(() => {
-    switch (recorder.state) {
-      case 'requesting-permission':
-        return 'Đang xin quyền...'
+    switch (effectiveState) {
+      case 'connecting':
+        return 'Đang kết nối realtime...'
+      case 'stopping':
+        return 'Đang dừng và lưu transcript...'
       case 'recording':
         return `Đang ghi âm ${formatDuration(recorder.duration)}`
       case 'paused':
@@ -71,42 +77,44 @@ export function AudioRecorderButton({
       default:
         return 'Sẵn sàng ghi âm'
     }
-  }, [recorder.duration, recorder.errorMessage, recorder.state])
+  }, [effectiveState, recorder.duration, recorder.errorMessage])
 
   const buttonLabel = useMemo(() => {
-    switch (recorder.state) {
+    switch (effectiveState) {
       case 'recording':
         return 'Dừng ghi âm'
       case 'paused':
         return 'Tiếp tục'
-      case 'requesting-permission':
-        return 'Đang xin quyền...'
+      case 'connecting':
+        return 'Đang kết nối realtime...'
+      case 'stopping':
+        return 'Đang dừng...'
       case 'error':
         return 'Thử lại'
       default:
         return 'Bắt đầu ghi âm'
     }
-  }, [recorder.state])
+  }, [effectiveState])
 
   const handleClick = async () => {
-    if (isBusy || recorder.state === 'requesting-permission') {
+    if (isBusy || effectiveState === 'connecting' || effectiveState === 'stopping') {
       return
     }
 
-    if (recorder.state === 'recording') {
+    if (effectiveState === 'recording') {
       recorder.stopRecording()
       return
     }
 
-    if (recorder.state === 'paused') {
+    if (effectiveState === 'paused') {
       recorder.resumeRecording()
       return
     }
 
     setIsBusy(true)
     try {
-      await onBeforeStartRecording?.()
-      await recorder.startRecording()
+      const prepareResult = await onBeforeStartRecording?.()
+      await recorder.startRecording(prepareResult?.expectedSessionId)
     } catch (error) {
       console.error('[AudioRecorderButton] Failed to start recording:', error)
     } finally {
@@ -114,10 +122,10 @@ export function AudioRecorderButton({
     }
   }
 
-  const isActive = recorder.state === 'recording'
-  const isPaused = recorder.state === 'paused'
-  const isError = recorder.state === 'error'
-  const disabled = recorder.state === 'requesting-permission' || isBusy
+  const isActive = effectiveState === 'recording'
+  const isPaused = effectiveState === 'paused'
+  const isError = effectiveState === 'error'
+  const disabled = effectiveState === 'connecting' || effectiveState === 'stopping' || isBusy
 
   return (
     <div className="audio-recorder-widget">
@@ -135,7 +143,13 @@ export function AudioRecorderButton({
       <div className="audio-recorder-widget__meta">
         <div className="audio-recorder-widget__status">{statusLabel}</div>
         <div className="audio-recorder-widget__hint">
-          {isActive ? 'Nhấn để dừng' : isPaused ? 'Nhấn để tiếp tục' : 'Nhấn để bắt đầu'}
+          {effectiveState === 'stopped'
+            ? 'Đã lưu transcript'
+            : isActive
+              ? 'Nhấn để dừng'
+              : isPaused
+                ? 'Nhấn để tiếp tục'
+                : 'Nhấn để bắt đầu'}
         </div>
       </div>
 

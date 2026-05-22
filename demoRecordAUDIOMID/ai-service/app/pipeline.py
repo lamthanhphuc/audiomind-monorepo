@@ -12,7 +12,10 @@ from app.models import Analysis, Transcript, TranscriptFragment
 from app.services.analysis_factory import build_analysis_analyzer
 from app.services.audio_processor import AudioProcessor
 from app.services.speech_recognizer import SpeechRecognizer
-from app.services.stt_adapter import DeepgramSTTAdapter
+from app.services.stt_adapter import (
+    DeepgramSTTAdapter,
+    normalize_deepgram_speaker_label,
+)
 from app.services.stt_persistence import (
     TranscriptFragmentInput,
     TranscriptPersistenceRepository,
@@ -71,6 +74,9 @@ class ProcessingPipeline:
         if self.ai_analyzer is None:
             self.ai_analyzer = build_analysis_analyzer(settings)
 
+        if self._should_use_native_deepgram_diarization():
+            return
+
         diarization_enabled = self._should_enable_diarization(runtime_device)
         if diarization_enabled and self.speaker_diarizer is None:
             try:
@@ -93,6 +99,9 @@ class ProcessingPipeline:
         if runtime_device == "cuda":
             return True
         return settings.enable_speaker_diarization
+
+    def _should_use_native_deepgram_diarization(self) -> bool:
+        return bool(settings.enable_speaker_diarization and settings.deepgram_diarize)
 
     def _record_baseline_snapshot(self, meeting_id: int, runtime_device: str) -> None:
         payload = {
@@ -121,13 +130,18 @@ class ProcessingPipeline:
         normalized = []
 
         for seg in segments:
-            raw_speaker = str(seg.get("speaker", "UNKNOWN")).strip() or "UNKNOWN"
+            raw_speaker = normalize_deepgram_speaker_label(
+                seg.get("speaker"), default=None
+            )
+            if raw_speaker is None:
+                raw_speaker = str(seg.get("speaker", "UNKNOWN")).strip() or "UNKNOWN"
             canonical = speaker_map.get(raw_speaker)
             if canonical is None:
                 canonical = f"SPEAKER_{len(speaker_map) + 1}"
                 speaker_map[raw_speaker] = canonical
 
-            normalized.append(
+            normalized_segment = dict(seg)
+            normalized_segment.update(
                 {
                     "speaker": canonical,
                     "start": seg.get("start"),
@@ -135,6 +149,7 @@ class ProcessingPipeline:
                     "text": seg.get("text", ""),
                 }
             )
+            normalized.append(normalized_segment)
 
         return normalized
 
@@ -346,14 +361,12 @@ class ProcessingPipeline:
             for pattern, target in replacements.items():
                 text = re.sub(pattern, target, text, flags=re.IGNORECASE)
 
-            normalized.append(
-                {
-                    "start": seg.get("start"),
-                    "end": seg.get("end"),
-                    "text": text,
-                    "words": seg.get("words", []),
-                }
-            )
+            normalized_segment = dict(seg)
+            normalized_segment["start"] = seg.get("start")
+            normalized_segment["end"] = seg.get("end")
+            normalized_segment["text"] = text
+            normalized_segment["words"] = seg.get("words", [])
+            normalized.append(normalized_segment)
 
         return normalized
 
@@ -403,6 +416,8 @@ class ProcessingPipeline:
                     model=deepgram_batch_model,
                     base_url=settings.deepgram_base_url,
                     timeout_seconds=settings.deepgram_timeout_seconds,
+                    enable_speaker_diarization=settings.enable_speaker_diarization,
+                    deepgram_diarize=settings.deepgram_diarize,
                 )
                 result = deepgram_adapter.batch_transcribe_file(
                     file_path=audio_path,
@@ -539,7 +554,20 @@ class ProcessingPipeline:
                 self._should_enable_diarization(runtime_device)
                 and self.diarization_available
             )
-            if diarization_enabled and self.speaker_diarizer is not None:
+            if self._should_use_native_deepgram_diarization():
+                logger.info("Step 3/4: Native Deepgram speaker diarization enabled")
+                aligned_segments = self._normalize_speaker_labels(transcript_segments)
+                speaker_count = (
+                    len(
+                        {
+                            str(segment.get("speaker") or "SPEAKER_1")
+                            for segment in aligned_segments
+                        }
+                    )
+                    or 1
+                )
+                logger.info(f"Diarization complete: {speaker_count} speakers detected")
+            elif diarization_enabled and self.speaker_diarizer is not None:
                 # Step 3: Speaker diarization
                 logger.info("Step 3: Speaker diarization")
                 diarization = self.speaker_diarizer.diarize(resolved_audio_path)

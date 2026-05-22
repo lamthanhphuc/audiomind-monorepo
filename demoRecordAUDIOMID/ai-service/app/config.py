@@ -44,6 +44,7 @@ class Settings(BaseSettings):
     deepgram_timeout_seconds: int = 30
     deepgram_simplify_streaming_url: bool = False
     deepgram_debug_raw_messages: bool = False
+    deepgram_diarize: bool = False
 
     # Provider selection (MVP defaults)
     stt_provider: str = "deepgram"
@@ -219,12 +220,16 @@ class Settings(BaseSettings):
                 "Invalid production openai_api_key: empty secret is not allowed when ai_provider=openai"
             )
 
+        native_deepgram_diarization_enabled = bool(
+            self.enable_speaker_diarization and self.deepgram_diarize
+        )
         if (
             self.enable_speaker_diarization
+            and not native_deepgram_diarization_enabled
             and not (self.huggingface_token or "").strip()
         ):
             raise ValueError(
-                "Invalid production huggingface_token: empty secret is not allowed when diarization is enabled"
+                "Invalid production huggingface_token: empty secret is not allowed when local diarization is enabled"
             )
 
         return self

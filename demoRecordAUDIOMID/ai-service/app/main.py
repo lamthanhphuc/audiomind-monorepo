@@ -1,3 +1,13 @@
+import asyncio
+import sys
+import threading
+import time
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
+from pathlib import Path
+from uuid import uuid4
+
+import numpy as np
 from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -7,58 +17,49 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 from starlette.requests import Request
 from starlette.responses import Response
-from dataclasses import dataclass
-import asyncio
-import numpy as np
-import threading
-import time
-from contextlib import asynccontextmanager
-from pathlib import Path
-from uuid import uuid4
-import sys
 
+from app.config import get_runtime_device, get_settings
 from app.database import (
-    get_db,
-    engine,
     Base,
-    wait_for_database,
+    engine,
     ensure_bigint_meeting_id,
+    get_db,
+    wait_for_database,
 )
-from app.schemas import (
-    ProcessRequest,
-    ProcessResponse,
-    TranscriptResponse,
-    AnalysisResponse,
-    TranscriptSegment,
-    ActionItem,
-    SttStreamResponse,
-)
-from app.config import get_settings, get_runtime_device
-from app.metrics import stt_metrics
 from app.ffmpeg_utils import ensure_ffmpeg_on_path
 from app.job_status_store import (
-    cleanup_expired_job_statuses,
     _get_client,
+    cleanup_expired_job_statuses,
     get_job_status,
     load_job_statuses,
     set_job_status,
 )
-from app.tasks import process_meeting
+from app.metrics import stt_metrics
+from app.schemas import (
+    ActionItem,
+    AnalysisResponse,
+    ProcessRequest,
+    ProcessResponse,
+    SttStreamResponse,
+    TranscriptResponse,
+    TranscriptSegment,
+)
 from app.services.glossary_repository import GlossaryRepository
 from app.services.glossary_service import GlossaryService
+from app.services.grpc_stt_service import AiStreamServicer, create_grpc_server
 from app.services.stt_adapter import (
     DeepgramSTTAdapter,
     is_terminal_error,
     is_transient_error,
 )
-from app.services.stt_session_actor import MeetingSessionActor, MeetingSessionState
-from app.services.stt_persistence import TranscriptPersistenceRepository
-from app.services.grpc_stt_service import AiStreamServicer, create_grpc_server
 from app.services.stt_ownership import (
     SttLease,
     SttOwnershipLost,
     get_stt_ownership_manager,
 )
+from app.services.stt_persistence import TranscriptPersistenceRepository
+from app.services.stt_session_actor import MeetingSessionActor, MeetingSessionState
+from app.tasks import process_meeting
 
 try:
     from app.pipeline import ProcessingPipeline
@@ -409,7 +410,10 @@ async def _get_or_create_stt_actor(
             headers={"Retry-After": str(retry_after_seconds)},
         )
 
-    if guard.requires_new_stream:
+    is_finalize_signal = bool(
+        seq == -1 and (chunk_bytes is None or len(chunk_bytes) == 0)
+    )
+    if guard.requires_new_stream and not is_finalize_signal:
         can_restart = (
             seq == 1 and chunk_bytes is not None and _is_webm_header_chunk(chunk_bytes)
         )
@@ -531,6 +535,8 @@ def _get_stt_adapter() -> DeepgramSTTAdapter | None:
         timeout_seconds=settings.deepgram_timeout_seconds,
         simplify_streaming_url=settings.deepgram_simplify_streaming_url,
         debug_raw_messages=settings.deepgram_debug_raw_messages,
+        enable_speaker_diarization=settings.enable_speaker_diarization,
+        deepgram_diarize=settings.deepgram_diarize,
     )
     return _stt_adapter
 
@@ -1057,8 +1063,10 @@ async def stream_stt_chunk(
             headers={"Retry-After": str(retry_after_seconds)},
         )
 
-    if guard.requires_new_stream and not (
-        seq == 1 and _is_webm_header_chunk(chunk_bytes)
+    if (
+        (not is_final)
+        and guard.requires_new_stream
+        and not (seq == 1 and _is_webm_header_chunk(chunk_bytes))
     ):
         logger.warning(
             "STT_RECONNECT_BLOCKED_WEBM_CONTINUATION meeting_id={} seq={} last_ack_seq={} reason={}",
@@ -1073,7 +1081,10 @@ async def stream_stt_chunk(
             detail={
                 "meeting_id": meeting_key,
                 "seq": seq,
+                "error": "webm_continuation_after_reconnect_blocked",
                 "reason": "new recording lifecycle required",
+                "reset_required": True,
+                "last_ack_seq": guard.last_terminal_seq,
             },
         )
 
@@ -1092,6 +1103,23 @@ async def stream_stt_chunk(
         if is_final:
             return cached_response
         raise HTTPException(status_code=409, detail="Meeting already finalized")
+
+    if is_final and guard.requires_new_stream:
+        logger.warning(
+            "FINALIZE_PARTIAL_TRANSCRIPT meeting_id={} seq={} last_ack_seq={} reason={}",
+            meeting_key,
+            seq,
+            guard.last_terminal_seq,
+            guard.last_terminal_close_error or "stream previously closed",
+        )
+        return SttStreamResponse(
+            transcript="",
+            is_final=True,
+            confidence=None,
+            finalized=False,
+            partial=True,
+            reset_required=True,
+        )
 
     try:
         actor = await _get_or_create_stt_actor(
@@ -1197,6 +1225,29 @@ async def stream_stt_chunk(
                 seq,
                 repr(exc),
             )
+            if is_final:
+                logger.warning(
+                    "FINALIZE_PARTIAL_TRANSCRIPT meeting_id={} seq={} last_ack_seq={} reason={}",
+                    meeting_key,
+                    seq,
+                    guard.last_terminal_seq,
+                    guard.last_terminal_close_error or error_name,
+                )
+                fallback_response = getattr(actor, "_last_persisted_response", None)
+                fallback_transcript = ""
+                fallback_confidence = None
+                if isinstance(fallback_response, SttStreamResponse):
+                    fallback_transcript = str(fallback_response.transcript or "")
+                    fallback_confidence = fallback_response.confidence
+                return SttStreamResponse(
+                    transcript=fallback_transcript,
+                    is_final=True,
+                    confidence=fallback_confidence,
+                    finalized=False,
+                    partial=True,
+                    reset_required=True,
+                )
+
             status_code = (
                 409
                 if guard.requires_new_stream or isinstance(exc, SttOwnershipLost)
@@ -1224,6 +1275,9 @@ async def stream_stt_chunk(
                     else None
                 ),
             }
+            if guard.requires_new_stream or isinstance(exc, SttOwnershipLost):
+                detail["error"] = "webm_continuation_after_reconnect_blocked"
+                detail["reset_required"] = True
             headers = None
             if guard.cooldown_until > time.time():
                 headers = {

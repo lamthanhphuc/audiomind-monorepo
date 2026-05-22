@@ -408,6 +408,59 @@ def test_stream_stt_chunk_final_signal_uses_finalize_path_for_synthetic_empty_ch
     assert FakeActor.instances[0].close_count == 1
 
 
+def test_stream_stt_chunk_blocked_continuation_returns_structured_reset_required(
+    monkeypatch,
+):
+    _reset_state(monkeypatch)
+    guard = main_module._get_stream_retry_guard("971")
+    guard.requires_new_stream = True
+    guard.last_terminal_seq = 8
+    guard.last_terminal_close_error = "ConnectionClosedError"
+
+    async def run_flow():
+        await main_module.stream_stt_chunk(
+            meeting_id=971,
+            audio_chunk=_make_upload_file(b"chunk-without-header"),
+            seq=13,
+            language="vi",
+            is_final=False,
+        )
+
+    with pytest.raises(Exception) as exc_info:
+        asyncio.run(run_flow())
+
+    detail = getattr(exc_info.value, "detail", {})
+    assert getattr(exc_info.value, "status_code", None) == 409
+    assert detail.get("error") == "webm_continuation_after_reconnect_blocked"
+    assert detail.get("reset_required") is True
+    assert detail.get("last_ack_seq") == 8
+
+
+def test_stream_stt_chunk_finalize_after_broken_stream_returns_partial_not_409(
+    monkeypatch,
+):
+    _reset_state(monkeypatch)
+    guard = main_module._get_stream_retry_guard("972")
+    guard.requires_new_stream = True
+    guard.last_terminal_seq = 8
+    guard.last_terminal_close_error = "ConnectionClosedError"
+
+    async def run_flow():
+        return await main_module.stream_stt_chunk(
+            meeting_id=972,
+            audio_chunk=_make_upload_file(b""),
+            seq=-1,
+            language="vi",
+            is_final=True,
+        )
+
+    response = asyncio.run(run_flow())
+    assert response.is_final is True
+    assert response.partial is True
+    assert response.finalized is False
+    assert response.reset_required is True
+
+
 def test_open_stt_session_json_route(monkeypatch):
     _reset_state(monkeypatch)
     monkeypatch.setattr(

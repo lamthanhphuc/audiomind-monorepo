@@ -1,12 +1,12 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createRoot } from 'react-dom/client'
 import { act } from 'react-dom/test-utils'
-import { useRealtimeMeetingStream } from './useRealtimeMeetingStream'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
-  mergeTranscriptSegments,
-  normalizePersistedTranscriptSegments,
-  normalizeTranscriptEvent,
+    mergeTranscriptSegments,
+    normalizePersistedTranscriptSegments,
+    normalizeTranscriptEvent,
 } from '../utils/transcript'
+import { useRealtimeMeetingStream, type RealtimeSessionToken } from './useRealtimeMeetingStream'
 
 class MockWebSocket {
   static instances: MockWebSocket[] = []
@@ -54,6 +54,7 @@ class MockWebSocket {
 }
 
 const originalWebSocket = globalThis.WebSocket
+const originalActEnvironment = (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT
 
 const flush = async () => {
   await act(async () => {
@@ -61,23 +62,34 @@ const flush = async () => {
   })
 }
 
+const createSessionToken = (meetingId: number, recordingSessionId: number, attemptId: number): RealtimeSessionToken => ({
+  meetingId,
+  recordingSessionId,
+  attemptId,
+  connectionSeq: 0,
+})
+
 describe('useRealtimeMeetingStream', () => {
   let container: HTMLDivElement
   let root: ReturnType<typeof createRoot>
   let latest: ReturnType<typeof useRealtimeMeetingStream> | null = null
+  let currentSessionToken: RealtimeSessionToken | null = null
 
   beforeEach(() => {
+    ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
     container = document.createElement('div')
     document.body.appendChild(container)
     root = createRoot(container)
     MockWebSocket.instances = []
     vi.stubGlobal('WebSocket', MockWebSocket)
+    currentSessionToken = createSessionToken(88, 1, 1)
 
     function Harness() {
       latest = useRealtimeMeetingStream({
         meetingId: 88,
         userId: 12,
         token: 'jwt-token',
+        sessionToken: currentSessionToken,
         enabled: true,
         autoReconnect: false,
       })
@@ -93,7 +105,20 @@ describe('useRealtimeMeetingStream', () => {
     act(() => {
       root.unmount()
     })
+    for (const socket of MockWebSocket.instances) {
+      if (socket.readyState === MockWebSocket.OPEN || socket.readyState === MockWebSocket.CONNECTING) {
+        socket.close()
+      }
+      socket.onopen = null
+      socket.onmessage = null
+      socket.onerror = null
+      socket.onclose = null
+    }
+    MockWebSocket.instances = []
+    vi.clearAllTimers()
+    vi.useRealTimers()
     container.remove()
+    ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = originalActEnvironment
     vi.stubGlobal('WebSocket', originalWebSocket as typeof WebSocket)
     vi.restoreAllMocks()
   })
@@ -526,6 +551,34 @@ describe('useRealtimeMeetingStream', () => {
     })
   })
 
+  it('falls back to SPEAKER_1 when realtime speaker data is missing or system', () => {
+    const missingSpeaker = normalizeTranscriptEvent({
+      type: 'transcript.partial',
+      segmentId: 'meeting-2-start-1.000',
+      startTime: 1,
+      endTime: 2,
+      text: 'Xin chào',
+      language: 'vi',
+    }, 'transcript.partial', { fallbackSpeaker: 'SPEAKER_1' })
+
+    const systemSpeaker = normalizeTranscriptEvent({
+      type: 'transcript.partial',
+      segmentId: 'meeting-2-start-2.000',
+      speaker: 'system',
+      startTime: 2,
+      endTime: 3,
+      text: 'Audiomind',
+      language: 'vi',
+    }, 'transcript.partial', { fallbackSpeaker: 'SPEAKER_1' })
+
+    expect(missingSpeaker).toMatchObject({
+      speaker: 'SPEAKER_1',
+    })
+    expect(systemSpeaker).toMatchObject({
+      speaker: 'SPEAKER_1',
+    })
+  })
+
   it('keeps distinct utterances as separate rows', async () => {
     const socket = MockWebSocket.instances[0]
 
@@ -593,6 +646,7 @@ describe('useRealtimeMeetingStream', () => {
 
     expect(latest?.status.state).toBe('stopped')
     expect(latest?.status.message).not.toMatch(/error/i)
+    expect(latest?.closeReason).toBe('')
   })
 
   it('marks server stop reason as stopped instead of error', async () => {
@@ -606,7 +660,7 @@ describe('useRealtimeMeetingStream', () => {
     await flush()
 
     expect(latest?.status.state).toBe('stopped')
-    expect(latest?.closeReason).toBe('Stream stopped by client')
+    expect(latest?.closeReason).toBe('')
   })
 
   it('marks abnormal close as error', async () => {
@@ -639,5 +693,453 @@ describe('useRealtimeMeetingStream', () => {
 
     expect(latest?.status.state).toBe('completed')
     expect(latest?.status.message).toBe('Không phát hiện giọng nói')
+  })
+
+  it('waits for session.ready before reporting readiness', async () => {
+    const socket = MockWebSocket.instances[0]
+    let resolved = false
+
+    const readyPromise = latest!.waitForSessionReady()
+    readyPromise.then(() => {
+      resolved = true
+    })
+
+    await flush()
+    expect(resolved).toBe(false)
+
+    act(() => {
+      socket.open()
+    })
+
+    await flush()
+    expect(resolved).toBe(false)
+
+    act(() => {
+      socket.receive({
+        type: 'session.ready',
+        meetingId: 88,
+        authenticated: true,
+        activeConnections: 1,
+      })
+    })
+
+    await flush()
+
+    expect(resolved).toBe(true)
+    expect(latest?.isAuthenticated).toBe(true)
+  })
+
+  it('waits for the caller supplied meeting id when the hook render has not updated yet', async () => {
+    let currentMeetingId: number | null = null
+    let resolved = false
+
+    function HarnessWithDeferredMeeting() {
+      latest = useRealtimeMeetingStream({
+        meetingId: currentMeetingId,
+        userId: 12,
+        token: 'jwt-token',
+        sessionToken: currentSessionToken,
+        enabled: true,
+        autoReconnect: false,
+      })
+
+      return null
+    }
+
+    act(() => {
+      root.render(<HarnessWithDeferredMeeting />)
+    })
+
+    await flush()
+    currentMeetingId = 501
+    currentSessionToken = createSessionToken(501, 1, 1)
+
+    act(() => {
+      root.render(<HarnessWithDeferredMeeting />)
+    })
+
+    await flush()
+    const socket = MockWebSocket.instances.at(-1)
+    expect(socket).not.toBeUndefined()
+
+    const readyPromise = latest!.waitForSessionReady(15000, 501, currentSessionToken)
+    readyPromise.then(() => {
+      resolved = true
+    })
+
+    act(() => {
+      socket!.open()
+      socket!.receive({
+        type: 'session.ready',
+        meetingId: 501,
+        authenticated: true,
+        activeConnections: 1,
+      })
+    })
+
+    await flush()
+
+    expect(resolved).toBe(true)
+    expect(latest?.isAuthenticated).toBe(true)
+  })
+
+  it('resolves an existing ready waiter when session.ready arrives on a newer connection sequence', async () => {
+    const token = createSessionToken(88, 1, 1)
+
+    function HarnessWithStableToken() {
+      latest = useRealtimeMeetingStream({
+        meetingId: 88,
+        userId: 12,
+        token: 'jwt-token',
+        sessionToken: token,
+        enabled: true,
+        autoReconnect: false,
+      })
+      return null
+    }
+
+    act(() => {
+      root.render(<HarnessWithStableToken />)
+    })
+    await flush()
+
+    const firstSocket = MockWebSocket.instances.at(-1)!
+    const waiterPromise = latest!.waitForSessionReady(1000, 88, token)
+
+    // Simulate a dead transport that never emitted onclose; this forces a new
+    // connection sequence while keeping the existing waiter alive.
+    firstSocket.readyState = MockWebSocket.CLOSED
+
+    act(() => {
+      latest!.connect()
+    })
+    await flush()
+
+    const secondSocket = MockWebSocket.instances.at(-1)!
+    expect(secondSocket).not.toBe(firstSocket)
+
+    act(() => {
+      secondSocket.open()
+      secondSocket.receive({
+        type: 'session.ready',
+        meetingId: 88,
+        authenticated: true,
+        activeConnections: 1,
+      })
+    })
+
+    await expect(waiterPromise).resolves.toBeUndefined()
+    expect(latest?.isAuthenticated).toBe(true)
+  })
+
+  it('ignores stale ready timeout from an old token and keeps the new socket active', async () => {
+    vi.useFakeTimers()
+
+    let currentToken = createSessionToken(88, 1, 1)
+
+    function HarnessWithSwappedToken() {
+      latest = useRealtimeMeetingStream({
+        meetingId: 88,
+        userId: 12,
+        token: 'jwt-token',
+        sessionToken: currentToken,
+        enabled: true,
+        autoReconnect: false,
+      })
+      return null
+    }
+
+    act(() => {
+      root.render(<HarnessWithSwappedToken />)
+    })
+
+    const staleReadyPromise = latest!.waitForSessionReady(100, 88, currentToken)
+    void staleReadyPromise.catch(() => {})
+
+    currentToken = createSessionToken(88, 2, 2)
+    act(() => {
+      root.render(<HarnessWithSwappedToken />)
+    })
+
+    const activeSocket = MockWebSocket.instances.at(-1)!
+    act(() => {
+      activeSocket.open()
+      activeSocket.receive({ type: 'session.ready', meetingId: 88, authenticated: true, activeConnections: 1 })
+    })
+
+    await vi.advanceTimersByTimeAsync(100)
+
+    await expect(staleReadyPromise).rejects.toThrow(
+      /Stale realtime ready timeout ignored|Realtime session disconnected before it became ready/,
+    )
+    expect(activeSocket.readyState).toBe(MockWebSocket.OPEN)
+    expect(latest?.isConnected).toBe(true)
+    expect(latest?.isAuthenticated).toBe(true)
+  })
+
+  it('fails the current ready timeout when the active token never becomes ready', async () => {
+    vi.useFakeTimers()
+
+    const currentToken = createSessionToken(88, 1, 1)
+
+    function HarnessWithTimedOutToken() {
+      latest = useRealtimeMeetingStream({
+        meetingId: 88,
+        userId: 12,
+        token: 'jwt-token',
+        sessionToken: currentToken,
+        enabled: true,
+        autoReconnect: false,
+      })
+      return null
+    }
+
+    act(() => {
+      root.render(<HarnessWithTimedOutToken />)
+    })
+
+    const readyPromise = latest!.waitForSessionReady(100, 88, currentToken)
+    void readyPromise.catch(() => {})
+
+    await vi.advanceTimersByTimeAsync(100)
+
+    await expect(readyPromise).rejects.toThrow('Realtime session did not become ready in time')
+  })
+
+  it('keeps meeting B chunks queued during bootstrap and flushes after meeting B session.ready', async () => {
+    let currentMeetingId = 21
+    currentSessionToken = createSessionToken(21, 1, 1)
+
+    function HarnessWithMeetingSwitch() {
+      latest = useRealtimeMeetingStream({
+        meetingId: currentMeetingId,
+        userId: 12,
+        token: 'jwt-token',
+        sessionToken: currentSessionToken,
+        enabled: true,
+        autoReconnect: false,
+      })
+      return null
+    }
+
+    act(() => {
+      root.render(<HarnessWithMeetingSwitch />)
+    })
+    await flush()
+
+    const socketA = MockWebSocket.instances.at(-1)!
+    act(() => {
+      socketA.open()
+      socketA.receive({ type: 'session.ready', meetingId: 21, authenticated: true, activeConnections: 1 })
+    })
+    await flush()
+
+    currentMeetingId = 22
+    act(() => {
+      root.render(<HarnessWithMeetingSwitch />)
+    })
+    await flush()
+
+    const socketB = MockWebSocket.instances.at(-1)!
+    await act(async () => {
+      await latest!.sendAudioChunk(new Blob(['chunk-b'], { type: 'audio/webm; codecs=opus' }), '22')
+    })
+
+    const preReadyAudioMetadata = socketB.send.mock.calls
+      .map(([payload]) => (typeof payload === 'string' ? payload : null))
+      .filter((payload): payload is string => payload !== null)
+      .some((payload) => payload.includes('"type":"audio.chunk"'))
+
+    expect(preReadyAudioMetadata).toBe(false)
+
+    act(() => {
+      socketB.open()
+      socketB.receive({ type: 'session.ready', meetingId: 22, authenticated: true, activeConnections: 1 })
+    })
+    await flush()
+
+    const postReadyMessages = socketB.send.mock.calls
+      .map(([payload]) => {
+        if (typeof payload !== 'string') return null
+        try {
+          return JSON.parse(payload) as Record<string, unknown>
+        } catch {
+          return null
+        }
+      })
+      .filter((msg): msg is Record<string, unknown> => msg !== null)
+
+    expect(postReadyMessages.some((message) => message.type === 'audio.chunk' && message.meeting_id === 22)).toBe(true)
+  })
+
+  it('keeps the active websocket alive when stale cleanup runs twice', async () => {
+    const staleToken = createSessionToken(88, 1, 1)
+    const activeToken = createSessionToken(89, 2, 2)
+
+    function FirstHarness() {
+      latest = useRealtimeMeetingStream({
+        meetingId: 88,
+        userId: 12,
+        token: 'jwt-token',
+        sessionToken: staleToken,
+        enabled: true,
+        autoReconnect: false,
+      })
+      return null
+    }
+
+    function SecondHarness() {
+      latest = useRealtimeMeetingStream({
+        meetingId: 89,
+        userId: 12,
+        token: 'jwt-token',
+        sessionToken: activeToken,
+        enabled: true,
+        autoReconnect: false,
+      })
+      return null
+    }
+
+    act(() => {
+      root.render(<FirstHarness />)
+    })
+    await flush()
+
+    const firstSocket = MockWebSocket.instances.at(-1)!
+    act(() => {
+      firstSocket.open()
+      firstSocket.receive({ type: 'session.ready', meetingId: 88, authenticated: true, activeConnections: 1 })
+    })
+    await flush()
+
+    act(() => {
+      root.render(<SecondHarness />)
+    })
+    await flush()
+
+    const secondSocket = MockWebSocket.instances.at(-1)!
+    act(() => {
+      secondSocket.open()
+      secondSocket.receive({ type: 'session.ready', meetingId: 89, authenticated: true, activeConnections: 1 })
+    })
+    await flush()
+
+    act(() => {
+      latest!.disconnect(staleToken)
+      latest!.disconnect(staleToken)
+    })
+
+    expect(secondSocket.readyState).toBe(MockWebSocket.OPEN)
+    expect(latest?.isConnected).toBe(true)
+    expect(latest?.isAuthenticated).toBe(true)
+  })
+
+  it('keeps the newest websocket active when a stale socket closes', async () => {
+    let secondLatest: ReturnType<typeof useRealtimeMeetingStream> | null = null
+    let secondRoot: ReturnType<typeof createRoot> | null = null
+    let secondContainer: HTMLDivElement | null = null
+    const secondSessionToken = createSessionToken(89, 2, 2)
+
+    function FirstHarness() {
+      latest = useRealtimeMeetingStream({
+        meetingId: 88,
+        userId: 12,
+        token: 'jwt-token',
+        sessionToken: currentSessionToken,
+        enabled: true,
+        autoReconnect: false,
+      })
+      return null
+    }
+
+    function SecondHarness() {
+      secondLatest = useRealtimeMeetingStream({
+        meetingId: 89,
+        userId: 12,
+        token: 'jwt-token',
+        sessionToken: secondSessionToken,
+        enabled: true,
+        autoReconnect: false,
+      })
+      return null
+    }
+
+    act(() => {
+      root.render(<FirstHarness />)
+    })
+    await flush()
+
+    const firstSocket = MockWebSocket.instances.at(-1)!
+
+    act(() => {
+      firstSocket.open()
+      firstSocket.receive({
+        type: 'session.ready',
+        meetingId: 88,
+        authenticated: true,
+        activeConnections: 1,
+      })
+    })
+
+    await flush()
+
+    secondContainer = document.createElement('div')
+    document.body.appendChild(secondContainer)
+    secondRoot = createRoot(secondContainer)
+
+    act(() => {
+      secondRoot!.render(<SecondHarness />)
+    })
+
+    await flush()
+
+    const secondSocket = MockWebSocket.instances.at(-1)!
+
+    act(() => {
+      secondSocket.open()
+      secondSocket.receive({
+        type: 'session.ready',
+        meetingId: 89,
+        authenticated: true,
+        activeConnections: 1,
+      })
+    })
+
+    await flush()
+
+    await act(async () => {
+      await secondLatest!.waitForSessionReady()
+    })
+
+    act(() => {
+      firstSocket.onclose?.({ code: 1006, reason: 'network reset' })
+    })
+
+    await flush()
+
+    expect(secondLatest).not.toBeNull()
+    const stableSecondLatest = secondLatest!
+    expect(stableSecondLatest.isConnected).toBe(true)
+    expect(stableSecondLatest.isAuthenticated).toBe(true)
+
+    await act(async () => {
+      await stableSecondLatest.sendAudioChunk(new Blob(['fresh'], { type: 'audio/webm; codecs=opus' }), '89')
+    })
+
+    const sentMessages = secondSocket.send.mock.calls.map(([payload]) => {
+      try {
+        return typeof payload === 'string' ? (JSON.parse(payload) as Record<string, unknown>) : null
+      } catch {
+        return null
+      }
+    })
+
+    expect(sentMessages.some((message) => message?.type === 'audio.chunk' && message?.meeting_id === 89)).toBe(true)
+
+    act(() => {
+      secondRoot?.unmount()
+    })
+
+    secondContainer?.remove()
   })
 })

@@ -4,8 +4,6 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy.exc import IntegrityError
-
 from app.services import stt_session_actor as actor_module
 from app.services.stt_session_actor import (
     AudioEnvelope,
@@ -14,6 +12,7 @@ from app.services.stt_session_actor import (
     MeetingSessionState,
     QueueCapacityError,
 )
+from sqlalchemy.exc import IntegrityError
 
 
 class ConnectionClosedOK(Exception):
@@ -444,6 +443,45 @@ def test_actor_persists_seconds_based_timing_without_millisecond_scaling(monkeyp
     assert fragments[0].end_time == 15.06
     assert fragments[0].end_time >= fragments[0].start_time
     assert fragments[0].event_id == "meeting-61-start-12.850"
+    assert actor.state == MeetingSessionState.CLOSED
+
+
+def test_actor_persists_final_speaker_label_from_adapter(monkeypatch):
+    repo = _bind_fake_repository(monkeypatch)
+
+    class _SpeakerAdapter(_FakeAdapter):
+        async def send_audio_chunk(self, session_id, pcm_chunk):
+            self.send_calls.append((session_id, bytes(pcm_chunk)))
+            self.events_by_ts.setdefault(len(self.send_calls), []).append(
+                {
+                    "text": "xin chao",
+                    "is_final": True,
+                    "confidence": 0.95,
+                    "ts_ms": len(self.send_calls),
+                    "event_id": f"evt-{len(self.send_calls)}",
+                    "speaker": "SPEAKER_2",
+                }
+            )
+
+    async def run_flow():
+        adapter = _SpeakerAdapter()
+        actor = await MeetingSessionActor.create(
+            meeting_key="62",
+            language="vi",
+            adapter=adapter,
+            db_session_factory=lambda: _FakeDBSession(),
+        )
+        try:
+            response = await actor.submit_chunk(1, b"speaker", 1, True)
+            return actor, response, list(repo.fragments)
+        finally:
+            await actor.shutdown()
+
+    actor, response, fragments = asyncio.run(run_flow())
+
+    assert response.is_final is True
+    assert response.speaker == "SPEAKER_2"
+    assert fragments[0].speaker == "SPEAKER_2"
     assert actor.state == MeetingSessionState.CLOSED
 
 

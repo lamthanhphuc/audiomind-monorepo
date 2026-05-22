@@ -1,37 +1,38 @@
 package com.example.processingservice.client;
 
-import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
-import io.github.resilience4j.retry.annotation.Retry;
-import lombok.RequiredArgsConstructor;
+import java.io.IOException;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.HexFormat;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.core.io.ByteArrayResource;
-import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
-import org.springframework.http.MediaType;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.retry.annotation.Backoff;
 import org.springframework.retry.annotation.Retryable;
 import org.springframework.stereotype.Service;
-import org.springframework.web.client.RestTemplate;
-import org.springframework.web.client.HttpClientErrorException;
-import org.springframework.web.client.RestClientException;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
 import org.springframework.util.StringUtils;
+import org.springframework.web.client.HttpClientErrorException;
+import org.springframework.web.client.RestClientException;
+import org.springframework.web.client.RestTemplate;
 import org.springframework.web.multipart.MultipartFile;
 
-import java.io.IOException;
-import java.util.Arrays;
-import java.util.HexFormat;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.UUID;
+import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
+import io.github.resilience4j.retry.annotation.Retry;
+import lombok.RequiredArgsConstructor;
 
 @Service
 @RequiredArgsConstructor
@@ -258,6 +259,11 @@ public class AIServiceClient {
                 );
                 return null;
             }
+
+            if (isResetRequiredConflict(ex)) {
+                throw new AudioStreamResetRequiredException(meetingId, seq, ex);
+            }
+
             throw ex;
         }
     }
@@ -301,6 +307,15 @@ public class AIServiceClient {
 
         String responseBody = exception.getResponseBodyAsString();
         return responseBody.contains("cached_final_response") || responseBody.contains("Meeting already finalized");
+    }
+
+    private boolean isResetRequiredConflict(HttpClientErrorException exception) {
+        if (!HttpStatus.CONFLICT.equals(exception.getStatusCode())) {
+            return false;
+        }
+
+        String responseBody = exception.getResponseBodyAsString();
+        return responseBody.contains("reset_required") || responseBody.contains("webm_continuation_after_reconnect_blocked");
     }
 
     private ByteArrayResource toNamedResource(MultipartFile file) {

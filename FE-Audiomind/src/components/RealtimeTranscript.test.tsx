@@ -1,8 +1,8 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createRoot } from 'react-dom/client'
 import { act } from 'react-dom/test-utils'
-import { RealtimeTranscript } from './RealtimeTranscript'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mergeTranscriptSegments, normalizePersistedTranscriptSegments } from '../utils/transcript'
+import { RealtimeTranscript } from './RealtimeTranscript'
 
 describe('RealtimeTranscript', () => {
   let container: HTMLDivElement
@@ -113,5 +113,37 @@ describe('RealtimeTranscript', () => {
     expect(container.textContent).toContain('Waiting for transcript...')
     expect(container.querySelector('.segment-count')).toBeNull()
     expect(container.querySelectorAll('.transcript-segment')).toHaveLength(0)
+  })
+
+  it('renders missing or system speakers as SPEAKER_1 in realtime transcript UI', () => {
+    act(() => {
+      root.render(
+        <RealtimeTranscript
+          segments={[
+            {
+              id: 'meeting-2-start-1.000',
+              mergeKey: 'segment:meeting-2-start-1.000',
+              speaker: 'system',
+              text: 'Xin chào',
+              start: 1,
+              end: 2,
+              timestamp: 1,
+            },
+            {
+              id: 'meeting-2-start-2.000',
+              mergeKey: 'segment:meeting-2-start-2.000',
+              speaker: '',
+              text: 'Audiomind',
+              start: 2,
+              end: 3,
+              timestamp: 2,
+            },
+          ]}
+        />,
+      )
+    })
+
+    const speakers = Array.from(container.querySelectorAll('.segment-speaker')).map((node) => node.textContent)
+    expect(speakers).toEqual(['SPEAKER_1', 'SPEAKER_1'])
   })
 })
