@@ -420,6 +420,19 @@ def test_deepgram_realtime_websocket_url_uses_configured_model_and_language():
     assert query["language"] == ["vi"]
 
 
+def test_deepgram_realtime_websocket_url_supports_multilingual_mode():
+    adapter = DeepgramSTTAdapter(
+        api_key="dg-test-key",
+        model="nova-3",
+        base_url="https://api.deepgram.com/v1/listen",
+    )
+
+    query = parse_qs(urlparse(adapter._build_websocket_url("multi")).query)
+
+    assert query["model"] == ["nova-3"]
+    assert query["language"] == ["multi"]
+
+
 def test_deepgram_realtime_websocket_url_includes_endpointing_when_configured():
     adapter = DeepgramSTTAdapter(
         api_key="dg-test-key",

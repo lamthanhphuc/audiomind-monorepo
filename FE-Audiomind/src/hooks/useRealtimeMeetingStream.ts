@@ -33,11 +33,24 @@ export interface RealtimeStatusEvent {
   resetRequired?: boolean
 }
 
+export type RealtimeLanguage = 'vi' | 'en' | 'multi'
+
+export const DEFAULT_REALTIME_LANGUAGE: RealtimeLanguage = 'vi'
+
+export const normalizeRealtimeLanguage = (language?: string | null): RealtimeLanguage => {
+  if (language === 'en' || language === 'multi') {
+    return language
+  }
+
+  return DEFAULT_REALTIME_LANGUAGE
+}
+
 interface UseRealtimeMeetingStreamOptions {
   meetingId: number | null
   userId: number | null
   token?: string
   sessionToken?: RealtimeSessionToken | null
+  language?: RealtimeLanguage
   enabled?: boolean
   onTranscript?: (segment: TranscriptSegment) => void
   onKeyword?: (hit: KeywordHit) => void
@@ -131,6 +144,7 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
     userId,
     token,
     sessionToken = null,
+    language = DEFAULT_REALTIME_LANGUAGE,
     enabled = true,
     onTranscript,
     onKeyword,
@@ -164,9 +178,14 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
   const effectRunCountRef = useRef(0)
   const connectRef = useRef<() => void>(() => {})
   const userStopRequestedRef = useRef(false)
+  const selectedLanguageRef = useRef<RealtimeLanguage>(DEFAULT_REALTIME_LANGUAGE)
 
   const resolvedToken = token || getAccessToken() || ''
   const canConnect = enabled && meetingId !== null && userId !== null && resolvedToken.trim().length > 0 && sessionToken !== null
+
+  useEffect(() => {
+    selectedLanguageRef.current = normalizeRealtimeLanguage(language)
+  }, [language])
 
   const isSameSessionToken = useCallback((left: RealtimeSessionToken | null, right: RealtimeSessionToken | null) => {
     if (!left || !right) {
@@ -406,6 +425,7 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
         console.info('[Realtime] REALTIME_AUTH_INIT_SEND', {
           meetingId,
           connectionSeq,
+          language: selectedLanguageRef.current,
         })
 
         websocket.send(JSON.stringify({
@@ -413,6 +433,7 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
           token: resolvedToken,
           userId,
           meetingId,
+          language: selectedLanguageRef.current,
         }))
 
         flushPendingMessages(false)

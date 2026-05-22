@@ -7,10 +7,12 @@ import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.BinaryMessage;
 import org.springframework.web.socket.CloseStatus;
@@ -31,6 +33,8 @@ import lombok.extern.slf4j.Slf4j;
 @Slf4j
 @Component
 public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
+
+    private static final Set<String> VALID_REALTIME_LANGUAGES = Set.of("vi", "en", "multi");
 
     private static final String AUTHENTICATED_ATTR = "authenticated";
     private static final String LAST_AUDIO_SEQ_ATTR = "lastAudioSeq";
@@ -59,6 +63,9 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
     private final ObjectMapper objectMapper;
     private final JwtUtil jwtUtil;
 
+    @Value("${deepgram.language:vi}")
+    private String deepgramLanguage;
+
     public MeetingWebSocketHandler(
             MeetingChannelAuthorizer meetingChannelAuthorizer,
             RealtimeEventSubscriber realtimeEventSubscriber,
@@ -84,7 +91,7 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
         // Register session with realtime subscriber
         realtimeEventSubscriber.registerSession(meetingId, session);
         session.getAttributes().put(AUTHENTICATED_ATTR, false);
-        session.getAttributes().put(LANGUAGE_ATTR, "vi");
+        session.getAttributes().put(LANGUAGE_ATTR, normalizeRealtimeLanguage(null));
         session.getAttributes().put(LAST_ACTIVITY_ATTR, System.currentTimeMillis());
 
         // Send initial ready event; auth.init will finalize user authentication.
@@ -996,6 +1003,17 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
         session.getAttributes().put("authorization", authorization);
         session.getAttributes().put(AUTHENTICATED_ATTR, true);
 
+        String requestedLanguage = getStringValue(data.get("language"));
+        String effectiveLanguage = normalizeRealtimeLanguage(requestedLanguage);
+        session.getAttributes().put(LANGUAGE_ATTR, effectiveLanguage);
+        log.info(
+            "REALTIME_LANGUAGE_SELECTED meetingId={} userId={} incomingLanguage={} effectiveLanguage={}",
+            expectedMeetingId,
+            userId,
+            requestedLanguage,
+            effectiveLanguage
+        );
+
         Map<String, Object> readyEvent = Map.of(
                 "type", "session.ready",
                 "meetingId", expectedMeetingId,
@@ -1004,5 +1022,28 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                 "activeConnections", realtimeEventSubscriber.getActiveConnectionCount(expectedMeetingId)
         );
         safeSendMessage(session, new TextMessage(objectMapper.writeValueAsString(readyEvent)));
+    }
+
+    private String normalizeRealtimeLanguage(String candidateLanguage) {
+        String defaultLanguage = normalizeFallbackLanguage(deepgramLanguage);
+        String requestedLanguage = normalizeFallbackLanguage(candidateLanguage);
+
+        if (VALID_REALTIME_LANGUAGES.contains(requestedLanguage)) {
+            return requestedLanguage;
+        }
+
+        if (VALID_REALTIME_LANGUAGES.contains(defaultLanguage)) {
+            return defaultLanguage;
+        }
+
+        return "vi";
+    }
+
+    private String normalizeFallbackLanguage(String candidateLanguage) {
+        if (candidateLanguage == null) {
+            return "";
+        }
+
+        return candidateLanguage.trim().toLowerCase(Locale.ROOT);
     }
 }

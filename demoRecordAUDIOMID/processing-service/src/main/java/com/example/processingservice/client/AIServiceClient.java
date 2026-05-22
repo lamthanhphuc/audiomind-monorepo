@@ -6,6 +6,7 @@ import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 import org.slf4j.Logger;
@@ -38,12 +39,17 @@ import lombok.RequiredArgsConstructor;
 @RequiredArgsConstructor
 public class AIServiceClient {
 
+    private static final Set<String> VALID_REALTIME_LANGUAGES = Set.of("vi", "en", "multi");
+
     private static final Logger log = LoggerFactory.getLogger(AIServiceClient.class);
 
     private final RestTemplate restTemplate;
 
     @Value("${ai.service.url}")
     private String aiUrl;
+
+    @Value("${deepgram.language:vi}")
+    private String deepgramLanguage;
 
     public Map<String, Object> processAudio(Long meetingId, String audioPath) {
         return processAudio(meetingId, audioPath, null, null, null, "vi", null, null);
@@ -224,7 +230,7 @@ public class AIServiceClient {
         body.add("meeting_id", String.valueOf(meetingId));
         body.add("audio_chunk", toNamedResource(audioChunk, meetingId, seq));
         body.add("seq", String.valueOf(seq == null ? 0L : seq));
-        body.add("language", StringUtils.hasText(language) ? language : "vi");
+        body.add("language", normalizeRealtimeLanguage(language));
         body.add("is_final", String.valueOf(isFinal));
         log.info(
             "AUDIO HASH PROCESSING_OUT meetingId={} seq={} size={} first16hex={}",
@@ -283,6 +289,29 @@ public class AIServiceClient {
             return UUID.randomUUID().toString();
         }
         return traceId;
+    }
+
+    private String normalizeRealtimeLanguage(String language) {
+        String defaultLanguage = normalizeFallbackLanguage(deepgramLanguage);
+        String requestedLanguage = normalizeFallbackLanguage(language);
+
+        if (VALID_REALTIME_LANGUAGES.contains(requestedLanguage)) {
+            return requestedLanguage;
+        }
+
+        if (VALID_REALTIME_LANGUAGES.contains(defaultLanguage)) {
+            return defaultLanguage;
+        }
+
+        return "vi";
+    }
+
+    private String normalizeFallbackLanguage(String candidateLanguage) {
+        if (!StringUtils.hasText(candidateLanguage)) {
+            return "";
+        }
+
+        return candidateLanguage.trim().toLowerCase();
     }
 
     private Map<String, Object> requireBody(ResponseEntity<Map<String, Object>> response, String operation, Long meetingId) {

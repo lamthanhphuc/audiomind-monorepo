@@ -571,6 +571,46 @@ def test_open_stt_session_json_route(monkeypatch):
     assert response["language"] == "vi"
 
 
+def test_open_stt_session_uses_configured_default_when_language_missing(monkeypatch):
+    _reset_state(monkeypatch)
+    monkeypatch.setattr(main_module.settings, "deepgram_language", "multi")
+    monkeypatch.setattr(
+        main_module,
+        "pipeline",
+        SimpleNamespace(speech_recognizer=FakeWhisperRecognizer()),
+    )
+
+    async def run_flow():
+        return await main_module.open_stt_session({"meeting_id": "test-456"})
+
+    response = asyncio.run(run_flow())
+
+    assert response["language"] == "multi"
+    assert FakeActor.instances[0].language == "multi"
+
+
+def test_open_stt_session_falls_back_to_vi_for_invalid_language_and_invalid_default(
+    monkeypatch,
+):
+    _reset_state(monkeypatch)
+    monkeypatch.setattr(main_module.settings, "deepgram_language", "bogus")
+    monkeypatch.setattr(
+        main_module,
+        "pipeline",
+        SimpleNamespace(speech_recognizer=FakeWhisperRecognizer()),
+    )
+
+    async def run_flow():
+        return await main_module.open_stt_session(
+            {"meeting_id": "test-789", "language": "fr"}
+        )
+
+    response = asyncio.run(run_flow())
+
+    assert response["language"] == "vi"
+    assert FakeActor.instances[0].language == "vi"
+
+
 def test_stream_stt_chunk_uses_local_whisper_fallback(monkeypatch):
     fake_recognizer = FakeWhisperRecognizer()
     monkeypatch.setattr(

@@ -2,12 +2,20 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { AudioRecorderButton } from './components/AudioRecorderButton'
 import { RealtimeTranscript } from './components/RealtimeTranscript'
 import { useAudioRecorder } from './hooks/useAudioRecorder'
-import type { RealtimeSessionToken, TranscriptSegment } from './hooks/useRealtimeMeetingStream'
-import { useRealtimeMeetingStream } from './hooks/useRealtimeMeetingStream'
+import {
+    DEFAULT_REALTIME_LANGUAGE,
+    normalizeRealtimeLanguage,
+    type RealtimeLanguage,
+    type RealtimeSessionToken,
+    type TranscriptSegment,
+    useRealtimeMeetingStream,
+} from './hooks/useRealtimeMeetingStream'
 import { ApiError, getAnalysis, getProcessingStatus, getTranscript, startProcessingByPath, uploadToMeetingApi } from './services/api'
 import { clearAccessToken, getAccessToken, getCurrentUserId, login, setAccessToken } from './services/auth'
 import { REALTIME_WS_ENABLED } from './services/config'
 import { mergeTranscriptSegments, mergeTranscriptSegmentsForDisplay, normalizePersistedTranscriptSegments } from './utils/transcript'
+
+export { DEFAULT_REALTIME_LANGUAGE } from './hooks/useRealtimeMeetingStream'
 
 type ResultView = {
   meetingId: number
@@ -23,6 +31,16 @@ type RealtimeConnectionView = {
   detail: string
   closeReason: string | null
   closeReasonIsError: boolean
+}
+
+export const REALTIME_LANGUAGE_OPTIONS: Array<{ value: RealtimeLanguage; label: string }> = [
+  { value: 'vi', label: 'Tiếng Việt' },
+  { value: 'en', label: 'English' },
+  { value: 'multi', label: 'Việt + Anh' },
+]
+
+export const isRealtimeLanguageSelectorDisabled = (lifecycleState: LiveLifecycleState): boolean => {
+  return lifecycleState === 'connecting' || lifecycleState === 'recording' || lifecycleState === 'stopping'
 }
 
 export const getRealtimeConnectionView = (
@@ -421,6 +439,7 @@ export default function App() {
   const [hydratedLiveTranscriptSegments, setHydratedLiveTranscriptSegments] = useState<TranscriptSegment[] | null>(null)
   const [liveLifecycleState, setLiveLifecycleState] = useState<LiveLifecycleState>('idle')
   const [activeRealtimeSessionToken, setActiveRealtimeSessionToken] = useState<RealtimeSessionToken | null>(null)
+  const [selectedRealtimeLanguage, setSelectedRealtimeLanguage] = useState<RealtimeLanguage>(DEFAULT_REALTIME_LANGUAGE)
   const abortControllerRef = useRef<AbortController | null>(null)
   const liveMeetingIdRef = useRef<number | null>(null)
   const liveRecordingSessionIdRef = useRef(0)
@@ -428,6 +447,7 @@ export default function App() {
   const realtimeAttemptIdRef = useRef(0)
   const resetRecoveryInProgressRef = useRef(false)
   const restartAfterReconnectRef = useRef(false)
+  const lastLoggedRealtimeLanguageRef = useRef<RealtimeLanguage | null>(null)
 
   const isRealtimeEnabled = REALTIME_WS_ENABLED
   const currentUserId = getCurrentUserId()
@@ -442,9 +462,23 @@ export default function App() {
     userId: realtimeUserId,
     token: realtimeToken,
     sessionToken: activeRealtimeSessionToken,
+    language: selectedRealtimeLanguage,
     enabled: isAuthenticated && isRealtimeEnabled && viewMode === 'realtime',
     autoReconnect: true,
   })
+
+  useEffect(() => {
+    const normalizedLanguage = normalizeRealtimeLanguage(selectedRealtimeLanguage)
+    if (lastLoggedRealtimeLanguageRef.current === normalizedLanguage) {
+      return
+    }
+
+    lastLoggedRealtimeLanguageRef.current = normalizedLanguage
+    console.info('[Realtime] FE_REALTIME_LANGUAGE_SELECTED', {
+      language: normalizedLanguage,
+      lifecycleState: liveLifecycleState,
+    })
+  }, [liveLifecycleState, selectedRealtimeLanguage])
 
   useEffect(() => {
     activeRealtimeSessionTokenRef.current = activeRealtimeSessionToken
@@ -803,6 +837,7 @@ export default function App() {
       console.info('[Realtime] REALTIME_START', {
         meetingId: normalizedMeetingId,
         sessionId,
+        language: selectedRealtimeLanguage,
       })
       setLiveStatusMessage(`Meeting ${normalizedMeetingId} đang kết nối realtime...`)
 
@@ -1127,6 +1162,35 @@ export default function App() {
               <p style={{ margin: '6px 0 0', color: '#475569' }}>
                 {liveStatusMessage || connectionView.detail || 'Sẵn sàng tạo meeting và bắt đầu ghi âm'}
               </p>
+              <div style={{ display: 'grid', gap: 6, marginTop: 12, maxWidth: 360 }}>
+                <label style={{ display: 'grid', gap: 6 }}>
+                  <span style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.08em', color: '#64748b' }}>
+                    Language mode
+                  </span>
+                  <select
+                    value={selectedRealtimeLanguage}
+                    onChange={(event) => setSelectedRealtimeLanguage(normalizeRealtimeLanguage(event.target.value))}
+                    disabled={isRealtimeLanguageSelectorDisabled(liveLifecycleState)}
+                    style={{
+                      padding: '10px 12px',
+                      borderRadius: 10,
+                      border: '1px solid #cbd5e1',
+                      background: isRealtimeLanguageSelectorDisabled(liveLifecycleState) ? '#f1f5f9' : '#ffffff',
+                      color: '#0f172a',
+                      fontWeight: 600,
+                    }}
+                  >
+                    {REALTIME_LANGUAGE_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <div style={{ fontSize: 13, color: '#475569' }}>
+                  Chọn Việt + Anh nếu audio có thuật ngữ tiếng Anh.
+                </div>
+              </div>
             </div>
             {liveMeetingId && (
               <span style={{ padding: '6px 10px', borderRadius: 999, background: '#e0e7ff', color: '#312e81' }}>

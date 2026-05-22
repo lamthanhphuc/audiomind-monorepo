@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { getRealtimeConnectionView, hydrateLiveTranscriptSegments, isCurrentLiveRecordingSession, mergeHydratedTranscriptWithLive } from './App'
+import { DEFAULT_REALTIME_LANGUAGE, REALTIME_LANGUAGE_OPTIONS, getRealtimeConnectionView, hydrateLiveTranscriptSegments, isCurrentLiveRecordingSession, isRealtimeLanguageSelectorDisabled, mergeHydratedTranscriptWithLive } from './App'
 import { ApiError } from './services/api'
 import { mergeTranscriptSegmentsForDisplay, normalizePersistedTranscriptSegments } from './utils/transcript'
 
@@ -402,5 +402,20 @@ describe('getRealtimeConnectionView', () => {
     expect(view.title).toBe('Đang kết nối')
     expect(view.closeReason).toBeNull()
     expect(view.closeReasonIsError).toBe(false)
+  })
+})
+
+describe('realtime language selector helpers', () => {
+  it('defaults to vi with the expected language options', () => {
+    expect(DEFAULT_REALTIME_LANGUAGE).toBe('vi')
+    expect(REALTIME_LANGUAGE_OPTIONS.map((option) => option.value)).toEqual(['vi', 'en', 'multi'])
+  })
+
+  it('disables language changes while active and allows them when idle', () => {
+    expect(isRealtimeLanguageSelectorDisabled('idle')).toBe(false)
+    expect(isRealtimeLanguageSelectorDisabled('connecting')).toBe(true)
+    expect(isRealtimeLanguageSelectorDisabled('recording')).toBe(true)
+    expect(isRealtimeLanguageSelectorDisabled('stopping')).toBe(true)
+    expect(isRealtimeLanguageSelectorDisabled('stopped')).toBe(false)
   })
 })

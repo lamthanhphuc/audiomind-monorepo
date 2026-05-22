@@ -264,9 +264,15 @@ def _normalize_meeting_key(meeting_id: int | str) -> str:
 
 
 def _normalize_stt_language(language: str | None) -> str:
-    default_language = (settings.deepgram_language or "vi").strip() or "vi"
-    value = (language or default_language).strip()
-    return value or default_language
+    default_language = (settings.deepgram_language or "vi").strip().lower() or "vi"
+    if default_language not in {"vi", "en", "multi"}:
+        default_language = "vi"
+
+    value = (language or "").strip().lower()
+    if value in {"vi", "en", "multi"}:
+        return value
+
+    return default_language
 
 
 def _resolve_realtime_model() -> str:
