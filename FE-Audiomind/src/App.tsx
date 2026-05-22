@@ -4,10 +4,10 @@ import { RealtimeTranscript } from './components/RealtimeTranscript'
 import { useAudioRecorder } from './hooks/useAudioRecorder'
 import type { RealtimeSessionToken, TranscriptSegment } from './hooks/useRealtimeMeetingStream'
 import { useRealtimeMeetingStream } from './hooks/useRealtimeMeetingStream'
-import { getAnalysis, getProcessingStatus, getTranscript, startProcessingByPath, uploadToMeetingApi } from './services/api'
+import { ApiError, getAnalysis, getProcessingStatus, getTranscript, startProcessingByPath, uploadToMeetingApi } from './services/api'
 import { clearAccessToken, getAccessToken, getCurrentUserId, login, setAccessToken } from './services/auth'
 import { REALTIME_WS_ENABLED } from './services/config'
-import { mergeTranscriptSegments, normalizePersistedTranscriptSegments } from './utils/transcript'
+import { mergeTranscriptSegments, mergeTranscriptSegmentsForDisplay, normalizePersistedTranscriptSegments } from './utils/transcript'
 
 type ResultView = {
   meetingId: number
@@ -88,6 +88,8 @@ export const getRealtimeConnectionView = (
 const HYDRATION_INITIAL_DELAY_MS = 1500
 const HYDRATION_RETRY_DELAY_MS = 800
 const HYDRATION_MAX_ATTEMPTS = 10
+const HYDRATION_STABLE_COUNT_REQUIRED = 2
+const HYDRATION_MIN_ATTEMPTS_AFTER_FIRST_FRAGMENTS = 2
 
 export const isCurrentLiveRecordingSession = (
   completedSessionId: number,
@@ -171,7 +173,7 @@ export const hydrateLiveTranscriptSegments = async (
   fetchTranscript: typeof getTranscript = getTranscript,
   sessionToken: RealtimeSessionToken | null = null,
   isSessionActive: ((token: RealtimeSessionToken | null) => boolean) | null = null,
-  options: { backendPartial?: boolean; backendResetRequired?: boolean } = {},
+  options: { backendPartial?: boolean; backendResetRequired?: boolean; currentLiveSegments?: TranscriptSegment[] } = {},
 ): Promise<TranscriptSegment[]> => {
   console.info('[Realtime] Post-stop transcript hydration started', { meetingId })
 
@@ -197,6 +199,8 @@ export const hydrateLiveTranscriptSegments = async (
 
   let stableCount = 0
   let previousFragments = -1
+  let firstFragmentsAttempt: number | null = null
+  let hasObservedFragments = false
   const forceStableHydration = Boolean(options.backendPartial || options.backendResetRequired)
 
   for (let attempt = 1; attempt <= HYDRATION_MAX_ATTEMPTS; attempt += 1) {
@@ -204,6 +208,19 @@ export const hydrateLiveTranscriptSegments = async (
     try {
       transcript = await fetchTranscript(meetingId)
     } catch (error) {
+      if (error instanceof ApiError && error.status === 404) {
+        console.info('[Realtime] HYDRATION_NO_FRAGMENTS_RETRY', {
+          meetingId,
+          attempt,
+          reason: 'transcript_404',
+        })
+        if (attempt < HYDRATION_MAX_ATTEMPTS) {
+          await new Promise((resolve) => setTimeout(resolve, HYDRATION_RETRY_DELAY_MS))
+          continue
+        }
+        break
+      }
+
       if (!isHydrationActive()) {
         console.info('[Realtime] STALE_HYDRATION_IGNORED', { meetingId, attempt, phase: 'fetch-error' })
         return []
@@ -234,8 +251,40 @@ export const hydrateLiveTranscriptSegments = async (
       previousFragments = hydratedSegments.length
     }
 
-    if (!forceStableHydration && hydratedSegments.length > 0) {
-      console.info('[Realtime] Post-stop transcript hydration completed', {
+    if (hydratedSegments.length > 0 && firstFragmentsAttempt === null) {
+      firstFragmentsAttempt = attempt
+    }
+    if (hydratedSegments.length > 0) {
+      hasObservedFragments = true
+    }
+
+    const attemptsSinceFirstFragments = firstFragmentsAttempt === null ? 0 : attempt - firstFragmentsAttempt
+    const liveSegmentsCount = options.currentLiveSegments?.length ?? 0
+    const persistedBehindLive = liveSegmentsCount > 0 && hydratedSegments.length < liveSegmentsCount
+    if (persistedBehindLive) {
+      console.info('[Realtime] HYDRATION_PERSISTED_BEHIND_LIVE', {
+        meetingId,
+        attempt,
+        persistedFragments: hydratedSegments.length,
+        liveFragments: liveSegmentsCount,
+      })
+    }
+
+    console.info('[Realtime] HYDRATION_WAITING_FOR_STABLE_TRANSCRIPT', {
+      meetingId,
+      attempt,
+      fragments: hydratedSegments.length,
+      stableCount,
+      attemptsSinceFirstFragments,
+      persistedBehindLive,
+      forceStableHydration,
+    })
+
+    const stableEnough = stableCount >= HYDRATION_STABLE_COUNT_REQUIRED
+      && attemptsSinceFirstFragments >= HYDRATION_MIN_ATTEMPTS_AFTER_FIRST_FRAGMENTS
+
+    if (hydratedSegments.length > 0 && stableEnough && !persistedBehindLive) {
+      console.info('[Realtime] HYDRATION_STABLE_COMPLETED', {
         meetingId,
         attempts: attempt,
         persistedFragments: hydratedSegments.length,
@@ -243,21 +292,21 @@ export const hydrateLiveTranscriptSegments = async (
       return hydratedSegments
     }
 
-    if (forceStableHydration) {
-      console.info('[Realtime] HYDRATION_WAITING_FOR_STABLE_TRANSCRIPT', {
+    if (forceStableHydration && hydratedSegments.length > 0 && stableEnough) {
+      console.info('[Realtime] HYDRATION_STABLE_COMPLETED', {
+        meetingId,
+        attempts: attempt,
+        persistedFragments: hydratedSegments.length,
+        partialMode: true,
+      })
+      return hydratedSegments
+    }
+
+    if (hydratedSegments.length === 0) {
+      console.info('[Realtime] HYDRATION_NO_FRAGMENTS_RETRY', {
         meetingId,
         attempt,
-        fragments: hydratedSegments.length,
-        stableCount,
       })
-      if (hydratedSegments.length > 0 && stableCount >= 1) {
-        console.info('[Realtime] HYDRATION_STABLE_COMPLETED', {
-          meetingId,
-          attempts: attempt,
-          persistedFragments: hydratedSegments.length,
-        })
-        return hydratedSegments
-      }
     }
 
     if (attempt < HYDRATION_MAX_ATTEMPTS) {
@@ -274,7 +323,82 @@ export const hydrateLiveTranscriptSegments = async (
     meetingId,
     attempts: HYDRATION_MAX_ATTEMPTS,
   })
+  console.info('[Realtime] HYDRATION_NO_FRAGMENTS_COMPLETED', {
+    meetingId,
+    attempts: HYDRATION_MAX_ATTEMPTS,
+  })
+  if (!hasObservedFragments) {
+    console.info('[Realtime] HYDRATION_TIMEOUT_NO_TRANSCRIPT', {
+      meetingId,
+    })
+  }
   return []
+}
+
+export const mergeHydratedTranscriptWithLive = (
+  liveSegments: TranscriptSegment[],
+  hydratedSegments: TranscriptSegment[],
+): TranscriptSegment[] => {
+  const mergedHydration = mergeTranscriptSegments([
+    ...liveSegments,
+    ...hydratedSegments,
+  ])
+  const canonicalSpeaker = (value: string): string => {
+    const normalized = value.trim().toLowerCase()
+    if (!normalized || normalized === 'unknown' || normalized === 'system') {
+      return 'speaker_1'
+    }
+    return normalized
+  }
+  const normalizeText = (value: string): string => value.replace(/\s+/g, ' ').trim().toLowerCase()
+  const hasTextOverlap = (a: string, b: string): boolean => {
+    const left = normalizeText(a)
+    const right = normalizeText(b)
+    if (!left || !right) {
+      return false
+    }
+    return left.includes(right) || right.includes(left)
+  }
+  const sameStartSpeaker = (a: TranscriptSegment, b: TranscriptSegment): boolean => {
+    return (
+      canonicalSpeaker(a.speaker) === canonicalSpeaker(b.speaker)
+      && Math.abs((a.start ?? 0) - (b.start ?? 0)) <= 0.4
+    )
+  }
+  const hasHeavyOverlap = (a: TranscriptSegment, b: TranscriptSegment): boolean => {
+    const overlap = Math.min(a.end ?? a.start ?? 0, b.end ?? b.start ?? 0) - Math.max(a.start ?? 0, b.start ?? 0)
+    return overlap > 1.0
+  }
+  const filteredHydration = mergedHydration.filter((segment) => {
+    if (segment.source !== 'live' || segment.isFinal) {
+      return true
+    }
+
+    const cleanerFinal = mergedHydration.find((candidate) => {
+      if (!candidate.isFinal) {
+        return false
+      }
+      if (canonicalSpeaker(candidate.speaker) !== canonicalSpeaker(segment.speaker)) {
+        return false
+      }
+
+      if (sameStartSpeaker(segment, candidate)) {
+        return true
+      }
+
+      return hasHeavyOverlap(segment, candidate) && hasTextOverlap(segment.text, candidate.text)
+    })
+
+    return !cleanerFinal
+  })
+  if (hydratedSegments.length < liveSegments.length) {
+    console.info('[Realtime] HYDRATION_MERGE_KEEP_LIVE_SEGMENT', {
+      persistedFragments: hydratedSegments.length,
+      liveFragments: liveSegments.length,
+      mergedFragments: filteredHydration.length,
+    })
+  }
+  return filteredHydration
 }
 
 export default function App() {
@@ -508,6 +632,13 @@ export default function App() {
   const liveTranscriptKeywords = useMemo(() => realtimeStream.keywords.map((keyword) => keyword.keyword), [realtimeStream.keywords])
   const liveModeActive = isRealtimeEnabled && viewMode === 'realtime' && realtimeUserId !== null
   const liveTranscriptSegments = hydratedLiveTranscriptSegments ?? realtimeStream.transcripts
+  const liveTranscriptSegmentsForDisplay = useMemo(() => {
+    const shouldMergeForDisplay = hydratedLiveTranscriptSegments !== null || liveLifecycleState === 'stopped'
+    if (!shouldMergeForDisplay) {
+      return liveTranscriptSegments
+    }
+    return mergeTranscriptSegmentsForDisplay(liveTranscriptSegments, { maxGapSeconds: 1.0 })
+  }, [hydratedLiveTranscriptSegments, liveLifecycleState, liveTranscriptSegments])
   const connectionView = useMemo(
     () => getRealtimeConnectionView(
       liveLifecycleState,
@@ -796,17 +927,27 @@ export default function App() {
       const activeMeetingId = liveMeetingIdRef.current
       if (activeMeetingId) {
         const partialState = Boolean(realtimeStream.status.resetRequired || realtimeStream.status.message?.includes('chưa đầy đủ'))
+        const liveSnapshot = [...realtimeStream.transcripts]
         const hydratedSegments = await hydrateLiveTranscriptSegments(
           activeMeetingId,
           getTranscript,
           sessionToken,
           isCurrentRealtimeSessionToken,
-          { backendPartial: partialState, backendResetRequired: realtimeStream.status.resetRequired },
+          {
+            backendPartial: partialState,
+            backendResetRequired: realtimeStream.status.resetRequired,
+            currentLiveSegments: liveSnapshot,
+          },
         )
         if (!isCurrentRealtimeSessionToken(sessionToken) || !isCurrentLiveRecordingSession(sessionId, completedMeetingId, liveRecordingSessionIdRef.current, liveMeetingIdRef.current)) {
           return
         }
-        setHydratedLiveTranscriptSegments(hydratedSegments)
+        const mergedHydration = mergeHydratedTranscriptWithLive(liveSnapshot, hydratedSegments)
+        setHydratedLiveTranscriptSegments(mergedHydration)
+        if (mergedHydration.length === 0) {
+          setLivePartialWarning('Chưa có transcript')
+          setLiveStatusMessage('Đã dừng ghi âm (chưa có transcript)')
+        }
         if (partialState) {
           setLivePartialWarning('Transcript có thể chưa đầy đủ')
           console.info('[Realtime] TRANSCRIPT_PARTIAL_WARNING', {
@@ -1045,7 +1186,7 @@ export default function App() {
 
           <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 280px', gap: 16 }}>
             <RealtimeTranscript
-              segments={liveTranscriptSegments}
+              segments={liveTranscriptSegmentsForDisplay}
               highlightKeywords={liveTranscriptKeywords}
               maxHeight="620px"
             />

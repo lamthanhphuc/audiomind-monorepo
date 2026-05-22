@@ -762,12 +762,20 @@ class MeetingSessionActor:
                 if self._owns_meeting():
                     await self.adapter.close_session(self.session_id)
             except Exception as exc:
-                logger.warning(
-                    "STT_SHUTDOWN_CLOSE_ERROR meeting_id={} session_id={} error={}",
-                    self.meeting_key,
-                    self.session_id,
-                    repr(exc),
-                )
+                if self._is_expected_close_error(exc):
+                    logger.info(
+                        "STT_SHUTDOWN_CLOSE_EXPECTED meeting_id={} session_id={} error={}",
+                        self.meeting_key,
+                        self.session_id,
+                        repr(exc),
+                    )
+                else:
+                    logger.warning(
+                        "STT_SHUTDOWN_CLOSE_ERROR meeting_id={} session_id={} error={}",
+                        self.meeting_key,
+                        self.session_id,
+                        repr(exc),
+                    )
         self._release_lease()
         try:
             await asyncio.wait_for(
@@ -1374,7 +1382,7 @@ class MeetingSessionActor:
         meeting_id_int = int(self.meeting_key) if str(self.meeting_key).isdigit() else 0
         last_response: SttStreamResponse | None = None
         for event in persist.transcript_events:
-            text = str(event.get("text") or "").strip()
+            text = str(event.get("text") or event.get("transcript") or "").strip()
             if not text:
                 continue
             start_time = self._coerce_fragment_time(
@@ -1410,7 +1418,7 @@ class MeetingSessionActor:
                 meeting_id=meeting_id_int,
                 seq=persist.seq,
                 text=text,
-                speaker=str(event.get("speaker") or "system"),
+                speaker=self._canonical_speaker(event.get("speaker")),
                 start_time=start_time,
                 end_time=end_time,
                 event_id=str(
@@ -1429,6 +1437,9 @@ class MeetingSessionActor:
                 is_final=bool(fragment.is_final),
                 confidence=fragment.confidence,
                 speaker=fragment.speaker,
+                segment_id=str(event.get("segment_id") or fragment.event_id),
+                start_time=float(fragment.start_time),
+                end_time=float(fragment.end_time),
             )
 
         if last_response is None:
@@ -1471,7 +1482,7 @@ class MeetingSessionActor:
                 meeting_id=meeting_id_int,
                 seq=persist.seq,
                 text=text,
-                speaker=str(event.get("speaker") or "system"),
+                speaker=self._canonical_speaker(event.get("speaker")),
                 start_time=float(start_time),
                 end_time=max(float(start_time), float(end_time)),
                 event_id=str(
@@ -1486,6 +1497,26 @@ class MeetingSessionActor:
             )
             return build_fragment_dedupe_key(fragment)
         return None
+
+    def _canonical_speaker(self, speaker_value: Any) -> str:
+        speaker = str(speaker_value or "").strip()
+        if not speaker:
+            return "SPEAKER_1"
+        normalized = speaker.upper().replace(" ", "_")
+        if normalized in {"SYSTEM", "UNKNOWN"}:
+            return "SPEAKER_1"
+        return speaker
+
+    def _is_expected_close_error(self, exc: BaseException) -> bool:
+        if is_terminal_error(exc):
+            return True
+        text = f"{type(exc).__name__} {exc}".lower()
+        return (
+            "unknown stt session" in text
+            or "session is not connected" in text
+            or "websocket closed" in text
+            or "already closed" in text
+        )
 
     def _next_expected_seq(self) -> int:
         return self._last_ack_seq + 1

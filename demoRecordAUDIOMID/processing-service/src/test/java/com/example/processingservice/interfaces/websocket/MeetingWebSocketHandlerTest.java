@@ -1,7 +1,6 @@
 package com.example.processingservice.interfaces.websocket;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -14,8 +13,8 @@ import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 import java.nio.ByteBuffer;
@@ -106,11 +105,12 @@ class MeetingWebSocketHandlerTest {
         Map<String, Object> cached = handler.getFinalizedTranscript(31L);
         assertNotNull(cached);
         assertEquals("transcript.final", cached.get("type"));
-        assertEquals("31", cached.get("segmentId"));
+        assertEquals("meeting-31-temp-31-unknown", cached.get("segmentId"));
         assertEquals(-1L, cached.get("seq"));
         assertEquals("xin chao", cached.get("text"));
         assertEquals(Boolean.TRUE, cached.get("isFinal"));
         assertEquals("vi", cached.get("language"));
+        assertEquals("", cached.get("speaker"));
         assertEquals(0.93, cached.get("confidence"));
 
         verify(aiServiceClient).streamAudioChunk(
@@ -256,9 +256,10 @@ class MeetingWebSocketHandlerTest {
         assertEquals("transcript.partial", event.get("type"));
         assertEquals(34L, event.get("meetingId"));
         assertEquals(8L, event.get("seq"));
-        assertEquals("8", event.get("segmentId"));
+        assertEquals("meeting-34-temp-8-unknown", event.get("segmentId"));
         assertEquals("seq-8", event.get("text"));
-        assertFalse(event.containsKey("isFinal"));
+        assertEquals(Boolean.FALSE, event.get("isFinal"));
+        assertEquals("", event.get("speaker"));
     }
 
     @Test
@@ -281,6 +282,7 @@ class MeetingWebSocketHandlerTest {
             "transcript", "Đáng sợ, mọi con quái bạn đối mặt",
             "is_final", true,
             "language", "vi",
+            "speaker", "SPEAKER_1",
             "confidence", 0.94,
             "segment_id", "meeting-340-start-1.250",
             "start_time", 1.25,
@@ -295,6 +297,7 @@ class MeetingWebSocketHandlerTest {
         Map<String, Object> event = eventCaptor.getValue();
         assertEquals("transcript.final", event.get("type"));
         assertEquals("meeting-340-start-1.250", event.get("segmentId"));
+        assertEquals("SPEAKER_1", event.get("speaker"));
         assertEquals(1.25, event.get("startTime"));
         assertEquals(3.10, event.get("endTime"));
         assertEquals(Boolean.TRUE, event.get("isFinal"));
@@ -480,7 +483,13 @@ class MeetingWebSocketHandlerTest {
 
             Map<String, Object> event = eventCaptor.getValue();
             assertEquals("transcript.final", event.get("type"));
-            assertEquals("35", event.get("segmentId"));
+            // Phase 4 uses stable string segmentId; stop finalize without timing may use temporary fallback ID.
+            assertEquals(35L, event.get("meetingId"));
+            assertTrue(event.get("segmentId") instanceof String);
+            String segmentId = (String) event.get("segmentId");
+            assertTrue(!segmentId.isBlank());
+            assertTrue(!"35".equals(segmentId));
+            assertTrue(segmentId.startsWith("meeting-35-temp-"));
             assertEquals(-1L, event.get("seq"));
             assertEquals("done", event.get("text"));
             assertEquals(Boolean.TRUE, event.get("isFinal"));
@@ -523,5 +532,96 @@ class MeetingWebSocketHandlerTest {
         assertEquals("completed_with_no_speech_detected", event.get("state"));
         assertEquals("completed_with_no_speech_detected", event.get("status"));
         assertEquals(36L, event.get("meetingId"));
+    }
+
+    @Test
+    void handleTextMessage_streamStop_shouldSkipUntimedDuplicateTempFinalWhenTimedSegmentAlreadyExists() throws Exception {
+        attributes.put("meetingId", 112L);
+        attributes.put("authenticated", true);
+        attributes.put("language", "vi");
+        attributes.put("authorization", "Bearer test-token");
+        attributes.put("lastAudioSeq", 35L);
+        attributes.put("AUDIO_RECEIVED_ATTR", Boolean.TRUE);
+
+        when(aiServiceClient.streamAudioChunk(
+                eq(112L),
+                any(byte[].class),
+                eq(35L),
+                eq("vi"),
+                eq(false),
+                isNull(),
+                eq("Bearer test-token")
+        )).thenReturn(Map.of(
+                "transcript", "xin chao moi nguoi",
+                "is_final", true,
+                "language", "vi",
+                "start_time", 30.95,
+                "end_time", 35.46
+        ));
+
+        handler.handleBinaryMessage(session, new BinaryMessage(ByteBuffer.wrap(new byte[] {1, 2, 3})));
+
+        doReturn(Map.of("type", "stream.stop")).when(objectMapper).readValue(anyString(), any(Class.class));
+        when(aiServiceClient.streamAudioChunk(
+                eq(112L),
+                argThat(bytes -> bytes != null && bytes.length == 0),
+                eq(-1L),
+                eq("vi"),
+                eq(true),
+                isNull(),
+                eq("Bearer test-token")
+        )).thenReturn(Map.of(
+                "transcript", "xin chao moi nguoi",
+                "is_final", true,
+                "language", "vi"
+        ));
+
+        handler.handleTextMessage(session, new TextMessage("{\"type\":\"stream.stop\"}"));
+
+        ArgumentCaptor<Map<String, Object>> eventCaptor = ArgumentCaptor.forClass(Map.class);
+        verify(realtimeEventSubscriber).broadcastToMeeting(eq(112L), eventCaptor.capture());
+        Map<String, Object> event = eventCaptor.getValue();
+        assertEquals("transcript.final", event.get("type"));
+        assertEquals("meeting-112-start-30.950-unknown", event.get("segmentId"));
+        assertEquals(35L, event.get("seq"));
+    }
+
+    @Test
+    void handleTextMessage_streamStop_shouldPreserveFinalSegmentWhenFinalizeIncludesTiming() throws Exception {
+        attributes.put("meetingId", 113L);
+        attributes.put("authenticated", true);
+        attributes.put("language", "vi");
+        attributes.put("authorization", "Bearer test-token");
+        attributes.put("lastAudioSeq", 40L);
+        attributes.put("AUDIO_RECEIVED_ATTR", Boolean.TRUE);
+
+        doReturn(Map.of("type", "stream.stop")).when(objectMapper).readValue(anyString(), any(Class.class));
+        when(aiServiceClient.streamAudioChunk(
+                eq(113L),
+                argThat(bytes -> bytes != null && bytes.length == 0),
+                eq(-1L),
+                eq("vi"),
+                eq(true),
+                isNull(),
+                eq("Bearer test-token")
+        )).thenReturn(Map.of(
+                "transcript", "final with timing",
+                "is_final", true,
+                "language", "vi",
+                "start_time", 30.95,
+                "end_time", 35.46,
+                "speaker", "SPEAKER_1"
+        ));
+
+        handler.handleTextMessage(session, new TextMessage("{\"type\":\"stream.stop\"}"));
+
+        ArgumentCaptor<Map<String, Object>> eventCaptor = ArgumentCaptor.forClass(Map.class);
+        verify(realtimeEventSubscriber).broadcastToMeeting(eq(113L), eventCaptor.capture());
+        Map<String, Object> event = eventCaptor.getValue();
+        assertEquals("transcript.final", event.get("type"));
+        assertEquals(-1L, event.get("seq"));
+        assertEquals("meeting-113-start-30.950-speaker_1", event.get("segmentId"));
+        assertEquals(30.95, event.get("startTime"));
+        assertEquals(35.46, event.get("endTime"));
     }
 }

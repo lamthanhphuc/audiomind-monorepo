@@ -396,7 +396,7 @@ class ProcessingPipeline:
         stt_provider = (settings.stt_provider or "deepgram").strip().lower()
         deepgram_api_key = (settings.deepgram_api_key or "").strip()
         deepgram_batch_model = (
-            settings.deepgram_batch_model or "nova-2"
+            settings.deepgram_batch_model or settings.deepgram_model or "nova-2"
         ).strip() or "nova-2"
         deepgram_language = (
             settings.deepgram_language or language or "vi"

@@ -4,7 +4,7 @@ import './AudioRecorderButton.css'
 
 interface AudioRecorderButtonProps {
   recorder: UseAudioRecorderReturn
-  onChunkReady?: (chunk: Blob, sessionId: number) => void
+  onChunkReady?: (chunk: Blob, sessionId: number) => void | Promise<void>
   onRecordingComplete?: (fullAudio: Blob, sessionId: number) => void
   onBeforeStartRecording?: () => Promise<{ expectedSessionId?: number } | void> | { expectedSessionId?: number } | void
   lifecycleState?: 'idle' | 'connecting' | 'recording' | 'stopping' | 'stopped' | 'error'
@@ -26,6 +26,7 @@ export function AudioRecorderButton({
   lifecycleState,
 }: AudioRecorderButtonProps) {
   const emittedChunkCountRef = useRef(0)
+  const pendingChunkDispatchesRef = useRef<Set<Promise<void>>>(new Set())
   const completionEmittedRef = useRef(false)
   const [isBusy, setIsBusy] = useState(false)
   const effectiveState = lifecycleState ?? recorder.state
@@ -38,7 +39,13 @@ export function AudioRecorderButton({
     if (recorder.audioChunks.length > emittedChunkCountRef.current) {
       const sessionId = recorder.recordingSessionId
       for (let index = emittedChunkCountRef.current; index < recorder.audioChunks.length; index += 1) {
-        onChunkReady?.(recorder.audioChunks[index], sessionId)
+        const maybePromise = onChunkReady?.(recorder.audioChunks[index], sessionId)
+        if (maybePromise && typeof (maybePromise as Promise<void>).then === 'function') {
+          const trackedPromise = Promise.resolve(maybePromise).finally(() => {
+            pendingChunkDispatchesRef.current.delete(trackedPromise)
+          })
+          pendingChunkDispatchesRef.current.add(trackedPromise)
+        }
       }
       emittedChunkCountRef.current = recorder.audioChunks.length
     }
@@ -56,7 +63,13 @@ export function AudioRecorderButton({
       emittedChunkCountRef.current >= recorder.audioChunks.length
     ) {
       completionEmittedRef.current = true
-      onRecordingComplete?.(new Blob(recorder.audioChunks, { type: RECORDING_MIME_TYPE }), recorder.recordingSessionId)
+      void (async () => {
+        const pending = Array.from(pendingChunkDispatchesRef.current)
+        if (pending.length > 0) {
+          await Promise.allSettled(pending)
+        }
+        onRecordingComplete?.(new Blob(recorder.audioChunks, { type: RECORDING_MIME_TYPE }), recorder.recordingSessionId)
+      })()
     }
   }, [effectiveState, onRecordingComplete, recorder.audioChunks, recorder.recordingSessionId])
 

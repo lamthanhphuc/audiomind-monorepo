@@ -296,7 +296,7 @@ describe('useRealtimeMeetingStream', () => {
       socket.receive({
         type: 'transcript.partial',
         seq: 7,
-        segmentId: '7',
+        segmentId: 'meeting-88-start-1.250-speaker_1-1',
         speaker: 'Speaker 1',
         startTime: 1.25,
         endTime: 2.5,
@@ -306,7 +306,7 @@ describe('useRealtimeMeetingStream', () => {
       socket.receive({
         type: 'transcript.final',
         seq: 7,
-        segmentId: '7',
+        segmentId: 'meeting-88-start-1.250-speaker_1-1',
         speaker: 'Speaker 1',
         startTime: 1.25,
         endTime: 3.1,
@@ -320,7 +320,8 @@ describe('useRealtimeMeetingStream', () => {
 
     expect(latest?.transcripts).toHaveLength(1)
     expect(latest?.transcripts[0]).toMatchObject({
-      id: 'time-1.250-speaker 1',
+      id: 'meeting-88-start-1.250-speaker_1-1',
+      mergeKey: 'segment:meeting-88-start-1.250-speaker_1-1',
       speaker: 'Speaker 1',
       text: 'Xin chào Audiomind',
       start: 1.25,
@@ -379,6 +380,49 @@ describe('useRealtimeMeetingStream', () => {
     })
   })
 
+  it('keeps two live segments separate when stable segmentId values are different', async () => {
+    const socket = MockWebSocket.instances[0]
+
+    act(() => {
+      socket.open()
+      socket.receive({
+        type: 'session.ready',
+        meetingId: 88,
+        authenticated: true,
+        activeConnections: 1,
+      })
+    })
+
+    await flush()
+
+    act(() => {
+      socket.receive({
+        type: 'transcript.partial',
+        segmentId: 'meeting-88-start-12.340-speaker_1-1',
+        speaker: 'Speaker 1',
+        startTime: 12.34,
+        endTime: 13.1,
+        text: 'Segment one',
+      })
+      socket.receive({
+        type: 'transcript.partial',
+        segmentId: 'meeting-88-start-14.220-speaker_1-2',
+        speaker: 'Speaker 1',
+        startTime: 14.22,
+        endTime: 15.0,
+        text: 'Segment two',
+      })
+    })
+
+    await flush()
+
+    expect(latest?.transcripts).toHaveLength(2)
+    expect(latest?.transcripts.map((segment) => segment.id)).toEqual([
+      'meeting-88-start-12.340-speaker_1-1',
+      'meeting-88-start-14.220-speaker_1-2',
+    ])
+  })
+
   it('keeps the final transcript when a later partial arrives for the same segment', async () => {
     const socket = MockWebSocket.instances[0]
 
@@ -428,6 +472,85 @@ describe('useRealtimeMeetingStream', () => {
     })
   })
 
+  it('ignores duplicate segment updates with identical text', async () => {
+    const socket = MockWebSocket.instances[0]
+
+    act(() => {
+      socket.open()
+      socket.receive({
+        type: 'session.ready',
+        meetingId: 88,
+        authenticated: true,
+        activeConnections: 1,
+      })
+    })
+
+    await flush()
+
+    act(() => {
+      socket.receive({
+        type: 'transcript.partial',
+        segmentId: 'meeting-88-start-12.340-speaker_1-1',
+        speaker: 'Speaker 1',
+        startTime: 12.34,
+        endTime: 12.9,
+        text: 'Xin chào',
+      })
+      socket.receive({
+        type: 'transcript.partial',
+        segmentId: 'meeting-88-start-12.340-speaker_1-1',
+        speaker: 'Speaker 1',
+        startTime: 12.34,
+        endTime: 13.1,
+        text: 'Xin chào',
+      })
+    })
+
+    await flush()
+
+    expect(latest?.transcripts).toHaveLength(1)
+    expect(latest?.transcripts[0]).toMatchObject({
+      id: 'meeting-88-start-12.340-speaker_1-1',
+      text: 'Xin chào',
+      end: 12.9,
+    })
+  })
+
+  it('accepts transcript events with missing speaker and timing without crashing', async () => {
+    const socket = MockWebSocket.instances[0]
+
+    act(() => {
+      socket.open()
+      socket.receive({
+        type: 'session.ready',
+        meetingId: 88,
+        authenticated: true,
+        activeConnections: 1,
+      })
+    })
+
+    await flush()
+
+    act(() => {
+      socket.receive({
+        type: 'transcript.partial',
+        segmentId: 'meeting-88-temp-1',
+        text: 'fallback event',
+      })
+    })
+
+    await flush()
+
+    expect(latest?.transcripts).toHaveLength(1)
+    expect(latest?.transcripts[0]).toMatchObject({
+      id: 'meeting-88-temp-1',
+      speaker: 'SPEAKER_1',
+      start: 0,
+      end: 0,
+      text: 'fallback event',
+    })
+  })
+
   it('merges persisted transcript rows into an existing realtime segment without duplicates', () => {
     const realtimeSegment = normalizeTranscriptEvent({
       type: 'transcript.partial',
@@ -459,6 +582,38 @@ describe('useRealtimeMeetingStream', () => {
       text: 'Xin chào Audiomind',
       start: 7.81,
       end: 8.48,
+    })
+  })
+
+  it('canonicalizes legacy live segment id and merges with hydration id without duplicates', () => {
+    const realtimeSegment = normalizeTranscriptEvent({
+      type: 'transcript.partial',
+      segmentId: 'meeting-11-0.000-speaker_1-1',
+      speaker: 'Speaker 1',
+      startTime: 0,
+      endTime: 0.8,
+      text: 'Xin chào',
+    }, 'transcript.partial')
+
+    const persistedSegments = normalizePersistedTranscriptSegments([
+      {
+        segment_id: 'meeting-11-start-0.000-speaker_1',
+        speaker: 'Speaker 1',
+        start_time: 0,
+        end_time: 1.1,
+        text: 'Xin chào Audiomind',
+      },
+    ])
+
+    const merged = mergeTranscriptSegments([
+      ...(realtimeSegment ? [realtimeSegment] : []),
+      ...persistedSegments,
+    ])
+
+    expect(merged).toHaveLength(1)
+    expect(merged[0]).toMatchObject({
+      id: 'meeting-11-start-0.000-speaker_1',
+      text: 'Xin chào Audiomind',
     })
   })
 

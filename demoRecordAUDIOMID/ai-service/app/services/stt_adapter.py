@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Callable, Protocol, runtime_checkable
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 from uuid import uuid4
 
@@ -169,6 +170,13 @@ class _SessionBuffer:
     speech_started_events: int = 0
     utterance_end_events: int = 0
     other_events: int = 0
+    fallback_segment_counter: int = 0
+    fallback_segment_ids: dict[str, str] = field(default_factory=dict)
+    consecutive_empty_results: int = 0
+    last_text_result_at: float = 0.0
+    finalize_sent: bool = False
+    finalize_acked: bool = False
+    close_stream_sent: bool = False
 
 
 class DeepgramSTTAdapter:
@@ -176,6 +184,10 @@ class DeepgramSTTAdapter:
 
     CLOSED_RESPONSE_CACHE_MAX_ITEMS = 256
     KEEPALIVE_AFTER_IDLE_SECONDS = 15.0
+    _LEGACY_SEGMENT_ID_PATTERN = re.compile(
+        r"^meeting-(?P<meeting>\d+)-(?P<start>\d+(?:\.\d+)?)-(?P<speaker>[a-z0-9_]+)-\d+$",
+        re.IGNORECASE,
+    )
 
     def __init__(
         self,
@@ -184,6 +196,7 @@ class DeepgramSTTAdapter:
         base_url: str = "https://api.deepgram.com/v1/listen",
         timeout_seconds: int = 30,
         sample_rate: int = 16000,
+        endpointing: int | None = None,
         simplify_streaming_url: bool = False,
         debug_raw_messages: bool = False,
         enable_speaker_diarization: bool = False,
@@ -194,6 +207,11 @@ class DeepgramSTTAdapter:
         self.base_url = (base_url or "https://api.deepgram.com/v1/listen").rstrip("/")
         self.timeout_seconds = timeout_seconds
         self.sample_rate = sample_rate
+        self.endpointing = (
+            int(endpointing)
+            if isinstance(endpointing, (int, float)) or str(endpointing or "").strip()
+            else None
+        )
         self.simplify_streaming_url = bool(simplify_streaming_url)
         self.debug_raw_messages = bool(debug_raw_messages)
         self.enable_speaker_diarization = bool(enable_speaker_diarization)
@@ -672,6 +690,43 @@ class DeepgramSTTAdapter:
 
         final_events: list[dict[str, Any]] = []
         if websocket is not None:
+            if not session.finalize_sent:
+                await self._send_control_message(
+                    websocket=websocket,
+                    session=session,
+                    payload={"type": "Finalize"},
+                    log_key="DG_FINALIZE_SEND",
+                )
+                session.finalize_sent = True
+                finalize_events, finalize_acked = await self._wait_for_finalize_ack(
+                    session=session,
+                    ts_ms=close_ts_ms,
+                    timeout_seconds=float(self.timeout_seconds),
+                )
+                final_events.extend(finalize_events)
+                session.finalize_acked = bool(finalize_acked)
+                if finalize_acked:
+                    logger.info(
+                        "DG_FINALIZE_ACK session_id={} meeting_id={} from_finalize=true",
+                        session.session_id,
+                        session.meeting_id,
+                    )
+                else:
+                    logger.warning(
+                        "DG_FINALIZE_TIMEOUT session_id={} meeting_id={} timeout_seconds={}",
+                        session.session_id,
+                        session.meeting_id,
+                        self.timeout_seconds,
+                    )
+
+            if not session.close_stream_sent:
+                await self._send_control_message(
+                    websocket=websocket,
+                    session=session,
+                    payload={"type": "CloseStream"},
+                    log_key="DG_CLOSE_STREAM_SEND",
+                )
+                session.close_stream_sent = True
             async with session.recv_lock:
                 final_events.extend(
                     await self._drain_transcript_events(
@@ -805,6 +860,7 @@ class DeepgramSTTAdapter:
         session: _SessionBuffer,
         ts_ms: int,
         drain_timeout: float | None = None,
+        payload_collector: Callable[[dict[str, Any]], None] | None = None,
     ) -> list[dict[str, Any]]:
         websocket = session.websocket
         if websocket is None:
@@ -834,6 +890,18 @@ class DeepgramSTTAdapter:
                 raise RuntimeError("Deepgram WebSocket receive failed") from exc
 
             self._log_raw_message(session.session_id, raw_message)
+            payload_obj: dict[str, Any] | None = None
+            if isinstance(raw_message, str):
+                try:
+                    parsed_payload = json.loads(raw_message)
+                    if isinstance(parsed_payload, dict):
+                        payload_obj = parsed_payload
+                except json.JSONDecodeError:
+                    payload_obj = None
+            elif isinstance(raw_message, dict):
+                payload_obj = raw_message
+            if payload_collector is not None and payload_obj is not None:
+                payload_collector(payload_obj)
             event = self._parse_transcript_message(
                 raw_message,
                 ts_ms=ts_ms,
@@ -882,8 +950,57 @@ class DeepgramSTTAdapter:
             )
         if self._speaker_diarization_enabled():
             query_pairs["diarize"] = "true"
+        if self.endpointing is not None:
+            query_pairs["endpointing"] = str(int(self.endpointing))
         query = urlencode(query_pairs)
         return urlunparse(parsed._replace(query=query))
+
+    async def _send_control_message(
+        self,
+        websocket: Any,
+        session: _SessionBuffer,
+        payload: dict[str, Any],
+        log_key: str,
+    ) -> None:
+        logger.info(
+            "{} session_id={} meeting_id={} payload={}",
+            log_key,
+            session.session_id,
+            session.meeting_id,
+            payload,
+        )
+        await asyncio.wait_for(
+            websocket.send(json.dumps(payload)),
+            timeout=self.timeout_seconds,
+        )
+
+    async def _wait_for_finalize_ack(
+        self,
+        session: _SessionBuffer,
+        ts_ms: int,
+        timeout_seconds: float,
+    ) -> tuple[list[dict[str, Any]], bool]:
+        collected_payloads: list[dict[str, Any]] = []
+        final_events = await self._drain_transcript_events(
+            session=session,
+            ts_ms=ts_ms,
+            drain_timeout=timeout_seconds,
+            payload_collector=lambda payload: collected_payloads.append(payload),
+        )
+        for payload in collected_payloads:
+            metadata = payload.get("metadata")
+            from_finalize = bool(payload.get("from_finalize")) or (
+                isinstance(metadata, dict) and bool(metadata.get("from_finalize"))
+            )
+            if from_finalize:
+                logger.info(
+                    "DG_CLOSE_STREAM_METADATA session_id={} meeting_id={} metadata={}",
+                    session.session_id,
+                    session.meeting_id,
+                    metadata if isinstance(metadata, dict) else payload,
+                )
+                return final_events, True
+        return final_events, False
 
     def _parse_transcript_message(
         self,
@@ -908,12 +1025,41 @@ class DeepgramSTTAdapter:
             return None
 
         transcript, confidence = self._extract_transcript(payload)
+        words_count = self._count_words(payload)
+        if not transcript and words_count > 0:
+            transcript = self._extract_transcript_from_words(payload)
         start_time, end_time = self._extract_timing(payload)
         self._record_event_count(session, payload)
         speaker = self._extract_speaker(payload)
         is_final = bool(payload.get("is_final") or payload.get("speech_final"))
+        if self._speaker_diarization_enabled() and not is_final:
+            speaker = None
+        alternatives_count = self._count_alternatives(payload)
+        duration = None
+        if start_time is not None and end_time is not None:
+            duration = max(0.0, float(end_time) - float(start_time))
 
         if self._is_results_payload(payload):
+            logger.info(
+                "DG_RESULT_DEBUG meeting_id={} seq={} event_index={} is_final={} speech_final={} text_len={} words_count={} alternatives_count={} start={} end={} duration={} language={} model={}",
+                getattr(session, "meeting_id", None) if session is not None else None,
+                ts_ms,
+                (
+                    getattr(session, "results_events", None)
+                    if session is not None
+                    else None
+                ),
+                bool(payload.get("is_final")),
+                bool(payload.get("speech_final")),
+                len(transcript),
+                words_count,
+                alternatives_count,
+                start_time,
+                end_time,
+                duration,
+                getattr(session, "language", None) if session is not None else None,
+                self.model,
+            )
             logger.info(
                 "DG RAW EVENT Results meeting_ts_ms={} type={} has_channel={} has_alternatives={} is_final={} speech_final={} text_len={} keys={}",
                 ts_ms,
@@ -935,9 +1081,55 @@ class DeepgramSTTAdapter:
                     bool(payload.get("is_final")),
                     bool(payload.get("speech_final")),
                     len(transcript),
-                    self._count_alternatives(payload),
+                    alternatives_count,
                     session.results_events if session is not None else None,
                 )
+                logger.warning(
+                    "STT_EMPTY_RESULT session_id={} meeting_id={} meeting_ts_ms={} event_type={} alternatives_count={} is_final={} speech_final={}",
+                    session.session_id if session is not None else None,
+                    (
+                        getattr(session, "meeting_id", None)
+                        if session is not None
+                        else None
+                    ),
+                    ts_ms,
+                    payload.get("type"),
+                    alternatives_count,
+                    bool(payload.get("is_final")),
+                    bool(payload.get("speech_final")),
+                )
+                if words_count > 0:
+                    logger.warning(
+                        "STT_EMPTY_RESULT_WITH_WORDS session_id={} meeting_id={} meeting_ts_ms={} words_count={} alternatives_count={}",
+                        session.session_id if session is not None else None,
+                        (
+                            getattr(session, "meeting_id", None)
+                            if session is not None
+                            else None
+                        ),
+                        ts_ms,
+                        words_count,
+                        alternatives_count,
+                    )
+                if session is not None:
+                    session.consecutive_empty_results = (
+                        int(getattr(session, "consecutive_empty_results", 0)) + 1
+                    )
+                    if (
+                        len(getattr(session, "chunks", [])) >= 5
+                        and session.consecutive_empty_results >= 5
+                    ):
+                        logger.warning(
+                            "STT_EMPTY_RESULT_AFTER_AUDIO_ACTIVE session_id={} meeting_id={} empty_results={} chunks_sent={} last_text_result_at={}",
+                            session.session_id,
+                            session.meeting_id,
+                            session.consecutive_empty_results,
+                            len(getattr(session, "chunks", [])),
+                            getattr(session, "last_text_result_at", 0.0),
+                        )
+            elif session is not None:
+                session.consecutive_empty_results = 0
+                session.last_text_result_at = time.time()
 
         # If payload contains metadata, emit a concise metadata event log
         try:
@@ -959,10 +1151,25 @@ class DeepgramSTTAdapter:
             pass
 
         if not transcript:
+            logger.info(
+                "LIVE_SEGMENT_NO_TEXT session_id={} meeting_id={} meeting_ts_ms={} event_type={} is_final={} speech_final={}",
+                session.session_id if session is not None else None,
+                getattr(session, "meeting_id", None) if session is not None else None,
+                ts_ms,
+                payload.get("type"),
+                bool(payload.get("is_final")),
+                bool(payload.get("speech_final")),
+            )
             return None
 
         segment_id = self._resolve_segment_id(
-            payload, session, start_time, end_time, ts_ms
+            payload,
+            session,
+            start_time,
+            end_time,
+            ts_ms,
+            speaker=speaker,
+            is_final=is_final,
         )
 
         # Emit a concise parsed transcript log (truncated) for debugging
@@ -991,6 +1198,30 @@ class DeepgramSTTAdapter:
                     "DIARIZATION_SKIPPED reason=missing_speaker_data mode=realtime"
                 )
 
+        if start_time is None or end_time is None:
+            logger.warning(
+                "LIVE_SEGMENT_EVENT_MISSING_TIMING session_id={} meeting_id={} segment_id={} is_final={} start_time={} end_time={} ts_ms={}",
+                session.session_id if session is not None else None,
+                session.meeting_id if session is not None else None,
+                segment_id,
+                is_final,
+                start_time,
+                end_time,
+                ts_ms,
+            )
+
+        logger.info(
+            "LIVE_SEGMENT_EVENT_CREATED session_id={} meeting_id={} segment_id={} is_final={} start_time={} end_time={} speaker={} text_len={}",
+            session.session_id if session is not None else None,
+            session.meeting_id if session is not None else None,
+            segment_id,
+            is_final,
+            start_time,
+            end_time,
+            speaker,
+            len(transcript),
+        )
+
         return {
             "text": transcript,
             "confidence": confidence,
@@ -999,7 +1230,7 @@ class DeepgramSTTAdapter:
             "segment_id": segment_id,
             "start_time": start_time,
             "end_time": end_time,
-            "speaker": speaker if is_final else None,
+            "speaker": speaker,
             "raw": payload,
         }
 
@@ -1113,6 +1344,35 @@ class DeepgramSTTAdapter:
 
         return "", None
 
+    def _extract_transcript_from_words(self, payload: dict[str, Any]) -> str:
+        channels = self._extract_channels(payload)
+        for channel in channels:
+            alternatives = channel.get("alternatives") or []
+            if not alternatives:
+                continue
+            words = (alternatives[0] or {}).get("words") or []
+            if not isinstance(words, list):
+                continue
+            text = " ".join(
+                str(word.get("punctuated_word") or word.get("word") or "").strip()
+                for word in words
+                if isinstance(word, dict)
+            ).strip()
+            if text:
+                return text
+        return ""
+
+    def _count_words(self, payload: dict[str, Any]) -> int:
+        channels = self._extract_channels(payload)
+        for channel in channels:
+            alternatives = channel.get("alternatives") or []
+            if not alternatives:
+                continue
+            words = (alternatives[0] or {}).get("words") or []
+            if isinstance(words, list):
+                return sum(1 for word in words if isinstance(word, dict))
+        return 0
+
     def _extract_timing(
         self, payload: dict[str, Any]
     ) -> tuple[float | None, float | None]:
@@ -1179,6 +1439,9 @@ class DeepgramSTTAdapter:
         start_time: float | None,
         end_time: float | None,
         ts_ms: int,
+        *,
+        speaker: str | None,
+        is_final: bool,
     ) -> str:
         explicit_id = str(
             payload.get("segment_id")
@@ -1188,16 +1451,47 @@ class DeepgramSTTAdapter:
             or ""
         ).strip()
         if explicit_id:
-            return explicit_id
+            return self._canonicalize_segment_id(explicit_id)
 
         meeting_part = (
             f"meeting-{session.meeting_id}" if session is not None else "meeting-0"
         )
+
+        speaker_part = (
+            str(speaker).strip().lower().replace(" ", "_") if speaker else "unknown"
+        )
+        if speaker_part in {"", "unknown", "system"}:
+            speaker_part = "speaker_1"
+        if start_time is not None and session is not None:
+            stable_id = f"{meeting_part}-start-{start_time:.3f}-{speaker_part}"
+            return self._canonicalize_segment_id(stable_id)
+
         if start_time is not None:
-            return f"{meeting_part}-start-{start_time:.3f}"
-        if end_time is not None:
+            return self._canonicalize_segment_id(
+                f"{meeting_part}-start-{start_time:.3f}-{speaker_part}"
+            )
+        if end_time is not None and is_final:
             return f"{meeting_part}-end-{end_time:.3f}"
+
+        if session is not None:
+            session.fallback_segment_counter += 1
+            return (
+                f"{meeting_part}-temp-{speaker_part}-{session.fallback_segment_counter}"
+            )
+
         return f"{meeting_part}-ts-{int(ts_ms)}"
+
+    def _canonicalize_segment_id(self, segment_id: str) -> str:
+        raw = str(segment_id or "").strip()
+        if not raw:
+            return raw
+        match = self._LEGACY_SEGMENT_ID_PATTERN.match(raw)
+        if match:
+            return (
+                f"meeting-{match.group('meeting')}-start-"
+                f"{float(match.group('start')):.3f}-{match.group('speaker').lower()}"
+            )
+        return raw
 
     def _first_float_value(self, *values: Any) -> float | None:
         for value in values:

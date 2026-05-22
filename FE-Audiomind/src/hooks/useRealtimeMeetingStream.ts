@@ -14,6 +14,7 @@ export interface TranscriptSegment {
   confidence?: number
   language?: string
   isFinal?: boolean
+  source?: 'live' | 'hydration'
 }
 
 export interface KeywordHit {
@@ -156,6 +157,10 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
   const connectionSequenceRef = useRef(0)
   const readyConnectionSeqRef = useRef(0)
   const readyMeetingIdRef = useRef<number | null>(null)
+  const lastTranscriptAtRef = useRef<number>(0)
+  const lastChunkSentAtRef = useRef<number>(0)
+  const firstChunkSentAtRef = useRef<number>(0)
+  const stalledWarningLoggedRef = useRef(false)
   const effectRunCountRef = useRef(0)
   const connectRef = useRef<() => void>(() => {})
   const userStopRequestedRef = useRef(false)
@@ -455,6 +460,8 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
               if (!nextSegment) {
                 break
               }
+              lastTranscriptAtRef.current = Date.now()
+              stalledWarningLoggedRef.current = false
 
               setTranscripts((current) => {
                 return upsertTranscriptSegment(current, nextSegment).segments
@@ -717,6 +724,10 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
     // Send metadata as JSON first
     const seq = (audioSequenceRef.current += 1)
     const tsMs = Date.now()
+    lastChunkSentAtRef.current = tsMs
+    if (firstChunkSentAtRef.current <= 0) {
+      firstChunkSentAtRef.current = tsMs
+    }
     const metadata: JsonValue = {
       type: 'audio.chunk',
       meeting_id: normalizedMeetingId,
@@ -835,6 +846,39 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
   }, [])
 
   useEffect(() => {
+    if (!isConnected) {
+      return undefined
+    }
+
+    const timerId = window.setInterval(() => {
+      const now = Date.now()
+      if (
+        lastChunkSentAtRef.current > 0 &&
+        now - lastChunkSentAtRef.current <= 2_000 &&
+        (
+          (lastTranscriptAtRef.current > 0 && now - lastTranscriptAtRef.current >= 10_000) ||
+          (lastTranscriptAtRef.current <= 0 && firstChunkSentAtRef.current > 0 && now - firstChunkSentAtRef.current >= 15_000)
+        ) &&
+        !stalledWarningLoggedRef.current
+      ) {
+        stalledWarningLoggedRef.current = true
+        console.warn('[Realtime] LIVE_SEGMENT_STALLED', {
+          meetingId,
+          connectionSeq: connectionSequenceRef.current,
+          lastTranscriptAt: lastTranscriptAtRef.current || null,
+          lastChunkSentAt: lastChunkSentAtRef.current,
+          firstChunkSentAt: firstChunkSentAtRef.current || null,
+          elapsedSinceFirstChunkMs: firstChunkSentAtRef.current > 0 ? now - firstChunkSentAtRef.current : null,
+        })
+      }
+    }, 2000)
+
+    return () => {
+      window.clearInterval(timerId)
+    }
+  }, [isConnected, meetingId])
+
+  useEffect(() => {
     effectRunCountRef.current += 1
     if (!canConnect) {
       disconnect(sessionToken)
@@ -845,6 +889,9 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
     setKeywords([])
     pendingQueueRef.current = []
     audioSequenceRef.current = 0
+    firstChunkSentAtRef.current = 0
+    lastTranscriptAtRef.current = 0
+    lastChunkSentAtRef.current = 0
     connect()
 
     return () => {

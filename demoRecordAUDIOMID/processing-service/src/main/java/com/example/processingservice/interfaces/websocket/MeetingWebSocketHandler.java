@@ -5,8 +5,11 @@ import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HexFormat;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.BinaryMessage;
@@ -33,8 +36,13 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
     private static final String LAST_AUDIO_SEQ_ATTR = "lastAudioSeq";
     private static final String LAST_AUDIO_DECLARED_SIZE_ATTR = "lastAudioDeclaredSize";
     private static final String LAST_AUDIO_IS_FINAL_ATTR = "lastAudioIsFinal";
+    private static final String LAST_SEGMENT_AT_ATTR = "lastSegmentAt";
+    private static final String EMPTY_TRANSCRIPT_STREAK_ATTR = "emptyTranscriptStreak";
+    private static final String FIRST_CHUNK_AT_ATTR = "firstChunkAt";
     private static final String AUDIO_RECEIVED_ATTR = "AUDIO_RECEIVED_ATTR";
     private static final String RESET_REQUIRED_ATTR = "RESET_REQUIRED_ATTR";
+    private static final String LAST_TRANSCRIPT_TEXT_ATTR = "lastTranscriptText";
+    private static final String LAST_TIMED_TRANSCRIPT_ATTR = "lastTimedTranscript";
     private static final String LANGUAGE_ATTR = "language";
     private static final String LAST_ACTIVITY_ATTR = "lastActivity";
     private static final String FINALIZED_ATTR = "FINALIZED_ATTR";
@@ -143,6 +151,9 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
             String encoding = getStringValue(data.get("encoding"));
             String language = getStringValue(data.get("language"));
             Boolean isFinal = getBooleanValue(data.get("is_final"));
+            String effectiveLanguage = language.isBlank()
+                    ? getStringAttribute(session, LANGUAGE_ATTR)
+                    : language;
 
             // Store seq so we can correlate with binary message
             session.getAttributes().put(LAST_AUDIO_SEQ_ATTR, seq);
@@ -164,6 +175,13 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                     channels,
                     language,
                     isFinal
+            );
+            log.info(
+                    "AUDIO_CHUNK_LANGUAGE_EFFECTIVE meetingId={} seq={} incomingLanguage={} effectiveLanguage={}",
+                    meetingId,
+                    seq,
+                    language,
+                    effectiveLanguage
             );
             return;
         }
@@ -237,6 +255,10 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
         ByteBuffer payloadBuffer = message.getPayload().asReadOnlyBuffer();
         byte[] audioBytes = new byte[payloadBuffer.remaining()];
         payloadBuffer.get(audioBytes);
+        long nowMs = System.currentTimeMillis();
+        if (getLongAttribute(session, FIRST_CHUNK_AT_ATTR) == null) {
+            session.getAttributes().put(FIRST_CHUNK_AT_ATTR, nowMs);
+        }
 
         int payloadSize = audioBytes.length;
         Long declaredSize = getLongAttribute(session, LAST_AUDIO_DECLARED_SIZE_ATTR);
@@ -287,8 +309,42 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
 
             try {
                 if (transcriptEvent != null) {
+                    session.getAttributes().put(LAST_SEGMENT_AT_ATTR, System.currentTimeMillis());
+                    session.getAttributes().put(EMPTY_TRANSCRIPT_STREAK_ATTR, 0L);
+                    log.info(
+                            "LIVE_SEGMENT_BROADCAST meetingId={} seq={} segmentId={} type={} startTime={} endTime={} isFinal={}",
+                            meetingId,
+                            transcriptEvent.get("seq"),
+                            transcriptEvent.get("segmentId"),
+                            transcriptEvent.get("type"),
+                            transcriptEvent.get("startTime"),
+                            transcriptEvent.get("endTime"),
+                            transcriptEvent.get("isFinal")
+                    );
+                    rememberTranscriptEvent(session, transcriptEvent);
                     realtimeEventSubscriber.broadcastToMeeting(meetingId, transcriptEvent);
                 } else {
+                    long emptyStreak = getLongAttribute(session, EMPTY_TRANSCRIPT_STREAK_ATTR) == null
+                            ? 0L
+                            : getLongAttribute(session, EMPTY_TRANSCRIPT_STREAK_ATTR);
+                    emptyStreak += 1L;
+                    session.getAttributes().put(EMPTY_TRANSCRIPT_STREAK_ATTR, emptyStreak);
+                    Long lastSegmentAt = getLongAttribute(session, LAST_SEGMENT_AT_ATTR);
+                    long now = System.currentTimeMillis();
+                    Long firstChunkAt = getLongAttribute(session, FIRST_CHUNK_AT_ATTR);
+                    boolean transcriptGraceElapsed = lastSegmentAt != null && now - lastSegmentAt >= 10_000;
+                    boolean firstTranscriptGraceElapsed = lastSegmentAt == null
+                            && firstChunkAt != null
+                            && now - firstChunkAt >= 15_000;
+                    if ((transcriptGraceElapsed || firstTranscriptGraceElapsed) && emptyStreak >= 10) {
+                        log.warn(
+                                "LIVE_SEGMENT_STALLED meetingId={} lastSegmentAt={} firstChunkAt={} lastChunkSeq={}",
+                                meetingId,
+                                lastSegmentAt,
+                                firstChunkAt,
+                                lastSeq
+                        );
+                    }
                     realtimeEventSubscriber.broadcastToMeeting(meetingId, buildListeningStatusEvent(meetingId, lastSeq));
                 }
             } catch (Exception e) {
@@ -488,8 +544,28 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                 // Preserve the final payload type while keeping the segment id stable for FE merging.
                 transcriptEvent.put("seq", -1L);
                 transcriptEvent.put("isFinal", true);
+                if (shouldSkipLowValueFinalEvent(session, transcriptEvent)) {
+                    log.info(
+                            "SKIP_LOW_VALUE_TEMP_FINAL meetingId={} segmentId={} seq={} reason=duplicate_or_untimed",
+                            meetingId,
+                            transcriptEvent.get("segmentId"),
+                            transcriptEvent.get("seq")
+                    );
+                    return;
+                }
+                rememberTranscriptEvent(session, transcriptEvent);
 
                 cacheFinalizedTranscript(meetingId, transcriptEvent);
+                log.info(
+                    "LIVE_SEGMENT_BROADCAST meetingId={} seq={} segmentId={} type={} startTime={} endTime={} isFinal={}",
+                    meetingId,
+                    transcriptEvent.get("seq"),
+                    transcriptEvent.get("segmentId"),
+                    transcriptEvent.get("type"),
+                    transcriptEvent.get("startTime"),
+                    transcriptEvent.get("endTime"),
+                    transcriptEvent.get("isFinal")
+                );
 
                 if (sessionStillOpen) {
                     try {
@@ -679,6 +755,9 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
             boolean finalEvent) {
         String transcriptText = getStringValue(transcript.get("transcript"));
         if (transcriptText.isBlank()) {
+            transcriptText = getStringValue(transcript.get("text"));
+        }
+        if (transcriptText.isBlank()) {
             return null;
         }
 
@@ -696,11 +775,13 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
         if (segmentId.isBlank()) {
             segmentId = getStringValue(transcript.get("segmentId"));
         }
-        if (segmentId.isBlank() && startTime != null) {
-            segmentId = String.format("meeting-%d-start-%.3f", meetingId, startTime);
+        segmentId = canonicalizeSegmentId(segmentId);
+        String speaker = getStringValue(transcript.get("speaker"));
+        if (segmentId.isBlank()) {
+            segmentId = buildDeterministicSegmentId(meetingId, resolvedSeq, speaker, startTime, endTime, finalEvent);
         }
         if (segmentId.isBlank()) {
-            segmentId = String.valueOf(resolvedSeq);
+            segmentId = String.format("meeting-%d-temp-%d", meetingId, resolvedSeq);
         }
 
         Map<String, Object> transcriptEvent = new HashMap<>();
@@ -710,6 +791,7 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
         transcriptEvent.put("segmentId", segmentId);
         transcriptEvent.put("text", transcriptText);
         transcriptEvent.put("language", getStringValue(transcript.getOrDefault("language", language)));
+        transcriptEvent.put("speaker", speaker);
 
         if (startTime != null) {
             transcriptEvent.put("startTime", startTime);
@@ -724,11 +806,58 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
         }
 
         Object finalFlag = transcript.get("is_final");
-        if (finalEvent || Boolean.TRUE.equals(getBooleanValue(finalFlag))) {
-            transcriptEvent.put("isFinal", true);
-        }
+        transcriptEvent.put("isFinal", finalEvent || Boolean.TRUE.equals(getBooleanValue(finalFlag)));
 
         return transcriptEvent;
+    }
+
+    private String buildDeterministicSegmentId(
+            Long meetingId,
+            Long resolvedSeq,
+            String speaker,
+            Double startTime,
+            Double endTime,
+            boolean finalEvent) {
+        String speakerPart = speaker == null || speaker.isBlank()
+                ? "unknown"
+                : speaker.trim().toLowerCase().replace(' ', '_');
+        if (startTime != null) {
+            return String.format(Locale.US, "meeting-%d-start-%.3f-%s", meetingId, startTime, speakerPart);
+        }
+        if (finalEvent && endTime != null) {
+            return String.format(Locale.US, "meeting-%d-end-%.3f-%s", meetingId, endTime, speakerPart);
+        }
+        return String.format(Locale.US, "meeting-%d-temp-%d-%s", meetingId, resolvedSeq, speakerPart);
+    }
+
+    private String canonicalizeSegmentId(String segmentId) {
+        String raw = getStringValue(segmentId).trim();
+        if (raw.isBlank()) {
+            return raw;
+        }
+        Pattern canonicalPattern = Pattern.compile("^meeting-(\\d+)-start-(\\d+(?:\\.\\d+)?)-([a-z0-9_]+)$", Pattern.CASE_INSENSITIVE);
+        Matcher canonicalMatcher = canonicalPattern.matcher(raw);
+        if (canonicalMatcher.matches()) {
+            return String.format(
+                    Locale.US,
+                    "meeting-%s-start-%.3f-%s",
+                    canonicalMatcher.group(1),
+                    Double.parseDouble(canonicalMatcher.group(2)),
+                    canonicalMatcher.group(3).toLowerCase()
+            );
+        }
+        Pattern legacyPattern = Pattern.compile("^meeting-(\\d+)-(\\d+(?:\\.\\d+)?)-([a-z0-9_]+)-\\d+$", Pattern.CASE_INSENSITIVE);
+        Matcher legacyMatcher = legacyPattern.matcher(raw);
+        if (legacyMatcher.matches()) {
+            return String.format(
+                    Locale.US,
+                    "meeting-%s-start-%.3f-%s",
+                    legacyMatcher.group(1),
+                    Double.parseDouble(legacyMatcher.group(2)),
+                    legacyMatcher.group(3).toLowerCase()
+            );
+        }
+        return raw;
     }
 
     private Map<String, Object> buildListeningStatusEvent(Long meetingId, Long seq) {
@@ -756,6 +885,41 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
             return null;
         }
         return Boolean.parseBoolean(normalized);
+    }
+
+    private void rememberTranscriptEvent(WebSocketSession session, Map<String, Object> transcriptEvent) {
+        String text = normalizeText(getStringValue(transcriptEvent.get("text")));
+        if (!text.isBlank()) {
+            session.getAttributes().put(LAST_TRANSCRIPT_TEXT_ATTR, text);
+        }
+        boolean hasTiming = transcriptEvent.get("startTime") instanceof Number || transcriptEvent.get("endTime") instanceof Number;
+        if (hasTiming) {
+            session.getAttributes().put(LAST_TIMED_TRANSCRIPT_ATTR, Boolean.TRUE);
+        }
+    }
+
+    private boolean shouldSkipLowValueFinalEvent(WebSocketSession session, Map<String, Object> transcriptEvent) {
+        Object seqValue = transcriptEvent.get("seq");
+        long seq = seqValue instanceof Number ? ((Number) seqValue).longValue() : 0L;
+        if (seq != -1L) {
+            return false;
+        }
+        boolean hasTiming = transcriptEvent.get("startTime") instanceof Number || transcriptEvent.get("endTime") instanceof Number;
+        if (hasTiming) {
+            return false;
+        }
+        String normalizedText = normalizeText(getStringValue(transcriptEvent.get("text")));
+        if (normalizedText.isBlank()) {
+            return true;
+        }
+        String lastText = normalizeText(getStringValue(session.getAttributes().get(LAST_TRANSCRIPT_TEXT_ATTR)));
+        boolean duplicateText = !lastText.isBlank() && (lastText.contains(normalizedText) || normalizedText.contains(lastText));
+        boolean alreadyHasTimedFinal = Boolean.TRUE.equals(session.getAttributes().get(LAST_TIMED_TRANSCRIPT_ATTR));
+        return duplicateText || alreadyHasTimedFinal;
+    }
+
+    private String normalizeText(String value) {
+        return getStringValue(value).trim().replaceAll("\\s+", " ").toLowerCase();
     }
 
     private void updateLastActivity(WebSocketSession session) {
