@@ -1,11 +1,5 @@
 package com.example.processingservice.interfaces.websocket;
 
-import com.example.processingservice.security.JwtUtil;
-import com.example.processingservice.security.MeetingChannelAuthorizer;
-import com.example.processingservice.client.AIServiceClient;
-import com.example.processingservice.services.RealtimeEventSubscriber;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import io.jsonwebtoken.Claims;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.Comparator;
@@ -13,13 +7,23 @@ import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import lombok.extern.slf4j.Slf4j;
+
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.BinaryMessage;
 import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.handler.AbstractWebSocketHandler;
+
+import com.example.processingservice.client.AIServiceClient;
+import com.example.processingservice.client.AudioStreamResetRequiredException;
+import com.example.processingservice.security.JwtUtil;
+import com.example.processingservice.security.MeetingChannelAuthorizer;
+import com.example.processingservice.services.RealtimeEventSubscriber;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
+import io.jsonwebtoken.Claims;
+import lombok.extern.slf4j.Slf4j;
 
 @Slf4j
 @Component
@@ -30,6 +34,7 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
     private static final String LAST_AUDIO_DECLARED_SIZE_ATTR = "lastAudioDeclaredSize";
     private static final String LAST_AUDIO_IS_FINAL_ATTR = "lastAudioIsFinal";
     private static final String AUDIO_RECEIVED_ATTR = "AUDIO_RECEIVED_ATTR";
+    private static final String RESET_REQUIRED_ATTR = "RESET_REQUIRED_ATTR";
     private static final String LANGUAGE_ATTR = "language";
     private static final String LAST_ACTIVITY_ATTR = "lastActivity";
     private static final String FINALIZED_ATTR = "FINALIZED_ATTR";
@@ -138,7 +143,7 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
             String encoding = getStringValue(data.get("encoding"));
             String language = getStringValue(data.get("language"));
             Boolean isFinal = getBooleanValue(data.get("is_final"));
-            
+
             // Store seq so we can correlate with binary message
             session.getAttributes().put(LAST_AUDIO_SEQ_ATTR, seq);
             session.getAttributes().put(LAST_AUDIO_DECLARED_SIZE_ATTR, size);
@@ -146,7 +151,7 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                 session.getAttributes().put(LANGUAGE_ATTR, language);
             }
             session.getAttributes().put(LAST_AUDIO_IS_FINAL_ATTR, isFinal != null && isFinal);
-            
+
             log.info(
                     "Received audio.chunk metadata meetingId={} seq={} declaredSize={} tsMs={} mimeType={} encoding={} sampleRate={} channels={} language={} isFinal={}",
                     meetingId,
@@ -219,13 +224,21 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
             );
             return;
         }
+        Long lastSeq = getLongAttribute(session, LAST_AUDIO_SEQ_ATTR);
+        if (Boolean.TRUE.equals(session.getAttributes().get(RESET_REQUIRED_ATTR))) {
+            log.info(
+                    "PROCESSING_DROP_CHUNK_AFTER_RESET_REQUIRED meetingId={} seq={}",
+                    meetingId,
+                    lastSeq
+            );
+            return;
+        }
 
         ByteBuffer payloadBuffer = message.getPayload().asReadOnlyBuffer();
         byte[] audioBytes = new byte[payloadBuffer.remaining()];
         payloadBuffer.get(audioBytes);
 
         int payloadSize = audioBytes.length;
-        Long lastSeq = getLongAttribute(session, LAST_AUDIO_SEQ_ATTR);
         Long declaredSize = getLongAttribute(session, LAST_AUDIO_DECLARED_SIZE_ATTR);
         String language = getStringAttribute(session, LANGUAGE_ATTR);
         String authorization = getStringAttribute(session, "authorization");
@@ -288,6 +301,29 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                     lastSeq,
                     ex.getMessage()
             );
+
+            if (ex instanceof AudioStreamResetRequiredException) {
+                session.getAttributes().put(RESET_REQUIRED_ATTR, Boolean.TRUE);
+                log.warn(
+                        "RESET_REQUIRED_FROM_AI meetingId={} seq={} message={}",
+                        meetingId,
+                        lastSeq,
+                        ex.getMessage()
+                );
+                Map<String, Object> errorEvent = Map.of(
+                        "type", "stream.error",
+                        "meetingId", meetingId,
+                        "message", "Nghiên cứu lại luồng ghi âm: cần khởi động lại recorder WebM",
+                        "recoverable", false,
+                        "resetRequired", true
+                );
+                try {
+                    realtimeEventSubscriber.broadcastToMeeting(meetingId, errorEvent);
+                } catch (Exception e) {
+                    log.error("Failed to broadcast resetRequired errorEvent for meetingId={}: {}", meetingId, e.getMessage(), e);
+                }
+                return;
+            }
 
             Map<String, Object> errorEvent = Map.of(
                     "type", "stream.error",
@@ -384,6 +420,10 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
             log.info("Skipping duplicate STT finalization for meetingId={} because finalization already started", meetingId);
             return;
         }
+        if (Boolean.TRUE.equals(session.getAttributes().get(RESET_REQUIRED_ATTR))) {
+            log.info("Skipping finalize seq=-1 for meetingId={} because reset_required was already raised", meetingId);
+            return;
+        }
 
         // Mark this session as finalized to avoid double-finalization
         try {
@@ -468,6 +508,20 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                             meetingId,
                             getStringValue(transcriptEvent.get("text")).length()
                     );
+                }
+                Object partialObj = transcript.get("partial");
+                boolean partial = partialObj instanceof Boolean ? (Boolean) partialObj : Boolean.parseBoolean(String.valueOf(partialObj));
+                if (partial) {
+                    Map<String, Object> partialWarningEvent = new HashMap<>();
+                    partialWarningEvent.put("type", "stream.status");
+                    partialWarningEvent.put("meetingId", meetingId);
+                    partialWarningEvent.put("state", "partial");
+                    partialWarningEvent.put("partial", true);
+                    partialWarningEvent.put("resetRequired", true);
+                    partialWarningEvent.put("message", "Transcript có thể chưa đầy đủ");
+                    if (sessionStillOpen) {
+                        realtimeEventSubscriber.broadcastToMeeting(meetingId, partialWarningEvent);
+                    }
                 }
                 return;
             }

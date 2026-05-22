@@ -1,42 +1,44 @@
 package com.example.processingservice.interfaces.websocket;
 
-import com.example.processingservice.client.AIServiceClient;
-import com.example.processingservice.security.JwtUtil;
-import com.example.processingservice.security.MeetingChannelAuthorizer;
-import com.example.processingservice.services.RealtimeEventSubscriber;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.when;
+
 import java.nio.ByteBuffer;
 import java.util.HashMap;
 import java.util.Map;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.mockito.InOrder;
 import org.springframework.web.socket.BinaryMessage;
 import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.argThat;
-import static org.mockito.ArgumentMatchers.anyLong;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.ArgumentMatchers.isNull;
-import static org.mockito.Mockito.doReturn;
-import static org.mockito.Mockito.inOrder;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.verifyNoInteractions;
-import static org.mockito.Mockito.when;
+import com.example.processingservice.client.AIServiceClient;
+import com.example.processingservice.client.AudioStreamResetRequiredException;
+import com.example.processingservice.security.JwtUtil;
+import com.example.processingservice.security.MeetingChannelAuthorizer;
+import com.example.processingservice.services.RealtimeEventSubscriber;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 @ExtendWith(MockitoExtension.class)
 class MeetingWebSocketHandlerTest {
@@ -344,6 +346,94 @@ class MeetingWebSocketHandlerTest {
             eq("Bearer test-token")
         );
         verifyNoInteractions(realtimeEventSubscriber);
+    }
+
+    @Test
+    void handleBinaryMessage_shouldBroadcastResetRequiredWhenAiServiceRequestsRecorderReset() throws Exception {
+        attributes.put("meetingId", 343L);
+        attributes.put("authenticated", true);
+        attributes.put("language", "vi");
+        attributes.put("authorization", "Bearer test-token");
+        attributes.put("lastAudioSeq", 12L);
+
+        when(aiServiceClient.streamAudioChunk(
+            eq(343L),
+            argThat(bytes -> bytes != null && bytes.length == 4),
+            eq(12L),
+            eq("vi"),
+            eq(false),
+            isNull(),
+            eq("Bearer test-token")
+        )).thenThrow(new AudioStreamResetRequiredException(343L, 12L, new RuntimeException("reset")));
+
+        handler.handleBinaryMessage(session, new BinaryMessage(ByteBuffer.wrap(new byte[] {9, 10, 11, 12})));
+
+        ArgumentCaptor<Map<String, Object>> eventCaptor = ArgumentCaptor.forClass(Map.class);
+        verify(realtimeEventSubscriber).broadcastToMeeting(eq(343L), eventCaptor.capture());
+
+        Map<String, Object> event = eventCaptor.getValue();
+        assertEquals("stream.error", event.get("type"));
+        assertEquals(Boolean.FALSE, event.get("recoverable"));
+        assertEquals(Boolean.TRUE, event.get("resetRequired"));
+    }
+
+    @Test
+    void handleBinaryMessage_shouldDropFollowingChunksAfterResetRequired() throws Exception {
+        attributes.put("meetingId", 344L);
+        attributes.put("authenticated", true);
+        attributes.put("language", "vi");
+        attributes.put("authorization", "Bearer test-token");
+        attributes.put("lastAudioSeq", 13L);
+
+        when(aiServiceClient.streamAudioChunk(
+                eq(344L),
+                argThat(bytes -> bytes != null && bytes.length == 4),
+                eq(13L),
+                eq("vi"),
+                eq(false),
+                isNull(),
+                eq("Bearer test-token")
+        )).thenThrow(new AudioStreamResetRequiredException(344L, 13L, new RuntimeException("reset")));
+
+        handler.handleBinaryMessage(session, new BinaryMessage(ByteBuffer.wrap(new byte[] {1, 2, 3, 4})));
+
+        attributes.put("lastAudioSeq", 14L);
+        handler.handleBinaryMessage(session, new BinaryMessage(ByteBuffer.wrap(new byte[] {5, 6, 7, 8})));
+
+        verify(aiServiceClient).streamAudioChunk(
+                eq(344L),
+                argThat(bytes -> bytes != null && bytes.length == 4),
+                eq(13L),
+                eq("vi"),
+                eq(false),
+                isNull(),
+                eq("Bearer test-token")
+        );
+        verifyNoMoreInteractions(aiServiceClient);
+    }
+
+    @Test
+    void handleTextMessage_streamStop_shouldSkipFinalizeAfterResetRequired() throws Exception {
+        attributes.put("meetingId", 345L);
+        attributes.put("authenticated", true);
+        attributes.put("language", "vi");
+        attributes.put("authorization", "Bearer test-token");
+        attributes.put("AUDIO_RECEIVED_ATTR", Boolean.TRUE);
+        attributes.put("RESET_REQUIRED_ATTR", Boolean.TRUE);
+
+        doReturn(Map.of("type", "stream.stop")).when(objectMapper).readValue(anyString(), any(Class.class));
+
+        handler.handleTextMessage(session, new TextMessage("{\"type\":\"stream.stop\"}"));
+
+        verify(aiServiceClient, never()).streamAudioChunk(
+                eq(345L),
+                any(byte[].class),
+                eq(-1L),
+                eq("vi"),
+                eq(true),
+                isNull(),
+                eq("Bearer test-token")
+        );
     }
 
     @Test
