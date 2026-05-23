@@ -648,10 +648,15 @@ async def _shutdown_all_stt_actors() -> None:
 
 
 def _get_stt_adapter(endpointing: int | None = None) -> DeepgramSTTAdapter | None:
+    global _stt_adapter
+
+    if endpointing is None and _stt_adapter is not None:
+        return _stt_adapter
+
     if not (settings.deepgram_api_key or "").strip():
         return None
 
-    return DeepgramSTTAdapter(
+    adapter = DeepgramSTTAdapter(
         api_key=settings.deepgram_api_key,
         model=_resolve_realtime_model(),
         base_url=settings.deepgram_base_url,
@@ -662,6 +667,11 @@ def _get_stt_adapter(endpointing: int | None = None) -> DeepgramSTTAdapter | Non
         enable_speaker_diarization=settings.enable_speaker_diarization,
         deepgram_diarize=settings.deepgram_diarize,
     )
+
+    if endpointing is None:
+        _stt_adapter = adapter
+
+    return adapter
 
 
 def _transcribe_locally(
