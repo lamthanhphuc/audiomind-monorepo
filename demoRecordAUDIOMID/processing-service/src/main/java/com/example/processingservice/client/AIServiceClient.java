@@ -55,6 +55,17 @@ public class AIServiceClient {
         return processAudio(meetingId, audioPath, null, null, null, "vi", null, null);
     }
 
+    public Map<String, Object> streamAudioChunk(
+            Long meetingId,
+            byte[] audioChunk,
+            Long seq,
+            String language,
+            boolean isFinal,
+            String traceId,
+            String authorization) {
+        return streamAudioChunk(meetingId, audioChunk, seq, language, null, isFinal, traceId, authorization);
+    }
+
     @Retry(name = "ai-service")
     @CircuitBreaker(name = "ai-service")
     @Retryable(
@@ -213,6 +224,7 @@ public class AIServiceClient {
             byte[] audioChunk,
             Long seq,
             String language,
+            String speakerMode,
             boolean isFinal,
             String traceId,
             String authorization) {
@@ -231,6 +243,7 @@ public class AIServiceClient {
         body.add("audio_chunk", toNamedResource(audioChunk, meetingId, seq));
         body.add("seq", String.valueOf(seq == null ? 0L : seq));
         body.add("language", normalizeRealtimeLanguage(language));
+        body.add("speaker_mode", normalizeSpeakerMode(speakerMode));
         body.add("is_final", String.valueOf(isFinal));
         log.info(
             "AUDIO HASH PROCESSING_OUT meetingId={} seq={} size={} first16hex={}",
@@ -304,6 +317,14 @@ public class AIServiceClient {
         }
 
         return "vi";
+    }
+
+    private String normalizeSpeakerMode(String speakerMode) {
+        String normalized = normalizeFallbackLanguage(speakerMode);
+        if ("multiple".equals(normalized)) {
+            return "multiple";
+        }
+        return "single";
     }
 
     private String normalizeFallbackLanguage(String candidateLanguage) {

@@ -97,7 +97,7 @@ class _FakeAdapter:
         self.fail_next_send = False
         self.next_send_exc = None
 
-    async def open_session(self, meeting_id, language):
+    async def open_session(self, meeting_id, language, diarize=None):
         self.open_calls += 1
         self.session_id = f"session-{meeting_id}"
         return self.session_id

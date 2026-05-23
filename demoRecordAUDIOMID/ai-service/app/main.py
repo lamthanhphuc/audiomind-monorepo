@@ -275,6 +275,22 @@ def _normalize_stt_language(language: str | None) -> str:
     return default_language
 
 
+def _normalize_speaker_mode(speaker_mode: str | None) -> str:
+    normalized = (speaker_mode or "").strip().lower()
+    if normalized in {"single", "multiple"}:
+        return normalized
+    return "single"
+
+
+def _resolve_effective_diarize(speaker_mode: str | None) -> bool:
+    normalized_mode = _normalize_speaker_mode(speaker_mode)
+    if normalized_mode == "multiple":
+        return True
+    if normalized_mode == "single":
+        return False
+    return bool(settings.enable_speaker_diarization and settings.deepgram_diarize)
+
+
 def _resolve_realtime_model() -> str:
     return (
         (settings.deepgram_realtime_model or "").strip()
@@ -393,6 +409,7 @@ async def _cleanup_stale_stt_actors() -> None:
 async def _get_or_create_stt_actor(
     meeting_key: str,
     normalized_language: str,
+    speaker_mode: str,
     *,
     seq: int | None = None,
     chunk_bytes: bytes | None = None,
@@ -495,6 +512,7 @@ async def _get_or_create_stt_actor(
             actor = await MeetingSessionActor.create(
                 meeting_key=meeting_key,
                 language=normalized_language,
+                speaker_mode=_normalize_speaker_mode(speaker_mode),
                 adapter=stt_adapter,
                 lease=lease,
                 ownership_manager=ownership_manager,
@@ -1037,9 +1055,12 @@ async def stream_stt_chunk(
     audio_chunk: UploadFile = File(...),
     seq: int = Form(...),
     language: str = Form(default=""),
+    speaker_mode: str = Form(default=""),
     is_final: bool = Form(default=False),
 ):
     normalized_language = _normalize_stt_language(language)
+    normalized_speaker_mode = _normalize_speaker_mode(speaker_mode if isinstance(speaker_mode, str) else None)
+    effective_diarize = _resolve_effective_diarize(normalized_speaker_mode)
     chunk_bytes = await audio_chunk.read()
     logger.info(
         "stream_stt_chunk received meeting_id={} seq={} byteLength={}",
@@ -1054,10 +1075,12 @@ async def stream_stt_chunk(
         bool(chunk_bytes[:4] == bytes.fromhex("1a45dfa3")),
     )
     logger.info(
-        "STT_STREAM_EFFECTIVE_CONFIG meeting_id={} seq={} language={} model={}",
+        "STT_STREAM_EFFECTIVE_CONFIG meeting_id={} seq={} language={} speaker_mode={} diarize={} model={}",
         meeting_id,
         seq,
         normalized_language,
+        normalized_speaker_mode,
+        effective_diarize,
         _resolve_realtime_model(),
     )
     await audio_chunk.close()
@@ -1166,6 +1189,7 @@ async def stream_stt_chunk(
         actor = await _get_or_create_stt_actor(
             meeting_key,
             normalized_language,
+            normalized_speaker_mode,
             seq=seq,
             chunk_bytes=chunk_bytes,
         )

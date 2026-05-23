@@ -60,7 +60,7 @@ class FakeAdapter:
         self.closed = []
         self.pushes = []
 
-    async def open_session(self, meeting_id, language):
+    async def open_session(self, meeting_id, language, diarize=None):
         return f"session-{meeting_id}"
 
     async def close_session(self, session_id):
