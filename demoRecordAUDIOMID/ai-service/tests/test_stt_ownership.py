@@ -81,9 +81,12 @@ class FakeAdapter:
 class FactoryActor:
     instances = []
 
-    def __init__(self, meeting_key, language, adapter, lease, ownership_manager):
+    def __init__(
+        self, meeting_key, language, speaker_mode, adapter, lease, ownership_manager
+    ):
         self.meeting_key = meeting_key
         self.language = language
+        self.speaker_mode = speaker_mode
         self.adapter = adapter
         self.lease = lease
         self.ownership_manager = ownership_manager
@@ -93,10 +96,11 @@ class FactoryActor:
         FactoryActor.instances.append(self)
 
     @classmethod
-    async def create(cls, meeting_key, language, adapter, **kwargs):
+    async def create(cls, meeting_key, language, speaker_mode, adapter, **kwargs):
         return cls(
             meeting_key,
             language,
+            speaker_mode,
             adapter,
             kwargs.get("lease"),
             kwargs.get("ownership_manager"),
@@ -124,10 +128,10 @@ def test_get_or_create_rejects_duplicate_active_owner_across_replicas(monkeypatc
     _reset_main(monkeypatch, manager)
 
     async def run_flow():
-        first = await main_module._get_or_create_stt_actor("501", "vi", seq=1)
+        first = await main_module._get_or_create_stt_actor("501", "vi", "single", seq=1)
         main_module._stt_stream_sessions.clear()
         with pytest.raises(main_module.HTTPException) as exc_info:
-            await main_module._get_or_create_stt_actor("501", "vi", seq=1)
+            await main_module._get_or_create_stt_actor("501", "vi", "single", seq=1)
         return first, exc_info.value
 
     first, exc = asyncio.run(run_flow())
@@ -145,7 +149,7 @@ def test_get_or_create_uses_shared_cooldown(monkeypatch):
 
     async def run_flow():
         with pytest.raises(main_module.HTTPException) as exc_info:
-            await main_module._get_or_create_stt_actor("502", "vi", seq=2)
+            await main_module._get_or_create_stt_actor("502", "vi", "single", seq=2)
         return exc_info.value
 
     exc = asyncio.run(run_flow())
@@ -161,6 +165,7 @@ def test_stale_owner_cannot_send_persist_or_finalize():
     actor = MeetingSessionActor(
         "503",
         "vi",
+        "single",
         FakeAdapter(),
         lease=lease,
         ownership_manager=manager,
@@ -204,6 +209,7 @@ def test_ownership_loss_fails_pending_finalization_future():
     actor = MeetingSessionActor(
         "505",
         "vi",
+        "single",
         FakeAdapter(),
         lease=lease,
         ownership_manager=manager,
@@ -231,6 +237,7 @@ def test_valid_owner_can_return_cached_finalization_response():
     actor = MeetingSessionActor(
         "506",
         "vi",
+        "single",
         FakeAdapter(),
         lease=lease,
         ownership_manager=manager,
@@ -265,6 +272,7 @@ def test_shutdown_releases_only_matching_lease():
     actor = MeetingSessionActor(
         "504",
         "vi",
+        "single",
         FakeAdapter(),
         lease=original,
         ownership_manager=manager,
