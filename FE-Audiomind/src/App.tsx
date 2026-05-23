@@ -1,17 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { AudioRecorderButton } from './components/AudioRecorderButton'
 import { RealtimeTranscript } from './components/RealtimeTranscript'
+import { TranscriptDisplay } from './components/TranscriptDisplay'
 import { useAudioRecorder } from './hooks/useAudioRecorder'
 import {
-    DEFAULT_REALTIME_LANGUAGE,
+  DEFAULT_REALTIME_LANGUAGE,
   DEFAULT_REALTIME_SPEAKER_MODE,
-    normalizeRealtimeLanguage,
+  normalizeRealtimeLanguage,
   normalizeRealtimeSpeakerMode,
-    type RealtimeLanguage,
+  type RealtimeLanguage,
+  type RealtimeSessionToken,
   type RealtimeSpeakerMode,
-    type RealtimeSessionToken,
-    type TranscriptSegment,
-    useRealtimeMeetingStream,
+  type TranscriptSegment,
+  useRealtimeMeetingStream,
 } from './hooks/useRealtimeMeetingStream'
 import { ApiError, getAnalysis, getProcessingStatus, getTranscript, startProcessingByPath, uploadToMeetingApi } from './services/api'
 import { clearAccessToken, getAccessToken, getCurrentUserId, login, setAccessToken } from './services/auth'
@@ -24,6 +25,7 @@ type ResultView = {
   meetingId: number
   status: string
   transcript: string
+  transcriptSegments: TranscriptSegment[]
   summary: string
 }
 
@@ -433,6 +435,7 @@ export const mergeHydratedTranscriptWithLive = (
 
 export default function App() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
+  const [selectedUploadLanguage, setSelectedUploadLanguage] = useState<'vi' | 'en' | 'multi'>('vi')
   const [busy, setBusy] = useState(false)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [status, setStatus] = useState('idle')
@@ -689,7 +692,6 @@ export default function App() {
     setViewMode('batch')
   }
 
-  const transcriptText = useMemo(() => result?.transcript || '(empty)', [result])
   const summaryText = useMemo(() => result?.summary || '(empty)', [result])
   const liveTranscriptKeywords = useMemo(() => realtimeStream.keywords.map((keyword) => keyword.keyword), [realtimeStream.keywords])
   const liveModeActive = isRealtimeEnabled && viewMode === 'realtime' && realtimeUserId !== null
@@ -734,7 +736,8 @@ export default function App() {
 
     try {
       setStatus('uploading')
-      const meeting = await uploadToMeetingApi(selectedFile.name, selectedFile)
+      console.info(`UPLOAD_REQUEST_SEND language=${selectedUploadLanguage}`)
+      const meeting = await uploadToMeetingApi(selectedFile.name, selectedFile, selectedUploadLanguage)
       meetingId = meeting.id
 
       setStatus('processing')
@@ -761,6 +764,7 @@ export default function App() {
         meetingId,
         status: 'COMPLETED',
         transcript: mergedTranscript,
+        transcriptSegments: mergedTranscriptSegments,
         summary: analysis.summary || '',
       })
       setStatus('completed')
@@ -1139,6 +1143,24 @@ export default function App() {
       {viewMode === 'batch' && (
         <>
           <div style={{ display: 'grid', gap: 12, marginBottom: 16 }}>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <label data-testid="e2e-upload-language-label" htmlFor="upload-language-select" style={{ fontWeight: 700, marginRight: 8 }}>UPLOAD LANGUAGE</label>
+              <select
+                id="upload-language-select"
+                data-testid="e2e-upload-language-select"
+                value={selectedUploadLanguage}
+                onChange={(e) => {
+                  const val = e.target.value as 'vi' | 'en' | 'multi'
+                  setSelectedUploadLanguage(val)
+                  console.info(`FE_UPLOAD_LANGUAGE_SELECTED language=${val}`)
+                }}
+                disabled={busy}
+              >
+                <option value="vi">Tiếng Việt</option>
+                <option value="en">English</option>
+                <option value="multi">Việt + Anh</option>
+              </select>
+            </div>
             <input
               type="file"
               accept="audio/*"
@@ -1175,7 +1197,17 @@ export default function App() {
             <section style={{ border: '1px solid #ddd', borderRadius: 8, padding: 16 }}>
               <p><strong>ID:</strong> {result.meetingId}</p>
               <p><strong>Status:</strong> {result.status}</p>
-              <p data-testid="e2e-transcript"><strong>Transcript:</strong> {transcriptText}</p>
+              <div data-testid="e2e-transcript">
+                <strong>Transcript:</strong>
+                <div style={{ marginTop: 12 }}>
+                  <TranscriptDisplay
+                    segments={result.transcriptSegments}
+                    transcriptTextFallback={result.transcript}
+                    emptyMessage="Không có transcript"
+                    maxHeight="420px"
+                  />
+                </div>
+              </div>
               <p data-testid="e2e-summary"><strong>Summary:</strong> {summaryText}</p>
             </section>
           )}

@@ -1,6 +1,7 @@
 import type { TranscriptSegment } from '../hooks/useRealtimeMeetingStream'
 
 type TranscriptSource = Record<string, unknown>
+const SPEAKER_MARKER_PATTERN = /(SPEAKER_\d+|Speaker\s+\d+):/gi
 const LEGACY_SEGMENT_ID_PATTERN = /^meeting-(\d+)-(\d+(?:\.\d+)?)-([a-z0-9_]+)-\d+$/i
 const CANONICAL_SEGMENT_ID_PATTERN = /^meeting-(\d+)-start-(\d+(?:\.\d+)?)-([a-z0-9_]+)$/i
 
@@ -20,6 +21,25 @@ export const normalizeSpeaker = (value: string, fallbackSpeaker?: string): strin
   }
 
   return trimmed
+}
+
+export const normalizeSpeakerBadge = (value: string, fallbackSpeaker = 'SPEAKER_1'): string => {
+  const trimmed = value.trim()
+  if (!trimmed) {
+    return fallbackSpeaker
+  }
+
+  const canonicalUpperMatch = trimmed.match(/^SPEAKER_(\d+)$/i)
+  if (canonicalUpperMatch) {
+    return `SPEAKER_${canonicalUpperMatch[1]}`
+  }
+
+  const canonicalSpelledMatch = trimmed.match(/^Speaker\s+(\d+)$/i)
+  if (canonicalSpelledMatch) {
+    return `SPEAKER_${canonicalSpelledMatch[1]}`
+  }
+
+  return normalizeSpeaker(trimmed, fallbackSpeaker)
 }
 
 const toNumber = (...values: unknown[]): number => {
@@ -684,4 +704,87 @@ export const formatTranscriptTimestamp = (secondsValue: number): string => {
   const minutes = Math.floor(totalSeconds / 60)
   const seconds = totalSeconds % 60
   return `${minutes}:${seconds.toString().padStart(2, '0')}`
+}
+
+export const parsePlainTranscriptText = (
+  transcriptText: string,
+  fallbackSpeaker = 'SPEAKER_1',
+): TranscriptSegment[] => {
+  const normalizedText = transcriptText.replace(/\r\n/g, '\n').trim()
+  if (!normalizedText) {
+    return []
+  }
+
+  const matches = Array.from(normalizedText.matchAll(SPEAKER_MARKER_PATTERN))
+  if (matches.length === 0) {
+    return [{
+      id: 'plain-transcript-0',
+      mergeKey: 'plain-transcript:0',
+      speaker: fallbackSpeaker,
+      text: normalizedText,
+      start: 0,
+      end: 0,
+      timestamp: undefined,
+      isFinal: true,
+      source: 'hydration',
+    }]
+  }
+
+  const segments: TranscriptSegment[] = []
+  const firstMatchIndex = matches[0]?.index ?? 0
+  if (firstMatchIndex > 0) {
+    const leadingText = normalizedText.slice(0, firstMatchIndex).trim()
+    if (leadingText) {
+      segments.push({
+        id: 'plain-transcript-0',
+        mergeKey: 'plain-transcript:0',
+        speaker: fallbackSpeaker,
+        text: leadingText,
+        start: 0,
+        end: 0,
+        timestamp: undefined,
+        isFinal: true,
+        source: 'hydration',
+      })
+    }
+  }
+
+  matches.forEach((match, index) => {
+    const markerStart = match.index ?? 0
+    const markerEnd = markerStart + match[0].length
+    const nextMarkerStart = matches[index + 1]?.index ?? normalizedText.length
+    const text = normalizedText.slice(markerEnd, nextMarkerStart).trim()
+
+    if (!text) {
+      return
+    }
+
+    segments.push({
+      id: `plain-transcript-${segments.length}`,
+      mergeKey: `plain-transcript:${segments.length}`,
+      speaker: normalizeSpeakerBadge(match[1], fallbackSpeaker),
+      text,
+      start: 0,
+      end: 0,
+      timestamp: undefined,
+      isFinal: true,
+      source: 'hydration',
+    })
+  })
+
+  if (segments.length === 0) {
+    return [{
+      id: 'plain-transcript-0',
+      mergeKey: 'plain-transcript:0',
+      speaker: fallbackSpeaker,
+      text: normalizedText,
+      start: 0,
+      end: 0,
+      timestamp: undefined,
+      isFinal: true,
+      source: 'hydration',
+    }]
+  }
+
+  return segments
 }

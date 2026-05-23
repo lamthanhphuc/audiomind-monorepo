@@ -1,8 +1,8 @@
-import type { AiAnalysis, TranscriptResponse } from '../types'
 import type { paths as MeetingPaths } from '../../../packages/api-clients/meeting'
 import type { paths as ProcessingPaths } from '../../../packages/api-clients/processing'
-import { API_BASE, MEETING_API_BASE, PROCESSING_API_BASE } from './config'
+import type { AiAnalysis, TranscriptResponse } from '../types'
 import { getAccessToken } from './auth'
+import { API_BASE, MEETING_API_BASE, PROCESSING_API_BASE } from './config'
 
 type CreateMeetingResponse =
   MeetingPaths['/api/v1/meetings']['post']['responses'][200]['content']['application/json']
@@ -188,11 +188,16 @@ export const getAuthHeaders = (): Record<string, string> => {
  * Returns the persisted Meeting entity with id and audioPath.
  */
 export const uploadToMeetingApi = async (
-  title: string, file: File
+  title: string,
+  file: File,
+  language?: string,
 ): Promise<{ id: number; audioPath: string; title: string }> => {
   const body = new FormData()
   body.append('title', title)
   body.append('file', file)
+  if (language) {
+    body.append('language', language)
+  }
   // Do NOT set Content-Type manually — browser auto-adds multipart boundary
   return fetchJson<{ id: number; audioPath: string; title: string }>(
     `${MEETING_API_BASE}/meetings/upload`,
