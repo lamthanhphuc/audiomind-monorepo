@@ -45,7 +45,11 @@ class Settings(BaseSettings):
     deepgram_simplify_streaming_url: bool = False
     deepgram_debug_raw_messages: bool = False
     deepgram_diarize: bool = False
-    deepgram_endpointing: int | None = None
+    deepgram_realtime_endpointing_default: str | None = None
+    deepgram_realtime_endpointing_vi: str | None = None
+    deepgram_realtime_endpointing_en: str | None = None
+    deepgram_realtime_endpointing_multi: str | None = None
+    deepgram_endpointing: str | None = None
 
     # Provider selection (MVP defaults)
     stt_provider: str = "deepgram"

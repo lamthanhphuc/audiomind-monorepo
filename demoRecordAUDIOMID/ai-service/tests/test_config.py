@@ -23,6 +23,11 @@ def test_provider_defaults_load_for_mvp():
     assert settings.deepgram_realtime_model == "nova-2"
     assert settings.deepgram_batch_model == "nova-2"
     assert settings.deepgram_language == "vi"
+    assert settings.deepgram_realtime_endpointing_default is None
+    assert settings.deepgram_realtime_endpointing_vi is None
+    assert settings.deepgram_realtime_endpointing_en is None
+    assert settings.deepgram_realtime_endpointing_multi is None
+    assert settings.deepgram_endpointing is None
     assert settings.local_whisper_enabled is False
     assert settings.ollama_enabled is False
 

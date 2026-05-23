@@ -210,11 +210,7 @@ class DeepgramSTTAdapter:
         self.base_url = (base_url or "https://api.deepgram.com/v1/listen").rstrip("/")
         self.timeout_seconds = timeout_seconds
         self.sample_rate = sample_rate
-        self.endpointing = (
-            int(endpointing)
-            if isinstance(endpointing, (int, float)) or str(endpointing or "").strip()
-            else None
-        )
+        self.endpointing = self._coerce_endpointing(endpointing)
         self.simplify_streaming_url = bool(simplify_streaming_url)
         self.debug_raw_messages = bool(debug_raw_messages)
         self.enable_speaker_diarization = bool(enable_speaker_diarization)
@@ -228,6 +224,29 @@ class DeepgramSTTAdapter:
             logger.warning(
                 "Deepgram API key is empty; transcription calls will fail until configured."
             )
+
+    @staticmethod
+    def _coerce_endpointing(value: Any) -> int | None:
+        if value is None or isinstance(value, bool):
+            return None
+
+        if isinstance(value, float):
+            if not value.is_integer() or value <= 0:
+                return None
+            return int(value)
+
+        if isinstance(value, int):
+            return value if value > 0 else None
+
+        text = str(value).strip()
+        if not text:
+            return None
+
+        if not re.fullmatch(r"[+-]?\d+", text):
+            return None
+
+        numeric_value = int(text)
+        return numeric_value if numeric_value > 0 else None
 
     async def open_session(
         self, meeting_id: int, language: str, diarize: bool | None = None

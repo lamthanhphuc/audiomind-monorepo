@@ -1,4 +1,5 @@
 import asyncio
+import re
 import sys
 import threading
 import time
@@ -299,6 +300,89 @@ def _resolve_realtime_model() -> str:
     )
 
 
+@dataclass(frozen=True)
+class RealtimeEndpointingResolution:
+    endpointing: int | None
+    source: str
+    env_name: str | None
+
+
+def _coerce_endpointing_value(raw_value: object) -> int | None:
+    if raw_value is None or isinstance(raw_value, bool):
+        return None
+
+    if isinstance(raw_value, float):
+        if not raw_value.is_integer() or raw_value <= 0:
+            return None
+        return int(raw_value)
+
+    if isinstance(raw_value, int):
+        return raw_value if raw_value > 0 else None
+
+    text = str(raw_value).strip()
+    if not text:
+        return None
+
+    if not re.fullmatch(r"[+-]?\d+", text):
+        return None
+
+    numeric_value = int(text)
+    return numeric_value if numeric_value > 0 else None
+
+
+def _resolve_realtime_endpointing(language: str) -> RealtimeEndpointingResolution:
+    normalized_language = _normalize_stt_language(language)
+    language_env_map = {
+        "vi": "DEEPGRAM_REALTIME_ENDPOINTING_VI",
+        "en": "DEEPGRAM_REALTIME_ENDPOINTING_EN",
+        "multi": "DEEPGRAM_REALTIME_ENDPOINTING_MULTI",
+    }
+    candidate_keys = [
+        (
+            "language_specific",
+            language_env_map[normalized_language],
+            getattr(settings, f"deepgram_realtime_endpointing_{normalized_language}"),
+        ),
+        (
+            "realtime_default",
+            "DEEPGRAM_REALTIME_ENDPOINTING_DEFAULT",
+            settings.deepgram_realtime_endpointing_default,
+        ),
+        ("legacy_global", "DEEPGRAM_ENDPOINTING", settings.deepgram_endpointing),
+    ]
+
+    invalid_candidate_seen = False
+    for source, env_name, raw_value in candidate_keys:
+        parsed_value = _coerce_endpointing_value(raw_value)
+        if parsed_value is not None:
+            return RealtimeEndpointingResolution(
+                endpointing=parsed_value,
+                source="invalid_fallback" if invalid_candidate_seen else source,
+                env_name=env_name,
+            )
+
+        if raw_value is None:
+            continue
+
+        raw_text = str(raw_value).strip()
+        if not raw_text:
+            continue
+
+        invalid_candidate_seen = True
+        logger.warning(
+            "STT_STREAM_ENDPOINTING_INVALID language={} env={} value={}",
+            normalized_language,
+            env_name,
+            raw_text,
+        )
+
+    return RealtimeEndpointingResolution(
+        endpointing=None,
+        source="invalid_fallback" if invalid_candidate_seen else "omitted",
+        env_name=None,
+    )
+
+
 def _resolve_batch_model() -> str:
     return (
         (settings.deepgram_batch_model or "").strip()
@@ -413,11 +497,12 @@ async def _get_or_create_stt_actor(
     *,
     seq: int | None = None,
     chunk_bytes: bytes | None = None,
+    endpointing: int | None = None,
 ) -> MeetingSessionActor:
     await _cleanup_stale_stt_actors()
     guard = _get_stream_retry_guard(meeting_key)
     now = time.time()
-    stt_adapter = _get_stt_adapter()
+    stt_adapter = _get_stt_adapter(endpointing=endpointing)
     if stt_adapter is None:
         raise RuntimeError("Deepgram STT adapter is unavailable")
 
@@ -562,27 +647,21 @@ async def _shutdown_all_stt_actors() -> None:
             )
 
 
-def _get_stt_adapter() -> DeepgramSTTAdapter | None:
-    global _stt_adapter
-
-    if _stt_adapter is not None:
-        return _stt_adapter
-
+def _get_stt_adapter(endpointing: int | None = None) -> DeepgramSTTAdapter | None:
     if not (settings.deepgram_api_key or "").strip():
         return None
 
-    _stt_adapter = DeepgramSTTAdapter(
+    return DeepgramSTTAdapter(
         api_key=settings.deepgram_api_key,
         model=_resolve_realtime_model(),
         base_url=settings.deepgram_base_url,
         timeout_seconds=settings.deepgram_timeout_seconds,
-        endpointing=settings.deepgram_endpointing,
+        endpointing=endpointing,
         simplify_streaming_url=settings.deepgram_simplify_streaming_url,
         debug_raw_messages=settings.deepgram_debug_raw_messages,
         enable_speaker_diarization=settings.enable_speaker_diarization,
         deepgram_diarize=settings.deepgram_diarize,
     )
-    return _stt_adapter
 
 
 def _transcribe_locally(
@@ -1063,6 +1142,7 @@ async def stream_stt_chunk(
         speaker_mode if isinstance(speaker_mode, str) else None
     )
     effective_diarize = _resolve_effective_diarize(normalized_speaker_mode)
+    endpointing_resolution = _resolve_realtime_endpointing(normalized_language)
     chunk_bytes = await audio_chunk.read()
     logger.info(
         "stream_stt_chunk received meeting_id={} seq={} byteLength={}",
@@ -1077,13 +1157,20 @@ async def stream_stt_chunk(
         bool(chunk_bytes[:4] == bytes.fromhex("1a45dfa3")),
     )
     logger.info(
-        "STT_STREAM_EFFECTIVE_CONFIG meeting_id={} seq={} language={} speaker_mode={} diarize={} model={}",
+        "STT_STREAM_EFFECTIVE_CONFIG meeting_id={} seq={} language={} speaker_mode={} diarize={} model={} endpointing={} endpointing_source={} endpointing_env={}",
         meeting_id,
         seq,
         normalized_language,
         normalized_speaker_mode,
         effective_diarize,
         _resolve_realtime_model(),
+        (
+            endpointing_resolution.endpointing
+            if endpointing_resolution.endpointing is not None
+            else "omitted"
+        ),
+        endpointing_resolution.source,
+        endpointing_resolution.env_name or "omitted",
     )
     await audio_chunk.close()
 
@@ -1194,6 +1281,7 @@ async def stream_stt_chunk(
             normalized_speaker_mode,
             seq=seq,
             chunk_bytes=chunk_bytes,
+            endpointing=endpointing_resolution.endpointing,
         )
     except HTTPException:
         raise

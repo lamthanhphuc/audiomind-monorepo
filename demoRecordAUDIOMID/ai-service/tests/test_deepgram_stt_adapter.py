@@ -454,6 +454,22 @@ def test_deepgram_realtime_websocket_url_omits_endpointing_when_unset():
     assert "endpointing" not in query
 
 
+@pytest.mark.parametrize("endpointing", ["bad-value", "", 0, -5, 0.0])
+def test_deepgram_realtime_websocket_url_ignores_invalid_endpointing_values(
+    endpointing,
+):
+    adapter = DeepgramSTTAdapter(
+        api_key="dg-test-key",
+        model="nova-2",
+        base_url="https://api.deepgram.com/v1/listen",
+        endpointing=endpointing,
+    )
+
+    query = parse_qs(urlparse(adapter._build_websocket_url("vi")).query)
+
+    assert "endpointing" not in query
+
+
 def test_deepgram_realtime_diarization_url_and_final_speaker_parsing(monkeypatch):
     from app.services import stt_adapter as stt_module
 
