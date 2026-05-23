@@ -124,6 +124,28 @@ class FakeWhisperRecognizer:
         return result.get("text", "")
 
 
+class _CaptureLogger:
+    def __init__(self):
+        self.messages = []
+
+    def _format(self, message, *args):
+        if args:
+            try:
+                return str(message).format(*args)
+            except Exception:
+                return str(message)
+        return str(message)
+
+    def info(self, message, *args, **kwargs):
+        self.messages.append(self._format(message, *args))
+
+    def warning(self, message, *args, **kwargs):
+        self.messages.append(self._format(message, *args))
+
+    def error(self, message, *args, **kwargs):
+        self.messages.append(self._format(message, *args))
+
+
 def _make_upload_file(payload: bytes):
     file_obj = SpooledTemporaryFile()
     file_obj.write(payload)
@@ -132,13 +154,19 @@ def _make_upload_file(payload: bytes):
 
 
 async def _fake_actor_factory(
-    meeting_key, language, speaker_mode=None, *, seq=None, chunk_bytes=None
+    meeting_key,
+    language,
+    speaker_mode=None,
+    *,
+    seq=None,
+    chunk_bytes=None,
+    endpointing=None,
 ):
     existing = main_module._stt_stream_sessions.get(str(meeting_key))
     if existing is not None:
         return existing
 
-    adapter = main_module._get_stt_adapter()
+    adapter = main_module._get_stt_adapter(endpointing=endpointing)
     if adapter is None:
         raise RuntimeError("Deepgram STT adapter is unavailable")
 
@@ -158,6 +186,26 @@ def _reset_state(monkeypatch):
     FakeAdapter.instances.clear()
     FakeActor.instances.clear()
     FakeActor.next_submit_exc = None
+
+
+def _set_realtime_endpointing_settings(
+    monkeypatch,
+    *,
+    default=None,
+    vi=None,
+    en=None,
+    multi=None,
+    legacy=None,
+):
+    monkeypatch.setattr(
+        main_module.settings, "deepgram_realtime_endpointing_default", default
+    )
+    monkeypatch.setattr(main_module.settings, "deepgram_realtime_endpointing_vi", vi)
+    monkeypatch.setattr(main_module.settings, "deepgram_realtime_endpointing_en", en)
+    monkeypatch.setattr(
+        main_module.settings, "deepgram_realtime_endpointing_multi", multi
+    )
+    monkeypatch.setattr(main_module.settings, "deepgram_endpointing", legacy)
 
 
 def test_stream_stt_chunk_reuses_session_and_returns_partial(monkeypatch):
@@ -664,6 +712,243 @@ def test_get_stt_adapter_falls_back_to_base_model_when_realtime_missing(monkeypa
     assert adapter is not None
     assert isinstance(adapter, FakeAdapter)
     assert adapter.model == "nova-2"
+
+
+@pytest.mark.parametrize(
+    (
+        "language",
+        "endpointing_kwargs",
+        "expected_endpointing",
+        "expected_env",
+    ),
+    [
+        (
+            "vi",
+            {"vi": "300", "default": "250", "legacy": "900"},
+            300,
+            "DEEPGRAM_REALTIME_ENDPOINTING_VI",
+        ),
+        (
+            "multi",
+            {"multi": "410", "default": "250", "legacy": "900"},
+            410,
+            "DEEPGRAM_REALTIME_ENDPOINTING_MULTI",
+        ),
+        (
+            "en",
+            {"en": "420", "default": "250", "legacy": "900"},
+            420,
+            "DEEPGRAM_REALTIME_ENDPOINTING_EN",
+        ),
+    ],
+)
+def test_stream_stt_chunk_uses_language_specific_endpointing(
+    monkeypatch,
+    language,
+    endpointing_kwargs,
+    expected_endpointing,
+    expected_env,
+):
+    _reset_state(monkeypatch)
+    capture_logger = _CaptureLogger()
+    monkeypatch.setattr(main_module, "logger", capture_logger)
+    _set_realtime_endpointing_settings(
+        monkeypatch,
+        default=endpointing_kwargs.get("default"),
+        vi=endpointing_kwargs.get("vi"),
+        en=endpointing_kwargs.get("en"),
+        multi=endpointing_kwargs.get("multi"),
+        legacy=endpointing_kwargs.get("legacy"),
+    )
+
+    async def run_flow():
+        return await main_module.stream_stt_chunk(
+            meeting_id=77,
+            audio_chunk=_make_upload_file(b"abc"),
+            seq=3,
+            language=language,
+            speaker_mode="single",
+            is_final=False,
+        )
+
+    response = asyncio.run(run_flow())
+
+    assert response.transcript == "Xin chao audiomind"
+    assert FakeAdapter.instances[0].kwargs["endpointing"] == expected_endpointing
+    log_line = next(
+        message
+        for message in capture_logger.messages
+        if message.startswith("STT_STREAM_EFFECTIVE_CONFIG")
+    )
+    assert f"endpointing={expected_endpointing}" in log_line
+    assert "endpointing_source=language_specific" in log_line
+    assert f"endpointing_env={expected_env}" in log_line
+
+
+def test_stream_stt_chunk_uses_realtime_default_then_legacy_fallback(monkeypatch):
+    _reset_state(monkeypatch)
+    capture_logger = _CaptureLogger()
+    monkeypatch.setattr(main_module, "logger", capture_logger)
+    _set_realtime_endpointing_settings(
+        monkeypatch,
+        default="250",
+        legacy="900",
+    )
+
+    async def run_flow():
+        return await main_module.stream_stt_chunk(
+            meeting_id=78,
+            audio_chunk=_make_upload_file(b"def"),
+            seq=4,
+            language="vi",
+            speaker_mode="single",
+            is_final=False,
+        )
+
+    response = asyncio.run(run_flow())
+
+    assert response.transcript == "Xin chao audiomind"
+    assert FakeAdapter.instances[0].kwargs["endpointing"] == 250
+    log_line = next(
+        message
+        for message in capture_logger.messages
+        if message.startswith("STT_STREAM_EFFECTIVE_CONFIG")
+    )
+    assert "endpointing=250" in log_line
+    assert "endpointing_source=realtime_default" in log_line
+    assert "endpointing_env=DEEPGRAM_REALTIME_ENDPOINTING_DEFAULT" in log_line
+
+    _reset_state(monkeypatch)
+    capture_logger = _CaptureLogger()
+    monkeypatch.setattr(main_module, "logger", capture_logger)
+    _set_realtime_endpointing_settings(monkeypatch, legacy="400")
+
+    async def run_legacy_flow():
+        return await main_module.stream_stt_chunk(
+            meeting_id=79,
+            audio_chunk=_make_upload_file(b"ghi"),
+            seq=5,
+            language="en",
+            speaker_mode="single",
+            is_final=False,
+        )
+
+    legacy_response = asyncio.run(run_legacy_flow())
+
+    assert legacy_response.transcript == "Xin chao audiomind"
+    assert FakeAdapter.instances[0].kwargs["endpointing"] == 400
+    log_line = next(
+        message
+        for message in capture_logger.messages
+        if message.startswith("STT_STREAM_EFFECTIVE_CONFIG")
+    )
+    assert "endpointing=400" in log_line
+    assert "endpointing_source=legacy_global" in log_line
+    assert "endpointing_env=DEEPGRAM_ENDPOINTING" in log_line
+
+
+def test_stream_stt_chunk_falls_back_safely_for_invalid_endpointing(monkeypatch):
+    _reset_state(monkeypatch)
+    capture_logger = _CaptureLogger()
+    monkeypatch.setattr(main_module, "logger", capture_logger)
+    _set_realtime_endpointing_settings(
+        monkeypatch,
+        vi="bad-value",
+        default="250",
+        legacy="900",
+    )
+
+    async def run_flow():
+        return await main_module.stream_stt_chunk(
+            meeting_id=80,
+            audio_chunk=_make_upload_file(b"jkl"),
+            seq=6,
+            language="vi",
+            speaker_mode="single",
+            is_final=False,
+        )
+
+    response = asyncio.run(run_flow())
+
+    assert response.transcript == "Xin chao audiomind"
+    assert FakeAdapter.instances[0].kwargs["endpointing"] == 250
+    assert any(
+        message.startswith("STT_STREAM_ENDPOINTING_INVALID")
+        and "env=DEEPGRAM_REALTIME_ENDPOINTING_VI" in message
+        for message in capture_logger.messages
+    )
+    log_line = next(
+        message
+        for message in capture_logger.messages
+        if message.startswith("STT_STREAM_EFFECTIVE_CONFIG")
+    )
+    assert "endpointing=250" in log_line
+    assert "endpointing_source=invalid_fallback" in log_line
+    assert "endpointing_env=DEEPGRAM_REALTIME_ENDPOINTING_DEFAULT" in log_line
+
+
+def test_stream_stt_chunk_omits_endpointing_when_all_values_invalid(monkeypatch):
+    _reset_state(monkeypatch)
+    capture_logger = _CaptureLogger()
+    monkeypatch.setattr(main_module, "logger", capture_logger)
+    _set_realtime_endpointing_settings(
+        monkeypatch,
+        default="nope",
+        legacy="-1",
+    )
+
+    async def run_flow():
+        return await main_module.stream_stt_chunk(
+            meeting_id=81,
+            audio_chunk=_make_upload_file(b"mno"),
+            seq=7,
+            language="multi",
+            speaker_mode="single",
+            is_final=False,
+        )
+
+    response = asyncio.run(run_flow())
+
+    assert response.transcript == "Xin chao audiomind"
+    assert FakeAdapter.instances[0].kwargs["endpointing"] is None
+    assert any(
+        message.startswith("STT_STREAM_ENDPOINTING_INVALID")
+        and "env=DEEPGRAM_REALTIME_ENDPOINTING_DEFAULT" in message
+        for message in capture_logger.messages
+    )
+    assert any(
+        message.startswith("STT_STREAM_ENDPOINTING_INVALID")
+        and "env=DEEPGRAM_ENDPOINTING" in message
+        for message in capture_logger.messages
+    )
+    log_line = next(
+        message
+        for message in capture_logger.messages
+        if message.startswith("STT_STREAM_EFFECTIVE_CONFIG")
+    )
+    assert "endpointing=omitted" in log_line
+    assert "endpointing_source=invalid_fallback" in log_line
+    assert "endpointing_env=omitted" in log_line
+
+
+def test_resolve_effective_diarize_keeps_single_and_multiple_mapping():
+    assert main_module._resolve_effective_diarize("single") is False
+    assert main_module._resolve_effective_diarize("multiple") is True
+
+
+@pytest.mark.parametrize("language", ["vi", "en", "multi"])
+def test_open_stt_session_preserves_supported_languages(monkeypatch, language):
+    _reset_state(monkeypatch)
+
+    async def run_flow():
+        return await main_module.open_stt_session(
+            {"meeting_id": f"test-{language}", "language": language}
+        )
+
+    response = asyncio.run(run_flow())
+
+    assert response["language"] == language
+    assert FakeActor.instances[0].language == language
 
 
 def test_get_transcript_returns_200_from_fragment_persistence(monkeypatch):
