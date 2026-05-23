@@ -22,6 +22,7 @@ from app.services.stt_persistence import (
 )
 
 settings = get_settings()
+ALLOWED_BATCH_LANGUAGES = {"vi", "en", "multi"}
 
 
 class ProcessingPipeline:
@@ -375,6 +376,8 @@ class ProcessingPipeline:
         audio_path: str,
         language: Optional[str] = "vi",
         initial_prompt: Optional[str] = None,
+        meeting_id: Optional[int] = None,
+        trace_id: Optional[str] = None,
     ) -> List[Dict]:
         """
         Select STT provider and transcribe audio.
@@ -398,9 +401,7 @@ class ProcessingPipeline:
         deepgram_batch_model = (
             settings.deepgram_batch_model or settings.deepgram_model or "nova-2"
         ).strip() or "nova-2"
-        deepgram_language = (
-            settings.deepgram_language or language or "vi"
-        ).strip() or "vi"
+        deepgram_language = self._normalize_batch_language(language)
         local_whisper_enabled = settings.local_whisper_enabled
 
         transcript_segments = []
@@ -408,6 +409,22 @@ class ProcessingPipeline:
         # Try Deepgram if configured
         if stt_provider == "deepgram" and deepgram_api_key:
             try:
+                log_parts = [
+                    (
+                        f"jobId={meeting_id}"
+                        if meeting_id is not None
+                        else "jobId=unknown"
+                    ),
+                ]
+                if trace_id:
+                    log_parts.append(f"traceId={trace_id}")
+                log_parts.extend(
+                    [
+                        f"model={deepgram_batch_model}",
+                        f"language={deepgram_language}",
+                    ]
+                )
+                logger.info("BATCH_STT_EFFECTIVE_CONFIG " + " ".join(log_parts))
                 logger.info(
                     f"STT_PROVIDER_SELECTED provider=deepgram model={deepgram_batch_model} language={deepgram_language}"
                 )
@@ -470,6 +487,12 @@ class ProcessingPipeline:
             f"LOCAL_WHISPER_ENABLED={local_whisper_enabled}"
         )
 
+    def _normalize_batch_language(self, language: Optional[str]) -> str:
+        candidate = (language or "").strip().lower()
+        if candidate in ALLOWED_BATCH_LANGUAGES:
+            return candidate
+        return "vi"
+
     def process_meeting(
         self,
         audio_path: str,
@@ -480,6 +503,7 @@ class ProcessingPipeline:
         glossary_context: Optional[Dict] = None,
         language: Optional[str] = "vi",
         precomputed_transcript_segments: Optional[List[Dict]] = None,
+        trace_id: Optional[str] = None,
     ) -> Dict:
         """
         Complete processing pipeline for a meeting
@@ -538,6 +562,8 @@ class ProcessingPipeline:
                     audio_path=resolved_audio_path,
                     language=language,
                     initial_prompt=initial_prompt,
+                    meeting_id=meeting_id,
+                    trace_id=trace_id,
                 )
                 transcript_segments = self._normalize_transcript_segments(
                     transcript_segments,
