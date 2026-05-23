@@ -245,6 +245,9 @@ jobs:
   build-and-push:
     runs-on: ubuntu-latest
     needs: prepare-matrix
+    permissions:
+      contents: read
+      packages: write
     strategy:
       fail-fast: false
       max-parallel: 4
@@ -290,7 +293,7 @@ jobs:
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
-          username: ${{ github.actor }}
+          username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Prepare image metadata
@@ -299,8 +302,8 @@ jobs:
         run: |
           set -euo pipefail
           ref_slug="${GITHUB_REF_NAME//\//-}"
-          sha_tag="ghcr.io/${{ github.actor }}/${{ matrix.service.image }}:sha-${GITHUB_SHA}"
-          latest_tag="ghcr.io/${{ github.actor }}/${{ matrix.service.image }}:latest"
+          sha_tag="ghcr.io/${{ github.repository_owner }}/${{ matrix.service.image }}:sha-${GITHUB_SHA}"
+          latest_tag="ghcr.io/${{ github.repository_owner }}/${{ matrix.service.image }}:latest"
           temp_tag="local/${{ matrix.service.name }}:smoke-${GITHUB_SHA}"
 
           push_latest="false"
@@ -424,23 +427,23 @@ jobs:
           kubectl kustomize k8s/overlays/staging --load-restrictor=LoadRestrictionsNone | kubectl apply -f -
 
           if [ "${{ needs.prepare-matrix.outputs.deploy_user_api }}" = "true" ]; then
-            kubectl set image deployment/user-api-deployment user-api=ghcr.io/${{ github.actor }}/audiomind-user-api:sha-${{ github.sha }} -n ${K8S_NAMESPACE}
+            kubectl set image deployment/user-api-deployment user-api=ghcr.io/${{ github.repository_owner }}/audiomind-user-api:sha-${{ github.sha }} -n ${K8S_NAMESPACE}
             kubectl rollout status deployment/user-api-deployment -n ${K8S_NAMESPACE} --timeout=120s
           fi
 
           if [ "${{ needs.prepare-matrix.outputs.deploy_meeting_api }}" = "true" ]; then
-            kubectl set image deployment/meeting-api-deployment meeting-api=ghcr.io/${{ github.actor }}/audiomind-meeting-api:sha-${{ github.sha }} -n ${K8S_NAMESPACE}
+            kubectl set image deployment/meeting-api-deployment meeting-api=ghcr.io/${{ github.repository_owner }}/audiomind-meeting-api:sha-${{ github.sha }} -n ${K8S_NAMESPACE}
             kubectl rollout status deployment/meeting-api-deployment -n ${K8S_NAMESPACE} --timeout=120s
           fi
 
           if [ "${{ needs.prepare-matrix.outputs.deploy_processing_api }}" = "true" ]; then
-            kubectl set image deployment/processing-api-deployment processing-api=ghcr.io/${{ github.actor }}/audiomind-processing-api:sha-${{ github.sha }} -n ${K8S_NAMESPACE}
+            kubectl set image deployment/processing-api-deployment processing-api=ghcr.io/${{ github.repository_owner }}/audiomind-processing-api:sha-${{ github.sha }} -n ${K8S_NAMESPACE}
             kubectl rollout status deployment/processing-api-deployment -n ${K8S_NAMESPACE} --timeout=120s
           fi
 
           if [ "${{ needs.prepare-matrix.outputs.deploy_ai_api }}" = "true" ]; then
             if kubectl get deployment ai-api-deployment -n ${K8S_NAMESPACE} >/dev/null 2>&1; then
-              kubectl set image deployment/ai-api-deployment ai-api=ghcr.io/${{ github.actor }}/audiomind-ai-api:sha-${{ github.sha }} -n ${K8S_NAMESPACE}
+              kubectl set image deployment/ai-api-deployment ai-api=ghcr.io/${{ github.repository_owner }}/audiomind-ai-api:sha-${{ github.sha }} -n ${K8S_NAMESPACE}
               kubectl rollout status deployment/ai-api-deployment -n ${K8S_NAMESPACE} --timeout=120s
             else
               echo "ai-api-deployment not found in namespace ${K8S_NAMESPACE}, skipping ai-api rollout."
