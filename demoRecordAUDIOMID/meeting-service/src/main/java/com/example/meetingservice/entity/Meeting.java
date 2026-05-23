@@ -31,4 +31,7 @@ public class Meeting {
 
     @Column(name = "created_at")
     private LocalDateTime createdAt;
+
+    @Column(name = "language")
+    private String language;
 }

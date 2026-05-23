@@ -58,6 +58,13 @@ def normalize_deepgram_speaker_label(
     return raw
 
 
+def normalize_batch_language(language: Any) -> str:
+    normalized = str(language or "").strip().lower()
+    if normalized in {"vi", "en", "multi"}:
+        return normalized
+    return "vi"
+
+
 def _iter_exception_chain(exc: BaseException):
     seen: set[int] = set()
     current: BaseException | None = exc
@@ -1583,7 +1590,7 @@ class DeepgramSTTAdapter:
             )
 
         api_model = (model or self.model or "nova-2").strip() or "nova-2"
-        safe_language = (language or "vi").strip() or "vi"
+        safe_language = normalize_batch_language(language)
         diarization_enabled = self._speaker_diarization_enabled()
 
         if diarization_enabled:

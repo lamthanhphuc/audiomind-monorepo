@@ -73,9 +73,10 @@ public class ProcessingController {
             @RequestParam(required = false) String fileId,
             @RequestParam(required = false) String topic,
             @RequestParam(name = "glossary_terms", required = false) List<String> glossaryTerms,
+            @RequestParam(required = false) String language,
             @RequestHeader(value = "x-trace-id", required = false) String traceId,
             @RequestHeader(HttpHeaders.AUTHORIZATION) String authorization) {
-        return processingService.startProcessing(meetingId, null, fileId, topic, glossaryTerms, "vi", ensureTraceId(traceId), authorization);
+        return processingService.startProcessing(meetingId, null, fileId, topic, glossaryTerms, language, ensureTraceId(traceId), authorization);
     }
 
     @GetMapping("/status/{jobId}")

@@ -41,6 +41,11 @@ export const REALTIME_LANGUAGE_OPTIONS: Array<{ value: RealtimeLanguage; label: 
   { value: 'en', label: 'English' },
   { value: 'multi', label: 'Việt + Anh' },
 ]
+export const UPLOAD_LANGUAGE_OPTIONS: Array<{ value: RealtimeLanguage; label: string }> = [
+  { value: 'vi', label: 'Tiếng Việt' },
+  { value: 'en', label: 'English' },
+  { value: 'multi', label: 'Việt + Anh (experimental)' },
+]
 
 export const REALTIME_SPEAKER_MODE_OPTIONS: Array<{ value: RealtimeSpeakerMode; label: string }> = [
   { value: 'single', label: 'Single speaker' },
@@ -452,6 +457,7 @@ export default function App() {
   const [liveLifecycleState, setLiveLifecycleState] = useState<LiveLifecycleState>('idle')
   const [activeRealtimeSessionToken, setActiveRealtimeSessionToken] = useState<RealtimeSessionToken | null>(null)
   const [selectedRealtimeLanguage, setSelectedRealtimeLanguage] = useState<RealtimeLanguage>(DEFAULT_REALTIME_LANGUAGE)
+  const [selectedUploadLanguage, setSelectedUploadLanguage] = useState<RealtimeLanguage>('vi')
   const [selectedRealtimeSpeakerMode, setSelectedRealtimeSpeakerMode] = useState<RealtimeSpeakerMode>(DEFAULT_REALTIME_SPEAKER_MODE)
   const abortControllerRef = useRef<AbortController | null>(null)
   const liveMeetingIdRef = useRef<number | null>(null)
@@ -733,12 +739,15 @@ export default function App() {
     let meetingId: number | null = null
 
     try {
+      const effectiveUploadLanguage = normalizeRealtimeLanguage(selectedUploadLanguage)
+      console.info('FE_UPLOAD_LANGUAGE_SELECTED language=' + effectiveUploadLanguage)
       setStatus('uploading')
-      const meeting = await uploadToMeetingApi(selectedFile.name, selectedFile)
+      console.info('UPLOAD_REQUEST_SEND language=' + effectiveUploadLanguage)
+      const meeting = await uploadToMeetingApi(selectedFile.name, selectedFile, effectiveUploadLanguage)
       meetingId = meeting.id
 
       setStatus('processing')
-      await startProcessingByPath(meetingId)
+      await startProcessingByPath(meetingId, effectiveUploadLanguage)
 
       await pollUntilCompleted(meetingId, abortControllerRef.current.signal)
 
@@ -1139,6 +1148,31 @@ export default function App() {
       {viewMode === 'batch' && (
         <>
           <div style={{ display: 'grid', gap: 12, marginBottom: 16 }}>
+            <label style={{ display: 'grid', gap: 6, maxWidth: 360 }}>
+              <span style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.08em', color: '#64748b' }}>
+                Upload language
+              </span>
+              <select
+                value={selectedUploadLanguage}
+                onChange={(event) => setSelectedUploadLanguage(normalizeRealtimeLanguage(event.target.value))}
+                disabled={busy}
+                data-testid="e2e-upload-language-select"
+                style={{
+                  padding: '10px 12px',
+                  borderRadius: 10,
+                  border: '1px solid #cbd5e1',
+                  background: busy ? '#f1f5f9' : '#ffffff',
+                  color: '#0f172a',
+                  fontWeight: 600,
+                }}
+              >
+                {UPLOAD_LANGUAGE_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
             <input
               type="file"
               accept="audio/*"

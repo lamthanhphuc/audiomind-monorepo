@@ -188,11 +188,14 @@ export const getAuthHeaders = (): Record<string, string> => {
  * Returns the persisted Meeting entity with id and audioPath.
  */
 export const uploadToMeetingApi = async (
-  title: string, file: File
+  title: string, file: File, language?: string
 ): Promise<{ id: number; audioPath: string; title: string }> => {
   const body = new FormData()
   body.append('title', title)
   body.append('file', file)
+  if (language && language.trim()) {
+    body.append('language', language.trim())
+  }
   // Do NOT set Content-Type manually — browser auto-adds multipart boundary
   return fetchJson<{ id: number; audioPath: string; title: string }>(
     `${MEETING_API_BASE}/meetings/upload`,
@@ -203,9 +206,12 @@ export const uploadToMeetingApi = async (
 /**
  * Start processing for an existing meeting by its ID.
  */
-export const startProcessingByPath = async (meetingId: number) => {
+export const startProcessingByPath = async (meetingId: number, language?: string) => {
+  const query = language && language.trim()
+    ? `?language=${encodeURIComponent(language.trim())}`
+    : ''
   return fetchJson<Record<string, unknown>>(
-    `${PROCESSING_API_BASE}/processing/start/${meetingId}`,
+    `${PROCESSING_API_BASE}/processing/start/${meetingId}${query}`,
     { method: 'POST' }
   )
 }

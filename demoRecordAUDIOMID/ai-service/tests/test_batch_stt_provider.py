@@ -485,6 +485,95 @@ def test_batch_deepgram_model_selection(monkeypatch):
         Path(temp_audio_path).unlink()
 
 
+@pytest.mark.parametrize("language", ["vi", "en", "multi"])
+def test_batch_deepgram_preserves_supported_languages(monkeypatch, language):
+    mock_client = MockHTTPClient()
+
+    def mock_client_factory(**kwargs):
+        return mock_client
+
+    monkeypatch.setattr(
+        "app.services.stt_adapter.httpx.Client",
+        mock_client_factory,
+    )
+
+    adapter = DeepgramSTTAdapter(
+        api_key="test-deepgram-key",
+        model="nova-2",
+    )
+
+    with tempfile.NamedTemporaryFile(suffix=".m4a", delete=False) as f:
+        temp_audio_path = f.name
+        f.write(b"fake audio data")
+
+    try:
+        adapter.batch_transcribe_file(
+            file_path=temp_audio_path, language=language, model="nova-2"
+        )
+        assert f"language={language}" in mock_client.last_post_url
+    finally:
+        Path(temp_audio_path).unlink()
+
+
+def test_batch_deepgram_invalid_language_falls_back_to_vi(monkeypatch):
+    mock_client = MockHTTPClient()
+
+    def mock_client_factory(**kwargs):
+        return mock_client
+
+    monkeypatch.setattr(
+        "app.services.stt_adapter.httpx.Client",
+        mock_client_factory,
+    )
+
+    adapter = DeepgramSTTAdapter(
+        api_key="test-deepgram-key",
+        model="nova-2",
+    )
+
+    with tempfile.NamedTemporaryFile(suffix=".m4a", delete=False) as f:
+        temp_audio_path = f.name
+        f.write(b"fake audio data")
+
+    try:
+        adapter.batch_transcribe_file(
+            file_path=temp_audio_path, language="fr", model="nova-2"
+        )
+        assert "language=vi" in mock_client.last_post_url
+    finally:
+        Path(temp_audio_path).unlink()
+
+
+def test_batch_deepgram_url_omits_realtime_endpointing(monkeypatch):
+    mock_client = MockHTTPClient()
+
+    def mock_client_factory(**kwargs):
+        return mock_client
+
+    monkeypatch.setattr(
+        "app.services.stt_adapter.httpx.Client",
+        mock_client_factory,
+    )
+
+    adapter = DeepgramSTTAdapter(
+        api_key="test-deepgram-key",
+        model="nova-2",
+        endpointing=300,
+    )
+
+    with tempfile.NamedTemporaryFile(suffix=".m4a", delete=False) as f:
+        temp_audio_path = f.name
+        f.write(b"fake audio data")
+
+    try:
+        adapter.batch_transcribe_file(
+            file_path=temp_audio_path, language="vi", model="nova-2"
+        )
+        assert "endpointing=" not in mock_client.last_post_url
+    finally:
+        Path(temp_audio_path).unlink()
+
+
 def test_batch_deepgram_uses_adapter_model_when_explicit_model_missing(monkeypatch):
     """Batch URL should fallback to adapter model when model arg is omitted."""
 

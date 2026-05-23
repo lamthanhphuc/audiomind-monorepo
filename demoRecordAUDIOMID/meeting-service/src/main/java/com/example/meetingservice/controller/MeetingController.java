@@ -26,15 +26,19 @@ import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
 import org.springframework.security.core.Authentication;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 @CrossOrigin(origins = "${CORS_ALLOWED_ORIGINS:http://localhost:5173}")
 @RestController
 @RequestMapping("/meetings")
 @RequiredArgsConstructor
 public class MeetingController {
+    private static final Logger log = LoggerFactory.getLogger(MeetingController.class);
 
     private static final long MAX_UPLOAD_BYTES = 100L * 1024L * 1024L;
     private static final Set<String> ALLOWED_EXTENSIONS = Set.of(".wav", ".mp3", ".m4a", ".ogg", ".aac", ".flac", ".webm", ".mp4");
+    private static final Set<String> ALLOWED_UPLOAD_LANGUAGES = Set.of("vi", "en", "multi");
 
     private final MeetingService meetingService;
 
@@ -44,6 +48,7 @@ public class MeetingController {
     public Meeting upload(
             @RequestParam String title,
             @RequestParam MultipartFile file,
+            @RequestParam(required = false) String language,
             Authentication authentication) {
 
         if (file.isEmpty()) {
@@ -84,7 +89,9 @@ public class MeetingController {
         }
 
         UserPrincipal principal = requirePrincipal(authentication);
-        return meetingService.saveMeeting(title, targetFile.toString(), principal.userId(), cleanedFileName);
+        String effectiveLanguage = normalizeUploadLanguage(language);
+        log.info("UPLOAD_LANGUAGE_EFFECTIVE language={}", effectiveLanguage);
+        return meetingService.saveMeeting(title, targetFile.toString(), principal.userId(), cleanedFileName, effectiveLanguage);
     }
 
     @GetMapping("/{id}")
@@ -104,5 +111,16 @@ public class MeetingController {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Unauthorized");
         }
         return principal;
+    }
+
+    private String normalizeUploadLanguage(String language) {
+        if (language == null) {
+            return "vi";
+        }
+        String normalized = language.trim().toLowerCase();
+        if (ALLOWED_UPLOAD_LANGUAGES.contains(normalized)) {
+            return normalized;
+        }
+        return "vi";
     }
 }
