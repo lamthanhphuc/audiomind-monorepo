@@ -4,8 +4,11 @@ import { RealtimeTranscript } from './components/RealtimeTranscript'
 import { useAudioRecorder } from './hooks/useAudioRecorder'
 import {
     DEFAULT_REALTIME_LANGUAGE,
+  DEFAULT_REALTIME_SPEAKER_MODE,
     normalizeRealtimeLanguage,
+  normalizeRealtimeSpeakerMode,
     type RealtimeLanguage,
+  type RealtimeSpeakerMode,
     type RealtimeSessionToken,
     type TranscriptSegment,
     useRealtimeMeetingStream,
@@ -39,8 +42,17 @@ export const REALTIME_LANGUAGE_OPTIONS: Array<{ value: RealtimeLanguage; label: 
   { value: 'multi', label: 'Việt + Anh' },
 ]
 
+export const REALTIME_SPEAKER_MODE_OPTIONS: Array<{ value: RealtimeSpeakerMode; label: string }> = [
+  { value: 'single', label: 'Single speaker' },
+  { value: 'multiple', label: 'Multiple speakers' },
+]
+
 export const isRealtimeLanguageSelectorDisabled = (lifecycleState: LiveLifecycleState): boolean => {
   return lifecycleState === 'connecting' || lifecycleState === 'recording' || lifecycleState === 'stopping'
+}
+
+export const isRealtimeSpeakerModeSelectorDisabled = (lifecycleState: LiveLifecycleState): boolean => {
+  return isRealtimeLanguageSelectorDisabled(lifecycleState)
 }
 
 export const getRealtimeConnectionView = (
@@ -440,6 +452,7 @@ export default function App() {
   const [liveLifecycleState, setLiveLifecycleState] = useState<LiveLifecycleState>('idle')
   const [activeRealtimeSessionToken, setActiveRealtimeSessionToken] = useState<RealtimeSessionToken | null>(null)
   const [selectedRealtimeLanguage, setSelectedRealtimeLanguage] = useState<RealtimeLanguage>(DEFAULT_REALTIME_LANGUAGE)
+  const [selectedRealtimeSpeakerMode, setSelectedRealtimeSpeakerMode] = useState<RealtimeSpeakerMode>(DEFAULT_REALTIME_SPEAKER_MODE)
   const abortControllerRef = useRef<AbortController | null>(null)
   const liveMeetingIdRef = useRef<number | null>(null)
   const liveRecordingSessionIdRef = useRef(0)
@@ -448,6 +461,7 @@ export default function App() {
   const resetRecoveryInProgressRef = useRef(false)
   const restartAfterReconnectRef = useRef(false)
   const lastLoggedRealtimeLanguageRef = useRef<RealtimeLanguage | null>(null)
+  const lastLoggedRealtimeSpeakerModeRef = useRef<RealtimeSpeakerMode | null>(null)
 
   const isRealtimeEnabled = REALTIME_WS_ENABLED
   const currentUserId = getCurrentUserId()
@@ -463,6 +477,7 @@ export default function App() {
     token: realtimeToken,
     sessionToken: activeRealtimeSessionToken,
     language: selectedRealtimeLanguage,
+    speakerMode: selectedRealtimeSpeakerMode,
     enabled: isAuthenticated && isRealtimeEnabled && viewMode === 'realtime',
     autoReconnect: true,
   })
@@ -474,11 +489,24 @@ export default function App() {
     }
 
     lastLoggedRealtimeLanguageRef.current = normalizedLanguage
-    console.info('[Realtime] FE_REALTIME_LANGUAGE_SELECTED', {
+    console.info('[Realtime] REALTIME_LANGUAGE_SELECTED', {
       language: normalizedLanguage,
       lifecycleState: liveLifecycleState,
     })
   }, [liveLifecycleState, selectedRealtimeLanguage])
+
+  useEffect(() => {
+    const normalizedSpeakerMode = normalizeRealtimeSpeakerMode(selectedRealtimeSpeakerMode)
+    if (lastLoggedRealtimeSpeakerModeRef.current === normalizedSpeakerMode) {
+      return
+    }
+
+    lastLoggedRealtimeSpeakerModeRef.current = normalizedSpeakerMode
+    console.info('[Realtime] FE_REALTIME_SPEAKER_MODE_SELECTED', {
+      speakerMode: normalizedSpeakerMode,
+      lifecycleState: liveLifecycleState,
+    })
+  }, [liveLifecycleState, selectedRealtimeSpeakerMode])
 
   useEffect(() => {
     activeRealtimeSessionTokenRef.current = activeRealtimeSessionToken
@@ -1189,6 +1217,33 @@ export default function App() {
                 </label>
                 <div style={{ fontSize: 13, color: '#475569' }}>
                   Chọn Việt + Anh nếu audio có thuật ngữ tiếng Anh.
+                </div>
+                <label style={{ display: 'grid', gap: 6 }}>
+                  <span style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.08em', color: '#64748b' }}>
+                    Speaker mode
+                  </span>
+                  <select
+                    value={selectedRealtimeSpeakerMode}
+                    onChange={(event) => setSelectedRealtimeSpeakerMode(normalizeRealtimeSpeakerMode(event.target.value))}
+                    disabled={isRealtimeSpeakerModeSelectorDisabled(liveLifecycleState)}
+                    style={{
+                      padding: '10px 12px',
+                      borderRadius: 10,
+                      border: '1px solid #cbd5e1',
+                      background: isRealtimeSpeakerModeSelectorDisabled(liveLifecycleState) ? '#f1f5f9' : '#ffffff',
+                      color: '#0f172a',
+                      fontWeight: 600,
+                    }}
+                  >
+                    {REALTIME_SPEAKER_MODE_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <div style={{ fontSize: 13, color: '#475569' }}>
+                  Single speaker disables diarization. Multiple speakers turns it on.
                 </div>
               </div>
             </div>

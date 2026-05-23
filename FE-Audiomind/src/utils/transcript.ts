@@ -152,6 +152,7 @@ const isFallbackDisplayId = (value: string): boolean =>
 
 const isSpecificMergeKey = (value?: string): boolean => !!value && (value.startsWith('segment:') || value.startsWith('dedupe:'))
 const HYDRATION_START_TIME_TOLERANCE_SECONDS = 0.4
+const FINAL_SMOOTHING_START_TIME_TOLERANCE_SECONDS = 0.75
 
 const hasSpecificIdentity = (segment: TranscriptSegment): boolean => {
   if (isSpecificMergeKey(segment.mergeKey)) {
@@ -219,6 +220,56 @@ const findHydrationMatchByTiming = (current: TranscriptSegment[], incoming: Tran
 
     smallestDelta = startDelta
     matchedIndex = index
+  })
+
+  return matchedIndex
+}
+
+const findFinalSmoothingMatch = (current: TranscriptSegment[], incoming: TranscriptSegment): number => {
+  if (!Boolean(incoming.isFinal)) {
+    return -1
+  }
+
+  if (!Number.isFinite(incoming.start) || incoming.start <= 0) {
+    return -1
+  }
+
+  const incomingText = getComparableText(incoming)
+  if (!incomingText) {
+    return -1
+  }
+
+  let matchedIndex = -1
+  let smallestDelta = Number.POSITIVE_INFINITY
+
+  current.forEach((segment, index) => {
+    const existingText = getComparableText(segment)
+    if (!existingText) {
+      return
+    }
+
+    if (!Number.isFinite(segment.start) || segment.start <= 0) {
+      return
+    }
+
+    const startDelta = Math.abs(segment.start - incoming.start)
+    if (startDelta > FINAL_SMOOTHING_START_TIME_TOLERANCE_SECONDS || startDelta > smallestDelta) {
+      return
+    }
+
+    const textsOverlap =
+      existingText === incomingText
+      || existingText.includes(incomingText)
+      || incomingText.includes(existingText)
+
+    if (!textsOverlap) {
+      return
+    }
+
+    if (startDelta < smallestDelta || (startDelta === smallestDelta && index > matchedIndex)) {
+      smallestDelta = startDelta
+      matchedIndex = index
+    }
   })
 
   return matchedIndex
@@ -394,6 +445,9 @@ export const upsertTranscriptSegment = (
   if (isHydrationIncoming && existingIndex < 0) {
     existingIndex = current.findIndex((segment) => sharesTranscriptIdentity(segment, incoming))
   }
+  if (!isHydrationIncoming && existingIndex < 0 && Boolean(incoming.isFinal)) {
+    existingIndex = findFinalSmoothingMatch(current, incoming)
+  }
   if (existingIndex < 0) {
     console.info('[Realtime] LIVE_SEGMENT_UPSERT', {
       action: 'insert',
@@ -426,16 +480,26 @@ export const upsertTranscriptSegment = (
   }
 
   if (existingText.length > 0 && existingText === incomingText && existingFinal === incomingFinal) {
+    if (!incomingFinal || canonicalSpeakerKey(existing.speaker) === canonicalSpeakerKey(incoming.speaker)) {
+      console.info('[Realtime] LIVE_SEGMENT_DUPLICATE_IGNORED', {
+        reason: 'same_segment_same_text',
+        segmentId: existing.id,
+        mergeKey: existing.mergeKey,
+        isFinal: existingFinal,
+      })
+      return {
+        segments: current,
+        segment: existing,
+      }
+    }
+  }
+
+  if (existingFinal && incomingFinal && existingText.length > 0 && existingText === incomingText) {
     console.info('[Realtime] LIVE_SEGMENT_DUPLICATE_IGNORED', {
-      reason: 'same_segment_same_text',
+      reason: 'final_text_match_requires_speaker_update',
       segmentId: existing.id,
       mergeKey: existing.mergeKey,
-      isFinal: existingFinal,
     })
-    return {
-      segments: current,
-      segment: existing,
-    }
   }
 
   if (!existingFinal && incomingFinal) {
@@ -453,7 +517,9 @@ export const upsertTranscriptSegment = (
     ...preferred,
     id: chooseDisplayId(existing, incoming),
     mergeKey: chooseMergeKey(existing, incoming),
-    speaker: sourceSegment.speaker.trim().length > 0 ? sourceSegment.speaker : (preferred === incoming ? existing.speaker : incoming.speaker),
+    speaker: Boolean(incoming.isFinal) && !isHydrationIncoming
+      ? (incoming.speaker.trim().length > 0 ? incoming.speaker : existing.speaker)
+      : (sourceSegment.speaker.trim().length > 0 ? sourceSegment.speaker : (preferred === incoming ? existing.speaker : incoming.speaker)),
     text: sourceSegment.text,
     start: sourceSegment.start,
     end: sourceSegment.end,

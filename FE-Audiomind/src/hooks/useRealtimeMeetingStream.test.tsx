@@ -301,6 +301,51 @@ describe('useRealtimeMeetingStream', () => {
     })
   })
 
+  it('sends the selected realtime speaker mode in auth.init', async () => {
+    let selectedSpeakerMode: 'single' | 'multiple' = 'multiple'
+
+    function Harness() {
+      latest = useRealtimeMeetingStream({
+        meetingId: 88,
+        userId: 12,
+        token: 'jwt-token',
+        sessionToken: currentSessionToken,
+        speakerMode: selectedSpeakerMode,
+        enabled: true,
+        autoReconnect: false,
+      })
+      return null
+    }
+
+    act(() => {
+      root.render(<Harness />)
+    })
+
+    const socket = MockWebSocket.instances.at(-1)
+    expect(socket).toBeDefined()
+
+    act(() => {
+      socket!.open()
+    })
+
+    await flush()
+
+    const authMessage = socket!.send.mock.calls
+      .map(([payload]) => {
+        try {
+          return typeof payload === 'string' ? (JSON.parse(payload) as Record<string, unknown>) : null
+        } catch {
+          return null
+        }
+      })
+      .find((message): message is Record<string, unknown> => message !== null && message.type === 'auth.init')
+
+    expect(authMessage).toMatchObject({
+      type: 'auth.init',
+      speakerMode: 'multiple',
+    })
+  })
+
   it('ignores empty transcript partials and keeps status-only updates out of the transcript list', async () => {
     const socket = MockWebSocket.instances[0]
 
