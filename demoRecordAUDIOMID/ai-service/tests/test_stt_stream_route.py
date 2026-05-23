@@ -131,7 +131,9 @@ def _make_upload_file(payload: bytes):
     return main_module.UploadFile(filename="chunk.wav", file=file_obj)
 
 
-async def _fake_actor_factory(meeting_key, language, speaker_mode=None, *, seq=None, chunk_bytes=None):
+async def _fake_actor_factory(
+    meeting_key, language, speaker_mode=None, *, seq=None, chunk_bytes=None
+):
     existing = main_module._stt_stream_sessions.get(str(meeting_key))
     if existing is not None:
         return existing

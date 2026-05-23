@@ -7,7 +7,9 @@ class FakeAdapter:
         self._behavior = behavior or {}
         self.sessions: Dict[str, Dict[str, Any]] = {}
 
-    async def open_session(self, meeting_id: int | str, language: str, diarize: bool | None = None) -> str:
+    async def open_session(
+        self, meeting_id: int | str, language: str, diarize: bool | None = None
+    ) -> str:
         sid = f"fake-{meeting_id}-{language}-{len(self.sessions)+1}"
         self.sessions[sid] = {"sent": [], "closed": False}
         if self._behavior.get("open_fail"):

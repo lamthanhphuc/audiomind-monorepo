@@ -1059,7 +1059,9 @@ async def stream_stt_chunk(
     is_final: bool = Form(default=False),
 ):
     normalized_language = _normalize_stt_language(language)
-    normalized_speaker_mode = _normalize_speaker_mode(speaker_mode if isinstance(speaker_mode, str) else None)
+    normalized_speaker_mode = _normalize_speaker_mode(
+        speaker_mode if isinstance(speaker_mode, str) else None
+    )
     effective_diarize = _resolve_effective_diarize(normalized_speaker_mode)
     chunk_bytes = await audio_chunk.read()
     logger.info(
