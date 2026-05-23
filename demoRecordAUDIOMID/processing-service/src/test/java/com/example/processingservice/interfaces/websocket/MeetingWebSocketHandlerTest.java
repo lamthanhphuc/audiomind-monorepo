@@ -28,6 +28,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.slf4j.LoggerFactory;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.web.socket.BinaryMessage;
 import org.springframework.web.socket.CloseStatus;
@@ -41,6 +42,9 @@ import com.example.processingservice.security.MeetingChannelAuthorizer;
 import com.example.processingservice.services.RealtimeEventSubscriber;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import io.jsonwebtoken.Claims;
 
 @ExtendWith(MockitoExtension.class)
@@ -106,6 +110,71 @@ class MeetingWebSocketHandlerTest {
 
         assertEquals("en", attributes.get("language"));
         verify(realtimeEventSubscriber).getActiveConnectionCount(41L);
+    }
+
+    @Test
+    void handleTextMessage_shouldNormalizeInvalidSpeakerModeToSingleFromAuthInit() throws Exception {
+        attributes.put("meetingId", 42L);
+        when(objectMapper.readValue(any(String.class), eq(Map.class))).thenReturn(Map.of(
+                "type", "auth.init",
+                "token", "Bearer raw-token",
+                "meetingId", 42L,
+                "speakerMode", "invalid"
+        ));
+
+        Claims claims = org.mockito.Mockito.mock(Claims.class);
+        when(claims.getSubject()).thenReturn("99");
+        when(claims.get("username", String.class)).thenReturn("alice");
+        when(jwtUtil.parseClaims("raw-token")).thenReturn(claims);
+        when(meetingChannelAuthorizer.canJoin(99L, 42L, "Bearer raw-token")).thenReturn(true);
+        when(realtimeEventSubscriber.getActiveConnectionCount(42L)).thenReturn(1);
+        when(objectMapper.writeValueAsString(any())).thenReturn("{}");
+        when(session.isOpen()).thenReturn(true);
+        doNothing().when(session).sendMessage(any(TextMessage.class));
+
+        handler.handleTextMessage(session, new TextMessage("{}"));
+
+        assertEquals("single", attributes.get("speakerMode"));
+        verify(realtimeEventSubscriber).getActiveConnectionCount(42L);
+    }
+
+    @Test
+    void handleTextMessage_shouldLogEffectiveSpeakerModeOnlyOncePerSessionUntilItChanges() throws Exception {
+        attributes.put("meetingId", 43L);
+        attributes.put("authenticated", true);
+        when(objectMapper.readValue(any(String.class), eq(Map.class))).thenReturn(
+                Map.of(
+                        "type", "audio.chunk",
+                        "speakerMode", "multiple",
+                        "language", "vi",
+                        "seq", 1L,
+                        "size", 4L
+                ),
+                Map.of(
+                        "type", "audio.chunk",
+                        "speakerMode", "multiple",
+                        "language", "vi",
+                        "seq", 2L,
+                        "size", 4L
+                )
+        );
+
+        Logger logger = (Logger) LoggerFactory.getLogger(MeetingWebSocketHandler.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+
+        try {
+            handler.handleTextMessage(session, new TextMessage("{}"));
+            handler.handleTextMessage(session, new TextMessage("{}"));
+        } finally {
+            logger.detachAppender(appender);
+        }
+
+        long speakerModeLogCount = appender.list.stream()
+                .filter(event -> event.getFormattedMessage().contains("AUDIO_CHUNK_SPEAKER_MODE_EFFECTIVE"))
+                .count();
+        assertEquals(1L, speakerModeLogCount);
     }
 
     @Test
@@ -245,6 +314,44 @@ class MeetingWebSocketHandlerTest {
         assertEquals("connected", event.get("state"));
         assertEquals("Đang lắng nghe...", event.get("message"));
         assertEquals(7L, event.get("seq"));
+    }
+
+    @Test
+    void handleBinaryMessage_shouldForwardMultipleSpeakerModeToAiService() throws Exception {
+        attributes.put("meetingId", 35L);
+        attributes.put("authenticated", true);
+        attributes.put("language", "vi");
+        attributes.put("speakerMode", "multiple");
+        attributes.put("authorization", "Bearer test-token");
+        attributes.put("lastAudioSeq", 9L);
+
+        when(aiServiceClient.streamAudioChunk(
+            eq(35L),
+            argThat(bytes -> bytes != null && bytes.length == 4),
+            eq(9L),
+            eq("vi"),
+            eq("multiple"),
+            eq(false),
+            isNull(),
+            eq("Bearer test-token")
+        )).thenReturn(Map.of(
+            "transcript", "xin chao",
+            "is_final", false,
+            "language", "vi"
+        ));
+
+        handler.handleBinaryMessage(session, new BinaryMessage(ByteBuffer.wrap(new byte[] {1, 2, 3, 4})));
+
+        verify(aiServiceClient).streamAudioChunk(
+            eq(35L),
+            argThat(bytes -> bytes != null && bytes.length == 4),
+            eq(9L),
+            eq("vi"),
+            eq("multiple"),
+            eq(false),
+            isNull(),
+            eq("Bearer test-token")
+        );
     }
 
     @Test

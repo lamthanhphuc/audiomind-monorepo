@@ -34,8 +34,10 @@ export interface RealtimeStatusEvent {
 }
 
 export type RealtimeLanguage = 'vi' | 'en' | 'multi'
+export type RealtimeSpeakerMode = 'single' | 'multiple'
 
 export const DEFAULT_REALTIME_LANGUAGE: RealtimeLanguage = 'vi'
+export const DEFAULT_REALTIME_SPEAKER_MODE: RealtimeSpeakerMode = 'single'
 
 export const normalizeRealtimeLanguage = (language?: string | null): RealtimeLanguage => {
   if (language === 'en' || language === 'multi') {
@@ -45,12 +47,21 @@ export const normalizeRealtimeLanguage = (language?: string | null): RealtimeLan
   return DEFAULT_REALTIME_LANGUAGE
 }
 
+export const normalizeRealtimeSpeakerMode = (speakerMode?: string | null): RealtimeSpeakerMode => {
+  if (speakerMode === 'multiple') {
+    return speakerMode
+  }
+
+  return DEFAULT_REALTIME_SPEAKER_MODE
+}
+
 interface UseRealtimeMeetingStreamOptions {
   meetingId: number | null
   userId: number | null
   token?: string
   sessionToken?: RealtimeSessionToken | null
   language?: RealtimeLanguage
+  speakerMode?: RealtimeSpeakerMode
   enabled?: boolean
   onTranscript?: (segment: TranscriptSegment) => void
   onKeyword?: (hit: KeywordHit) => void
@@ -145,6 +156,7 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
     token,
     sessionToken = null,
     language = DEFAULT_REALTIME_LANGUAGE,
+    speakerMode = DEFAULT_REALTIME_SPEAKER_MODE,
     enabled = true,
     onTranscript,
     onKeyword,
@@ -179,6 +191,7 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
   const connectRef = useRef<() => void>(() => {})
   const userStopRequestedRef = useRef(false)
   const selectedLanguageRef = useRef<RealtimeLanguage>(DEFAULT_REALTIME_LANGUAGE)
+  const selectedSpeakerModeRef = useRef<RealtimeSpeakerMode>(DEFAULT_REALTIME_SPEAKER_MODE)
 
   const resolvedToken = token || getAccessToken() || ''
   const canConnect = enabled && meetingId !== null && userId !== null && resolvedToken.trim().length > 0 && sessionToken !== null
@@ -186,6 +199,10 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
   useEffect(() => {
     selectedLanguageRef.current = normalizeRealtimeLanguage(language)
   }, [language])
+
+  useEffect(() => {
+    selectedSpeakerModeRef.current = normalizeRealtimeSpeakerMode(speakerMode)
+  }, [speakerMode])
 
   const isSameSessionToken = useCallback((left: RealtimeSessionToken | null, right: RealtimeSessionToken | null) => {
     if (!left || !right) {
@@ -426,6 +443,7 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
           meetingId,
           connectionSeq,
           language: selectedLanguageRef.current,
+          speakerMode: selectedSpeakerModeRef.current,
         })
 
         websocket.send(JSON.stringify({
@@ -434,6 +452,7 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
           userId,
           meetingId,
           language: selectedLanguageRef.current,
+          speakerMode: selectedSpeakerModeRef.current,
         }))
 
         flushPendingMessages(false)

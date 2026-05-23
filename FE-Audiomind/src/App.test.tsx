@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_REALTIME_LANGUAGE, REALTIME_LANGUAGE_OPTIONS, getRealtimeConnectionView, hydrateLiveTranscriptSegments, isCurrentLiveRecordingSession, isRealtimeLanguageSelectorDisabled, mergeHydratedTranscriptWithLive } from './App'
 import { ApiError } from './services/api'
-import { mergeTranscriptSegmentsForDisplay, normalizePersistedTranscriptSegments } from './utils/transcript'
+import { mergeTranscriptSegmentsForDisplay, normalizePersistedTranscriptSegments, upsertTranscriptSegment } from './utils/transcript'
 
 describe('hydrateLiveTranscriptSegments', () => {
   afterEach(() => {
@@ -313,6 +313,92 @@ describe('mergeTranscriptSegmentsForDisplay', () => {
       { id: 'b', mergeKey: 'segment:b', speaker: 'Speaker 1', text: 'Xin chào', start: 2.2, end: 2.8, isFinal: true, source: 'hydration' as const },
     ])
     expect(merged).toHaveLength(1)
+  })
+
+  it('updates the existing final segment speaker instead of duplicating near-matching finals', () => {
+    const existing = [
+      { id: 'meeting-1-start-1.000-speaker_1', mergeKey: 'segment:meeting-1-start-1.000-speaker_1', speaker: 'Speaker 1', text: 'Xin chào Audiomind', start: 1, end: 2, isFinal: true, source: 'live' as const },
+    ]
+    const incoming = {
+      id: 'meeting-1-start-1.450-speaker_2',
+      mergeKey: 'segment:meeting-1-start-1.450-speaker_2',
+      speaker: 'Speaker 2',
+      text: 'Xin chào Audiomind',
+      start: 1.45,
+      end: 2.25,
+      isFinal: true,
+      source: 'live' as const,
+    }
+
+    const { segments, segment } = upsertTranscriptSegment(existing, incoming)
+    expect(segments).toHaveLength(1)
+    expect(segment).toMatchObject({
+      id: 'meeting-1-start-1.450-speaker_2',
+      speaker: 'Speaker 2',
+      text: 'Xin chào Audiomind',
+      start: 1.45,
+      end: 2.25,
+      isFinal: true,
+    })
+  })
+
+  it('selects the closest matching final segment and prefers the most recently inserted tie', () => {
+    const existing = [
+      { id: 'meeting-1-start-1.000-speaker_1', mergeKey: 'segment:meeting-1-start-1.000-speaker_1', speaker: 'Speaker 1', text: 'Xin chào Audiomind', start: 1, end: 2, isFinal: true, source: 'live' as const },
+      { id: 'meeting-1-start-1.400-speaker_2', mergeKey: 'segment:meeting-1-start-1.400-speaker_2', speaker: 'Speaker 2', text: 'Xin chào Audiomind', start: 1.4, end: 2.4, isFinal: true, source: 'live' as const },
+    ]
+    const incoming = {
+      id: 'meeting-1-start-1.200-speaker_3',
+      mergeKey: 'segment:meeting-1-start-1.200-speaker_3',
+      speaker: 'Speaker 3',
+      text: 'Xin chào Audiomind',
+      start: 1.2,
+      end: 2.3,
+      isFinal: true,
+      source: 'live' as const,
+    }
+
+    const { segments } = upsertTranscriptSegment(existing, incoming)
+    expect(segments).toHaveLength(2)
+    expect(segments[0]).toMatchObject({
+      id: 'meeting-1-start-1.000-speaker_1',
+      speaker: 'Speaker 1',
+      text: 'Xin chào Audiomind',
+    })
+    expect(segments[1]).toMatchObject({
+      id: 'meeting-1-start-1.200-speaker_3',
+      speaker: 'Speaker 3',
+      text: 'Xin chào Audiomind',
+      start: 1.4,
+      end: 2.4,
+    })
+  })
+
+  it('keeps meaningful existing final text when a shorter final arrives but still updates the speaker', () => {
+    const existing = [
+      { id: 'meeting-2-start-5.000-speaker_1', mergeKey: 'segment:meeting-2-start-5.000-speaker_1', speaker: 'Speaker 1', text: 'Xin chào Audiomind từ realtime', start: 5, end: 7, isFinal: true, source: 'live' as const },
+    ]
+    const incoming = {
+      id: 'meeting-2-start-5.180-speaker_2',
+      mergeKey: 'segment:meeting-2-start-5.180-speaker_2',
+      speaker: 'Speaker 2',
+      text: 'Xin chào Audiomind',
+      start: 5.18,
+      end: 6.1,
+      isFinal: true,
+      source: 'live' as const,
+    }
+
+    const { segments } = upsertTranscriptSegment(existing, incoming)
+    expect(segments).toHaveLength(1)
+    expect(segments[0]).toMatchObject({
+      id: 'meeting-2-start-5.180-speaker_2',
+      speaker: 'Speaker 2',
+      text: 'Xin chào Audiomind từ realtime',
+      start: 5,
+      end: 7,
+      isFinal: true,
+    })
   })
 
   it('does not merge long overlapping fragments that exceed short-fragment policy', () => {

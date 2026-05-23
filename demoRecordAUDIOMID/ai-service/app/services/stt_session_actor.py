@@ -248,6 +248,7 @@ class MeetingSessionActor:
         self,
         meeting_key: str,
         language: str,
+        speaker_mode: str,
         adapter: DeepgramSTTAdapter,
         db_session_factory: Callable[[], Any] = SessionLocal,
         lease: SttLease | None = None,
@@ -256,6 +257,8 @@ class MeetingSessionActor:
         settings = get_settings()
         self.meeting_key = str(meeting_key)
         self.language = (language or "vi").strip() or "vi"
+        self.speaker_mode = (speaker_mode or "single").strip().lower() or "single"
+        self.diarize_enabled = self.speaker_mode == "multiple"
         self.adapter = adapter
         self.db_session_factory = db_session_factory
         self.lease = lease
@@ -402,12 +405,15 @@ class MeetingSessionActor:
         language: str,
         adapter: DeepgramSTTAdapter,
         db_session_factory: Callable[[], Any] = SessionLocal,
+        *,
+        speaker_mode: str = "single",
         lease: SttLease | None = None,
         ownership_manager: SttOwnershipManager | None = None,
     ) -> "MeetingSessionActor":
         actor = cls(
             meeting_key,
             language,
+            speaker_mode,
             adapter,
             db_session_factory=db_session_factory,
             lease=lease,
@@ -417,7 +423,6 @@ class MeetingSessionActor:
         actor._send_task = asyncio.create_task(
             actor._send_pump(), name=f"stt-send-{actor.meeting_key}"
         )
-        await actor._transition(MeetingSessionState.CONNECTING, "open_session")
         actor._recv_task = asyncio.create_task(
             actor._recv_pump(), name=f"stt-recv-{actor.meeting_key}"
         )
@@ -577,12 +582,14 @@ class MeetingSessionActor:
             except (TypeError, ValueError):
                 meeting_id_value = self.meeting_key
             self.session_id = await self.adapter.open_session(
-                meeting_id_value, self.language
+                meeting_id_value, self.language, self.diarize_enabled
             )
             logger.info(
-                "DG SESSION OWNED meeting_id={} session_id={}",
+                "DG SESSION OWNED meeting_id={} session_id={} speaker_mode={} diarize={}",
                 self.meeting_key,
                 self.session_id,
+                self.speaker_mode,
+                self.diarize_enabled,
             )
         except Exception:
             await self._transition(MeetingSessionState.FAILED, "open_session_failed")

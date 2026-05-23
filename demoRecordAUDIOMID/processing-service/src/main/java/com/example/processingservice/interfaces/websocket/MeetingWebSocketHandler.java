@@ -48,6 +48,8 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
     private static final String LAST_TRANSCRIPT_TEXT_ATTR = "lastTranscriptText";
     private static final String LAST_TIMED_TRANSCRIPT_ATTR = "lastTimedTranscript";
     private static final String LANGUAGE_ATTR = "language";
+    private static final String SPEAKER_MODE_ATTR = "speakerMode";
+    private static final String LAST_LOGGED_SPEAKER_MODE_ATTR = "lastLoggedSpeakerMode";
     private static final String LAST_ACTIVITY_ATTR = "lastActivity";
     private static final String FINALIZED_ATTR = "FINALIZED_ATTR";
     private static final long IDLE_SESSION_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
@@ -92,6 +94,7 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
         realtimeEventSubscriber.registerSession(meetingId, session);
         session.getAttributes().put(AUTHENTICATED_ATTR, false);
         session.getAttributes().put(LANGUAGE_ATTR, normalizeRealtimeLanguage(null));
+        session.getAttributes().put(SPEAKER_MODE_ATTR, normalizeRealtimeSpeakerMode(null));
         session.getAttributes().put(LAST_ACTIVITY_ATTR, System.currentTimeMillis());
 
         // Send initial ready event; auth.init will finalize user authentication.
@@ -157,16 +160,23 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
             String mimeType = getStringValue(data.get("mime_type"));
             String encoding = getStringValue(data.get("encoding"));
             String language = getStringValue(data.get("language"));
+            String speakerMode = getStringValue(data.get("speakerMode"));
             Boolean isFinal = getBooleanValue(data.get("is_final"));
             String effectiveLanguage = language.isBlank()
                     ? getStringAttribute(session, LANGUAGE_ATTR)
                     : language;
+            String effectiveSpeakerMode = speakerMode.isBlank()
+                    ? normalizeRealtimeSpeakerMode(getStringAttribute(session, SPEAKER_MODE_ATTR))
+                    : normalizeRealtimeSpeakerMode(speakerMode);
 
             // Store seq so we can correlate with binary message
             session.getAttributes().put(LAST_AUDIO_SEQ_ATTR, seq);
             session.getAttributes().put(LAST_AUDIO_DECLARED_SIZE_ATTR, size);
             if (!language.isBlank()) {
                 session.getAttributes().put(LANGUAGE_ATTR, language);
+            }
+            if (!speakerMode.isBlank()) {
+                session.getAttributes().put(SPEAKER_MODE_ATTR, effectiveSpeakerMode);
             }
             session.getAttributes().put(LAST_AUDIO_IS_FINAL_ATTR, isFinal != null && isFinal);
 
@@ -190,6 +200,7 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                     language,
                     effectiveLanguage
             );
+            maybeLogEffectiveSpeakerMode(session, meetingId, seq, speakerMode, effectiveSpeakerMode);
             return;
         }
 
@@ -270,8 +281,10 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
         int payloadSize = audioBytes.length;
         Long declaredSize = getLongAttribute(session, LAST_AUDIO_DECLARED_SIZE_ATTR);
         String language = getStringAttribute(session, LANGUAGE_ATTR);
+        String speakerMode = getStringAttribute(session, SPEAKER_MODE_ATTR);
         String authorization = getStringAttribute(session, "authorization");
         Boolean isFinal = getBooleanAttribute(session, LAST_AUDIO_IS_FINAL_ATTR);
+        String effectiveSpeakerMode = normalizeRealtimeSpeakerMode(speakerMode);
         log.info(
                 "AUDIO HASH PROCESSING_IN seq={} size={} first16hex={}",
                 lastSeq,
@@ -280,15 +293,26 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
         );
 
         try {
-            Map<String, Object> transcript = aiServiceClient.streamAudioChunk(
-                    meetingId,
-                    audioBytes,
-                    lastSeq != null ? lastSeq : 0L,
-                    language,
-                    isFinal != null && isFinal,
-                    null,
-                    authorization
-            );
+                Map<String, Object> transcript = "multiple".equals(effectiveSpeakerMode)
+                    ? aiServiceClient.streamAudioChunk(
+                        meetingId,
+                        audioBytes,
+                        lastSeq != null ? lastSeq : 0L,
+                        language,
+                        effectiveSpeakerMode,
+                        isFinal != null && isFinal,
+                        null,
+                        authorization
+                    )
+                    : aiServiceClient.streamAudioChunk(
+                        meetingId,
+                        audioBytes,
+                        lastSeq != null ? lastSeq : 0L,
+                        language,
+                        isFinal != null && isFinal,
+                        null,
+                        authorization
+                    );
 
             if (transcript == null) {
                 log.info(
@@ -477,6 +501,7 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
 
     private void finalizeSttSession(WebSocketSession session, Long meetingId, boolean sessionStillOpen) {
         String language = getStringAttribute(session, LANGUAGE_ATTR);
+        String speakerMode = getStringAttribute(session, SPEAKER_MODE_ATTR);
         String authorization = getStringAttribute(session, "authorization");
 
         if (Boolean.TRUE.equals(session.getAttributes().get(FINALIZED_ATTR))) {
@@ -523,15 +548,26 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
         );
 
         try {
-            Map<String, Object> transcript = aiServiceClient.streamAudioChunk(
-                    meetingId,
-                    new byte[0],
-                    -1L,
-                    language,
-                    true,
-                    null,
-                    authorization
-            );
+                Map<String, Object> transcript = "multiple".equals(normalizeRealtimeSpeakerMode(speakerMode))
+                    ? aiServiceClient.streamAudioChunk(
+                        meetingId,
+                        new byte[0],
+                        -1L,
+                        language,
+                        normalizeRealtimeSpeakerMode(speakerMode),
+                        true,
+                        null,
+                        authorization
+                    )
+                    : aiServiceClient.streamAudioChunk(
+                        meetingId,
+                        new byte[0],
+                        -1L,
+                        language,
+                        true,
+                        null,
+                        authorization
+                    );
 
                     if (transcript == null) {
                     log.info("Skipping duplicate finalization for meetingId={} because ai-service already finalized it", meetingId);
@@ -1006,6 +1042,16 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
         String requestedLanguage = getStringValue(data.get("language"));
         String effectiveLanguage = normalizeRealtimeLanguage(requestedLanguage);
         session.getAttributes().put(LANGUAGE_ATTR, effectiveLanguage);
+        String requestedSpeakerMode = getStringValue(data.get("speakerMode"));
+        String effectiveSpeakerMode = normalizeRealtimeSpeakerMode(requestedSpeakerMode);
+        session.getAttributes().put(SPEAKER_MODE_ATTR, effectiveSpeakerMode);
+        log.info(
+            "REALTIME_SPEAKER_MODE_SELECTED meetingId={} userId={} incomingSpeakerMode={} effectiveSpeakerMode={}",
+            expectedMeetingId,
+            userId,
+            requestedSpeakerMode,
+            effectiveSpeakerMode
+        );
         log.info(
             "REALTIME_LANGUAGE_SELECTED meetingId={} userId={} incomingLanguage={} effectiveLanguage={}",
             expectedMeetingId,
@@ -1039,11 +1085,41 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
         return "vi";
     }
 
+    private String normalizeRealtimeSpeakerMode(String candidateSpeakerMode) {
+        String requestedSpeakerMode = normalizeFallbackLanguage(candidateSpeakerMode);
+        if ("multiple".equals(requestedSpeakerMode)) {
+            return "multiple";
+        }
+        return "single";
+    }
+
     private String normalizeFallbackLanguage(String candidateLanguage) {
         if (candidateLanguage == null) {
             return "";
         }
 
         return candidateLanguage.trim().toLowerCase(Locale.ROOT);
+    }
+
+    private void maybeLogEffectiveSpeakerMode(
+            WebSocketSession session,
+            Long meetingId,
+            Long seq,
+            String incomingSpeakerMode,
+            String effectiveSpeakerMode) {
+
+        String lastLoggedSpeakerMode = getStringAttribute(session, LAST_LOGGED_SPEAKER_MODE_ATTR);
+        if (effectiveSpeakerMode.equals(lastLoggedSpeakerMode)) {
+            return;
+        }
+
+        session.getAttributes().put(LAST_LOGGED_SPEAKER_MODE_ATTR, effectiveSpeakerMode);
+        log.info(
+                "AUDIO_CHUNK_SPEAKER_MODE_EFFECTIVE meetingId={} seq={} incomingSpeakerMode={} effectiveSpeakerMode={}",
+                meetingId,
+                seq,
+                incomingSpeakerMode,
+                effectiveSpeakerMode
+        );
     }
 }

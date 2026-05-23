@@ -51,7 +51,7 @@ class AIServiceClientTest {
         logger.addAppender(appender);
 
         try {
-            Map<String, Object> body = client.streamAudioChunk(9L, new byte[] {0x01, 0x02, 0x03}, 4L, "vi", false, null, null);
+            Map<String, Object> body = client.streamAudioChunk(9L, new byte[] {0x01, 0x02, 0x03}, 4L, "vi", "multiple", false, null, null);
             assertEquals("ok", body.get("transcript"));
         } finally {
             logger.detachAppender(appender);
@@ -68,6 +68,16 @@ class AIServiceClientTest {
                 event.getFormattedMessage().contains("AUDIO HASH PROCESSING_OUT meetingId=9 seq=4 size=3 first16hex=010203")
         );
         assertTrue(sawLog);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<HttpEntity<MultiValueMap<String, Object>>> captor = ArgumentCaptor.forClass(HttpEntity.class);
+        verify(restTemplate).exchange(
+            eq("http://ai-service/api/v1/stt/stream"),
+            eq(HttpMethod.POST),
+            captor.capture(),
+            any(org.springframework.core.ParameterizedTypeReference.class)
+        );
+        assertEquals("multiple", captor.getValue().getBody().getFirst("speaker_mode"));
     }
 
         @Test
@@ -91,7 +101,7 @@ class AIServiceClientTest {
             any(org.springframework.core.ParameterizedTypeReference.class)
         )).thenThrow(conflict);
 
-        Map<String, Object> body = client.streamAudioChunk(9L, new byte[] {0x01, 0x02, 0x03}, 4L, "vi", false, null, null);
+        Map<String, Object> body = client.streamAudioChunk(9L, new byte[] {0x01, 0x02, 0x03}, 4L, "vi", null, false, null, null);
 
         assertNull(body);
         verify(restTemplate).exchange(
@@ -143,7 +153,7 @@ class AIServiceClientTest {
                 any(org.springframework.core.ParameterizedTypeReference.class)
         )).thenReturn(response);
 
-        client.streamAudioChunk(10L, new byte[] {0x01}, 1L, null, false, null, null);
+        client.streamAudioChunk(10L, new byte[] {0x01}, 1L, null, null, false, null, null);
 
         @SuppressWarnings("unchecked")
         ArgumentCaptor<HttpEntity<MultiValueMap<String, Object>>> captor = ArgumentCaptor.forClass(HttpEntity.class);
@@ -173,7 +183,7 @@ class AIServiceClientTest {
                 any(org.springframework.core.ParameterizedTypeReference.class)
         )).thenReturn(response);
 
-        client.streamAudioChunk(11L, new byte[] {0x02}, 2L, "fr", false, null, null);
+        client.streamAudioChunk(11L, new byte[] {0x02}, 2L, "fr", null, false, null, null);
 
         @SuppressWarnings("unchecked")
         ArgumentCaptor<HttpEntity<MultiValueMap<String, Object>>> captor = ArgumentCaptor.forClass(HttpEntity.class);

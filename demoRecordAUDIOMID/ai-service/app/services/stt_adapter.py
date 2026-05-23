@@ -127,7 +127,9 @@ def is_transient_error(exc: BaseException) -> bool:
 
 @runtime_checkable
 class STTStreamAdapter(Protocol):
-    async def open_session(self, meeting_id: int, language: str) -> str: ...
+    async def open_session(
+        self, meeting_id: int, language: str, diarize: bool | None = None
+    ) -> str: ...
 
     async def send_audio_chunk(
         self, session_id: str, pcm_chunk: bytes, seq: int | None = None
@@ -154,6 +156,7 @@ class _SessionBuffer:
     session_id: str
     meeting_id: int
     language: str
+    diarize: bool = False
     websocket: Any | None = None
     state_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     recv_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -226,12 +229,19 @@ class DeepgramSTTAdapter:
                 "Deepgram API key is empty; transcription calls will fail until configured."
             )
 
-    async def open_session(self, meeting_id: int, language: str) -> str:
+    async def open_session(
+        self, meeting_id: int, language: str, diarize: bool | None = None
+    ) -> str:
         session_id = uuid4().hex
         session = _SessionBuffer(
             session_id=session_id,
             meeting_id=meeting_id,
             language=(language or "vi").strip() or "vi",
+            diarize=(
+                self._speaker_diarization_enabled()
+                if diarize is None
+                else bool(diarize)
+            ),
         )
         self._sessions[session_id] = session
         session.websocket = await self._connect_session(session, session_id)
@@ -804,10 +814,10 @@ class DeepgramSTTAdapter:
                 "websockets package is required for Deepgram streaming support"
             )
 
-        connection_url = self._build_websocket_url(session.language)
+        connection_url = self._build_websocket_url(session.language, session.diarize)
         headers = [("Authorization", f"Token {self.api_key}")]
         safe_url = connection_url
-        if self._speaker_diarization_enabled():
+        if session.diarize:
             logger.info("DIARIZATION_ENABLED provider=deepgram mode=realtime")
         else:
             logger.info("DIARIZATION_SKIPPED reason=disabled mode=realtime")
@@ -921,7 +931,7 @@ class DeepgramSTTAdapter:
 
         return events
 
-    def _build_websocket_url(self, language: str) -> str:
+    def _build_websocket_url(self, language: str, diarize: bool | None = None) -> str:
         normalized = self.base_url
         if normalized.startswith("https://"):
             normalized = "wss://" + normalized[len("https://") :]
@@ -948,7 +958,10 @@ class DeepgramSTTAdapter:
                     "utterances": "true",
                 }
             )
-        if self._speaker_diarization_enabled():
+        diarize_enabled = (
+            self._speaker_diarization_enabled() if diarize is None else bool(diarize)
+        )
+        if diarize_enabled:
             query_pairs["diarize"] = "true"
         if self.endpointing is not None:
             query_pairs["endpointing"] = str(int(self.endpointing))
