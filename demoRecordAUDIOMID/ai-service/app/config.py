@@ -31,6 +31,11 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""
     gemini_analysis_model: str = "gemini-2.5-flash"
     gemini_summary_model: str = "gemini-2.5-flash"
+    gemini_analysis_domain_mode: str = "it"
+    gemini_analysis_max_input_tokens: int = 12000
+    gemini_analysis_max_output_tokens: int = 4096
+    gemini_analysis_thinking_budget: int = 0
+    gemini_analysis_retry_max_attempts: int = 3
     gemini_max_single_request_chars: int = 50000
     gemini_request_delay_seconds: float = 15.0
 
@@ -159,6 +164,30 @@ class Settings(BaseSettings):
         self.analysis_provider = (self.analysis_provider or "openai").strip().lower()
         if self.analysis_provider not in {"openai", "gemini", "ollama", "local"}:
             self.analysis_provider = "openai"
+
+        self.gemini_analysis_domain_mode = (
+            (self.gemini_analysis_domain_mode or "it").strip().lower()
+        )
+        if self.gemini_analysis_domain_mode not in {
+            "general",
+            "it",
+            "business",
+            "education",
+        }:
+            self.gemini_analysis_domain_mode = "it"
+
+        self.gemini_analysis_max_input_tokens = max(
+            1, int(self.gemini_analysis_max_input_tokens or 12000)
+        )
+        self.gemini_analysis_max_output_tokens = max(
+            1, int(self.gemini_analysis_max_output_tokens or 4096)
+        )
+        self.gemini_analysis_thinking_budget = max(
+            0, int(self.gemini_analysis_thinking_budget or 0)
+        )
+        self.gemini_analysis_retry_max_attempts = max(
+            1, int(self.gemini_analysis_retry_max_attempts or 3)
+        )
 
         # Backward-compatible normalization for legacy variable usage.
         self.ai_provider = (self.ai_provider or "ollama").strip().lower()

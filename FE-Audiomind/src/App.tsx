@@ -4,19 +4,20 @@ import { RealtimeTranscript } from './components/RealtimeTranscript'
 import { TranscriptDisplay } from './components/TranscriptDisplay'
 import { useAudioRecorder } from './hooks/useAudioRecorder'
 import {
-    DEFAULT_REALTIME_LANGUAGE,
-    DEFAULT_REALTIME_SPEAKER_MODE,
-    normalizeRealtimeLanguage,
-    normalizeRealtimeSpeakerMode,
-    type RealtimeLanguage,
-    type RealtimeSessionToken,
-    type RealtimeSpeakerMode,
-    type TranscriptSegment,
-    useRealtimeMeetingStream,
+  DEFAULT_REALTIME_LANGUAGE,
+  DEFAULT_REALTIME_SPEAKER_MODE,
+  normalizeRealtimeLanguage,
+  normalizeRealtimeSpeakerMode,
+  type RealtimeLanguage,
+  type RealtimeSessionToken,
+  type RealtimeSpeakerMode,
+  type TranscriptSegment,
+  useRealtimeMeetingStream,
 } from './hooks/useRealtimeMeetingStream'
 import { ApiError, getAnalysis, getProcessingStatus, getTranscript, startProcessingByPath, uploadToMeetingApi } from './services/api'
 import { clearAccessToken, getAccessToken, getCurrentUserId, login, setAccessToken } from './services/auth'
 import { REALTIME_WS_ENABLED } from './services/config'
+import type { AiAnalysis } from './types'
 import { mergeTranscriptSegments, mergeTranscriptSegmentsForDisplay, normalizePersistedTranscriptSegments } from './utils/transcript'
 
 export { DEFAULT_REALTIME_LANGUAGE } from './hooks/useRealtimeMeetingStream'
@@ -26,7 +27,7 @@ type ResultView = {
   status: string
   transcript: string
   transcriptSegments: TranscriptSegment[]
-  summary: string
+  analysis: AiAnalysis
 }
 
 type LiveLifecycleState = 'idle' | 'connecting' | 'recording' | 'stopping' | 'stopped' | 'error'
@@ -697,7 +698,12 @@ export default function App() {
     setViewMode('batch')
   }
 
-  const summaryText = useMemo(() => result?.summary || '(empty)', [result])
+  const analysis = result?.analysis
+  const summaryText = useMemo(() => analysis?.summary || '(empty)', [analysis])
+  const analysisKeywords = analysis?.keywords ?? []
+  const analysisTechnicalTerms = analysis?.technicalTerms ?? []
+  const analysisPainPoints = analysis?.painPoints ?? []
+  const analysisActionItems = analysis?.actionItems ?? []
   const liveTranscriptKeywords = useMemo(() => realtimeStream.keywords.map((keyword) => keyword.keyword), [realtimeStream.keywords])
   const liveModeActive = isRealtimeEnabled && viewMode === 'realtime' && realtimeUserId !== null
   const liveTranscriptSegments = hydratedLiveTranscriptSegments ?? realtimeStream.transcripts
@@ -771,7 +777,7 @@ export default function App() {
         status: 'COMPLETED',
         transcript: mergedTranscript,
         transcriptSegments: mergedTranscriptSegments,
-        summary: analysis.summary || '',
+        analysis,
       })
       setStatus('completed')
     } catch (error: any) {
@@ -1211,7 +1217,7 @@ export default function App() {
           )}
 
           {result && (
-            <section style={{ border: '1px solid #ddd', borderRadius: 8, padding: 16 }}>
+            <section style={{ border: '1px solid #ddd', borderRadius: 8, padding: 16, display: 'grid', gap: 16 }}>
               <p><strong>ID:</strong> {result.meetingId}</p>
               <p><strong>Status:</strong> {result.status}</p>
               <div data-testid="e2e-transcript">
@@ -1225,7 +1231,82 @@ export default function App() {
                   />
                 </div>
               </div>
-              <p data-testid="e2e-summary"><strong>Summary:</strong> {summaryText}</p>
+              <div data-testid="e2e-analysis" style={{ display: 'grid', gap: 12 }}>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+                  <strong>Summary:</strong>
+                  <span data-testid="e2e-summary">{summaryText}</span>
+                  <span style={{ padding: '4px 10px', borderRadius: 999, background: '#eef2ff', color: '#3730a3', fontSize: 12, fontWeight: 700 }}>
+                    {analysis?.domainMode ?? 'it'}
+                  </span>
+                </div>
+
+                <div>
+                  <strong>Keywords:</strong>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
+                    {analysisKeywords.length
+                      ? analysisKeywords.map((keyword) => (
+                          <span
+                            key={keyword}
+                            style={{ padding: '4px 10px', borderRadius: 999, background: '#f1f5f9', color: '#0f172a', fontSize: 12, fontWeight: 600 }}
+                          >
+                            {keyword}
+                          </span>
+                        ))
+                      : <span style={{ color: '#64748b' }}>Không có từ khóa</span>}
+                  </div>
+                </div>
+
+                <div>
+                  <strong>Technical terms:</strong>
+                  <div style={{ display: 'grid', gap: 8, marginTop: 8 }}>
+                    {analysisTechnicalTerms.length
+                      ? analysisTechnicalTerms.map((item) => (
+                          <article key={item.term} style={{ border: '1px solid #e2e8f0', borderRadius: 10, padding: 12, background: '#fafafa' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center' }}>
+                              <strong>{item.term}</strong>
+                              <span style={{ fontSize: 12, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                                {item.category || 'uncategorized'}
+                              </span>
+                            </div>
+                            <p style={{ margin: '6px 0 0', color: '#334155' }}>{item.meaning || 'Chưa có mô tả'}</p>
+                          </article>
+                        ))
+                      : <span style={{ color: '#64748b' }}>Không có thuật ngữ kỹ thuật</span>}
+                  </div>
+                </div>
+
+                <div>
+                  <strong>Pain points:</strong>
+                  <div style={{ display: 'grid', gap: 8, marginTop: 8 }}>
+                    {analysisPainPoints.length
+                      ? analysisPainPoints.map((item) => (
+                          <article key={`${item.title}-${item.severity}`} style={{ border: '1px solid #e2e8f0', borderRadius: 10, padding: 12, background: '#fff7ed' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center' }}>
+                              <strong>{item.title}</strong>
+                              <span style={{ padding: '2px 8px', borderRadius: 999, background: item.severity === 'high' ? '#fee2e2' : item.severity === 'medium' ? '#fef3c7' : '#dcfce7', color: '#0f172a', fontSize: 12, fontWeight: 700 }}>
+                                {item.severity}
+                              </span>
+                            </div>
+                            <p style={{ margin: '6px 0 0', color: '#334155' }}>{item.evidence || 'Không có dẫn chứng'}</p>
+                          </article>
+                        ))
+                      : <span style={{ color: '#64748b' }}>Không có pain points</span>}
+                  </div>
+                </div>
+
+                <div>
+                  <strong>Action items:</strong>
+                  {analysisActionItems.length ? (
+                    <ul style={{ margin: '8px 0 0', paddingLeft: 20 }}>
+                      {analysisActionItems.map((item) => (
+                        <li key={item}>{item}</li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p style={{ margin: '8px 0 0', color: '#64748b' }}>Không có đầu việc</p>
+                  )}
+                </div>
+              </div>
             </section>
           )}
         </>

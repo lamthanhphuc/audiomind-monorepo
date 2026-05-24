@@ -1,6 +1,6 @@
 import type { paths as MeetingPaths } from '../../../packages/api-clients/meeting'
 import type { paths as ProcessingPaths } from '../../../packages/api-clients/processing'
-import type { AiAnalysis, TranscriptResponse } from '../types'
+import { normalizeAnalysisResponse, type AiAnalysis, type TranscriptResponse } from '../types'
 import { getAccessToken } from './auth'
 import { API_BASE, MEETING_API_BASE, PROCESSING_API_BASE } from './config'
 
@@ -120,10 +120,7 @@ export const getAnalysis = async (meetingId: number): Promise<AiAnalysis> => {
     `${API_BASE}/processing/${meetingId}/analysis`
   )
 
-  if ('data' in response && response.data) {
-    return response.data
-  }
-  return response as AiAnalysis
+  return normalizeAnalysisResponse(response)
 }
 
 export const getProcessingStatus = async (meetingId: number): Promise<{

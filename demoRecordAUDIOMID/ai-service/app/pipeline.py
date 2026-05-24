@@ -762,6 +762,7 @@ class ProcessingPipeline:
             logger.info(
                 f"Saved {len(aligned_segments)} transcript segments and analysis"
             )
+            logger.info(f"ANALYSIS_SAVED meetingId={meeting_id}")
 
         except Exception as e:
             db.rollback()
