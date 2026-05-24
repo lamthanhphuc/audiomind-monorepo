@@ -1,6 +1,7 @@
 import { createRoot } from 'react-dom/client'
 import { act } from 'react-dom/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import * as transcriptUtils from '../utils/transcript'
 import { mergeTranscriptSegments, normalizePersistedTranscriptSegments } from '../utils/transcript'
 import { RealtimeTranscript } from './RealtimeTranscript'
 
@@ -145,5 +146,29 @@ describe('RealtimeTranscript', () => {
 
     const speakers = Array.from(container.querySelectorAll('.segment-speaker')).map((node) => node.textContent)
     expect(speakers).toEqual(['SPEAKER_1', 'SPEAKER_1'])
+  })
+
+  it('does not call upload display grouping utility in realtime render path', () => {
+    const groupingSpy = vi.spyOn(transcriptUtils, 'groupUploadTranscriptSegmentsForDisplay')
+
+    act(() => {
+      root.render(
+        <RealtimeTranscript
+          segments={[
+            {
+              id: 'meeting-1-start-7.810',
+              mergeKey: 'segment:meeting-1-start-7.810',
+              speaker: 'Speaker 1',
+              text: 'Xin chào',
+              start: 7.81,
+              end: 8.4,
+              timestamp: 7.81,
+            },
+          ]}
+        />,
+      )
+    })
+
+    expect(groupingSpy).not.toHaveBeenCalled()
   })
 })
