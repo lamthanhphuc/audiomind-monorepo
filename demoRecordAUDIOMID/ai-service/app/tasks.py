@@ -97,7 +97,7 @@ def process_meeting(payload: dict) -> None:
         logger.info(f"[traceId={trace_id}] [jobId={meeting_id}] update RUNNING")
         set_job_status(meeting_id, "RUNNING", file_id=file_id, trace_id=trace_id)
 
-        pipeline.process_meeting(
+        process_result = pipeline.process_meeting(
             audio_path=payload["audio_path"],
             meeting_id=meeting_id,
             db=db,
@@ -120,22 +120,34 @@ def process_meeting(payload: dict) -> None:
                 for item in transcripts
             ]
 
-        analysis = pipeline.get_analysis(meeting_id, db)
+        analysis = None
+        if isinstance(process_result, dict):
+            analysis = process_result.get("analysis")
+
+        if analysis is None:
+            db_analysis = pipeline.get_analysis(meeting_id, db)
+            if db_analysis:
+                analysis = {
+                    "summary": db_analysis.summary,
+                    "keywords": db_analysis.keywords,
+                    "technical_terms": db_analysis.technical_terms,
+                    "action_items": db_analysis.action_items,
+                    "created_at": (
+                        db_analysis.created_at.isoformat()
+                        if db_analysis.created_at
+                        else None
+                    ),
+                    "glossary_domain": getattr(db_analysis, "glossary_domain", None),
+                    "glossary_version_id": getattr(
+                        db_analysis, "glossary_version_id", None
+                    ),
+                    "glossary_version_hash": getattr(
+                        db_analysis, "glossary_version_hash", None
+                    ),
+                }
+
         if analysis:
-            result_data["analysis"] = {
-                "summary": analysis.summary,
-                "keywords": analysis.keywords,
-                "technical_terms": analysis.technical_terms,
-                "action_items": analysis.action_items,
-                "created_at": (
-                    analysis.created_at.isoformat() if analysis.created_at else None
-                ),
-                "glossary_domain": getattr(analysis, "glossary_domain", None),
-                "glossary_version_id": getattr(analysis, "glossary_version_id", None),
-                "glossary_version_hash": getattr(
-                    analysis, "glossary_version_hash", None
-                ),
-            }
+            result_data["analysis"] = analysis
 
         set_job_status(
             meeting_id,

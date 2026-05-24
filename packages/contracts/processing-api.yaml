@@ -245,4 +245,69 @@ components:
           format: int64
         status:
           type: string
+        meetingId:
+          type: integer
+          format: int64
+        data:
+          $ref: "#/components/schemas/StructuredAnalysis"
+        structuredAnalysis:
+          $ref: "#/components/schemas/StructuredAnalysis"
       additionalProperties: true
+    StructuredAnalysis:
+      type: object
+      required:
+        - summary
+        - keywords
+        - technicalTerms
+        - painPoints
+        - actionItems
+        - domainMode
+      properties:
+        summary:
+          type: string
+        keywords:
+          type: array
+          items:
+            type: string
+        technicalTerms:
+          type: array
+          items:
+            $ref: "#/components/schemas/TechnicalTerm"
+        painPoints:
+          type: array
+          items:
+            $ref: "#/components/schemas/PainPoint"
+        actionItems:
+          type: array
+          items:
+            type: string
+        domainMode:
+          type: string
+          enum: [general, it, business, education]
+    TechnicalTerm:
+      type: object
+      required:
+        - term
+        - meaning
+        - category
+      properties:
+        term:
+          type: string
+        meaning:
+          type: string
+        category:
+          type: string
+    PainPoint:
+      type: object
+      required:
+        - title
+        - evidence
+        - severity
+      properties:
+        title:
+          type: string
+        evidence:
+          type: string
+        severity:
+          type: string
+          enum: [low, medium, high]

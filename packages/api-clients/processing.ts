@@ -194,8 +194,32 @@ export interface components {
             /** Format: int64 */
             meeting_id: number;
             status: string;
+            /** Format: int64 */
+            meetingId?: number;
+            data?: components["schemas"]["StructuredAnalysis"];
+            structuredAnalysis?: components["schemas"]["StructuredAnalysis"];
         } & {
             [key: string]: unknown;
+        };
+        StructuredAnalysis: {
+            summary: string;
+            keywords: string[];
+            technicalTerms: components["schemas"]["TechnicalTerm"][];
+            painPoints: components["schemas"]["PainPoint"][];
+            actionItems: string[];
+            /** @enum {string} */
+            domainMode: "general" | "it" | "business" | "education";
+        };
+        TechnicalTerm: {
+            term: string;
+            meaning: string;
+            category: string;
+        };
+        PainPoint: {
+            title: string;
+            evidence: string;
+            /** @enum {string} */
+            severity: "low" | "medium" | "high";
         };
     };
     responses: never;

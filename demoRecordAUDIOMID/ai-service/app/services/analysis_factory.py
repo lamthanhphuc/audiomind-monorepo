@@ -22,6 +22,19 @@ def build_analysis_analyzer(settings):
         )
 
     if provider == "gemini":
+        analysis_domain_mode = getattr(settings, "gemini_analysis_domain_mode", "it")
+        analysis_max_input_tokens = getattr(
+            settings, "gemini_analysis_max_input_tokens", 12000
+        )
+        analysis_max_output_tokens = getattr(
+            settings, "gemini_analysis_max_output_tokens", 4096
+        )
+        analysis_thinking_budget = getattr(
+            settings, "gemini_analysis_thinking_budget", 0
+        )
+        analysis_retry_max_attempts = getattr(
+            settings, "gemini_analysis_retry_max_attempts", 3
+        )
         logger.info(
             "Selected analysis provider=gemini analysis_model={} summary_model={}",
             settings.gemini_analysis_model,
@@ -31,6 +44,11 @@ def build_analysis_analyzer(settings):
             api_key=settings.gemini_api_key,
             analysis_model=settings.gemini_analysis_model,
             summary_model=settings.gemini_summary_model,
+            analysis_domain_mode=analysis_domain_mode,
+            analysis_max_input_tokens=analysis_max_input_tokens,
+            analysis_max_output_tokens=analysis_max_output_tokens,
+            analysis_thinking_budget=analysis_thinking_budget,
+            analysis_retry_max_attempts=analysis_retry_max_attempts,
             gemini_max_single_request_chars=settings.gemini_max_single_request_chars,
             gemini_request_delay_seconds=settings.gemini_request_delay_seconds,
             timeout_seconds=settings.ollama_timeout_seconds,

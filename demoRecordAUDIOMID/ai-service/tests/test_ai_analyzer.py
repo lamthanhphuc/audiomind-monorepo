@@ -60,3 +60,59 @@ def test_ensure_analysis_completeness_fills_missing_and_removes_overlap():
     keyword_keys = {item.lower() for item in result["keywords"]}
     term_keys = {item.lower() for item in result["technical_terms"]}
     assert keyword_keys.isdisjoint(term_keys)
+
+
+def test_normalize_gemini_structured_analysis_handles_defaults_and_legacy_aliases():
+    analyzer = AIAnalyzer(api_key="", provider="gemini")
+
+    transcript = "Bug log cho API gateway va cache layer."
+    payload = {
+        "summary": "Tong hop san pham",
+        "keywords": ["API", "api", "cache"],
+        "technicalTerms": [
+            {
+                "term": "API",
+                "meaning": "Giao dien lap trinh ung dung",
+                "category": "protocol",
+            },
+            {"term": "Cache", "meaning": "Bo nho dem", "category": "infra"},
+        ],
+        "painPoints": [
+            {"title": "Do tre", "evidence": "phuc hoi cham", "severity": "urgent"}
+        ],
+        "actionItems": ["Toi uu cache"],
+        "domainMode": "it",
+        "topics": ["van de hien thi"],
+    }
+
+    result = analyzer._normalize_gemini_structured_analysis(transcript, payload)
+
+    assert result["summary"] == "Tong hop san pham"
+    assert result["domainMode"] == "it"
+    assert result["keywords"] == []
+    assert result["technicalTerms"][0]["term"] == "API"
+    assert result["painPoints"][0]["severity"] == "medium"
+    assert result["actionItems"] == ["Toi uu cache"]
+    assert result["key_points"] == []
+    assert result["risks_blockers"] == ["Do tre"]
+    assert result["topics"] == ["van de hien thi"]
+
+
+def test_default_structured_analysis_uses_concise_fallback_summary():
+    analyzer = AIAnalyzer(api_key="", provider="gemini")
+
+    transcript = (
+        "Speaker 1: Hôm nay chúng ta bàn về API gateway và cache layer. "
+        "Speaker 2: Cần cập nhật cấu hình triển khai. "
+        "Speaker 1: Sau đó kiểm tra lại luồng xác thực và theo dõi lỗi."
+    )
+
+    result = analyzer._default_structured_analysis(transcript, "parse_error")
+
+    assert result["summary"] != transcript
+    assert len(result["summary"]) < len(transcript)
+    assert result["summary"]
+    assert result["keywords"] == []
+    assert result["technicalTerms"] == []
+    assert result["painPoints"] == []
+    assert result["actionItems"] == []

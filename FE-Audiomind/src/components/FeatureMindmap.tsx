@@ -1,4 +1,5 @@
-import type { AiAnalysis } from '../types'
+import { useMemo } from 'react'
+import { normalizeAnalysisResponse, type AiAnalysis } from '../types'
 
 type FeatureMindmapProps = {
   analysis: AiAnalysis | null
@@ -8,9 +9,11 @@ type FeatureMindmapProps = {
 }
 
 export default function FeatureMindmap({ analysis, onLoadAnalysis, busy, meetingId }: FeatureMindmapProps) {
-  const keywords = analysis?.keywords.slice(0, 4) ?? []
-  const actions = analysis?.action_items.slice(0, 3) ?? []
-  const technicalTerms = analysis?.technical_terms.slice(0, 4) ?? []
+  const normalizedAnalysis = useMemo(() => normalizeAnalysisResponse(analysis), [analysis])
+  const keywords = normalizedAnalysis.keywords.slice(0, 4)
+  const actions = normalizedAnalysis.actionItems.slice(0, 3)
+  const technicalTerms = normalizedAnalysis.technicalTerms.slice(0, 4)
+  const painPoints = normalizedAnalysis.painPoints.slice(0, 3)
 
   return (
     <section className="feature-scene feature-mindmap-scene">
@@ -36,7 +39,7 @@ export default function FeatureMindmap({ analysis, onLoadAnalysis, busy, meeting
         <div className="mindmap-status">
           <span className="feature-chip">Meeting ID: {meetingId ?? '--'}</span>
           <span className="mindmap-status__dot" />
-          <span>{analysis ? 'Đã đồng bộ dữ liệu' : 'Chưa có dữ liệu phân tích'}</span>
+          <span>{analysis ? `Đã đồng bộ dữ liệu (${normalizedAnalysis.domainMode})` : 'Chưa có dữ liệu phân tích'}</span>
         </div>
 
         <div className="mindmap-canvas">
@@ -52,17 +55,30 @@ export default function FeatureMindmap({ analysis, onLoadAnalysis, busy, meeting
               <h4>Thuật ngữ</h4>
               {technicalTerms.length
                 ? technicalTerms.map((item) => (
-                    <span key={item} className="mind-pill mind-pill--muted">{item}</span>
+                    <span key={item.term} className="mind-pill mind-pill--muted" title={item.meaning || ''}>
+                      {item.term}
+                    </span>
                   ))
                 : <span className="mind-pill mind-pill--muted">Chờ dữ liệu...</span>}
+            </div>
+
+            <div className="mindmap-graph__col">
+              <h4>Pain points</h4>
+              {painPoints.length
+                ? painPoints.map((item) => (
+                    <span key={`${item.title}-${item.severity}`} className="mind-pill" style={{ background: item.severity === 'high' ? '#fee2e2' : item.severity === 'medium' ? '#fef3c7' : '#dcfce7' }}>
+                      {item.title}
+                    </span>
+                  ))
+                : <span className="mind-pill">Chờ dữ liệu...</span>}
             </div>
 
             <div className="mindmap-graph__col mindmap-graph__col--actions">
               <h4>Hành động</h4>
               {actions.length
-                ? actions.map((item, index) => (
-                    <span key={`${item.task}-${index}`} className="mind-pill mind-pill--accent">
-                      {item.task}
+                ? actions.map((item) => (
+                    <span key={item} className="mind-pill mind-pill--accent">
+                      {item}
                     </span>
                   ))
                 : <span className="mind-pill mind-pill--accent">Chờ dữ liệu...</span>}
