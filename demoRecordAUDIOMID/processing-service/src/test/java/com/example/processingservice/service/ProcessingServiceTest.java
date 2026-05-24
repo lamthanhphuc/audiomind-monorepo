@@ -14,6 +14,9 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.lang.reflect.Constructor;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -384,19 +387,21 @@ class ProcessingServiceTest {
         when(jobStateStore.getJobState(611L)).thenReturn(Optional.empty());
         when(aiServiceClient.getAnalysis(611L, "trace-611"))
                 .thenThrow(new HttpClientErrorException(HttpStatus.NOT_FOUND));
+        String transcriptText = "SPEAKER_1: failed transcript row";
         when(aiServiceClient.getTranscript(611L, "trace-611")).thenReturn(Map.of(
                 "meeting_id", 611L,
                 "transcripts", List.of(
                         Map.of("speaker", "SPEAKER_1", "text", "failed transcript row")
                 )
         ));
+        String transcriptHash = sha256Hex(transcriptText);
 
         Constructor<?> constructor = Class
                 .forName("com.example.processingservice.service.ProcessingService$RealtimeAnalysisGuard")
                 .getDeclaredConstructor(String.class, long.class, boolean.class, long.class, String.class);
         constructor.setAccessible(true);
         Object recentFailureGuard = constructor.newInstance(
-                "cooldown-hash",
+                transcriptHash,
                 System.currentTimeMillis(),
                 false,
                 System.currentTimeMillis() + 60_000L,
@@ -423,6 +428,16 @@ class ProcessingServiceTest {
                 eq(AUTH_HEADER)
         );
     }
+
+        private static String sha256Hex(String value) {
+                try {
+                        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+                        byte[] bytes = digest.digest(value.getBytes(StandardCharsets.UTF_8));
+                        return java.util.HexFormat.of().formatHex(bytes);
+                } catch (NoSuchAlgorithmException ex) {
+                        throw new IllegalStateException(ex);
+                }
+        }
 
     @Test
     void getAnalysis_shouldSkipLazyEnqueueWhenTranscriptNotReady() {
