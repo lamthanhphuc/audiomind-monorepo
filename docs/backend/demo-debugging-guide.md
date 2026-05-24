@@ -34,13 +34,20 @@ curl -fsS http://localhost:8082/ready
 curl -fsS http://localhost:8000/health
 curl -fsS http://localhost:8000/ready
 curl -fsS http://localhost:8081/health
+curl -fsS http://localhost:8081/ready
 curl -fsS http://localhost:8083/health
+curl -fsS http://localhost:8083/ready
 ```
 
 If any check fails, inspect logs for that service first, then dependency chain (`db`, `redis`, `ai-api`).
 
 Port note:
 - If `curl` fails, confirm host port mappings in `infra/docker-compose.dev.yml` first; container ports and host-exposed ports may differ.
+
+Phase 7B note:
+- After Phase 7B, `/ready` is the primary endpoint for dependency readiness checks.
+- `/health` only checks that the app is alive.
+- If Docker healthcheck fails, verify the command available inside the container first (`curl`, `wget`, or another lightweight option).
 
 ## 3. Focused log commands
 
