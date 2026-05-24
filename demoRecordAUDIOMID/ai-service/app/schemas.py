@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel
 
@@ -16,6 +16,18 @@ class ActionItem(BaseModel):
     task: str
     owner: Optional[str] = None
     deadline: Optional[str] = None
+
+
+class AnalysisTechnicalTerm(BaseModel):
+    term: str
+    meaning: str = ""
+    category: str = ""
+
+
+class AnalysisPainPoint(BaseModel):
+    title: str
+    evidence: str = ""
+    severity: str = "medium"
 
 
 class MeetingAnalysis(BaseModel):
@@ -92,12 +104,35 @@ class AnalysisResponse(BaseModel):
     meeting_id: int
     summary: str
     keywords: List[str]
-    technical_terms: List[str]
+    technical_terms: List[Any]
     action_items: List[ActionItem]
     created_at: datetime
+    technicalTerms: List[AnalysisTechnicalTerm] = []
+    painPoints: List[AnalysisPainPoint] = []
+    actionItems: List[str] = []
+    domainMode: str = "it"
+    status: Optional[str] = None
+    source: Optional[str] = None
+    transcript_hash: Optional[str] = None
 
     class Config:
         from_attributes = True
+
+
+class RealtimeTranscriptAnalysisRequest(BaseModel):
+    meeting_id: int
+    transcript: str
+    domain_mode: Optional[str] = "it"
+    source: Optional[str] = "realtime"
+    transcript_hash: Optional[str] = None
+
+
+class RealtimeTranscriptAnalysisResponse(BaseModel):
+    meeting_id: int
+    status: str
+    reason: Optional[str] = None
+    transcript_hash: Optional[str] = None
+    source: Optional[str] = None
 
 
 class SttStreamResponse(BaseModel):

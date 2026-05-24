@@ -1,35 +1,44 @@
 package com.example.processingservice.service;
 
-import com.example.processingservice.client.AIServiceClient;
-import com.example.processingservice.client.MeetingServiceClient;
-import com.example.processingservice.controller.dto.ProcessingStatusResponse;
-import io.micrometer.core.instrument.Gauge;
-import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.timeout;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+import java.lang.reflect.Constructor;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.http.HttpStatus;
+import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.server.ResponseStatusException;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.mockito.ArgumentMatchers.anyLong;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.ArgumentMatchers.isNull;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
+import com.example.processingservice.client.AIServiceClient;
+import com.example.processingservice.client.MeetingServiceClient;
+import com.example.processingservice.controller.dto.ProcessingStatusResponse;
+
+import io.micrometer.core.instrument.Gauge;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 
 @ExtendWith(MockitoExtension.class)
 class ProcessingServiceTest {
@@ -252,6 +261,206 @@ class ProcessingServiceTest {
         assertEquals("QUEUED", response.get("status"));
         assertEquals("ok", response.get("summary"));
         assertEquals("positive", response.get("sentiment"));
+    }
+
+    @Test
+    void getAnalysis_shouldFallbackToAiServiceWhenJobStateMissing() {
+        when(jobStateStore.getJobState(606L)).thenReturn(Optional.empty());
+        when(aiServiceClient.getAnalysis(606L, "trace-606")).thenReturn(Map.of(
+                "meeting_id", 606L,
+                "status", "COMPLETED",
+                "summary", "Realtime summary",
+                "keywords", List.of("API"),
+                "technicalTerms", List.of(
+                        Map.of("term", "Webhook", "meaning", "HTTP callback", "category", "integration")
+                ),
+                "painPoints", List.of(
+                        Map.of("title", "Delay", "evidence", "queue lag", "severity", "high")
+                ),
+                "actionItems", List.of("Scale workers"),
+                "domainMode", "it"
+        ));
+
+        Map<String, Object> response = processingService.getAnalysis(606L, "trace-606", AUTH_HEADER);
+
+        assertEquals("COMPLETED", response.get("status"));
+        assertEquals("Realtime summary", response.get("summary"));
+        assertEquals("it", response.get("domainMode"));
+        verify(aiServiceClient).getAnalysis(606L, "trace-606");
+    }
+
+    @Test
+    void getAnalysis_shouldFallbackToAiServiceWhenStateExistsButAnalysisMissing() {
+        Map<String, Object> state = new HashMap<>();
+        state.put("status", "RUNNING");
+        state.put("result", Map.of("transcripts", List.of()));
+        when(jobStateStore.getJobState(607L)).thenReturn(Optional.of(state));
+        when(aiServiceClient.getAnalysis(607L, "trace-607")).thenReturn(Map.of(
+                "meeting_id", 607L,
+                "status", "COMPLETED",
+                "summary", "Ready",
+                "domainMode", "it"
+        ));
+
+        Map<String, Object> response = processingService.getAnalysis(607L, "trace-607", AUTH_HEADER);
+
+        assertEquals("RUNNING", response.get("status"));
+        assertEquals("Ready", response.get("summary"));
+        verify(aiServiceClient).getAnalysis(607L, "trace-607");
+    }
+
+    @Test
+    void getAnalysis_shouldEnqueueRealtimeAnalysisLazilyWhenAiAnalysisIsMissing() {
+        when(jobStateStore.getJobState(608L)).thenReturn(Optional.empty());
+        when(aiServiceClient.getAnalysis(608L, "trace-608"))
+                .thenThrow(new HttpClientErrorException(HttpStatus.NOT_FOUND));
+        when(aiServiceClient.getTranscript(608L, "trace-608")).thenReturn(Map.of(
+                "meeting_id", 608L,
+                "transcripts", List.of(
+                        Map.of("speaker", "SPEAKER_1", "text", "lazy transcript row")
+                )
+        ));
+        when(aiServiceClient.analyzeRealtimeTranscript(
+                eq(608L),
+                anyString(),
+                eq("it"),
+                eq("realtime"),
+                anyString(),
+                eq("trace-608"),
+                eq(AUTH_HEADER)
+        )).thenReturn(Map.of("status", "completed"));
+
+        Map<String, Object> response = processingService.getAnalysis(608L, "trace-608", AUTH_HEADER);
+
+        assertEquals("NOT_FOUND", response.get("status"));
+        verify(aiServiceClient, timeout(1000)).analyzeRealtimeTranscript(
+                eq(608L),
+                anyString(),
+                eq("it"),
+                eq("realtime"),
+                anyString(),
+                eq("trace-608"),
+                eq(AUTH_HEADER)
+        );
+    }
+
+    @Test
+    void getAnalysis_shouldNotEnqueueRealtimeAnalysisRepeatedlyWhileInProgress() throws Exception {
+        when(jobStateStore.getJobState(609L)).thenReturn(Optional.empty());
+        when(aiServiceClient.getAnalysis(609L, "trace-609"))
+                .thenThrow(new HttpClientErrorException(HttpStatus.NOT_FOUND));
+        when(aiServiceClient.getTranscript(609L, "trace-609")).thenReturn(Map.of(
+                "meeting_id", 609L,
+                "transcripts", List.of(
+                        Map.of("speaker", "SPEAKER_1", "text", "same transcript")
+                )
+        ));
+        when(aiServiceClient.analyzeRealtimeTranscript(
+                eq(609L),
+                anyString(),
+                eq("it"),
+                eq("realtime"),
+                anyString(),
+                eq("trace-609"),
+                eq(AUTH_HEADER)
+        )).thenAnswer(invocation -> {
+            Thread.sleep(150);
+            return Map.of("status", "completed");
+        });
+
+        processingService.getAnalysis(609L, "trace-609", AUTH_HEADER);
+        processingService.getAnalysis(609L, "trace-609", AUTH_HEADER);
+
+        verify(aiServiceClient, timeout(1500).times(1)).analyzeRealtimeTranscript(
+                eq(609L),
+                anyString(),
+                eq("it"),
+                eq("realtime"),
+                anyString(),
+                eq("trace-609"),
+                eq(AUTH_HEADER)
+        );
+    }
+
+    @Test
+    void getAnalysis_shouldSkipLazyEnqueueDuringRecentFailureCooldown() throws Exception {
+        when(jobStateStore.getJobState(611L)).thenReturn(Optional.empty());
+        when(aiServiceClient.getAnalysis(611L, "trace-611"))
+                .thenThrow(new HttpClientErrorException(HttpStatus.NOT_FOUND));
+        String transcriptText = "SPEAKER_1: failed transcript row";
+        when(aiServiceClient.getTranscript(611L, "trace-611")).thenReturn(Map.of(
+                "meeting_id", 611L,
+                "transcripts", List.of(
+                        Map.of("speaker", "SPEAKER_1", "text", "failed transcript row")
+                )
+        ));
+        String transcriptHash = sha256Hex(transcriptText);
+
+        Constructor<?> constructor = Class
+                .forName("com.example.processingservice.service.ProcessingService$RealtimeAnalysisGuard")
+                .getDeclaredConstructor(String.class, long.class, boolean.class, long.class, String.class);
+        constructor.setAccessible(true);
+        Object recentFailureGuard = constructor.newInstance(
+                transcriptHash,
+                System.currentTimeMillis(),
+                false,
+                System.currentTimeMillis() + 60_000L,
+                "analysis_failed"
+        );
+
+        @SuppressWarnings("unchecked")
+        ConcurrentHashMap<Long, Object> guardMap = (ConcurrentHashMap<Long, Object>) ReflectionTestUtils.getField(
+                processingService,
+                "realtimeAnalysisGuard"
+        );
+        guardMap.put(611L, recentFailureGuard);
+
+        Map<String, Object> response = processingService.getAnalysis(611L, "trace-611", AUTH_HEADER);
+
+        assertEquals("NOT_FOUND", response.get("status"));
+        verify(aiServiceClient, never()).analyzeRealtimeTranscript(
+                eq(611L),
+                anyString(),
+                eq("it"),
+                eq("realtime"),
+                anyString(),
+                eq("trace-611"),
+                eq(AUTH_HEADER)
+        );
+    }
+
+        private static String sha256Hex(String value) {
+                try {
+                        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+                        byte[] bytes = digest.digest(value.getBytes(StandardCharsets.UTF_8));
+                        return java.util.HexFormat.of().formatHex(bytes);
+                } catch (NoSuchAlgorithmException ex) {
+                        throw new IllegalStateException(ex);
+                }
+        }
+
+    @Test
+    void getAnalysis_shouldSkipLazyEnqueueWhenTranscriptNotReady() {
+        when(jobStateStore.getJobState(610L)).thenReturn(Optional.empty());
+        when(aiServiceClient.getAnalysis(610L, "trace-610"))
+                .thenThrow(new HttpClientErrorException(HttpStatus.NOT_FOUND));
+        when(aiServiceClient.getTranscript(610L, "trace-610")).thenReturn(Map.of(
+                "meeting_id", 610L,
+                "transcripts", List.of()
+        ));
+
+        Map<String, Object> response = processingService.getAnalysis(610L, "trace-610", AUTH_HEADER);
+
+        assertEquals("NOT_FOUND", response.get("status"));
+        verify(aiServiceClient, never()).analyzeRealtimeTranscript(
+                eq(610L),
+                anyString(),
+                eq("it"),
+                eq("realtime"),
+                anyString(),
+                eq("trace-610"),
+                eq(AUTH_HEADER)
+        );
     }
 
     @Test

@@ -26,6 +26,7 @@ export type AnalysisActionItem = {
 export type AiAnalysis = {
   meetingId?: number
   meeting_id?: number
+  status?: string
   summary: string
   keywords: string[]
   technicalTerms: AnalysisTechnicalTerm[]
@@ -201,6 +202,12 @@ export const normalizeAnalysisResponse = (value: unknown): AiAnalysis => {
           ? nested.meeting_id
           : undefined
 
+  const resolvedStatus = typeof nested.status === 'string'
+    ? nested.status
+    : typeof payload.status === 'string'
+      ? payload.status
+      : undefined
+
   const technicalTerms = normalizeTechnicalTerms(
     nested.technicalTerms ?? nested.technical_terms ?? nested.terms,
   )
@@ -214,6 +221,7 @@ export const normalizeAnalysisResponse = (value: unknown): AiAnalysis => {
   return {
     meetingId: resolvedMeetingId,
     meeting_id: resolvedMeetingId,
+    status: resolvedStatus,
     summary: String(nested.summary ?? '').trim(),
     keywords,
     technicalTerms,

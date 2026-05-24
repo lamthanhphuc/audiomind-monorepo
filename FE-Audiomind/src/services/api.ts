@@ -116,11 +116,26 @@ export const getTranscript = async (meetingId: number): Promise<TranscriptRespon
 }
 
 export const getAnalysis = async (meetingId: number): Promise<AiAnalysis> => {
-  const response = await fetchJson<AiAnalysis | { data?: AiAnalysis }>(
+  const response = await fetchJson<AiAnalysis | { data?: AiAnalysis } & { status?: string }>(
     `${API_BASE}/processing/${meetingId}/analysis`
   )
 
-  return normalizeAnalysisResponse(response)
+  const normalized = normalizeAnalysisResponse(response)
+  const payload = response && typeof response === 'object' && !Array.isArray(response)
+    ? (response as Record<string, unknown>)
+    : {}
+  const nested = payload.data && typeof payload.data === 'object' && !Array.isArray(payload.data)
+    ? (payload.data as Record<string, unknown>)
+    : payload
+  const statusValue = typeof nested.status === 'string'
+    ? nested.status
+    : typeof payload.status === 'string'
+      ? payload.status
+      : undefined
+  if (statusValue) {
+    ;(normalized as AiAnalysis & { status?: string }).status = statusValue
+  }
+  return normalized
 }
 
 export const getProcessingStatus = async (meetingId: number): Promise<{

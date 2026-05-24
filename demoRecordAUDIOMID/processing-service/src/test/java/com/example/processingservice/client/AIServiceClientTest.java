@@ -197,4 +197,53 @@ class AIServiceClientTest {
         MultiValueMap<String, Object> body = captor.getValue().getBody();
         assertEquals("vi", body.getFirst("language"));
     }
+
+    @Test
+    void analyzeRealtimeTranscript_shouldPostTranscriptPayloadToInternalEndpoint() {
+        RestTemplate restTemplate = mock(RestTemplate.class);
+        AIServiceClient client = new AIServiceClient(restTemplate);
+        ReflectionTestUtils.setField(client, "aiUrl", "http://ai-service");
+
+        ResponseEntity<Map<String, Object>> response = new ResponseEntity<>(
+                Map.of("status", "completed"),
+                HttpStatus.OK
+        );
+        when(restTemplate.exchange(
+                any(String.class),
+                eq(HttpMethod.POST),
+                any(HttpEntity.class),
+                any(org.springframework.core.ParameterizedTypeReference.class)
+        )).thenReturn(response);
+
+        Map<String, Object> result = client.analyzeRealtimeTranscript(
+                44L,
+                "Speaker 1: demo text",
+                "it",
+                "realtime",
+                "abc123",
+                "trace-realtime",
+                "Bearer test-token"
+        );
+
+        assertEquals("completed", result.get("status"));
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<HttpEntity<Map<String, Object>>> captor = ArgumentCaptor.forClass(HttpEntity.class);
+        verify(restTemplate).exchange(
+                eq("http://ai-service/api/internal/realtime-analysis"),
+                eq(HttpMethod.POST),
+                captor.capture(),
+                any(org.springframework.core.ParameterizedTypeReference.class)
+        );
+
+        HttpEntity<Map<String, Object>> entity = captor.getValue();
+        Map<String, Object> payload = entity.getBody();
+        assertEquals(44L, payload.get("meeting_id"));
+        assertEquals("Speaker 1: demo text", payload.get("transcript"));
+        assertEquals("it", payload.get("domain_mode"));
+        assertEquals("realtime", payload.get("source"));
+        assertEquals("abc123", payload.get("transcript_hash"));
+        assertEquals("Bearer test-token", entity.getHeaders().getFirst(HttpHeaders.AUTHORIZATION));
+        assertEquals("application/json", entity.getHeaders().getContentType().toString());
+    }
 }

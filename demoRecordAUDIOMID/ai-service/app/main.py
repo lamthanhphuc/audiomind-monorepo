@@ -1,11 +1,14 @@
 import asyncio
+import hashlib
 import re
 import sys
 import threading
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 import numpy as np
@@ -36,15 +39,25 @@ from app.job_status_store import (
     set_job_status,
 )
 from app.metrics import stt_metrics
+from app.models import Analysis
 from app.schemas import (
     ActionItem,
+    AnalysisPainPoint,
     AnalysisResponse,
+    AnalysisTechnicalTerm,
     ProcessRequest,
     ProcessResponse,
+    RealtimeTranscriptAnalysisRequest,
+    RealtimeTranscriptAnalysisResponse,
     SttStreamResponse,
     TranscriptResponse,
     TranscriptSegment,
 )
+from app.services.analysis_errors import (
+    AnalysisConfigError,
+    AnalysisUnavailableError,
+)
+from app.services.analysis_factory import build_analysis_analyzer
 from app.services.glossary_repository import GlossaryRepository
 from app.services.glossary_service import GlossaryService
 from app.services.grpc_stt_service import AiStreamServicer, create_grpc_server
@@ -246,6 +259,10 @@ _stt_stream_registry_lock = asyncio.Lock()
 _stt_stream_retry_guards: dict[str, "MeetingStreamRetryGuard"] = {}
 _stt_finalized_responses: dict[str, tuple[SttStreamResponse, float]] = {}
 _STT_FINALIZED_RESPONSE_TTL_SECONDS = 300.0
+_REALTIME_ANALYSIS_GUARD_TTL_SECONDS = 30.0 * 60.0
+_realtime_analysis_guard_lock = threading.Lock()
+_realtime_analysis_in_progress: dict[int, tuple[str, float]] = {}
+_realtime_analysis_completed_hash: dict[int, tuple[str, float]] = {}
 
 
 @dataclass
@@ -710,6 +727,25 @@ def _transcribe_locally(
 
 
 pipeline = ProcessingPipeline() if ProcessingPipeline is not None else None
+_realtime_analysis_analyzer = None
+
+
+def _get_realtime_analysis_analyzer():
+    global _realtime_analysis_analyzer
+
+    if _realtime_analysis_analyzer is not None:
+        return _realtime_analysis_analyzer
+
+    try:
+        _realtime_analysis_analyzer = build_analysis_analyzer(settings)
+    except Exception as exc:
+        logger.warning(
+            "Realtime analysis analyzer unavailable: {}",
+            repr(exc),
+        )
+        _realtime_analysis_analyzer = None
+
+    return _realtime_analysis_analyzer
 
 
 def _resolve_cors_origins() -> list[str]:
@@ -791,6 +827,305 @@ def resolve_upload_dir() -> Path:
             )
 
     raise RuntimeError("No writable upload directory is available")
+
+
+def _normalize_domain_mode(value: Any, default: str = "it") -> str:
+    normalized = str(value or default).strip().lower()
+    if normalized in {"general", "it", "business", "education"}:
+        return normalized
+    return default
+
+
+def _coerce_string_list(values: Any) -> list[str]:
+    if not isinstance(values, list):
+        return []
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in values:
+        text = str(item or "").strip()
+        if not text:
+            continue
+        key = text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(text)
+    return normalized
+
+
+def _coerce_structured_terms(values: Any) -> list[dict[str, str]]:
+    if not isinstance(values, list):
+        return []
+    normalized: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in values:
+        if not isinstance(item, dict):
+            continue
+        term = str(item.get("term") or "").strip()
+        if not term:
+            continue
+        key = term.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(
+            {
+                "term": term,
+                "meaning": str(item.get("meaning") or "").strip(),
+                "category": str(item.get("category") or "").strip(),
+            }
+        )
+    return normalized
+
+
+def _coerce_pain_points(values: Any) -> list[dict[str, str]]:
+    if not isinstance(values, list):
+        return []
+    normalized: list[dict[str, str]] = []
+    for item in values:
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title") or "").strip()
+        if not title:
+            continue
+        severity = str(item.get("severity") or "medium").strip().lower()
+        if severity not in {"low", "medium", "high"}:
+            severity = "medium"
+        normalized.append(
+            {
+                "title": title,
+                "evidence": str(item.get("evidence") or "").strip(),
+                "severity": severity,
+            }
+        )
+    return normalized
+
+
+def _coerce_action_items(values: Any) -> list[dict[str, Any]]:
+    if not isinstance(values, list):
+        return []
+    normalized: list[dict[str, Any]] = []
+    for item in values:
+        if isinstance(item, dict):
+            task = str(item.get("task") or item.get("text") or "").strip()
+            if not task:
+                continue
+            owner = str(item.get("owner") or "").strip() or None
+            deadline = str(item.get("deadline") or "").strip() or None
+            normalized.append({"task": task, "owner": owner, "deadline": deadline})
+            continue
+        task = str(item or "").strip()
+        if task:
+            normalized.append({"task": task, "owner": None, "deadline": None})
+    return normalized
+
+
+def _extract_analysis_from_job_state(
+    job_state: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if not isinstance(job_state, dict):
+        return {}
+    result = job_state.get("result")
+    if not isinstance(result, dict):
+        return {}
+    analysis = result.get("analysis")
+    if not isinstance(analysis, dict):
+        return {}
+    return analysis
+
+
+def _normalize_analysis_payload(raw_analysis: dict[str, Any]) -> dict[str, Any]:
+    summary = str(raw_analysis.get("summary") or "").strip()
+    keywords = _coerce_string_list(
+        raw_analysis.get("keywords")
+        or raw_analysis.get("key_points")
+        or raw_analysis.get("topics")
+        or []
+    )
+    technical_terms = _coerce_string_list(
+        raw_analysis.get("technical_terms") or raw_analysis.get("terms") or []
+    )
+    technical_terms_structured = _coerce_structured_terms(
+        raw_analysis.get("technicalTerms") or []
+    )
+    if technical_terms_structured:
+        technical_terms = [item["term"] for item in technical_terms_structured]
+    pain_points = _coerce_pain_points(
+        raw_analysis.get("painPoints") or raw_analysis.get("pain_points") or []
+    )
+    action_items_structured = _coerce_action_items(
+        raw_analysis.get("action_items") or raw_analysis.get("actionItems") or []
+    )
+    action_items = [
+        str(item.get("task") or "").strip() for item in action_items_structured
+    ]
+    action_items = [item for item in action_items if item]
+    domain_mode = _normalize_domain_mode(
+        raw_analysis.get("domainMode") or raw_analysis.get("domain_mode") or "it"
+    )
+    transcript_hash = str(raw_analysis.get("transcript_hash") or "").strip() or None
+    source = str(raw_analysis.get("source") or "").strip() or None
+    return {
+        "summary": summary,
+        "keywords": keywords,
+        "technical_terms": technical_terms,
+        "technicalTerms": technical_terms_structured,
+        "painPoints": pain_points,
+        "action_items": action_items_structured,
+        "actionItems": action_items,
+        "domainMode": domain_mode,
+        "domain_mode": domain_mode,
+        "transcript_hash": transcript_hash,
+        "source": source,
+    }
+
+
+def _normalize_transcript_text(transcript: str) -> str:
+    lines = [
+        line.strip() for line in str(transcript or "").splitlines() if line.strip()
+    ]
+    return "\n".join(lines).strip()
+
+
+def _compute_transcript_hash(transcript: str, provided_hash: str | None) -> str:
+    normalized = str(provided_hash or "").strip().lower()
+    if normalized and re.fullmatch(r"[a-f0-9]{64}", normalized):
+        return normalized
+    return hashlib.sha256(transcript.encode("utf-8")).hexdigest()
+
+
+def _purge_realtime_analysis_guards(now: float) -> None:
+    stale_in_progress = [
+        meeting_id
+        for meeting_id, (_, created_at) in _realtime_analysis_in_progress.items()
+        if now - created_at > _REALTIME_ANALYSIS_GUARD_TTL_SECONDS
+    ]
+    for meeting_id in stale_in_progress:
+        _realtime_analysis_in_progress.pop(meeting_id, None)
+
+    stale_completed = [
+        meeting_id
+        for meeting_id, (_, created_at) in _realtime_analysis_completed_hash.items()
+        if now - created_at > _REALTIME_ANALYSIS_GUARD_TTL_SECONDS
+    ]
+    for meeting_id in stale_completed:
+        _realtime_analysis_completed_hash.pop(meeting_id, None)
+
+
+def _try_begin_realtime_analysis(
+    meeting_id: int, transcript_hash: str
+) -> tuple[bool, str | None]:
+    now = time.time()
+    with _realtime_analysis_guard_lock:
+        _purge_realtime_analysis_guards(now)
+        in_progress = _realtime_analysis_in_progress.get(meeting_id)
+        if in_progress is not None:
+            return False, "in_progress"
+        completed = _realtime_analysis_completed_hash.get(meeting_id)
+        if completed is not None and completed[0] == transcript_hash:
+            return False, "already_exists"
+        _realtime_analysis_in_progress[meeting_id] = (transcript_hash, now)
+        return True, None
+
+
+def _finish_realtime_analysis(
+    meeting_id: int, transcript_hash: str, success: bool
+) -> None:
+    now = time.time()
+    with _realtime_analysis_guard_lock:
+        _realtime_analysis_in_progress.pop(meeting_id, None)
+        if success:
+            _realtime_analysis_completed_hash[meeting_id] = (transcript_hash, now)
+
+
+def _analyze_and_persist_realtime_transcript(
+    *,
+    meeting_id: int,
+    transcript_text: str,
+    transcript_hash: str,
+    source: str,
+    domain_mode: str | None,
+    db: Session,
+):
+    analyzer = _get_realtime_analysis_analyzer()
+    if analyzer is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Analysis service unavailable",
+        )
+
+    requested_domain_mode = _normalize_domain_mode(
+        domain_mode, default=analyzer.analysis_domain_mode
+    )
+    metadata = {
+        "meetingId": meeting_id,
+        "source": source,
+        "transcriptHash": transcript_hash,
+        "domainMode": requested_domain_mode,
+    }
+
+    if getattr(analyzer, "provider", "") == "gemini":
+        structured_analysis = analyzer._analyze_with_gemini(
+            transcript_text,
+            metadata=metadata,
+        )
+    else:
+        structured_analysis = analyzer.analyze_meeting(
+            transcript_text,
+            metadata=metadata,
+        )
+
+    normalized = _normalize_analysis_payload(structured_analysis)
+    prepared = analyzer.prepare_analysis_for_storage(
+        transcript=transcript_text,
+        data=structured_analysis,
+    )
+    clean_keywords = prepared.get("keywords", [])
+    clean_terms = prepared.get("technical_terms", [])
+    clean_terms = analyzer.sanitize_technical_terms(
+        transcript=transcript_text,
+        technical_terms=clean_terms,
+        keywords=clean_keywords,
+    )
+
+    technical_terms_payload = {
+        "technical_terms": clean_terms,
+        "technicalTerms": normalized["technicalTerms"],
+        "painPoints": normalized["painPoints"],
+        "domainMode": normalized["domainMode"],
+        "transcript_hash": transcript_hash,
+        "source": source,
+    }
+    action_items_payload = prepared.get("action_items", [])
+
+    analysis_row = db.query(Analysis).filter(Analysis.meeting_id == meeting_id).first()
+    if analysis_row is None:
+        analysis_row = Analysis(meeting_id=meeting_id)
+        db.add(analysis_row)
+
+    analysis_row.summary = str(prepared.get("summary", ""))
+    analysis_row.keywords = clean_keywords
+    analysis_row.technical_terms = technical_terms_payload
+    analysis_row.action_items = action_items_payload
+    analysis_row.created_at = datetime.now(timezone.utc)
+    db.commit()
+
+    set_job_status(
+        meeting_id=meeting_id,
+        status="COMPLETED",
+        result={"analysis": structured_analysis, "source": source},
+        stage="completed",
+        progress=100,
+    )
+
+    logger.info("REALTIME_ANALYSIS_SAVED meetingId={}", meeting_id)
+
+    return RealtimeTranscriptAnalysisResponse(
+        meeting_id=meeting_id,
+        status="completed",
+        transcript_hash=transcript_hash,
+        source=source,
+    )
 
 
 @app.get("/api/meeting/{meeting_id}/transcript", response_model=TranscriptResponse)
@@ -915,28 +1250,85 @@ async def get_analysis(meeting_id: int, db: Session = Depends(get_db)):
     Returns summary, keywords, technical terms, and action items
     """
     try:
+        logger.info(f"Fetching analysis for meeting {meeting_id}")
+
+        job_state = get_job_status(meeting_id)
+        job_analysis = _extract_analysis_from_job_state(job_state)
+        if job_analysis:
+            normalized = _normalize_analysis_payload(job_analysis)
+            action_items = [ActionItem(**item) for item in normalized["action_items"]]
+            technical_terms = [
+                AnalysisTechnicalTerm(**item) for item in normalized["technicalTerms"]
+            ]
+            pain_points = [
+                AnalysisPainPoint(**item) for item in normalized["painPoints"]
+            ]
+            return AnalysisResponse(
+                meeting_id=meeting_id,
+                summary=normalized["summary"],
+                keywords=normalized["keywords"],
+                technical_terms=normalized["technical_terms"],
+                action_items=action_items,
+                created_at=datetime.now(timezone.utc),
+                technicalTerms=technical_terms,
+                painPoints=pain_points,
+                actionItems=normalized["actionItems"],
+                domainMode=normalized["domainMode"],
+                status=(
+                    str(job_state.get("status") or "COMPLETED")
+                    if isinstance(job_state, dict)
+                    else "COMPLETED"
+                ),
+                source=normalized["source"] or "job_state",
+                transcript_hash=normalized["transcript_hash"],
+            )
+
         if pipeline is None:
             raise HTTPException(
                 status_code=503,
                 detail="Processing pipeline dependencies are not available",
             )
 
-        logger.info(f"Fetching analysis for meeting {meeting_id}")
-
         analysis = pipeline.get_analysis(meeting_id, db)
-
         if not analysis:
             raise HTTPException(status_code=404, detail="Analysis not found")
 
-        action_items = [ActionItem(**item) for item in analysis.action_items]
+        raw_analysis: dict[str, Any] = {
+            "summary": analysis.summary or "",
+            "keywords": analysis.keywords or [],
+            "action_items": analysis.action_items or [],
+        }
+        technical_terms_value = analysis.technical_terms or []
+        if isinstance(technical_terms_value, dict):
+            raw_analysis.update(technical_terms_value)
+            raw_analysis["technical_terms"] = (
+                technical_terms_value.get("technical_terms")
+                or technical_terms_value.get("terms")
+                or []
+            )
+        else:
+            raw_analysis["technical_terms"] = technical_terms_value
 
+        normalized = _normalize_analysis_payload(raw_analysis)
+        action_items = [ActionItem(**item) for item in normalized["action_items"]]
+        technical_terms = [
+            AnalysisTechnicalTerm(**item) for item in normalized["technicalTerms"]
+        ]
+        pain_points = [AnalysisPainPoint(**item) for item in normalized["painPoints"]]
         return AnalysisResponse(
             meeting_id=meeting_id,
-            summary=analysis.summary,
-            keywords=analysis.keywords,
-            technical_terms=analysis.technical_terms,
+            summary=normalized["summary"],
+            keywords=normalized["keywords"],
+            technical_terms=normalized["technical_terms"],
             action_items=action_items,
-            created_at=analysis.created_at,
+            created_at=analysis.created_at or datetime.now(timezone.utc),
+            technicalTerms=technical_terms,
+            painPoints=pain_points,
+            actionItems=normalized["actionItems"],
+            domainMode=normalized["domainMode"],
+            status="COMPLETED",
+            source=normalized["source"] or "database",
+            transcript_hash=normalized["transcript_hash"],
         )
 
     except HTTPException:
@@ -944,6 +1336,125 @@ async def get_analysis(meeting_id: int, db: Session = Depends(get_db)):
     except Exception as e:
         request_id = uuid4().hex
         logger.error(f"Error fetching analysis request_id={request_id}: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal server error. request_id={request_id}",
+        )
+
+
+@app.post(
+    "/api/internal/realtime-analysis",
+    response_model=RealtimeTranscriptAnalysisResponse,
+)
+async def analyze_realtime_transcript(
+    request: RealtimeTranscriptAnalysisRequest,
+    db: Session = Depends(get_db),
+):
+    try:
+        meeting_id = int(request.meeting_id)
+        source = str(request.source or "realtime").strip().lower() or "realtime"
+        transcript_text = _normalize_transcript_text(request.transcript)
+        if not transcript_text:
+            logger.info(
+                "REALTIME_ANALYSIS_SKIPPED reason=empty_transcript meetingId={}",
+                meeting_id,
+            )
+            return RealtimeTranscriptAnalysisResponse(
+                meeting_id=meeting_id,
+                status="skipped",
+                reason="empty_transcript",
+                source=source,
+            )
+
+        transcript_hash = _compute_transcript_hash(
+            transcript_text, request.transcript_hash
+        )
+        existing = db.query(Analysis).filter(Analysis.meeting_id == meeting_id).first()
+        if existing is not None:
+            existing_hash: str | None = None
+            if isinstance(existing.technical_terms, dict):
+                existing_hash = (
+                    str(existing.technical_terms.get("transcript_hash") or "").strip()
+                    or None
+                )
+            if existing_hash is None or existing_hash == transcript_hash:
+                logger.info(
+                    "REALTIME_ANALYSIS_SKIPPED reason=already_exists meetingId={}",
+                    meeting_id,
+                )
+                return RealtimeTranscriptAnalysisResponse(
+                    meeting_id=meeting_id,
+                    status="skipped",
+                    reason="already_exists",
+                    transcript_hash=transcript_hash,
+                    source=source,
+                )
+
+        allowed, skip_reason = _try_begin_realtime_analysis(meeting_id, transcript_hash)
+        if not allowed:
+            logger.info(
+                "REALTIME_ANALYSIS_SKIPPED reason={} meetingId={}",
+                skip_reason,
+                meeting_id,
+            )
+            return RealtimeTranscriptAnalysisResponse(
+                meeting_id=meeting_id,
+                status="skipped",
+                reason=skip_reason,
+                transcript_hash=transcript_hash,
+                source=source,
+            )
+
+        logger.info("REALTIME_ANALYSIS_TRIGGERED meetingId={}", meeting_id)
+        success = False
+        try:
+            response = _analyze_and_persist_realtime_transcript(
+                meeting_id=meeting_id,
+                transcript_text=transcript_text,
+                transcript_hash=transcript_hash,
+                source=source,
+                domain_mode=request.domain_mode,
+                db=db,
+            )
+            success = True
+            return response
+        except (AnalysisConfigError, AnalysisUnavailableError) as analysis_error:
+            db.rollback()
+            logger.warning(
+                "REALTIME_ANALYSIS_FAILED meetingId={} reason=analysis_unavailable error={}",
+                meeting_id,
+                repr(analysis_error),
+            )
+            raise HTTPException(
+                status_code=503,
+                detail="Analysis service unavailable",
+            ) from analysis_error
+        except Exception as analysis_error:
+            db.rollback()
+            logger.warning(
+                "REALTIME_ANALYSIS_FAILED meetingId={} reason={}",
+                meeting_id,
+                repr(analysis_error),
+            )
+            return RealtimeTranscriptAnalysisResponse(
+                meeting_id=meeting_id,
+                status="failed",
+                reason="analysis_failed",
+                transcript_hash=transcript_hash,
+                source=source,
+            )
+        finally:
+            _finish_realtime_analysis(
+                meeting_id,
+                transcript_hash,
+                success=success,
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        request_id = uuid4().hex
+        logger.error(f"Realtime analysis request failed request_id={request_id}: {e}")
         raise HTTPException(
             status_code=500,
             detail=f"Internal server error. request_id={request_id}",
