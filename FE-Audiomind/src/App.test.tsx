@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { DEFAULT_REALTIME_LANGUAGE, REALTIME_LANGUAGE_OPTIONS, getRealtimeConnectionView, hydrateLiveTranscriptSegments, isCurrentLiveRecordingSession, isRealtimeLanguageSelectorDisabled, mergeHydratedTranscriptWithLive } from './App'
+import { DEFAULT_REALTIME_LANGUAGE, REALTIME_LANGUAGE_OPTIONS, getRealtimeConnectionView, hydrateLiveTranscriptSegments, isCurrentLiveRecordingSession, isRealtimeLanguageSelectorDisabled, mergeHydratedTranscriptWithLive, pollRealtimeAnalysisAfterStop } from './App'
 import { ApiError } from './services/api'
 import { mergeTranscriptSegmentsForDisplay, normalizePersistedTranscriptSegments, upsertTranscriptSegment } from './utils/transcript'
 
@@ -428,6 +428,88 @@ describe('mergeTranscriptSegmentsForDisplay', () => {
     const snapshot = JSON.parse(JSON.stringify(source))
     void mergeTranscriptSegmentsForDisplay(source)
     expect(source).toEqual(snapshot)
+  })
+})
+
+describe('pollRealtimeAnalysisAfterStop', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('returns completed when structured analysis becomes available', async () => {
+    vi.useFakeTimers()
+
+    const fetchAnalysis = vi
+      .fn()
+      .mockRejectedValueOnce(new ApiError('Analysis not found', 404))
+      .mockResolvedValueOnce({
+        summary: '',
+        keywords: [],
+        technicalTerms: [],
+        painPoints: [],
+        actionItems: [],
+        domainMode: 'it',
+      })
+      .mockResolvedValueOnce({
+        summary: 'Realtime summary',
+        keywords: ['API'],
+        technicalTerms: [],
+        painPoints: [],
+        actionItems: ['Scale workers'],
+        domainMode: 'it',
+      })
+
+    const resultPromise = pollRealtimeAnalysisAfterStop(
+      77,
+      new AbortController().signal,
+      fetchAnalysis as any,
+      4,
+    )
+
+    await vi.advanceTimersByTimeAsync(2000)
+    await vi.advanceTimersByTimeAsync(2000)
+    const result = await resultPromise
+
+    expect(fetchAnalysis).toHaveBeenCalledTimes(3)
+    expect(result.status).toBe('completed')
+    expect(result.analysis?.summary).toBe('Realtime summary')
+  })
+
+  it('returns failed for non-retryable analysis errors', async () => {
+    const fetchAnalysis = vi.fn().mockRejectedValue(new ApiError('Unauthorized', 401))
+
+    const result = await pollRealtimeAnalysisAfterStop(
+      78,
+      new AbortController().signal,
+      fetchAnalysis as any,
+      3,
+    )
+
+    expect(result.status).toBe('failed')
+    expect(result.analysis).toBeNull()
+  })
+
+  it('stops polling when backend marks analysis as failed', async () => {
+    const fetchAnalysis = vi.fn().mockResolvedValue({
+      status: 'FAILED',
+      summary: '',
+      keywords: [],
+      technicalTerms: [],
+      painPoints: [],
+      actionItems: [],
+      domainMode: 'it',
+    })
+
+    const result = await pollRealtimeAnalysisAfterStop(
+      79,
+      new AbortController().signal,
+      fetchAnalysis as any,
+      3,
+    )
+
+    expect(fetchAnalysis).toHaveBeenCalledTimes(1)
+    expect(result.status).toBe('failed')
+    expect(result.reason).toBe('analysis_failed')
   })
 })
 

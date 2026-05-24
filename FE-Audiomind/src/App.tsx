@@ -206,6 +206,63 @@ const pollUntilCompleted = async (
   throw new Error('Processing timeout exceeded')
 }
 
+const REALTIME_ANALYSIS_POLL_INTERVAL_MS = 2000
+const REALTIME_ANALYSIS_POLL_MAX_ATTEMPTS = 25
+
+export const pollRealtimeAnalysisAfterStop = async (
+  meetingId: number,
+  signal: AbortSignal,
+  fetchAnalysis: typeof getAnalysis = getAnalysis,
+  maxAttempts = REALTIME_ANALYSIS_POLL_MAX_ATTEMPTS,
+): Promise<{ status: 'completed' | 'pending' | 'failed'; analysis: AiAnalysis | null; reason?: string }> => {
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    if (signal.aborted) {
+      throw new DOMException('Polling aborted', 'AbortError')
+    }
+
+    try {
+      const analysis = await fetchAnalysis(meetingId)
+      const analysisStatus = String((analysis as AiAnalysis & { status?: string }).status ?? '').toUpperCase()
+      if (analysisStatus === 'FAILED') {
+        return {
+          status: 'failed',
+          analysis: null,
+          reason: 'analysis_failed',
+        }
+      }
+      const hasStructuredData = Boolean(
+        analysis.summary?.trim()
+        || (analysis.keywords?.length ?? 0) > 0
+        || (analysis.technicalTerms?.length ?? 0) > 0
+        || (analysis.painPoints?.length ?? 0) > 0
+        || (analysis.actionItems?.length ?? 0) > 0,
+      )
+
+      if (hasStructuredData) {
+        return { status: 'completed', analysis }
+      }
+    } catch (error: any) {
+      if (error instanceof ApiError && error.status === 404) {
+        // Analysis not ready yet.
+      } else if (error instanceof ApiError && error.status >= 500) {
+        // transient backend error: keep polling
+      } else {
+        return {
+          status: 'failed',
+          analysis: null,
+          reason: error instanceof Error ? error.message : 'Không thể tải phân tích realtime',
+        }
+      }
+    }
+
+    if (attempt < maxAttempts) {
+      await waitWithSignal(REALTIME_ANALYSIS_POLL_INTERVAL_MS, signal)
+    }
+  }
+
+  return { status: 'pending', analysis: null, reason: 'analysis_timeout' }
+}
+
 export const hydrateLiveTranscriptSegments = async (
   meetingId: number,
   fetchTranscript: typeof getTranscript = getTranscript,
@@ -450,6 +507,9 @@ export default function App() {
   const [liveError, setLiveError] = useState<string | null>(null)
   const [livePartialWarning, setLivePartialWarning] = useState<string | null>(null)
   const [liveStatusMessage, setLiveStatusMessage] = useState<string | null>(null)
+  const [liveAnalysis, setLiveAnalysis] = useState<AiAnalysis | null>(null)
+  const [liveAnalysisStatus, setLiveAnalysisStatus] = useState<'idle' | 'polling' | 'completed' | 'pending' | 'failed'>('idle')
+  const [liveAnalysisError, setLiveAnalysisError] = useState<string | null>(null)
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [authError, setAuthError] = useState('')
@@ -463,6 +523,7 @@ export default function App() {
   const [selectedRealtimeLanguage, setSelectedRealtimeLanguage] = useState<RealtimeLanguage>(DEFAULT_REALTIME_LANGUAGE)
   const [selectedRealtimeSpeakerMode, setSelectedRealtimeSpeakerMode] = useState<RealtimeSpeakerMode>(DEFAULT_REALTIME_SPEAKER_MODE)
   const abortControllerRef = useRef<AbortController | null>(null)
+  const liveAnalysisAbortControllerRef = useRef<AbortController | null>(null)
   const liveMeetingIdRef = useRef<number | null>(null)
   const liveRecordingSessionIdRef = useRef(0)
   const activeRealtimeSessionTokenRef = useRef<RealtimeSessionToken | null>(null)
@@ -642,6 +703,7 @@ export default function App() {
     setIsAuthenticated(Boolean(getAccessToken()))
     return () => {
       abortControllerRef.current?.abort()
+      liveAnalysisAbortControllerRef.current?.abort()
     }
   }, [])
 
@@ -677,6 +739,8 @@ export default function App() {
   const handleLogout = () => {
     audioRecorder.stopRecording()
     realtimeStream.disconnect(activeRealtimeSessionTokenRef.current)
+    liveAnalysisAbortControllerRef.current?.abort()
+    liveAnalysisAbortControllerRef.current = null
     activateRealtimeSessionToken(null)
     clearAccessToken()
     setIsAuthenticated(false)
@@ -691,6 +755,9 @@ export default function App() {
     setLiveError(null)
     setLivePartialWarning(null)
     setLiveStatusMessage(null)
+    setLiveAnalysis(null)
+    setLiveAnalysisStatus('idle')
+    setLiveAnalysisError(null)
     setLiveLifecycleState('idle')
     setPassword('')
     setJoinMeetingIdInput('')
@@ -704,6 +771,11 @@ export default function App() {
   const analysisTechnicalTerms = analysis?.technicalTerms ?? []
   const analysisPainPoints = analysis?.painPoints ?? []
   const analysisActionItems = analysis?.actionItems ?? []
+  const liveAnalysisSummaryText = useMemo(() => liveAnalysis?.summary || '(đang chờ phân tích)', [liveAnalysis])
+  const liveAnalysisKeywords = liveAnalysis?.keywords ?? []
+  const liveAnalysisTechnicalTerms = liveAnalysis?.technicalTerms ?? []
+  const liveAnalysisPainPoints = liveAnalysis?.painPoints ?? []
+  const liveAnalysisActionItems = liveAnalysis?.actionItems ?? []
   const liveTranscriptKeywords = useMemo(() => realtimeStream.keywords.map((keyword) => keyword.keyword), [realtimeStream.keywords])
   const liveModeActive = isRealtimeEnabled && viewMode === 'realtime' && realtimeUserId !== null
   const liveTranscriptSegments = hydratedLiveTranscriptSegments ?? realtimeStream.transcripts
@@ -728,6 +800,11 @@ export default function App() {
   useEffect(() => {
     if (viewMode !== 'realtime' || liveMeetingId === null) {
       setHydratedLiveTranscriptSegments(null)
+      liveAnalysisAbortControllerRef.current?.abort()
+      liveAnalysisAbortControllerRef.current = null
+      setLiveAnalysis(null)
+      setLiveAnalysisStatus('idle')
+      setLiveAnalysisError(null)
     }
   }, [liveMeetingId, viewMode])
 
@@ -819,6 +896,11 @@ export default function App() {
 
     setLiveError(null)
     setLivePartialWarning(null)
+    liveAnalysisAbortControllerRef.current?.abort()
+    liveAnalysisAbortControllerRef.current = null
+    setLiveAnalysis(null)
+    setLiveAnalysisStatus('idle')
+    setLiveAnalysisError(null)
     setHydratedLiveTranscriptSegments(null)
     realtimeStream.clearQueuedAudio?.()
     realtimeStream.disconnect(activeRealtimeSessionTokenRef.current)
@@ -834,6 +916,11 @@ export default function App() {
   const handlePrepareLiveMeeting = async (): Promise<{ expectedSessionId: number }> => {
     setLiveError(null)
     setLivePartialWarning(null)
+    liveAnalysisAbortControllerRef.current?.abort()
+    liveAnalysisAbortControllerRef.current = null
+    setLiveAnalysis(null)
+    setLiveAnalysisStatus('idle')
+    setLiveAnalysisError(null)
     setLiveStatusMessage('Đang tạo meeting mới...')
     setHydratedLiveTranscriptSegments(null)
     setLiveLifecycleState('connecting')
@@ -969,6 +1056,59 @@ export default function App() {
     }
   }
 
+  const startRealtimeAnalysisPolling = (
+    meetingId: number,
+    sessionId: number,
+    sessionToken: RealtimeSessionToken,
+  ) => {
+    liveAnalysisAbortControllerRef.current?.abort()
+    const controller = new AbortController()
+    liveAnalysisAbortControllerRef.current = controller
+    setLiveAnalysis(null)
+    setLiveAnalysisStatus('polling')
+    setLiveAnalysisError(null)
+
+    void (async () => {
+      try {
+        const pollResult = await pollRealtimeAnalysisAfterStop(meetingId, controller.signal)
+        if (
+          !isCurrentRealtimeSessionToken(sessionToken)
+          || !isCurrentLiveRecordingSession(sessionId, meetingId, liveRecordingSessionIdRef.current, liveMeetingIdRef.current)
+        ) {
+          return
+        }
+
+        if (pollResult.status === 'completed' && pollResult.analysis) {
+          setLiveAnalysis(pollResult.analysis)
+          setLiveAnalysisStatus('completed')
+          setLiveAnalysisError(null)
+          return
+        }
+
+        if (pollResult.status === 'failed') {
+          setLiveAnalysisStatus('failed')
+          setLiveAnalysisError(pollResult.reason || 'Không thể tải phân tích realtime')
+          return
+        }
+
+        setLiveAnalysisStatus('pending')
+        setLiveAnalysisError('Phân tích realtime đang xử lý, vui lòng thử lại sau')
+      } catch (error) {
+        if (error instanceof DOMException && error.name === 'AbortError') {
+          return
+        }
+        if (
+          !isCurrentRealtimeSessionToken(sessionToken)
+          || !isCurrentLiveRecordingSession(sessionId, meetingId, liveRecordingSessionIdRef.current, liveMeetingIdRef.current)
+        ) {
+          return
+        }
+        setLiveAnalysisStatus('failed')
+        setLiveAnalysisError(error instanceof Error ? error.message : 'Không thể tải phân tích realtime')
+      }
+    })()
+  }
+
   const handleLiveRecordingComplete = async (fullAudio: Blob, sessionId: number) => {
     const sessionToken = activeRealtimeSessionTokenRef.current
     const completedMeetingId = liveMeetingIdRef.current
@@ -1056,6 +1196,9 @@ export default function App() {
       setLiveLifecycleState('stopped')
       setLiveError(null)
       setLiveStatusMessage('Đã dừng ghi âm')
+      if (completedMeetingId !== null && isCurrentRealtimeSessionToken(sessionToken)) {
+        startRealtimeAnalysisPolling(completedMeetingId, sessionId, sessionToken)
+      }
 
       // eslint-disable-next-line no-console
       console.info('[Realtime] REALTIME_CLEANUP_DONE', {
@@ -1478,6 +1621,100 @@ export default function App() {
               </div>
             </aside>
           </div>
+
+          {(liveLifecycleState === 'stopped' || liveAnalysisStatus !== 'idle') && (
+            <section data-testid="e2e-live-analysis" style={{ border: '1px solid #ddd', borderRadius: 8, padding: 16, display: 'grid', gap: 12 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center' }}>
+                <strong>Realtime Analysis</strong>
+                <span style={{ padding: '4px 10px', borderRadius: 999, background: '#eef2ff', color: '#3730a3', fontSize: 12, fontWeight: 700 }}>
+                  {liveAnalysis?.domainMode ?? 'it'}
+                </span>
+              </div>
+
+              {liveAnalysisStatus === 'polling' && (
+                <p style={{ margin: 0, color: '#475569' }}>Đang phân tích transcript sau khi dừng ghi âm...</p>
+              )}
+              {liveAnalysisError && (
+                <p style={{ margin: 0, color: '#b45309' }}>{liveAnalysisError}</p>
+              )}
+
+              {liveAnalysis && (
+                <>
+                  <div style={{ display: 'grid', gap: 6 }}>
+                    <strong>Summary:</strong>
+                    <span>{liveAnalysisSummaryText}</span>
+                  </div>
+
+                  <div>
+                    <strong>Keywords:</strong>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
+                      {liveAnalysisKeywords.length
+                        ? liveAnalysisKeywords.map((keyword) => (
+                            <span
+                              key={keyword}
+                              style={{ padding: '4px 10px', borderRadius: 999, background: '#f1f5f9', color: '#0f172a', fontSize: 12, fontWeight: 600 }}
+                            >
+                              {keyword}
+                            </span>
+                          ))
+                        : <span style={{ color: '#64748b' }}>Không có từ khóa</span>}
+                    </div>
+                  </div>
+
+                  <div>
+                    <strong>Technical terms:</strong>
+                    <div style={{ display: 'grid', gap: 8, marginTop: 8 }}>
+                      {liveAnalysisTechnicalTerms.length
+                        ? liveAnalysisTechnicalTerms.map((item) => (
+                            <article key={item.term} style={{ border: '1px solid #e2e8f0', borderRadius: 10, padding: 12, background: '#fafafa' }}>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center' }}>
+                                <strong>{item.term}</strong>
+                                <span style={{ fontSize: 12, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                                  {item.category || 'uncategorized'}
+                                </span>
+                              </div>
+                              <p style={{ margin: '6px 0 0', color: '#334155' }}>{item.meaning || 'Chưa có mô tả'}</p>
+                            </article>
+                          ))
+                        : <span style={{ color: '#64748b' }}>Không có thuật ngữ kỹ thuật</span>}
+                    </div>
+                  </div>
+
+                  <div>
+                    <strong>Pain points:</strong>
+                    <div style={{ display: 'grid', gap: 8, marginTop: 8 }}>
+                      {liveAnalysisPainPoints.length
+                        ? liveAnalysisPainPoints.map((item) => (
+                            <article key={`${item.title}-${item.severity}`} style={{ border: '1px solid #e2e8f0', borderRadius: 10, padding: 12, background: '#fff7ed' }}>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center' }}>
+                                <strong>{item.title}</strong>
+                                <span style={{ padding: '2px 8px', borderRadius: 999, background: item.severity === 'high' ? '#fee2e2' : item.severity === 'medium' ? '#fef3c7' : '#dcfce7', color: '#0f172a', fontSize: 12, fontWeight: 700 }}>
+                                  {item.severity}
+                                </span>
+                              </div>
+                              <p style={{ margin: '6px 0 0', color: '#334155' }}>{item.evidence || 'Không có dẫn chứng'}</p>
+                            </article>
+                          ))
+                        : <span style={{ color: '#64748b' }}>Không có pain points</span>}
+                    </div>
+                  </div>
+
+                  <div>
+                    <strong>Action items:</strong>
+                    {liveAnalysisActionItems.length ? (
+                      <ul style={{ margin: '8px 0 0', paddingLeft: 20 }}>
+                        {liveAnalysisActionItems.map((item) => (
+                          <li key={item}>{item}</li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p style={{ margin: '8px 0 0', color: '#64748b' }}>Không có đầu việc</p>
+                    )}
+                  </div>
+                </>
+              )}
+            </section>
+          )}
         </section>
       )}
     </main>

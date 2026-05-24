@@ -159,6 +159,73 @@ public class AIServiceClient {
         return requireBody(response, "getAnalysis", meetingId);
     }
 
+    public Map<String, Object> analyzeRealtimeTranscript(
+            Long meetingId,
+            String transcript,
+            String domainMode,
+            String source,
+            String transcriptHash,
+            String traceId
+    ) {
+        return analyzeRealtimeTranscript(
+                meetingId,
+                transcript,
+                domainMode,
+                source,
+                transcriptHash,
+                traceId,
+                null
+        );
+    }
+
+    @Retry(name = "ai-service")
+    @CircuitBreaker(name = "ai-service")
+    @Retryable(
+        retryFor = { RestClientException.class, IllegalStateException.class },
+        maxAttempts = 3,
+        backoff = @Backoff(delay = 1000, multiplier = 2.0)
+    )
+    public Map<String, Object> analyzeRealtimeTranscript(
+            Long meetingId,
+            String transcript,
+            String domainMode,
+            String source,
+            String transcriptHash,
+            String traceId,
+            String authorization
+    ) {
+        HttpHeaders headers = new HttpHeaders();
+        String resolvedTraceId = resolveTraceId(traceId);
+        headers.add("x-trace-id", resolvedTraceId);
+        headers.add("x-request-id", resolvedTraceId);
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        if (StringUtils.hasText(authorization)) {
+            headers.add(HttpHeaders.AUTHORIZATION, authorization);
+        }
+
+        Map<String, Object> request = new HashMap<>();
+        request.put("meeting_id", meetingId);
+        request.put("transcript", transcript == null ? "" : transcript);
+        if (StringUtils.hasText(domainMode)) {
+            request.put("domain_mode", domainMode);
+        }
+        if (StringUtils.hasText(source)) {
+            request.put("source", source);
+        }
+        if (StringUtils.hasText(transcriptHash)) {
+            request.put("transcript_hash", transcriptHash);
+        }
+
+        ResponseEntity<Map<String, Object>> response = restTemplate.exchange(
+                aiUrl + "/api/internal/realtime-analysis",
+                HttpMethod.POST,
+                new HttpEntity<>(request, headers),
+                new ParameterizedTypeReference<>() {
+                }
+        );
+        return requireBody(response, "analyzeRealtimeTranscript", meetingId);
+    }
+
     @Retry(name = "ai-service")
     @CircuitBreaker(name = "ai-service")
     @Retryable(

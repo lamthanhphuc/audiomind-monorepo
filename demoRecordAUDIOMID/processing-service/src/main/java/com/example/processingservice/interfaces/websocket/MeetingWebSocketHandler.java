@@ -1,14 +1,20 @@
 package com.example.processingservice.interfaces.websocket;
 
+import java.nio.charset.StandardCharsets;
 import java.nio.ByteBuffer;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HexFormat;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CompletableFuture;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -55,9 +61,13 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
     private static final long IDLE_SESSION_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
     static final int MAX_FINALIZED_TRANSCRIPT_CACHE_SIZE = 100;
     private static final long FINALIZED_TRANSCRIPT_CACHE_TTL_MS = 5 * 60 * 1000;
+    private static final long REALTIME_ANALYSIS_GUARD_TTL_MS = 30 * 60 * 1000;
+    private static final String REALTIME_ANALYSIS_SOURCE_STREAM_STOP = "stream_stop";
+    private static final String REALTIME_ANALYSIS_SOURCE_AFTER_CLOSE = "after_close";
 
     // Cache for finalized transcripts (key: meetingId, value: final transcript event)
     private final ConcurrentHashMap<Long, CachedTranscript> finalizedTranscriptCache = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<Long, RealtimeAnalysisGuard> realtimeAnalysisGuard = new ConcurrentHashMap<>();
 
     private final MeetingChannelAuthorizer meetingChannelAuthorizer;
     private final RealtimeEventSubscriber realtimeEventSubscriber;
@@ -503,6 +513,9 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
         String language = getStringAttribute(session, LANGUAGE_ATTR);
         String speakerMode = getStringAttribute(session, SPEAKER_MODE_ATTR);
         String authorization = getStringAttribute(session, "authorization");
+        String analysisSource = sessionStillOpen
+                ? REALTIME_ANALYSIS_SOURCE_STREAM_STOP
+                : REALTIME_ANALYSIS_SOURCE_AFTER_CLOSE;
 
         if (Boolean.TRUE.equals(session.getAttributes().get(FINALIZED_ATTR))) {
             log.info("Skipping duplicate STT finalization for meetingId={} because finalization already started", meetingId);
@@ -574,6 +587,7 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                     return;
                     }
 
+            boolean partial = isPartialTranscript(transcript);
             Long finalSeq = getLongAttribute(session, LAST_AUDIO_SEQ_ATTR);
             Map<String, Object> transcriptEvent = buildTranscriptEvent(
                     meetingId,
@@ -594,6 +608,15 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                             transcriptEvent.get("segmentId"),
                             transcriptEvent.get("seq")
                     );
+                    if (partial) {
+                        log.info(
+                                "REALTIME_ANALYSIS_SKIPPED reason=not_final source={} meetingId={}",
+                                analysisSource,
+                                meetingId
+                        );
+                    } else {
+                        triggerRealtimeAnalysisAsync(meetingId, authorization, language, analysisSource);
+                    }
                     return;
                 }
                 rememberTranscriptEvent(session, transcriptEvent);
@@ -628,8 +651,6 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                             getStringValue(transcriptEvent.get("text")).length()
                     );
                 }
-                Object partialObj = transcript.get("partial");
-                boolean partial = partialObj instanceof Boolean ? (Boolean) partialObj : Boolean.parseBoolean(String.valueOf(partialObj));
                 if (partial) {
                     Map<String, Object> partialWarningEvent = new HashMap<>();
                     partialWarningEvent.put("type", "stream.status");
@@ -641,6 +662,13 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                     if (sessionStillOpen) {
                         realtimeEventSubscriber.broadcastToMeeting(meetingId, partialWarningEvent);
                     }
+                    log.info(
+                            "REALTIME_ANALYSIS_SKIPPED reason=not_final source={} meetingId={}",
+                            analysisSource,
+                            meetingId
+                    );
+                } else {
+                    triggerRealtimeAnalysisAsync(meetingId, authorization, language, analysisSource);
                 }
                 return;
             }
@@ -659,6 +687,15 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                 } catch (Exception e) {
                     log.error("Failed to broadcast statusEvent for meetingId={}: {}", meetingId, e.getMessage(), e);
                 }
+            }
+            if (partial) {
+                log.info(
+                        "REALTIME_ANALYSIS_SKIPPED reason=not_final source={} meetingId={}",
+                        analysisSource,
+                        meetingId
+                );
+            } else {
+                triggerRealtimeAnalysisAsync(meetingId, authorization, language, analysisSource);
             }
             log.info("No final transcript returned for meetingId={}", meetingId);
         } catch (Exception ex) {
@@ -700,6 +737,177 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
         finalizedTranscriptCache.remove(meetingId);
     }
 
+    private void triggerRealtimeAnalysisAsync(
+            Long meetingId,
+            String authorization,
+            String language,
+            String source
+    ) {
+        log.info(
+                "REALTIME_ANALYSIS_TRIGGER_ATTEMPT meetingId={} source={}",
+                meetingId,
+                source
+        );
+        try {
+            CompletableFuture.runAsync(() -> runRealtimeAnalysis(meetingId, authorization, language, source));
+            log.info("REALTIME_ANALYSIS_ENQUEUED meetingId={} source={}", meetingId, source);
+        } catch (Exception ex) {
+            log.warn(
+                    "REALTIME_ANALYSIS_ENQUEUE_FAILED meetingId={} source={} reason={}",
+                    meetingId,
+                    source,
+                    ex.getMessage()
+            );
+        }
+    }
+
+    private void runRealtimeAnalysis(Long meetingId, String authorization, String language, String source) {
+        String traceId = "realtime-analysis-" + meetingId + "-" + System.currentTimeMillis();
+        Map<String, Object> transcriptResponse;
+        try {
+            transcriptResponse = aiServiceClient.getTranscript(meetingId, traceId);
+        } catch (Exception ex) {
+            log.warn(
+                    "REALTIME_ANALYSIS_FAILED meetingId={} source={} reason=transcript_fetch_error:{}",
+                    meetingId,
+                    source,
+                    ex.getMessage()
+            );
+            return;
+        }
+
+        List<Map<String, Object>> transcriptRows = normalizeTranscriptRows(
+                transcriptResponse == null ? null : transcriptResponse.get("transcripts")
+        );
+        String transcriptText = buildTranscriptText(transcriptRows);
+        if (transcriptText.isBlank()) {
+            log.info(
+                    "REALTIME_ANALYSIS_SKIPPED reason=empty_transcript source={} meetingId={}",
+                    source,
+                    meetingId
+            );
+            return;
+        }
+
+        String transcriptHash = computeTranscriptHash(transcriptText);
+        if (!markRealtimeAnalysisInProgress(meetingId, transcriptHash, source)) {
+            return;
+        }
+
+        try {
+            log.info("REALTIME_ANALYSIS_TRIGGERED meetingId={} source={}", meetingId, source);
+            aiServiceClient.analyzeRealtimeTranscript(
+                    meetingId,
+                    transcriptText,
+                    "it",
+                    "realtime",
+                    transcriptHash,
+                    traceId,
+                    authorization
+            );
+            realtimeAnalysisGuard.put(
+                    meetingId,
+                    new RealtimeAnalysisGuard(transcriptHash, System.currentTimeMillis(), false)
+            );
+            log.info("REALTIME_ANALYSIS_SAVED meetingId={} source={}", meetingId, source);
+        } catch (Exception ex) {
+            realtimeAnalysisGuard.remove(meetingId);
+            log.warn(
+                    "REALTIME_ANALYSIS_FAILED meetingId={} source={} reason={}",
+                    meetingId,
+                    source,
+                    ex.getMessage()
+            );
+        }
+    }
+
+    private boolean isPartialTranscript(Map<String, Object> transcript) {
+        Object partialObj = transcript.get("partial");
+        return partialObj instanceof Boolean
+                ? (Boolean) partialObj
+                : Boolean.parseBoolean(String.valueOf(partialObj));
+    }
+
+    private List<Map<String, Object>> normalizeTranscriptRows(Object transcripts) {
+        if (!(transcripts instanceof List<?> rows) || rows.isEmpty()) {
+            return List.of();
+        }
+        List<Map<String, Object>> normalized = new ArrayList<>();
+        for (Object row : rows) {
+            if (!(row instanceof Map<?, ?> mapRow)) {
+                continue;
+            }
+            Map<String, Object> value = new HashMap<>();
+            for (Map.Entry<?, ?> entry : mapRow.entrySet()) {
+                value.put(String.valueOf(entry.getKey()), entry.getValue());
+            }
+            normalized.add(value);
+        }
+        return normalized;
+    }
+
+    private String buildTranscriptText(List<Map<String, Object>> rows) {
+        if (rows == null || rows.isEmpty()) {
+            return "";
+        }
+        StringBuilder builder = new StringBuilder();
+        for (Map<String, Object> row : rows) {
+            String speaker = getStringValue(row.get("speaker")).trim();
+            String text = getStringValue(row.get("text")).trim();
+            if (text.isBlank()) {
+                continue;
+            }
+            if (!speaker.isBlank()) {
+                builder.append(speaker).append(": ");
+            }
+            builder.append(text).append('\n');
+        }
+        return builder.toString().trim();
+    }
+
+    private String computeTranscriptHash(String transcriptText) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] bytes = digest.digest(transcriptText.getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(bytes);
+        } catch (NoSuchAlgorithmException ex) {
+            return Integer.toHexString(transcriptText.hashCode());
+        }
+    }
+
+    private boolean markRealtimeAnalysisInProgress(Long meetingId, String transcriptHash, String source) {
+        evictExpiredRealtimeAnalysisGuards();
+        RealtimeAnalysisGuard currentGuard = realtimeAnalysisGuard.get(meetingId);
+        if (currentGuard != null) {
+            if (currentGuard.inProgress()) {
+                log.info(
+                        "REALTIME_ANALYSIS_SKIPPED reason=in_progress source={} meetingId={}",
+                        source,
+                        meetingId
+                );
+                return false;
+            }
+            if (transcriptHash.equals(currentGuard.transcriptHash())) {
+                log.info(
+                        "REALTIME_ANALYSIS_SKIPPED reason=already_exists source={} meetingId={}",
+                        source,
+                        meetingId
+                );
+                return false;
+            }
+        }
+        realtimeAnalysisGuard.put(
+                meetingId,
+                new RealtimeAnalysisGuard(transcriptHash, System.currentTimeMillis(), true)
+        );
+        return true;
+    }
+
+    private void evictExpiredRealtimeAnalysisGuards() {
+        long cutoff = System.currentTimeMillis() - REALTIME_ANALYSIS_GUARD_TTL_MS;
+        realtimeAnalysisGuard.entrySet().removeIf(entry -> entry.getValue().updatedAtMs() < cutoff);
+    }
+
     int finalizedTranscriptCacheSizeForTesting() {
         evictExpiredFinalizedTranscripts();
         return finalizedTranscriptCache.size();
@@ -730,6 +938,9 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
     }
 
     private record CachedTranscript(Map<String, Object> event, long createdAtMs) {
+    }
+
+    private record RealtimeAnalysisGuard(String transcriptHash, long updatedAtMs, boolean inProgress) {
     }
 
     private Long getLongAttribute(Map<String, Object> data, String key) {

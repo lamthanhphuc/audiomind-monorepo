@@ -1,39 +1,50 @@
 package com.example.processingservice.service;
 
-import com.example.processingservice.client.AIServiceClient;
-import com.example.processingservice.client.MeetingServiceClient;
-import com.example.processingservice.controller.dto.ProcessStartResponse;
-import com.example.processingservice.controller.dto.ProcessingStatusResponse;
-import jakarta.annotation.PostConstruct;
-import io.micrometer.core.instrument.Counter;
-import io.micrometer.core.instrument.MeterRegistry;
-import io.micrometer.core.instrument.Timer;
-import lombok.RequiredArgsConstructor;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.slf4j.MDC;
-import org.springframework.http.HttpStatus;
-import org.springframework.stereotype.Service;
-import org.springframework.web.multipart.MultipartFile;
-import org.springframework.web.client.HttpStatusCodeException;
-import org.springframework.web.server.ResponseStatusException;
-
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
+import org.springframework.http.HttpStatus;
+import org.springframework.stereotype.Service;
+import org.springframework.web.client.HttpStatusCodeException;
+import org.springframework.web.multipart.MultipartFile;
+import org.springframework.web.server.ResponseStatusException;
+
+import com.example.processingservice.client.AIServiceClient;
+import com.example.processingservice.client.MeetingServiceClient;
+import com.example.processingservice.controller.dto.ProcessStartResponse;
+import com.example.processingservice.controller.dto.ProcessingStatusResponse;
+
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
+import jakarta.annotation.PostConstruct;
+import lombok.RequiredArgsConstructor;
 
 @Service
 @RequiredArgsConstructor
 public class ProcessingService {
     private static final Set<String> ALLOWED_UPLOAD_LANGUAGES = Set.of("vi", "en", "multi");
+    private static final String REALTIME_ANALYSIS_SOURCE_GET_ANALYSIS_LAZY = "get_analysis_lazy";
+    private static final long REALTIME_ANALYSIS_GUARD_TTL_MS = 30 * 60 * 1000;
+    private static final long REALTIME_ANALYSIS_SKIP_LOG_THROTTLE_MS = 30 * 1000;
+    private static final long REALTIME_ANALYSIS_FAILURE_COOLDOWN_MS = 45 * 1000;
 
     private static final Logger log = LoggerFactory.getLogger(ProcessingService.class);
 
@@ -44,6 +55,8 @@ public class ProcessingService {
 
     private final AtomicInteger runningGauge = new AtomicInteger(0);
     private final Set<Long> activeJobs = Collections.newSetFromMap(new ConcurrentHashMap<>());
+    private final ConcurrentHashMap<Long, RealtimeAnalysisGuard> realtimeAnalysisGuard = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Long> realtimeAnalysisSkipLogGuard = new ConcurrentHashMap<>();
 
     @PostConstruct
     void initMetrics() {
@@ -284,24 +297,40 @@ public class ProcessingService {
     public Map<String, Object> getAnalysis(Long meetingId, String traceId, String authorization) {
         assertMeetingAccess(meetingId, traceId, authorization);
         Map<String, Object> state = jobStateStore.getJobState(meetingId).orElse(null);
-        if (state == null) {
-            return Map.of("meeting_id", meetingId, "status", "NOT_FOUND");
+        String stateStatus = state == null ? "NOT_FOUND" : normalizeStatus(state.get("status"));
+        Map<String, Object> analysis = extractAnalysisFromState(state);
+        if (!analysis.isEmpty()) {
+            Map<String, Object> response = new HashMap<>();
+            response.put("meeting_id", meetingId);
+            response.put("status", stateStatus);
+            response.putAll(analysis);
+            return response;
         }
 
-        Map<String, Object> result = extractResult(state);
-        Map<String, Object> analysis = new HashMap<>();
-        Object analysisObj = result.get("analysis");
-        if (analysisObj instanceof Map<?, ?> mapObj) {
-            for (Map.Entry<?, ?> entry : mapObj.entrySet()) {
-                analysis.put(String.valueOf(entry.getKey()), entry.getValue());
+        log.info(
+                "[traceId={}] [jobId={}] analysis job-state missing_or_empty status={} -> fallback to ai-service analysis",
+                traceId,
+                meetingId,
+                stateStatus
+        );
+
+        Map<String, Object> aiAnalysis = fetchAnalysisFromAiService(meetingId, traceId);
+        if (!aiAnalysis.isEmpty()) {
+            Map<String, Object> response = new HashMap<>();
+            response.put("meeting_id", meetingId);
+            String aiStatus = normalizeStatus(aiAnalysis.get("status"));
+            response.put("status", "NOT_FOUND".equals(stateStatus) ? aiStatus : stateStatus);
+            for (Map.Entry<String, Object> entry : aiAnalysis.entrySet()) {
+                if ("meeting_id".equals(entry.getKey()) || "status".equals(entry.getKey())) {
+                    continue;
+                }
+                response.put(entry.getKey(), entry.getValue());
             }
+            return response;
         }
 
-        Map<String, Object> response = new HashMap<>();
-        response.put("meeting_id", meetingId);
-        response.put("status", normalizeStatus(state.get("status")));
-        response.putAll(analysis);
-        return response;
+        maybeTriggerRealtimeAnalysisLazy(meetingId, traceId, authorization, state, stateStatus);
+        return Map.of("meeting_id", meetingId, "status", stateStatus);
     }
 
     private String normalizeStatus(Object value) {
@@ -374,6 +403,9 @@ public class ProcessingService {
 
     @SuppressWarnings("unchecked")
     private Map<String, Object> extractResult(Map<String, Object> state) {
+        if (state == null) {
+            return Map.of();
+        }
         Object result = state.get("result");
         if (result instanceof Map<?, ?> resultMap) {
             Map<String, Object> value = new HashMap<>();
@@ -383,6 +415,18 @@ public class ProcessingService {
             return value;
         }
         return Map.of();
+    }
+
+    private Map<String, Object> extractAnalysisFromState(Map<String, Object> state) {
+        Map<String, Object> result = extractResult(state);
+        Map<String, Object> analysis = new HashMap<>();
+        Object analysisObj = result.get("analysis");
+        if (analysisObj instanceof Map<?, ?> mapObj) {
+            for (Map.Entry<?, ?> entry : mapObj.entrySet()) {
+                analysis.put(String.valueOf(entry.getKey()), entry.getValue());
+            }
+        }
+        return analysis;
     }
 
     @SuppressWarnings("unchecked")
@@ -451,6 +495,248 @@ public class ProcessingService {
                     ex.getMessage()
             );
             return List.of();
+        }
+    }
+
+    private Map<String, Object> fetchAnalysisFromAiService(Long meetingId, String traceId) {
+        try {
+            Map<String, Object> aiResponse = aiServiceClient.getAnalysis(meetingId, traceId);
+            if (aiResponse != null && !aiResponse.isEmpty()) {
+                log.info(
+                        "[traceId={}] [jobId={}] ai-service analysis fallback keys={}",
+                        traceId,
+                        meetingId,
+                        aiResponse.keySet()
+                );
+                return aiResponse;
+            }
+        } catch (HttpStatusCodeException ex) {
+            if (ex.getStatusCode().value() == HttpStatus.NOT_FOUND.value()) {
+                log.info(
+                        "[traceId={}] [jobId={}] ai-service analysis fallback returned 404/not_found",
+                        traceId,
+                        meetingId
+                );
+                return Map.of();
+            }
+            log.warn(
+                    "[traceId={}] [jobId={}] ai-service analysis fallback failed status={} body={}",
+                    traceId,
+                    meetingId,
+                    ex.getStatusCode().value(),
+                    ex.getResponseBodyAsString()
+            );
+            return Map.of();
+        } catch (Exception ex) {
+            log.warn(
+                    "[traceId={}] [jobId={}] ai-service analysis fallback failed error={}",
+                    traceId,
+                    meetingId,
+                    ex.getMessage()
+            );
+            return Map.of();
+        }
+        return Map.of();
+    }
+
+    private void maybeTriggerRealtimeAnalysisLazy(
+            Long meetingId,
+            String traceId,
+            String authorization,
+            Map<String, Object> state,
+            String stateStatus
+    ) {
+        final String source = REALTIME_ANALYSIS_SOURCE_GET_ANALYSIS_LAZY;
+        log.info("REALTIME_ANALYSIS_TRIGGER_ATTEMPT meetingId={} source={}", meetingId, source);
+
+        List<Map<String, Object>> transcriptRows = extractTranscriptRowsFromState(state);
+        if (transcriptRows.isEmpty()) {
+            transcriptRows = fetchTranscriptRowsFromAiService(meetingId, traceId);
+        }
+
+        String transcriptText = buildTranscriptText(transcriptRows);
+        if (transcriptText.isBlank()) {
+            String reason = transcriptRows.isEmpty() ? "transcript_not_ready" : "empty_transcript";
+            logRealtimeAnalysisSkipThrottled(meetingId, source, reason);
+            return;
+        }
+
+        String transcriptHash = computeTranscriptHash(transcriptText);
+        if (!markRealtimeAnalysisInProgress(meetingId, transcriptHash, source)) {
+            return;
+        }
+
+        try {
+            String finalTranscriptText = transcriptText;
+            CompletableFuture.runAsync(() -> runLazyRealtimeAnalysis(
+                    meetingId,
+                    finalTranscriptText,
+                    transcriptHash,
+                    traceId,
+                    authorization,
+                    stateStatus,
+                    source
+            ));
+            log.info("REALTIME_ANALYSIS_ENQUEUED meetingId={} source={}", meetingId, source);
+        } catch (Exception ex) {
+                realtimeAnalysisGuard.put(
+                    meetingId,
+                    RealtimeAnalysisGuard.failed(transcriptHash, ex.getMessage())
+                );
+            log.warn(
+                    "REALTIME_ANALYSIS_ENQUEUE_FAILED meetingId={} source={} reason={}",
+                    meetingId,
+                    source,
+                    ex.getMessage()
+            );
+        }
+    }
+
+    private void runLazyRealtimeAnalysis(
+            Long meetingId,
+            String transcriptText,
+            String transcriptHash,
+            String traceId,
+            String authorization,
+            String stateStatus,
+            String source
+    ) {
+        try {
+            log.info("REALTIME_ANALYSIS_TRIGGERED meetingId={} source={}", meetingId, source);
+            aiServiceClient.analyzeRealtimeTranscript(
+                    meetingId,
+                    transcriptText,
+                    "it",
+                    "realtime",
+                    transcriptHash,
+                    traceId,
+                    authorization
+            );
+            realtimeAnalysisGuard.put(
+                    meetingId,
+                    RealtimeAnalysisGuard.completed(transcriptHash)
+            );
+            log.info("REALTIME_ANALYSIS_SAVED meetingId={} source={}", meetingId, source);
+        } catch (Exception ex) {
+            realtimeAnalysisGuard.put(
+                    meetingId,
+                    RealtimeAnalysisGuard.failed(transcriptHash, ex.getMessage())
+            );
+            log.warn(
+                    "REALTIME_ANALYSIS_FAILED meetingId={} source={} reason={} status={}",
+                    meetingId,
+                    source,
+                    ex.getMessage(),
+                    stateStatus
+            );
+        }
+    }
+
+    private String buildTranscriptText(List<Map<String, Object>> rows) {
+        if (rows == null || rows.isEmpty()) {
+            return "";
+        }
+        StringBuilder builder = new StringBuilder();
+        for (Map<String, Object> row : rows) {
+            String speaker = row.get("speaker") == null ? "" : String.valueOf(row.get("speaker")).trim();
+            String text = row.get("text") == null ? "" : String.valueOf(row.get("text")).trim();
+            if (text.isBlank()) {
+                continue;
+            }
+            if (!speaker.isBlank()) {
+                builder.append(speaker).append(": ");
+            }
+            builder.append(text).append('\n');
+        }
+        return builder.toString().trim();
+    }
+
+    private String computeTranscriptHash(String transcriptText) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] bytes = digest.digest(transcriptText.getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(bytes);
+        } catch (NoSuchAlgorithmException ex) {
+            return Integer.toHexString(transcriptText.hashCode());
+        }
+    }
+
+    private boolean markRealtimeAnalysisInProgress(Long meetingId, String transcriptHash, String source) {
+        evictExpiredRealtimeAnalysisGuards();
+        RealtimeAnalysisGuard currentGuard = realtimeAnalysisGuard.get(meetingId);
+        if (currentGuard != null) {
+            if (currentGuard.inProgress()) {
+                logRealtimeAnalysisSkipThrottled(meetingId, source, "in_progress");
+                return false;
+            }
+            if (transcriptHash.equals(currentGuard.transcriptHash())) {
+                if (currentGuard.isFailureActive()) {
+                    logRealtimeAnalysisSkipThrottled(meetingId, source, "recent_failure");
+                    return false;
+                }
+                logRealtimeAnalysisSkipThrottled(meetingId, source, "already_exists");
+                return false;
+            }
+        }
+
+        realtimeAnalysisGuard.put(
+                meetingId,
+                RealtimeAnalysisGuard.inProgress(transcriptHash)
+        );
+        return true;
+    }
+
+    private void evictExpiredRealtimeAnalysisGuards() {
+        long cutoff = System.currentTimeMillis() - REALTIME_ANALYSIS_GUARD_TTL_MS;
+        realtimeAnalysisGuard.entrySet().removeIf(entry -> entry.getValue().updatedAtMs() < cutoff);
+    }
+
+    private void logRealtimeAnalysisSkipThrottled(Long meetingId, String source, String reason) {
+        long now = System.currentTimeMillis();
+        String key = meetingId + "|" + source + "|" + reason;
+        Long lastLoggedAt = realtimeAnalysisSkipLogGuard.get(key);
+        if (lastLoggedAt != null && now - lastLoggedAt < REALTIME_ANALYSIS_SKIP_LOG_THROTTLE_MS) {
+            return;
+        }
+        realtimeAnalysisSkipLogGuard.put(key, now);
+        log.info(
+                "REALTIME_ANALYSIS_SKIPPED reason={} source={} meetingId={}",
+                reason,
+                source,
+                meetingId
+        );
+    }
+
+    private record RealtimeAnalysisGuard(
+            String transcriptHash,
+            long updatedAtMs,
+            boolean inProgress,
+            long failureCooldownUntilMs,
+            String failureReason
+    ) {
+        private static RealtimeAnalysisGuard inProgress(String transcriptHash) {
+            long now = System.currentTimeMillis();
+            return new RealtimeAnalysisGuard(transcriptHash, now, true, 0L, null);
+        }
+
+        private static RealtimeAnalysisGuard completed(String transcriptHash) {
+            long now = System.currentTimeMillis();
+            return new RealtimeAnalysisGuard(transcriptHash, now, false, 0L, null);
+        }
+
+        private static RealtimeAnalysisGuard failed(String transcriptHash, String reason) {
+            long now = System.currentTimeMillis();
+            return new RealtimeAnalysisGuard(
+                    transcriptHash,
+                    now,
+                    false,
+                    now + REALTIME_ANALYSIS_FAILURE_COOLDOWN_MS,
+                    reason
+            );
+        }
+
+        private boolean isFailureActive() {
+            return failureCooldownUntilMs > System.currentTimeMillis();
         }
     }
 
