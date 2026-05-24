@@ -196,7 +196,7 @@ export const uploadToMeetingApi = async (
   body.append('title', title)
   body.append('file', file)
   if (language) {
-    body.append('language', language)
+    body.append('language', language.trim())
   }
   // Do NOT set Content-Type manually — browser auto-adds multipart boundary
   return fetchJson<{ id: number; audioPath: string; title: string }>(
@@ -208,9 +208,12 @@ export const uploadToMeetingApi = async (
 /**
  * Start processing for an existing meeting by its ID.
  */
-export const startProcessingByPath = async (meetingId: number) => {
+export const startProcessingByPath = async (meetingId: number, language?: string) => {
+  const query = language && language.trim()
+    ? `?language=${encodeURIComponent(language.trim())}`
+    : ''
   return fetchJson<Record<string, unknown>>(
-    `${PROCESSING_API_BASE}/processing/start/${meetingId}`,
+    `${PROCESSING_API_BASE}/processing/start/${meetingId}${query}`,
     { method: 'POST' }
   )
 }

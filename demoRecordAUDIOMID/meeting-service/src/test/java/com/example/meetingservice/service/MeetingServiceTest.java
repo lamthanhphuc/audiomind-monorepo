@@ -41,6 +41,9 @@ class MeetingServiceTest {
         assertEquals(10L, result.getId());
         assertEquals("Team sync", result.getTitle());
         assertEquals("uploads/a.wav", result.getAudioPath());
+        ArgumentCaptor<Meeting> captor = ArgumentCaptor.forClass(Meeting.class);
+        verify(meetingRepository).save(captor.capture());
+        assertEquals("vi", captor.getValue().getLanguage());
         assertTrue(result.getCreatedAt() != null || saved.getCreatedAt() == null);
     }
 
@@ -91,6 +94,7 @@ class MeetingServiceTest {
         Meeting persisted = captor.getValue();
         assertEquals("Planning", persisted.getTitle());
         assertEquals("uploads/p.wav", persisted.getAudioPath());
+        assertEquals("vi", persisted.getLanguage());
         assertTrue(persisted.getCreatedAt() != null);
     }
 

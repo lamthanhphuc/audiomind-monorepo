@@ -340,4 +340,34 @@ class ProcessingServiceTest {
         assertEquals(1002L, response.meetingId());
         assertEquals("QUEUED", response.status());
     }
+
+    @Test
+    void startProcessing_shouldForwardExplicitUploadLanguageToAiService() {
+        when(jobStateStore.claimIdempotency("legacy-meeting:2001", 2001L))
+                .thenReturn(new JobStateStore.IdempotencyClaim(2001L, true));
+        when(meetingServiceClient.getMeetingById(2001L, "trace-2001", AUTH_HEADER))
+                .thenReturn(Map.of("id", 2001L, "audioPath", "/app/uploads/c.wav", "language", "vi"));
+        when(aiServiceClient.processAudio(2001L, "/app/uploads/c.wav", "legacy-meeting:2001", null, null, "en", "trace-2001", AUTH_HEADER))
+                .thenReturn(Map.of("status", "queued"));
+        when(jobStateStore.getJobState(2001L)).thenReturn(Optional.of(Map.of("status", "QUEUED", "progress", 0, "stage", "unknown")));
+
+        processingService.startProcessing(2001L, null, null, null, null, "en", "trace-2001", AUTH_HEADER);
+
+        verify(aiServiceClient).processAudio(2001L, "/app/uploads/c.wav", "legacy-meeting:2001", null, null, "en", "trace-2001", AUTH_HEADER);
+    }
+
+    @Test
+    void startProcessing_shouldFallbackToMeetingLanguageWhenRequestLanguageMissing() {
+        when(jobStateStore.claimIdempotency("legacy-meeting:2002", 2002L))
+                .thenReturn(new JobStateStore.IdempotencyClaim(2002L, true));
+        when(meetingServiceClient.getMeetingById(2002L, "trace-2002", AUTH_HEADER))
+                .thenReturn(Map.of("id", 2002L, "audioPath", "/app/uploads/d.wav", "language", "multi"));
+        when(aiServiceClient.processAudio(2002L, "/app/uploads/d.wav", "legacy-meeting:2002", null, null, "multi", "trace-2002", AUTH_HEADER))
+                .thenReturn(Map.of("status", "queued"));
+        when(jobStateStore.getJobState(2002L)).thenReturn(Optional.of(Map.of("status", "QUEUED", "progress", 0, "stage", "unknown")));
+
+        processingService.startProcessing(2002L, null, null, null, null, null, "trace-2002", AUTH_HEADER);
+
+        verify(aiServiceClient).processAudio(2002L, "/app/uploads/d.wav", "legacy-meeting:2002", null, null, "multi", "trace-2002", AUTH_HEADER);
+    }
 }

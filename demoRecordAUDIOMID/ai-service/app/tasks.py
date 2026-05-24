@@ -105,6 +105,7 @@ def process_meeting(payload: dict) -> None:
             glossary_terms=payload.get("glossary_terms"),
             glossary_context=glossary_context,
             language=payload.get("language"),
+            trace_id=trace_id,
         )
 
         transcripts = pipeline.get_transcript(meeting_id, db)

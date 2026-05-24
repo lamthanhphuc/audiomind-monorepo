@@ -43,6 +43,11 @@ export const REALTIME_LANGUAGE_OPTIONS: Array<{ value: RealtimeLanguage; label: 
   { value: 'en', label: 'English' },
   { value: 'multi', label: 'Việt + Anh' },
 ]
+export const UPLOAD_LANGUAGE_OPTIONS: Array<{ value: RealtimeLanguage; label: string }> = [
+  { value: 'vi', label: 'Tiếng Việt' },
+  { value: 'en', label: 'English' },
+  { value: 'multi', label: 'Việt + Anh (experimental)' },
+]
 
 export const REALTIME_SPEAKER_MODE_OPTIONS: Array<{ value: RealtimeSpeakerMode; label: string }> = [
   { value: 'single', label: 'Single speaker' },
@@ -735,13 +740,14 @@ export default function App() {
     let meetingId: number | null = null
 
     try {
+      const effectiveUploadLanguage = normalizeRealtimeLanguage(selectedUploadLanguage)
       setStatus('uploading')
-      console.info(`UPLOAD_REQUEST_SEND language=${selectedUploadLanguage}`)
-      const meeting = await uploadToMeetingApi(selectedFile.name, selectedFile, selectedUploadLanguage)
+      console.info('UPLOAD_REQUEST_SEND language=' + effectiveUploadLanguage)
+      const meeting = await uploadToMeetingApi(selectedFile.name, selectedFile, effectiveUploadLanguage)
       meetingId = meeting.id
 
       setStatus('processing')
-      await startProcessingByPath(meetingId)
+      await startProcessingByPath(meetingId, effectiveUploadLanguage)
 
       await pollUntilCompleted(meetingId, abortControllerRef.current.signal)
 
@@ -1143,24 +1149,35 @@ export default function App() {
       {viewMode === 'batch' && (
         <>
           <div style={{ display: 'grid', gap: 12, marginBottom: 16 }}>
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-              <label data-testid="e2e-upload-language-label" htmlFor="upload-language-select" style={{ fontWeight: 700, marginRight: 8 }}>UPLOAD LANGUAGE</label>
+            <label style={{ display: 'grid', gap: 6, maxWidth: 360 }}>
+              <span style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.08em', color: '#64748b' }}>
+                Upload language
+              </span>
               <select
-                id="upload-language-select"
-                data-testid="e2e-upload-language-select"
                 value={selectedUploadLanguage}
-                onChange={(e) => {
-                  const val = e.target.value as 'vi' | 'en' | 'multi'
-                  setSelectedUploadLanguage(val)
-                  console.info(`FE_UPLOAD_LANGUAGE_SELECTED language=${val}`)
+                onChange={(event) => {
+                  const nextLanguage = normalizeRealtimeLanguage(event.target.value)
+                  setSelectedUploadLanguage(nextLanguage)
+                  console.info(`FE_UPLOAD_LANGUAGE_SELECTED language=${nextLanguage}`)
                 }}
                 disabled={busy}
+                data-testid="e2e-upload-language-select"
+                style={{
+                  padding: '10px 12px',
+                  borderRadius: 10,
+                  border: '1px solid #cbd5e1',
+                  background: busy ? '#f1f5f9' : '#ffffff',
+                  color: '#0f172a',
+                  fontWeight: 600,
+                }}
               >
-                <option value="vi">Tiếng Việt</option>
-                <option value="en">English</option>
-                <option value="multi">Việt + Anh</option>
+                {UPLOAD_LANGUAGE_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
               </select>
-            </div>
+            </label>
             <input
               type="file"
               accept="audio/*"

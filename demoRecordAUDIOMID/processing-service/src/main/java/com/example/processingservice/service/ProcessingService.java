@@ -33,6 +33,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 @Service
 @RequiredArgsConstructor
 public class ProcessingService {
+    private static final Set<String> ALLOWED_UPLOAD_LANGUAGES = Set.of("vi", "en", "multi");
 
     private static final Logger log = LoggerFactory.getLogger(ProcessingService.class);
 
@@ -140,6 +141,7 @@ public class ProcessingService {
             String authorization
     ) {
         String resolvedAudioPath = audioPath;
+        String resolvedLanguage = normalizeBatchLanguage(language);
         if (resolvedAudioPath == null || resolvedAudioPath.isBlank()) {
             try {
                 Map<String, Object> meeting = meetingServiceClient.getMeetingById(meetingId, traceId, authorization);
@@ -148,6 +150,10 @@ public class ProcessingService {
                     throw new IllegalArgumentException("Meeting has no audioPath: " + meetingId);
                 }
                 resolvedAudioPath = String.valueOf(audioPathObj);
+                if ("vi".equals(resolvedLanguage)) {
+                    Object meetingLanguage = meeting.get("language");
+                    resolvedLanguage = normalizeBatchLanguage(meetingLanguage == null ? null : String.valueOf(meetingLanguage));
+                }
             } catch (Exception ex) {
                 if (audioPath == null || audioPath.isBlank()) {
                     log.warn("[traceId={}] [jobId={}] Meeting {} not found and no audioPath provided", traceId, meetingId, meetingId);
@@ -164,7 +170,7 @@ public class ProcessingService {
                 fileId,
                 topic,
                 glossaryTerms,
-                language,
+                resolvedLanguage,
                 traceId,
                 authorization
         );
@@ -335,6 +341,17 @@ public class ProcessingService {
             return audioPath;
         }
         return "legacy-meeting:" + meetingId;
+    }
+
+    private String normalizeBatchLanguage(String language) {
+        if (language == null) {
+            return "vi";
+        }
+        String normalized = language.trim().toLowerCase();
+        if (ALLOWED_UPLOAD_LANGUAGES.contains(normalized)) {
+            return normalized;
+        }
+        return "vi";
     }
 
     private void assertMeetingAccess(Long meetingId, String traceId, String authorization) {
