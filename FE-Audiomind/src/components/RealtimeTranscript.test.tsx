@@ -171,4 +171,78 @@ describe('RealtimeTranscript', () => {
 
     expect(groupingSpy).not.toHaveBeenCalled()
   })
+
+  it('renders highlighted IT terms in realtime transcript rows', () => {
+    act(() => {
+      root.render(
+        <RealtimeTranscript
+          segments={[
+            {
+              id: 'meeting-3-start-1.000',
+              mergeKey: 'segment:meeting-3-start-1.000',
+              speaker: 'Speaker 1',
+              text: 'Testing WebSocket latency with Docker deployment',
+              start: 1,
+              end: 4,
+              timestamp: 1,
+            },
+          ]}
+        />,
+      )
+    })
+
+    const highlights = Array.from(container.querySelectorAll('.it-term-highlight')).map((node) => node.textContent)
+    expect(highlights).toEqual(['WebSocket latency', 'Docker', 'deployment'])
+    expect(container.querySelectorAll('.transcript-segment')).toHaveLength(1)
+  })
+
+  it('highlights keyword prop terms using the same safe render path', () => {
+    act(() => {
+      root.render(
+        <RealtimeTranscript
+          highlightKeywords={['Audiomind']}
+          segments={[
+            {
+              id: 'meeting-3-start-5.000',
+              mergeKey: 'segment:meeting-3-start-5.000',
+              speaker: 'Speaker 1',
+              text: 'Audiomind still appears as normal text source',
+              start: 5,
+              end: 6,
+              timestamp: 5,
+            },
+          ]}
+        />,
+      )
+    })
+
+    expect(container.querySelectorAll('.it-term-highlight')).toHaveLength(1)
+    expect(container.querySelector('img')).toBeNull()
+    expect(container.textContent).toContain('Audiomind still appears as normal text source')
+  })
+
+  it('renders AI-domain highlights in realtime and does not highlight pronoun it', () => {
+    act(() => {
+      root.render(
+        <RealtimeTranscript
+          segments={[
+            {
+              id: 'meeting-4-start-2.000',
+              mergeKey: 'segment:meeting-4-start-2.000',
+              speaker: 'Speaker 1',
+              text: "Anthropic says AI agent is one thing. OpenAI says AI agents are different. These are the biggest AI labs and it's fine.",
+              start: 2,
+              end: 8,
+              timestamp: 2,
+            },
+          ]}
+        />,
+      )
+    })
+
+    const highlights = Array.from(container.querySelectorAll('.it-term-highlight')).map((node) => node.textContent)
+    expect(highlights).toEqual(['Anthropic', 'AI agent', 'OpenAI', 'AI agents', 'AI labs'])
+    expect(highlights).not.toContain('it')
+    expect(highlights).not.toContain('It')
+  })
 })
