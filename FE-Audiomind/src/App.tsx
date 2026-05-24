@@ -4,15 +4,15 @@ import { RealtimeTranscript } from './components/RealtimeTranscript'
 import { TranscriptDisplay } from './components/TranscriptDisplay'
 import { useAudioRecorder } from './hooks/useAudioRecorder'
 import {
-  DEFAULT_REALTIME_LANGUAGE,
-  DEFAULT_REALTIME_SPEAKER_MODE,
-  normalizeRealtimeLanguage,
-  normalizeRealtimeSpeakerMode,
-  type RealtimeLanguage,
-  type RealtimeSessionToken,
-  type RealtimeSpeakerMode,
-  type TranscriptSegment,
-  useRealtimeMeetingStream,
+    DEFAULT_REALTIME_LANGUAGE,
+    DEFAULT_REALTIME_SPEAKER_MODE,
+    normalizeRealtimeLanguage,
+    normalizeRealtimeSpeakerMode,
+    type RealtimeLanguage,
+    type RealtimeSessionToken,
+    type RealtimeSpeakerMode,
+    type TranscriptSegment,
+    useRealtimeMeetingStream,
 } from './hooks/useRealtimeMeetingStream'
 import { ApiError, getAnalysis, getProcessingStatus, getTranscript, startProcessingByPath, uploadToMeetingApi } from './services/api'
 import { clearAccessToken, getAccessToken, getCurrentUserId, login, setAccessToken } from './services/auth'
