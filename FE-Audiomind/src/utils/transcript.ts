@@ -4,6 +4,16 @@ type TranscriptSource = Record<string, unknown>
 const SPEAKER_MARKER_PATTERN = /(SPEAKER_\d+|Speaker\s+\d+):/gi
 const LEGACY_SEGMENT_ID_PATTERN = /^meeting-(\d+)-(\d+(?:\.\d+)?)-([a-z0-9_]+)-\d+$/i
 const CANONICAL_SEGMENT_ID_PATTERN = /^meeting-(\d+)-start-(\d+(?:\.\d+)?)-([a-z0-9_]+)$/i
+const SENTENCE_END_PUNCTUATION_PATTERN = /[.!?;…]\s*$/
+const CONNECTOR_PREFIX_PATTERN = /^(và|hoặc|hay|nhưng|nên|thì|mà|and|or|but|so)\b/i
+const BOUNDARY_PUNCTUATION_PATTERN = /[,:-]\s*$/
+
+const SHORT_SEGMENT_MAX_WORDS = 3
+const SHORT_SEGMENT_MAX_CHARS = 20
+const SHORT_SEGMENT_MAX_DURATION_SECONDS = 1.5
+const MERGE_MAX_GAP_SECONDS = 5
+const MERGE_MAX_TEXT_CHARS = 700
+const MERGE_MAX_DURATION_SECONDS = 90
 
 const normalizeText = (value: string): string => value.replace(/\s+/g, ' ').trim().toLowerCase()
 const canonicalSpeakerKey = (value: string): string => {
@@ -567,6 +577,232 @@ export const mergeTranscriptSegments = (segments: TranscriptSegment[]): Transcri
   return segments.reduce<TranscriptSegment[]>((current, incoming) => {
     return upsertTranscriptSegment(current, incoming).segments
   }, [])
+}
+
+type UploadTranscriptDisplayGroupingOptions = {
+  shortSegmentMaxWords?: number
+  shortSegmentMaxChars?: number
+  shortSegmentMaxDurationSeconds?: number
+  mergeMaxGapSeconds?: number
+  mergeMaxTextChars?: number
+  mergeMaxDurationSeconds?: number
+}
+
+const countWords = (text: string): number => {
+  const trimmed = text.trim()
+  if (!trimmed) {
+    return 0
+  }
+  return trimmed.split(/\s+/).filter(Boolean).length
+}
+
+const hasSentenceEndingPunctuation = (text: string): boolean => SENTENCE_END_PUNCTUATION_PATTERN.test(text.trim())
+
+const isLikelyContinuationStart = (text: string): boolean => {
+  const trimmed = text.trim()
+  if (!trimmed) {
+    return false
+  }
+
+  if (CONNECTOR_PREFIX_PATTERN.test(trimmed)) {
+    return true
+  }
+
+  const first = trimmed.charAt(0)
+  return first === first.toLowerCase() && first !== first.toUpperCase()
+}
+
+const isValidTimestamp = (value: number): boolean => Number.isFinite(value) && value > 0
+
+const hasValidSegmentTiming = (segment: TranscriptSegment): boolean =>
+  isValidTimestamp(segment.start) && isValidTimestamp(segment.end) && segment.end >= segment.start
+
+const segmentDurationSeconds = (segment: TranscriptSegment): number | null => {
+  if (!hasValidSegmentTiming(segment)) {
+    return null
+  }
+  return segment.end - segment.start
+}
+
+const mergeDisplayTexts = (left: string, right: string): string => {
+  const merged = `${left.trim()} ${right.trim()}`
+    .replace(/\s+/g, ' ')
+    .replace(/\s+([,.;!?])/g, '$1')
+    .replace(/([(\[{])\s+/g, '$1')
+    .trim()
+
+  return merged
+}
+
+type MergeCandidate = {
+  valid: boolean
+  mergedSegment?: TranscriptSegment
+  naturalScore?: number
+  gapScore?: number
+}
+
+const evaluateUploadDisplayMergeCandidate = (
+  left: TranscriptSegment,
+  right: TranscriptSegment,
+  triggerSegment: TranscriptSegment,
+  direction: 'prev' | 'next',
+  limits: Required<UploadTranscriptDisplayGroupingOptions>,
+): MergeCandidate => {
+  const sameSpeaker = canonicalSpeakerKey(left.speaker) === canonicalSpeakerKey(right.speaker)
+  if (!sameSpeaker) {
+    return { valid: false }
+  }
+
+  const triggerText = triggerSegment.text.trim()
+  const triggerDuration = segmentDurationSeconds(triggerSegment)
+  const isVeryShort =
+    countWords(triggerText) <= limits.shortSegmentMaxWords
+    || triggerText.length <= limits.shortSegmentMaxChars
+    || (triggerDuration !== null && triggerDuration <= limits.shortSegmentMaxDurationSeconds)
+  const continuationSignal =
+    direction === 'next'
+    && !hasSentenceEndingPunctuation(triggerText)
+    && isLikelyContinuationStart(right.text)
+
+  if (!isVeryShort && !continuationSignal) {
+    return { valid: false }
+  }
+
+  const mergedText = mergeDisplayTexts(left.text, right.text)
+  if (mergedText.length > limits.mergeMaxTextChars) {
+    return { valid: false }
+  }
+
+  const pairHasTiming = hasValidSegmentTiming(left) && hasValidSegmentTiming(right)
+  let gapScore = Number.POSITIVE_INFINITY
+  if (pairHasTiming) {
+    const gapSeconds = right.start - left.end
+    if (gapSeconds > limits.mergeMaxGapSeconds) {
+      return { valid: false }
+    }
+
+    const combinedDuration = right.end - left.start
+    if (combinedDuration < 0 || combinedDuration > limits.mergeMaxDurationSeconds) {
+      return { valid: false }
+    }
+
+    gapScore = Math.abs(gapSeconds)
+  } else if (!isVeryShort) {
+    // Missing timestamps are only safe for adjacent same-speaker very-short merges.
+    return { valid: false }
+  }
+
+  const naturalScore =
+    (hasSentenceEndingPunctuation(left.text) ? 0 : 2)
+    + (isLikelyContinuationStart(right.text) ? 1 : 0)
+    + (BOUNDARY_PUNCTUATION_PATTERN.test(left.text.trim()) ? 1 : 0)
+
+  const mergedSegment: TranscriptSegment = {
+    ...left,
+    text: mergedText,
+    start: left.start,
+    end: right.end,
+    timestamp: isValidTimestamp(left.start) ? left.start : left.timestamp,
+    isFinal: Boolean(left.isFinal) && Boolean(right.isFinal),
+    confidence:
+      typeof left.confidence === 'number' && typeof right.confidence === 'number'
+        ? (left.confidence + right.confidence) / 2
+        : left.confidence ?? right.confidence,
+  }
+
+  return {
+    valid: true,
+    mergedSegment,
+    naturalScore,
+    gapScore,
+  }
+}
+
+export const groupUploadTranscriptSegmentsForDisplay = (
+  segments: TranscriptSegment[],
+  options: UploadTranscriptDisplayGroupingOptions = {},
+): TranscriptSegment[] => {
+  const limits: Required<UploadTranscriptDisplayGroupingOptions> = {
+    shortSegmentMaxWords: options.shortSegmentMaxWords ?? SHORT_SEGMENT_MAX_WORDS,
+    shortSegmentMaxChars: options.shortSegmentMaxChars ?? SHORT_SEGMENT_MAX_CHARS,
+    shortSegmentMaxDurationSeconds: options.shortSegmentMaxDurationSeconds ?? SHORT_SEGMENT_MAX_DURATION_SECONDS,
+    mergeMaxGapSeconds: options.mergeMaxGapSeconds ?? MERGE_MAX_GAP_SECONDS,
+    mergeMaxTextChars: options.mergeMaxTextChars ?? MERGE_MAX_TEXT_CHARS,
+    mergeMaxDurationSeconds: options.mergeMaxDurationSeconds ?? MERGE_MAX_DURATION_SECONDS,
+  }
+
+  if (!Array.isArray(segments) || segments.length === 0) {
+    return []
+  }
+
+  try {
+    const source: TranscriptSegment[] = segments
+      .filter((segment): segment is TranscriptSegment => Boolean(segment) && typeof segment === 'object')
+      .map((segment) => ({ ...segment }))
+
+    const grouped: TranscriptSegment[] = []
+    let index = 0
+
+    while (index < source.length) {
+      const current = source[index]
+      if (!current) {
+        index += 1
+        continue
+      }
+
+      const previous = grouped[grouped.length - 1]
+      const next = source[index + 1]
+
+      const mergeWithPrevious = previous
+        ? evaluateUploadDisplayMergeCandidate(previous, current, current, 'prev', limits)
+        : { valid: false }
+      const mergeWithNext = next
+        ? evaluateUploadDisplayMergeCandidate(current, next, current, 'next', limits)
+        : { valid: false }
+
+      if (mergeWithPrevious.valid && mergeWithNext.valid) {
+        const prevNaturalScore = mergeWithPrevious.naturalScore ?? 0
+        const nextNaturalScore = mergeWithNext.naturalScore ?? 0
+        const prevGapScore = mergeWithPrevious.gapScore ?? Number.POSITIVE_INFINITY
+        const nextGapScore = mergeWithNext.gapScore ?? Number.POSITIVE_INFINITY
+
+        const shouldMergeWithPrevious =
+          prevNaturalScore > nextNaturalScore
+          || (prevNaturalScore === nextNaturalScore && prevGapScore <= nextGapScore)
+
+        if (shouldMergeWithPrevious) {
+          grouped[grouped.length - 1] = mergeWithPrevious.mergedSegment as TranscriptSegment
+          index += 1
+          continue
+        }
+
+        grouped.push(mergeWithNext.mergedSegment as TranscriptSegment)
+        index += 2
+        continue
+      }
+
+      if (mergeWithPrevious.valid) {
+        grouped[grouped.length - 1] = mergeWithPrevious.mergedSegment as TranscriptSegment
+        index += 1
+        continue
+      }
+
+      if (mergeWithNext.valid) {
+        grouped.push(mergeWithNext.mergedSegment as TranscriptSegment)
+        index += 2
+        continue
+      }
+
+      grouped.push({ ...current })
+      index += 1
+    }
+
+    return grouped
+  } catch {
+    return segments
+      .filter((segment): segment is TranscriptSegment => Boolean(segment) && typeof segment === 'object')
+      .map((segment) => ({ ...segment }))
+  }
 }
 
 export const mergeTranscriptSegmentsForDisplay = (

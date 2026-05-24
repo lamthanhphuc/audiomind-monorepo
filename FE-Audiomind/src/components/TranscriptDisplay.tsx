@@ -1,6 +1,11 @@
 import React from 'react'
 import type { TranscriptSegment } from '../hooks/useRealtimeMeetingStream'
-import { formatTranscriptTimestamp, normalizeSpeakerBadge, parsePlainTranscriptText } from '../utils/transcript'
+import {
+  formatTranscriptTimestamp,
+  groupUploadTranscriptSegmentsForDisplay,
+  normalizeSpeakerBadge,
+  parsePlainTranscriptText,
+} from '../utils/transcript'
 import './TranscriptDisplay.css'
 
 interface TranscriptDisplayProps {
@@ -8,6 +13,7 @@ interface TranscriptDisplayProps {
   transcriptTextFallback?: string
   emptyMessage?: string
   maxHeight?: string
+  enableDisplayGrouping?: boolean
 }
 
 const getTimestampLabel = (segment: TranscriptSegment): string | null => {
@@ -30,9 +36,10 @@ export const TranscriptDisplay: React.FC<TranscriptDisplayProps> = ({
   transcriptTextFallback,
   emptyMessage = 'Không có transcript',
   maxHeight = '480px',
+  enableDisplayGrouping = false,
 }) => {
   const displaySegments = segments.length > 0
-    ? segments
+    ? (enableDisplayGrouping ? groupUploadTranscriptSegmentsForDisplay(segments) : segments)
     : transcriptTextFallback
       ? parsePlainTranscriptText(transcriptTextFallback)
       : []

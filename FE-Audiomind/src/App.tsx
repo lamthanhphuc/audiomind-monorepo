@@ -1228,6 +1228,7 @@ export default function App() {
                     transcriptTextFallback={result.transcript}
                     emptyMessage="Không có transcript"
                     maxHeight="420px"
+                    enableDisplayGrouping
                   />
                 </div>
               </div>

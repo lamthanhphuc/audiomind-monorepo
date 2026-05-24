@@ -52,6 +52,56 @@ describe('TranscriptDisplay', () => {
     expect(container.textContent).toContain('Tom, I am so tired of learning English.')
   })
 
+  it('renders grouped upload blocks when enableDisplayGrouping is true', () => {
+    const segments = normalizePersistedTranscriptSegments([
+      {
+        speaker: 'Speaker 1',
+        start_time: 280,
+        end_time: 281,
+        text: 'hoặc',
+      },
+      {
+        speaker: 'Speaker 1',
+        start_time: 285,
+        end_time: 303,
+        text: 'giảng viên tại các trường...',
+      },
+    ])
+
+    act(() => {
+      root.render(<TranscriptDisplay segments={segments} enableDisplayGrouping />)
+    })
+
+    expect(container.querySelectorAll('.transcript-display__segment')).toHaveLength(1)
+    expect(container.textContent).toContain('4:40 - 5:03')
+    expect(container.textContent).toContain('hoặc giảng viên tại các trường...')
+  })
+
+  it('keeps ungrouped behavior when enableDisplayGrouping is false', () => {
+    const segments = normalizePersistedTranscriptSegments([
+      {
+        speaker: 'Speaker 1',
+        start_time: 280,
+        end_time: 281,
+        text: 'hoặc',
+      },
+      {
+        speaker: 'Speaker 1',
+        start_time: 285,
+        end_time: 303,
+        text: 'giảng viên tại các trường...',
+      },
+    ])
+
+    act(() => {
+      root.render(<TranscriptDisplay segments={segments} enableDisplayGrouping={false} />)
+    })
+
+    expect(container.querySelectorAll('.transcript-display__segment')).toHaveLength(2)
+    expect(container.textContent).toContain('4:40 - 4:41')
+    expect(container.textContent).toContain('4:45 - 5:03')
+  })
+
   it('splits plain transcript text into speaker blocks when speaker markers are present', () => {
     act(() => {
       root.render(
