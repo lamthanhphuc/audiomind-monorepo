@@ -77,6 +77,43 @@ describe('TranscriptDisplay', () => {
     expect(container.textContent).toContain('hoặc giảng viên tại các trường...')
   })
 
+  it('renders highlighted IT terms in upload transcript segments', () => {
+    const segments = normalizePersistedTranscriptSegments([
+      {
+        speaker: 'Speaker 1',
+        start_time: 12,
+        end_time: 18,
+        text: 'WebSocket latency and JWT authentication',
+      },
+    ])
+
+    act(() => {
+      root.render(<TranscriptDisplay segments={segments} />)
+    })
+
+    const highlights = Array.from(container.querySelectorAll('.it-term-highlight')).map((node) => node.textContent)
+    expect(highlights).toEqual(['WebSocket latency', 'JWT', 'authentication'])
+    expect(container.textContent).toContain('WebSocket latency and JWT authentication')
+  })
+
+  it('renders highlighted Vietnamese IT terms in upload transcript segments', () => {
+    const segments = normalizePersistedTranscriptSegments([
+      {
+        speaker: 'Speaker 1',
+        start_time: 21,
+        end_time: 30,
+        text: 'Ngành công nghệ thông tin gồm hệ thống thông tin và kỹ thuật phần mềm.',
+      },
+    ])
+
+    act(() => {
+      root.render(<TranscriptDisplay segments={segments} />)
+    })
+
+    const highlights = Array.from(container.querySelectorAll('.it-term-highlight')).map((node) => node.textContent)
+    expect(highlights).toEqual(['công nghệ thông tin', 'hệ thống thông tin', 'kỹ thuật phần mềm'])
+  })
+
   it('keeps ungrouped behavior when enableDisplayGrouping is false', () => {
     const segments = normalizePersistedTranscriptSegments([
       {

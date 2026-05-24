@@ -1,6 +1,8 @@
-import React, { useEffect, useRef } from 'react'
+import React, { useEffect, useMemo, useRef } from 'react'
+import { DEFAULT_IT_TERMS } from '../constants/itTerms'
 import type { TranscriptSegment } from '../hooks/useRealtimeMeetingStream'
 import { formatTranscriptTimestamp, normalizeSpeaker } from '../utils/transcript'
+import { HighlightedTranscriptText } from './HighlightedTranscriptText'
 import './RealtimeTranscript.css'
 
 interface RealtimeTranscriptProps {
@@ -10,14 +12,6 @@ interface RealtimeTranscriptProps {
   highlightKeywords?: string[]
   maxHeight?: string
 }
-
-const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-const escapeHtml = (value: string): string => value
-  .replace(/&/g, '&amp;')
-  .replace(/</g, '&lt;')
-  .replace(/>/g, '&gt;')
-  .replace(/"/g, '&quot;')
-  .replace(/'/g, '&#39;')
 
 export const RealtimeTranscript: React.FC<RealtimeTranscriptProps> = ({
   segments,
@@ -54,22 +48,18 @@ export const RealtimeTranscript: React.FC<RealtimeTranscriptProps> = ({
     }
   }, [segments, isPaused])
 
-  const highlightText = (text: string, keywords: string[]) => {
-    if (keywords.length === 0) {
-      return escapeHtml(text)
+  const mergedHighlightTerms = useMemo(() => {
+    const normalizedKeywords = highlightKeywords
+      .map((keyword) => keyword.trim())
+      .filter((keyword) => keyword.length > 0)
+      .map((keyword) => ({ canonical: keyword }))
+
+    if (normalizedKeywords.length === 0) {
+      return DEFAULT_IT_TERMS
     }
 
-    let highlighted = escapeHtml(text)
-    keywords.forEach((keyword) => {
-      const safeKeyword = escapeRegExp(keyword)
-      if (!safeKeyword) {
-        return
-      }
-      const regex = new RegExp(`(${safeKeyword})`, 'gi')
-      highlighted = highlighted.replace(regex, '<span class="keyword-highlight">$1</span>')
-    })
-    return highlighted
-  }
+    return [...DEFAULT_IT_TERMS, ...normalizedKeywords]
+  }, [highlightKeywords])
 
   if (segments.length === 0) {
     return (
@@ -114,11 +104,7 @@ export const RealtimeTranscript: React.FC<RealtimeTranscriptProps> = ({
               <div className="segment-speaker">{normalizeSpeaker(segment.speaker, 'SPEAKER_1')}</div>
               <div className="segment-text">
                 {segment.text && segment.text.trim().length > 0 ? (
-                  <div
-                    dangerouslySetInnerHTML={{
-                      __html: highlightText(segment.text, highlightKeywords),
-                    }}
-                  />
+                  <HighlightedTranscriptText text={segment.text} terms={mergedHighlightTerms} />
                 ) : (
                   <div className="listening-placeholder">Đang lắng nghe...</div>
                 )}

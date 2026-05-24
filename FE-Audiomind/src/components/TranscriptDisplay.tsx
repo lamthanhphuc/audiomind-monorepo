@@ -6,6 +6,7 @@ import {
   normalizeSpeakerBadge,
   parsePlainTranscriptText,
 } from '../utils/transcript'
+import { HighlightedTranscriptText } from './HighlightedTranscriptText'
 import './TranscriptDisplay.css'
 
 interface TranscriptDisplayProps {
@@ -66,7 +67,9 @@ export const TranscriptDisplay: React.FC<TranscriptDisplayProps> = ({
                   <span className="transcript-display__timestamp">{timestampLabel}</span>
                 )}
               </div>
-              <div className="transcript-display__text">{segment.text}</div>
+              <div className="transcript-display__text">
+                <HighlightedTranscriptText text={segment.text} />
+              </div>
             </article>
           )
         })}

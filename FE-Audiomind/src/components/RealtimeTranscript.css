@@ -75,6 +75,14 @@
   word-break: break-word;
 }
 
+.it-term-highlight {
+  background: #fef3c7;
+  color: inherit;
+  border-radius: 3px;
+  padding: 0 2px;
+  font-weight: 600;
+}
+
 .keyword-highlight {
   background-color: #fef08a;
   border-radius: 2px;

@@ -64,6 +64,14 @@
   word-break: break-word;
 }
 
+.it-term-highlight {
+  background: #fef3c7;
+  color: inherit;
+  padding: 0 2px;
+  border-radius: 3px;
+  font-weight: 600;
+}
+
 .transcript-display__empty {
   margin: 0;
   color: #64748b;
