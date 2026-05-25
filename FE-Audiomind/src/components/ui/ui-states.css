@@ -1,0 +1,62 @@
+.ui-state {
+  display: grid;
+  gap: 8px;
+  padding: 14px 16px;
+  border-radius: 12px;
+  border: 1px solid #e2e8f0;
+}
+
+.ui-state__title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.ui-state__message {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.ui-state--empty {
+  background: linear-gradient(180deg, #fbfdff 0%, #f8fafc 100%);
+  color: #64748b;
+}
+
+.ui-state--empty .ui-state__title {
+  color: #475569;
+}
+
+.ui-state--loading {
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  background: #f8fafc;
+  color: #475569;
+}
+
+.ui-state__spinner {
+  width: 18px;
+  height: 18px;
+  border: 2px solid #cbd5e1;
+  border-top-color: #0f172a;
+  border-radius: 50%;
+  animation: ui-state-spin 0.8s linear infinite;
+}
+
+@keyframes ui-state-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.ui-state--error {
+  background: #fef2f2;
+  border-color: #fecaca;
+  color: #991b1b;
+}
+
+.ui-state--error .ui-state__title {
+  color: #b91c1c;
+}

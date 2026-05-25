@@ -1,0 +1,336 @@
+.production-app {
+  max-width: 1080px;
+  margin: 40px auto;
+  padding: 20px 24px 32px;
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  color: #0f172a;
+}
+
+.production-app__header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.production-app__title {
+  margin: 0;
+  font-size: 28px;
+  font-weight: 700;
+}
+
+.production-app__subtitle {
+  margin: 6px 0 0;
+  color: #475569;
+  font-size: 14px;
+}
+
+.production-app__logout {
+  padding: 8px 14px;
+  border-radius: 10px;
+  border: 1px solid #cbd5e1;
+  background: #f8fafc;
+  color: #0f172a;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.production-app__logout:hover {
+  background: #f1f5f9;
+}
+
+.view-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 24px;
+}
+
+.view-tabs__button {
+  padding: 10px 16px;
+  border-radius: 999px;
+  border: 1px solid #cbd5e1;
+  background: #f8fafc;
+  color: #0f172a;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.view-tabs__button--active {
+  background: #0f172a;
+  color: #f8fafc;
+  border-color: #0f172a;
+}
+
+.upload-panel {
+  display: grid;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.upload-panel__controls {
+  display: grid;
+  gap: 14px;
+  max-width: 420px;
+}
+
+.upload-panel__label {
+  display: grid;
+  gap: 6px;
+}
+
+.upload-panel__label-text {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #64748b;
+  font-weight: 600;
+}
+
+.upload-panel__select,
+.upload-panel__file {
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  color: #0f172a;
+  font-weight: 600;
+}
+
+.upload-panel__select:disabled,
+.upload-panel__file:disabled {
+  background: #f1f5f9;
+  cursor: not-allowed;
+}
+
+.upload-panel__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.upload-panel__submit {
+  padding: 10px 18px;
+  border-radius: 10px;
+  border: none;
+  background: #0f172a;
+  color: #f8fafc;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.upload-panel__submit:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.upload-panel__cancel {
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  color: #0f172a;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.status-line {
+  margin: 0 0 16px;
+  font-size: 14px;
+  color: #334155;
+}
+
+.result-layout {
+  display: grid;
+  gap: 20px;
+}
+
+@media (min-width: 900px) {
+  .result-layout--split {
+    grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+    align-items: start;
+  }
+}
+
+.result-card {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  border: 1px solid #dbe4f0;
+  border-radius: 16px;
+  background: #ffffff;
+}
+
+.result-card__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  font-size: 14px;
+  color: #475569;
+}
+
+.result-card__meta strong {
+  color: #0f172a;
+}
+
+.realtime-panel {
+  display: grid;
+  gap: 20px;
+}
+
+.realtime-panel__header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.realtime-panel__title {
+  margin: 0;
+  font-size: 22px;
+}
+
+.realtime-panel__status {
+  margin: 6px 0 0;
+  color: #475569;
+}
+
+.realtime-panel__settings {
+  display: grid;
+  gap: 12px;
+  margin-top: 12px;
+  max-width: 360px;
+}
+
+.realtime-panel__hint {
+  font-size: 13px;
+  color: #475569;
+}
+
+.realtime-panel__meeting-badge {
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: #e0e7ff;
+  color: #312e81;
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.realtime-panel__grid {
+  display: grid;
+  gap: 16px;
+}
+
+@media (min-width: 900px) {
+  .realtime-panel__grid {
+    grid-template-columns: minmax(0, 1fr) 280px;
+  }
+}
+
+.realtime-panel__aside {
+  display: grid;
+  gap: 12px;
+  align-content: start;
+}
+
+.status-card {
+  padding: 14px;
+  border-radius: 12px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+}
+
+.status-card__label {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #64748b;
+  font-weight: 600;
+}
+
+.status-card__value {
+  font-size: 18px;
+  font-weight: 700;
+  margin-top: 4px;
+}
+
+.status-card__detail {
+  margin-top: 6px;
+  color: #475569;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.status-card__detail--error {
+  color: #991b1b;
+}
+
+.join-meeting-panel {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border-radius: 12px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+}
+
+.join-meeting-panel input {
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid #cbd5e1;
+}
+
+.join-meeting-panel button {
+  justify-self: start;
+  padding: 8px 14px;
+  border-radius: 10px;
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.login-panel {
+  max-width: 480px;
+  margin: 40px auto;
+  padding: 16px;
+}
+
+.login-panel__form {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.login-panel input {
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid #cbd5e1;
+}
+
+.login-panel button {
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: none;
+  background: #0f172a;
+  color: #f8fafc;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.login-panel__error {
+  color: #b91c1c;
+  margin-top: 12px;
+}
+
+.warning-banner {
+  padding: 10px 14px;
+  background: #fef3c7;
+  color: #92400e;
+  border-radius: 10px;
+  border: 1px solid #fde68a;
+}
