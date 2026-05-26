@@ -13,6 +13,7 @@ from uuid import uuid4
 
 import numpy as np
 from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from loguru import logger
@@ -55,6 +56,10 @@ from app.schemas import (
 )
 from app.services.analysis_errors import (
     AnalysisConfigError,
+    AnalysisNotImplementedError,
+    AnalysisParseError,
+    AnalysisProviderError,
+    AnalysisRateLimitError,
     AnalysisUnavailableError,
 )
 from app.services.analysis_factory import build_analysis_analyzer
@@ -767,6 +772,8 @@ app.add_middleware(
     allow_headers=["Authorization", "Content-Type", "X-Request-ID", "X-Trace-ID"],
 )
 
+TRACE_HEADER_NAME = "X-Trace-Id"
+
 
 @app.middleware("http")
 async def inject_trace_headers(request: Request, call_next) -> Response:
@@ -780,12 +787,279 @@ async def inject_trace_headers(request: Request, call_next) -> Response:
     request.state.request_id = request_id
 
     response = await call_next(request)
-    response.headers["x-trace-id"] = trace_id
+    response.headers[TRACE_HEADER_NAME] = trace_id
     response.headers["x-request-id"] = request_id
     logger.bind(trace_id=trace_id, request_id=request_id).debug(
         f"request completed path={request.url.path} status={response.status_code}"
     )
     return response
+
+
+def _utc_now_iso8601() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _normalize_error_text(value: object) -> str:
+    return str(value or "").strip().lower()
+
+
+def _default_error_message(error: str) -> str:
+    defaults = {
+        "ANALYSIS_NOT_READY": "Analysis is not ready yet",
+        "TRANSCRIPT_NOT_READY": "Transcript is not ready yet",
+        "RESOURCE_NOT_FOUND": "Resource not found",
+        "UNAUTHORIZED": "Unauthorized",
+        "FORBIDDEN": "Forbidden",
+        "CONFLICT": "Request conflicts with current resource state",
+        "AI_SERVICE_UNAVAILABLE": "AI service is unavailable",
+        "DATABASE_UNAVAILABLE": "Database dependency is unavailable",
+        "SERVICE_UNAVAILABLE": "Service is unavailable",
+        "DEEPGRAM_UNAVAILABLE": "Deepgram service is unavailable",
+        "GEMINI_UNAVAILABLE": "Gemini service is unavailable",
+        "GEMINI_ANALYSIS_FAILED": "Gemini analysis failed",
+        "INVALID_LANGUAGE": "Invalid language",
+        "EMPTY_TRANSCRIPT": "Transcript is empty",
+        "VALIDATION_ERROR": "Request validation failed",
+        "INTERNAL_ERROR": "Unexpected server error",
+    }
+    return defaults.get(error, "Unexpected server error")
+
+
+def _is_sensitive_text(value: str) -> bool:
+    normalized = _normalize_error_text(value)
+    return (
+        "password" in normalized
+        or "secret" in normalized
+        or "token" in normalized
+        or "authorization" in normalized
+        or "bearer" in normalized
+        or "stack trace" in normalized
+        or "traceback" in normalized
+    )
+
+
+def _sanitize_message(message: object, fallback: str) -> str:
+    candidate = str(message or "").strip()
+    if not candidate:
+        return fallback
+    if len(candidate) > 280 or _is_sensitive_text(candidate):
+        return fallback
+    return candidate
+
+
+def _resolve_trace_id(request: Request) -> str:
+    from_header = request.headers.get("x-trace-id")
+    if from_header and from_header.strip():
+        return from_header.strip()
+
+    from_state = getattr(request.state, "trace_id", "")
+    if isinstance(from_state, str) and from_state.strip():
+        return from_state.strip()
+
+    return uuid4().hex
+
+
+def _extract_meeting_details(path: str) -> dict[str, object] | None:
+    match = re.search(r"/meeting/(\d+)/(analysis|transcript)$", path or "")
+    if not match:
+        return None
+    return {"meetingId": match.group(1)}
+
+
+def _sanitize_details(details: object) -> dict[str, object] | None:
+    if not isinstance(details, dict):
+        return None
+
+    safe: dict[str, object] = {}
+    for key, value in details.items():
+        key_text = str(key).strip()
+        if not key_text:
+            continue
+        normalized_key = key_text.lower()
+        if (
+            "password" in normalized_key
+            or "secret" in normalized_key
+            or "token" in normalized_key
+            or "authorization" in normalized_key
+            or "api_key" in normalized_key
+            or "apikey" in normalized_key
+            or "transcript" in normalized_key
+        ):
+            continue
+
+        safe_value = _sanitize_detail_value(value)
+        if safe_value is not None:
+            safe[key_text] = safe_value
+
+    return safe or None
+
+
+def _sanitize_detail_value(value: object) -> object | None:
+    if value is None:
+        return None
+
+    if isinstance(value, (bool, int, float)):
+        return value
+
+    if isinstance(value, str):
+        clean_value = value.strip()
+        if (
+            clean_value
+            and len(clean_value) <= 240
+            and not _is_sensitive_text(clean_value)
+        ):
+            return clean_value
+        return None
+
+    if isinstance(value, dict):
+        return _sanitize_details(value)
+
+    if isinstance(value, list):
+        safe_items: list[object] = []
+        for item in value[:10]:
+            safe_item = _sanitize_detail_value(item)
+            if safe_item is not None:
+                safe_items.append(safe_item)
+        return safe_items or None
+
+    clean_value = str(value).strip()
+    if clean_value and len(clean_value) <= 240 and not _is_sensitive_text(clean_value):
+        return clean_value
+    return None
+
+
+def build_error_response(
+    error: str,
+    message: str,
+    status: int,
+    request: Request,
+    details: dict[str, object] | None = None,
+    headers: dict[str, str] | None = None,
+) -> JSONResponse:
+    trace_id = _resolve_trace_id(request)
+    payload: dict[str, object] = {
+        "error": error,
+        "message": _sanitize_message(message, _default_error_message(error)),
+        "status": status,
+        "timestamp": _utc_now_iso8601(),
+        "traceId": trace_id,
+    }
+    path = str(request.url.path or "").strip()
+    if path:
+        payload["path"] = path
+
+    safe_details = _sanitize_details(details)
+    if safe_details:
+        payload["details"] = safe_details
+
+    response_headers = dict(headers or {})
+    response_headers[TRACE_HEADER_NAME] = trace_id
+    return JSONResponse(status_code=status, content=payload, headers=response_headers)
+
+
+def _map_http_exception(
+    request: Request, exc: HTTPException
+) -> tuple[str, str, dict[str, object] | None]:
+    status_code = int(exc.status_code)
+    path = str(request.url.path or "")
+    normalized_path = path.lower()
+    detail_text = exc.detail if isinstance(exc.detail, str) else ""
+    normalized_detail = _normalize_error_text(detail_text)
+    details = _sanitize_details(exc.detail)
+
+    if status_code == 404:
+        if normalized_path.endswith("/analysis"):
+            return (
+                "ANALYSIS_NOT_READY",
+                _default_error_message("ANALYSIS_NOT_READY"),
+                _extract_meeting_details(path),
+            )
+        if normalized_path.endswith("/transcript"):
+            return (
+                "TRANSCRIPT_NOT_READY",
+                _default_error_message("TRANSCRIPT_NOT_READY"),
+                _extract_meeting_details(path),
+            )
+        return (
+            "RESOURCE_NOT_FOUND",
+            _sanitize_message(
+                detail_text, _default_error_message("RESOURCE_NOT_FOUND")
+            ),
+            details,
+        )
+
+    if status_code in {400, 422}:
+        if "language" in normalized_detail:
+            return (
+                "INVALID_LANGUAGE",
+                _default_error_message("INVALID_LANGUAGE"),
+                details,
+            )
+        if "empty transcript" in normalized_detail:
+            return (
+                "EMPTY_TRANSCRIPT",
+                _default_error_message("EMPTY_TRANSCRIPT"),
+                details,
+            )
+        return (
+            "VALIDATION_ERROR",
+            _sanitize_message(detail_text, _default_error_message("VALIDATION_ERROR")),
+            details,
+        )
+
+    if status_code == 401:
+        return ("UNAUTHORIZED", _default_error_message("UNAUTHORIZED"), details)
+
+    if status_code == 403:
+        return ("FORBIDDEN", _default_error_message("FORBIDDEN"), details)
+
+    if status_code == 409:
+        return (
+            "CONFLICT",
+            _sanitize_message(detail_text, _default_error_message("CONFLICT")),
+            details,
+        )
+
+    if status_code == 503:
+        if "deepgram" in normalized_detail:
+            return (
+                "DEEPGRAM_UNAVAILABLE",
+                _default_error_message("DEEPGRAM_UNAVAILABLE"),
+                details,
+            )
+        if "gemini" in normalized_detail:
+            return (
+                "GEMINI_UNAVAILABLE",
+                _default_error_message("GEMINI_UNAVAILABLE"),
+                details,
+            )
+        if "analysis service unavailable" in normalized_detail:
+            return (
+                "AI_SERVICE_UNAVAILABLE",
+                _default_error_message("AI_SERVICE_UNAVAILABLE"),
+                details,
+            )
+        return (
+            "SERVICE_UNAVAILABLE",
+            _default_error_message("SERVICE_UNAVAILABLE"),
+            details,
+        )
+
+    if status_code == 502:
+        return (
+            "GEMINI_ANALYSIS_FAILED",
+            _default_error_message("GEMINI_ANALYSIS_FAILED"),
+            details,
+        )
+
+    if status_code >= 500:
+        return ("INTERNAL_ERROR", _default_error_message("INTERNAL_ERROR"), details)
+
+    return (
+        "SERVICE_UNAVAILABLE",
+        _default_error_message("SERVICE_UNAVAILABLE"),
+        details,
+    )
 
 
 def ensure_runtime_dirs() -> None:
@@ -1579,17 +1853,88 @@ async def readiness_check():
     return payload
 
 
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    error, message, details = _map_http_exception(request, exc)
+    headers = dict(exc.headers or {})
+    return build_error_response(
+        error=error,
+        message=message,
+        status=int(exc.status_code),
+        request=request,
+        details=details,
+        headers=headers,
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    errors: list[dict[str, object]] = []
+    for item in list(exc.errors())[:10]:
+        errors.append(
+            {
+                "loc": [str(part) for part in item.get("loc", [])],
+                "msg": str(item.get("msg", "")),
+                "type": str(item.get("type", "")),
+            }
+        )
+    return build_error_response(
+        error="VALIDATION_ERROR",
+        message=_default_error_message("VALIDATION_ERROR"),
+        status=422,
+        request=request,
+        details={"errors": errors},
+    )
+
+
+@app.exception_handler(AnalysisProviderError)
+async def analysis_provider_exception_handler(
+    request: Request, exc: AnalysisProviderError
+):
+    provider = _normalize_error_text(getattr(exc, "provider", ""))
+    if isinstance(exc, AnalysisParseError) and provider == "gemini":
+        error = "GEMINI_ANALYSIS_FAILED"
+        status_code = 502
+    elif provider == "deepgram":
+        error = "DEEPGRAM_UNAVAILABLE"
+        status_code = 503
+    elif provider == "gemini":
+        error = "GEMINI_UNAVAILABLE"
+        status_code = 503
+    elif isinstance(exc, AnalysisRateLimitError):
+        error = "SERVICE_UNAVAILABLE"
+        status_code = 503
+    elif isinstance(exc, AnalysisNotImplementedError):
+        error = "SERVICE_UNAVAILABLE"
+        status_code = 503
+    elif isinstance(exc, (AnalysisConfigError, AnalysisUnavailableError)):
+        error = "SERVICE_UNAVAILABLE"
+        status_code = 503
+    else:
+        error = "SERVICE_UNAVAILABLE"
+        status_code = 503
+
+    return build_error_response(
+        error=error,
+        message=_default_error_message(error),
+        status=status_code,
+        request=request,
+        details={"provider": provider} if provider else None,
+    )
+
+
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    trace_id = getattr(request.state, "trace_id", uuid4().hex)
-    logger.exception(f"Unhandled exception trace_id={trace_id}: {repr(exc)}")
-    return JSONResponse(
-        status_code=500,
-        content={
-            "code": "INTERNAL_SERVER_ERROR",
-            "message": "Unexpected server error",
-            "trace_id": trace_id,
-        },
+    logger.exception(
+        "Unhandled exception trace_id={}: {}",
+        _resolve_trace_id(request),
+        repr(exc),
+    )
+    return build_error_response(
+        error="INTERNAL_ERROR",
+        message=_default_error_message("INTERNAL_ERROR"),
+        status=500,
+        request=request,
     )
 
 
