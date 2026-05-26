@@ -1,7 +1,7 @@
 import { createRoot } from 'react-dom/client'
 import { act } from 'react-dom/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { useAudioRecorder } from '../hooks/useAudioRecorder'
+import { useAudioRecorder } from '../../hooks/useAudioRecorder'
 import { AudioRecorderButton } from './AudioRecorderButton'
 
 class MockMediaRecorder {

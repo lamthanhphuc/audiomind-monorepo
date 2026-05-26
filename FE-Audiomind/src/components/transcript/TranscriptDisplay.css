@@ -1,0 +1,105 @@
+.transcript-display {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  overflow: hidden;
+  box-shadow: var(--shadow-sm);
+}
+
+.transcript-display--empty {
+  min-height: 200px;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(180deg, var(--color-brand-50) 0%, var(--color-surface-raised) 100%);
+}
+
+.transcript-display__container {
+  display: grid;
+  gap: var(--space-3);
+  overflow-y: auto;
+  padding: var(--space-4);
+}
+
+.transcript-display__segment {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-raised);
+  box-shadow: var(--shadow-sm);
+  transition: border-color var(--duration-fast);
+}
+
+.transcript-display__segment:hover {
+  border-color: rgba(99, 102, 241, 0.35);
+}
+
+.transcript-display__speaker-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.transcript-display__speaker {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: var(--radius-full);
+  background: linear-gradient(135deg, var(--color-brand-700), var(--color-brand-600));
+  color: #fff;
+  font-size: var(--text-xs);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.transcript-display__timestamp {
+  color: var(--color-ink-subtle);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.transcript-display__text {
+  color: var(--color-ink);
+  line-height: 1.75;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: var(--text-sm);
+}
+
+.it-term-highlight {
+  background: var(--color-highlight);
+  color: inherit;
+  padding: 0 3px;
+  border-radius: 4px;
+  font-weight: 600;
+  box-decoration-break: clone;
+}
+
+.transcript-display__empty {
+  margin: 0;
+  color: var(--color-ink-subtle);
+  font-style: italic;
+}
+
+.transcript-display__container::-webkit-scrollbar {
+  width: 6px;
+}
+
+.transcript-display__container::-webkit-scrollbar-track {
+  background: var(--color-surface-sunken);
+}
+
+.transcript-display__container::-webkit-scrollbar-thumb {
+  background: var(--color-border-strong);
+  border-radius: var(--radius-full);
+}
+
+.transcript-display__container::-webkit-scrollbar-thumb:hover {
+  background: var(--color-ink-subtle);
+}

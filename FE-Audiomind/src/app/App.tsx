@@ -1,8 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { AudioRecorderButton } from './components/AudioRecorderButton'
-import { RealtimeTranscript } from './components/RealtimeTranscript'
-import { TranscriptDisplay } from './components/TranscriptDisplay'
-import { useAudioRecorder } from './hooks/useAudioRecorder'
+import { AnalysisPanel } from '../components/analysis/AnalysisPanel'
+import { AudioRecorderButton } from '../components/realtime/AudioRecorderButton'
+import { RealtimeTranscript } from '../components/transcript/RealtimeTranscript'
+import { TranscriptDisplay } from '../components/transcript/TranscriptDisplay'
+import { ErrorState } from '../components/ui/ErrorState'
+import '../styles/app.css'
+import { useAudioRecorder } from '../hooks/useAudioRecorder'
 import {
   DEFAULT_REALTIME_LANGUAGE,
   DEFAULT_REALTIME_SPEAKER_MODE,
@@ -13,14 +16,14 @@ import {
   type RealtimeSpeakerMode,
   type TranscriptSegment,
   useRealtimeMeetingStream,
-} from './hooks/useRealtimeMeetingStream'
-import { ApiError, getAnalysis, getProcessingStatus, getTranscript, startProcessingByPath, uploadToMeetingApi } from './services/api'
-import { clearAccessToken, getAccessToken, getCurrentUserId, login, setAccessToken } from './services/auth'
-import { REALTIME_WS_ENABLED } from './services/config'
-import type { AiAnalysis } from './types'
-import { mergeTranscriptSegments, mergeTranscriptSegmentsForDisplay, normalizePersistedTranscriptSegments } from './utils/transcript'
+} from '../hooks/useRealtimeMeetingStream'
+import { ApiError, getAnalysis, getProcessingStatus, getTranscript, startProcessingByPath, uploadToMeetingApi } from '../services/api'
+import { clearAccessToken, getAccessToken, getCurrentUserId, login, setAccessToken } from '../services/auth'
+import { REALTIME_WS_ENABLED } from '../services/config'
+import type { AiAnalysis } from '../types'
+import { mergeTranscriptSegments, mergeTranscriptSegmentsForDisplay, normalizePersistedTranscriptSegments } from '../utils/transcript'
 
-export { DEFAULT_REALTIME_LANGUAGE } from './hooks/useRealtimeMeetingStream'
+export { DEFAULT_REALTIME_LANGUAGE } from '../hooks/useRealtimeMeetingStream'
 
 type ResultView = {
   meetingId: number
@@ -61,6 +64,26 @@ export const isRealtimeLanguageSelectorDisabled = (lifecycleState: LiveLifecycle
 
 export const isRealtimeSpeakerModeSelectorDisabled = (lifecycleState: LiveLifecycleState): boolean => {
   return isRealtimeLanguageSelectorDisabled(lifecycleState)
+}
+
+export const getStatusBadgeClass = (statusText: string): string => {
+  const normalized = statusText.toLowerCase()
+  if (normalized.includes('completed') || normalized.includes('hoàn tất')) {
+    return 'status-badge status-badge--completed'
+  }
+  if (normalized.includes('failed') || normalized.includes('lỗi')) {
+    return 'status-badge status-badge--failed'
+  }
+  if (
+    normalized.includes('process')
+    || normalized.includes('upload')
+    || normalized.includes('queue')
+    || normalized.includes('running')
+    || normalized.includes('đang')
+  ) {
+    return 'status-badge status-badge--processing'
+  }
+  return 'status-badge status-badge--idle'
 }
 
 export const getRealtimeConnectionView = (
@@ -766,16 +789,6 @@ export default function App() {
   }
 
   const analysis = result?.analysis
-  const summaryText = useMemo(() => analysis?.summary || '(empty)', [analysis])
-  const analysisKeywords = analysis?.keywords ?? []
-  const analysisTechnicalTerms = analysis?.technicalTerms ?? []
-  const analysisPainPoints = analysis?.painPoints ?? []
-  const analysisActionItems = analysis?.actionItems ?? []
-  const liveAnalysisSummaryText = useMemo(() => liveAnalysis?.summary || '(đang chờ phân tích)', [liveAnalysis])
-  const liveAnalysisKeywords = liveAnalysis?.keywords ?? []
-  const liveAnalysisTechnicalTerms = liveAnalysis?.technicalTerms ?? []
-  const liveAnalysisPainPoints = liveAnalysis?.painPoints ?? []
-  const liveAnalysisActionItems = liveAnalysis?.actionItems ?? []
   const liveTranscriptKeywords = useMemo(() => realtimeStream.keywords.map((keyword) => keyword.keyword), [realtimeStream.keywords])
   const liveModeActive = isRealtimeEnabled && viewMode === 'realtime' && realtimeUserId !== null
   const liveTranscriptSegments = hydratedLiveTranscriptSegments ?? realtimeStream.transcripts
@@ -1229,10 +1242,14 @@ export default function App() {
 
   if (!isAuthenticated) {
     return (
-      <main style={{ maxWidth: 480, margin: '40px auto', fontFamily: 'Segoe UI, sans-serif', padding: 16 }}>
-        <h1>AudioMind Login</h1>
-        <p>Đăng nhập để sử dụng API thật.</p>
-        <div style={{ display: 'grid', gap: 12, marginTop: 16 }}>
+      <div className="login-shell">
+      <main className="login-panel">
+        <div className="login-panel__brand">
+          <span className="login-panel__logo" aria-hidden="true">🎙</span>
+          <h1>AudioMind</h1>
+        </div>
+        <p>Đăng nhập để upload audio, ghi âm realtime và nhận phân tích AI.</p>
+        <div className="login-panel__form">
           <input
             type="text"
             placeholder="Username"
@@ -1249,46 +1266,40 @@ export default function App() {
           />
           <button type="button" data-testid="e2e-login-submit" onClick={handleLogin}>Đăng nhập</button>
         </div>
-        {authError && <p style={{ color: 'crimson', marginTop: 12 }}>{authError}</p>}
+        {authError && <p className="login-panel__error">{authError}</p>}
       </main>
+      </div>
     )
   }
 
   return (
-    <main style={{ maxWidth: 920, margin: '40px auto', fontFamily: 'Segoe UI, sans-serif', padding: 16 }}>
-      <h1>AudioMind Production Flow</h1>
-      <p>Flow: upload - processing - transcript - summary</p>
-      <button type="button" onClick={handleLogout} style={{ marginBottom: 16 }}>
-        Đăng xuất
-      </button>
+    <main className="production-app">
+      <header className="production-app__header">
+        <div className="production-app__brand">
+          <span className="production-app__logo" aria-hidden="true">🎙</span>
+          <div>
+            <h1 className="production-app__title">AudioMind</h1>
+            <p className="production-app__subtitle">Upload file hoặc ghi âm trực tiếp — transcript và phân tích AI</p>
+          </div>
+        </div>
+        <button type="button" className="production-app__logout" onClick={handleLogout}>
+          Đăng xuất
+        </button>
+      </header>
 
-      <div style={{ display: 'flex', gap: 8, marginBottom: 20 }}>
+      <div className="view-tabs">
         <button
           type="button"
+          className={`view-tabs__button ${viewMode === 'batch' ? 'view-tabs__button--active' : ''}`}
           onClick={() => setViewMode('batch')}
-          style={{
-            padding: '10px 14px',
-            borderRadius: 999,
-            border: '1px solid #cbd5e1',
-            background: viewMode === 'batch' ? '#0f172a' : '#f8fafc',
-            color: viewMode === 'batch' ? '#f8fafc' : '#0f172a',
-            fontWeight: 600,
-          }}
         >
           Upload File
         </button>
         {isRealtimeEnabled && (
           <button
             type="button"
+            className={`view-tabs__button ${viewMode === 'realtime' ? 'view-tabs__button--active' : ''}`}
             onClick={() => setViewMode('realtime')}
-            style={{
-              padding: '10px 14px',
-              borderRadius: 999,
-              border: '1px solid #cbd5e1',
-              background: viewMode === 'realtime' ? '#0f172a' : '#f8fafc',
-              color: viewMode === 'realtime' ? '#f8fafc' : '#0f172a',
-              fontWeight: 600,
-            }}
           >
             Ghi âm Trực tiếp
           </button>
@@ -1297,190 +1308,124 @@ export default function App() {
 
       {viewMode === 'batch' && (
         <>
-          <div style={{ display: 'grid', gap: 12, marginBottom: 16 }}>
-            <label style={{ display: 'grid', gap: 6, maxWidth: 360 }}>
-              <span style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.08em', color: '#64748b' }}>
-                Upload language
-              </span>
-              <select
-                value={selectedUploadLanguage}
-                onChange={(event) => {
-                  const nextLanguage = normalizeRealtimeLanguage(event.target.value)
-                  setSelectedUploadLanguage(nextLanguage)
-                  console.info(`FE_UPLOAD_LANGUAGE_SELECTED language=${nextLanguage}`)
-                }}
-                disabled={busy}
-                data-testid="e2e-upload-language-select"
-                style={{
-                  padding: '10px 12px',
-                  borderRadius: 10,
-                  border: '1px solid #cbd5e1',
-                  background: busy ? '#f1f5f9' : '#ffffff',
-                  color: '#0f172a',
-                  fontWeight: 600,
-                }}
-              >
-                {UPLOAD_LANGUAGE_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <input
-              type="file"
-              accept="audio/*"
-              data-testid="e2e-upload-input"
-              onChange={(event) => setSelectedFile(event.target.files?.[0] || null)}
-              disabled={busy}
-            />
-            <button data-testid="e2e-process-submit" onClick={handleProcess} disabled={busy || !selectedFile}>
-              Phân tích file
-            </button>
-            {busy && (
-              <button onClick={handleCancel}>
-                Hủy xử lý
-              </button>
-            )}
-          </div>
-
-          <p data-testid="e2e-status"><strong>Status:</strong> {status}</p>
-
-          {errorMessage && (
-            <div className="error-banner" style={{
-              padding: '12px 16px',
-              background: '#fee2e2',
-              color: '#991b1b',
-              borderRadius: 8,
-              marginTop: 12,
-              marginBottom: 12,
-            }}>
-              {errorMessage}
+          <section className="upload-panel">
+            <div className="upload-card">
+              <h2 className="upload-card__title">Upload & phân tích</h2>
+              <p className="upload-card__desc">Chọn ngôn ngữ, tải file audio và nhận transcript cùng tóm tắt Gemini.</p>
+            <div className="upload-panel__controls">
+              <label className="upload-panel__label">
+                <span className="upload-panel__label-text">Ngôn ngữ</span>
+                <select
+                  className="upload-panel__select"
+                  value={selectedUploadLanguage}
+                  onChange={(event) => {
+                    const nextLanguage = normalizeRealtimeLanguage(event.target.value)
+                    setSelectedUploadLanguage(nextLanguage)
+                    console.info(`FE_UPLOAD_LANGUAGE_SELECTED language=${nextLanguage}`)
+                  }}
+                  disabled={busy}
+                  data-testid="e2e-upload-language-select"
+                >
+                  {UPLOAD_LANGUAGE_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="file-dropzone">
+                <span className="file-dropzone__icon" aria-hidden="true">📁</span>
+                <span className="file-dropzone__title">Chọn file audio</span>
+                <span className="file-dropzone__hint">MP3, WAV, M4A — tối đa theo giới hạn server</span>
+                {selectedFile && (
+                  <span className="file-dropzone__name">{selectedFile.name}</span>
+                )}
+                <input
+                  className="file-dropzone__input"
+                  type="file"
+                  accept="audio/*"
+                  data-testid="e2e-upload-input"
+                  onChange={(event) => setSelectedFile(event.target.files?.[0] || null)}
+                  disabled={busy}
+                />
+              </label>
+              <div className="upload-panel__actions">
+                <button
+                  type="button"
+                  className="upload-panel__submit"
+                  data-testid="e2e-process-submit"
+                  onClick={handleProcess}
+                  disabled={busy || !selectedFile}
+                >
+                  Phân tích file
+                </button>
+                {busy && (
+                  <button type="button" className="upload-panel__cancel" onClick={handleCancel}>
+                    Hủy xử lý
+                  </button>
+                )}
+              </div>
             </div>
-          )}
+            </div>
+          </section>
+
+          <p className="status-line" data-testid="e2e-status">
+            <span>Trạng thái</span>
+            <span className={getStatusBadgeClass(status)}>{status}</span>
+          </p>
+
+          {errorMessage && <ErrorState message={errorMessage} title="Lỗi xử lý" />}
 
           {result && (
-            <section style={{ border: '1px solid #ddd', borderRadius: 8, padding: 16, display: 'grid', gap: 16 }}>
-              <p><strong>ID:</strong> {result.meetingId}</p>
-              <p><strong>Status:</strong> {result.status}</p>
-              <div data-testid="e2e-transcript">
-                <strong>Transcript:</strong>
-                <div style={{ marginTop: 12 }}>
-                  <TranscriptDisplay
-                    segments={result.transcriptSegments}
-                    transcriptTextFallback={result.transcript}
-                    emptyMessage="Không có transcript"
-                    maxHeight="420px"
-                    enableDisplayGrouping
-                  />
-                </div>
-              </div>
-              <div data-testid="e2e-analysis" style={{ display: 'grid', gap: 12 }}>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
-                  <strong>Summary:</strong>
-                  <span data-testid="e2e-summary">{summaryText}</span>
-                  <span style={{ padding: '4px 10px', borderRadius: 999, background: '#eef2ff', color: '#3730a3', fontSize: 12, fontWeight: 700 }}>
-                    {analysis?.domainMode ?? 'it'}
-                  </span>
-                </div>
-
-                <div>
-                  <strong>Keywords:</strong>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
-                    {analysisKeywords.length
-                      ? analysisKeywords.map((keyword) => (
-                          <span
-                            key={keyword}
-                            style={{ padding: '4px 10px', borderRadius: 999, background: '#f1f5f9', color: '#0f172a', fontSize: 12, fontWeight: 600 }}
-                          >
-                            {keyword}
-                          </span>
-                        ))
-                      : <span style={{ color: '#64748b' }}>Không có từ khóa</span>}
+            <div className="result-layout result-layout--split">
+              <section className="result-card">
+                <div className="result-card__header">
+                  <h3 className="result-card__heading">Transcript</h3>
+                  <div className="result-card__meta">
+                    <span className="meta-pill">ID <strong>{result.meetingId}</strong></span>
+                    <span className="meta-pill">Status <strong>{result.status}</strong></span>
                   </div>
                 </div>
-
-                <div>
-                  <strong>Technical terms:</strong>
-                  <div style={{ display: 'grid', gap: 8, marginTop: 8 }}>
-                    {analysisTechnicalTerms.length
-                      ? analysisTechnicalTerms.map((item) => (
-                          <article key={item.term} style={{ border: '1px solid #e2e8f0', borderRadius: 10, padding: 12, background: '#fafafa' }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center' }}>
-                              <strong>{item.term}</strong>
-                              <span style={{ fontSize: 12, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-                                {item.category || 'uncategorized'}
-                              </span>
-                            </div>
-                            <p style={{ margin: '6px 0 0', color: '#334155' }}>{item.meaning || 'Chưa có mô tả'}</p>
-                          </article>
-                        ))
-                      : <span style={{ color: '#64748b' }}>Không có thuật ngữ kỹ thuật</span>}
-                  </div>
+                <div className="result-card__transcript" data-testid="e2e-transcript">
+                    <TranscriptDisplay
+                      segments={result.transcriptSegments}
+                      transcriptTextFallback={result.transcript}
+                      emptyMessage="Không có transcript"
+                      maxHeight="420px"
+                      enableDisplayGrouping
+                    />
                 </div>
-
-                <div>
-                  <strong>Pain points:</strong>
-                  <div style={{ display: 'grid', gap: 8, marginTop: 8 }}>
-                    {analysisPainPoints.length
-                      ? analysisPainPoints.map((item) => (
-                          <article key={`${item.title}-${item.severity}`} style={{ border: '1px solid #e2e8f0', borderRadius: 10, padding: 12, background: '#fff7ed' }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center' }}>
-                              <strong>{item.title}</strong>
-                              <span style={{ padding: '2px 8px', borderRadius: 999, background: item.severity === 'high' ? '#fee2e2' : item.severity === 'medium' ? '#fef3c7' : '#dcfce7', color: '#0f172a', fontSize: 12, fontWeight: 700 }}>
-                                {item.severity}
-                              </span>
-                            </div>
-                            <p style={{ margin: '6px 0 0', color: '#334155' }}>{item.evidence || 'Không có dẫn chứng'}</p>
-                          </article>
-                        ))
-                      : <span style={{ color: '#64748b' }}>Không có pain points</span>}
-                  </div>
-                </div>
-
-                <div>
-                  <strong>Action items:</strong>
-                  {analysisActionItems.length ? (
-                    <ul style={{ margin: '8px 0 0', paddingLeft: 20 }}>
-                      {analysisActionItems.map((item) => (
-                        <li key={item}>{item}</li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <p style={{ margin: '8px 0 0', color: '#64748b' }}>Không có đầu việc</p>
-                  )}
-                </div>
-              </div>
-            </section>
+              </section>
+              <AnalysisPanel
+                title="Phân tích upload"
+                analysis={analysis ?? null}
+                status={analysis ? 'ready' : 'empty'}
+                testId="e2e-analysis"
+                summaryTestId="e2e-summary"
+                summaryFallback="(empty)"
+              />
+            </div>
           )}
         </>
       )}
 
       {liveModeActive && (
-        <section style={{ display: 'grid', gap: 16 }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 }}>
+        <section className="realtime-panel">
+          <div className="realtime-hero">
+          <div className="realtime-panel__header">
             <div>
-              <h2 style={{ margin: 0 }}>Ghi âm trực tiếp</h2>
-              <p style={{ margin: '6px 0 0', color: '#475569' }}>
+              <h2 className="realtime-panel__title">Ghi âm trực tiếp</h2>
+              <p className="realtime-panel__status">
                 {liveStatusMessage || connectionView.detail || 'Sẵn sàng tạo meeting và bắt đầu ghi âm'}
               </p>
-              <div style={{ display: 'grid', gap: 6, marginTop: 12, maxWidth: 360 }}>
-                <label style={{ display: 'grid', gap: 6 }}>
-                  <span style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.08em', color: '#64748b' }}>
-                    Language mode
-                  </span>
+              <div className="realtime-panel__settings">
+                <label className="upload-panel__label">
+                  <span className="upload-panel__label-text">Language mode</span>
                   <select
+                    className="upload-panel__select"
                     value={selectedRealtimeLanguage}
                     onChange={(event) => setSelectedRealtimeLanguage(normalizeRealtimeLanguage(event.target.value))}
                     disabled={isRealtimeLanguageSelectorDisabled(liveLifecycleState)}
-                    style={{
-                      padding: '10px 12px',
-                      borderRadius: 10,
-                      border: '1px solid #cbd5e1',
-                      background: isRealtimeLanguageSelectorDisabled(liveLifecycleState) ? '#f1f5f9' : '#ffffff',
-                      color: '#0f172a',
-                      fontWeight: 600,
-                    }}
                   >
                     {REALTIME_LANGUAGE_OPTIONS.map((option) => (
                       <option key={option.value} value={option.value}>
@@ -1489,25 +1434,14 @@ export default function App() {
                     ))}
                   </select>
                 </label>
-                <div style={{ fontSize: 13, color: '#475569' }}>
-                  Chọn Việt + Anh nếu audio có thuật ngữ tiếng Anh.
-                </div>
-                <label style={{ display: 'grid', gap: 6 }}>
-                  <span style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.08em', color: '#64748b' }}>
-                    Speaker mode
-                  </span>
+                <p className="realtime-panel__hint">Chọn Việt + Anh nếu audio có thuật ngữ tiếng Anh.</p>
+                <label className="upload-panel__label">
+                  <span className="upload-panel__label-text">Speaker mode</span>
                   <select
+                    className="upload-panel__select"
                     value={selectedRealtimeSpeakerMode}
                     onChange={(event) => setSelectedRealtimeSpeakerMode(normalizeRealtimeSpeakerMode(event.target.value))}
                     disabled={isRealtimeSpeakerModeSelectorDisabled(liveLifecycleState)}
-                    style={{
-                      padding: '10px 12px',
-                      borderRadius: 10,
-                      border: '1px solid #cbd5e1',
-                      background: isRealtimeSpeakerModeSelectorDisabled(liveLifecycleState) ? '#f1f5f9' : '#ffffff',
-                      color: '#0f172a',
-                      fontWeight: 600,
-                    }}
                   >
                     {REALTIME_SPEAKER_MODE_OPTIONS.map((option) => (
                       <option key={option.value} value={option.value}>
@@ -1516,18 +1450,15 @@ export default function App() {
                     ))}
                   </select>
                 </label>
-                <div style={{ fontSize: 13, color: '#475569' }}>
-                  Single speaker disables diarization. Multiple speakers turns it on.
-                </div>
+                <p className="realtime-panel__hint">Single speaker disables diarization. Multiple speakers turns it on.</p>
               </div>
             </div>
             {liveMeetingId && (
-              <span style={{ padding: '6px 10px', borderRadius: 999, background: '#e0e7ff', color: '#312e81' }}>
-                Meeting #{liveMeetingId}
-              </span>
+              <span className="realtime-panel__meeting-badge">Meeting #{liveMeetingId}</span>
             )}
           </div>
 
+          <div className="realtime-panel__recorder-wrap">
           <AudioRecorderButton
             recorder={audioRecorder}
             lifecycleState={liveLifecycleState}
@@ -1535,30 +1466,14 @@ export default function App() {
             onChunkReady={handleLiveChunkReady}
             onRecordingComplete={handleLiveRecordingComplete}
           />
+          </div>
+          </div>
 
-          {liveError && (
-            <div className="error-banner" style={{
-              padding: '12px 16px',
-              background: '#fee2e2',
-              color: '#991b1b',
-              borderRadius: 8,
-            }}>
-              {liveError}
-            </div>
-          )}
-          {livePartialWarning && (
-            <div style={{
-              padding: '10px 14px',
-              background: '#fef3c7',
-              color: '#92400e',
-              borderRadius: 8,
-            }}>
-              {livePartialWarning}
-            </div>
-          )}
+          {liveError && <ErrorState message={liveError} title="Lỗi realtime" />}
+          {livePartialWarning && <div className="warning-banner">{livePartialWarning}</div>}
 
           {showJoinOtherMeeting && (
-            <div style={{ display: 'grid', gap: 8, padding: 12, borderRadius: 8, background: '#f8fafc' }}>
+            <div className="join-meeting-panel">
               <strong>Tham gia Meeting khác</strong>
               <input
                 type="number"
@@ -1570,150 +1485,64 @@ export default function App() {
                 type="button"
                 onClick={handleJoinMeeting}
                 disabled={!joinMeetingIdInput.trim()}
-                style={{ justifySelf: 'start' }}
               >
                 Join Meeting
               </button>
             </div>
           )}
 
-          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 280px', gap: 16 }}>
+          <div className="realtime-panel__grid">
             <RealtimeTranscript
               segments={liveTranscriptSegmentsForDisplay}
               highlightKeywords={liveTranscriptKeywords}
               maxHeight="620px"
             />
 
-            <aside style={{ display: 'grid', gap: 12, alignContent: 'start' }}>
-              <div style={{ padding: 12, borderRadius: 12, background: '#f8fafc', border: '1px solid #e2e8f0' }}>
-                <div style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.08em', color: '#64748b' }}>
-                  Connection
-                </div>
-                <div style={{ fontSize: 18, fontWeight: 700, marginTop: 4 }}>
-                  {connectionView.title}
-                </div>
-                <div style={{ marginTop: 6, color: '#475569' }}>
-                  {connectionView.detail}
-                </div>
+            <aside className="realtime-panel__aside">
+              <div className="status-card status-card--live">
+                <div className="status-card__label">Connection</div>
+                <div className="status-card__value">{connectionView.title}</div>
+                <div className="status-card__detail">{connectionView.detail}</div>
                 {connectionView.closeReason && (
-                  <div style={{ marginTop: 6, color: connectionView.closeReasonIsError ? '#991b1b' : '#475569', fontSize: 13 }}>
+                  <div className={`status-card__detail ${connectionView.closeReasonIsError ? 'status-card__detail--error' : ''}`}>
                     Close reason: {connectionView.closeReason}
                   </div>
                 )}
               </div>
 
-              <div style={{ padding: 12, borderRadius: 12, background: '#f8fafc', border: '1px solid #e2e8f0' }}>
-                <div style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.08em', color: '#64748b' }}>
-                  Keywords
-                </div>
-                <div style={{ fontSize: 18, fontWeight: 700, marginTop: 4 }}>
-                  {realtimeStream.keywords.length}
-                </div>
+              <div className="status-card">
+                <div className="status-card__label">Keywords</div>
+                <div className="status-card__value">{realtimeStream.keywords.length}</div>
               </div>
 
-              <div style={{ padding: 12, borderRadius: 12, background: '#f8fafc', border: '1px solid #e2e8f0' }}>
-                <div style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.08em', color: '#64748b' }}>
-                  User
-                </div>
-                <div style={{ fontSize: 18, fontWeight: 700, marginTop: 4 }}>
-                  {currentUserId || 'Unknown'}
-                </div>
+              <div className="status-card">
+                <div className="status-card__label">User</div>
+                <div className="status-card__value">{currentUserId || 'Unknown'}</div>
               </div>
             </aside>
           </div>
 
           {(liveLifecycleState === 'stopped' || liveAnalysisStatus !== 'idle') && (
-            <section data-testid="e2e-live-analysis" style={{ border: '1px solid #ddd', borderRadius: 8, padding: 16, display: 'grid', gap: 12 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center' }}>
-                <strong>Realtime Analysis</strong>
-                <span style={{ padding: '4px 10px', borderRadius: 999, background: '#eef2ff', color: '#3730a3', fontSize: 12, fontWeight: 700 }}>
-                  {liveAnalysis?.domainMode ?? 'it'}
-                </span>
-              </div>
-
-              {liveAnalysisStatus === 'polling' && (
-                <p style={{ margin: 0, color: '#475569' }}>Đang phân tích transcript sau khi dừng ghi âm...</p>
-              )}
-              {liveAnalysisError && (
-                <p style={{ margin: 0, color: '#b45309' }}>{liveAnalysisError}</p>
-              )}
-
-              {liveAnalysis && (
-                <>
-                  <div style={{ display: 'grid', gap: 6 }}>
-                    <strong>Summary:</strong>
-                    <span>{liveAnalysisSummaryText}</span>
-                  </div>
-
-                  <div>
-                    <strong>Keywords:</strong>
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
-                      {liveAnalysisKeywords.length
-                        ? liveAnalysisKeywords.map((keyword) => (
-                            <span
-                              key={keyword}
-                              style={{ padding: '4px 10px', borderRadius: 999, background: '#f1f5f9', color: '#0f172a', fontSize: 12, fontWeight: 600 }}
-                            >
-                              {keyword}
-                            </span>
-                          ))
-                        : <span style={{ color: '#64748b' }}>Không có từ khóa</span>}
-                    </div>
-                  </div>
-
-                  <div>
-                    <strong>Technical terms:</strong>
-                    <div style={{ display: 'grid', gap: 8, marginTop: 8 }}>
-                      {liveAnalysisTechnicalTerms.length
-                        ? liveAnalysisTechnicalTerms.map((item) => (
-                            <article key={item.term} style={{ border: '1px solid #e2e8f0', borderRadius: 10, padding: 12, background: '#fafafa' }}>
-                              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center' }}>
-                                <strong>{item.term}</strong>
-                                <span style={{ fontSize: 12, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-                                  {item.category || 'uncategorized'}
-                                </span>
-                              </div>
-                              <p style={{ margin: '6px 0 0', color: '#334155' }}>{item.meaning || 'Chưa có mô tả'}</p>
-                            </article>
-                          ))
-                        : <span style={{ color: '#64748b' }}>Không có thuật ngữ kỹ thuật</span>}
-                    </div>
-                  </div>
-
-                  <div>
-                    <strong>Pain points:</strong>
-                    <div style={{ display: 'grid', gap: 8, marginTop: 8 }}>
-                      {liveAnalysisPainPoints.length
-                        ? liveAnalysisPainPoints.map((item) => (
-                            <article key={`${item.title}-${item.severity}`} style={{ border: '1px solid #e2e8f0', borderRadius: 10, padding: 12, background: '#fff7ed' }}>
-                              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center' }}>
-                                <strong>{item.title}</strong>
-                                <span style={{ padding: '2px 8px', borderRadius: 999, background: item.severity === 'high' ? '#fee2e2' : item.severity === 'medium' ? '#fef3c7' : '#dcfce7', color: '#0f172a', fontSize: 12, fontWeight: 700 }}>
-                                  {item.severity}
-                                </span>
-                              </div>
-                              <p style={{ margin: '6px 0 0', color: '#334155' }}>{item.evidence || 'Không có dẫn chứng'}</p>
-                            </article>
-                          ))
-                        : <span style={{ color: '#64748b' }}>Không có pain points</span>}
-                    </div>
-                  </div>
-
-                  <div>
-                    <strong>Action items:</strong>
-                    {liveAnalysisActionItems.length ? (
-                      <ul style={{ margin: '8px 0 0', paddingLeft: 20 }}>
-                        {liveAnalysisActionItems.map((item) => (
-                          <li key={item}>{item}</li>
-                        ))}
-                      </ul>
-                    ) : (
-                      <p style={{ margin: '8px 0 0', color: '#64748b' }}>Không có đầu việc</p>
-                    )}
-                  </div>
-                </>
-              )}
-            </section>
+            <div className="realtime-analysis-section">
+            <AnalysisPanel
+              title="Phân tích realtime"
+              analysis={liveAnalysis}
+              status={
+                liveAnalysisStatus === 'polling'
+                  ? 'loading'
+                  : liveAnalysis
+                    ? 'ready'
+                    : liveAnalysisError
+                      ? 'empty'
+                      : 'empty'
+              }
+              loadingMessage="Đang phân tích transcript sau khi dừng ghi âm..."
+              errorMessage={liveAnalysisError}
+              emptyMessage="Chưa có kết quả phân tích realtime"
+              summaryFallback="(đang chờ phân tích)"
+              testId="e2e-live-analysis"
+            />
+            </div>
           )}
         </section>
       )}

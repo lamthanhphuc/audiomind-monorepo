@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
-import { normalizeAnalysisResponse, type AiAnalysis, type TranscriptResponse } from '../types'
-import AiAssistant from './AiAssistant'
+import { normalizeAnalysisResponse, type AiAnalysis, type TranscriptResponse } from '../../types'
+import AiAssistant from '../dashboard/AiAssistant'
 
 type ProcessedMeetingItem = {
   id: number

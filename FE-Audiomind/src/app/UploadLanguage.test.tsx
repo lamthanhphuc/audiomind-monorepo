@@ -1,7 +1,7 @@
 import { createRoot } from 'react-dom/client'
 import { act } from 'react-dom/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import App from '../App'
+import App from './App'
 import * as api from '../services/api'
 
 describe('Upload language selector (integration)', () => {

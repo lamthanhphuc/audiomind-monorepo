@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { DEFAULT_REALTIME_LANGUAGE, REALTIME_LANGUAGE_OPTIONS, getRealtimeConnectionView, hydrateLiveTranscriptSegments, isCurrentLiveRecordingSession, isRealtimeLanguageSelectorDisabled, mergeHydratedTranscriptWithLive, pollRealtimeAnalysisAfterStop } from './App'
-import { ApiError } from './services/api'
-import { mergeTranscriptSegmentsForDisplay, normalizePersistedTranscriptSegments, upsertTranscriptSegment } from './utils/transcript'
+import { DEFAULT_REALTIME_LANGUAGE, REALTIME_LANGUAGE_OPTIONS, getRealtimeConnectionView, getStatusBadgeClass, hydrateLiveTranscriptSegments, isCurrentLiveRecordingSession, isRealtimeLanguageSelectorDisabled, mergeHydratedTranscriptWithLive, pollRealtimeAnalysisAfterStop } from './App'
+import { ApiError } from '../services/api'
+import { mergeTranscriptSegmentsForDisplay, normalizePersistedTranscriptSegments, upsertTranscriptSegment } from '../utils/transcript'
 
 describe('hydrateLiveTranscriptSegments', () => {
   afterEach(() => {
@@ -585,5 +585,14 @@ describe('realtime language selector helpers', () => {
     expect(isRealtimeLanguageSelectorDisabled('recording')).toBe(true)
     expect(isRealtimeLanguageSelectorDisabled('stopping')).toBe(true)
     expect(isRealtimeLanguageSelectorDisabled('stopped')).toBe(false)
+  })
+})
+
+describe('getStatusBadgeClass', () => {
+  it('maps processing and completed statuses to badge variants', () => {
+    expect(getStatusBadgeClass('completed')).toContain('completed')
+    expect(getStatusBadgeClass('processing')).toContain('processing')
+    expect(getStatusBadgeClass('failed')).toContain('failed')
+    expect(getStatusBadgeClass('idle')).toContain('idle')
   })
 })

@@ -1,0 +1,121 @@
+.audio-recorder-widget {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-6);
+  border-radius: var(--radius-xl);
+  background: linear-gradient(180deg, var(--color-brand-50) 0%, var(--color-surface) 100%);
+  border: 1px solid var(--color-border);
+  box-shadow: var(--shadow-md);
+  max-width: 360px;
+  margin: 0 auto;
+}
+
+.audio-recorder-button {
+  width: 5.75rem;
+  height: 5.75rem;
+  border: none;
+  border-radius: var(--radius-full);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: #fff;
+  background: linear-gradient(135deg, var(--color-brand-600), #7c3aed);
+  box-shadow: var(--shadow-glow);
+  transition: transform var(--duration-normal) var(--ease-out),
+    box-shadow var(--duration-normal) var(--ease-out);
+}
+
+.audio-recorder-button:hover:not(:disabled) {
+  transform: translateY(-2px) scale(1.02);
+}
+
+.audio-recorder-button:disabled {
+  cursor: wait;
+  opacity: 0.75;
+}
+
+.audio-recorder-button--recording {
+  background: linear-gradient(135deg, #e11d48, #f43f5e);
+  box-shadow: 0 0 0 1px rgba(244, 63, 94, 0.3), 0 16px 40px rgba(225, 29, 72, 0.35);
+  animation: audioRecorderPulse 1.2s ease-in-out infinite;
+}
+
+.audio-recorder-button--paused {
+  background: linear-gradient(135deg, #d97706, #f59e0b);
+  animation: audioRecorderBlink 1s steps(2, end) infinite;
+}
+
+.audio-recorder-button--error {
+  background: linear-gradient(135deg, #991b1b, #dc2626);
+}
+
+.audio-recorder-button__icon {
+  font-size: 1.85rem;
+  line-height: 1;
+}
+
+.audio-recorder-widget__meta {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-1);
+  text-align: center;
+}
+
+.audio-recorder-widget__status {
+  font-size: var(--text-sm);
+  font-weight: 700;
+  color: var(--color-ink);
+}
+
+.audio-recorder-widget__hint {
+  font-size: var(--text-xs);
+  color: var(--color-ink-muted);
+  max-width: 20rem;
+}
+
+.audio-recorder-widget__error {
+  max-width: 28rem;
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  background: var(--color-danger-bg);
+  color: #991b1b;
+  font-size: var(--text-sm);
+  line-height: 1.45;
+  border: 1px solid #fecaca;
+}
+
+.audio-recorder-widget__timer {
+  padding: 6px 14px;
+  border-radius: var(--radius-full);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  color: var(--color-ink);
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  font-size: var(--text-sm);
+  letter-spacing: 0.06em;
+}
+
+@keyframes audioRecorderPulse {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.05);
+  }
+}
+
+@keyframes audioRecorderBlink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.72;
+  }
+}

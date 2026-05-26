@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import { normalizeAnalysisResponse, type AiAnalysis } from '../types'
+import { normalizeAnalysisResponse, type AiAnalysis } from '../../types'
 
 type FeatureMindmapProps = {
   analysis: AiAnalysis | null

@@ -1,6 +1,6 @@
 import { useState } from 'react';
-import { useRealtimeMeetingStream } from '../hooks/useRealtimeMeetingStream';
-import { RealtimeTranscript } from './RealtimeTranscript';
+import { useRealtimeMeetingStream } from '../../hooks/useRealtimeMeetingStream';
+import { RealtimeTranscript } from '../transcript/RealtimeTranscript';
 import { KeywordSidebar } from './KeywordSidebar';
 import './RealtimeMeetingView.css';
 
