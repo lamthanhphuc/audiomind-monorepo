@@ -348,19 +348,32 @@ public class AIServiceClient {
     }
 
     public void health() {
+        probeEndpoint("/health", "health");
+    }
+
+    public void ready() {
+        probeEndpoint("/ready", "ready");
+    }
+
+    private void probeEndpoint(String path, String endpointName) {
         try {
             ResponseEntity<Map<String, Object>> response = restTemplate.exchange(
-                    aiUrl + "/health",
+                    aiUrl + path,
                     HttpMethod.GET,
                     null,
                     new ParameterizedTypeReference<>() {
                     }
             );
             if (!response.getStatusCode().is2xxSuccessful()) {
-                throw new IllegalStateException("AI health endpoint returned non-2xx");
+                throw new IllegalStateException(
+                    "AI " + endpointName + " endpoint returned non-2xx"
+                );
             }
         } catch (RestClientException ex) {
-            throw new IllegalStateException("AI health check failed", ex);
+            throw new IllegalStateException(
+                "AI " + endpointName + " check failed",
+                ex
+            );
         }
     }
 

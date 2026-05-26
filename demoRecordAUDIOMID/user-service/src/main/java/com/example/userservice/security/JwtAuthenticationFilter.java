@@ -29,11 +29,31 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
-        String path = request.getServletPath();
+        String path = resolvePath(request);
         return path.equals("/api/users/register")
                 || path.equals("/api/users/login")
                 || path.equals("/health")
+                || path.equals("/ready")
                 || path.startsWith("/actuator");
+    }
+
+    private String resolvePath(HttpServletRequest request) {
+        String servletPath = request.getServletPath();
+        if (servletPath != null && !servletPath.isBlank()) {
+            return servletPath;
+        }
+
+        String requestUri = request.getRequestURI();
+        if (requestUri == null || requestUri.isBlank()) {
+            return "";
+        }
+
+        String contextPath = request.getContextPath();
+        if (contextPath != null && !contextPath.isBlank() && requestUri.startsWith(contextPath)) {
+            return requestUri.substring(contextPath.length());
+        }
+
+        return requestUri;
     }
 
     @Override

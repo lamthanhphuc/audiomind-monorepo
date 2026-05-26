@@ -1471,18 +1471,51 @@ async def root():
     }
 
 
+def _iso_utc_timestamp() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _dependency_state(is_up: bool) -> str:
+    return "UP" if is_up else "DOWN"
+
+
+def _health_payload(
+    *,
+    status: str,
+    dependencies: dict[str, str],
+    legacy_status: str,
+    extras: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "status": status,
+        "service": "ai-service",
+        "timestamp": _iso_utc_timestamp(),
+        "dependencies": dependencies,
+        "legacyStatus": legacy_status,
+    }
+    if extras:
+        payload.update(extras)
+    return payload
+
+
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
     await _cleanup_stale_stt_actors()
-    return {
-        "status": "healthy",
-        "whisper_model": settings.whisper_model,
-        "device": get_runtime_device(),
-        "lazy_load_models": settings.lazy_load_models,
-        "enable_speaker_diarization": settings.enable_speaker_diarization,
-        "stt_actor_registry": _stt_registry_summary(),
-    }
+    return _health_payload(
+        status="UP",
+        dependencies={},
+        legacy_status="healthy",
+        extras={
+            "analysisProvider": settings.analysis_provider,
+            "sttProvider": settings.stt_provider,
+            "whisper_model": settings.whisper_model,
+            "device": get_runtime_device(),
+            "lazy_load_models": settings.lazy_load_models,
+            "enable_speaker_diarization": settings.enable_speaker_diarization,
+            "stt_actor_registry": _stt_registry_summary(),
+        },
+    )
 
 
 @app.get("/metrics")
@@ -1493,16 +1526,57 @@ async def metrics() -> Response:
 @app.get("/ready")
 async def readiness_check():
     await _cleanup_stale_stt_actors()
-    with engine.connect() as connection:
-        connection.execute(text("SELECT 1"))
-    _get_client().ping()
-    if pipeline is None:
-        raise HTTPException(status_code=503, detail="Pipeline dependencies unavailable")
-    return {
-        "status": "ready",
-        "service": "ai-service",
-        "stt_actor_registry": _stt_registry_summary(),
-    }
+    dependencies: dict[str, str] = {}
+    ready = True
+
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("SELECT 1"))
+        dependencies["database"] = "UP"
+    except Exception as exc:
+        logger.warning("Readiness database check failed: {}", repr(exc))
+        dependencies["database"] = "DOWN"
+        ready = False
+
+    try:
+        _get_client().ping()
+        dependencies["redis"] = "UP"
+    except Exception as exc:
+        logger.warning("Readiness redis check failed: {}", repr(exc))
+        dependencies["redis"] = "DOWN"
+        ready = False
+
+    pipeline_ready = pipeline is not None
+    dependencies["pipeline"] = _dependency_state(pipeline_ready)
+    if not pipeline_ready:
+        ready = False
+
+    deepgram_required = (settings.stt_provider or "").strip().lower() == "deepgram"
+    deepgram_configured = bool((settings.deepgram_api_key or "").strip())
+    dependencies["deepgramConfigured"] = _dependency_state(deepgram_configured)
+    if deepgram_required and not deepgram_configured:
+        ready = False
+
+    analysis_provider = (settings.analysis_provider or "").strip().lower()
+    gemini_required = analysis_provider == "gemini"
+    gemini_configured = bool((settings.gemini_api_key or "").strip())
+    dependencies["geminiConfigured"] = _dependency_state(gemini_configured)
+    if gemini_required and not gemini_configured:
+        ready = False
+
+    payload = _health_payload(
+        status="UP" if ready else "DOWN",
+        dependencies=dependencies,
+        legacy_status="ready" if ready else "not_ready",
+        extras={
+            "analysisProvider": analysis_provider,
+            "sttProvider": (settings.stt_provider or "").strip().lower(),
+            "stt_actor_registry": _stt_registry_summary(),
+        },
+    )
+    if not ready:
+        return JSONResponse(status_code=503, content=payload)
+    return payload
 
 
 @app.exception_handler(Exception)
