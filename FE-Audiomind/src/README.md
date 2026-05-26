@@ -14,8 +14,17 @@ src/
   constants/        App constants (IT terms dictionary)
   hooks/            React hooks (realtime WS, audio recorder)
   services/         API, auth, config
-  styles/           Global CSS (production flow + shared tokens)
+  styles/
+    tokens.css      Design tokens (colors, spacing, typography)
+    base.css        Global reset & page background
+    app.css         Production app layout
   types/            Shared TypeScript types
   utils/            Pure helpers (transcript, highlight)
   main.tsx          Entry point
 ```
+
+## Design
+
+- Font: **Plus Jakarta Sans** (loaded in `index.html`)
+- Theme: indigo/violet accent on light gradient background
+- Components use CSS variables from `styles/tokens.css`

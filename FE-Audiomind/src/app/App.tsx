@@ -66,6 +66,26 @@ export const isRealtimeSpeakerModeSelectorDisabled = (lifecycleState: LiveLifecy
   return isRealtimeLanguageSelectorDisabled(lifecycleState)
 }
 
+export const getStatusBadgeClass = (statusText: string): string => {
+  const normalized = statusText.toLowerCase()
+  if (normalized.includes('completed') || normalized.includes('hoàn tất')) {
+    return 'status-badge status-badge--completed'
+  }
+  if (normalized.includes('failed') || normalized.includes('lỗi')) {
+    return 'status-badge status-badge--failed'
+  }
+  if (
+    normalized.includes('process')
+    || normalized.includes('upload')
+    || normalized.includes('queue')
+    || normalized.includes('running')
+    || normalized.includes('đang')
+  ) {
+    return 'status-badge status-badge--processing'
+  }
+  return 'status-badge status-badge--idle'
+}
+
 export const getRealtimeConnectionView = (
   lifecycleState: LiveLifecycleState,
   realtimeState: string,
@@ -1222,9 +1242,13 @@ export default function App() {
 
   if (!isAuthenticated) {
     return (
+      <div className="login-shell">
       <main className="login-panel">
-        <h1>AudioMind Login</h1>
-        <p>Đăng nhập để sử dụng API thật.</p>
+        <div className="login-panel__brand">
+          <span className="login-panel__logo" aria-hidden="true">🎙</span>
+          <h1>AudioMind</h1>
+        </div>
+        <p>Đăng nhập để upload audio, ghi âm realtime và nhận phân tích AI.</p>
         <div className="login-panel__form">
           <input
             type="text"
@@ -1244,15 +1268,19 @@ export default function App() {
         </div>
         {authError && <p className="login-panel__error">{authError}</p>}
       </main>
+      </div>
     )
   }
 
   return (
     <main className="production-app">
       <header className="production-app__header">
-        <div>
-          <h1 className="production-app__title">AudioMind</h1>
-          <p className="production-app__subtitle">Upload file hoặc ghi âm trực tiếp — transcript và phân tích AI</p>
+        <div className="production-app__brand">
+          <span className="production-app__logo" aria-hidden="true">🎙</span>
+          <div>
+            <h1 className="production-app__title">AudioMind</h1>
+            <p className="production-app__subtitle">Upload file hoặc ghi âm trực tiếp — transcript và phân tích AI</p>
+          </div>
         </div>
         <button type="button" className="production-app__logout" onClick={handleLogout}>
           Đăng xuất
@@ -1281,9 +1309,12 @@ export default function App() {
       {viewMode === 'batch' && (
         <>
           <section className="upload-panel">
+            <div className="upload-card">
+              <h2 className="upload-card__title">Upload & phân tích</h2>
+              <p className="upload-card__desc">Chọn ngôn ngữ, tải file audio và nhận transcript cùng tóm tắt Gemini.</p>
             <div className="upload-panel__controls">
               <label className="upload-panel__label">
-                <span className="upload-panel__label-text">Upload language</span>
+                <span className="upload-panel__label-text">Ngôn ngữ</span>
                 <select
                   className="upload-panel__select"
                   value={selectedUploadLanguage}
@@ -1302,14 +1333,22 @@ export default function App() {
                   ))}
                 </select>
               </label>
-              <input
-                className="upload-panel__file"
-                type="file"
-                accept="audio/*"
-                data-testid="e2e-upload-input"
-                onChange={(event) => setSelectedFile(event.target.files?.[0] || null)}
-                disabled={busy}
-              />
+              <label className="file-dropzone">
+                <span className="file-dropzone__icon" aria-hidden="true">📁</span>
+                <span className="file-dropzone__title">Chọn file audio</span>
+                <span className="file-dropzone__hint">MP3, WAV, M4A — tối đa theo giới hạn server</span>
+                {selectedFile && (
+                  <span className="file-dropzone__name">{selectedFile.name}</span>
+                )}
+                <input
+                  className="file-dropzone__input"
+                  type="file"
+                  accept="audio/*"
+                  data-testid="e2e-upload-input"
+                  onChange={(event) => setSelectedFile(event.target.files?.[0] || null)}
+                  disabled={busy}
+                />
+              </label>
               <div className="upload-panel__actions">
                 <button
                   type="button"
@@ -1327,22 +1366,27 @@ export default function App() {
                 )}
               </div>
             </div>
+            </div>
           </section>
 
-          <p className="status-line" data-testid="e2e-status"><strong>Status:</strong> {status}</p>
+          <p className="status-line" data-testid="e2e-status">
+            <span>Trạng thái</span>
+            <span className={getStatusBadgeClass(status)}>{status}</span>
+          </p>
 
           {errorMessage && <ErrorState message={errorMessage} title="Lỗi xử lý" />}
 
           {result && (
             <div className="result-layout result-layout--split">
               <section className="result-card">
-                <div className="result-card__meta">
-                  <span><strong>ID:</strong> {result.meetingId}</span>
-                  <span><strong>Status:</strong> {result.status}</span>
+                <div className="result-card__header">
+                  <h3 className="result-card__heading">Transcript</h3>
+                  <div className="result-card__meta">
+                    <span className="meta-pill">ID <strong>{result.meetingId}</strong></span>
+                    <span className="meta-pill">Status <strong>{result.status}</strong></span>
+                  </div>
                 </div>
-                <div data-testid="e2e-transcript">
-                  <strong>Transcript</strong>
-                  <div style={{ marginTop: 12 }}>
+                <div className="result-card__transcript" data-testid="e2e-transcript">
                     <TranscriptDisplay
                       segments={result.transcriptSegments}
                       transcriptTextFallback={result.transcript}
@@ -1350,7 +1394,6 @@ export default function App() {
                       maxHeight="420px"
                       enableDisplayGrouping
                     />
-                  </div>
                 </div>
               </section>
               <AnalysisPanel
@@ -1368,6 +1411,7 @@ export default function App() {
 
       {liveModeActive && (
         <section className="realtime-panel">
+          <div className="realtime-hero">
           <div className="realtime-panel__header">
             <div>
               <h2 className="realtime-panel__title">Ghi âm trực tiếp</h2>
@@ -1414,6 +1458,7 @@ export default function App() {
             )}
           </div>
 
+          <div className="realtime-panel__recorder-wrap">
           <AudioRecorderButton
             recorder={audioRecorder}
             lifecycleState={liveLifecycleState}
@@ -1421,6 +1466,8 @@ export default function App() {
             onChunkReady={handleLiveChunkReady}
             onRecordingComplete={handleLiveRecordingComplete}
           />
+          </div>
+          </div>
 
           {liveError && <ErrorState message={liveError} title="Lỗi realtime" />}
           {livePartialWarning && <div className="warning-banner">{livePartialWarning}</div>}
@@ -1452,7 +1499,7 @@ export default function App() {
             />
 
             <aside className="realtime-panel__aside">
-              <div className="status-card">
+              <div className="status-card status-card--live">
                 <div className="status-card__label">Connection</div>
                 <div className="status-card__value">{connectionView.title}</div>
                 <div className="status-card__detail">{connectionView.detail}</div>
@@ -1476,6 +1523,7 @@ export default function App() {
           </div>
 
           {(liveLifecycleState === 'stopped' || liveAnalysisStatus !== 'idle') && (
+            <div className="realtime-analysis-section">
             <AnalysisPanel
               title="Phân tích realtime"
               analysis={liveAnalysis}
@@ -1494,6 +1542,7 @@ export default function App() {
               summaryFallback="(đang chờ phân tích)"
               testId="e2e-live-analysis"
             />
+            </div>
           )}
         </section>
       )}
