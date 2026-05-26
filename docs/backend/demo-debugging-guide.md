@@ -41,6 +41,12 @@ curl -fsS http://localhost:8083/ready
 
 If any check fails, inspect logs for that service first, then dependency chain (`db`, `redis`, `ai-api`).
 
+Phase 7C note:
+- When a backend call fails, read `error`, `message`, `status`, and `traceId` first.
+- `traceId` should also match the `X-Trace-Id` response header when present.
+- `path` and `details` are optional and should stay safe if they are present.
+- Ignore raw stack traces or provider payloads in client-facing responses; those belong in logs only.
+
 Port note:
 - If `curl` fails, confirm host port mappings in `infra/docker-compose.dev.yml` first; container ports and host-exposed ports may differ.
 

@@ -8,18 +8,28 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.example.userservice.client.MeetingClient;
 import com.example.userservice.client.ProcessingClient;
+import com.example.userservice.config.SecurityConfig;
 import com.example.userservice.repository.UserAccountRepository;
 import com.example.userservice.security.JwtAuthenticationFilter;
 import com.example.userservice.security.JwtUtil;
 import com.example.userservice.security.TokenBlacklistStore;
 import com.example.userservice.service.UserService;
+import jakarta.servlet.FilterChain;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import java.io.IOException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.data.redis.connection.RedisConnection;
 import org.springframework.data.redis.connection.RedisConnectionFactory;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.security.authentication.InsufficientAuthenticationException;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.web.AuthenticationEntryPoint;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+import org.springframework.web.filter.OncePerRequestFilter;
 
 class HealthSecurityTest {
 
@@ -48,9 +58,36 @@ class HealthSecurityTest {
             mock(JwtUtil.class),
             mock(TokenBlacklistStore.class)
         );
+        SecurityConfig securityConfig = new SecurityConfig(jwtAuthenticationFilter);
+        AuthenticationEntryPoint authenticationEntryPoint = securityConfig.authenticationEntryPoint();
+
+        OncePerRequestFilter authGuardFilter = new OncePerRequestFilter() {
+            @Override
+            protected void doFilterInternal(
+                    HttpServletRequest request,
+                    HttpServletResponse response,
+                    FilterChain filterChain
+            ) throws ServletException, IOException {
+                if (!request.getRequestURI().startsWith("/api/users/")) {
+                    filterChain.doFilter(request, response);
+                    return;
+                }
+
+                if (SecurityContextHolder.getContext().getAuthentication() == null) {
+                    authenticationEntryPoint.commence(
+                            request,
+                            response,
+                            new InsufficientAuthenticationException("Unauthorized"));
+                    return;
+                }
+
+                filterChain.doFilter(request, response);
+            }
+        };
 
         mockMvc = MockMvcBuilders.standaloneSetup(healthController, userController)
             .addFilter(jwtAuthenticationFilter)
+            .addFilter(authGuardFilter)
             .build();
     }
 
@@ -73,6 +110,8 @@ class HealthSecurityTest {
     @Test
     void protectedEndpoint_shouldStillRequireAuth() throws Exception {
         mockMvc.perform(get("/api/users/me"))
-            .andExpect(status().isUnauthorized());
+            .andExpect(status().isUnauthorized())
+            .andExpect(jsonPath("$.error").value("UNAUTHORIZED"))
+            .andExpect(jsonPath("$.status").value(401));
     }
 }
