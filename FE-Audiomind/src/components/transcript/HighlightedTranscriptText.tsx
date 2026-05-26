@@ -1,7 +1,7 @@
 import React, { useMemo } from 'react'
-import { DEFAULT_IT_TERMS } from '../constants/itTerms'
-import type { HighlightTermInput } from '../utils/highlightTerms'
-import { highlightTermsInText } from '../utils/highlightTerms'
+import { DEFAULT_IT_TERMS } from '../../constants/itTerms'
+import type { HighlightTermInput } from '../../utils/highlightTerms'
+import { highlightTermsInText } from '../../utils/highlightTerms'
 
 interface HighlightedTranscriptTextProps {
   text: string

@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef } from 'react'
-import { DEFAULT_IT_TERMS } from '../constants/itTerms'
-import type { TranscriptSegment } from '../hooks/useRealtimeMeetingStream'
-import { formatTranscriptTimestamp, normalizeSpeaker } from '../utils/transcript'
+import { DEFAULT_IT_TERMS } from '../../constants/itTerms'
+import type { TranscriptSegment } from '../../hooks/useRealtimeMeetingStream'
+import { formatTranscriptTimestamp, normalizeSpeaker } from '../../utils/transcript'
 import { HighlightedTranscriptText } from './HighlightedTranscriptText'
 import './RealtimeTranscript.css'
 

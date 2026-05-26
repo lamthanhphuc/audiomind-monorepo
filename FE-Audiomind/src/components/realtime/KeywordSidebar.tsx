@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import type { KeywordHit } from '../hooks/useRealtimeMeetingStream';
+import type { KeywordHit } from '../../hooks/useRealtimeMeetingStream';
 import './KeywordSidebar.css';
 
 interface KeywordSidebarProps {

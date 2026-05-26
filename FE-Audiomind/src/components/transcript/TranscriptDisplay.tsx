@@ -1,11 +1,11 @@
 import React from 'react'
-import type { TranscriptSegment } from '../hooks/useRealtimeMeetingStream'
+import type { TranscriptSegment } from '../../hooks/useRealtimeMeetingStream'
 import {
   formatTranscriptTimestamp,
   groupUploadTranscriptSegmentsForDisplay,
   normalizeSpeakerBadge,
   parsePlainTranscriptText,
-} from '../utils/transcript'
+} from '../../utils/transcript'
 import { HighlightedTranscriptText } from './HighlightedTranscriptText'
 import './TranscriptDisplay.css'
 
