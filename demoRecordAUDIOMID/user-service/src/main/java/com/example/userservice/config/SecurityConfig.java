@@ -44,7 +44,8 @@ public class SecurityConfig {
                         response.sendError(HttpStatus.FORBIDDEN.value(), "Forbidden")))
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(HttpMethod.POST, "/api/users/register", "/api/users/login").permitAll()
-                        .requestMatchers("/health", "/ready", "/actuator/**").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/health", "/ready").permitAll()
+                        .requestMatchers("/actuator/**").permitAll()
                         .anyRequest().authenticated())
                 .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)
                 .build();
