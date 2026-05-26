@@ -2,6 +2,8 @@
 
 Purpose: quick operational guide for Phase 7A demo hardening validation.
 Scope: docker startup/rebuild/health/log triage for backend services only.
+Date: 2026-05-26
+Branch: chore/backend-health-checks-spec
 
 ## 1. Start and rebuild commands
 
