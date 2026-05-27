@@ -1,19 +1,30 @@
 package com.example.userservice.config;
 
+import com.example.userservice.controller.ApiErrorResponse;
+import com.example.userservice.controller.ErrorCode;
+import com.example.userservice.logging.TraceIdFilter;
 import com.example.userservice.security.JwtAuthenticationFilter;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import java.io.IOException;
+import java.time.Instant;
 import java.util.Arrays;
 import java.util.List;
+import java.util.UUID;
+import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.web.AuthenticationEntryPoint;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.access.AccessDeniedHandler;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
@@ -21,6 +32,8 @@ import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
 @Configuration
 public class SecurityConfig {
+
+    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
     private final JwtAuthenticationFilter jwtAuthenticationFilter;
 
@@ -32,22 +45,37 @@ public class SecurityConfig {
     }
 
     @Bean
-    public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
+    public SecurityFilterChain securityFilterChain(
+            HttpSecurity http,
+            AuthenticationEntryPoint authenticationEntryPoint,
+            AccessDeniedHandler accessDeniedHandler
+    ) throws Exception {
         return http
                 .csrf(csrf -> csrf.disable())
                 .cors(Customizer.withDefaults())
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .exceptionHandling(ex -> ex
-                    .authenticationEntryPoint((request, response, authException) ->
-                        response.sendError(HttpStatus.UNAUTHORIZED.value(), "Unauthorized"))
-                    .accessDeniedHandler((request, response, accessDeniedException) ->
-                        response.sendError(HttpStatus.FORBIDDEN.value(), "Forbidden")))
+                    .authenticationEntryPoint(authenticationEntryPoint)
+                    .accessDeniedHandler(accessDeniedHandler))
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(HttpMethod.POST, "/api/users/register", "/api/users/login").permitAll()
-                        .requestMatchers("/health", "/ready", "/actuator/**").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/health", "/ready").permitAll()
+                        .requestMatchers("/actuator/**").permitAll()
                         .anyRequest().authenticated())
                 .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)
                 .build();
+    }
+
+    @Bean
+    public AuthenticationEntryPoint authenticationEntryPoint() {
+        return (request, response, authException) ->
+                writeCanonicalError(response, request, ErrorCode.UNAUTHORIZED, HttpStatus.UNAUTHORIZED);
+    }
+
+    @Bean
+    public AccessDeniedHandler accessDeniedHandler() {
+        return (request, response, accessDeniedException) ->
+                writeCanonicalError(response, request, ErrorCode.FORBIDDEN, HttpStatus.FORBIDDEN);
     }
 
     @Bean
@@ -72,5 +100,43 @@ public class SecurityConfig {
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
         source.registerCorsConfiguration("/**", config);
         return source;
+    }
+
+    private static void writeCanonicalError(
+            jakarta.servlet.http.HttpServletResponse response,
+            jakarta.servlet.http.HttpServletRequest request,
+            ErrorCode code,
+            HttpStatus status
+    ) throws IOException {
+        String traceId = resolveTraceId(request);
+        response.setStatus(status.value());
+        response.setContentType(MediaType.APPLICATION_JSON_VALUE);
+        response.setHeader(TraceIdFilter.TRACE_HEADER, traceId);
+        ApiErrorResponse body = new ApiErrorResponse(
+                code.name(),
+                code.defaultMessage(),
+                status.value(),
+                Instant.now().toString(),
+                traceId,
+                request.getRequestURI(),
+                null
+        );
+        OBJECT_MAPPER.writeValue(response.getOutputStream(), body);
+    }
+
+    private static String resolveTraceId(jakarta.servlet.http.HttpServletRequest request) {
+        String fromHeader = request.getHeader(TraceIdFilter.TRACE_HEADER);
+        if (fromHeader != null && !fromHeader.isBlank()) {
+            return fromHeader;
+        }
+        String lowerHeader = request.getHeader("x-trace-id");
+        if (lowerHeader != null && !lowerHeader.isBlank()) {
+            return lowerHeader;
+        }
+        String fromMdc = MDC.get("traceId");
+        if (fromMdc != null && !fromMdc.isBlank()) {
+            return fromMdc;
+        }
+        return UUID.randomUUID().toString();
     }
 }

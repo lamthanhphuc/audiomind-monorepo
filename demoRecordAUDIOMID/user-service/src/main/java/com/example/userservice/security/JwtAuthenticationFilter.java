@@ -10,7 +10,6 @@ import java.io.IOException;
 import java.util.List;
 import org.slf4j.MDC;
 import org.springframework.http.HttpHeaders;
-import org.springframework.http.HttpStatus;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Component;
@@ -29,11 +28,31 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
-        String path = request.getServletPath();
+        String path = resolvePath(request);
         return path.equals("/api/users/register")
                 || path.equals("/api/users/login")
                 || path.equals("/health")
+                || path.equals("/ready")
                 || path.startsWith("/actuator");
+    }
+
+    private String resolvePath(HttpServletRequest request) {
+        String servletPath = request.getServletPath();
+        if (servletPath != null && !servletPath.isBlank()) {
+            return servletPath;
+        }
+
+        String requestUri = request.getRequestURI();
+        if (requestUri == null || requestUri.isBlank()) {
+            return "";
+        }
+
+        String contextPath = request.getContextPath();
+        if (contextPath != null && !contextPath.isBlank() && requestUri.startsWith(contextPath)) {
+            return requestUri.substring(contextPath.length());
+        }
+
+        return requestUri;
     }
 
     @Override
@@ -41,13 +60,14 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             throws ServletException, IOException {
         String authHeader = request.getHeader(HttpHeaders.AUTHORIZATION);
         if (authHeader == null || !authHeader.startsWith("Bearer ")) {
-            response.sendError(HttpStatus.UNAUTHORIZED.value(), "Missing bearer token");
+            filterChain.doFilter(request, response);
             return;
         }
 
         String token = authHeader.substring(7);
         if (tokenBlacklistStore.isBlacklisted(token)) {
-            response.sendError(HttpStatus.UNAUTHORIZED.value(), "Token revoked");
+            SecurityContextHolder.clearContext();
+            filterChain.doFilter(request, response);
             return;
         }
 
@@ -62,10 +82,12 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
             SecurityContextHolder.getContext().setAuthentication(authentication);
             MDC.put("userId", String.valueOf(userId));
-
-            filterChain.doFilter(request, response);
         } catch (JwtException | IllegalArgumentException ex) {
-            response.sendError(HttpStatus.UNAUTHORIZED.value(), "Invalid or expired token");
+            SecurityContextHolder.clearContext();
+        }
+
+        try {
+            filterChain.doFilter(request, response);
         } finally {
             MDC.remove("userId");
         }
