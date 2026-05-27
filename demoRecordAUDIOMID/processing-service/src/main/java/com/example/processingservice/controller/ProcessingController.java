@@ -12,6 +12,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpHeaders;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.slf4j.MDC;
 import org.springframework.web.bind.annotation.CrossOrigin;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -155,9 +156,13 @@ public class ProcessingController {
     }
 
     private String ensureTraceId(String traceId) {
-        if (traceId == null || traceId.isBlank()) {
-            return UUID.randomUUID().toString();
+        if (traceId != null && !traceId.isBlank()) {
+            return traceId;
         }
-        return traceId;
+        String mdcTraceId = MDC.get("traceId");
+        if (mdcTraceId != null && !mdcTraceId.isBlank()) {
+            return mdcTraceId;
+        }
+        return UUID.randomUUID().toString();
     }
 }

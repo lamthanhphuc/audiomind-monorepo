@@ -14,6 +14,7 @@ import io.jsonwebtoken.Claims;
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -49,7 +50,12 @@ public class UserService {
         user.setPasswordHash(passwordEncoder.encode(request.password()));
 
         UserAccount saved = userAccountRepository.save(user);
-        log.info("user registered");
+        log.info(
+                "event=REQUEST_COMPLETED traceId={} requestId={} path=/api/users/register userId={}",
+                MDC.get("traceId"),
+                resolveRequestId(),
+                saved.getId()
+        );
 
         return new RegisterResponse(saved.getId());
     }
@@ -64,7 +70,12 @@ public class UserService {
         }
 
         String accessToken = jwtUtil.createAccessToken(user.getId(), user.getUsername());
-        log.info("user login accepted");
+        log.info(
+                "event=REQUEST_COMPLETED traceId={} requestId={} path=/api/users/login userId={}",
+                MDC.get("traceId"),
+                resolveRequestId(),
+                user.getId()
+        );
 
         return new AuthResponse(user.getId(), accessToken, accessExpirationSeconds);
     }
@@ -74,7 +85,12 @@ public class UserService {
         Claims claims = jwtUtil.parseClaims(token);
         long ttlSeconds = jwtUtil.remainingTtlSeconds(token);
         tokenBlacklistStore.blacklist(token, ttlSeconds);
-        log.info("user logout accepted for userId={}", claims.getSubject());
+        log.info(
+                "event=REQUEST_COMPLETED traceId={} requestId={} path=/api/users/logout userId={}",
+                MDC.get("traceId"),
+                resolveRequestId(),
+                claims.getSubject()
+        );
     }
 
     @Transactional(readOnly = true)
@@ -90,5 +106,14 @@ public class UserService {
             throw new BadCredentialsException("Missing bearer token");
         }
         return bearerToken.substring(7);
+    }
+
+    private String resolveRequestId() {
+        String requestId = MDC.get("requestId");
+        if (requestId != null && !requestId.isBlank()) {
+            return requestId;
+        }
+        String traceId = MDC.get("traceId");
+        return traceId == null ? "" : traceId;
     }
 }

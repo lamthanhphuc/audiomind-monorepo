@@ -8,6 +8,7 @@ import redis
 from loguru import logger
 
 from app.config import get_settings
+from app.logging_utils import safe_error_message
 
 settings = get_settings()
 _redis_client: redis.Redis | None = None
@@ -90,7 +91,11 @@ def load_job_statuses(recover_interrupted: bool = False) -> None:
         _get_client().ping()
         logger.info("Redis job status store is ready")
     except Exception as redis_error:
-        logger.warning(f"Redis job store unavailable: {repr(redis_error)}")
+        logger.warning(
+            "event=REDIS_OPERATION_FAILED operation=ping errorCode={} error={}",
+            type(redis_error).__name__,
+            safe_error_message(redis_error),
+        )
 
 
 def cleanup_expired_job_statuses() -> None:
@@ -197,7 +202,10 @@ def set_job_status(
         )
     except Exception as redis_error:
         logger.warning(
-            f"Could not set Redis job state for {meeting_id}: {repr(redis_error)}"
+            "event=REDIS_OPERATION_FAILED operation=set_job_status meetingId={} errorCode={} error={}",
+            meeting_id,
+            type(redis_error).__name__,
+            safe_error_message(redis_error),
         )
 
 
@@ -227,7 +235,10 @@ def get_job_status(meeting_id: int) -> dict | None:
         }
     except Exception as redis_error:
         logger.warning(
-            f"Could not load Redis job state for {meeting_id}: {repr(redis_error)}"
+            "event=REDIS_OPERATION_FAILED operation=get_job_status meetingId={} errorCode={} error={}",
+            meeting_id,
+            type(redis_error).__name__,
+            safe_error_message(redis_error),
         )
         return None
 
@@ -261,7 +272,11 @@ def set_chunk_status(
         client.expire(key, settings.chunk_state_ttl_seconds)
     except Exception as redis_error:
         logger.warning(
-            f"Could not set chunk status for job={job_id} chunk={chunk_index}: {repr(redis_error)}"
+            "event=REDIS_OPERATION_FAILED operation=set_chunk_status meetingId={} chunkIndex={} errorCode={} error={}",
+            job_id,
+            chunk_index,
+            type(redis_error).__name__,
+            safe_error_message(redis_error),
         )
 
 
@@ -281,7 +296,11 @@ def get_chunk_status(job_id: int, chunk_index: int) -> dict | None:
         }
     except Exception as redis_error:
         logger.warning(
-            f"Could not load chunk status for job={job_id} chunk={chunk_index}: {repr(redis_error)}"
+            "event=REDIS_OPERATION_FAILED operation=get_chunk_status meetingId={} chunkIndex={} errorCode={} error={}",
+            job_id,
+            chunk_index,
+            type(redis_error).__name__,
+            safe_error_message(redis_error),
         )
         return None
 
@@ -308,7 +327,11 @@ def list_running_job_ids() -> list[int]:
                     running.append(int(job_id_raw))
         return running
     except Exception as redis_error:
-        logger.warning(f"Could not list running jobs: {repr(redis_error)}")
+        logger.warning(
+            "event=REDIS_OPERATION_FAILED operation=list_running_jobs errorCode={} error={}",
+            type(redis_error).__name__,
+            safe_error_message(redis_error),
+        )
         return []
 
 
@@ -321,7 +344,10 @@ def increment_completed_chunks(job_id: int) -> int:
         return int(value)
     except Exception as redis_error:
         logger.warning(
-            f"Could not increment completed_chunks for job={job_id}: {repr(redis_error)}"
+            "event=REDIS_OPERATION_FAILED operation=increment_completed_chunks meetingId={} errorCode={} error={}",
+            job_id,
+            type(redis_error).__name__,
+            safe_error_message(redis_error),
         )
         return 0
 

@@ -1,9 +1,9 @@
 # Backend Demo Debugging Guide
 
-Purpose: quick operational guide for Phase 7A demo hardening validation.
+Purpose: quick operational guide for Phase 7B-7D demo hardening validation.
 Scope: docker startup/rebuild/health/log triage for backend services only.
-Date: 2026-05-26
-Branch: chore/backend-health-checks-spec
+Last updated: 2026-05-27
+Applies to: Phase 7B-7D backend demo hardening
 
 ## 1. Start and rebuild commands
 
@@ -167,3 +167,47 @@ Expected key logs to inspect:
 4. processing-api -> ai-api connectivity/logs.
 5. ai-api provider config availability (Deepgram/Gemini non-secret indicators).
 6. realtime and analysis guard logs for duplicate/cooldown behavior.
+
+## 8. Logging filters
+
+Use these patterns when you need fast demo triage on Phase 7D logging.
+
+traceId:
+
+```bash
+docker compose --env-file infra/.env -f infra/docker-compose.dev.yml logs processing-api ai-api meeting-api user-api | findstr /I "traceId=test-trace-123"
+docker compose --env-file infra/.env -f infra/docker-compose.dev.yml logs processing-api ai-api meeting-api user-api | Select-String -Pattern "traceId=test-trace-123" -CaseSensitive:$false
+docker compose --env-file infra/.env -f infra/docker-compose.dev.yml logs processing-api ai-api meeting-api user-api | grep -Ei "traceId=test-trace-123"
+```
+
+meetingId:
+
+```bash
+docker compose --env-file infra/.env -f infra/docker-compose.dev.yml logs processing-api ai-api meeting-api | findstr /I "meetingId=123"
+docker compose --env-file infra/.env -f infra/docker-compose.dev.yml logs processing-api ai-api meeting-api | Select-String -Pattern "meetingId=123" -CaseSensitive:$false
+docker compose --env-file infra/.env -f infra/docker-compose.dev.yml logs processing-api ai-api meeting-api | grep -Ei "meetingId=123"
+```
+
+event key:
+
+```bash
+docker compose --env-file infra/.env -f infra/docker-compose.dev.yml logs processing-api ai-api meeting-api user-api | findstr /I "ANALYSIS_GET_RESULT REALTIME_ANALYSIS_FAILED UPLOAD_TRANSCRIPT_COMPLETED"
+docker compose --env-file infra/.env -f infra/docker-compose.dev.yml logs processing-api ai-api meeting-api user-api | Select-String -Pattern "ANALYSIS_GET_RESULT|REALTIME_ANALYSIS_FAILED|UPLOAD_TRANSCRIPT_COMPLETED" -CaseSensitive:$false
+docker compose --env-file infra/.env -f infra/docker-compose.dev.yml logs processing-api ai-api meeting-api user-api | grep -Ei "ANALYSIS_GET_RESULT|REALTIME_ANALYSIS_FAILED|UPLOAD_TRANSCRIPT_COMPLETED"
+```
+
+analysis failure:
+
+```bash
+docker compose --env-file infra/.env -f infra/docker-compose.dev.yml logs processing-api ai-api | findstr /I "ANALYSIS_TRIGGER_FAILED GEMINI_ANALYSIS_FAILED REALTIME_ANALYSIS_FAILED"
+docker compose --env-file infra/.env -f infra/docker-compose.dev.yml logs processing-api ai-api | Select-String -Pattern "ANALYSIS_TRIGGER_FAILED|GEMINI_ANALYSIS_FAILED|REALTIME_ANALYSIS_FAILED" -CaseSensitive:$false
+docker compose --env-file infra/.env -f infra/docker-compose.dev.yml logs processing-api ai-api | grep -Ei "ANALYSIS_TRIGGER_FAILED|GEMINI_ANALYSIS_FAILED|REALTIME_ANALYSIS_FAILED"
+```
+
+language / STT config:
+
+```bash
+docker compose --env-file infra/.env -f infra/docker-compose.dev.yml logs processing-api ai-api meeting-api | findstr /I "UPLOAD_LANGUAGE_EFFECTIVE BATCH_STT_EFFECTIVE_CONFIG DEEPGRAM_STT_CONFIG"
+docker compose --env-file infra/.env -f infra/docker-compose.dev.yml logs processing-api ai-api meeting-api | Select-String -Pattern "UPLOAD_LANGUAGE_EFFECTIVE|BATCH_STT_EFFECTIVE_CONFIG|DEEPGRAM_STT_CONFIG" -CaseSensitive:$false
+docker compose --env-file infra/.env -f infra/docker-compose.dev.yml logs processing-api ai-api meeting-api | grep -Ei "UPLOAD_LANGUAGE_EFFECTIVE|BATCH_STT_EFFECTIVE_CONFIG|DEEPGRAM_STT_CONFIG"
+```
