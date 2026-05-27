@@ -1,8 +1,8 @@
 # Phase 7A - Backend Reliability & Demo Hardening
 
 Status: SPEC-ONLY (no backend/frontend implementation in this branch)
-Date: 2026-05-24
-Branch: chore/backend-demo-hardening
+Date: 2026-05-26
+Branch: chore/backend-health-checks-spec
 
 ## 1. Current backend state
 
