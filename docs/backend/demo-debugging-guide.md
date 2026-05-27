@@ -1,9 +1,9 @@
 # Backend Demo Debugging Guide
 
-Purpose: quick operational guide for Phase 7B-7E demo hardening validation.
+Purpose: quick operational guide for Phase 7B-7F demo hardening validation.
 Scope: docker startup/rebuild/health/log triage for backend services only.
 Last updated: 2026-05-27
-Applies to: Phase 7B-7E backend demo hardening
+Applies to: Phase 7B-7F backend demo hardening
 
 ## 1. Start and rebuild commands
 
@@ -164,6 +164,24 @@ Expected key logs to inspect:
 - `REALTIME_ANALYSIS_SKIPPED`
 - `REALTIME_ANALYSIS_SAVED`
 - `REALTIME_ANALYSIS_FAILED`
+
+## 4.2 Multilingual STT investigation smoke
+
+Use this when checking vi, en, and multi transcript behavior before any 7G implementation.
+
+- Make sure `celery-worker` is running before upload tests.
+- Filter logs by `requestedLanguage`, `effectiveLanguage`, and `language=multi` when comparing runs.
+- Record a 0-5 score for each audio sample instead of pasting a full transcript.
+
+Helpful filters:
+
+```powershell
+docker compose --env-file infra/.env -f infra/docker-compose.dev.yml logs processing-api ai-api celery-worker | Select-String -Pattern "requestedLanguage|effectiveLanguage|language=multi|language=vi|language=en|BATCH_STT|REALTIME_STT" -CaseSensitive:$false
+```
+
+```bash
+docker compose --env-file infra/.env -f infra/docker-compose.dev.yml logs processing-api ai-api celery-worker | findstr /I "requestedLanguage effectiveLanguage language=multi language=vi language=en BATCH_STT REALTIME_STT"
+```
 
 ## 5. Upload path quick checks
 
