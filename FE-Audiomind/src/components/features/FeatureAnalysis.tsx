@@ -1,50 +1,56 @@
 import { useMemo, useState } from 'react'
-import { normalizeAnalysisResponse, type AiAnalysis, type TranscriptResponse } from '../../types'
+import type { TranscriptSegment } from '../../hooks/useRealtimeMeetingStream'
+import { normalizeAnalysisResponse, type AiAnalysis } from '../../types'
+import { AnalysisPanel } from '../analysis/AnalysisPanel'
 import AiAssistant from '../dashboard/AiAssistant'
-
-type ProcessedMeetingItem = {
-  id: number
-  title: string
-  processedAt: string
-}
+import { TranscriptDisplay } from '../transcript/TranscriptDisplay'
 
 type FeatureAnalysisProps = {
   meetingId?: number | null
   meetingTitle?: string
+  fileName?: string
   busy?: boolean
   analysis: AiAnalysis | null
-  transcript: TranscriptResponse | null
-  processingStatus?: string
-  processedMeetings: ProcessedMeetingItem[]
-  onStartProcessing: () => Promise<void>
-  onLoadAnalysis: () => Promise<void>
+  transcriptSegments?: TranscriptSegment[]
+  transcriptText?: string
+  statusLabel?: string
 }
 
 export default function FeatureAnalysis({
   meetingId,
   meetingTitle,
+  fileName,
   busy,
   analysis,
-  transcript: _transcript,
-  processingStatus: _processingStatus,
-  processedMeetings: _processedMeetings,
-  onStartProcessing,
-  onLoadAnalysis: _onLoadAnalysis,
+  transcriptSegments = [],
+  transcriptText = '',
+  statusLabel,
 }: FeatureAnalysisProps) {
   const [activeTab, setActiveTab] = useState<'content' | 'model' | 'mindmap'>('content')
-  const normalizedAnalysis = useMemo(() => normalizeAnalysisResponse(analysis), [analysis])
+  const normalizedAnalysis = useMemo(
+    () => (analysis ? normalizeAnalysisResponse(analysis) : null),
+    [analysis],
+  )
+  const title = meetingTitle || fileName || 'Kết quả phân tích'
+  const audioLabel = fileName || 'audio-file.mp3'
+  const hasTranscript = transcriptSegments.length > 0 || transcriptText.trim().length > 0
 
-  const title = meetingTitle || 'Thuyết trình môn AI cho các bạn sinh viên'
+  const statusBadge = useMemo(() => {
+    if (!statusLabel) return null
+    return <span className="meta-pill analysis-meta-pill">{statusLabel}</span>
+  }, [statusLabel])
 
   return (
     <div className="dashboard-page bg-gray-light">
       <header className="analysis-page-header">
         <div className="breadcrumbs">
-          <button className="back-btn">←</button>
+          <button type="button" className="back-btn" aria-label="Quay lại">←</button>
           <span>{title}</span>
+          {meetingId && <span className="meta-pill">ID {meetingId}</span>}
+          {statusBadge}
         </div>
         <div className="header-actions">
-          <button className="secondary-cta" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <button type="button" className="secondary-cta" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <span>⬇</span> Tải slide
           </button>
         </div>
@@ -52,37 +58,39 @@ export default function FeatureAnalysis({
 
       <div className="analysis-main-content">
         <div className="analysis-left-panel">
-
           <div className="audio-player-card">
-            <div className="audio-waves"></div>
+            <div className="audio-waves" />
             <div className="audio-controls">
-              <button className="play-btn">⏸</button>
+              <button type="button" className="play-btn" aria-label="Phát">▶</button>
               <div className="time-info">
-                <span className="time-title">thuyet-trinh.mp3</span>
-                <span className="time-duration">12:00:00</span>
+                <span className="time-title">{audioLabel}</span>
+                <span className="time-duration">—</span>
               </div>
               <div className="audio-options">
-                <button>🔊</button>
-                <select><option>1x</option></select>
-                <button>⚙</button>
+                <button type="button" aria-label="Âm lượng">🔊</button>
+                <select aria-label="Tốc độ phát"><option>1x</option></select>
+                <button type="button" aria-label="Cài đặt">⚙</button>
               </div>
             </div>
           </div>
 
           <div className="analysis-tabs">
             <button
+              type="button"
               className={`tab-btn ${activeTab === 'content' ? 'active' : ''}`}
               onClick={() => setActiveTab('content')}
             >
-              Phân tích nội dung
+              Transcript
             </button>
             <button
+              type="button"
               className={`tab-btn ${activeTab === 'model' ? 'active' : ''}`}
               onClick={() => setActiveTab('model')}
             >
-              Mô hình và Kiến trúc
+              Phân tích AI
             </button>
             <button
+              type="button"
               className={`tab-btn ${activeTab === 'mindmap' ? 'active' : ''}`}
               onClick={() => setActiveTab('mindmap')}
             >
@@ -91,84 +99,63 @@ export default function FeatureAnalysis({
           </div>
 
           <div className="doc-content">
-            {activeTab === 'mindmap' ? (
-              <div style={{ textAlign: 'center', padding: '40px 0' }}>
-                <img src="/tính năng/mindmap_scene.png" alt="Mindmap" style={{ maxWidth: '100%', borderRadius: '8px' }} />
+            {activeTab === 'mindmap' && (
+              <div className="mindmap-placeholder">
+                <p>Sơ đồ mindmap sẽ hiển thị khi có dữ liệu từ phân tích.</p>
               </div>
-            ) : (
-              <>
-                <h2>Nhận dạng Giọng nói và Xử lý Ngôn ngữ Tự nhiên</h2>
+            )}
 
-                <h3>1. Nhận dạng Giọng nói (Speech Recognition)</h3>
-                <p>Khái niệm: Là quá trình máy tính nhận diện và chuyển đổi giọng nói con người thành văn bản.</p>
-                <p>Ứng dụng: Trợ lý ảo (Siri, Google Assistant), hệ thống tổng đài tự động, phần mềm chuyển ngữ (dictation).</p>
-
-                <h3>2. Xử lý Ngôn ngữ Tự nhiên (NLP)</h3>
-                <p>Khái niệm: Lĩnh vực nghiên cứu giúp máy tính hiểu, phân tích, và tạo ra ngôn ngữ của con người một cách tự nhiên.</p>
-                <p>Các ứng dụng tiêu biểu:</p>
-                <ul>
-                  <li>Dịch tự động: Google Translate.</li>
-                  <li>Phân tích cảm xúc: Xác định xem phản hồi của người dùng là tích cực, tiêu cực, hay trung lập.</li>
-                  <li>Chatbot: Trợ lý ảo giao tiếp tự nhiên như ChatGPT.</li>
-                </ul>
-
-                {analysis && (
-                  <div style={{ marginTop: '30px', padding: '20px', background: '#f8f9fa', borderRadius: '8px', display: 'grid', gap: 12 }}>
-                    <h3>Kết quả AI chi tiết:</h3>
-                    <p>{normalizedAnalysis.summary}</p>
-                    <p><strong>Domain:</strong> {normalizedAnalysis.domainMode}</p>
-                    <p><strong>Từ khóa:</strong> {normalizedAnalysis.keywords.length ? normalizedAnalysis.keywords.join(', ') : 'Không có'}</p>
-                    <div style={{ display: 'grid', gap: 8 }}>
-                      {normalizedAnalysis.technicalTerms.length ? normalizedAnalysis.technicalTerms.map((item) => (
-                        <article key={item.term} style={{ padding: '12px', borderRadius: '8px', background: '#fff', border: '1px solid #e5e7eb' }}>
-                          <strong>{item.term}</strong>
-                          <div style={{ fontSize: '12px', color: '#64748b' }}>{item.category || 'uncategorized'}</div>
-                          <p style={{ margin: '6px 0 0' }}>{item.meaning || 'Chưa có mô tả'}</p>
-                        </article>
-                      )) : <p style={{ margin: 0, color: '#64748b' }}>Không có thuật ngữ kỹ thuật</p>}
-                    </div>
-                    <div style={{ display: 'grid', gap: 8 }}>
-                      {normalizedAnalysis.painPoints.length ? normalizedAnalysis.painPoints.map((item) => (
-                        <article key={`${item.title}-${item.severity}`} style={{ padding: '12px', borderRadius: '8px', background: '#fff7ed', border: '1px solid #fed7aa' }}>
-                          <strong>{item.title}</strong>
-                          <span style={{ marginLeft: 8, fontSize: 12 }}>{item.severity}</span>
-                          <p style={{ margin: '6px 0 0' }}>{item.evidence || 'Không có dẫn chứng'}</p>
-                        </article>
-                      )) : <p style={{ margin: 0, color: '#64748b' }}>Không có pain points</p>}
-                    </div>
-                    {normalizedAnalysis.actionItems.length ? (
-                      <ul>
-                        {normalizedAnalysis.actionItems.map((item) => (
-                          <li key={item}>{item}</li>
-                        ))}
-                      </ul>
-                    ) : (
-                      <p style={{ margin: 0, color: '#64748b' }}>Không có đầu việc</p>
-                    )}
-                  </div>
+            {activeTab === 'content' && (
+              <div data-testid="e2e-transcript">
+                {hasTranscript ? (
+                  <TranscriptDisplay
+                    segments={transcriptSegments}
+                    transcriptTextFallback={transcriptText}
+                    emptyMessage="Không có transcript"
+                    maxHeight="520px"
+                    enableDisplayGrouping
+                  />
+                ) : (
+                  <p className="analysis-empty-hint">
+                    {busy ? 'Đang xử lý transcript...' : 'Chưa có transcript. Hãy tải file và phân tích từ màn Tải & phân tích.'}
+                  </p>
                 )}
+              </div>
+            )}
 
-                {(!analysis && !busy) && (
-                  <div style={{ marginTop: '20px' }}>
-                    <button className="btn-primary" onClick={onStartProcessing} style={{ width: 'auto' }}>
-                      Bắt đầu xử lý báo cáo AI
-                    </button>
-                  </div>
-                )}
-              </>
+            {activeTab === 'model' && (
+              <div className="analysis-inline-panel">
+                <AnalysisPanel
+                  title="Phân tích AI"
+                  analysis={normalizedAnalysis}
+                  status={busy ? 'loading' : normalizedAnalysis ? 'ready' : 'empty'}
+                  testId="e2e-analysis"
+                  summaryTestId="e2e-summary"
+                  summaryFallback="(empty)"
+                  loadingMessage="Đang phân tích nội dung..."
+                  emptyMessage="Chưa có kết quả phân tích"
+                />
+              </div>
             )}
           </div>
-
         </div>
 
         <div className="analysis-right-panel">
+          <AnalysisPanel
+            title="Tóm tắt"
+            analysis={normalizedAnalysis}
+            status={busy ? 'loading' : normalizedAnalysis ? 'ready' : 'empty'}
+            summaryTestId="e2e-summary"
+            summaryFallback="(empty)"
+          />
           <AiAssistant
             busy={busy}
             meetingId={meetingId}
-            onAsk={async (_msg) => {
-              return new Promise(resolve => setTimeout(() => {
-                resolve("Dưới đây là một số ý chính được tóm tắt từ bài giảng:\n- Khái niệm: Xử lý Ngôn ngữ Tự nhiên (NLP).")
-              }, 1000))
+            onAsk={async () => {
+              await new Promise((resolve) => window.setTimeout(resolve, 600))
+              return normalizedAnalysis?.summary
+                ? `Tóm tắt: ${normalizedAnalysis.summary}`
+                : 'Chưa có dữ liệu phân tích để trả lời câu hỏi.'
             }}
           />
         </div>

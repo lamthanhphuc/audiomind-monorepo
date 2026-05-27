@@ -2,7 +2,7 @@
 
 ```
 src/
-  app/              Main production flow (App.tsx, tests)
+  app/              Main flow — dashboard shell + API/realtime (App.tsx)
   assets/           Static assets
   components/
     analysis/       Gemini analysis panel (upload + realtime)
@@ -17,7 +17,8 @@ src/
   styles/
     tokens.css      Design tokens (colors, spacing, typography)
     base.css        Global reset & page background
-    app.css         Production app layout
+    app.css         Shared utilities (status badges, realtime)
+    dashboard.css   Figma dashboard shell (sidebar, upload, analysis)
   types/            Shared TypeScript types
   utils/            Pure helpers (transcript, highlight)
   main.tsx          Entry point
