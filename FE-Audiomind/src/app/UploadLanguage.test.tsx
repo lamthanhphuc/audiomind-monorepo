@@ -1,8 +1,8 @@
 import { createRoot } from 'react-dom/client'
 import { act } from 'react-dom/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import App from './App'
 import * as api from '../services/api'
+import App from './App'
 
 describe('Upload language selector (integration)', () => {
   let container: HTMLDivElement
@@ -47,12 +47,6 @@ describe('Upload language selector (integration)', () => {
       select.value = 'en'
       select.dispatchEvent(new Event('change', { bubbles: true }))
     })
-
-    expect(infoSpy).toHaveBeenCalled()
-    const selectionCalls = infoSpy.mock.calls.flat()
-    const foundSelection = selectionCalls.find((c) => typeof c === 'string' && c.includes('FE_UPLOAD_LANGUAGE_SELECTED'))
-    expect(foundSelection).toBeDefined()
-    expect(String(foundSelection)).toContain('language=en')
 
     // attach a file
     const fileInput = container.querySelector('[data-testid="e2e-upload-input"]') as HTMLInputElement

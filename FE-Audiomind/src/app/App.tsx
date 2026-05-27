@@ -1,21 +1,21 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { AnalysisPanel } from '../components/analysis/AnalysisPanel'
-import { AudioRecorderButton } from '../components/realtime/AudioRecorderButton'
-import { RealtimeTranscript } from '../components/transcript/RealtimeTranscript'
-import { TranscriptDisplay } from '../components/transcript/TranscriptDisplay'
-import { ErrorState } from '../components/ui/ErrorState'
-import '../styles/app.css'
+import DashboardLayout, { type DashboardScene } from '../components/dashboard/DashboardLayout'
+import FilesList from '../components/dashboard/FilesList'
+import SubjectsList from '../components/dashboard/SubjectsList'
+import FeatureAnalysis from '../components/features/FeatureAnalysis'
+import FeatureUpload from '../components/features/FeatureUpload'
+import RealtimeDashboardScene from '../components/features/RealtimeDashboardScene'
 import { useAudioRecorder } from '../hooks/useAudioRecorder'
 import {
-  DEFAULT_REALTIME_LANGUAGE,
-  DEFAULT_REALTIME_SPEAKER_MODE,
-  normalizeRealtimeLanguage,
-  normalizeRealtimeSpeakerMode,
-  type RealtimeLanguage,
-  type RealtimeSessionToken,
-  type RealtimeSpeakerMode,
-  type TranscriptSegment,
-  useRealtimeMeetingStream,
+    DEFAULT_REALTIME_LANGUAGE,
+    DEFAULT_REALTIME_SPEAKER_MODE,
+    normalizeRealtimeLanguage,
+    normalizeRealtimeSpeakerMode,
+    type RealtimeLanguage,
+    type RealtimeSessionToken,
+    type RealtimeSpeakerMode,
+    type TranscriptSegment,
+    useRealtimeMeetingStream,
 } from '../hooks/useRealtimeMeetingStream'
 import { ApiError, getAnalysis, getProcessingStatus, getTranscript, startProcessingByPath, uploadToMeetingApi } from '../services/api'
 import { clearAccessToken, getAccessToken, getCurrentUserId, login, setAccessToken } from '../services/auth'
@@ -24,6 +24,7 @@ import type { AiAnalysis } from '../types'
 import { mergeTranscriptSegments, mergeTranscriptSegmentsForDisplay, normalizePersistedTranscriptSegments } from '../utils/transcript'
 
 export { DEFAULT_REALTIME_LANGUAGE } from '../hooks/useRealtimeMeetingStream'
+export { getStatusBadgeClass } from '../utils/statusBadge'
 
 type ResultView = {
   meetingId: number
@@ -64,26 +65,6 @@ export const isRealtimeLanguageSelectorDisabled = (lifecycleState: LiveLifecycle
 
 export const isRealtimeSpeakerModeSelectorDisabled = (lifecycleState: LiveLifecycleState): boolean => {
   return isRealtimeLanguageSelectorDisabled(lifecycleState)
-}
-
-export const getStatusBadgeClass = (statusText: string): string => {
-  const normalized = statusText.toLowerCase()
-  if (normalized.includes('completed') || normalized.includes('hoàn tất')) {
-    return 'status-badge status-badge--completed'
-  }
-  if (normalized.includes('failed') || normalized.includes('lỗi')) {
-    return 'status-badge status-badge--failed'
-  }
-  if (
-    normalized.includes('process')
-    || normalized.includes('upload')
-    || normalized.includes('queue')
-    || normalized.includes('running')
-    || normalized.includes('đang')
-  ) {
-    return 'status-badge status-badge--processing'
-  }
-  return 'status-badge status-badge--idle'
 }
 
 export const getRealtimeConnectionView = (
@@ -537,7 +518,7 @@ export default function App() {
   const [password, setPassword] = useState('')
   const [authError, setAuthError] = useState('')
   const [isAuthenticated, setIsAuthenticated] = useState(false)
-  const [viewMode, setViewMode] = useState<'batch' | 'realtime'>('batch')
+  const [featureScene, setFeatureScene] = useState<DashboardScene>('upload')
   const [joinMeetingIdInput, setJoinMeetingIdInput] = useState('')
   const [showJoinOtherMeeting, setShowJoinOtherMeeting] = useState(false)
   const [hydratedLiveTranscriptSegments, setHydratedLiveTranscriptSegments] = useState<TranscriptSegment[] | null>(null)
@@ -571,7 +552,7 @@ export default function App() {
     sessionToken: activeRealtimeSessionToken,
     language: selectedRealtimeLanguage,
     speakerMode: selectedRealtimeSpeakerMode,
-    enabled: isAuthenticated && isRealtimeEnabled && viewMode === 'realtime',
+    enabled: isAuthenticated && isRealtimeEnabled && featureScene === 'realtime',
     autoReconnect: true,
   })
 
@@ -735,10 +716,10 @@ export default function App() {
   }, [liveMeetingId])
 
   useEffect(() => {
-    if (viewMode !== 'realtime' && (audioRecorder.state === 'recording' || audioRecorder.state === 'paused')) {
+    if (featureScene !== 'realtime' && (audioRecorder.state === 'recording' || audioRecorder.state === 'paused')) {
       audioRecorder.stopRecording()
     }
-  }, [audioRecorder, viewMode])
+  }, [audioRecorder, featureScene])
 
   const handleLogin = async () => {
     if (!username.trim() || !password) {
@@ -785,12 +766,11 @@ export default function App() {
     setPassword('')
     setJoinMeetingIdInput('')
     setShowJoinOtherMeeting(false)
-    setViewMode('batch')
+    setFeatureScene('upload')
   }
 
   const analysis = result?.analysis
   const liveTranscriptKeywords = useMemo(() => realtimeStream.keywords.map((keyword) => keyword.keyword), [realtimeStream.keywords])
-  const liveModeActive = isRealtimeEnabled && viewMode === 'realtime' && realtimeUserId !== null
   const liveTranscriptSegments = hydratedLiveTranscriptSegments ?? realtimeStream.transcripts
   const liveTranscriptSegmentsForDisplay = useMemo(() => {
     const shouldMergeForDisplay = hydratedLiveTranscriptSegments !== null || liveLifecycleState === 'stopped'
@@ -811,7 +791,7 @@ export default function App() {
   )
 
   useEffect(() => {
-    if (viewMode !== 'realtime' || liveMeetingId === null) {
+    if (featureScene !== 'realtime' || liveMeetingId === null) {
       setHydratedLiveTranscriptSegments(null)
       liveAnalysisAbortControllerRef.current?.abort()
       liveAnalysisAbortControllerRef.current = null
@@ -819,10 +799,11 @@ export default function App() {
       setLiveAnalysisStatus('idle')
       setLiveAnalysisError(null)
     }
-  }, [liveMeetingId, viewMode])
+  }, [liveMeetingId, featureScene])
 
-  const handleProcess = async () => {
-    if (!selectedFile) {
+  const handleProcess = async (fileOverride?: File) => {
+    const file = fileOverride ?? selectedFile
+    if (!file) {
       setErrorMessage('Vui lòng chọn file audio trước khi xử lý')
       return
     }
@@ -838,8 +819,9 @@ export default function App() {
     try {
       const effectiveUploadLanguage = normalizeRealtimeLanguage(selectedUploadLanguage)
       setStatus('uploading')
+      setFeatureScene('upload')
       console.info('UPLOAD_REQUEST_SEND language=' + effectiveUploadLanguage)
-      const meeting = await uploadToMeetingApi(selectedFile.name, selectedFile, effectiveUploadLanguage)
+      const meeting = await uploadToMeetingApi(file.name, file, effectiveUploadLanguage)
       meetingId = meeting.id
 
       setStatus('processing')
@@ -870,6 +852,7 @@ export default function App() {
         analysis,
       })
       setStatus('completed')
+      setFeatureScene('analysis')
     } catch (error: any) {
       setStatus('failed')
       if (error instanceof DOMException && error.name === 'AbortError') {
@@ -923,10 +906,102 @@ export default function App() {
     liveRecordingSessionIdRef.current = 0
     setLiveLifecycleState('idle')
     setShowJoinOtherMeeting(false)
-    setViewMode('realtime')
+    setFeatureScene('realtime')
   }
 
-  const handlePrepareLiveMeeting = async (): Promise<{ expectedSessionId: number }> => {
+  const handleDashboardUpload = async (_title: string, file: File) => {
+    setSelectedFile(file)
+    await handleProcess(file)
+  }
+
+  const dashboardUser = useMemo(() => ({
+    name: username.trim() || `User ${currentUserId || ''}`.trim() || 'AudioMind',
+    email: currentUserId ? `user-${currentUserId}@audiomind` : undefined,
+  }), [currentUserId, username])
+
+  const recentFiles = useMemo(() => {
+    if (!result && !selectedFile) return []
+    const items = []
+    if (result) {
+      items.push({
+        id: String(result.meetingId),
+        label: selectedFile?.name || `Meeting #${result.meetingId}`,
+        active: featureScene === 'analysis',
+      })
+    }
+    return items
+  }, [featureScene, result, selectedFile])
+
+  const renderDashboardScene = () => {
+    if (featureScene === 'realtime' && isRealtimeEnabled && realtimeUserId !== null) {
+      return (
+        <RealtimeDashboardScene
+          liveStatusMessage={liveStatusMessage}
+          connectionView={connectionView}
+          selectedRealtimeLanguage={selectedRealtimeLanguage}
+          selectedRealtimeSpeakerMode={selectedRealtimeSpeakerMode}
+          liveLifecycleState={liveLifecycleState}
+          onRealtimeLanguageChange={(value) => setSelectedRealtimeLanguage(normalizeRealtimeLanguage(value))}
+          onRealtimeSpeakerModeChange={(value) => setSelectedRealtimeSpeakerMode(normalizeRealtimeSpeakerMode(value))}
+          isRealtimeLanguageSelectorDisabled={isRealtimeLanguageSelectorDisabled(liveLifecycleState)}
+          isRealtimeSpeakerModeSelectorDisabled={isRealtimeSpeakerModeSelectorDisabled(liveLifecycleState)}
+          liveMeetingId={liveMeetingId}
+          audioRecorder={audioRecorder}
+          onBeforeStartRecording={handlePrepareLiveMeeting}
+          onChunkReady={handleLiveChunkReady}
+          onRecordingComplete={handleLiveRecordingComplete}
+          liveError={liveError}
+          livePartialWarning={livePartialWarning}
+          showJoinOtherMeeting={showJoinOtherMeeting}
+          joinMeetingIdInput={joinMeetingIdInput}
+          onJoinMeetingIdChange={setJoinMeetingIdInput}
+          onJoinMeeting={handleJoinMeeting}
+          liveTranscriptSegments={liveTranscriptSegmentsForDisplay}
+          liveTranscriptKeywords={liveTranscriptKeywords}
+          realtimeKeywordCount={realtimeStream.keywords.length}
+          currentUserId={currentUserId}
+          connectionViewForAside={connectionView}
+          liveAnalysis={liveAnalysis}
+          liveAnalysisStatus={liveAnalysisStatus}
+          liveAnalysisError={liveAnalysisError}
+          showLiveAnalysis={liveLifecycleState === 'stopped' || liveAnalysisStatus !== 'idle'}
+        />
+      )
+    }
+
+    if (featureScene === 'analysis') {
+      return (
+        <FeatureAnalysis
+          meetingId={result?.meetingId}
+          meetingTitle={selectedFile?.name}
+          fileName={selectedFile?.name}
+          busy={busy}
+          analysis={analysis ?? null}
+          transcriptSegments={result?.transcriptSegments}
+          transcriptText={result?.transcript}
+          statusLabel={status}
+        />
+      )
+    }
+
+    if (featureScene === 'files') return <FilesList />
+    if (featureScene === 'subjects') return <SubjectsList />
+
+    return (
+      <FeatureUpload
+        disabled={busy}
+        userName={dashboardUser.name}
+        uploadLanguage={selectedUploadLanguage}
+        onUploadLanguageChange={setSelectedUploadLanguage}
+        status={status}
+        errorMessage={errorMessage}
+        onUpload={handleDashboardUpload}
+        onCancel={handleCancel}
+      />
+    )
+  }
+
+  const handlePrepareLiveMeeting = async (): Promise<void> => {
     setLiveError(null)
     setLivePartialWarning(null)
     liveAnalysisAbortControllerRef.current?.abort()
@@ -996,7 +1071,7 @@ export default function App() {
       }
 
       setLiveStatusMessage(`Meeting ${normalizedMeetingId} sẵn sàng ghi âm`)
-      return { expectedSessionId: sessionId }
+      return
     } catch (error) {
       if (sessionToken !== null && !isCurrentRealtimeSessionToken(sessionToken)) {
         console.info('[Realtime] STALE_SESSION_PREPARE_IGNORED', {
@@ -1242,310 +1317,50 @@ export default function App() {
 
   if (!isAuthenticated) {
     return (
-      <div className="login-shell">
-      <main className="login-panel">
-        <div className="login-panel__brand">
-          <span className="login-panel__logo" aria-hidden="true">🎙</span>
-          <h1>AudioMind</h1>
+      <div className="app app--guest">
+        <div className="login-modal login-modal--page">
+          <main className="login-card">
+            <div className="login-panel__brand">
+              <span className="login-panel__logo" aria-hidden="true">🎙</span>
+              <h2>AudioMind</h2>
+            </div>
+            <p>Đăng nhập để upload audio, ghi âm realtime và nhận phân tích AI.</p>
+            <input
+              type="text"
+              placeholder="Username"
+              data-testid="e2e-login-username"
+              value={username}
+              onChange={(event) => setUsername(event.target.value)}
+            />
+            <input
+              type="password"
+              placeholder="Password"
+              data-testid="e2e-login-password"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+            />
+            <button type="button" data-testid="e2e-login-submit" onClick={handleLogin}>
+              Đăng nhập
+            </button>
+            {authError && <p className="login-panel__error">{authError}</p>}
+          </main>
         </div>
-        <p>Đăng nhập để upload audio, ghi âm realtime và nhận phân tích AI.</p>
-        <div className="login-panel__form">
-          <input
-            type="text"
-            placeholder="Username"
-            data-testid="e2e-login-username"
-            value={username}
-            onChange={(event) => setUsername(event.target.value)}
-          />
-          <input
-            type="password"
-            placeholder="Password"
-            data-testid="e2e-login-password"
-            value={password}
-            onChange={(event) => setPassword(event.target.value)}
-          />
-          <button type="button" data-testid="e2e-login-submit" onClick={handleLogin}>Đăng nhập</button>
-        </div>
-        {authError && <p className="login-panel__error">{authError}</p>}
-      </main>
       </div>
     )
   }
 
   return (
-    <main className="production-app">
-      <header className="production-app__header">
-        <div className="production-app__brand">
-          <span className="production-app__logo" aria-hidden="true">🎙</span>
-          <div>
-            <h1 className="production-app__title">AudioMind</h1>
-            <p className="production-app__subtitle">Upload file hoặc ghi âm trực tiếp — transcript và phân tích AI</p>
-          </div>
-        </div>
-        <button type="button" className="production-app__logout" onClick={handleLogout}>
-          Đăng xuất
-        </button>
-      </header>
-
-      <div className="view-tabs">
-        <button
-          type="button"
-          className={`view-tabs__button ${viewMode === 'batch' ? 'view-tabs__button--active' : ''}`}
-          onClick={() => setViewMode('batch')}
-        >
-          Upload File
-        </button>
-        {isRealtimeEnabled && (
-          <button
-            type="button"
-            className={`view-tabs__button ${viewMode === 'realtime' ? 'view-tabs__button--active' : ''}`}
-            onClick={() => setViewMode('realtime')}
-          >
-            Ghi âm Trực tiếp
-          </button>
-        )}
-      </div>
-
-      {viewMode === 'batch' && (
-        <>
-          <section className="upload-panel">
-            <div className="upload-card">
-              <h2 className="upload-card__title">Upload & phân tích</h2>
-              <p className="upload-card__desc">Chọn ngôn ngữ, tải file audio và nhận transcript cùng tóm tắt Gemini.</p>
-            <div className="upload-panel__controls">
-              <label className="upload-panel__label">
-                <span className="upload-panel__label-text">Ngôn ngữ</span>
-                <select
-                  className="upload-panel__select"
-                  value={selectedUploadLanguage}
-                  onChange={(event) => {
-                    const nextLanguage = normalizeRealtimeLanguage(event.target.value)
-                    setSelectedUploadLanguage(nextLanguage)
-                    console.info(`FE_UPLOAD_LANGUAGE_SELECTED language=${nextLanguage}`)
-                  }}
-                  disabled={busy}
-                  data-testid="e2e-upload-language-select"
-                >
-                  {UPLOAD_LANGUAGE_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="file-dropzone">
-                <span className="file-dropzone__icon" aria-hidden="true">📁</span>
-                <span className="file-dropzone__title">Chọn file audio</span>
-                <span className="file-dropzone__hint">MP3, WAV, M4A — tối đa theo giới hạn server</span>
-                {selectedFile && (
-                  <span className="file-dropzone__name">{selectedFile.name}</span>
-                )}
-                <input
-                  className="file-dropzone__input"
-                  type="file"
-                  accept="audio/*"
-                  data-testid="e2e-upload-input"
-                  onChange={(event) => setSelectedFile(event.target.files?.[0] || null)}
-                  disabled={busy}
-                />
-              </label>
-              <div className="upload-panel__actions">
-                <button
-                  type="button"
-                  className="upload-panel__submit"
-                  data-testid="e2e-process-submit"
-                  onClick={handleProcess}
-                  disabled={busy || !selectedFile}
-                >
-                  Phân tích file
-                </button>
-                {busy && (
-                  <button type="button" className="upload-panel__cancel" onClick={handleCancel}>
-                    Hủy xử lý
-                  </button>
-                )}
-              </div>
-            </div>
-            </div>
-          </section>
-
-          <p className="status-line" data-testid="e2e-status">
-            <span>Trạng thái</span>
-            <span className={getStatusBadgeClass(status)}>{status}</span>
-          </p>
-
-          {errorMessage && <ErrorState message={errorMessage} title="Lỗi xử lý" />}
-
-          {result && (
-            <div className="result-layout result-layout--split">
-              <section className="result-card">
-                <div className="result-card__header">
-                  <h3 className="result-card__heading">Transcript</h3>
-                  <div className="result-card__meta">
-                    <span className="meta-pill">ID <strong>{result.meetingId}</strong></span>
-                    <span className="meta-pill">Status <strong>{result.status}</strong></span>
-                  </div>
-                </div>
-                <div className="result-card__transcript" data-testid="e2e-transcript">
-                    <TranscriptDisplay
-                      segments={result.transcriptSegments}
-                      transcriptTextFallback={result.transcript}
-                      emptyMessage="Không có transcript"
-                      maxHeight="420px"
-                      enableDisplayGrouping
-                    />
-                </div>
-              </section>
-              <AnalysisPanel
-                title="Phân tích upload"
-                analysis={analysis ?? null}
-                status={analysis ? 'ready' : 'empty'}
-                testId="e2e-analysis"
-                summaryTestId="e2e-summary"
-                summaryFallback="(empty)"
-              />
-            </div>
-          )}
-        </>
-      )}
-
-      {liveModeActive && (
-        <section className="realtime-panel">
-          <div className="realtime-hero">
-          <div className="realtime-panel__header">
-            <div>
-              <h2 className="realtime-panel__title">Ghi âm trực tiếp</h2>
-              <p className="realtime-panel__status">
-                {liveStatusMessage || connectionView.detail || 'Sẵn sàng tạo meeting và bắt đầu ghi âm'}
-              </p>
-              <div className="realtime-panel__settings">
-                <label className="upload-panel__label">
-                  <span className="upload-panel__label-text">Language mode</span>
-                  <select
-                    className="upload-panel__select"
-                    value={selectedRealtimeLanguage}
-                    onChange={(event) => setSelectedRealtimeLanguage(normalizeRealtimeLanguage(event.target.value))}
-                    disabled={isRealtimeLanguageSelectorDisabled(liveLifecycleState)}
-                  >
-                    {REALTIME_LANGUAGE_OPTIONS.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <p className="realtime-panel__hint">Chọn Việt + Anh nếu audio có thuật ngữ tiếng Anh.</p>
-                <label className="upload-panel__label">
-                  <span className="upload-panel__label-text">Speaker mode</span>
-                  <select
-                    className="upload-panel__select"
-                    value={selectedRealtimeSpeakerMode}
-                    onChange={(event) => setSelectedRealtimeSpeakerMode(normalizeRealtimeSpeakerMode(event.target.value))}
-                    disabled={isRealtimeSpeakerModeSelectorDisabled(liveLifecycleState)}
-                  >
-                    {REALTIME_SPEAKER_MODE_OPTIONS.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <p className="realtime-panel__hint">Single speaker disables diarization. Multiple speakers turns it on.</p>
-              </div>
-            </div>
-            {liveMeetingId && (
-              <span className="realtime-panel__meeting-badge">Meeting #{liveMeetingId}</span>
-            )}
-          </div>
-
-          <div className="realtime-panel__recorder-wrap">
-          <AudioRecorderButton
-            recorder={audioRecorder}
-            lifecycleState={liveLifecycleState}
-            onBeforeStartRecording={handlePrepareLiveMeeting}
-            onChunkReady={handleLiveChunkReady}
-            onRecordingComplete={handleLiveRecordingComplete}
-          />
-          </div>
-          </div>
-
-          {liveError && <ErrorState message={liveError} title="Lỗi realtime" />}
-          {livePartialWarning && <div className="warning-banner">{livePartialWarning}</div>}
-
-          {showJoinOtherMeeting && (
-            <div className="join-meeting-panel">
-              <strong>Tham gia Meeting khác</strong>
-              <input
-                type="number"
-                placeholder="Meeting ID"
-                value={joinMeetingIdInput}
-                onChange={(e) => setJoinMeetingIdInput(e.target.value)}
-              />
-              <button
-                type="button"
-                onClick={handleJoinMeeting}
-                disabled={!joinMeetingIdInput.trim()}
-              >
-                Join Meeting
-              </button>
-            </div>
-          )}
-
-          <div className="realtime-panel__grid">
-            <RealtimeTranscript
-              segments={liveTranscriptSegmentsForDisplay}
-              highlightKeywords={liveTranscriptKeywords}
-              maxHeight="620px"
-            />
-
-            <aside className="realtime-panel__aside">
-              <div className="status-card status-card--live">
-                <div className="status-card__label">Connection</div>
-                <div className="status-card__value">{connectionView.title}</div>
-                <div className="status-card__detail">{connectionView.detail}</div>
-                {connectionView.closeReason && (
-                  <div className={`status-card__detail ${connectionView.closeReasonIsError ? 'status-card__detail--error' : ''}`}>
-                    Close reason: {connectionView.closeReason}
-                  </div>
-                )}
-              </div>
-
-              <div className="status-card">
-                <div className="status-card__label">Keywords</div>
-                <div className="status-card__value">{realtimeStream.keywords.length}</div>
-              </div>
-
-              <div className="status-card">
-                <div className="status-card__label">User</div>
-                <div className="status-card__value">{currentUserId || 'Unknown'}</div>
-              </div>
-            </aside>
-          </div>
-
-          {(liveLifecycleState === 'stopped' || liveAnalysisStatus !== 'idle') && (
-            <div className="realtime-analysis-section">
-            <AnalysisPanel
-              title="Phân tích realtime"
-              analysis={liveAnalysis}
-              status={
-                liveAnalysisStatus === 'polling'
-                  ? 'loading'
-                  : liveAnalysis
-                    ? 'ready'
-                    : liveAnalysisError
-                      ? 'empty'
-                      : 'empty'
-              }
-              loadingMessage="Đang phân tích transcript sau khi dừng ghi âm..."
-              errorMessage={liveAnalysisError}
-              emptyMessage="Chưa có kết quả phân tích realtime"
-              summaryFallback="(đang chờ phân tích)"
-              testId="e2e-live-analysis"
-            />
-            </div>
-          )}
-        </section>
-      )}
-    </main>
+    <div className="app app--dashboard">
+      <DashboardLayout
+        user={dashboardUser}
+        onLogout={handleLogout}
+        activeMenu={featureScene}
+        onNavigate={setFeatureScene}
+        showRealtime={isRealtimeEnabled}
+        recentFiles={recentFiles}
+      >
+        {renderDashboardScene()}
+      </DashboardLayout>
+    </div>
   )
 }

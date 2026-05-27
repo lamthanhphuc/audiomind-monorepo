@@ -3,8 +3,6 @@ import { act } from 'react-dom/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import FeatureAnalysis from './FeatureAnalysis'
 
-const noopPromise = async () => {}
-
 describe('FeatureAnalysis', () => {
   let container: HTMLDivElement
   let root: ReturnType<typeof createRoot>
@@ -42,10 +40,8 @@ describe('FeatureAnalysis', () => {
             actionItems: ['Toi uu cache'],
             domainMode: 'it',
           } as any}
-          transcript={{ meeting_id: 42, transcripts: [] }}
-          processedMeetings={[]}
-          onStartProcessing={noopPromise}
-          onLoadAnalysis={noopPromise}
+          transcriptSegments={[]}
+          transcriptText=""
         />,
       )
     })
@@ -70,10 +66,8 @@ describe('FeatureAnalysis', () => {
             technical_terms: ['Webhook'],
             action_items: [{ task: 'Retry webhook' }],
           } as any}
-          transcript={{ meeting_id: 7, transcripts: [] }}
-          processedMeetings={[]}
-          onStartProcessing={noopPromise}
-          onLoadAnalysis={noopPromise}
+          transcriptSegments={[]}
+          transcriptText=""
         />,
       )
     })
@@ -91,10 +85,8 @@ describe('FeatureAnalysis', () => {
           meetingTitle="Summary only"
           busy={false}
           analysis={{ summary: 'Only summary' } as any}
-          transcript={{ meeting_id: 99, transcripts: [] }}
-          processedMeetings={[]}
-          onStartProcessing={noopPromise}
-          onLoadAnalysis={noopPromise}
+          transcriptSegments={[]}
+          transcriptText=""
         />,
       )
     })
