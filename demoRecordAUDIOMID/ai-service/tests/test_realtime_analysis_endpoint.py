@@ -61,6 +61,14 @@ class FakeUnavailableAnalyzer(FakeRealtimeAnalyzer):
         super().__init__(fail_with_config_error=True)
 
 
+class FakeParseFailAnalyzer(FakeRealtimeAnalyzer):
+    def _analyze_with_gemini(self, transcript, metadata=None):
+        raise main_module.AnalysisParseError(
+            "Invalid structured response",
+            provider="gemini",
+        )
+
+
 @pytest.fixture
 def db_session():
     engine = create_engine("sqlite+pysqlite:///:memory:")
@@ -91,10 +99,11 @@ def test_realtime_analysis_skips_empty_transcript(db_session):
         source="realtime",
     )
 
-    response = asyncio.run(main_module.analyze_realtime_transcript(request, db_session))
+    with pytest.raises(main_module.HTTPException) as exc_info:
+        asyncio.run(main_module.analyze_realtime_transcript(request, db_session))
 
-    assert response.status == "skipped"
-    assert response.reason == "empty_transcript"
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.detail == "Empty transcript"
     assert db_session.query(Analysis).filter(Analysis.meeting_id == 901).first() is None
 
 
@@ -137,5 +146,53 @@ def test_realtime_analysis_returns_503_when_analyzer_unavailable(
         asyncio.run(main_module.analyze_realtime_transcript(request, db_session))
 
     assert exc_info.value.status_code == 503
-    assert exc_info.value.detail == "Analysis service unavailable"
+    assert exc_info.value.detail == "Gemini service unavailable"
     assert db_session.query(Analysis).filter(Analysis.meeting_id == 903).first() is None
+
+
+def test_realtime_analysis_returns_502_when_parse_fails(db_session, monkeypatch):
+    monkeypatch.setattr(
+        main_module, "_realtime_analysis_analyzer", FakeParseFailAnalyzer()
+    )
+    request = RealtimeTranscriptAnalysisRequest(
+        meeting_id=904,
+        transcript="Speaker 1: parse fail path",
+        source="realtime",
+    )
+
+    with pytest.raises(main_module.HTTPException) as exc_info:
+        asyncio.run(main_module.analyze_realtime_transcript(request, db_session))
+
+    assert exc_info.value.status_code == 502
+    assert exc_info.value.detail == "Gemini analysis failed"
+    assert db_session.query(Analysis).filter(Analysis.meeting_id == 904).first() is None
+
+
+def test_realtime_analysis_cooldown_active_returns_failed_without_new_call(
+    db_session, monkeypatch
+):
+    request = RealtimeTranscriptAnalysisRequest(
+        meeting_id=905,
+        transcript="Speaker 1: cooldown guard",
+        source="realtime",
+    )
+
+    monkeypatch.setattr(
+        main_module,
+        "_try_begin_realtime_analysis",
+        lambda meeting_id, transcript_hash, source: (
+            False,
+            "cooldown_active",
+            "GEMINI_UNAVAILABLE",
+            37,
+            None,
+        ),
+    )
+
+    response = asyncio.run(main_module.analyze_realtime_transcript(request, db_session))
+
+    assert response.status == "failed"
+    assert response.reason == "cooldown_active"
+    assert response.retryAfterSeconds == 37
+    assert response.errorCode == "GEMINI_UNAVAILABLE"
+    assert len(main_module._realtime_analysis_analyzer.calls) == 0

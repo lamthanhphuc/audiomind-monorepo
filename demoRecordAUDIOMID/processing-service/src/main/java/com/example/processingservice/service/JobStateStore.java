@@ -17,6 +17,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.UUID;
 
 @Component
 @RequiredArgsConstructor
@@ -93,8 +94,46 @@ public class JobStateStore {
 
     @Value("${processing.job-state-ttl-seconds:21600}")
     private long jobStateTtlSeconds;
+    @Value("${processing.analysis-lock-ttl-seconds:180}")
+    private long analysisLockTtlSeconds;
+    @Value("${processing.analysis-failure-cooldown-seconds:90}")
+    private long analysisFailureCooldownSeconds;
+    @Value("${processing.analysis-skip-log-throttle-seconds:45}")
+    private long analysisSkipLogThrottleSeconds;
 
     public record IdempotencyClaim(Long jobId, boolean owner) {
+    }
+
+    public record AnalysisTriggerDecision(
+            boolean shouldTrigger,
+            String status,
+            String reason,
+            String lockToken,
+            int retryAfterSeconds,
+            String errorCode
+    ) {
+    }
+
+    public record AnalysisStateSnapshot(
+            String status,
+            String transcriptHash,
+            String source,
+            String errorCode,
+            String errorMessage,
+            long cooldownUntilMs,
+            int retryAfterSeconds
+    ) {
+        boolean isRunning() {
+            return "RUNNING".equals(status) || "PENDING".equals(status) || "QUEUED".equals(status);
+        }
+
+        boolean isFailed() {
+            return "FAILED".equals(status);
+        }
+
+        boolean isCompleted() {
+            return "COMPLETED".equals(status);
+        }
     }
 
     public Optional<Long> getIdempotentJobId(String fileId) {
@@ -224,8 +263,171 @@ public class JobStateStore {
         redisTemplate.expire(jobKey(jobId), jobStateTtl());
     }
 
+    public AnalysisTriggerDecision tryStartAnalysis(Long meetingId, String transcriptHash, String source, String triggeredBy) {
+        long nowMs = System.currentTimeMillis();
+        String normalizedHash = normalizeTranscriptHash(transcriptHash);
+        AnalysisStateSnapshot snapshot = getAnalysisState(meetingId).orElse(null);
+        if (snapshot != null) {
+            if (snapshot.isCompleted() && normalizedHash.equals(snapshot.transcriptHash())) {
+                return new AnalysisTriggerDecision(false, "COMPLETED", "already_exists", null, 0, null);
+            }
+            if (snapshot.isRunning()) {
+                int retryAfter = lockRetryAfterSeconds(meetingId);
+                return new AnalysisTriggerDecision(false, snapshot.status(), "in_progress", null, retryAfter, null);
+            }
+            if (snapshot.isFailed() && snapshot.retryAfterSeconds() > 0) {
+                return new AnalysisTriggerDecision(
+                        false,
+                        "FAILED",
+                        "cooldown_active",
+                        null,
+                        snapshot.retryAfterSeconds(),
+                        snapshot.errorCode()
+                );
+            }
+        }
+
+        String lockToken = UUID.randomUUID().toString();
+        Boolean locked = redisTemplate.opsForValue().setIfAbsent(
+                analysisLockKey(meetingId),
+                lockToken,
+                analysisLockTtl()
+        );
+        if (!Boolean.TRUE.equals(locked)) {
+            int retryAfter = lockRetryAfterSeconds(meetingId);
+            return new AnalysisTriggerDecision(false, "RUNNING", "lock_busy", null, retryAfter, null);
+        }
+
+        Map<String, String> state = new HashMap<>();
+        state.put("meetingId", String.valueOf(meetingId));
+        state.put("status", "RUNNING");
+        state.put("source", safeText(source));
+        state.put("transcriptHash", normalizedHash);
+        state.put("updatedAtMs", String.valueOf(nowMs));
+        state.put("startedAtMs", String.valueOf(nowMs));
+        state.put("lastTriggeredBy", safeText(triggeredBy));
+        state.put("errorCode", "");
+        state.put("errorMessage", "");
+        redisTemplate.opsForHash().putAll(analysisStateKey(meetingId), state);
+        redisTemplate.expire(analysisStateKey(meetingId), jobStateTtl());
+        redisTemplate.delete(analysisCooldownKey(meetingId));
+        return new AnalysisTriggerDecision(true, "RUNNING", "started", lockToken, 0, null);
+    }
+
+    public void markAnalysisCompleted(
+            Long meetingId,
+            String transcriptHash,
+            String source,
+            String triggeredBy,
+            String lockToken
+    ) {
+        long nowMs = System.currentTimeMillis();
+        Map<String, String> state = new HashMap<>();
+        state.put("meetingId", String.valueOf(meetingId));
+        state.put("status", "COMPLETED");
+        state.put("source", safeText(source));
+        state.put("transcriptHash", normalizeTranscriptHash(transcriptHash));
+        state.put("updatedAtMs", String.valueOf(nowMs));
+        state.put("completedAtMs", String.valueOf(nowMs));
+        state.put("lastTriggeredBy", safeText(triggeredBy));
+        state.put("errorCode", "");
+        state.put("errorMessage", "");
+        redisTemplate.opsForHash().putAll(analysisStateKey(meetingId), state);
+        redisTemplate.expire(analysisStateKey(meetingId), jobStateTtl());
+        redisTemplate.delete(analysisCooldownKey(meetingId));
+        releaseAnalysisLock(meetingId, lockToken);
+    }
+
+    public void markAnalysisFailed(
+            Long meetingId,
+            String transcriptHash,
+            String source,
+            String triggeredBy,
+            String lockToken,
+            String errorCode,
+            String errorMessage
+    ) {
+        long nowMs = System.currentTimeMillis();
+        long cooldownUntilMs = nowMs + Math.max(1, analysisFailureCooldownSeconds) * 1000L;
+        int retryAfterSeconds = Math.max(1, (int) Math.ceil((cooldownUntilMs - nowMs) / 1000.0));
+
+        Map<String, String> state = new HashMap<>();
+        state.put("meetingId", String.valueOf(meetingId));
+        state.put("status", "FAILED");
+        state.put("source", safeText(source));
+        state.put("transcriptHash", normalizeTranscriptHash(transcriptHash));
+        state.put("updatedAtMs", String.valueOf(nowMs));
+        state.put("failedAtMs", String.valueOf(nowMs));
+        state.put("cooldownUntilMs", String.valueOf(cooldownUntilMs));
+        state.put("retryAfterSeconds", String.valueOf(retryAfterSeconds));
+        state.put("lastTriggeredBy", safeText(triggeredBy));
+        state.put("errorCode", safeText(errorCode));
+        state.put("errorMessage", safeText(errorMessage));
+        redisTemplate.opsForHash().putAll(analysisStateKey(meetingId), state);
+        redisTemplate.expire(analysisStateKey(meetingId), jobStateTtl());
+        redisTemplate.opsForValue().set(
+                analysisCooldownKey(meetingId),
+                String.valueOf(cooldownUntilMs),
+                Duration.ofSeconds(Math.max(1, analysisFailureCooldownSeconds))
+        );
+        releaseAnalysisLock(meetingId, lockToken);
+    }
+
+    public Optional<AnalysisStateSnapshot> getAnalysisState(Long meetingId) {
+        Map<Object, Object> raw = redisTemplate.opsForHash().entries(analysisStateKey(meetingId));
+        if (raw == null || raw.isEmpty()) {
+            return Optional.empty();
+        }
+        long nowMs = System.currentTimeMillis();
+        String status = normalizeStatus(raw.get("status"));
+        String transcriptHash = String.valueOf(raw.getOrDefault("transcriptHash", "")).trim().toLowerCase();
+        String source = String.valueOf(raw.getOrDefault("source", "")).trim();
+        String errorCode = String.valueOf(raw.getOrDefault("errorCode", "")).trim();
+        String errorMessage = String.valueOf(raw.getOrDefault("errorMessage", "")).trim();
+        long cooldownUntilMs = parseLong(String.valueOf(raw.getOrDefault("cooldownUntilMs", "0")), 0L);
+        String cooldownValue = redisTemplate.opsForValue().get(analysisCooldownKey(meetingId));
+        long cooldownFromKey = parseLong(cooldownValue, 0L);
+        if (cooldownFromKey > cooldownUntilMs) {
+            cooldownUntilMs = cooldownFromKey;
+        }
+        int retryAfterSeconds = cooldownUntilMs > nowMs
+                ? Math.max(1, (int) Math.ceil((cooldownUntilMs - nowMs) / 1000.0))
+                : 0;
+        return Optional.of(new AnalysisStateSnapshot(
+                status,
+                transcriptHash,
+                source,
+                errorCode,
+                errorMessage,
+                cooldownUntilMs,
+                retryAfterSeconds
+        ));
+    }
+
+    public boolean shouldLogAnalysisSkip(Long meetingId, String source, String reason) {
+        String key = analysisSkipLogKey(meetingId, source, reason);
+        Boolean created = redisTemplate.opsForValue().setIfAbsent(
+                key,
+                String.valueOf(System.currentTimeMillis()),
+                Duration.ofSeconds(Math.max(1, analysisSkipLogThrottleSeconds))
+        );
+        return Boolean.TRUE.equals(created);
+    }
+
     private Duration jobStateTtl() {
         return Duration.ofSeconds(jobStateTtlSeconds);
+    }
+
+    private Duration analysisLockTtl() {
+        return Duration.ofSeconds(Math.max(120, analysisLockTtlSeconds));
+    }
+
+    private int lockRetryAfterSeconds(Long meetingId) {
+        Long ttl = redisTemplate.getExpire(analysisLockKey(meetingId));
+        if (ttl == null || ttl < 0) {
+            return (int) Math.max(1, analysisLockTtlSeconds);
+        }
+        return (int) Math.max(1, ttl);
     }
 
     private Object decodeHashValue(String field, String value) {
@@ -271,5 +473,58 @@ public class JobStateStore {
 
     private String idempotencyKey(String fileId) {
         return "idem:" + fileId;
+    }
+
+    private String analysisLockKey(Long meetingId) {
+        return "analysis:lock:" + meetingId;
+    }
+
+    private String analysisStateKey(Long meetingId) {
+        return "analysis:state:" + meetingId;
+    }
+
+    private String analysisCooldownKey(Long meetingId) {
+        return "analysis:cooldown:" + meetingId;
+    }
+
+    private String analysisSkipLogKey(Long meetingId, String source, String reason) {
+        return "analysis:skiplog:" + meetingId + ":" + safeText(source) + ":" + safeText(reason);
+    }
+
+    private String normalizeTranscriptHash(String transcriptHash) {
+        return transcriptHash == null ? "" : transcriptHash.trim().toLowerCase();
+    }
+
+    private long parseLong(String value, long fallback) {
+        if (value == null || value.isBlank()) {
+            return fallback;
+        }
+        try {
+            return Long.parseLong(value.trim());
+        } catch (NumberFormatException ignored) {
+            return fallback;
+        }
+    }
+
+    private String safeText(String value) {
+        if (value == null) {
+            return "";
+        }
+        String trimmed = value.trim();
+        if (trimmed.length() <= 180) {
+            return trimmed;
+        }
+        return trimmed.substring(0, 180);
+    }
+
+    private void releaseAnalysisLock(Long meetingId, String lockToken) {
+        if (lockToken == null || lockToken.isBlank()) {
+            return;
+        }
+        String key = analysisLockKey(meetingId);
+        String current = redisTemplate.opsForValue().get(key);
+        if (lockToken.equals(current)) {
+            redisTemplate.delete(key);
+        }
     }
 }

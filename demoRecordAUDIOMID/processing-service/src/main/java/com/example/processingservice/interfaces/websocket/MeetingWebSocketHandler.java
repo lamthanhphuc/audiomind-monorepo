@@ -30,6 +30,7 @@ import com.example.processingservice.client.AIServiceClient;
 import com.example.processingservice.client.AudioStreamResetRequiredException;
 import com.example.processingservice.security.JwtUtil;
 import com.example.processingservice.security.MeetingChannelAuthorizer;
+import com.example.processingservice.service.JobStateStore;
 import com.example.processingservice.services.RealtimeEventSubscriber;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -61,17 +62,16 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
     private static final long IDLE_SESSION_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
     static final int MAX_FINALIZED_TRANSCRIPT_CACHE_SIZE = 100;
     private static final long FINALIZED_TRANSCRIPT_CACHE_TTL_MS = 5 * 60 * 1000;
-    private static final long REALTIME_ANALYSIS_GUARD_TTL_MS = 30 * 60 * 1000;
     private static final String REALTIME_ANALYSIS_SOURCE_STREAM_STOP = "stream_stop";
     private static final String REALTIME_ANALYSIS_SOURCE_AFTER_CLOSE = "after_close";
 
     // Cache for finalized transcripts (key: meetingId, value: final transcript event)
     private final ConcurrentHashMap<Long, CachedTranscript> finalizedTranscriptCache = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<Long, RealtimeAnalysisGuard> realtimeAnalysisGuard = new ConcurrentHashMap<>();
 
     private final MeetingChannelAuthorizer meetingChannelAuthorizer;
     private final RealtimeEventSubscriber realtimeEventSubscriber;
     private final AIServiceClient aiServiceClient;
+    private final JobStateStore jobStateStore;
     private final ObjectMapper objectMapper;
     private final JwtUtil jwtUtil;
 
@@ -82,11 +82,13 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
             MeetingChannelAuthorizer meetingChannelAuthorizer,
             RealtimeEventSubscriber realtimeEventSubscriber,
             AIServiceClient aiServiceClient,
+            JobStateStore jobStateStore,
             ObjectMapper objectMapper,
             JwtUtil jwtUtil) {
         this.meetingChannelAuthorizer = meetingChannelAuthorizer;
         this.realtimeEventSubscriber = realtimeEventSubscriber;
         this.aiServiceClient = aiServiceClient;
+        this.jobStateStore = jobStateStore;
         this.objectMapper = objectMapper;
         this.jwtUtil = jwtUtil;
     }
@@ -828,13 +830,26 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
         }
 
         String transcriptHash = computeTranscriptHash(transcriptText);
-        if (!markRealtimeAnalysisInProgress(meetingId, transcriptHash, source)) {
+        JobStateStore.AnalysisTriggerDecision decision = jobStateStore.tryStartAnalysis(
+                meetingId,
+                transcriptHash,
+                source,
+                "processing_ws_realtime_stop"
+        );
+        if (!decision.shouldTrigger()) {
+            log.info(
+                    "event=REALTIME_ANALYSIS_SKIPPED reason={} source={} meetingId={} retryAfterSeconds={}",
+                    decision.reason(),
+                    source,
+                    meetingId,
+                    decision.retryAfterSeconds()
+            );
             return;
         }
 
         try {
-            log.info("REALTIME_ANALYSIS_TRIGGERED meetingId={} source={}", meetingId, source);
-            aiServiceClient.analyzeRealtimeTranscript(
+            log.info("event=REALTIME_ANALYSIS_TRIGGERED meetingId={} source={}", meetingId, source);
+            Map<String, Object> analysisResponse = aiServiceClient.analyzeRealtimeTranscript(
                     meetingId,
                     transcriptText,
                     "it",
@@ -843,18 +858,72 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                     traceId,
                     authorization
             );
-            realtimeAnalysisGuard.put(
-                    meetingId,
-                    new RealtimeAnalysisGuard(transcriptHash, System.currentTimeMillis(), false)
+
+            String analysisStatus = normalizeStatus(
+                    analysisResponse == null ? null : analysisResponse.get("status")
             );
-            log.info("REALTIME_ANALYSIS_SAVED meetingId={} source={}", meetingId, source);
-        } catch (Exception ex) {
-            realtimeAnalysisGuard.remove(meetingId);
+            if ("FAILED".equals(analysisStatus)) {
+                String errorCode = mapRealtimeFailureCode(analysisResponse);
+                jobStateStore.markAnalysisFailed(
+                        meetingId,
+                        transcriptHash,
+                        source,
+                        "processing_ws_realtime_stop",
+                        decision.lockToken(),
+                        errorCode,
+                        safeText(analysisResponse.get("reason"))
+                );
+                log.warn(
+                        "event=REALTIME_ANALYSIS_FAILED meetingId={} source={} errorCode={}",
+                        meetingId,
+                        source,
+                        errorCode
+                );
+                return;
+            }
+
+            jobStateStore.markAnalysisCompleted(
+                    meetingId,
+                    transcriptHash,
+                    source,
+                    "processing_ws_realtime_stop",
+                    decision.lockToken()
+            );
+            log.info("event=REALTIME_ANALYSIS_SAVED meetingId={} source={}", meetingId, source);
+        } catch (org.springframework.web.client.HttpStatusCodeException ex) {
+            String errorCode = mapFailureCode(ex);
+            jobStateStore.markAnalysisFailed(
+                    meetingId,
+                    transcriptHash,
+                    source,
+                    "processing_ws_realtime_stop",
+                    decision.lockToken(),
+                    errorCode,
+                    safeText(ex.getStatusText())
+            );
             log.warn(
-                    "REALTIME_ANALYSIS_FAILED meetingId={} source={} errorCode={}",
+                    "event=REALTIME_ANALYSIS_FAILED meetingId={} source={} errorCode={} httpStatus={}",
                     meetingId,
                     source,
-                    safeErrorCode(ex)
+                    errorCode,
+                    ex.getStatusCode().value()
+            );
+        } catch (Exception ex) {
+            String errorCode = mapFailureCode(ex);
+            jobStateStore.markAnalysisFailed(
+                    meetingId,
+                    transcriptHash,
+                    source,
+                    "processing_ws_realtime_stop",
+                    decision.lockToken(),
+                    errorCode,
+                    ex.getClass().getSimpleName()
+            );
+            log.warn(
+                    "event=REALTIME_ANALYSIS_FAILED meetingId={} source={} errorCode={}",
+                    meetingId,
+                    source,
+                    errorCode
             );
         }
     }
@@ -913,37 +982,55 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
         }
     }
 
-    private boolean markRealtimeAnalysisInProgress(Long meetingId, String transcriptHash, String source) {
-        evictExpiredRealtimeAnalysisGuards();
-        RealtimeAnalysisGuard currentGuard = realtimeAnalysisGuard.get(meetingId);
-        if (currentGuard != null) {
-            if (currentGuard.inProgress()) {
-                log.info(
-                        "REALTIME_ANALYSIS_SKIPPED reason=in_progress source={} meetingId={}",
-                        source,
-                        meetingId
-                );
-                return false;
-            }
-            if (transcriptHash.equals(currentGuard.transcriptHash())) {
-                log.info(
-                        "REALTIME_ANALYSIS_SKIPPED reason=already_exists source={} meetingId={}",
-                        source,
-                        meetingId
-                );
-                return false;
-            }
+    private String normalizeStatus(Object value) {
+        if (value == null) {
+            return "";
         }
-        realtimeAnalysisGuard.put(
-                meetingId,
-                new RealtimeAnalysisGuard(transcriptHash, System.currentTimeMillis(), true)
-        );
-        return true;
+        return String.valueOf(value).trim().toUpperCase(Locale.ROOT);
     }
 
-    private void evictExpiredRealtimeAnalysisGuards() {
-        long cutoff = System.currentTimeMillis() - REALTIME_ANALYSIS_GUARD_TTL_MS;
-        realtimeAnalysisGuard.entrySet().removeIf(entry -> entry.getValue().updatedAtMs() < cutoff);
+    private String mapRealtimeFailureCode(Map<String, Object> response) {
+        if (response == null) {
+            return "GEMINI_ANALYSIS_FAILED";
+        }
+        String reason = safeText(response.get("reason")).toLowerCase(Locale.ROOT);
+        if (reason.contains("empty_transcript")) {
+            return "EMPTY_TRANSCRIPT";
+        }
+        if (reason.contains("unavailable")) {
+            return "GEMINI_UNAVAILABLE";
+        }
+        return "GEMINI_ANALYSIS_FAILED";
+    }
+
+    private String mapFailureCode(Exception ex) {
+        if (ex instanceof org.springframework.web.client.HttpStatusCodeException httpEx) {
+            int status = httpEx.getStatusCode().value();
+            String statusText = safeText(httpEx.getStatusText()).toLowerCase(Locale.ROOT);
+            String body = safeText(httpEx.getResponseBodyAsString()).toLowerCase(Locale.ROOT);
+            if (status == 422 || statusText.contains("empty transcript") || body.contains("empty_transcript")) {
+                return "EMPTY_TRANSCRIPT";
+            }
+            if (status == 503 || statusText.contains("gemini") || body.contains("gemini_unavailable")) {
+                return "GEMINI_UNAVAILABLE";
+            }
+            if (status == 502) {
+                return "GEMINI_ANALYSIS_FAILED";
+            }
+            return "AI_SERVICE_UNAVAILABLE";
+        }
+        return "GEMINI_ANALYSIS_FAILED";
+    }
+
+    private String safeText(Object value) {
+        if (value == null) {
+            return "";
+        }
+        String text = String.valueOf(value).trim();
+        if (text.length() <= 180) {
+            return text;
+        }
+        return text.substring(0, 180);
     }
 
     int finalizedTranscriptCacheSizeForTesting() {
@@ -976,9 +1063,6 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
     }
 
     private record CachedTranscript(Map<String, Object> event, long createdAtMs) {
-    }
-
-    private record RealtimeAnalysisGuard(String transcriptHash, long updatedAtMs, boolean inProgress) {
     }
 
     private Long getLongAttribute(Map<String, Object> data, String key) {

@@ -133,6 +133,8 @@ class RealtimeTranscriptAnalysisResponse(BaseModel):
     reason: Optional[str] = None
     transcript_hash: Optional[str] = None
     source: Optional[str] = None
+    retryAfterSeconds: Optional[int] = None
+    errorCode: Optional[str] = None
 
 
 class SttStreamResponse(BaseModel):

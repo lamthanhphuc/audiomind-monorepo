@@ -141,10 +141,15 @@ public class GlobalExceptionHandler {
             case CONFLICT -> ErrorCode.CONFLICT;
             case SERVICE_UNAVAILABLE -> normalizedReason.contains("ai service")
                     ? ErrorCode.AI_SERVICE_UNAVAILABLE
-                    : ErrorCode.SERVICE_UNAVAILABLE;
+                    : normalizedReason.contains("gemini")
+                        ? ErrorCode.GEMINI_UNAVAILABLE
+                        : ErrorCode.SERVICE_UNAVAILABLE;
             case BAD_GATEWAY -> normalizedReason.contains("gemini")
                     ? ErrorCode.GEMINI_ANALYSIS_FAILED
                     : ErrorCode.SERVICE_UNAVAILABLE;
+            case UNPROCESSABLE_ENTITY -> normalizedReason.contains("empty transcript")
+                    ? ErrorCode.EMPTY_TRANSCRIPT
+                    : ErrorCode.VALIDATION_ERROR;
             default -> status.is5xxServerError() ? ErrorCode.INTERNAL_ERROR : ErrorCode.SERVICE_UNAVAILABLE;
         };
     }

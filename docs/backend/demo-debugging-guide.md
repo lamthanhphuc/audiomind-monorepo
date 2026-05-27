@@ -1,9 +1,9 @@
 # Backend Demo Debugging Guide
 
-Purpose: quick operational guide for Phase 7B-7D demo hardening validation.
+Purpose: quick operational guide for Phase 7B-7E demo hardening validation.
 Scope: docker startup/rebuild/health/log triage for backend services only.
 Last updated: 2026-05-27
-Applies to: Phase 7B-7D backend demo hardening
+Applies to: Phase 7B-7E backend demo hardening
 
 ## 1. Start and rebuild commands
 
@@ -137,6 +137,25 @@ docker compose --env-file infra/.env -f infra/docker-compose.dev.yml logs proces
 2. Send one `stream.stop`.
 3. Verify logs show one finalization path and no duplicate trigger spam.
 4. Call analysis polling endpoint before/after ready and verify transition behavior.
+
+## 4.1 Analysis reliability smoke
+
+1. Poll `/processing/<meetingId>/analysis` before the transcript or analysis is ready.
+2. Stop realtime once, then stop again, and confirm only one analysis trigger is logged.
+3. Poll again after completion and confirm the response is stable.
+4. Check logs by `traceId`, `meetingId`, and `ANALYSIS_*` / `REALTIME_ANALYSIS_*` keys.
+
+Expected:
+- poll before ready should not trigger repeated analysis spam
+- duplicate realtime stop should show one trigger and skipped duplicates
+- failed analysis should preserve transcript availability
+- logs should include traceId/meetingId and ANALYSIS_* or REALTIME_ANALYSIS_* keys when applicable
+
+Useful filters:
+
+```powershell
+docker compose --env-file infra/.env -f infra/docker-compose.dev.yml logs processing-api ai-api | Select-String -Pattern "traceId=test-7e|meetingId=<meetingId>|ANALYSIS_GET_|REALTIME_ANALYSIS_|GEMINI_ANALYSIS_" -CaseSensitive:$false
+```
 
 Expected key logs to inspect:
 - `REALTIME_ANALYSIS_TRIGGER_ATTEMPT`

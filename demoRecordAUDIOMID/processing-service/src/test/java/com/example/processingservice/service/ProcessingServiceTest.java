@@ -12,16 +12,12 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.lenient;
 
-import java.lang.reflect.Constructor;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.concurrent.ConcurrentHashMap;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -29,7 +25,6 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.http.HttpStatus;
-import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -68,6 +63,16 @@ class ProcessingServiceTest {
 
         when(meetingServiceClient.getMeetingById(anyLong(), anyString(), anyString()))
             .thenReturn(Map.of("id", 1L));
+        lenient().when(jobStateStore.tryStartAnalysis(anyLong(), anyString(), anyString(), anyString()))
+                .thenReturn(new JobStateStore.AnalysisTriggerDecision(
+                        true,
+                        "RUNNING",
+                        "started",
+                        "lock-token",
+                        0,
+                        null
+                ));
+        lenient().when(jobStateStore.getAnalysisState(anyLong())).thenReturn(Optional.empty());
     }
 
     @Test
@@ -367,6 +372,25 @@ class ProcessingServiceTest {
             Thread.sleep(150);
             return Map.of("status", "completed");
         });
+        when(jobStateStore.tryStartAnalysis(eq(609L), anyString(), anyString(), anyString()))
+                .thenReturn(
+                        new JobStateStore.AnalysisTriggerDecision(
+                                true,
+                                "RUNNING",
+                                "started",
+                                "lock-token-609",
+                                0,
+                                null
+                        ),
+                        new JobStateStore.AnalysisTriggerDecision(
+                                false,
+                                "RUNNING",
+                                "in_progress",
+                                null,
+                                10,
+                                null
+                        )
+                );
 
         processingService.getAnalysis(609L, "trace-609", AUTH_HEADER);
         processingService.getAnalysis(609L, "trace-609", AUTH_HEADER);
@@ -383,41 +407,31 @@ class ProcessingServiceTest {
     }
 
     @Test
-    void getAnalysis_shouldSkipLazyEnqueueDuringRecentFailureCooldown() throws Exception {
+    void getAnalysis_shouldSkipLazyEnqueueDuringRecentFailureCooldown() {
         when(jobStateStore.getJobState(611L)).thenReturn(Optional.empty());
         when(aiServiceClient.getAnalysis(611L, "trace-611"))
                 .thenThrow(new HttpClientErrorException(HttpStatus.NOT_FOUND));
-        String transcriptText = "SPEAKER_1: failed transcript row";
         when(aiServiceClient.getTranscript(611L, "trace-611")).thenReturn(Map.of(
                 "meeting_id", 611L,
                 "transcripts", List.of(
                         Map.of("speaker", "SPEAKER_1", "text", "failed transcript row")
                 )
         ));
-        String transcriptHash = sha256Hex(transcriptText);
+        when(jobStateStore.tryStartAnalysis(eq(611L), anyString(), anyString(), anyString()))
+                .thenReturn(new JobStateStore.AnalysisTriggerDecision(
+                        false,
+                        "FAILED",
+                        "cooldown_active",
+                        null,
+                        45,
+                        "GEMINI_UNAVAILABLE"
+                ));
 
-        Constructor<?> constructor = Class
-                .forName("com.example.processingservice.service.ProcessingService$RealtimeAnalysisGuard")
-                .getDeclaredConstructor(String.class, long.class, boolean.class, long.class, String.class);
-        constructor.setAccessible(true);
-        Object recentFailureGuard = constructor.newInstance(
-                transcriptHash,
-                System.currentTimeMillis(),
-                false,
-                System.currentTimeMillis() + 60_000L,
-                "analysis_failed"
+        ResponseStatusException ex = assertThrows(
+                ResponseStatusException.class,
+                () -> processingService.getAnalysis(611L, "trace-611", AUTH_HEADER)
         );
-
-        @SuppressWarnings("unchecked")
-        ConcurrentHashMap<Long, Object> guardMap = (ConcurrentHashMap<Long, Object>) ReflectionTestUtils.getField(
-                processingService,
-                "realtimeAnalysisGuard"
-        );
-        guardMap.put(611L, recentFailureGuard);
-
-        Map<String, Object> response = processingService.getAnalysis(611L, "trace-611", AUTH_HEADER);
-
-        assertEquals("NOT_FOUND", response.get("status"));
+        assertEquals(HttpStatus.SERVICE_UNAVAILABLE, ex.getStatusCode());
         verify(aiServiceClient, never()).analyzeRealtimeTranscript(
                 eq(611L),
                 anyString(),
@@ -428,16 +442,6 @@ class ProcessingServiceTest {
                 eq(AUTH_HEADER)
         );
     }
-
-        private static String sha256Hex(String value) {
-                try {
-                        MessageDigest digest = MessageDigest.getInstance("SHA-256");
-                        byte[] bytes = digest.digest(value.getBytes(StandardCharsets.UTF_8));
-                        return java.util.HexFormat.of().formatHex(bytes);
-                } catch (NoSuchAlgorithmException ex) {
-                        throw new IllegalStateException(ex);
-                }
-        }
 
     @Test
     void getAnalysis_shouldSkipLazyEnqueueWhenTranscriptNotReady() {

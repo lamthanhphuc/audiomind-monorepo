@@ -273,6 +273,8 @@ _stt_stream_retry_guards: dict[str, "MeetingStreamRetryGuard"] = {}
 _stt_finalized_responses: dict[str, tuple[SttStreamResponse, float]] = {}
 _STT_FINALIZED_RESPONSE_TTL_SECONDS = 300.0
 _REALTIME_ANALYSIS_GUARD_TTL_SECONDS = 30.0 * 60.0
+_REALTIME_ANALYSIS_LOCK_TTL_SECONDS = 180.0
+_REALTIME_ANALYSIS_FAILURE_COOLDOWN_SECONDS = 90.0
 _realtime_analysis_guard_lock = threading.Lock()
 _realtime_analysis_in_progress: dict[int, tuple[str, float]] = {}
 _realtime_analysis_completed_hash: dict[int, tuple[str, float]] = {}
@@ -849,6 +851,7 @@ def _default_error_message(error: str) -> str:
         "GEMINI_ANALYSIS_FAILED": "Gemini analysis failed",
         "INVALID_LANGUAGE": "Invalid language",
         "EMPTY_TRANSCRIPT": "Transcript is empty",
+        "DUPLICATE_REQUEST_SKIPPED": "Duplicate request skipped",
         "VALIDATION_ERROR": "Request validation failed",
         "INTERNAL_ERROR": "Unexpected server error",
     }
@@ -1298,6 +1301,18 @@ def _compute_transcript_hash(transcript: str, provided_hash: str | None) -> str:
     return hashlib.sha256(transcript.encode("utf-8")).hexdigest()
 
 
+def _analysis_lock_key(meeting_id: int) -> str:
+    return f"analysis:lock:{meeting_id}"
+
+
+def _analysis_state_key(meeting_id: int) -> str:
+    return f"analysis:state:{meeting_id}"
+
+
+def _analysis_cooldown_key(meeting_id: int) -> str:
+    return f"analysis:cooldown:{meeting_id}"
+
+
 def _purge_realtime_analysis_guards(now: float) -> None:
     stale_in_progress = [
         meeting_id
@@ -1317,25 +1332,178 @@ def _purge_realtime_analysis_guards(now: float) -> None:
 
 
 def _try_begin_realtime_analysis(
-    meeting_id: int, transcript_hash: str
-) -> tuple[bool, str | None]:
+    meeting_id: int, transcript_hash: str, source: str
+) -> tuple[bool, str | None, str | None, int, str | None]:
     now = time.time()
+    state: dict[str, str] = {}
+    cooldown_until = 0.0
+    lock_retry_after = 0
+    error_code: str | None = None
+
+    try:
+        client = _get_client()
+        state = client.hgetall(_analysis_state_key(meeting_id)) or {}
+        cooldown_value = client.get(_analysis_cooldown_key(meeting_id))
+        if cooldown_value:
+            try:
+                cooldown_until = max(cooldown_until, float(cooldown_value))
+            except (TypeError, ValueError):
+                cooldown_until = cooldown_until
+        state_cooldown = state.get("cooldown_until")
+        if state_cooldown:
+            try:
+                cooldown_until = max(cooldown_until, float(state_cooldown))
+            except (TypeError, ValueError):
+                cooldown_until = cooldown_until
+
+        status = str(state.get("status") or "").strip().upper()
+        state_hash = str(state.get("transcript_hash") or "").strip().lower()
+        error_code = str(state.get("error_code") or "").strip().upper() or None
+        if status == "COMPLETED" and state_hash and state_hash == transcript_hash:
+            return False, "already_exists", error_code, 0, None
+        if status in {"RUNNING", "PENDING", "QUEUED"}:
+            lock_ttl = client.ttl(_analysis_lock_key(meeting_id))
+            lock_retry_after = int(
+                lock_ttl if isinstance(lock_ttl, int) and lock_ttl > 0 else 1
+            )
+            return False, "in_progress", error_code, lock_retry_after, None
+        if status == "FAILED" and cooldown_until > now:
+            retry_after = max(1, int(cooldown_until - now + 0.999))
+            return False, "cooldown_active", error_code, retry_after, None
+    except Exception as redis_error:
+        logger.warning(
+            "event=REDIS_OPERATION_FAILED operation=realtime_analysis_precheck meetingId={} errorCode={} error={}",
+            meeting_id,
+            type(redis_error).__name__,
+            safe_error_message(redis_error),
+        )
+
+    lock_token = uuid4().hex
+    try:
+        client = _get_client()
+        acquired = client.set(
+            _analysis_lock_key(meeting_id),
+            lock_token,
+            nx=True,
+            ex=max(120, int(_REALTIME_ANALYSIS_LOCK_TTL_SECONDS)),
+        )
+        if not acquired:
+            lock_ttl = client.ttl(_analysis_lock_key(meeting_id))
+            retry_after = int(
+                lock_ttl if isinstance(lock_ttl, int) and lock_ttl > 0 else 1
+            )
+            return False, "in_progress", error_code, retry_after, None
+        client.hset(
+            _analysis_state_key(meeting_id),
+            mapping={
+                "meeting_id": str(meeting_id),
+                "status": "RUNNING",
+                "transcript_hash": transcript_hash,
+                "source": source,
+                "updated_at": str(now),
+                "started_at": str(now),
+                "error_code": "",
+                "error_message": "",
+            },
+        )
+        client.expire(
+            _analysis_state_key(meeting_id), int(settings.job_state_ttl_seconds)
+        )
+        client.delete(_analysis_cooldown_key(meeting_id))
+    except Exception as redis_error:
+        logger.warning(
+            "event=REDIS_OPERATION_FAILED operation=realtime_analysis_begin meetingId={} errorCode={} error={}",
+            meeting_id,
+            type(redis_error).__name__,
+            safe_error_message(redis_error),
+        )
+        lock_token = None
+
     with _realtime_analysis_guard_lock:
         _purge_realtime_analysis_guards(now)
         in_progress = _realtime_analysis_in_progress.get(meeting_id)
         if in_progress is not None:
-            return False, "in_progress"
+            return False, "in_progress", error_code, 1, lock_token
         completed = _realtime_analysis_completed_hash.get(meeting_id)
         if completed is not None and completed[0] == transcript_hash:
-            return False, "already_exists"
+            return False, "already_exists", error_code, 0, lock_token
         _realtime_analysis_in_progress[meeting_id] = (transcript_hash, now)
-        return True, None
+        return True, None, None, 0, lock_token
 
 
 def _finish_realtime_analysis(
-    meeting_id: int, transcript_hash: str, success: bool
+    meeting_id: int,
+    transcript_hash: str,
+    success: bool,
+    source: str,
+    lock_token: str | None,
+    error_code: str | None = None,
+    error_reason: str | None = None,
+    retry_after_seconds: int = 0,
 ) -> None:
     now = time.time()
+    try:
+        client = _get_client()
+        if success:
+            client.hset(
+                _analysis_state_key(meeting_id),
+                mapping={
+                    "meeting_id": str(meeting_id),
+                    "status": "COMPLETED",
+                    "transcript_hash": transcript_hash,
+                    "source": source,
+                    "updated_at": str(now),
+                    "completed_at": str(now),
+                    "error_code": "",
+                    "error_message": "",
+                },
+            )
+            client.expire(
+                _analysis_state_key(meeting_id), int(settings.job_state_ttl_seconds)
+            )
+            client.delete(_analysis_cooldown_key(meeting_id))
+        else:
+            retry_after = max(
+                1,
+                retry_after_seconds or int(_REALTIME_ANALYSIS_FAILURE_COOLDOWN_SECONDS),
+            )
+            cooldown_until = now + retry_after
+            client.hset(
+                _analysis_state_key(meeting_id),
+                mapping={
+                    "meeting_id": str(meeting_id),
+                    "status": "FAILED",
+                    "transcript_hash": transcript_hash,
+                    "source": source,
+                    "updated_at": str(now),
+                    "failed_at": str(now),
+                    "cooldown_until": str(cooldown_until),
+                    "retry_after_seconds": str(retry_after),
+                    "error_code": str(error_code or "GEMINI_ANALYSIS_FAILED"),
+                    "error_message": str(error_reason or "analysis_failed")[:180],
+                },
+            )
+            client.expire(
+                _analysis_state_key(meeting_id), int(settings.job_state_ttl_seconds)
+            )
+            client.set(
+                _analysis_cooldown_key(meeting_id),
+                str(cooldown_until),
+                ex=retry_after,
+            )
+
+        if lock_token:
+            current_token = client.get(_analysis_lock_key(meeting_id))
+            if current_token and str(current_token) == lock_token:
+                client.delete(_analysis_lock_key(meeting_id))
+    except Exception as redis_error:
+        logger.warning(
+            "event=REDIS_OPERATION_FAILED operation=realtime_analysis_finish meetingId={} errorCode={} error={}",
+            meeting_id,
+            type(redis_error).__name__,
+            safe_error_message(redis_error),
+        )
+
     with _realtime_analysis_guard_lock:
         _realtime_analysis_in_progress.pop(meeting_id, None)
         if success:
@@ -1671,15 +1839,14 @@ async def analyze_realtime_transcript(
         source = str(request.source or "realtime").strip().lower() or "realtime"
         transcript_text = _normalize_transcript_text(request.transcript)
         if not transcript_text:
-            logger.info(
-                "REALTIME_ANALYSIS_SKIPPED reason=empty_transcript meetingId={}",
+            logger.warning(
+                "event=REALTIME_ANALYSIS_FAILED meetingId={} source={} errorCode=EMPTY_TRANSCRIPT",
                 meeting_id,
+                source,
             )
-            return RealtimeTranscriptAnalysisResponse(
-                meeting_id=meeting_id,
-                status="skipped",
-                reason="empty_transcript",
-                source=source,
+            raise HTTPException(
+                status_code=422,
+                detail="Empty transcript",
             )
 
         transcript_hash = _compute_transcript_hash(
@@ -1706,23 +1873,49 @@ async def analyze_realtime_transcript(
                     source=source,
                 )
 
-        allowed, skip_reason = _try_begin_realtime_analysis(meeting_id, transcript_hash)
+        (
+            allowed,
+            skip_reason,
+            skip_error_code,
+            retry_after_seconds,
+            lock_token,
+        ) = _try_begin_realtime_analysis(meeting_id, transcript_hash, source)
         if not allowed:
             logger.info(
-                "REALTIME_ANALYSIS_SKIPPED reason={} meetingId={}",
+                "event=REALTIME_ANALYSIS_SKIPPED reason={} meetingId={} retryAfterSeconds={}",
                 skip_reason,
                 meeting_id,
+                retry_after_seconds,
             )
+            if skip_reason == "cooldown_active":
+                return RealtimeTranscriptAnalysisResponse(
+                    meeting_id=meeting_id,
+                    status="failed",
+                    reason=skip_reason,
+                    transcript_hash=transcript_hash,
+                    source=source,
+                    retryAfterSeconds=retry_after_seconds,
+                    errorCode=skip_error_code or "GEMINI_ANALYSIS_FAILED",
+                )
             return RealtimeTranscriptAnalysisResponse(
                 meeting_id=meeting_id,
                 status="skipped",
                 reason=skip_reason,
                 transcript_hash=transcript_hash,
                 source=source,
+                retryAfterSeconds=retry_after_seconds or None,
+                errorCode=skip_error_code,
             )
 
-        logger.info("REALTIME_ANALYSIS_TRIGGERED meetingId={}", meeting_id)
+        logger.info(
+            "event=REALTIME_ANALYSIS_TRIGGERED meetingId={} source={}",
+            meeting_id,
+            source,
+        )
         success = False
+        finish_error_code: str | None = None
+        finish_error_reason: str | None = None
+        finish_retry_after_seconds = 0
         try:
             response = _analyze_and_persist_realtime_transcript(
                 meeting_id=meeting_id,
@@ -1734,37 +1927,67 @@ async def analyze_realtime_transcript(
             )
             success = True
             return response
+        except AnalysisParseError as analysis_error:
+            db.rollback()
+            logger.warning(
+                "event=REALTIME_ANALYSIS_FAILED meetingId={} source={} errorCode=GEMINI_ANALYSIS_FAILED error={}",
+                meeting_id,
+                source,
+                safe_error_message(analysis_error),
+            )
+            finish_error_code = "GEMINI_ANALYSIS_FAILED"
+            finish_error_reason = safe_error_message(analysis_error)
+            finish_retry_after_seconds = int(
+                _REALTIME_ANALYSIS_FAILURE_COOLDOWN_SECONDS
+            )
+            raise HTTPException(
+                status_code=502,
+                detail="Gemini analysis failed",
+            ) from analysis_error
         except (AnalysisConfigError, AnalysisUnavailableError) as analysis_error:
             db.rollback()
             logger.warning(
-                "REALTIME_ANALYSIS_FAILED meetingId={} reason=analysis_unavailable error={}",
+                "event=REALTIME_ANALYSIS_FAILED meetingId={} source={} errorCode=GEMINI_UNAVAILABLE error={}",
                 meeting_id,
+                source,
                 safe_error_message(analysis_error),
+            )
+            finish_error_code = "GEMINI_UNAVAILABLE"
+            finish_error_reason = safe_error_message(analysis_error)
+            finish_retry_after_seconds = int(
+                _REALTIME_ANALYSIS_FAILURE_COOLDOWN_SECONDS
             )
             raise HTTPException(
                 status_code=503,
-                detail="Analysis service unavailable",
+                detail="Gemini service unavailable",
             ) from analysis_error
         except Exception as analysis_error:
             db.rollback()
             logger.warning(
-                "REALTIME_ANALYSIS_FAILED meetingId={} reason={} errorCode={}",
+                "event=REALTIME_ANALYSIS_FAILED meetingId={} source={} errorCode=GEMINI_ANALYSIS_FAILED error={}",
                 meeting_id,
+                source,
                 safe_error_message(analysis_error),
-                type(analysis_error).__name__,
             )
-            return RealtimeTranscriptAnalysisResponse(
-                meeting_id=meeting_id,
-                status="failed",
-                reason="analysis_failed",
-                transcript_hash=transcript_hash,
-                source=source,
+            finish_error_code = "GEMINI_ANALYSIS_FAILED"
+            finish_error_reason = safe_error_message(analysis_error)
+            finish_retry_after_seconds = int(
+                _REALTIME_ANALYSIS_FAILURE_COOLDOWN_SECONDS
             )
+            raise HTTPException(
+                status_code=502,
+                detail="Gemini analysis failed",
+            ) from analysis_error
         finally:
             _finish_realtime_analysis(
                 meeting_id,
                 transcript_hash,
                 success=success,
+                source=source,
+                lock_token=lock_token,
+                error_code=finish_error_code,
+                error_reason=finish_error_reason,
+                retry_after_seconds=finish_retry_after_seconds,
             )
 
     except HTTPException:
