@@ -19,6 +19,7 @@ import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.lenient;
 
 import java.nio.ByteBuffer;
 import java.util.HashMap;
@@ -41,6 +42,7 @@ import com.example.processingservice.client.AIServiceClient;
 import com.example.processingservice.client.AudioStreamResetRequiredException;
 import com.example.processingservice.security.JwtUtil;
 import com.example.processingservice.security.MeetingChannelAuthorizer;
+import com.example.processingservice.service.JobStateStore;
 import com.example.processingservice.services.RealtimeEventSubscriber;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -62,6 +64,9 @@ class MeetingWebSocketHandlerTest {
     private AIServiceClient aiServiceClient;
 
     @Mock
+    private JobStateStore jobStateStore;
+
+    @Mock
     private ObjectMapper objectMapper;
 
     @Mock
@@ -79,11 +84,21 @@ class MeetingWebSocketHandlerTest {
                 meetingChannelAuthorizer,
                 realtimeEventSubscriber,
                 aiServiceClient,
+                jobStateStore,
                 objectMapper,
                 jwtUtil);
 
         attributes = new HashMap<>();
         when(session.getAttributes()).thenReturn(attributes);
+        lenient().when(jobStateStore.tryStartAnalysis(anyLong(), anyString(), anyString(), anyString()))
+                .thenReturn(new JobStateStore.AnalysisTriggerDecision(
+                        true,
+                        "RUNNING",
+                        "started",
+                        "lock-token",
+                        0,
+                        null
+                ));
     }
 
     @Test

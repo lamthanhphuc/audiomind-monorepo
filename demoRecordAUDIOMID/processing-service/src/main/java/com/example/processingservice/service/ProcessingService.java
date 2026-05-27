@@ -42,9 +42,6 @@ import lombok.RequiredArgsConstructor;
 public class ProcessingService {
     private static final Set<String> ALLOWED_UPLOAD_LANGUAGES = Set.of("vi", "en", "multi");
     private static final String REALTIME_ANALYSIS_SOURCE_GET_ANALYSIS_LAZY = "get_analysis_lazy";
-    private static final long REALTIME_ANALYSIS_GUARD_TTL_MS = 30 * 60 * 1000;
-    private static final long REALTIME_ANALYSIS_SKIP_LOG_THROTTLE_MS = 30 * 1000;
-    private static final long REALTIME_ANALYSIS_FAILURE_COOLDOWN_MS = 45 * 1000;
 
     private static final Logger log = LoggerFactory.getLogger(ProcessingService.class);
 
@@ -55,8 +52,6 @@ public class ProcessingService {
 
     private final AtomicInteger runningGauge = new AtomicInteger(0);
     private final Set<Long> activeJobs = Collections.newSetFromMap(new ConcurrentHashMap<>());
-    private final ConcurrentHashMap<Long, RealtimeAnalysisGuard> realtimeAnalysisGuard = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<String, Long> realtimeAnalysisSkipLogGuard = new ConcurrentHashMap<>();
 
     @PostConstruct
     void initMetrics() {
@@ -413,7 +408,16 @@ public class ProcessingService {
             return response;
         }
 
-        maybeTriggerRealtimeAnalysisLazy(meetingId, traceId, authorization, state, stateStatus);
+        JobStateStore.AnalysisStateSnapshot analysisState = jobStateStore.getAnalysisState(meetingId).orElse(null);
+        if (analysisState != null && analysisState.isFailed() && analysisState.retryAfterSeconds() > 0) {
+            throw toAnalysisFailureException(analysisState.errorCode(), analysisState.retryAfterSeconds());
+        }
+
+        AnalysisTriggerResult triggerResult = maybeTriggerRealtimeAnalysisLazy(meetingId, traceId, authorization, state);
+        if ("FAILED".equals(triggerResult.status()) && triggerResult.errorCode() != null && !triggerResult.errorCode().isBlank()) {
+            throw toAnalysisFailureException(triggerResult.errorCode(), triggerResult.retryAfterSeconds());
+        }
+
         log.info(
                 "event=ANALYSIS_GET_NOT_READY traceId={} requestId={} meetingId={} analysisStatus={}",
                 traceId,
@@ -421,7 +425,18 @@ public class ProcessingService {
                 meetingId,
                 stateStatus
         );
-        return Map.of("meeting_id", meetingId, "status", stateStatus);
+        Map<String, Object> response = new HashMap<>();
+        response.put("meeting_id", meetingId);
+        response.put("status", stateStatus);
+        if (analysisState != null && analysisState.retryAfterSeconds() > 0) {
+            response.put("retryAfterSeconds", analysisState.retryAfterSeconds());
+            if (analysisState.errorCode() != null && !analysisState.errorCode().isBlank()) {
+                response.put("errorCode", analysisState.errorCode());
+            }
+        } else if (triggerResult.retryAfterSeconds() > 0) {
+            response.put("retryAfterSeconds", triggerResult.retryAfterSeconds());
+        }
+        return response;
     }
 
     private String normalizeStatus(Object value) {
@@ -611,6 +626,15 @@ public class ProcessingService {
                 );
                 return Map.of();
             }
+            if (ex.getStatusCode().value() == HttpStatus.SERVICE_UNAVAILABLE.value()) {
+                throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Gemini service unavailable");
+            }
+            if (ex.getStatusCode().value() == HttpStatus.BAD_GATEWAY.value()) {
+                throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "Gemini analysis failed");
+            }
+            if (ex.getStatusCode().value() == HttpStatus.UNPROCESSABLE_ENTITY.value()) {
+                throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY, "Empty transcript");
+            }
             log.warn(
                     "event=AI_SERVICE_CALL_FAILED traceId={} requestId={} meetingId={} source=analysis_fallback httpStatus={} errorCode=DOWNSTREAM_HTTP_ERROR",
                     traceId,
@@ -632,15 +656,20 @@ public class ProcessingService {
         return Map.of();
     }
 
-    private void maybeTriggerRealtimeAnalysisLazy(
+    private AnalysisTriggerResult maybeTriggerRealtimeAnalysisLazy(
             Long meetingId,
             String traceId,
             String authorization,
-            Map<String, Object> state,
-            String stateStatus
+            Map<String, Object> state
     ) {
         final String source = REALTIME_ANALYSIS_SOURCE_GET_ANALYSIS_LAZY;
-        log.info("event=ANALYSIS_TRIGGER_REQUEST meetingId={} source={} traceId={} requestId={}", meetingId, source, traceId, currentRequestId(traceId));
+        log.info(
+                "event=ANALYSIS_TRIGGER_REQUEST meetingId={} source={} traceId={} requestId={}",
+                meetingId,
+                source,
+                traceId,
+                currentRequestId(traceId)
+        );
 
         List<Map<String, Object>> transcriptRows = extractTranscriptRowsFromState(state);
         if (transcriptRows.isEmpty()) {
@@ -651,37 +680,66 @@ public class ProcessingService {
         if (transcriptText.isBlank()) {
             String reason = transcriptRows.isEmpty() ? "transcript_not_ready" : "empty_transcript";
             logRealtimeAnalysisSkipThrottled(meetingId, source, reason);
-            return;
+            if ("empty_transcript".equals(reason)) {
+                return new AnalysisTriggerResult("FAILED", "EMPTY_TRANSCRIPT", 0);
+            }
+            return new AnalysisTriggerResult("NOT_READY", null, 0);
         }
 
         String transcriptHash = computeTranscriptHash(transcriptText);
-        if (!markRealtimeAnalysisInProgress(meetingId, transcriptHash, source)) {
-            return;
+        JobStateStore.AnalysisTriggerDecision decision = jobStateStore.tryStartAnalysis(
+                meetingId,
+                transcriptHash,
+                source,
+                "processing_service_lazy_poll"
+        );
+        if (!decision.shouldTrigger()) {
+            log.info(
+                    "event=ANALYSIS_TRIGGER_SKIPPED meetingId={} source={} reason={} retryAfterSeconds={}",
+                    meetingId,
+                    source,
+                    decision.reason(),
+                    decision.retryAfterSeconds()
+            );
+            logRealtimeAnalysisSkipThrottled(meetingId, source, decision.reason());
+            if ("cooldown_active".equals(decision.reason())) {
+                return new AnalysisTriggerResult("FAILED", decision.errorCode(), decision.retryAfterSeconds());
+            }
+            return new AnalysisTriggerResult(decision.status(), null, decision.retryAfterSeconds());
         }
 
         try {
             String finalTranscriptText = transcriptText;
+            String lockToken = decision.lockToken();
             CompletableFuture.runAsync(() -> runLazyRealtimeAnalysis(
                     meetingId,
                     finalTranscriptText,
                     transcriptHash,
                     traceId,
                     authorization,
-                    stateStatus,
-                    source
+                    source,
+                    lockToken
             ));
-            log.info("REALTIME_ANALYSIS_ENQUEUED meetingId={} source={}", meetingId, source);
+            log.info("event=REALTIME_ANALYSIS_TRIGGERED meetingId={} source={}", meetingId, source);
+            return new AnalysisTriggerResult("RUNNING", null, 0);
         } catch (Exception ex) {
-                realtimeAnalysisGuard.put(
+            String errorCode = mapAnalysisFailureCode(ex);
+            jobStateStore.markAnalysisFailed(
                     meetingId,
-                    RealtimeAnalysisGuard.failed(transcriptHash, ex.getMessage())
-                );
+                    transcriptHash,
+                    source,
+                    "processing_service_lazy_poll",
+                    decision.lockToken(),
+                    errorCode,
+                    ex.getClass().getSimpleName()
+            );
             log.warn(
                     "event=ANALYSIS_TRIGGER_FAILED meetingId={} source={} errorCode={}",
                     meetingId,
                     source,
-                    ex.getClass().getSimpleName()
+                    errorCode
             );
+            return new AnalysisTriggerResult("FAILED", errorCode, 0);
         }
     }
 
@@ -691,12 +749,11 @@ public class ProcessingService {
             String transcriptHash,
             String traceId,
             String authorization,
-            String stateStatus,
-            String source
+            String source,
+            String lockToken
     ) {
         try {
-            log.info("REALTIME_ANALYSIS_TRIGGERED meetingId={} source={}", meetingId, source);
-            aiServiceClient.analyzeRealtimeTranscript(
+            Map<String, Object> response = aiServiceClient.analyzeRealtimeTranscript(
                     meetingId,
                     transcriptText,
                     "it",
@@ -705,22 +762,71 @@ public class ProcessingService {
                     traceId,
                     authorization
             );
-            realtimeAnalysisGuard.put(
+            String status = normalizeStatus(response == null ? null : response.get("status"));
+            if ("FAILED".equals(status)) {
+                String errorCode = mapRealtimeFailureCode(response);
+                int retryAfter = parseRetryAfter(response);
+                jobStateStore.markAnalysisFailed(
+                        meetingId,
+                        transcriptHash,
+                        source,
+                        "processing_service_lazy_poll",
+                        lockToken,
+                        errorCode,
+                        safeErrorText(response.get("reason"))
+                );
+                log.warn(
+                        "event=REALTIME_ANALYSIS_FAILED meetingId={} source={} errorCode={} retryAfterSeconds={}",
+                        meetingId,
+                        source,
+                        errorCode,
+                        retryAfter
+                );
+                return;
+            }
+
+            jobStateStore.markAnalysisCompleted(
                     meetingId,
-                    RealtimeAnalysisGuard.completed(transcriptHash)
+                    transcriptHash,
+                    source,
+                    "processing_service_lazy_poll",
+                    lockToken
             );
-            log.info("REALTIME_ANALYSIS_SAVED meetingId={} source={}", meetingId, source);
-        } catch (Exception ex) {
-            realtimeAnalysisGuard.put(
+            log.info("event=REALTIME_ANALYSIS_SAVED meetingId={} source={}", meetingId, source);
+        } catch (HttpStatusCodeException ex) {
+            String errorCode = mapAnalysisFailureCode(ex);
+            jobStateStore.markAnalysisFailed(
                     meetingId,
-                    RealtimeAnalysisGuard.failed(transcriptHash, ex.getMessage())
+                    transcriptHash,
+                    source,
+                    "processing_service_lazy_poll",
+                    lockToken,
+                    errorCode,
+                    safeErrorText(ex.getStatusText())
             );
             log.warn(
-                    "REALTIME_ANALYSIS_FAILED meetingId={} source={} reason={} status={}",
+                    "event=REALTIME_ANALYSIS_FAILED meetingId={} source={} errorCode={} httpStatus={}",
                     meetingId,
                     source,
-                    ex.getMessage(),
-                    stateStatus
+                    errorCode,
+                    ex.getStatusCode().value()
+            );
+        } catch (Exception ex) {
+            String errorCode = mapAnalysisFailureCode(ex);
+            jobStateStore.markAnalysisFailed(
+                    meetingId,
+                    transcriptHash,
+                    source,
+                    "processing_service_lazy_poll",
+                    lockToken,
+                    errorCode,
+                    ex.getClass().getSimpleName()
+            );
+            log.warn(
+                    "event=REALTIME_ANALYSIS_FAILED meetingId={} source={} errorCode={}",
+                    meetingId,
+                    source,
+                    errorCode
             );
         }
     }
@@ -754,83 +860,93 @@ public class ProcessingService {
         }
     }
 
-    private boolean markRealtimeAnalysisInProgress(Long meetingId, String transcriptHash, String source) {
-        evictExpiredRealtimeAnalysisGuards();
-        RealtimeAnalysisGuard currentGuard = realtimeAnalysisGuard.get(meetingId);
-        if (currentGuard != null) {
-            if (currentGuard.inProgress()) {
-                logRealtimeAnalysisSkipThrottled(meetingId, source, "in_progress");
-                return false;
-            }
-            if (transcriptHash.equals(currentGuard.transcriptHash())) {
-                if (currentGuard.isFailureActive()) {
-                    logRealtimeAnalysisSkipThrottled(meetingId, source, "recent_failure");
-                    return false;
-                }
-                logRealtimeAnalysisSkipThrottled(meetingId, source, "already_exists");
-                return false;
-            }
-        }
-
-        realtimeAnalysisGuard.put(
-                meetingId,
-                RealtimeAnalysisGuard.inProgress(transcriptHash)
-        );
-        return true;
-    }
-
-    private void evictExpiredRealtimeAnalysisGuards() {
-        long cutoff = System.currentTimeMillis() - REALTIME_ANALYSIS_GUARD_TTL_MS;
-        realtimeAnalysisGuard.entrySet().removeIf(entry -> entry.getValue().updatedAtMs() < cutoff);
-    }
-
     private void logRealtimeAnalysisSkipThrottled(Long meetingId, String source, String reason) {
-        long now = System.currentTimeMillis();
-        String key = meetingId + "|" + source + "|" + reason;
-        Long lastLoggedAt = realtimeAnalysisSkipLogGuard.get(key);
-        if (lastLoggedAt != null && now - lastLoggedAt < REALTIME_ANALYSIS_SKIP_LOG_THROTTLE_MS) {
+        if (!jobStateStore.shouldLogAnalysisSkip(meetingId, source, reason)) {
             return;
         }
-        realtimeAnalysisSkipLogGuard.put(key, now);
         log.info(
-                "REALTIME_ANALYSIS_SKIPPED reason={} source={} meetingId={}",
+                "event=REALTIME_ANALYSIS_SKIPPED reason={} source={} meetingId={}",
                 reason,
                 source,
                 meetingId
         );
     }
 
-    private record RealtimeAnalysisGuard(
-            String transcriptHash,
-            long updatedAtMs,
-            boolean inProgress,
-            long failureCooldownUntilMs,
-            String failureReason
-    ) {
-        private static RealtimeAnalysisGuard inProgress(String transcriptHash) {
-            long now = System.currentTimeMillis();
-            return new RealtimeAnalysisGuard(transcriptHash, now, true, 0L, null);
+    private String mapRealtimeFailureCode(Map<String, Object> response) {
+        if (response == null) {
+            return "GEMINI_ANALYSIS_FAILED";
         }
+        Object reason = response.get("reason");
+        String normalized = reason == null ? "" : String.valueOf(reason).trim().toLowerCase();
+        if (normalized.contains("empty_transcript")) {
+            return "EMPTY_TRANSCRIPT";
+        }
+        if (normalized.contains("unavailable")) {
+            return "GEMINI_UNAVAILABLE";
+        }
+        return "GEMINI_ANALYSIS_FAILED";
+    }
 
-        private static RealtimeAnalysisGuard completed(String transcriptHash) {
-            long now = System.currentTimeMillis();
-            return new RealtimeAnalysisGuard(transcriptHash, now, false, 0L, null);
+    private int parseRetryAfter(Map<String, Object> response) {
+        if (response == null) {
+            return 0;
         }
+        Object value = response.get("retryAfterSeconds");
+        if (value == null) {
+            return 0;
+        }
+        try {
+            return Math.max(0, Integer.parseInt(String.valueOf(value)));
+        } catch (NumberFormatException ex) {
+            return 0;
+        }
+    }
 
-        private static RealtimeAnalysisGuard failed(String transcriptHash, String reason) {
-            long now = System.currentTimeMillis();
-            return new RealtimeAnalysisGuard(
-                    transcriptHash,
-                    now,
-                    false,
-                    now + REALTIME_ANALYSIS_FAILURE_COOLDOWN_MS,
-                    reason
-            );
+    private String mapAnalysisFailureCode(Exception ex) {
+        if (ex instanceof HttpStatusCodeException httpError) {
+            int status = httpError.getStatusCode().value();
+            String body = safeErrorText(httpError.getResponseBodyAsString()).toLowerCase();
+            String message = safeErrorText(httpError.getStatusText()).toLowerCase();
+            if (status == 422 || body.contains("empty_transcript") || message.contains("empty transcript")) {
+                return "EMPTY_TRANSCRIPT";
+            }
+            if (status == 503 || body.contains("gemini_unavailable") || message.contains("gemini")) {
+                return "GEMINI_UNAVAILABLE";
+            }
+            if (status == 502) {
+                return "GEMINI_ANALYSIS_FAILED";
+            }
+            return "AI_SERVICE_UNAVAILABLE";
         }
+        return "GEMINI_ANALYSIS_FAILED";
+    }
 
-        private boolean isFailureActive() {
-            return failureCooldownUntilMs > System.currentTimeMillis();
+    private ResponseStatusException toAnalysisFailureException(String errorCode, int retryAfterSeconds) {
+        String suffix = retryAfterSeconds > 0 ? " retryAfterSeconds=" + retryAfterSeconds : "";
+        if ("EMPTY_TRANSCRIPT".equals(errorCode)) {
+            return new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY, "Empty transcript" + suffix);
         }
+        if ("GEMINI_UNAVAILABLE".equals(errorCode)) {
+            return new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Gemini service unavailable" + suffix);
+        }
+        if ("AI_SERVICE_UNAVAILABLE".equals(errorCode)) {
+            return new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "AI service unavailable" + suffix);
+        }
+        return new ResponseStatusException(HttpStatus.BAD_GATEWAY, "Gemini analysis failed" + suffix);
+    }
+
+    private String safeErrorText(Object value) {
+        if (value == null) {
+            return "";
+        }
+        String text = String.valueOf(value).trim();
+        if (text.length() <= 180) {
+            return text;
+        }
+        return text.substring(0, 180);
+    }
+
+    private record AnalysisTriggerResult(String status, String errorCode, int retryAfterSeconds) {
     }
 
     private void updateMetricsForState(Long meetingId, String status, Map<String, Object> state) {
