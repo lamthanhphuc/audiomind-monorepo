@@ -28,6 +28,7 @@ import java.util.UUID;
 import org.springframework.security.core.Authentication;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 
 @CrossOrigin(origins = "${CORS_ALLOWED_ORIGINS:http://localhost:5173}")
 @RestController
@@ -90,13 +91,38 @@ public class MeetingController {
 
         UserPrincipal principal = requirePrincipal(authentication);
         String effectiveLanguage = normalizeUploadLanguage(language);
-        log.info("UPLOAD_LANGUAGE_EFFECTIVE language={}", effectiveLanguage);
-        return meetingService.saveMeeting(title, targetFile.toString(), principal.userId(), cleanedFileName, effectiveLanguage);
+        log.info(
+                "event=UPLOAD_REQUEST_RECEIVED traceId={} requestId={} source=upload path=/meetings/upload",
+                MDC.get("traceId"),
+                resolveRequestId()
+        );
+        log.info(
+                "event=UPLOAD_LANGUAGE_EFFECTIVE traceId={} requestId={} source=upload requestedLanguage={} effectiveLanguage={}",
+                MDC.get("traceId"),
+                resolveRequestId(),
+                language == null ? "" : language,
+                effectiveLanguage
+        );
+        Meeting saved = meetingService.saveMeeting(title, targetFile.toString(), principal.userId(), cleanedFileName, effectiveLanguage);
+        log.info(
+                "event=REQUEST_COMPLETED traceId={} requestId={} meetingId={} path=/meetings/upload",
+                MDC.get("traceId"),
+                resolveRequestId(),
+                saved.getId()
+        );
+        return saved;
     }
 
     @GetMapping("/{id}")
     public Meeting getById(@PathVariable Long id, Authentication authentication) {
         UserPrincipal principal = requirePrincipal(authentication);
+        log.info(
+                "event=REQUEST_RECEIVED traceId={} requestId={} meetingId={} path=/meetings/{}",
+                MDC.get("traceId"),
+                resolveRequestId(),
+                id,
+                id
+        );
         return meetingService.findByIdForOwner(id, principal.userId());
     }
 
@@ -122,5 +148,14 @@ public class MeetingController {
             return normalized;
         }
         return "vi";
+    }
+
+    private String resolveRequestId() {
+        String requestId = MDC.get("requestId");
+        if (requestId != null && !requestId.isBlank()) {
+            return requestId;
+        }
+        String traceId = MDC.get("traceId");
+        return traceId == null ? "" : traceId;
     }
 }

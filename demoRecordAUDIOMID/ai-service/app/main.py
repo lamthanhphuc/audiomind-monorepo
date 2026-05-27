@@ -41,6 +41,7 @@ from app.job_status_store import (
 )
 from app.metrics import stt_metrics
 from app.models import Analysis
+from app.logging_utils import safe_error_message
 from app.schemas import (
     ActionItem,
     AnalysisPainPoint,
@@ -84,7 +85,10 @@ try:
     from app.pipeline import ProcessingPipeline
 except Exception as pipeline_import_error:
     ProcessingPipeline = None
-    logger.warning(f"Pipeline modules unavailable: {repr(pipeline_import_error)}")
+    logger.warning(
+        "Pipeline modules unavailable: {}",
+        safe_error_message(pipeline_import_error),
+    )
 
 # Configure logging
 logger.remove()
@@ -107,7 +111,7 @@ async def lifespan(_: FastAPI):
             raise RuntimeError(
                 "Database connectivity check failed during production startup"
             ) from e
-        logger.warning(f"Database connectivity check skipped: {repr(e)}")
+        logger.warning("Database connectivity check skipped: {}", safe_error_message(e))
 
     try:
         ensure_bigint_meeting_id()
@@ -116,7 +120,7 @@ async def lifespan(_: FastAPI):
             raise RuntimeError(
                 "Database migration step failed during production startup"
             ) from e
-        logger.warning(f"Database migration step skipped: {repr(e)}")
+        logger.warning("Database migration step skipped: {}", safe_error_message(e))
 
     try:
         Base.metadata.create_all(bind=engine)
@@ -125,12 +129,14 @@ async def lifespan(_: FastAPI):
             raise RuntimeError(
                 "Database schema initialization failed during production startup"
             ) from e
-        logger.warning(f"Database schema initialization failed: {repr(e)}")
+        logger.warning(
+            "Database schema initialization failed: {}", safe_error_message(e)
+        )
 
     try:
         ensure_ffmpeg_on_path(log=True)
     except Exception as e:
-        logger.warning(f"FFmpeg bootstrap warning: {repr(e)}")
+        logger.warning("FFmpeg bootstrap warning: {}", safe_error_message(e))
 
     logger.info("=" * 50)
     logger.info("AudioMind AI Service Starting...")
@@ -156,7 +162,7 @@ async def lifespan(_: FastAPI):
             grpc_thread = threading.Thread(target=grpc_server.start, daemon=True)
             grpc_thread.start()
     except Exception as e:
-        logger.warning(f"Failed to start gRPC server: {repr(e)}")
+        logger.warning("Failed to start gRPC server: {}", safe_error_message(e))
     yield
 
     await _shutdown_all_stt_actors()
@@ -164,7 +170,9 @@ async def lifespan(_: FastAPI):
         try:
             grpc_server.stop(grace=5)
         except Exception as e:
-            logger.warning(f"Error during gRPC server shutdown: {repr(e)}")
+            logger.warning(
+                "Error during gRPC server shutdown: {}", safe_error_message(e)
+            )
     cleanup_expired_job_statuses()
     logger.info("AudioMind AI Service Shutting Down...")
 
@@ -216,7 +224,7 @@ async def _retire_stt_actor(
         logger.warning(
             "STT_ACTOR_RETIREMENT_ERROR meeting_id={} error={}",
             meeting_key,
-            repr(exc),
+            safe_error_message(exc),
         )
     finally:
         if clear_retry_guard:
@@ -245,7 +253,7 @@ def _retry_guard_snapshot_from_actor(actor: MeetingSessionActor) -> dict[str, ob
         logger.warning(
             "STT_RETRY_GUARD_SNAPSHOT_FAILED meeting_id={} error={}",
             getattr(actor, "meeting_key", None),
-            repr(exc),
+            safe_error_message(exc),
         )
         return snapshot
 
@@ -537,7 +545,7 @@ async def _get_or_create_stt_actor(
             logger.warning(
                 "STT_OWNERSHIP_COOLDOWN_READ_ERROR meeting_id={} error={}",
                 meeting_key,
-                repr(exc),
+                safe_error_message(exc),
             )
             raise HTTPException(
                 status_code=503,
@@ -598,7 +606,7 @@ async def _get_or_create_stt_actor(
                 logger.warning(
                     "STT_OWNERSHIP_ACQUIRE_ERROR meeting_id={} error={}",
                     meeting_key,
-                    repr(exc),
+                    safe_error_message(exc),
                 )
                 raise HTTPException(
                     status_code=503,
@@ -665,7 +673,7 @@ async def _shutdown_all_stt_actors() -> None:
             logger.warning(
                 "STT_SHUTDOWN_DRAIN_END meeting_id={} error={}",
                 meeting_key,
-                repr(exc),
+                safe_error_message(exc),
             )
 
 
@@ -746,7 +754,7 @@ def _get_realtime_analysis_analyzer():
     except Exception as exc:
         logger.warning(
             "Realtime analysis analyzer unavailable: {}",
-            repr(exc),
+            safe_error_message(exc),
         )
         _realtime_analysis_analyzer = None
 
@@ -777,6 +785,7 @@ TRACE_HEADER_NAME = "X-Trace-Id"
 
 @app.middleware("http")
 async def inject_trace_headers(request: Request, call_next) -> Response:
+    started_at = time.time()
     trace_id = (
         request.headers.get("x-trace-id")
         or request.headers.get("x-request-id")
@@ -785,12 +794,33 @@ async def inject_trace_headers(request: Request, call_next) -> Response:
     request_id = request.headers.get("x-request-id") or trace_id
     request.state.trace_id = trace_id
     request.state.request_id = request_id
-
-    response = await call_next(request)
+    logger.bind(trace_id=trace_id, request_id=request_id).info(
+        "event=REQUEST_RECEIVED traceId={} requestId={} path={}",
+        trace_id,
+        request_id,
+        request.url.path,
+    )
+    try:
+        response = await call_next(request)
+    except Exception as exc:
+        logger.bind(trace_id=trace_id, request_id=request_id).warning(
+            "event=REQUEST_FAILED traceId={} requestId={} path={} errorCode={} durationMs={}",
+            trace_id,
+            request_id,
+            request.url.path,
+            type(exc).__name__,
+            int((time.time() - started_at) * 1000),
+        )
+        raise
     response.headers[TRACE_HEADER_NAME] = trace_id
     response.headers["x-request-id"] = request_id
-    logger.bind(trace_id=trace_id, request_id=request_id).debug(
-        f"request completed path={request.url.path} status={response.status_code}"
+    logger.bind(trace_id=trace_id, request_id=request_id).info(
+        "event=REQUEST_COMPLETED traceId={} requestId={} path={} httpStatus={} durationMs={}",
+        trace_id,
+        request_id,
+        request.url.path,
+        response.status_code,
+        int((time.time() - started_at) * 1000),
     )
     return response
 
@@ -1499,7 +1529,13 @@ async def get_transcript(meeting_id: int, db: Session = Depends(get_db)):
         raise
     except Exception as e:
         request_id = uuid4().hex
-        logger.error(f"Error fetching transcript request_id={request_id}: {e}")
+        logger.error(
+            "event=REQUEST_FAILED requestId={} path=/api/meeting/{}/transcript errorCode={} error={}",
+            request_id,
+            meeting_id,
+            type(e).__name__,
+            safe_error_message(e),
+        )
         raise HTTPException(
             status_code=500,
             detail=f"Internal server error. request_id={request_id}",
@@ -1609,7 +1645,13 @@ async def get_analysis(meeting_id: int, db: Session = Depends(get_db)):
         raise
     except Exception as e:
         request_id = uuid4().hex
-        logger.error(f"Error fetching analysis request_id={request_id}: {e}")
+        logger.error(
+            "event=REQUEST_FAILED requestId={} path=/api/meeting/{}/analysis errorCode={} error={}",
+            request_id,
+            meeting_id,
+            type(e).__name__,
+            safe_error_message(e),
+        )
         raise HTTPException(
             status_code=500,
             detail=f"Internal server error. request_id={request_id}",
@@ -1697,7 +1739,7 @@ async def analyze_realtime_transcript(
             logger.warning(
                 "REALTIME_ANALYSIS_FAILED meetingId={} reason=analysis_unavailable error={}",
                 meeting_id,
-                repr(analysis_error),
+                safe_error_message(analysis_error),
             )
             raise HTTPException(
                 status_code=503,
@@ -1706,9 +1748,10 @@ async def analyze_realtime_transcript(
         except Exception as analysis_error:
             db.rollback()
             logger.warning(
-                "REALTIME_ANALYSIS_FAILED meetingId={} reason={}",
+                "REALTIME_ANALYSIS_FAILED meetingId={} reason={} errorCode={}",
                 meeting_id,
-                repr(analysis_error),
+                safe_error_message(analysis_error),
+                type(analysis_error).__name__,
             )
             return RealtimeTranscriptAnalysisResponse(
                 meeting_id=meeting_id,
@@ -1728,7 +1771,12 @@ async def analyze_realtime_transcript(
         raise
     except Exception as e:
         request_id = uuid4().hex
-        logger.error(f"Realtime analysis request failed request_id={request_id}: {e}")
+        logger.error(
+            "event=REQUEST_FAILED requestId={} path=/api/internal/realtime-analysis errorCode={} error={}",
+            request_id,
+            type(e).__name__,
+            safe_error_message(e),
+        )
         raise HTTPException(
             status_code=500,
             detail=f"Internal server error. request_id={request_id}",
@@ -1808,7 +1856,7 @@ async def readiness_check():
             connection.execute(text("SELECT 1"))
         dependencies["database"] = "UP"
     except Exception as exc:
-        logger.warning("Readiness database check failed: {}", repr(exc))
+        logger.warning("Readiness database check failed: {}", safe_error_message(exc))
         dependencies["database"] = "DOWN"
         ready = False
 
@@ -1816,7 +1864,7 @@ async def readiness_check():
         _get_client().ping()
         dependencies["redis"] = "UP"
     except Exception as exc:
-        logger.warning("Readiness redis check failed: {}", repr(exc))
+        logger.warning("Readiness redis check failed: {}", safe_error_message(exc))
         dependencies["redis"] = "DOWN"
         ready = False
 
@@ -1928,7 +1976,7 @@ async def global_exception_handler(request: Request, exc: Exception):
     logger.exception(
         "Unhandled exception trace_id={}: {}",
         _resolve_trace_id(request),
-        repr(exc),
+        safe_error_message(exc),
     )
     return build_error_response(
         error="INTERNAL_ERROR",
@@ -1982,8 +2030,11 @@ async def process_audio(
         raise
     except Exception as e:
         request_id = uuid4().hex
-        logger.exception(
-            f"Unexpected processing error request_id={request_id}: {repr(e)}"
+        logger.error(
+            "event=REQUEST_FAILED requestId={} path=/api/process errorCode={} error={}",
+            request_id,
+            type(e).__name__,
+            safe_error_message(e),
         )
         raise HTTPException(
             status_code=500,
@@ -2044,7 +2095,12 @@ async def upload_audio(file: UploadFile = File(...)):
         raise
     except Exception as e:
         request_id = uuid4().hex
-        logger.exception(f"Upload audio error request_id={request_id}: {repr(e)}")
+        logger.error(
+            "event=REQUEST_FAILED requestId={} path=/api/upload-audio errorCode={} error={}",
+            request_id,
+            type(e).__name__,
+            safe_error_message(e),
+        )
         raise HTTPException(
             status_code=500,
             detail=f"Internal server error. request_id={request_id}",
@@ -2076,7 +2132,19 @@ async def stream_stt_chunk(
     language: str = Form(default=""),
     speaker_mode: str = Form(default=""),
     is_final: bool = Form(default=False),
+    request: Request = None,
 ):
+    started_at = time.time()
+    trace_id = (
+        getattr(getattr(request, "state", None), "trace_id", None)
+        if request is not None
+        else None
+    ) or uuid4().hex
+    request_id = (
+        getattr(getattr(request, "state", None), "request_id", None)
+        if request is not None
+        else None
+    ) or trace_id
     normalized_language = _normalize_stt_language(language)
     normalized_speaker_mode = _normalize_speaker_mode(
         speaker_mode if isinstance(speaker_mode, str) else None
@@ -2084,6 +2152,26 @@ async def stream_stt_chunk(
     effective_diarize = _resolve_effective_diarize(normalized_speaker_mode)
     endpointing_resolution = _resolve_realtime_endpointing(normalized_language)
     chunk_bytes = await audio_chunk.read()
+    logger.info(
+        "event=DEEPGRAM_STT_REQUEST traceId={} requestId={} meetingId={} source=realtime requestedLanguage={} path=/api/v1/stt/stream",
+        trace_id,
+        request_id,
+        meeting_id,
+        language or "",
+    )
+    logger.info(
+        "event=DEEPGRAM_STT_CONFIG traceId={} requestId={} meetingId={} source=realtime provider=deepgram language={} model={} endpointing={}",
+        trace_id,
+        request_id,
+        meeting_id,
+        normalized_language,
+        _resolve_realtime_model(),
+        (
+            endpointing_resolution.endpointing
+            if endpointing_resolution.endpointing is not None
+            else "omitted"
+        ),
+    )
     logger.info(
         "stream_stt_chunk received meeting_id={} seq={} byteLength={}",
         meeting_id,
@@ -2237,10 +2325,20 @@ async def stream_stt_chunk(
                 seq,
             )
             return _transcribe_locally(chunk_bytes, normalized_language, is_final)
-        logger.exception("Failed to create STT session: {}", repr(exc))
+            logger.exception(
+                "Failed to create STT session: {}", safe_error_message(exc)
+            )
+        logger.warning(
+            "event=DEEPGRAM_STT_FAILED traceId={} requestId={} meetingId={} source=realtime errorCode={} error={}",
+            trace_id,
+            request_id,
+            meeting_id,
+            type(exc).__name__,
+            safe_error_message(exc),
+        )
         raise HTTPException(
             status_code=503,
-            detail=f"Failed to initialize STT: {repr(exc)}",
+            detail=f"Failed to initialize STT: {safe_error_message(exc)}",
         ) from exc
 
     try:
@@ -2318,7 +2416,15 @@ async def stream_stt_chunk(
                 meeting_key,
                 actor.session_id,
                 seq,
-                repr(exc),
+                safe_error_message(exc),
+            )
+            logger.warning(
+                "event=DEEPGRAM_STT_FAILED traceId={} requestId={} meetingId={} source=realtime errorCode={} error={}",
+                trace_id,
+                request_id,
+                meeting_key,
+                type(exc).__name__,
+                safe_error_message(exc),
             )
             if is_final:
                 logger.warning(
@@ -2360,7 +2466,7 @@ async def stream_stt_chunk(
                         else (
                             "reconnect cooldown active"
                             if guard.cooldown_until > time.time()
-                            else f"STT stream failed: {repr(exc)}"
+                            else f"STT stream failed: {safe_error_message(exc)}"
                         )
                     )
                 ),
@@ -2391,17 +2497,33 @@ async def stream_stt_chunk(
             meeting_key,
             actor.session_id,
             seq,
-            repr(exc),
+            safe_error_message(exc),
+        )
+        logger.warning(
+            "event=DEEPGRAM_STT_FAILED traceId={} requestId={} meetingId={} source=realtime errorCode={} error={}",
+            trace_id,
+            request_id,
+            meeting_key,
+            type(exc).__name__,
+            safe_error_message(exc),
         )
         raise HTTPException(
             status_code=502,
-            detail=f"STT stream failed for meeting_id={meeting_id}: {repr(exc)}",
+            detail=f"STT stream failed for meeting_id={meeting_id}: {safe_error_message(exc)}",
         ) from exc
 
     if is_final:
         _store_final_response(meeting_key, response)
         _stt_stream_sessions.pop(meeting_key, None)
         _clear_stream_retry_guard(meeting_key)
+        logger.info(
+            "event=DEEPGRAM_STT_COMPLETED traceId={} requestId={} meetingId={} source=realtime durationMs={} transcriptLength={}",
+            trace_id,
+            request_id,
+            meeting_key,
+            int((time.time() - started_at) * 1000),
+            len(response.transcript),
+        )
         logger.info(
             "STT_FINALIZATION_END meeting_id={} session_id={} seq={} transcript_length={}",
             meeting_key,
@@ -2411,4 +2533,12 @@ async def stream_stt_chunk(
         )
         return response
 
+    logger.info(
+        "event=DEEPGRAM_STT_COMPLETED traceId={} requestId={} meetingId={} source=realtime durationMs={} transcriptLength={}",
+        trace_id,
+        request_id,
+        meeting_key,
+        int((time.time() - started_at) * 1000),
+        len(response.transcript or ""),
+    )
     return response

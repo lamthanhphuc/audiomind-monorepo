@@ -11,6 +11,7 @@ import java.util.UUID;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.core.io.ByteArrayResource;
@@ -40,6 +41,8 @@ import lombok.RequiredArgsConstructor;
 public class AIServiceClient {
 
     private static final Set<String> VALID_REALTIME_LANGUAGES = Set.of("vi", "en", "multi");
+    private static final String TRACE_HEADER = "x-trace-id";
+    private static final String REQUEST_HEADER = "x-request-id";
 
     private static final Logger log = LoggerFactory.getLogger(AIServiceClient.class);
 
@@ -103,21 +106,29 @@ public class AIServiceClient {
 
         HttpHeaders headers = new HttpHeaders();
         String resolvedTraceId = resolveTraceId(traceId);
-        headers.add("x-trace-id", resolvedTraceId);
-        headers.add("x-request-id", resolvedTraceId);
+        String resolvedRequestId = resolveRequestId(resolvedTraceId);
+        headers.add(TRACE_HEADER, resolvedTraceId);
+        headers.add(REQUEST_HEADER, resolvedRequestId);
         if (StringUtils.hasText(authorization)) {
             headers.add(HttpHeaders.AUTHORIZATION, authorization);
         }
-        log.info("[traceId={}] [jobId={}] enqueue request sent to ai-service", resolvedTraceId, meetingId);
-
-        ResponseEntity<Map<String, Object>> response =
-            restTemplate.exchange(
-                        aiUrl + "/api/process",
+        log.info(
+                "event=BATCH_STT_EFFECTIVE_CONFIG traceId={} requestId={} meetingId={} source=upload requestedLanguage={} effectiveLanguage={}",
+                resolvedTraceId,
+                resolvedRequestId,
+                meetingId,
+                language == null ? "" : language,
+                normalizeRealtimeLanguage(language)
+        );
+        ResponseEntity<Map<String, Object>> response = executeAiServiceCall(
+                "processAudio",
+                aiUrl + "/api/process",
                 HttpMethod.POST,
-            new HttpEntity<>(request, headers),
-                new ParameterizedTypeReference<>() {
-                }
-                );
+                new HttpEntity<>(request, headers),
+                resolvedTraceId,
+                resolvedRequestId,
+                meetingId
+        );
 
         return requireBody(response, "processAudio", meetingId);
     }
@@ -125,14 +136,17 @@ public class AIServiceClient {
     public Map<String, Object> getTranscript(Long meetingId, String traceId) {
         HttpHeaders headers = new HttpHeaders();
         String resolvedTraceId = resolveTraceId(traceId);
-        headers.add("x-trace-id", resolvedTraceId);
-        headers.add("x-request-id", resolvedTraceId);
-        ResponseEntity<Map<String, Object>> response = restTemplate.exchange(
+        String resolvedRequestId = resolveRequestId(resolvedTraceId);
+        headers.add(TRACE_HEADER, resolvedTraceId);
+        headers.add(REQUEST_HEADER, resolvedRequestId);
+        ResponseEntity<Map<String, Object>> response = executeAiServiceCall(
+                "getTranscript",
                 aiUrl + "/api/meeting/" + meetingId + "/transcript",
-            HttpMethod.GET,
-            new HttpEntity<>(headers),
-            new ParameterizedTypeReference<>() {
-            }
+                HttpMethod.GET,
+                new HttpEntity<>(headers),
+                resolvedTraceId,
+                resolvedRequestId,
+                meetingId
         );
         return requireBody(response, "getTranscript", meetingId);
     }
@@ -147,14 +161,17 @@ public class AIServiceClient {
     public Map<String, Object> getAnalysis(Long meetingId, String traceId) {
         HttpHeaders headers = new HttpHeaders();
         String resolvedTraceId = resolveTraceId(traceId);
-        headers.add("x-trace-id", resolvedTraceId);
-        headers.add("x-request-id", resolvedTraceId);
-        ResponseEntity<Map<String, Object>> response = restTemplate.exchange(
+        String resolvedRequestId = resolveRequestId(resolvedTraceId);
+        headers.add(TRACE_HEADER, resolvedTraceId);
+        headers.add(REQUEST_HEADER, resolvedRequestId);
+        ResponseEntity<Map<String, Object>> response = executeAiServiceCall(
+                "getAnalysis",
                 aiUrl + "/api/meeting/" + meetingId + "/analysis",
-            HttpMethod.GET,
-            new HttpEntity<>(headers),
-            new ParameterizedTypeReference<>() {
-            }
+                HttpMethod.GET,
+                new HttpEntity<>(headers),
+                resolvedTraceId,
+                resolvedRequestId,
+                meetingId
         );
         return requireBody(response, "getAnalysis", meetingId);
     }
@@ -196,8 +213,9 @@ public class AIServiceClient {
     ) {
         HttpHeaders headers = new HttpHeaders();
         String resolvedTraceId = resolveTraceId(traceId);
-        headers.add("x-trace-id", resolvedTraceId);
-        headers.add("x-request-id", resolvedTraceId);
+        String resolvedRequestId = resolveRequestId(resolvedTraceId);
+        headers.add(TRACE_HEADER, resolvedTraceId);
+        headers.add(REQUEST_HEADER, resolvedRequestId);
         headers.setContentType(MediaType.APPLICATION_JSON);
         if (StringUtils.hasText(authorization)) {
             headers.add(HttpHeaders.AUTHORIZATION, authorization);
@@ -216,12 +234,14 @@ public class AIServiceClient {
             request.put("transcript_hash", transcriptHash);
         }
 
-        ResponseEntity<Map<String, Object>> response = restTemplate.exchange(
+        ResponseEntity<Map<String, Object>> response = executeAiServiceCall(
+                "analyzeRealtimeTranscript",
                 aiUrl + "/api/internal/realtime-analysis",
                 HttpMethod.POST,
                 new HttpEntity<>(request, headers),
-                new ParameterizedTypeReference<>() {
-                }
+                resolvedTraceId,
+                resolvedRequestId,
+                meetingId
         );
         return requireBody(response, "analyzeRealtimeTranscript", meetingId);
     }
@@ -236,15 +256,17 @@ public class AIServiceClient {
     public Map<String, Object> getStatus(Long meetingId, String traceId) {
         HttpHeaders headers = new HttpHeaders();
         String resolvedTraceId = resolveTraceId(traceId);
-        headers.add("x-trace-id", resolvedTraceId);
-        headers.add("x-request-id", resolvedTraceId);
-
-        ResponseEntity<Map<String, Object>> response = restTemplate.exchange(
-            aiUrl + "/api/meeting/" + meetingId + "/status",
-            HttpMethod.GET,
-            new HttpEntity<>(headers),
-            new ParameterizedTypeReference<>() {
-            }
+        String resolvedRequestId = resolveRequestId(resolvedTraceId);
+        headers.add(TRACE_HEADER, resolvedTraceId);
+        headers.add(REQUEST_HEADER, resolvedRequestId);
+        ResponseEntity<Map<String, Object>> response = executeAiServiceCall(
+                "getStatus",
+                aiUrl + "/api/meeting/" + meetingId + "/status",
+                HttpMethod.GET,
+                new HttpEntity<>(headers),
+                resolvedTraceId,
+                resolvedRequestId,
+                meetingId
         );
         return requireBody(response, "getStatus", meetingId);
     }
@@ -259,8 +281,9 @@ public class AIServiceClient {
     public Map<String, Object> uploadAudio(MultipartFile file, String traceId, String authorization) {
         HttpHeaders headers = new HttpHeaders();
         String resolvedTraceId = resolveTraceId(traceId);
-        headers.add("x-trace-id", resolvedTraceId);
-        headers.add("x-request-id", resolvedTraceId);
+        String resolvedRequestId = resolveRequestId(resolvedTraceId);
+        headers.add(TRACE_HEADER, resolvedTraceId);
+        headers.add(REQUEST_HEADER, resolvedRequestId);
         if (StringUtils.hasText(authorization)) {
             headers.add(HttpHeaders.AUTHORIZATION, authorization);
         }
@@ -269,12 +292,14 @@ public class AIServiceClient {
         MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
         body.add("file", toNamedResource(file));
 
-        ResponseEntity<Map<String, Object>> response = restTemplate.exchange(
-            aiUrl + "/api/upload-audio",
-            HttpMethod.POST,
-            new HttpEntity<>(body, headers),
-            new ParameterizedTypeReference<>() {
-            }
+        ResponseEntity<Map<String, Object>> response = executeAiServiceCall(
+                "uploadAudio",
+                aiUrl + "/api/upload-audio",
+                HttpMethod.POST,
+                new HttpEntity<>(body, headers),
+                resolvedTraceId,
+                resolvedRequestId,
+                0L
         );
         return requireBody(response, "uploadAudio", 0L);
     }
@@ -298,8 +323,9 @@ public class AIServiceClient {
 
         HttpHeaders headers = new HttpHeaders();
         String resolvedTraceId = resolveTraceId(traceId);
-        headers.add("x-trace-id", resolvedTraceId);
-        headers.add("x-request-id", resolvedTraceId);
+        String resolvedRequestId = resolveRequestId(resolvedTraceId);
+        headers.add(TRACE_HEADER, resolvedTraceId);
+        headers.add(REQUEST_HEADER, resolvedRequestId);
         if (StringUtils.hasText(authorization)) {
             headers.add(HttpHeaders.AUTHORIZATION, authorization);
         }
@@ -312,21 +338,34 @@ public class AIServiceClient {
         body.add("language", normalizeRealtimeLanguage(language));
         body.add("speaker_mode", normalizeSpeakerMode(speakerMode));
         body.add("is_final", String.valueOf(isFinal));
+        String requestedLanguage = normalizeFallbackLanguage(language);
+        String effectiveLanguage = normalizeRealtimeLanguage(language);
         log.info(
-            "AUDIO HASH PROCESSING_OUT meetingId={} seq={} size={} first16hex={}",
-            meetingId,
+                "event=DEEPGRAM_STT_CONFIG traceId={} requestId={} meetingId={} source=realtime requestedLanguage={} effectiveLanguage={} model={}",
+                resolvedTraceId,
+                resolvedRequestId,
+                meetingId,
+                requestedLanguage,
+                effectiveLanguage,
+                "nova-2"
+        );
+        log.info(
+                "AUDIO HASH PROCESSING_OUT meetingId={} seq={} size={} first16hex={}",
+                meetingId,
                 seq,
                 audioChunk == null ? 0 : audioChunk.length,
                 first16Hex(audioChunk)
         );
 
         try {
-            ResponseEntity<Map<String, Object>> response = restTemplate.exchange(
+            ResponseEntity<Map<String, Object>> response = executeAiServiceCall(
+                    "streamAudioChunk",
                     aiUrl + "/api/v1/stt/stream",
                     HttpMethod.POST,
                     new HttpEntity<>(body, headers),
-                    new ParameterizedTypeReference<>() {
-                    }
+                    resolvedTraceId,
+                    resolvedRequestId,
+                    meetingId
             );
             return requireBody(response, "streamAudioChunk", meetingId);
         } catch (HttpClientErrorException ex) {
@@ -384,6 +423,21 @@ public class AIServiceClient {
         return traceId;
     }
 
+    private String resolveRequestId(String traceId) {
+        String requestId = MDC.get("requestId");
+        if (requestId != null && !requestId.isBlank()) {
+            return requestId;
+        }
+        if (traceId != null && !traceId.isBlank()) {
+            return traceId;
+        }
+        String mdcTrace = MDC.get("traceId");
+        if (mdcTrace != null && !mdcTrace.isBlank()) {
+            return mdcTrace;
+        }
+        return UUID.randomUUID().toString();
+    }
+
     private String normalizeRealtimeLanguage(String language) {
         String defaultLanguage = normalizeFallbackLanguage(deepgramLanguage);
         String requestedLanguage = normalizeFallbackLanguage(language);
@@ -413,6 +467,59 @@ public class AIServiceClient {
         }
 
         return candidateLanguage.trim().toLowerCase();
+    }
+
+    private ResponseEntity<Map<String, Object>> executeAiServiceCall(
+            String operation,
+            String url,
+            HttpMethod method,
+            HttpEntity<?> requestEntity,
+            String traceId,
+            String requestId,
+            Long meetingId
+    ) {
+        long startedAt = System.currentTimeMillis();
+        log.info(
+                "event=AI_SERVICE_CALL_STARTED traceId={} requestId={} meetingId={} path={} source={} operation={}",
+                traceId,
+                requestId,
+                meetingId,
+                url,
+                "processing-api",
+                operation
+        );
+        try {
+            ResponseEntity<Map<String, Object>> response = restTemplate.exchange(
+                    url,
+                    method,
+                    requestEntity,
+                    new ParameterizedTypeReference<>() {
+                    }
+            );
+            log.info(
+                    "event=AI_SERVICE_CALL_COMPLETED traceId={} requestId={} meetingId={} path={} operation={} httpStatus={} durationMs={}",
+                    traceId,
+                    requestId,
+                    meetingId,
+                    url,
+                    operation,
+                    response.getStatusCode().value(),
+                    System.currentTimeMillis() - startedAt
+            );
+            return response;
+        } catch (RestClientException ex) {
+            log.warn(
+                    "event=AI_SERVICE_CALL_FAILED traceId={} requestId={} meetingId={} path={} operation={} errorCode={} durationMs={}",
+                    traceId,
+                    requestId,
+                    meetingId,
+                    url,
+                    operation,
+                    ex.getClass().getSimpleName(),
+                    System.currentTimeMillis() - startedAt
+            );
+            throw ex;
+        }
     }
 
     private Map<String, Object> requireBody(ResponseEntity<Map<String, Object>> response, String operation, Long meetingId) {

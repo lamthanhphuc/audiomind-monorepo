@@ -7,6 +7,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.dao.DataAccessException;
 import org.springframework.http.HttpStatus;
@@ -17,6 +19,7 @@ import org.springframework.web.server.ResponseStatusException;
 
 @RestControllerAdvice
 public class GlobalExceptionHandler {
+    private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
 
     @ExceptionHandler(NoSuchElementException.class)
     public ResponseEntity<ApiErrorResponse> handleNotFound(NoSuchElementException ex, HttpServletRequest request) {
@@ -53,6 +56,13 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(DataAccessException.class)
     public ResponseEntity<ApiErrorResponse> handleDataAccess(DataAccessException ex, HttpServletRequest request) {
+        log.warn(
+                "event=DB_OPERATION_FAILED traceId={} requestId={} path={} errorCode={}",
+                resolveTraceId(request),
+                resolveRequestId(request),
+                request == null ? "" : request.getRequestURI(),
+                ex.getClass().getSimpleName()
+        );
         return buildResponse(
                 ErrorCode.DATABASE_UNAVAILABLE,
                 HttpStatus.SERVICE_UNAVAILABLE,
@@ -79,6 +89,7 @@ public class GlobalExceptionHandler {
             Map<String, Object> details
     ) {
         String traceId = resolveTraceId(request);
+        String requestId = resolveRequestId(request);
         String resolvedMessage = shouldUseDefaultMessage(code)
                 ? code.defaultMessage()
                 : sanitizeMessage(message, code.defaultMessage());
@@ -90,6 +101,14 @@ public class GlobalExceptionHandler {
                 traceId,
                 request == null ? null : request.getRequestURI(),
                 details
+        );
+        log.info(
+                "event=ERROR_RESPONSE_SENT traceId={} requestId={} path={} httpStatus={} errorCode={}",
+                traceId,
+                requestId,
+                request == null ? "" : request.getRequestURI(),
+                status.value(),
+                code.name()
         );
         return ResponseEntity.status(status)
                 .header(TraceIdFilter.TRACE_HEADER, traceId)
@@ -176,6 +195,25 @@ public class GlobalExceptionHandler {
             return fromMdc;
         }
         return UUID.randomUUID().toString();
+    }
+
+    private String resolveRequestId(HttpServletRequest request) {
+        if (request != null) {
+            String fromHeader = request.getHeader(TraceIdFilter.REQUEST_HEADER);
+            if (fromHeader != null && !fromHeader.isBlank()) {
+                return fromHeader;
+            }
+            String lowerHeader = request.getHeader("x-request-id");
+            if (lowerHeader != null && !lowerHeader.isBlank()) {
+                return lowerHeader;
+            }
+        }
+        String fromMdc = MDC.get("requestId");
+        if (fromMdc != null && !fromMdc.isBlank()) {
+            return fromMdc;
+        }
+        String traceId = resolveTraceId(request);
+        return traceId == null ? UUID.randomUUID().toString() : traceId;
     }
 
     private boolean isLanguageError(String message) {

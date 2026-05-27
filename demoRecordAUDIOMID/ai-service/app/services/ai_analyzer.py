@@ -21,6 +21,7 @@ from app.services.analysis_errors import (
     AnalysisProviderError,
     AnalysisUnavailableError,
 )
+from app.logging_utils import safe_error_message, transcript_hash_prefix
 
 
 class AIAnalyzer:
@@ -397,7 +398,7 @@ class AIAnalyzer:
     ) -> Dict[str, Any]:
         summary = self._build_concise_fallback_summary(transcript)
 
-        logger.warning(f"GEMINI_ANALYSIS_FALLBACK reason={reason}")
+        logger.warning("GEMINI_ANALYSIS_FALLBACK reason={}", safe_error_message(reason))
         return {
             "summary": summary,
             "keywords": [],
@@ -1478,27 +1479,62 @@ NỘI DUNG:
                     used_tokens,
                 )
 
+            source = str((metadata or {}).get("source") or "unknown").strip().lower()
+            transcript_prefix = transcript_hash_prefix(truncated_transcript)
             logger.info(
-                "GEMINI_ANALYSIS_REQUEST domainMode={} transcript_chars={} transcript_tokens={}",
+                "GEMINI_ANALYSIS_REQUEST provider=gemini model={} source={} domainMode={} transcript_chars={} transcript_tokens={} transcriptHashPrefix={}",
+                self.model,
+                source,
                 self.analysis_domain_mode,
                 len(truncated_transcript),
                 used_tokens,
+                transcript_prefix,
             )
 
             try:
+                started_at = time.time()
                 result = self._analyze_with_gemini(
                     truncated_transcript, metadata=metadata
                 )
-                logger.info("AI analysis completed (Gemini structured)")
+                logger.info(
+                    "GEMINI_ANALYSIS_RESPONSE_PARSED provider=gemini model={} source={} durationMs={}",
+                    self.model,
+                    source,
+                    int((time.time() - started_at) * 1000),
+                )
                 return result
             except AnalysisConfigError as exc:
-                logger.warning(f"GEMINI_ANALYSIS_FALLBACK reason={exc}")
+                logger.warning(
+                    "GEMINI_ANALYSIS_FAILED provider=gemini model={} source={} errorCode=ANALYSIS_CONFIG_ERROR error={}",
+                    self.model,
+                    source,
+                    safe_error_message(exc),
+                )
+                logger.warning(
+                    "GEMINI_ANALYSIS_FALLBACK reason={}", safe_error_message(exc)
+                )
                 return self._default_structured_analysis(truncated_transcript, str(exc))
             except AnalysisParseError as exc:
-                logger.warning(f"GEMINI_ANALYSIS_FALLBACK reason={exc}")
+                logger.warning(
+                    "GEMINI_ANALYSIS_FAILED provider=gemini model={} source={} errorCode=ANALYSIS_PARSE_ERROR error={}",
+                    self.model,
+                    source,
+                    safe_error_message(exc),
+                )
+                logger.warning(
+                    "GEMINI_ANALYSIS_FALLBACK reason={}", safe_error_message(exc)
+                )
                 return self._default_structured_analysis(truncated_transcript, str(exc))
             except AnalysisUnavailableError as exc:
-                logger.warning(f"GEMINI_ANALYSIS_FALLBACK reason={exc}")
+                logger.warning(
+                    "GEMINI_ANALYSIS_FAILED provider=gemini model={} source={} errorCode=ANALYSIS_UNAVAILABLE error={}",
+                    self.model,
+                    source,
+                    safe_error_message(exc),
+                )
+                logger.warning(
+                    "GEMINI_ANALYSIS_FALLBACK reason={}", safe_error_message(exc)
+                )
                 return self._default_structured_analysis(truncated_transcript, str(exc))
 
         if self.provider == "openai":
@@ -1561,7 +1597,11 @@ TEXT:
             return result
 
         except Exception as e:
-            logger.warning(f"AI analysis fallback activated due to Ollama error: {e}")
+            logger.warning(
+                "GEMINI_ANALYSIS_FAILED provider=ollama model={} source=unknown errorCode=OLLAMA_FAILURE error={}",
+                self.model,
+                safe_error_message(e),
+            )
             fallback = self._local_analysis(transcript)
             return self._ensure_analysis_completeness(transcript, fallback)
 

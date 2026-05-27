@@ -52,6 +52,13 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(BadCredentialsException.class)
     public ResponseEntity<ApiErrorResponse> handleUnauthorized(BadCredentialsException ex, HttpServletRequest request) {
+        log.warn(
+                "event=AUTH_UNAUTHORIZED traceId={} requestId={} path={} errorCode={}",
+                resolveTraceId(request),
+                resolveRequestId(request),
+                request == null ? "" : request.getRequestURI(),
+                ex.getClass().getSimpleName()
+        );
         return buildResponse(
                 ErrorCode.UNAUTHORIZED,
                 HttpStatus.UNAUTHORIZED,
@@ -62,6 +69,13 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(AccessDeniedException.class)
     public ResponseEntity<ApiErrorResponse> handleForbidden(AccessDeniedException ex, HttpServletRequest request) {
+        log.warn(
+                "event=AUTH_FORBIDDEN traceId={} requestId={} path={} errorCode={}",
+                resolveTraceId(request),
+                resolveRequestId(request),
+                request == null ? "" : request.getRequestURI(),
+                ex.getClass().getSimpleName()
+        );
         return buildResponse(
                 ErrorCode.FORBIDDEN,
                 HttpStatus.FORBIDDEN,
@@ -89,7 +103,13 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(DataAccessException.class)
     public ResponseEntity<ApiErrorResponse> handleDataAccess(DataAccessException ex, HttpServletRequest request) {
-        log.error("Data access failure in request processing", ex);
+        log.warn(
+                "event=DB_OPERATION_FAILED traceId={} requestId={} path={} errorCode={}",
+                resolveTraceId(request),
+                resolveRequestId(request),
+                request == null ? "" : request.getRequestURI(),
+                ex.getClass().getSimpleName()
+        );
         return buildResponse(
                 ErrorCode.DATABASE_UNAVAILABLE,
                 HttpStatus.SERVICE_UNAVAILABLE,
@@ -100,7 +120,13 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiErrorResponse> handleUnexpected(Exception ex, HttpServletRequest request) {
-        log.error("Unhandled request error, traceId={}", MDC.get("traceId"), ex);
+        log.warn(
+                "event=REQUEST_FAILED traceId={} requestId={} path={} errorCode={}",
+                resolveTraceId(request),
+                resolveRequestId(request),
+                request == null ? "" : request.getRequestURI(),
+                ex.getClass().getSimpleName()
+        );
         return buildResponse(
                 ErrorCode.INTERNAL_ERROR,
                 HttpStatus.INTERNAL_SERVER_ERROR,
@@ -117,6 +143,7 @@ public class GlobalExceptionHandler {
             Map<String, Object> details
     ) {
         String traceId = resolveTraceId(request);
+        String requestId = resolveRequestId(request);
         String resolvedMessage = shouldUseDefaultMessage(code)
                 ? code.defaultMessage()
                 : sanitizeMessage(message, code.defaultMessage());
@@ -128,6 +155,14 @@ public class GlobalExceptionHandler {
                 traceId,
                 request == null ? null : request.getRequestURI(),
                 details
+        );
+        log.info(
+                "event=ERROR_RESPONSE_SENT traceId={} requestId={} path={} httpStatus={} errorCode={}",
+                traceId,
+                requestId,
+                request == null ? "" : request.getRequestURI(),
+                status.value(),
+                code.name()
         );
         return ResponseEntity.status(status)
                 .header(TraceIdFilter.TRACE_HEADER, traceId)
@@ -214,6 +249,25 @@ public class GlobalExceptionHandler {
             return fromMdc;
         }
         return UUID.randomUUID().toString();
+    }
+
+    private String resolveRequestId(HttpServletRequest request) {
+        if (request != null) {
+            String fromHeader = request.getHeader(TraceIdFilter.REQUEST_HEADER);
+            if (fromHeader != null && !fromHeader.isBlank()) {
+                return fromHeader;
+            }
+            String lowerHeader = request.getHeader("x-request-id");
+            if (lowerHeader != null && !lowerHeader.isBlank()) {
+                return lowerHeader;
+            }
+        }
+        String fromMdc = MDC.get("requestId");
+        if (fromMdc != null && !fromMdc.isBlank()) {
+            return fromMdc;
+        }
+        String traceId = resolveTraceId(request);
+        return traceId == null ? UUID.randomUUID().toString() : traceId;
     }
 
     private boolean isLanguageError(String message) {

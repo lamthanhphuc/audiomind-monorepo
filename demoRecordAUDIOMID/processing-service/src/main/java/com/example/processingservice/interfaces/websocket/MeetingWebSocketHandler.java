@@ -120,7 +120,7 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
         }
         safeSendMessage(session, new TextMessage(objectMapper.writeValueAsString(readyEvent)));
 
-        log.info("WebSocket session established for meetingId={} (awaiting auth.init)", meetingId);
+        log.info("event=REALTIME_SESSION_STARTED meetingId={} source=realtime", meetingId);
     }
 
     @Override
@@ -217,21 +217,29 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
         // Handle stream stop request - finalize STT BEFORE closing session
         if ("stream.stop".equals(type)) {
             if (Boolean.TRUE.equals(session.getAttributes().get(FINALIZED_ATTR))) {
-                log.info("Ignoring duplicate stream.stop for meetingId={} because STT finalization already started", meetingId);
+                log.info("event=REALTIME_STOP_RECEIVED meetingId={} source=stream_stop status=duplicate_ignored", meetingId);
                 try {
                     session.close(CloseStatus.NORMAL.withReason("Stream stopped by client"));
                 } catch (Exception e) {
-                    log.warn("Error closing session after duplicate stream.stop for meetingId={}: {}", meetingId, e.getMessage());
+                    log.warn(
+                            "event=REALTIME_ANALYSIS_FAILED meetingId={} source=stream_stop errorCode={}",
+                            meetingId,
+                            safeErrorCode(e)
+                    );
                 }
                 return;
             }
 
-            log.info("Received stream.stop for meetingId={}, finalizing STT session now", meetingId);
+            log.info("event=REALTIME_STOP_RECEIVED meetingId={} source=stream_stop status=accepted", meetingId);
             finalizeSttSession(session, meetingId, true);
             try {
                 session.close(CloseStatus.NORMAL.withReason("Stream stopped by client"));
             } catch (Exception e) {
-                log.warn("Error closing session after stream.stop for meetingId={}: {}", meetingId, e.getMessage());
+                log.warn(
+                        "event=REALTIME_ANALYSIS_FAILED meetingId={} source=stream_stop errorCode={}",
+                        meetingId,
+                        safeErrorCode(e)
+                );
             }
             return;
         }
@@ -389,23 +397,27 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                     realtimeEventSubscriber.broadcastToMeeting(meetingId, buildListeningStatusEvent(meetingId, lastSeq));
                 }
             } catch (Exception e) {
-                log.error("Failed to broadcast transcriptEvent for meetingId={}: {}", meetingId, e.getMessage(), e);
+                log.warn(
+                        "event=REALTIME_ANALYSIS_FAILED meetingId={} source=realtime_broadcast errorCode={}",
+                        meetingId,
+                        safeErrorCode(e)
+                );
             }
         } catch (Exception ex) {
             log.warn(
-                    "Failed to stream audio chunk to ai-service for meetingId={} seq={}: {}",
+                    "event=DEEPGRAM_STT_FAILED meetingId={} source=realtime seq={} errorCode={}",
                     meetingId,
                     lastSeq,
-                    ex.getMessage()
+                    safeErrorCode(ex)
             );
 
             if (ex instanceof AudioStreamResetRequiredException) {
                 session.getAttributes().put(RESET_REQUIRED_ATTR, Boolean.TRUE);
                 log.warn(
-                        "RESET_REQUIRED_FROM_AI meetingId={} seq={} message={}",
+                        "RESET_REQUIRED_FROM_AI meetingId={} seq={} errorCode={}",
                         meetingId,
                         lastSeq,
-                        ex.getMessage()
+                        safeErrorCode(ex)
                 );
                 Map<String, Object> errorEvent = Map.of(
                         "type", "stream.error",
@@ -417,7 +429,11 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                 try {
                     realtimeEventSubscriber.broadcastToMeeting(meetingId, errorEvent);
                 } catch (Exception e) {
-                    log.error("Failed to broadcast resetRequired errorEvent for meetingId={}: {}", meetingId, e.getMessage(), e);
+                    log.warn(
+                            "event=REALTIME_ANALYSIS_FAILED meetingId={} source=reset_required errorCode={}",
+                            meetingId,
+                            safeErrorCode(e)
+                    );
                 }
                 return;
             }
@@ -431,7 +447,11 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
             try {
                 realtimeEventSubscriber.broadcastToMeeting(meetingId, errorEvent);
             } catch (Exception e) {
-                log.error("Failed to broadcast errorEvent for meetingId={}: {}", meetingId, e.getMessage(), e);
+                log.warn(
+                        "event=REALTIME_ANALYSIS_FAILED meetingId={} source=stream_error errorCode={}",
+                        meetingId,
+                        safeErrorCode(e)
+                );
             }
         }
     }
@@ -623,6 +643,12 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
 
                 cacheFinalizedTranscript(meetingId, transcriptEvent);
                 log.info(
+                        "event=REALTIME_TRANSCRIPT_FINALIZED meetingId={} source={} transcriptLength={}",
+                        meetingId,
+                        analysisSource,
+                        getStringValue(transcriptEvent.get("text")).length()
+                );
+                log.info(
                     "LIVE_SEGMENT_BROADCAST meetingId={} seq={} segmentId={} type={} startTime={} endTime={} isFinal={}",
                     meetingId,
                     transcriptEvent.get("seq"),
@@ -642,7 +668,11 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                                 getStringValue(transcriptEvent.get("text")).length()
                         );
                     } catch (Exception e) {
-                        log.error("Failed to broadcast final transcript for meetingId={}: {}", meetingId, e.getMessage(), e);
+                        log.warn(
+                                "event=REALTIME_ANALYSIS_FAILED meetingId={} source=final_broadcast errorCode={}",
+                                meetingId,
+                                safeErrorCode(e)
+                        );
                     }
                 } else {
                     log.info(
@@ -685,7 +715,11 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                 try {
                     realtimeEventSubscriber.broadcastToMeeting(meetingId, statusEvent);
                 } catch (Exception e) {
-                    log.error("Failed to broadcast statusEvent for meetingId={}: {}", meetingId, e.getMessage(), e);
+                    log.warn(
+                            "event=REALTIME_ANALYSIS_FAILED meetingId={} source=status_broadcast errorCode={}",
+                            meetingId,
+                            safeErrorCode(e)
+                    );
                 }
             }
             if (partial) {
@@ -700,9 +734,9 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
             log.info("No final transcript returned for meetingId={}", meetingId);
         } catch (Exception ex) {
             log.warn(
-                    "Failed to finalize STT session for meetingId={}: {}",
+                    "event=REALTIME_ANALYSIS_FAILED meetingId={} source=finalize errorCode={}",
                     meetingId,
-                    ex.getMessage()
+                    safeErrorCode(ex)
             );
 
             Map<String, Object> errorEvent = Map.of(
@@ -715,7 +749,11 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                 try {
                     realtimeEventSubscriber.broadcastToMeeting(meetingId, errorEvent);
                 } catch (Exception e) {
-                    log.error("Failed to broadcast finalize errorEvent for meetingId={}: {}", meetingId, e.getMessage(), e);
+                    log.warn(
+                            "event=REALTIME_ANALYSIS_FAILED meetingId={} source=finalize_broadcast errorCode={}",
+                            meetingId,
+                            safeErrorCode(e)
+                    );
                 }
             }
         }
@@ -753,10 +791,10 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
             log.info("REALTIME_ANALYSIS_ENQUEUED meetingId={} source={}", meetingId, source);
         } catch (Exception ex) {
             log.warn(
-                    "REALTIME_ANALYSIS_ENQUEUE_FAILED meetingId={} source={} reason={}",
+                    "REALTIME_ANALYSIS_FAILED meetingId={} source={} reason=enqueue_failed errorCode={}",
                     meetingId,
                     source,
-                    ex.getMessage()
+                    safeErrorCode(ex)
             );
         }
     }
@@ -768,10 +806,10 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
             transcriptResponse = aiServiceClient.getTranscript(meetingId, traceId);
         } catch (Exception ex) {
             log.warn(
-                    "REALTIME_ANALYSIS_FAILED meetingId={} source={} reason=transcript_fetch_error:{}",
+                    "REALTIME_ANALYSIS_FAILED meetingId={} source={} reason=transcript_fetch_error errorCode={}",
                     meetingId,
                     source,
-                    ex.getMessage()
+                    safeErrorCode(ex)
             );
             return;
         }
@@ -813,10 +851,10 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
         } catch (Exception ex) {
             realtimeAnalysisGuard.remove(meetingId);
             log.warn(
-                    "REALTIME_ANALYSIS_FAILED meetingId={} source={} reason={}",
+                    "REALTIME_ANALYSIS_FAILED meetingId={} source={} errorCode={}",
                     meetingId,
                     source,
-                    ex.getMessage()
+                    safeErrorCode(ex)
             );
         }
     }
@@ -1194,7 +1232,7 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                 session.close(new CloseStatus(1000, "Idle timeout"));
             }
         } catch (Exception e) {
-            log.debug("Error updating last activity for session {}: {}", session.getId(), e.getMessage());
+            log.debug("Unable to update last activity for sessionId={} errorCode={}", session.getId(), safeErrorCode(e));
         }
     }
 
@@ -1332,5 +1370,13 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                 incomingSpeakerMode,
                 effectiveSpeakerMode
         );
+    }
+
+    private String safeErrorCode(Throwable throwable) {
+        if (throwable == null) {
+            return "UNKNOWN_ERROR";
+        }
+        String code = throwable.getClass().getSimpleName();
+        return (code == null || code.isBlank()) ? "UNKNOWN_ERROR" : code;
     }
 }

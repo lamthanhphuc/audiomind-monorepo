@@ -94,14 +94,24 @@ public class ProcessingService {
             JobStateStore.IdempotencyClaim claim = jobStateStore.claimIdempotency(resolvedFileId, meetingId);
             if (!claim.owner()) {
                 Long existingJobId = claim.jobId();
-                log.info("[traceId={}] [jobId={}] idempotency hit for fileId={}", traceId, existingJobId, resolvedFileId);
+                log.info(
+                        "event=ANALYSIS_TRIGGER_SKIPPED traceId={} requestId={} meetingId={} source=batch reason=idempotency_hit",
+                        traceId,
+                        currentRequestId(traceId),
+                        existingJobId
+                );
                 ProcessingStatusResponse existing = getProcessingStatus(existingJobId, traceId, authorization);
                 return new ProcessStartResponse(existing.meetingId(), existing.status(), existing.error(), existing.updatedAt());
             }
 
             jobStateStore.upsertJobState(meetingId, "QUEUED", resolvedFileId, null, null, traceId);
             incrementJobsTotal("QUEUED");
-            log.info("[traceId={}] [jobId={}] state set to QUEUED", traceId, meetingId);
+            log.info(
+                    "event=ANALYSIS_TRIGGER_REQUEST traceId={} requestId={} meetingId={} source=batch analysisStatus=QUEUED",
+                    traceId,
+                    currentRequestId(traceId),
+                    meetingId
+            );
 
             try {
                 processMeeting(meetingId, audioPath, resolvedFileId, topic, glossaryTerms, language, traceId, authorization);
@@ -110,11 +120,11 @@ public class ProcessingService {
                 incrementJobsTotal("FAILED");
                 int downstreamStatus = ex.getStatusCode().value();
                 log.warn(
-                        "[traceId={}] [jobId={}] ai-service request failed status={} body={}",
+                        "event=AI_SERVICE_CALL_FAILED traceId={} requestId={} meetingId={} source=batch httpStatus={} errorCode=DOWNSTREAM_HTTP_ERROR",
                         traceId,
+                        currentRequestId(traceId),
                         meetingId,
-                        downstreamStatus,
-                        ex.getResponseBodyAsString()
+                        downstreamStatus
                 );
                 if (downstreamStatus == HttpStatus.SERVICE_UNAVAILABLE.value()) {
                     throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "AI service unavailable");
@@ -123,6 +133,13 @@ public class ProcessingService {
             } catch (Exception ex) {
                 jobStateStore.upsertJobState(meetingId, "FAILED", resolvedFileId, null, ex.getMessage(), traceId);
                 incrementJobsTotal("FAILED");
+                log.warn(
+                        "event=ANALYSIS_TRIGGER_FAILED traceId={} requestId={} meetingId={} source=batch errorCode={}",
+                        traceId,
+                        currentRequestId(traceId),
+                        meetingId,
+                        ex.getClass().getSimpleName()
+                );
                 throw ex;
             }
 
@@ -176,6 +193,14 @@ public class ProcessingService {
                 log.info("[traceId={}] [jobId={}] Meeting {} not found, proceeding with provided audioPath", traceId, meetingId, meetingId);
             }
         }
+        log.info(
+                "event=BATCH_STT_EFFECTIVE_CONFIG traceId={} requestId={} meetingId={} source=upload requestedLanguage={} effectiveLanguage={}",
+                traceId,
+                currentRequestId(traceId),
+                meetingId,
+                language == null ? "" : language,
+                resolvedLanguage
+        );
 
         Map<String, Object> aiResponse = aiServiceClient.processAudio(
                 meetingId,
@@ -187,7 +212,12 @@ public class ProcessingService {
                 traceId,
                 authorization
         );
-        log.info("[traceId={}] [jobId={}] enqueue accepted by ai-service", traceId, meetingId);
+        log.info(
+                "event=UPLOAD_TRANSCRIPT_STARTED traceId={} requestId={} meetingId={} source=upload",
+                traceId,
+                currentRequestId(traceId),
+                meetingId
+        );
         return aiResponse;
     }
 
@@ -196,6 +226,11 @@ public class ProcessingService {
     }
 
     public Map<String, Object> uploadAudio(MultipartFile file, String traceId, String authorization) {
+        log.info(
+                "event=UPLOAD_REQUEST_RECEIVED traceId={} requestId={} source=upload path=/processing/upload",
+                traceId,
+                currentRequestId(traceId)
+        );
         return aiServiceClient.uploadAudio(file, traceId, authorization);
     }
 
@@ -207,13 +242,18 @@ public class ProcessingService {
             MultipartFile file, String traceId, String authorization) {
         return java.util.concurrent.CompletableFuture.supplyAsync(() -> {
             try {
-                log.info("[traceId={}] Starting async audio upload, file size: {} bytes", traceId, file.getSize());
+                log.info("event=UPLOAD_TRANSCRIPT_STARTED traceId={} requestId={} source=upload", traceId, currentRequestId(traceId));
                 Map<String, Object> result = uploadAudio(file, traceId, authorization);
-                log.info("[traceId={}] Async audio upload completed", traceId);
+                log.info("event=UPLOAD_TRANSCRIPT_COMPLETED traceId={} requestId={} source=upload", traceId, currentRequestId(traceId));
                 return result;
             } catch (Exception e) {
-                log.error("[traceId={}] Async audio upload failed: {}", traceId, e.getMessage(), e);
-                throw new RuntimeException("Audio upload failed: " + e.getMessage(), e);
+                log.warn(
+                        "event=UPLOAD_TRANSCRIPT_FAILED traceId={} requestId={} source=upload errorCode={}",
+                        traceId,
+                        currentRequestId(traceId),
+                        e.getClass().getSimpleName()
+                );
+                throw new RuntimeException("Audio upload failed", e);
             }
         });
     }
@@ -249,11 +289,23 @@ public class ProcessingService {
 
     public Map<String, Object> getTranscript(Long meetingId, String traceId, String authorization) {
         assertMeetingAccess(meetingId, traceId, authorization);
+        log.info(
+                "event=UPLOAD_TRANSCRIPT_STARTED traceId={} requestId={} meetingId={} source=upload",
+                traceId,
+                currentRequestId(traceId),
+                meetingId
+        );
         Map<String, Object> state = jobStateStore.getJobState(meetingId).orElse(null);
 
         String stateStatus = state == null ? "NOT_FOUND" : normalizeStatus(state.get("status"));
         List<Map<String, Object>> batchTranscripts = extractTranscriptRowsFromState(state);
         if (!batchTranscripts.isEmpty()) {
+            log.info(
+                    "event=UPLOAD_TRANSCRIPT_COMPLETED traceId={} requestId={} meetingId={} source=upload",
+                    traceId,
+                    currentRequestId(traceId),
+                    meetingId
+            );
             return Map.of(
                     "meeting_id", meetingId,
                     "status", stateStatus,
@@ -271,6 +323,12 @@ public class ProcessingService {
         List<Map<String, Object>> aiTranscripts = fetchTranscriptRowsFromAiService(meetingId, traceId);
         if (!aiTranscripts.isEmpty()) {
             String responseStatus = "NOT_FOUND".equals(stateStatus) ? "COMPLETED" : stateStatus;
+            log.info(
+                    "event=UPLOAD_TRANSCRIPT_COMPLETED traceId={} requestId={} meetingId={} source=upload",
+                    traceId,
+                    currentRequestId(traceId),
+                    meetingId
+            );
             return Map.of(
                     "meeting_id", meetingId,
                     "status", responseStatus,
@@ -281,6 +339,12 @@ public class ProcessingService {
         log.info(
                 "[traceId={}] [jobId={}] transcript fallback empty/no transcript",
                 traceId,
+                meetingId
+        );
+        log.info(
+                "event=UPLOAD_TRANSCRIPT_FAILED traceId={} requestId={} meetingId={} source=upload errorCode=TRANSCRIPT_NOT_READY",
+                traceId,
+                currentRequestId(traceId),
                 meetingId
         );
         return Map.of(
@@ -296,6 +360,12 @@ public class ProcessingService {
 
     public Map<String, Object> getAnalysis(Long meetingId, String traceId, String authorization) {
         assertMeetingAccess(meetingId, traceId, authorization);
+        log.info(
+                "event=ANALYSIS_GET_REQUEST traceId={} requestId={} meetingId={} source=analysis_get",
+                traceId,
+                currentRequestId(traceId),
+                meetingId
+        );
         Map<String, Object> state = jobStateStore.getJobState(meetingId).orElse(null);
         String stateStatus = state == null ? "NOT_FOUND" : normalizeStatus(state.get("status"));
         Map<String, Object> analysis = extractAnalysisFromState(state);
@@ -304,6 +374,13 @@ public class ProcessingService {
             response.put("meeting_id", meetingId);
             response.put("status", stateStatus);
             response.putAll(analysis);
+            log.info(
+                    "event=ANALYSIS_GET_RESULT traceId={} requestId={} meetingId={} analysisStatus={}",
+                    traceId,
+                    currentRequestId(traceId),
+                    meetingId,
+                    stateStatus
+            );
             return response;
         }
 
@@ -326,10 +403,24 @@ public class ProcessingService {
                 }
                 response.put(entry.getKey(), entry.getValue());
             }
+            log.info(
+                    "event=ANALYSIS_GET_RESULT traceId={} requestId={} meetingId={} analysisStatus={}",
+                    traceId,
+                    currentRequestId(traceId),
+                    meetingId,
+                    response.get("status")
+            );
             return response;
         }
 
         maybeTriggerRealtimeAnalysisLazy(meetingId, traceId, authorization, state, stateStatus);
+        log.info(
+                "event=ANALYSIS_GET_NOT_READY traceId={} requestId={} meetingId={} analysisStatus={}",
+                traceId,
+                currentRequestId(traceId),
+                meetingId,
+                stateStatus
+        );
         return Map.of("meeting_id", meetingId, "status", stateStatus);
     }
 
@@ -480,19 +571,20 @@ public class ProcessingService {
                 return List.of();
             }
             log.warn(
-                    "[traceId={}] [jobId={}] ai-service transcript fallback failed status={} body={}",
+                    "event=AI_SERVICE_CALL_FAILED traceId={} requestId={} meetingId={} source=transcript_fallback httpStatus={} errorCode=DOWNSTREAM_HTTP_ERROR",
                     traceId,
+                    currentRequestId(traceId),
                     meetingId,
-                    ex.getStatusCode().value(),
-                    ex.getResponseBodyAsString()
+                    ex.getStatusCode().value()
             );
             return List.of();
         } catch (Exception ex) {
             log.warn(
-                    "[traceId={}] [jobId={}] ai-service transcript fallback failed error={}",
+                    "event=AI_SERVICE_CALL_FAILED traceId={} requestId={} meetingId={} source=transcript_fallback errorCode={}",
                     traceId,
+                    currentRequestId(traceId),
                     meetingId,
-                    ex.getMessage()
+                    ex.getClass().getSimpleName()
             );
             return List.of();
         }
@@ -520,19 +612,20 @@ public class ProcessingService {
                 return Map.of();
             }
             log.warn(
-                    "[traceId={}] [jobId={}] ai-service analysis fallback failed status={} body={}",
+                    "event=AI_SERVICE_CALL_FAILED traceId={} requestId={} meetingId={} source=analysis_fallback httpStatus={} errorCode=DOWNSTREAM_HTTP_ERROR",
                     traceId,
+                    currentRequestId(traceId),
                     meetingId,
-                    ex.getStatusCode().value(),
-                    ex.getResponseBodyAsString()
+                    ex.getStatusCode().value()
             );
             return Map.of();
         } catch (Exception ex) {
             log.warn(
-                    "[traceId={}] [jobId={}] ai-service analysis fallback failed error={}",
+                    "event=AI_SERVICE_CALL_FAILED traceId={} requestId={} meetingId={} source=analysis_fallback errorCode={}",
                     traceId,
+                    currentRequestId(traceId),
                     meetingId,
-                    ex.getMessage()
+                    ex.getClass().getSimpleName()
             );
             return Map.of();
         }
@@ -547,7 +640,7 @@ public class ProcessingService {
             String stateStatus
     ) {
         final String source = REALTIME_ANALYSIS_SOURCE_GET_ANALYSIS_LAZY;
-        log.info("REALTIME_ANALYSIS_TRIGGER_ATTEMPT meetingId={} source={}", meetingId, source);
+        log.info("event=ANALYSIS_TRIGGER_REQUEST meetingId={} source={} traceId={} requestId={}", meetingId, source, traceId, currentRequestId(traceId));
 
         List<Map<String, Object>> transcriptRows = extractTranscriptRowsFromState(state);
         if (transcriptRows.isEmpty()) {
@@ -584,10 +677,10 @@ public class ProcessingService {
                     RealtimeAnalysisGuard.failed(transcriptHash, ex.getMessage())
                 );
             log.warn(
-                    "REALTIME_ANALYSIS_ENQUEUE_FAILED meetingId={} source={} reason={}",
+                    "event=ANALYSIS_TRIGGER_FAILED meetingId={} source={} errorCode={}",
                     meetingId,
                     source,
-                    ex.getMessage()
+                    ex.getClass().getSimpleName()
             );
         }
     }
@@ -776,5 +869,17 @@ public class ProcessingService {
         } catch (DateTimeParseException ignored) {
             log.debug("Unable to parse job duration timestamps createdAt={} updatedAt={}", createdAt, updatedAt);
         }
+    }
+
+    private String currentRequestId(String fallbackTraceId) {
+        String requestId = MDC.get("requestId");
+        if (requestId != null && !requestId.isBlank()) {
+            return requestId;
+        }
+        if (fallbackTraceId != null && !fallbackTraceId.isBlank()) {
+            return fallbackTraceId;
+        }
+        String traceIdFromMdc = MDC.get("traceId");
+        return traceIdFromMdc == null ? "" : traceIdFromMdc;
     }
 }

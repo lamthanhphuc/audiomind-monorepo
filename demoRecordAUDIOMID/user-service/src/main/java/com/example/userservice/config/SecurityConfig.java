@@ -10,6 +10,8 @@ import java.time.Instant;
 import java.util.Arrays;
 import java.util.List;
 import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
@@ -34,6 +36,7 @@ import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 public class SecurityConfig {
 
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+    private static final Logger log = LoggerFactory.getLogger(SecurityConfig.class);
 
     private final JwtAuthenticationFilter jwtAuthenticationFilter;
 
@@ -109,9 +112,11 @@ public class SecurityConfig {
             HttpStatus status
     ) throws IOException {
         String traceId = resolveTraceId(request);
+        String requestId = resolveRequestId(request, traceId);
         response.setStatus(status.value());
         response.setContentType(MediaType.APPLICATION_JSON_VALUE);
         response.setHeader(TraceIdFilter.TRACE_HEADER, traceId);
+        response.setHeader(TraceIdFilter.REQUEST_HEADER, requestId);
         ApiErrorResponse body = new ApiErrorResponse(
                 code.name(),
                 code.defaultMessage(),
@@ -120,6 +125,31 @@ public class SecurityConfig {
                 traceId,
                 request.getRequestURI(),
                 null
+        );
+        if (status == HttpStatus.UNAUTHORIZED) {
+            log.warn(
+                    "event=AUTH_UNAUTHORIZED traceId={} requestId={} path={} errorCode={}",
+                    traceId,
+                    requestId,
+                    request.getRequestURI(),
+                    code.name()
+            );
+        } else if (status == HttpStatus.FORBIDDEN) {
+            log.warn(
+                    "event=AUTH_FORBIDDEN traceId={} requestId={} path={} errorCode={}",
+                    traceId,
+                    requestId,
+                    request.getRequestURI(),
+                    code.name()
+            );
+        }
+        log.info(
+                "event=ERROR_RESPONSE_SENT traceId={} requestId={} path={} httpStatus={} errorCode={}",
+                traceId,
+                requestId,
+                request.getRequestURI(),
+                status.value(),
+                code.name()
         );
         OBJECT_MAPPER.writeValue(response.getOutputStream(), body);
     }
@@ -136,6 +166,25 @@ public class SecurityConfig {
         String fromMdc = MDC.get("traceId");
         if (fromMdc != null && !fromMdc.isBlank()) {
             return fromMdc;
+        }
+        return UUID.randomUUID().toString();
+    }
+
+    private static String resolveRequestId(jakarta.servlet.http.HttpServletRequest request, String fallbackTraceId) {
+        String fromHeader = request.getHeader(TraceIdFilter.REQUEST_HEADER);
+        if (fromHeader != null && !fromHeader.isBlank()) {
+            return fromHeader;
+        }
+        String lowerHeader = request.getHeader("x-request-id");
+        if (lowerHeader != null && !lowerHeader.isBlank()) {
+            return lowerHeader;
+        }
+        String fromMdc = MDC.get("requestId");
+        if (fromMdc != null && !fromMdc.isBlank()) {
+            return fromMdc;
+        }
+        if (fallbackTraceId != null && !fallbackTraceId.isBlank()) {
+            return fallbackTraceId;
         }
         return UUID.randomUUID().toString();
     }
