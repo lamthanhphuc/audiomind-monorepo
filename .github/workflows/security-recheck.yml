@@ -139,6 +139,8 @@ jobs:
 
       - name: Setup k6
         uses: grafana/setup-k6-action@v1
+        with:
+          k6-version: '0.49.0'
 
       - name: Start local k6 health target
         run: |
