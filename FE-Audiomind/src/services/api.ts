@@ -1,6 +1,6 @@
 import type { paths as MeetingPaths } from '../../../packages/api-clients/meeting'
 import type { paths as ProcessingPaths } from '../../../packages/api-clients/processing'
-import { normalizeAnalysisResponse, type AiAnalysis, type TranscriptResponse } from '../types'
+import { normalizeAnalysisResponse, type AiAnalysis, type Meeting, type TranscriptResponse } from '../types'
 import { getAccessToken } from './auth'
 import { API_BASE, MEETING_API_BASE, PROCESSING_API_BASE } from './config'
 
@@ -138,6 +138,29 @@ export const getAnalysis = async (meetingId: number): Promise<AiAnalysis> => {
   return normalized
 }
 
+export const getSavedAnalysis = async (meetingId: number): Promise<AiAnalysis> => {
+  const response = await fetchJson<AiAnalysis | { data?: AiAnalysis } & { status?: string }>(
+    `${API_BASE}/processing/${meetingId}/analysis/saved`
+  )
+
+  const normalized = normalizeAnalysisResponse(response)
+  const payload = response && typeof response === 'object' && !Array.isArray(response)
+    ? (response as Record<string, unknown>)
+    : {}
+  const nested = payload.data && typeof payload.data === 'object' && !Array.isArray(payload.data)
+    ? (payload.data as Record<string, unknown>)
+    : payload
+  const statusValue = typeof nested.status === 'string'
+    ? nested.status
+    : typeof payload.status === 'string'
+      ? payload.status
+      : undefined
+  if (statusValue) {
+    ;(normalized as AiAnalysis & { status?: string }).status = statusValue
+  }
+  return normalized
+}
+
 export const getProcessingStatus = async (meetingId: number): Promise<{
   meeting_id: number
   status: 'QUEUED' | 'RUNNING' | 'COMPLETED' | 'FAILED' | string
@@ -178,6 +201,14 @@ export const processMeeting = async (meetingId: string) => {
 
 export const getMeeting = async (meetingId: string): Promise<GetMeetingResponse> => {
   return fetchJson<GetMeetingResponse>(`${MEETING_API_BASE}/api/v1/meetings/${meetingId}`)
+}
+
+export const listMeetings = async (): Promise<Meeting[]> => {
+  return fetchJson<Meeting[]>(`${MEETING_API_BASE}/meetings`)
+}
+
+export const getMeetingDetail = async (meetingId: number): Promise<Meeting> => {
+  return fetchJson<Meeting>(`${MEETING_API_BASE}/meetings/${meetingId}`)
 }
 
 /**

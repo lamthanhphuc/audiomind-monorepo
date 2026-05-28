@@ -294,6 +294,25 @@ class ProcessingServiceTest {
         verify(aiServiceClient).getAnalysis(606L, "trace-606");
     }
 
+        @Test
+        void getAnalysisReadOnly_shouldReturnStoredAnalysisWithoutLazyTrigger() {
+                when(jobStateStore.getJobState(700L)).thenReturn(Optional.empty());
+                when(aiServiceClient.getAnalysis(700L, "trace-700")).thenThrow(new HttpClientErrorException(HttpStatus.NOT_FOUND));
+
+                Map<String, Object> response = processingService.getAnalysisReadOnly(700L, "trace-700", AUTH_HEADER);
+
+                assertEquals("NOT_FOUND", response.get("status"));
+                verify(aiServiceClient, never()).analyzeRealtimeTranscript(
+                                eq(700L),
+                                anyString(),
+                                eq("it"),
+                                eq("realtime"),
+                                anyString(),
+                                eq("trace-700"),
+                                eq(AUTH_HEADER)
+                );
+        }
+
     @Test
     void getAnalysis_shouldFallbackToAiServiceWhenStateExistsButAnalysisMissing() {
         Map<String, Object> state = new HashMap<>();

@@ -3,6 +3,9 @@ export type Meeting = {
   title: string
   audioPath: string
   createdAt: string
+  originalFileName?: string | null
+  ownerUserId?: number | null
+  language?: string | null
 }
 
 export type AnalysisTechnicalTerm = {

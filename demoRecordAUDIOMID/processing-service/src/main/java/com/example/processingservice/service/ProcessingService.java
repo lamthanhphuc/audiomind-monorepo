@@ -355,6 +355,14 @@ public class ProcessingService {
     }
 
     public Map<String, Object> getAnalysis(Long meetingId, String traceId, String authorization) {
+        return getAnalysisInternal(meetingId, traceId, authorization, true);
+    }
+
+    public Map<String, Object> getAnalysisReadOnly(Long meetingId, String traceId, String authorization) {
+        return getAnalysisInternal(meetingId, traceId, authorization, false);
+    }
+
+    private Map<String, Object> getAnalysisInternal(Long meetingId, String traceId, String authorization, boolean allowLazyTrigger) {
         assertMeetingAccess(meetingId, traceId, authorization);
         log.info(
                 "event=ANALYSIS_GET_REQUEST traceId={} requestId={} meetingId={} source=analysis_get",
@@ -365,6 +373,7 @@ public class ProcessingService {
         Map<String, Object> state = jobStateStore.getJobState(meetingId).orElse(null);
         String stateStatus = state == null ? "NOT_FOUND" : normalizeStatus(state.get("status"));
         Map<String, Object> analysis = extractAnalysisFromState(state);
+        JobStateStore.AnalysisStateSnapshot analysisState = jobStateStore.getAnalysisState(meetingId).orElse(null);
         if (!analysis.isEmpty()) {
             Map<String, Object> response = new HashMap<>();
             response.put("meeting_id", meetingId);
@@ -409,7 +418,21 @@ public class ProcessingService {
             return response;
         }
 
-        JobStateStore.AnalysisStateSnapshot analysisState = jobStateStore.getAnalysisState(meetingId).orElse(null);
+        if (!allowLazyTrigger) {
+            Map<String, Object> response = new HashMap<>();
+            response.put("meeting_id", meetingId);
+            response.put("status", stateStatus);
+            if (analysisState != null) {
+                if (analysisState.retryAfterSeconds() > 0) {
+                    response.put("retryAfterSeconds", analysisState.retryAfterSeconds());
+                }
+                if (analysisState.errorCode() != null && !analysisState.errorCode().isBlank()) {
+                    response.put("errorCode", analysisState.errorCode());
+                }
+            }
+            return response;
+        }
+
         if (analysisState != null && analysisState.isFailed() && analysisState.retryAfterSeconds() > 0) {
             throw toAnalysisFailureException(analysisState.errorCode(), analysisState.retryAfterSeconds());
         }

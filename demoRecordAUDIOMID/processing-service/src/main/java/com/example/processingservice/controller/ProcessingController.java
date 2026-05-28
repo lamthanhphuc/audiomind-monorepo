@@ -125,6 +125,15 @@ public class ProcessingController {
         return new AnalysisResponse(meetingId, processingService.getAnalysis(meetingId, ensureTraceId(traceId), authorization));
     }
 
+    @GetMapping("/{meetingId}/analysis/saved")
+    public AnalysisResponse savedAnalysis(
+            @PathVariable Long meetingId,
+            @RequestHeader(value = "x-trace-id", required = false) String traceId,
+            @RequestHeader(HttpHeaders.AUTHORIZATION) String authorization) {
+        requirePrincipal();
+        return new AnalysisResponse(meetingId, processingService.getAnalysisReadOnly(meetingId, ensureTraceId(traceId), authorization));
+    }
+
     private UserPrincipal requirePrincipal() {
         Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
         if (authentication == null || !(authentication.getPrincipal() instanceof UserPrincipal principal)) {

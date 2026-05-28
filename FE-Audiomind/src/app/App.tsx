@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import DashboardLayout, { type DashboardScene } from '../components/dashboard/DashboardLayout'
-import FilesList from '../components/dashboard/FilesList'
+import MeetingHistoryScene from '../components/features/MeetingHistoryScene'
 import SubjectsList from '../components/dashboard/SubjectsList'
 import FeatureAnalysis from '../components/features/FeatureAnalysis'
 import FeatureUpload from '../components/features/FeatureUpload'
@@ -984,7 +984,7 @@ export default function App() {
       )
     }
 
-    if (featureScene === 'files') return <FilesList />
+    if (featureScene === 'files') return <MeetingHistoryScene />
     if (featureScene === 'subjects') return <SubjectsList />
 
     return (
