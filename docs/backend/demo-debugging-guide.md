@@ -1,9 +1,9 @@
 # Backend Demo Debugging Guide
 
-Purpose: quick operational guide for Phase 7B-7F demo hardening validation.
+Purpose: quick operational guide for Phase 7B-7G demo hardening validation.
 Scope: docker startup/rebuild/health/log triage for backend services only.
 Last updated: 2026-05-27
-Applies to: Phase 7B-7F backend demo hardening
+Applies to: Phase 7B-7G backend demo hardening
 
 ## 1. Start and rebuild commands
 
@@ -165,7 +165,26 @@ Expected key logs to inspect:
 - `REALTIME_ANALYSIS_SAVED`
 - `REALTIME_ANALYSIS_FAILED`
 
-## 4.2 Multilingual STT investigation smoke
+## 4.2 Realtime STT optimization smoke
+
+Use this when comparing vi, en, and multi behavior for Phase 7G.
+
+- Treat realtime multi as experimental until the 7G matrix passes.
+- Prefer vi or en for normal demo runs.
+- Compare endpointing variants with the existing realtime diagnostic logs.
+- Do not treat multi as the default realtime choice.
+
+Helpful filters:
+
+```powershell
+docker compose --env-file infra/.env -f infra/docker-compose.dev.yml logs processing-api ai-api | Select-String -Pattern "REALTIME_STT_DIAGNOSTIC_CONFIG|REALTIME_STT_SEGMENT_FINAL|REALTIME_STT_DIAGNOSTIC_COMPLETED|requestedLanguage|effectiveLanguage|deepgramLanguage|endpointing" -CaseSensitive:$false
+```
+
+```bash
+docker compose --env-file infra/.env -f infra/docker-compose.dev.yml logs processing-api ai-api | findstr /I "REALTIME_STT_DIAGNOSTIC_CONFIG REALTIME_STT_SEGMENT_FINAL REALTIME_STT_DIAGNOSTIC_COMPLETED requestedLanguage effectiveLanguage deepgramLanguage endpointing"
+```
+
+## 4.3 Multilingual STT investigation smoke
 
 Use this when checking vi, en, and multi transcript behavior before any 7G implementation.
 
