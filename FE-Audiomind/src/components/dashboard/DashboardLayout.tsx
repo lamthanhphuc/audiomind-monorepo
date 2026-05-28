@@ -59,7 +59,7 @@ export default function DashboardLayout({
               <span className="icon">📊</span> Kết quả phân tích
             </li>
             <li className={activeMenu === 'files' ? 'active' : ''} onClick={() => onNavigate('files')}>
-              <span className="icon">⏱</span> File ghi âm
+              <span className="icon">⏱</span> Lịch sử meeting
             </li>
             <li className={activeMenu === 'subjects' ? 'active' : ''} onClick={() => onNavigate('subjects')}>
               <span className="icon">📁</span> Môn học

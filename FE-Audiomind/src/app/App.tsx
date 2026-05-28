@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import DashboardLayout, { type DashboardScene } from '../components/dashboard/DashboardLayout'
-import FilesList from '../components/dashboard/FilesList'
 import SubjectsList from '../components/dashboard/SubjectsList'
 import FeatureAnalysis from '../components/features/FeatureAnalysis'
 import FeatureUpload from '../components/features/FeatureUpload'
+import MeetingHistoryScene from '../components/features/MeetingHistoryScene'
 import RealtimeDashboardScene from '../components/features/RealtimeDashboardScene'
 import { useAudioRecorder } from '../hooks/useAudioRecorder'
 import {
@@ -984,7 +984,7 @@ export default function App() {
       )
     }
 
-    if (featureScene === 'files') return <FilesList />
+    if (featureScene === 'files') return <MeetingHistoryScene />
     if (featureScene === 'subjects') return <SubjectsList />
 
     return (
