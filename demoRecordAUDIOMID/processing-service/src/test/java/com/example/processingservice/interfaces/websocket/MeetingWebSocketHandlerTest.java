@@ -701,6 +701,13 @@ class MeetingWebSocketHandlerTest {
                 anyString(),
                 eq("Bearer test-token")
         );
+        verify(jobStateStore, timeout(1000)).markAnalysisCompleted(
+                eq(351L),
+                anyString(),
+                eq("stream_stop"),
+                eq("processing_ws_realtime_stop"),
+                eq("lock-token")
+        );
     }
 
     @Test
@@ -762,6 +769,69 @@ class MeetingWebSocketHandlerTest {
                 eq(true),
                 isNull(),
                 eq("Bearer test-token")
+        );
+    }
+
+    @Test
+    void handleTextMessage_streamStop_shouldNotMarkCompletedWhenRealtimeAnalysisSkippedInProgress() throws Exception {
+        attributes.put("meetingId", 354L);
+        attributes.put("authenticated", true);
+        attributes.put("language", "vi");
+        attributes.put("authorization", "Bearer test-token");
+        attributes.put("lastAudioSeq", 23L);
+        attributes.put("AUDIO_RECEIVED_ATTR", Boolean.TRUE);
+
+        doReturn(Map.of("type", "stream.stop")).when(objectMapper).readValue(anyString(), any(Class.class));
+        when(aiServiceClient.streamAudioChunk(
+                eq(354L),
+                argThat(bytes -> bytes != null && bytes.length == 0),
+                eq(-1L),
+                eq("vi"),
+                eq(true),
+                isNull(),
+                eq("Bearer test-token")
+        )).thenReturn(Map.of(
+                "transcript", "done",
+                "is_final", true,
+                "language", "vi"
+        ));
+        when(aiServiceClient.getTranscript(eq(354L), anyString())).thenReturn(Map.of(
+                "meeting_id", 354L,
+                "transcripts", java.util.List.of(
+                        Map.of("speaker", "SPEAKER_1", "text", "final transcript")
+                )
+        ));
+        when(aiServiceClient.analyzeRealtimeTranscript(
+                eq(354L),
+                anyString(),
+                eq("it"),
+                eq("realtime"),
+                anyString(),
+                anyString(),
+                eq("Bearer test-token")
+        )).thenReturn(Map.of(
+                "status", "skipped",
+                "reason", "in_progress",
+                "retryAfterSeconds", 25
+        ));
+
+        handler.handleTextMessage(session, new TextMessage("{\"type\":\"stream.stop\"}"));
+
+        verify(jobStateStore, timeout(1000)).markAnalysisSkipped(
+                eq(354L),
+                anyString(),
+                eq("stream_stop"),
+                eq("processing_ws_realtime_stop"),
+                eq("lock-token"),
+                eq("in_progress"),
+                eq(25)
+        );
+        verify(jobStateStore, never()).markAnalysisCompleted(
+                eq(354L),
+                anyString(),
+                eq("stream_stop"),
+                eq("processing_ws_realtime_stop"),
+                eq("lock-token")
         );
     }
 

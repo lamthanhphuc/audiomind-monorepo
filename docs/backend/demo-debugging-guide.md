@@ -183,6 +183,9 @@ docker compose --env-file infra/.env -f infra/docker-compose.dev.yml logs proces
 docker compose --env-file infra/.env -f infra/docker-compose.dev.yml logs processing-api ai-api celery-worker | findstr /I "requestedLanguage effectiveLanguage language=multi language=vi language=en BATCH_STT REALTIME_STT"
 ```
 
+Result reference:
+- `docs/reports/multilingual-stt-investigation-results.md`
+
 ## 5. Upload path quick checks
 
 1. Upload audio and start processing with explicit language (`vi`, `en`, `multi`).

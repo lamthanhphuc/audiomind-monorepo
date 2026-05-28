@@ -11,6 +11,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
@@ -763,9 +764,10 @@ public class ProcessingService {
                     authorization
             );
             String status = normalizeStatus(response == null ? null : response.get("status"));
+            String reason = normalizeRealtimeSkipReason(response);
+            int retryAfter = parseRetryAfter(response);
             if ("FAILED".equals(status)) {
                 String errorCode = mapRealtimeFailureCode(response);
-                int retryAfter = parseRetryAfter(response);
                 jobStateStore.markAnalysisFailed(
                         meetingId,
                         transcriptHash,
@@ -785,14 +787,70 @@ public class ProcessingService {
                 return;
             }
 
-            jobStateStore.markAnalysisCompleted(
+            if ("COMPLETED".equals(status)) {
+                jobStateStore.markAnalysisCompleted(
+                        meetingId,
+                        transcriptHash,
+                        source,
+                        "processing_service_lazy_poll",
+                        lockToken
+                );
+                log.info("event=REALTIME_ANALYSIS_SAVED meetingId={} source={}", meetingId, source);
+                return;
+            }
+
+            if ("SKIPPED".equals(status)) {
+                if ("already_exists".equals(reason) && hasPersistedAnalysisResult(meetingId, traceId)) {
+                    jobStateStore.markAnalysisCompleted(
+                            meetingId,
+                            transcriptHash,
+                            source,
+                            "processing_service_lazy_poll",
+                            lockToken
+                    );
+                    log.info(
+                            "event=REALTIME_ANALYSIS_SAVED meetingId={} source={} reason=already_exists_verified",
+                            meetingId,
+                            source
+                    );
+                    return;
+                }
+
+                jobStateStore.markAnalysisSkipped(
+                        meetingId,
+                        transcriptHash,
+                        source,
+                        "processing_service_lazy_poll",
+                        lockToken,
+                        reason.isBlank() ? "skipped" : reason,
+                        retryAfter
+                );
+                log.info(
+                        "event=REALTIME_ANALYSIS_SKIPPED reason={} source={} meetingId={} retryAfterSeconds={}",
+                        reason.isBlank() ? "skipped" : reason,
+                        source,
+                        meetingId,
+                        retryAfter
+                );
+                return;
+            }
+
+            jobStateStore.markAnalysisSkipped(
                     meetingId,
                     transcriptHash,
                     source,
                     "processing_service_lazy_poll",
-                    lockToken
+                    lockToken,
+                    "unexpected_status",
+                    retryAfter
             );
-            log.info("event=REALTIME_ANALYSIS_SAVED meetingId={} source={}", meetingId, source);
+            log.warn(
+                    "event=REALTIME_ANALYSIS_SKIPPED reason=unexpected_status source={} meetingId={} status={} retryAfterSeconds={}",
+                    source,
+                    meetingId,
+                    status,
+                    retryAfter
+            );
         } catch (HttpStatusCodeException ex) {
             String errorCode = mapAnalysisFailureCode(ex);
             jobStateStore.markAnalysisFailed(
@@ -885,6 +943,63 @@ public class ProcessingService {
             return "GEMINI_UNAVAILABLE";
         }
         return "GEMINI_ANALYSIS_FAILED";
+    }
+
+    private String normalizeRealtimeSkipReason(Map<String, Object> response) {
+        if (response == null) {
+            return "";
+        }
+        return safeErrorText(response.get("reason")).trim().toLowerCase(Locale.ROOT);
+    }
+
+    private boolean hasPersistedAnalysisResult(Long meetingId, String traceId) {
+        try {
+            Map<String, Object> response = aiServiceClient.getAnalysis(meetingId, traceId);
+            return hasStructuredAnalysis(response);
+        } catch (HttpStatusCodeException ex) {
+            if (ex.getStatusCode().value() == HttpStatus.NOT_FOUND.value()) {
+                return false;
+            }
+            log.warn(
+                    "event=AI_SERVICE_CALL_FAILED traceId={} requestId={} meetingId={} source=analysis_verify httpStatus={} errorCode=DOWNSTREAM_HTTP_ERROR",
+                    traceId,
+                    currentRequestId(traceId),
+                    meetingId,
+                    ex.getStatusCode().value()
+            );
+            return false;
+        } catch (Exception ex) {
+            log.warn(
+                    "event=AI_SERVICE_CALL_FAILED traceId={} requestId={} meetingId={} source=analysis_verify errorCode={}",
+                    traceId,
+                    currentRequestId(traceId),
+                    meetingId,
+                    ex.getClass().getSimpleName()
+            );
+            return false;
+        }
+    }
+
+    private boolean hasStructuredAnalysis(Map<String, Object> payload) {
+        if (payload == null || payload.isEmpty()) {
+            return false;
+        }
+        String summary = safeErrorText(payload.get("summary"));
+        if (!summary.isBlank()) {
+            return true;
+        }
+        if (payload.get("analysis") instanceof Map<?, ?> analysisMap) {
+            Object nestedSummary = analysisMap.get("summary");
+            if (nestedSummary != null && !String.valueOf(nestedSummary).trim().isBlank()) {
+                return true;
+            }
+        }
+        return (payload.get("keywords") instanceof List<?> keywords && !keywords.isEmpty())
+                || (payload.get("technicalTerms") instanceof List<?> technicalTerms && !technicalTerms.isEmpty())
+                || (payload.get("painPoints") instanceof List<?> painPoints && !painPoints.isEmpty())
+                || (payload.get("actionItems") instanceof List<?> actionItems && !actionItems.isEmpty())
+                || (payload.get("technical_terms") instanceof List<?> technicalTermsSnake && !technicalTermsSnake.isEmpty())
+                || (payload.get("action_items") instanceof List<?> actionItemsSnake && !actionItemsSnake.isEmpty());
     }
 
     private int parseRetryAfter(Map<String, Object> response) {

@@ -1,5 +1,6 @@
 import json
 import re
+import time
 from datetime import datetime
 from pathlib import Path, PureWindowsPath
 from typing import Dict, List, Optional
@@ -8,6 +9,7 @@ from loguru import logger
 from sqlalchemy.orm import Session
 
 from app.config import get_runtime_device, get_settings
+from app.logging_utils import safe_error_message, transcript_hash_prefix
 from app.models import Analysis, Transcript, TranscriptFragment
 from app.services.analysis_factory import build_analysis_analyzer
 from app.services.audio_processor import AudioProcessor
@@ -403,12 +405,91 @@ class ProcessingPipeline:
         ).strip() or "nova-2"
         deepgram_language = self._normalize_batch_language(language)
         local_whisper_enabled = settings.local_whisper_enabled
+        deepgram_timeout_seconds = int(settings.deepgram_timeout_seconds)
 
         transcript_segments = []
+        audio_bytes = -1
+        try:
+            audio_bytes = max(0, int(Path(audio_path).stat().st_size))
+        except OSError:
+            audio_bytes = -1
 
         # Try Deepgram if configured
         if stt_provider == "deepgram" and deepgram_api_key:
+            diagnostic_started_at = time.time()
+            requested_language = str(language or "")
+            request_id = trace_id or (
+                f"job-{meeting_id}" if meeting_id is not None else ""
+            )
+            effective_diarize = bool(
+                settings.enable_speaker_diarization and settings.deepgram_diarize
+            )
+
+            def _resolve_batch_failure_diagnostics(
+                exc: BaseException,
+            ) -> tuple[str, str]:
+                timeout_type = "none"
+                provider_status = "unavailable"
+                seen: set[int] = set()
+                current: BaseException | None = exc
+                while current is not None and id(current) not in seen:
+                    seen.add(id(current))
+                    name = type(current).__name__.lower()
+                    text = str(current).lower()
+                    if timeout_type == "none":
+                        if "writetimeout" in name or "write timeout" in text:
+                            timeout_type = "write"
+                        elif "readtimeout" in name or "read timeout" in text:
+                            timeout_type = "read"
+                        elif "timeout" in name or "timed out" in text:
+                            timeout_type = "timeout"
+
+                    response = getattr(current, "response", None)
+                    status_code = getattr(response, "status_code", None)
+                    if isinstance(status_code, int):
+                        provider_status = str(status_code)
+                        break
+
+                    current_status_code = getattr(current, "status_code", None)
+                    if isinstance(current_status_code, int):
+                        provider_status = str(current_status_code)
+                        break
+
+                    current = current.__cause__ or current.__context__
+                return timeout_type, provider_status
+
             try:
+                logger.info(
+                    "event=BATCH_STT_DIAGNOSTIC_START traceId={} requestId={} jobId={} meetingId={} source=upload requestedLanguage={} effectiveLanguage={} deepgramLanguage={} model={} audioBytes={} deepgramTimeoutSeconds={}",
+                    trace_id or "",
+                    request_id,
+                    meeting_id if meeting_id is not None else "unknown",
+                    meeting_id if meeting_id is not None else "unknown",
+                    requested_language,
+                    deepgram_language,
+                    deepgram_language,
+                    deepgram_batch_model,
+                    audio_bytes,
+                    deepgram_timeout_seconds,
+                )
+                logger.info(
+                    "event=BATCH_STT_DIAGNOSTIC_CONFIG traceId={} requestId={} jobId={} meetingId={} source=upload requestedLanguage={} effectiveLanguage={} deepgramLanguage={} model={} detectLanguage={} smartFormat={} utterances={} diarize={} punctuate={} audioBytes={} deepgramTimeoutSeconds={}",
+                    trace_id or "",
+                    request_id,
+                    meeting_id if meeting_id is not None else "unknown",
+                    meeting_id if meeting_id is not None else "unknown",
+                    requested_language,
+                    deepgram_language,
+                    deepgram_language,
+                    deepgram_batch_model,
+                    False,
+                    True,
+                    True,
+                    effective_diarize,
+                    "omitted",
+                    audio_bytes,
+                    deepgram_timeout_seconds,
+                )
                 log_parts = [
                     (
                         f"jobId={meeting_id}"
@@ -422,6 +503,8 @@ class ProcessingPipeline:
                     [
                         f"model={deepgram_batch_model}",
                         f"language={deepgram_language}",
+                        f"audioBytes={audio_bytes}",
+                        f"deepgramTimeoutSeconds={deepgram_timeout_seconds}",
                     ]
                 )
                 logger.info("BATCH_STT_EFFECTIVE_CONFIG " + " ".join(log_parts))
@@ -432,7 +515,7 @@ class ProcessingPipeline:
                     api_key=deepgram_api_key,
                     model=deepgram_batch_model,
                     base_url=settings.deepgram_base_url,
-                    timeout_seconds=settings.deepgram_timeout_seconds,
+                    timeout_seconds=deepgram_timeout_seconds,
                     enable_speaker_diarization=settings.enable_speaker_diarization,
                     deepgram_diarize=settings.deepgram_diarize,
                 )
@@ -443,27 +526,114 @@ class ProcessingPipeline:
                 )
 
                 transcript_segments = result.get("segments", [])
+                transcript_text = " ".join(
+                    str(item.get("text", ""))
+                    for item in transcript_segments
+                    if isinstance(item, dict)
+                ).strip()
+                logger.info(
+                    "event=BATCH_STT_DIAGNOSTIC_COMPLETED traceId={} requestId={} jobId={} meetingId={} source=upload requestedLanguage={} effectiveLanguage={} deepgramLanguage={} model={} transcriptLength={} transcriptHashPrefix={} providerStatus={} errorCode={} timeoutType={} audioBytes={} deepgramTimeoutSeconds={} durationMs={}",
+                    trace_id or "",
+                    request_id,
+                    meeting_id if meeting_id is not None else "unknown",
+                    meeting_id if meeting_id is not None else "unknown",
+                    requested_language,
+                    deepgram_language,
+                    deepgram_language,
+                    deepgram_batch_model,
+                    len(transcript_text),
+                    transcript_hash_prefix(transcript_text),
+                    "ok",
+                    "none",
+                    "none",
+                    audio_bytes,
+                    deepgram_timeout_seconds,
+                    int((time.time() - diagnostic_started_at) * 1000),
+                )
                 logger.info(
                     f"DEEPGRAM_BATCH_SUCCESS segments={len(transcript_segments)}"
                 )
                 return transcript_segments
             except Exception as e:
+                timeout_type, provider_status = _resolve_batch_failure_diagnostics(e)
+                provider_error_code = type(e).__name__
+                logger.warning(
+                    "event=BATCH_STT_DIAGNOSTIC_FAILED traceId={} requestId={} jobId={} meetingId={} source=upload requestedLanguage={} effectiveLanguage={} deepgramLanguage={} model={} providerStatus={} errorCode={} timeoutType={} audioBytes={} deepgramTimeoutSeconds={} durationMs={} error={}",
+                    trace_id or "",
+                    request_id,
+                    meeting_id if meeting_id is not None else "unknown",
+                    meeting_id if meeting_id is not None else "unknown",
+                    requested_language,
+                    deepgram_language,
+                    deepgram_language,
+                    deepgram_batch_model,
+                    provider_status,
+                    provider_error_code,
+                    timeout_type,
+                    audio_bytes,
+                    deepgram_timeout_seconds,
+                    int((time.time() - diagnostic_started_at) * 1000),
+                    safe_error_message(e),
+                )
                 logger.warning(
                     f"Deepgram batch transcription failed: {repr(e)}. Fallback decision: LOCAL_WHISPER_ENABLED={local_whisper_enabled}"
                 )
+
+                if deepgram_language == "multi":
+                    logger.warning(
+                        "event=BATCH_STT_FALLBACK_SKIPPED traceId={} requestId={} jobId={} meetingId={} source=upload fallbackSkipped={} fallbackReason={} requestedLanguage={} effectiveLanguage={} deepgramLanguage={} providerStatus={} errorCode={} timeoutType={} audioBytes={} deepgramTimeoutSeconds={}",
+                        trace_id or "",
+                        request_id,
+                        meeting_id if meeting_id is not None else "unknown",
+                        meeting_id if meeting_id is not None else "unknown",
+                        True,
+                        "multi_not_supported_by_local_whisper",
+                        requested_language,
+                        deepgram_language,
+                        deepgram_language,
+                        provider_status,
+                        provider_error_code,
+                        timeout_type,
+                        audio_bytes,
+                        deepgram_timeout_seconds,
+                    )
+                    raise RuntimeError(
+                        "STT_PROVIDER_UNAVAILABLE: DEEPGRAM_STT_FAILED (fallbackSkipped=true reason=multi_not_supported_by_local_whisper)"
+                    ) from e
 
                 if not local_whisper_enabled:
                     logger.error(
                         "STT_PROVIDER=deepgram but LOCAL_WHISPER_ENABLED=false. Cannot continue."
                     )
                     raise RuntimeError(
-                        f"Deepgram batch failed and fallback disabled: {repr(e)}"
+                        "DEEPGRAM_STT_FAILED: Deepgram batch failed and fallback disabled"
                     )
 
                 # Fall through to Whisper
 
         # Fallback to Whisper if enabled or explicitly selected
         if stt_provider == "local_whisper" or local_whisper_enabled:
+            if deepgram_language == "multi":
+                logger.warning(
+                    "event=BATCH_STT_FALLBACK_SKIPPED traceId={} requestId={} jobId={} meetingId={} source=upload fallbackSkipped={} fallbackReason={} requestedLanguage={} effectiveLanguage={} deepgramLanguage={} providerStatus={} errorCode={} timeoutType={} audioBytes={} deepgramTimeoutSeconds={}",
+                    trace_id or "",
+                    trace_id or (f"job-{meeting_id}" if meeting_id is not None else ""),
+                    meeting_id if meeting_id is not None else "unknown",
+                    meeting_id if meeting_id is not None else "unknown",
+                    True,
+                    "multi_not_supported_by_local_whisper",
+                    str(language or ""),
+                    deepgram_language,
+                    deepgram_language,
+                    "unavailable",
+                    "LOCAL_WHISPER_LANGUAGE_UNSUPPORTED",
+                    "none",
+                    audio_bytes,
+                    deepgram_timeout_seconds,
+                )
+                raise RuntimeError(
+                    "STT_PROVIDER_UNAVAILABLE: LOCAL_WHISPER_LANGUAGE_UNSUPPORTED (language=multi)"
+                )
             logger.info(
                 f"STT_PROVIDER_SELECTED provider=local_whisper model={settings.whisper_model} language={deepgram_language}"
             )

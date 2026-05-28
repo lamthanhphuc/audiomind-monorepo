@@ -12,6 +12,8 @@ from uuid import uuid4
 
 from loguru import logger
 
+from app.logging_utils import safe_error_message, transcript_hash_prefix
+
 try:
     import websockets
 except ImportError:  # pragma: no cover - import is validated by runtime tests
@@ -187,6 +189,9 @@ class _SessionBuffer:
     finalize_sent: bool = False
     finalize_acked: bool = False
     close_stream_sent: bool = False
+    is_final_count: int = 0
+    speech_final_count: int = 0
+    final_segment_count: int = 0
 
 
 class DeepgramSTTAdapter:
@@ -788,6 +793,7 @@ class DeepgramSTTAdapter:
                 "transcript": session.transcript,
                 "partials": list(session.partial_events),
                 "closed": session.closed,
+                "diagnostics": self._build_diagnostics_from_session(session),
             }
             session.raw_response = raw_response
 
@@ -827,6 +833,20 @@ class DeepgramSTTAdapter:
         if session is not None:
             return session.raw_response
         return self._closed_responses.get(session_id)
+
+    def get_session_diagnostics(self, session_id: str) -> dict[str, Any]:
+        session = self._sessions.get(session_id)
+        if session is not None:
+            return self._build_diagnostics_from_session(session)
+
+        raw_response = self._closed_responses.get(session_id)
+        if raw_response is None:
+            return self._empty_diagnostics()
+
+        diagnostics = raw_response.get("diagnostics")
+        if isinstance(diagnostics, dict):
+            return diagnostics
+        return self._build_diagnostics_from_raw_response(raw_response)
 
     def _get_session(self, session_id: str) -> _SessionBuffer:
         try:
@@ -1070,7 +1090,16 @@ class DeepgramSTTAdapter:
         start_time, end_time = self._extract_timing(payload)
         self._record_event_count(session, payload)
         speaker = self._extract_speaker(payload)
-        is_final = bool(payload.get("is_final") or payload.get("speech_final"))
+        payload_is_final = bool(payload.get("is_final"))
+        payload_speech_final = bool(payload.get("speech_final"))
+        is_final = bool(payload_is_final or payload_speech_final)
+        if session is not None and self._is_results_payload(payload):
+            if payload_is_final:
+                session.is_final_count = int(getattr(session, "is_final_count", 0)) + 1
+            if payload_speech_final:
+                session.speech_final_count = (
+                    int(getattr(session, "speech_final_count", 0)) + 1
+                )
         if self._speaker_diarization_enabled() and not is_final:
             speaker = None
         alternatives_count = self._count_alternatives(payload)
@@ -1260,6 +1289,37 @@ class DeepgramSTTAdapter:
             speaker,
             len(transcript),
         )
+        if is_final:
+            if session is not None:
+                session.final_segment_count = (
+                    int(getattr(session, "final_segment_count", 0)) + 1
+                )
+            logger.info(
+                "event=REALTIME_STT_SEGMENT_FINAL source=realtime meetingId={} sessionId={} language={} model={} isFinal={} speechFinal={} segmentTextLength={} segmentHashPrefix={} finalSegmentCount={} speechFinalCount={} isFinalCount={}",
+                session.meeting_id if session is not None else None,
+                session.session_id if session is not None else None,
+                session.language if session is not None else None,
+                self.model,
+                payload_is_final,
+                payload_speech_final,
+                len(transcript),
+                transcript_hash_prefix(transcript),
+                (
+                    int(getattr(session, "final_segment_count", 0))
+                    if session is not None
+                    else 0
+                ),
+                (
+                    int(getattr(session, "speech_final_count", 0))
+                    if session is not None
+                    else 0
+                ),
+                (
+                    int(getattr(session, "is_final_count", 0))
+                    if session is not None
+                    else 0
+                ),
+            )
 
         return {
             "text": transcript,
@@ -1271,6 +1331,55 @@ class DeepgramSTTAdapter:
             "end_time": end_time,
             "speaker": speaker,
             "raw": payload,
+        }
+
+    def _empty_diagnostics(self) -> dict[str, Any]:
+        return {
+            "final_segment_count": 0,
+            "speech_final_count": 0,
+            "is_final_count": 0,
+            "transcript_length": 0,
+            "transcript_hash_prefix": transcript_hash_prefix(""),
+        }
+
+    def _build_diagnostics_from_session(
+        self, session: _SessionBuffer
+    ) -> dict[str, Any]:
+        transcript_text = str(getattr(session, "transcript", "") or "")
+        return {
+            "final_segment_count": int(getattr(session, "final_segment_count", 0) or 0),
+            "speech_final_count": int(getattr(session, "speech_final_count", 0) or 0),
+            "is_final_count": int(getattr(session, "is_final_count", 0) or 0),
+            "transcript_length": len(transcript_text),
+            "transcript_hash_prefix": transcript_hash_prefix(transcript_text),
+        }
+
+    def _build_diagnostics_from_raw_response(
+        self, raw_response: dict[str, Any]
+    ) -> dict[str, Any]:
+        transcript_text = str(raw_response.get("transcript") or "")
+        partials = raw_response.get("partials")
+        final_segment_count = 0
+        speech_final_count = 0
+        is_final_count = 0
+        if isinstance(partials, list):
+            for event in partials:
+                if not isinstance(event, dict):
+                    continue
+                if bool(event.get("is_final")):
+                    final_segment_count += 1
+                raw_payload = event.get("raw")
+                if isinstance(raw_payload, dict):
+                    if bool(raw_payload.get("is_final")):
+                        is_final_count += 1
+                    if bool(raw_payload.get("speech_final")):
+                        speech_final_count += 1
+        return {
+            "final_segment_count": final_segment_count,
+            "speech_final_count": speech_final_count,
+            "is_final_count": is_final_count,
+            "transcript_length": len(transcript_text),
+            "transcript_hash_prefix": transcript_hash_prefix(transcript_text),
         }
 
     def _log_raw_message(self, session_id: str, raw_message: Any) -> None:
@@ -1546,6 +1655,29 @@ class DeepgramSTTAdapter:
                     continue
         return None
 
+    def _resolve_batch_timeout_type(self, exc: BaseException) -> str:
+        for cause in _iter_exception_chain(exc):
+            name = type(cause).__name__.lower()
+            message = str(cause).lower()
+            if "writetimeout" in name or "write timeout" in message:
+                return "write"
+            if "readtimeout" in name or "read timeout" in message:
+                return "read"
+            if "timeout" in name or "timed out" in message:
+                return "timeout"
+        return "none"
+
+    def _resolve_batch_provider_status(self, exc: BaseException) -> str:
+        for cause in _iter_exception_chain(exc):
+            response = getattr(cause, "response", None)
+            status_code = getattr(response, "status_code", None)
+            if isinstance(status_code, int):
+                return str(status_code)
+            cause_status_code = getattr(cause, "status_code", None)
+            if isinstance(cause_status_code, int):
+                return str(cause_status_code)
+        return "unavailable"
+
     def _merge_transcript(self, current: str, next_text: str) -> str:
         current_text = (current or "").strip()
         incoming_text = (next_text or "").strip()
@@ -1598,10 +1730,6 @@ class DeepgramSTTAdapter:
         else:
             logger.info("DIARIZATION_SKIPPED reason=disabled mode=batch")
 
-        logger.info(
-            f"BATCH_STT_START file={file_path} model={api_model} language={safe_language}"
-        )
-
         try:
             with open(file_path, "rb") as f:
                 audio_data = f.read()
@@ -1611,6 +1739,16 @@ class DeepgramSTTAdapter:
         except Exception as e:
             logger.error(f"Failed to read audio file {file_path}: {repr(e)}")
             raise
+
+        audio_bytes = len(audio_data)
+        logger.info(
+            "BATCH_STT_START file={} model={} language={} audioBytes={} deepgramTimeoutSeconds={}",
+            file_path,
+            api_model,
+            safe_language,
+            audio_bytes,
+            self.timeout_seconds,
+        )
 
         # Deepgram prerecorded endpoint
         query_pairs = {
@@ -1634,8 +1772,23 @@ class DeepgramSTTAdapter:
                 response.raise_for_status()
                 result = response.json()
         except Exception as e:
-            logger.error(f"Deepgram batch request failed: {repr(e)}")
-            raise RuntimeError(f"Deepgram batch transcription failed: {repr(e)}")
+            timeout_type = self._resolve_batch_timeout_type(e)
+            provider_status = self._resolve_batch_provider_status(e)
+            error_code = type(e).__name__
+            logger.error(
+                "BATCH_STT_PROVIDER_FAILED model={} language={} audioBytes={} deepgramTimeoutSeconds={} timeoutType={} providerStatus={} errorCode={} error={}",
+                api_model,
+                safe_language,
+                audio_bytes,
+                self.timeout_seconds,
+                timeout_type,
+                provider_status,
+                error_code,
+                safe_error_message(e),
+            )
+            raise RuntimeError(
+                f"Deepgram batch transcription failed: {error_code}"
+            ) from e
 
         # Parse Deepgram response
         transcript_text = ""
@@ -1746,7 +1899,14 @@ class DeepgramSTTAdapter:
             raise RuntimeError(f"Failed to parse Deepgram response: {repr(e)}")
 
         logger.info(
-            f"BATCH_STT_COMPLETE file={file_path} segments={len(segments)} text_len={len(transcript_text)}"
+            "BATCH_STT_COMPLETE file={} segments={} text_len={} audioBytes={} deepgramTimeoutSeconds={} providerStatus={} errorCode={}",
+            file_path,
+            len(segments),
+            len(transcript_text),
+            audio_bytes,
+            self.timeout_seconds,
+            "ok",
+            "none",
         )
 
         return {

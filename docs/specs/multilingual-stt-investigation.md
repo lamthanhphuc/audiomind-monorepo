@@ -214,7 +214,11 @@ Proposed result output path:
 - Spec includes a scoring method.
 - Spec includes manual validation commands.
 - Spec includes decision rules for 7G.
-- No code changes are introduced in this branch.
+
+## 16. 7F Result Report
+
+- Final investigation report:
+  - `docs/reports/multilingual-stt-investigation-results.md`
 
 ## 15. Official docs to verify before 7G
 - Deepgram language parameter documentation.

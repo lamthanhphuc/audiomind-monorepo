@@ -848,7 +848,7 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
         }
 
         try {
-            log.info("event=REALTIME_ANALYSIS_TRIGGERED meetingId={} source={}", meetingId, source);
+            log.info("event=REALTIME_ANALYSIS_REQUEST_SENT meetingId={} source={}", meetingId, source);
             Map<String, Object> analysisResponse = aiServiceClient.analyzeRealtimeTranscript(
                     meetingId,
                     transcriptText,
@@ -862,6 +862,8 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
             String analysisStatus = normalizeStatus(
                     analysisResponse == null ? null : analysisResponse.get("status")
             );
+            String analysisReason = normalizeRealtimeSkipReason(analysisResponse);
+            int retryAfterSeconds = parseRetryAfter(analysisResponse);
             if ("FAILED".equals(analysisStatus)) {
                 String errorCode = mapRealtimeFailureCode(analysisResponse);
                 jobStateStore.markAnalysisFailed(
@@ -882,14 +884,70 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                 return;
             }
 
-            jobStateStore.markAnalysisCompleted(
+            if ("COMPLETED".equals(analysisStatus)) {
+                jobStateStore.markAnalysisCompleted(
+                        meetingId,
+                        transcriptHash,
+                        source,
+                        "processing_ws_realtime_stop",
+                        decision.lockToken()
+                );
+                log.info("event=REALTIME_ANALYSIS_SAVED meetingId={} source={}", meetingId, source);
+                return;
+            }
+
+            if ("SKIPPED".equals(analysisStatus)) {
+                if ("already_exists".equals(analysisReason) && hasPersistedAnalysisResult(meetingId, traceId)) {
+                    jobStateStore.markAnalysisCompleted(
+                            meetingId,
+                            transcriptHash,
+                            source,
+                            "processing_ws_realtime_stop",
+                            decision.lockToken()
+                    );
+                    log.info(
+                            "event=REALTIME_ANALYSIS_SAVED meetingId={} source={} reason=already_exists_verified",
+                            meetingId,
+                            source
+                    );
+                    return;
+                }
+
+                jobStateStore.markAnalysisSkipped(
+                        meetingId,
+                        transcriptHash,
+                        source,
+                        "processing_ws_realtime_stop",
+                        decision.lockToken(),
+                        analysisReason.isBlank() ? "skipped" : analysisReason,
+                        retryAfterSeconds
+                );
+                log.info(
+                        "event=REALTIME_ANALYSIS_SKIPPED reason={} source={} meetingId={} retryAfterSeconds={}",
+                        analysisReason.isBlank() ? "skipped" : analysisReason,
+                        source,
+                        meetingId,
+                        retryAfterSeconds
+                );
+                return;
+            }
+
+            jobStateStore.markAnalysisSkipped(
                     meetingId,
                     transcriptHash,
                     source,
                     "processing_ws_realtime_stop",
-                    decision.lockToken()
+                    decision.lockToken(),
+                    "unexpected_status",
+                    retryAfterSeconds
             );
-            log.info("event=REALTIME_ANALYSIS_SAVED meetingId={} source={}", meetingId, source);
+            log.warn(
+                    "event=REALTIME_ANALYSIS_SKIPPED reason=unexpected_status source={} meetingId={} status={} retryAfterSeconds={}",
+                    source,
+                    meetingId,
+                    analysisStatus,
+                    retryAfterSeconds
+            );
         } catch (org.springframework.web.client.HttpStatusCodeException ex) {
             String errorCode = mapFailureCode(ex);
             jobStateStore.markAnalysisFailed(
@@ -987,6 +1045,61 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
             return "";
         }
         return String.valueOf(value).trim().toUpperCase(Locale.ROOT);
+    }
+
+    private int parseRetryAfter(Map<String, Object> response) {
+        if (response == null) {
+            return 0;
+        }
+        Object value = response.get("retryAfterSeconds");
+        if (value == null) {
+            return 0;
+        }
+        try {
+            return Math.max(0, Integer.parseInt(String.valueOf(value)));
+        } catch (NumberFormatException ex) {
+            return 0;
+        }
+    }
+
+    private String normalizeRealtimeSkipReason(Map<String, Object> response) {
+        if (response == null) {
+            return "";
+        }
+        return safeText(response.get("reason")).trim().toLowerCase(Locale.ROOT);
+    }
+
+    private boolean hasPersistedAnalysisResult(Long meetingId, String traceId) {
+        try {
+            Map<String, Object> response = aiServiceClient.getAnalysis(meetingId, traceId);
+            return hasStructuredAnalysis(response);
+        } catch (org.springframework.web.client.HttpStatusCodeException ex) {
+            return false;
+        } catch (Exception ex) {
+            return false;
+        }
+    }
+
+    private boolean hasStructuredAnalysis(Map<String, Object> payload) {
+        if (payload == null || payload.isEmpty()) {
+            return false;
+        }
+        String summary = safeText(payload.get("summary"));
+        if (!summary.isBlank()) {
+            return true;
+        }
+        if (payload.get("analysis") instanceof Map<?, ?> analysisMap) {
+            Object nestedSummary = analysisMap.get("summary");
+            if (nestedSummary != null && !String.valueOf(nestedSummary).trim().isBlank()) {
+                return true;
+            }
+        }
+        return (payload.get("keywords") instanceof List<?> keywords && !keywords.isEmpty())
+                || (payload.get("technicalTerms") instanceof List<?> technicalTerms && !technicalTerms.isEmpty())
+                || (payload.get("painPoints") instanceof List<?> painPoints && !painPoints.isEmpty())
+                || (payload.get("actionItems") instanceof List<?> actionItems && !actionItems.isEmpty())
+                || (payload.get("technical_terms") instanceof List<?> technicalTermsSnake && !technicalTermsSnake.isEmpty())
+                || (payload.get("action_items") instanceof List<?> actionItemsSnake && !actionItemsSnake.isEmpty());
     }
 
     private String mapRealtimeFailureCode(Map<String, Object> response) {
