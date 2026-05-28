@@ -14,6 +14,7 @@ export interface UseAudioRecorderReturn {
   pauseRecording: () => void
   resumeRecording: () => void
   duration: number
+  getCurrentRms: () => number | null
 }
 
 const RECORDER_MIME_TYPE = 'audio/webm; codecs=opus'
@@ -60,6 +61,7 @@ export const useAudioRecorder = (diagnosticMeetingId: number | null = null): Use
   const audioContextRef = useRef<AudioContext | null>(null)
   const audioSourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null)
   const audioAnalyserRef = useRef<AnalyserNode | null>(null)
+  const audioAnalyserSamplesRef = useRef<Uint8Array<ArrayBuffer> | null>(null)
   const audioLevelTimerRef = useRef<number | null>(null)
 
   const stopDurationTimer = useCallback(() => {
@@ -128,6 +130,7 @@ export const useAudioRecorder = (diagnosticMeetingId: number | null = null): Use
         // ignore cleanup errors
       }
       audioAnalyserRef.current = null
+      audioAnalyserSamplesRef.current = null
     }
 
     if (audioContextRef.current) {
@@ -137,12 +140,38 @@ export const useAudioRecorder = (diagnosticMeetingId: number | null = null): Use
     }
   }, [])
 
+  const readAudioMetrics = useCallback((): { rms: number; peak: number } | null => {
+    const analyser = audioAnalyserRef.current
+    if (!analyser) {
+      return null
+    }
+
+    if (!audioAnalyserSamplesRef.current || audioAnalyserSamplesRef.current.length !== analyser.fftSize) {
+      audioAnalyserSamplesRef.current = new Uint8Array(analyser.fftSize)
+    }
+
+    const samples = audioAnalyserSamplesRef.current
+    analyser.getByteTimeDomainData(samples)
+    let sumSquares = 0
+    let peak = 0
+    for (const sample of samples) {
+      const normalized = (sample - 128) / 128
+      sumSquares += normalized * normalized
+      peak = Math.max(peak, Math.abs(normalized))
+    }
+
+    return {
+      rms: Math.sqrt(sumSquares / samples.length),
+      peak,
+    }
+  }, [])
+
+  const getCurrentRms = useCallback((): number | null => {
+    return readAudioMetrics()?.rms ?? null
+  }, [readAudioMetrics])
+
   const startAudioLevelDiagnostics = useCallback((stream: MediaStream, sessionId: number, meetingId: number | null) => {
     stopAudioLevelDiagnostics()
-
-    if (meetingId === null || (!AUDIO_DEBUG_ENABLED && !import.meta.env.DEV)) {
-      return
-    }
 
     const AudioContextCtor = window.AudioContext || (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
     if (!AudioContextCtor) {
@@ -159,39 +188,35 @@ export const useAudioRecorder = (diagnosticMeetingId: number | null = null): Use
       audioContextRef.current = audioContext
       audioSourceNodeRef.current = sourceNode
       audioAnalyserRef.current = analyser
+      audioAnalyserSamplesRef.current = new Uint8Array(analyser.fftSize)
 
-      const samples = new Uint8Array(analyser.fftSize)
+      const shouldLogLevel = meetingId !== null && (AUDIO_DEBUG_ENABLED || import.meta.env.DEV)
       const logLevel = () => {
         if (!mountedRef.current || recordingSessionIdRef.current !== sessionId) {
           return
         }
 
-        analyser.getByteTimeDomainData(samples)
-        let sumSquares = 0
-        let peak = 0
-
-        for (const sample of samples) {
-          const normalized = (sample - 128) / 128
-          sumSquares += normalized * normalized
-          peak = Math.max(peak, Math.abs(normalized))
+        const metrics = readAudioMetrics()
+        if (!metrics) {
+          return
         }
-
-        const rms = Math.sqrt(sumSquares / samples.length)
         // eslint-disable-next-line no-console
         console.info('[Realtime] REALTIME_AUDIO_LEVEL', {
           meetingId,
           sessionId,
-          rms: Number(rms.toFixed(4)),
-          peak: Number(peak.toFixed(4)),
+          rms: Number(metrics.rms.toFixed(4)),
+          peak: Number(metrics.peak.toFixed(4)),
         })
       }
 
-      logLevel()
-      audioLevelTimerRef.current = window.setInterval(logLevel, 1000)
+      if (shouldLogLevel) {
+        logLevel()
+        audioLevelTimerRef.current = window.setInterval(logLevel, 1000)
+      }
     } catch {
       stopAudioLevelDiagnostics()
     }
-  }, [stopAudioLevelDiagnostics])
+  }, [readAudioMetrics, stopAudioLevelDiagnostics])
 
   const clearRecorderHandlers = useCallback((recorder: MediaRecorder | null) => {
     if (!recorder) {
@@ -474,5 +499,6 @@ export const useAudioRecorder = (diagnosticMeetingId: number | null = null): Use
     pauseRecording,
     resumeRecording,
     duration,
+    getCurrentRms,
   }
 }

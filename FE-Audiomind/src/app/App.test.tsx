@@ -571,6 +571,33 @@ describe('getRealtimeConnectionView', () => {
     expect(view.closeReason).toBeNull()
     expect(view.closeReasonIsError).toBe(false)
   })
+
+  it('shows paused state copy during silence-driven soft pause', () => {
+    const view = getRealtimeConnectionView(
+      'silent_paused',
+      'connected',
+      undefined,
+      true,
+      '',
+    )
+
+    expect(view.title).toBe('Paused')
+    expect(view.detail).toBe('Paused while silent — speak to continue')
+    expect(view.closeReason).toBeNull()
+  })
+
+  it('shows resumed state after speech activity returns', () => {
+    const view = getRealtimeConnectionView(
+      'listening_resumed',
+      'connected',
+      undefined,
+      true,
+      '',
+    )
+
+    expect(view.title).toBe('Resumed')
+    expect(view.detail).toContain('lắng nghe trở lại')
+  })
 })
 
 describe('realtime language selector helpers', () => {
@@ -583,6 +610,8 @@ describe('realtime language selector helpers', () => {
     expect(isRealtimeLanguageSelectorDisabled('idle')).toBe(false)
     expect(isRealtimeLanguageSelectorDisabled('connecting')).toBe(true)
     expect(isRealtimeLanguageSelectorDisabled('recording')).toBe(true)
+    expect(isRealtimeLanguageSelectorDisabled('silent_paused')).toBe(true)
+    expect(isRealtimeLanguageSelectorDisabled('listening_resumed')).toBe(true)
     expect(isRealtimeLanguageSelectorDisabled('stopping')).toBe(true)
     expect(isRealtimeLanguageSelectorDisabled('stopped')).toBe(false)
   })

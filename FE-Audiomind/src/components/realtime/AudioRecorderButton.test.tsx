@@ -257,6 +257,7 @@ describe('AudioRecorderButton', () => {
       pauseRecording: vi.fn(),
       resumeRecording: vi.fn(),
       duration: 0,
+      getCurrentRms: vi.fn(() => 0.03),
     }
 
     act(() => {

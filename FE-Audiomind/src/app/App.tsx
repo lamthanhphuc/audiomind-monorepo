@@ -17,6 +17,7 @@ import {
     type TranscriptSegment,
     useRealtimeMeetingStream,
 } from '../hooks/useRealtimeMeetingStream'
+import { type VoiceActivityState, useVoiceActivityDetection } from '../hooks/useVoiceActivityDetection'
 import { ApiError, getAnalysis, getProcessingStatus, getTranscript, startProcessingByPath, uploadToMeetingApi } from '../services/api'
 import { clearAccessToken, getAccessToken, getCurrentUserId, login, setAccessToken } from '../services/auth'
 import { REALTIME_WS_ENABLED } from '../services/config'
@@ -34,7 +35,15 @@ type ResultView = {
   analysis: AiAnalysis
 }
 
-type LiveLifecycleState = 'idle' | 'connecting' | 'recording' | 'stopping' | 'stopped' | 'error'
+type LiveLifecycleState =
+  | 'idle'
+  | 'connecting'
+  | 'recording'
+  | 'silent_paused'
+  | 'listening_resumed'
+  | 'stopping'
+  | 'stopped'
+  | 'error'
 
 type RealtimeConnectionView = {
   title: string
@@ -60,7 +69,13 @@ export const REALTIME_SPEAKER_MODE_OPTIONS: Array<{ value: RealtimeSpeakerMode; 
 ]
 
 export const isRealtimeLanguageSelectorDisabled = (lifecycleState: LiveLifecycleState): boolean => {
-  return lifecycleState === 'connecting' || lifecycleState === 'recording' || lifecycleState === 'stopping'
+  return (
+    lifecycleState === 'connecting'
+    || lifecycleState === 'recording'
+    || lifecycleState === 'silent_paused'
+    || lifecycleState === 'listening_resumed'
+    || lifecycleState === 'stopping'
+  )
 }
 
 export const isRealtimeSpeakerModeSelectorDisabled = (lifecycleState: LiveLifecycleState): boolean => {
@@ -74,6 +89,24 @@ export const getRealtimeConnectionView = (
   isConnected: boolean,
   closeReason: string,
 ): RealtimeConnectionView => {
+  if (lifecycleState === 'silent_paused') {
+    return {
+      title: 'Paused',
+      detail: 'Paused while silent — speak to continue',
+      closeReason: null,
+      closeReasonIsError: false,
+    }
+  }
+
+  if (lifecycleState === 'listening_resumed') {
+    return {
+      title: 'Resumed',
+      detail: 'Đang lắng nghe trở lại...',
+      closeReason: null,
+      closeReasonIsError: false,
+    }
+  }
+
   if (lifecycleState === 'stopped') {
     return {
       title: 'Hoàn tất',
@@ -94,7 +127,7 @@ export const getRealtimeConnectionView = (
 
   if (lifecycleState === 'recording') {
     return {
-      title: 'Đang ghi âm',
+      title: 'Listening',
       detail: 'Đang lắng nghe...',
       closeReason: null,
       closeReasonIsError: false,
@@ -132,6 +165,9 @@ const HYDRATION_RETRY_DELAY_MS = 800
 const HYDRATION_MAX_ATTEMPTS = 10
 const HYDRATION_STABLE_COUNT_REQUIRED = 2
 const HYDRATION_MIN_ATTEMPTS_AFTER_FIRST_FRAGMENTS = 2
+const LIVE_STATUS_LISTENING = 'Đang lắng nghe...'
+const LIVE_STATUS_PAUSED = 'Paused while silent — speak to continue'
+const LIVE_STATUS_RESUMED = 'Resumed — continuing to listen...'
 
 export const isCurrentLiveRecordingSession = (
   completedSessionId: number,
@@ -536,6 +572,7 @@ export default function App() {
   const restartAfterReconnectRef = useRef(false)
   const lastLoggedRealtimeLanguageRef = useRef<RealtimeLanguage | null>(null)
   const lastLoggedRealtimeSpeakerModeRef = useRef<RealtimeSpeakerMode | null>(null)
+  const lastVoiceActivityStateRef = useRef<VoiceActivityState | null>(null)
 
   const isRealtimeEnabled = REALTIME_WS_ENABLED
   const currentUserId = getCurrentUserId()
@@ -545,6 +582,16 @@ export default function App() {
     : null
   const realtimeToken = getAccessToken() ?? ''
   const audioRecorder = useAudioRecorder(liveMeetingId)
+  const voiceActivity = useVoiceActivityDetection({
+    enabled: audioRecorder.state === 'recording',
+    getRmsLevel: audioRecorder.getCurrentRms,
+    silenceThreshold: 0.012,
+    speechThreshold: 0.02,
+    silenceDurationMs: 2000,
+    resumeDurationMs: 300,
+    sampleIntervalMs: 100,
+    resumedLabelMs: 900,
+  })
   const realtimeStream = useRealtimeMeetingStream({
     meetingId: liveMeetingId,
     userId: realtimeUserId,
@@ -677,7 +724,7 @@ export default function App() {
     }
 
     if (liveLifecycleState === 'connecting') {
-      setLiveStatusMessage('Đang lắng nghe...')
+      setLiveStatusMessage(LIVE_STATUS_LISTENING)
     }
   }, [liveLifecycleState, realtimeStream.isAuthenticated])
 
@@ -702,6 +749,44 @@ export default function App() {
       return
     }
   }, [audioRecorder.state])
+
+  useEffect(() => {
+    if (audioRecorder.state !== 'recording') {
+      lastVoiceActivityStateRef.current = null
+      return
+    }
+
+    if (
+      liveLifecycleState === 'stopping'
+      || liveLifecycleState === 'stopped'
+      || liveLifecycleState === 'error'
+    ) {
+      return
+    }
+
+    if (lastVoiceActivityStateRef.current === voiceActivity.state) {
+      return
+    }
+
+    lastVoiceActivityStateRef.current = voiceActivity.state
+
+    if (voiceActivity.state === 'silent_paused') {
+      setLiveLifecycleState('silent_paused')
+      setLiveStatusMessage(LIVE_STATUS_PAUSED)
+      return
+    }
+
+    if (voiceActivity.state === 'listening_resumed') {
+      setLiveLifecycleState('listening_resumed')
+      setLiveStatusMessage(LIVE_STATUS_RESUMED)
+      return
+    }
+
+    setLiveLifecycleState((current) => (
+      current === 'silent_paused' || current === 'listening_resumed' ? 'recording' : current
+    ))
+    setLiveStatusMessage(LIVE_STATUS_LISTENING)
+  }, [audioRecorder.state, liveLifecycleState, voiceActivity.state])
 
   useEffect(() => {
     setIsAuthenticated(Boolean(getAccessToken()))
