@@ -99,13 +99,13 @@ try {
     }
 
     Invoke-Step -Name 'Typecheck generated client' -Action {
-        npm run typecheck:client
+        npx tsc --noEmit -p tsconfig.generated.json
         if ($LASTEXITCODE -ne 0) {
-            throw 'npm run typecheck:client failed'
+            throw 'npx tsc --noEmit -p tsconfig.generated.json failed'
         }
     }
 
-    Invoke-Step -Name 'Check drift' -Action {
+    Invoke-Step -Name 'Check client drift' -Action {
         git diff --exit-code -- packages/api-clients
         if ($LASTEXITCODE -ne 0) {
             throw 'git diff detected client drift after generation'
