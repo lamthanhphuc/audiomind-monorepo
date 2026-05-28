@@ -41,7 +41,7 @@ from app.job_status_store import (
 )
 from app.metrics import stt_metrics
 from app.models import Analysis
-from app.logging_utils import safe_error_message
+from app.logging_utils import safe_error_message, transcript_hash_prefix
 from app.schemas import (
     ActionItem,
     AnalysisPainPoint,
@@ -275,6 +275,9 @@ _STT_FINALIZED_RESPONSE_TTL_SECONDS = 300.0
 _REALTIME_ANALYSIS_GUARD_TTL_SECONDS = 30.0 * 60.0
 _REALTIME_ANALYSIS_LOCK_TTL_SECONDS = 180.0
 _REALTIME_ANALYSIS_FAILURE_COOLDOWN_SECONDS = 90.0
+_REALTIME_ANALYSIS_STALE_SECONDS = max(300.0, _REALTIME_ANALYSIS_LOCK_TTL_SECONDS * 2.0)
+_REALTIME_ANALYSIS_LOCK_TOKEN_PREFIX = "aiapi:"
+_REALTIME_ANALYSIS_STATE_OWNER = "ai-api"
 _realtime_analysis_guard_lock = threading.Lock()
 _realtime_analysis_in_progress: dict[int, tuple[str, float]] = {}
 _realtime_analysis_completed_hash: dict[int, tuple[str, float]] = {}
@@ -421,6 +424,53 @@ def _resolve_batch_model() -> str:
         or (settings.deepgram_model or "").strip()
         or "nova-2"
     )
+
+
+def _resolve_realtime_session_diagnostics(
+    actor: MeetingSessionActor | None, fallback_transcript: str = ""
+) -> dict[str, Any]:
+    transcript_text = str(fallback_transcript or "")
+    diagnostics: dict[str, Any] = {
+        "final_segment_count": 0,
+        "speech_final_count": 0,
+        "is_final_count": 0,
+        "transcript_length": len(transcript_text),
+        "transcript_hash_prefix": transcript_hash_prefix(transcript_text),
+    }
+    if actor is None:
+        return diagnostics
+
+    adapter = getattr(actor, "adapter", None)
+    session_id = str(getattr(actor, "session_id", "") or "")
+    getter = getattr(adapter, "get_session_diagnostics", None)
+    if not callable(getter) or not session_id:
+        return diagnostics
+
+    try:
+        candidate = getter(session_id)
+    except Exception:
+        return diagnostics
+
+    if not isinstance(candidate, dict):
+        return diagnostics
+
+    for field_name in ("final_segment_count", "speech_final_count", "is_final_count"):
+        try:
+            diagnostics[field_name] = max(0, int(candidate.get(field_name, 0) or 0))
+        except (TypeError, ValueError):
+            diagnostics[field_name] = 0
+
+    transcript_length = candidate.get("transcript_length")
+    if isinstance(transcript_length, int) and transcript_length >= 0:
+        diagnostics["transcript_length"] = transcript_length
+    else:
+        diagnostics["transcript_length"] = len(transcript_text)
+
+    hash_prefix = str(candidate.get("transcript_hash_prefix") or "").strip()
+    diagnostics["transcript_hash_prefix"] = hash_prefix or transcript_hash_prefix(
+        transcript_text
+    )
+    return diagnostics
 
 
 def _is_webm_header_chunk(chunk_bytes: bytes) -> bool:
@@ -1313,6 +1363,82 @@ def _analysis_cooldown_key(meeting_id: int) -> str:
     return f"analysis:cooldown:{meeting_id}"
 
 
+def _parse_float(value: Any, default: float = 0.0) -> float:
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _normalize_epoch_seconds(value: Any, default: float = 0.0) -> float:
+    parsed = _parse_float(value, default=default)
+    if parsed <= 0.0:
+        return default
+    # Some callers may persist epoch milliseconds instead of seconds.
+    if parsed > 10_000_000_000:
+        return parsed / 1000.0
+    return parsed
+
+
+def _is_ai_owned_lock_token(lock_token: Any) -> bool:
+    return str(lock_token or "").startswith(_REALTIME_ANALYSIS_LOCK_TOKEN_PREFIX)
+
+
+def _analysis_state_owner(state: dict[str, str]) -> str:
+    owner = str(
+        state.get("owner") or state.get("managed_by") or state.get("managedBy") or ""
+    ).strip()
+    return owner.lower()
+
+
+def _release_realtime_analysis_lock(client: Any, meeting_id: int) -> None:
+    try:
+        client.delete(_analysis_lock_key(meeting_id))
+    except Exception:
+        return
+
+
+def _clear_realtime_analysis_running_state(
+    client: Any, meeting_id: int, reason: str
+) -> None:
+    try:
+        client.delete(_analysis_lock_key(meeting_id))
+        client.delete(_analysis_state_key(meeting_id))
+        client.delete(_analysis_cooldown_key(meeting_id))
+    except Exception as redis_error:
+        logger.warning(
+            "event=REDIS_OPERATION_FAILED operation=realtime_analysis_stale_clear meetingId={} reason={} errorCode={} error={}",
+            meeting_id,
+            reason,
+            type(redis_error).__name__,
+            safe_error_message(redis_error),
+        )
+
+
+def _running_state_is_stale(
+    *, now: float, status: str, state: dict[str, str], lock_ttl: int | None
+) -> bool:
+    if status not in {"RUNNING", "PENDING", "QUEUED"}:
+        return False
+
+    started_at = _normalize_epoch_seconds(state.get("started_at"), default=0.0)
+    updated_at = _normalize_epoch_seconds(state.get("updated_at"), default=0.0)
+    reference = max(started_at, updated_at)
+    if reference <= 0:
+        return True
+
+    running_age = now - reference
+    if running_age > _REALTIME_ANALYSIS_STALE_SECONDS:
+        return True
+
+    if not isinstance(lock_ttl, int) or lock_ttl <= 0:
+        return running_age > _REALTIME_ANALYSIS_LOCK_TTL_SECONDS
+
+    return False
+
+
 def _purge_realtime_analysis_guards(now: float) -> None:
     stale_in_progress = [
         meeting_id
@@ -1340,33 +1466,107 @@ def _try_begin_realtime_analysis(
     lock_retry_after = 0
     error_code: str | None = None
 
+    with _realtime_analysis_guard_lock:
+        _purge_realtime_analysis_guards(now)
+        completed = _realtime_analysis_completed_hash.get(meeting_id)
+        if completed is not None and completed[0] == transcript_hash:
+            return False, "already_exists", None, 0, None
+
+        in_progress = _realtime_analysis_in_progress.get(meeting_id)
+        if in_progress is not None:
+            active_hash, created_at = in_progress
+            age_seconds = max(0.0, now - created_at)
+            if (
+                active_hash == transcript_hash
+                and age_seconds <= _REALTIME_ANALYSIS_STALE_SECONDS
+            ):
+                retry_after = max(
+                    1, int(_REALTIME_ANALYSIS_STALE_SECONDS - age_seconds + 0.999)
+                )
+                return False, "in_progress", None, retry_after, None
+            _realtime_analysis_in_progress.pop(meeting_id, None)
+
     try:
         client = _get_client()
         state = client.hgetall(_analysis_state_key(meeting_id)) or {}
         cooldown_value = client.get(_analysis_cooldown_key(meeting_id))
         if cooldown_value:
             try:
-                cooldown_until = max(cooldown_until, float(cooldown_value))
+                cooldown_until = max(
+                    cooldown_until,
+                    _normalize_epoch_seconds(cooldown_value, default=0.0),
+                )
             except (TypeError, ValueError):
                 cooldown_until = cooldown_until
-        state_cooldown = state.get("cooldown_until")
+        state_cooldown = state.get("cooldown_until") or state.get("cooldownUntilMs")
         if state_cooldown:
             try:
-                cooldown_until = max(cooldown_until, float(state_cooldown))
+                cooldown_until = max(
+                    cooldown_until,
+                    _normalize_epoch_seconds(state_cooldown, default=0.0),
+                )
             except (TypeError, ValueError):
                 cooldown_until = cooldown_until
 
         status = str(state.get("status") or "").strip().upper()
-        state_hash = str(state.get("transcript_hash") or "").strip().lower()
-        error_code = str(state.get("error_code") or "").strip().upper() or None
-        if status == "COMPLETED" and state_hash and state_hash == transcript_hash:
+        state_owner = _analysis_state_owner(state)
+        state_hash = (
+            str(state.get("transcript_hash") or state.get("transcriptHash") or "")
+            .strip()
+            .lower()
+        )
+        error_code = (
+            str(state.get("error_code") or state.get("errorCode") or "").strip().upper()
+            or None
+        )
+        if (
+            status == "COMPLETED"
+            and state_owner in {"", _REALTIME_ANALYSIS_STATE_OWNER}
+            and state_hash
+            and state_hash == transcript_hash
+        ):
             return False, "already_exists", error_code, 0, None
         if status in {"RUNNING", "PENDING", "QUEUED"}:
             lock_ttl = client.ttl(_analysis_lock_key(meeting_id))
-            lock_retry_after = int(
-                lock_ttl if isinstance(lock_ttl, int) and lock_ttl > 0 else 1
-            )
-            return False, "in_progress", error_code, lock_retry_after, None
+            if state_owner and state_owner != _REALTIME_ANALYSIS_STATE_OWNER:
+                logger.warning(
+                    "event=REALTIME_ANALYSIS_STALE_CLEARED meetingId={} status={} lockTtl={} source={} reason=foreign_owner owner={}",
+                    meeting_id,
+                    status,
+                    lock_ttl,
+                    source,
+                    state_owner,
+                )
+                _clear_realtime_analysis_running_state(
+                    client, meeting_id, "foreign_owner"
+                )
+                with _realtime_analysis_guard_lock:
+                    _realtime_analysis_in_progress.pop(meeting_id, None)
+            elif _running_state_is_stale(
+                now=now,
+                status=status,
+                state=state,
+                lock_ttl=lock_ttl if isinstance(lock_ttl, int) else None,
+            ):
+                logger.warning(
+                    "event=REALTIME_ANALYSIS_STALE_CLEARED meetingId={} status={} lockTtl={} source={}",
+                    meeting_id,
+                    status,
+                    lock_ttl,
+                    source,
+                )
+                _clear_realtime_analysis_running_state(
+                    client, meeting_id, "stale_running"
+                )
+                with _realtime_analysis_guard_lock:
+                    _realtime_analysis_in_progress.pop(meeting_id, None)
+            else:
+                lock_retry_after = int(
+                    lock_ttl
+                    if isinstance(lock_ttl, int) and lock_ttl > 0
+                    else max(1, int(_REALTIME_ANALYSIS_LOCK_TTL_SECONDS))
+                )
+                return False, "in_progress", error_code, lock_retry_after, None
         if status == "FAILED" and cooldown_until > now:
             retry_after = max(1, int(cooldown_until - now + 0.999))
             return False, "cooldown_active", error_code, retry_after, None
@@ -1378,21 +1578,80 @@ def _try_begin_realtime_analysis(
             safe_error_message(redis_error),
         )
 
-    lock_token = uuid4().hex
+    lock_token = f"{_REALTIME_ANALYSIS_LOCK_TOKEN_PREFIX}{uuid4().hex}"
     try:
         client = _get_client()
+        lock_key = _analysis_lock_key(meeting_id)
         acquired = client.set(
-            _analysis_lock_key(meeting_id),
+            lock_key,
             lock_token,
             nx=True,
             ex=max(120, int(_REALTIME_ANALYSIS_LOCK_TTL_SECONDS)),
         )
         if not acquired:
-            lock_ttl = client.ttl(_analysis_lock_key(meeting_id))
-            retry_after = int(
-                lock_ttl if isinstance(lock_ttl, int) and lock_ttl > 0 else 1
+            lock_ttl = client.ttl(lock_key)
+            lock_token_value = client.get(lock_key)
+            state_snapshot = client.hgetall(_analysis_state_key(meeting_id)) or {}
+            status_snapshot = str(state_snapshot.get("status") or "").strip().upper()
+            can_recover_foreign_or_orphan_lock = not _is_ai_owned_lock_token(
+                lock_token_value
+            ) and (
+                status_snapshot not in {"RUNNING", "PENDING", "QUEUED"}
+                or _running_state_is_stale(
+                    now=now,
+                    status=status_snapshot,
+                    state=state_snapshot,
+                    lock_ttl=lock_ttl if isinstance(lock_ttl, int) else None,
+                )
             )
-            return False, "in_progress", error_code, retry_after, None
+            if can_recover_foreign_or_orphan_lock:
+                logger.warning(
+                    "event=REALTIME_ANALYSIS_STALE_CLEARED meetingId={} status={} lockTtl={} source={} reason=foreign_or_orphan_lock",
+                    meeting_id,
+                    status_snapshot or "UNKNOWN",
+                    lock_ttl,
+                    source,
+                )
+                _clear_realtime_analysis_running_state(
+                    client, meeting_id, "foreign_or_orphan_lock"
+                )
+                acquired = client.set(
+                    lock_key,
+                    lock_token,
+                    nx=True,
+                    ex=max(120, int(_REALTIME_ANALYSIS_LOCK_TTL_SECONDS)),
+                )
+
+            if not acquired:
+                retry_after = int(
+                    lock_ttl if isinstance(lock_ttl, int) and lock_ttl > 0 else 1
+                )
+                return False, "in_progress", error_code, retry_after, None
+
+        with _realtime_analysis_guard_lock:
+            _purge_realtime_analysis_guards(now)
+            in_progress = _realtime_analysis_in_progress.get(meeting_id)
+            if in_progress is not None:
+                active_hash, created_at = in_progress
+                age_seconds = max(0.0, now - created_at)
+                if (
+                    active_hash == transcript_hash
+                    and age_seconds <= _REALTIME_ANALYSIS_STALE_SECONDS
+                ):
+                    _release_realtime_analysis_lock(client, meeting_id)
+                    retry_after = max(
+                        1, int(_REALTIME_ANALYSIS_STALE_SECONDS - age_seconds + 0.999)
+                    )
+                    return False, "in_progress", error_code, retry_after, None
+                _realtime_analysis_in_progress.pop(meeting_id, None)
+
+            completed = _realtime_analysis_completed_hash.get(meeting_id)
+            if completed is not None and completed[0] == transcript_hash:
+                _release_realtime_analysis_lock(client, meeting_id)
+                return False, "already_exists", error_code, 0, None
+
+            _realtime_analysis_in_progress[meeting_id] = (transcript_hash, now)
+
         client.hset(
             _analysis_state_key(meeting_id),
             mapping={
@@ -1402,6 +1661,7 @@ def _try_begin_realtime_analysis(
                 "source": source,
                 "updated_at": str(now),
                 "started_at": str(now),
+                "owner": _REALTIME_ANALYSIS_STATE_OWNER,
                 "error_code": "",
                 "error_message": "",
             },
@@ -1418,17 +1678,7 @@ def _try_begin_realtime_analysis(
             safe_error_message(redis_error),
         )
         lock_token = None
-
-    with _realtime_analysis_guard_lock:
-        _purge_realtime_analysis_guards(now)
-        in_progress = _realtime_analysis_in_progress.get(meeting_id)
-        if in_progress is not None:
-            return False, "in_progress", error_code, 1, lock_token
-        completed = _realtime_analysis_completed_hash.get(meeting_id)
-        if completed is not None and completed[0] == transcript_hash:
-            return False, "already_exists", error_code, 0, lock_token
-        _realtime_analysis_in_progress[meeting_id] = (transcript_hash, now)
-        return True, None, None, 0, lock_token
+    return True, None, None, 0, lock_token
 
 
 def _finish_realtime_analysis(
@@ -1454,6 +1704,7 @@ def _finish_realtime_analysis(
                     "source": source,
                     "updated_at": str(now),
                     "completed_at": str(now),
+                    "owner": _REALTIME_ANALYSIS_STATE_OWNER,
                     "error_code": "",
                     "error_message": "",
                 },
@@ -1477,6 +1728,7 @@ def _finish_realtime_analysis(
                     "source": source,
                     "updated_at": str(now),
                     "failed_at": str(now),
+                    "owner": _REALTIME_ANALYSIS_STATE_OWNER,
                     "cooldown_until": str(cooldown_until),
                     "retry_after_seconds": str(retry_after),
                     "error_code": str(error_code or "GEMINI_ANALYSIS_FAILED"),
@@ -1881,6 +2133,34 @@ async def analyze_realtime_transcript(
             lock_token,
         ) = _try_begin_realtime_analysis(meeting_id, transcript_hash, source)
         if not allowed:
+            if skip_reason in {"in_progress", "already_exists"}:
+                existing_now = (
+                    db.query(Analysis).filter(Analysis.meeting_id == meeting_id).first()
+                )
+                if existing_now is not None:
+                    existing_hash: str | None = None
+                    if isinstance(existing_now.technical_terms, dict):
+                        existing_hash = (
+                            str(
+                                existing_now.technical_terms.get("transcript_hash")
+                                or ""
+                            )
+                            .strip()
+                            .lower()
+                            or None
+                        )
+                    if existing_hash is None or existing_hash == transcript_hash:
+                        logger.info(
+                            "REALTIME_ANALYSIS_SKIPPED reason=already_exists meetingId={}",
+                            meeting_id,
+                        )
+                        return RealtimeTranscriptAnalysisResponse(
+                            meeting_id=meeting_id,
+                            status="skipped",
+                            reason="already_exists",
+                            transcript_hash=transcript_hash,
+                            source=source,
+                        )
             logger.info(
                 "event=REALTIME_ANALYSIS_SKIPPED reason={} meetingId={} retryAfterSeconds={}",
                 skip_reason,
@@ -2375,12 +2655,55 @@ async def stream_stt_chunk(
     effective_diarize = _resolve_effective_diarize(normalized_speaker_mode)
     endpointing_resolution = _resolve_realtime_endpointing(normalized_language)
     chunk_bytes = await audio_chunk.read()
+    realtime_model = _resolve_realtime_model()
+    endpointing_value = (
+        endpointing_resolution.endpointing
+        if endpointing_resolution.endpointing is not None
+        else "omitted"
+    )
+    request_language = language or ""
+    interim_results_enabled = True
+    smart_format_enabled = not settings.deepgram_simplify_streaming_url
+    utterances_enabled = not settings.deepgram_simplify_streaming_url
+    detect_language_enabled = False
+    sample_rate = 16000
+    encoding = "webm"
+    channels = "unknown"
+    logger.info(
+        "event=REALTIME_STT_DIAGNOSTIC_START traceId={} requestId={} meetingId={} source=realtime requestedLanguage={} effectiveLanguage={} deepgramLanguage={} model={}",
+        trace_id,
+        request_id,
+        meeting_id,
+        request_language,
+        normalized_language,
+        normalized_language,
+        realtime_model,
+    )
+    logger.info(
+        "event=REALTIME_STT_DIAGNOSTIC_CONFIG traceId={} requestId={} meetingId={} source=realtime requestedLanguage={} effectiveLanguage={} deepgramLanguage={} model={} endpointing={} interimResults={} smartFormat={} utterances={} diarize={} detectLanguage={} encoding={} sampleRate={} channels={}",
+        trace_id,
+        request_id,
+        meeting_id,
+        request_language,
+        normalized_language,
+        normalized_language,
+        realtime_model,
+        endpointing_value,
+        interim_results_enabled,
+        smart_format_enabled,
+        utterances_enabled,
+        effective_diarize,
+        detect_language_enabled,
+        encoding,
+        sample_rate,
+        channels,
+    )
     logger.info(
         "event=DEEPGRAM_STT_REQUEST traceId={} requestId={} meetingId={} source=realtime requestedLanguage={} path=/api/v1/stt/stream",
         trace_id,
         request_id,
         meeting_id,
-        language or "",
+        request_language,
     )
     logger.info(
         "event=DEEPGRAM_STT_CONFIG traceId={} requestId={} meetingId={} source=realtime provider=deepgram language={} model={} endpointing={}",
@@ -2388,12 +2711,8 @@ async def stream_stt_chunk(
         request_id,
         meeting_id,
         normalized_language,
-        _resolve_realtime_model(),
-        (
-            endpointing_resolution.endpointing
-            if endpointing_resolution.endpointing is not None
-            else "omitted"
-        ),
+        realtime_model,
+        endpointing_value,
     )
     logger.info(
         "stream_stt_chunk received meeting_id={} seq={} byteLength={}",
@@ -2415,11 +2734,7 @@ async def stream_stt_chunk(
         normalized_speaker_mode,
         effective_diarize,
         _resolve_realtime_model(),
-        (
-            endpointing_resolution.endpointing
-            if endpointing_resolution.endpointing is not None
-            else "omitted"
-        ),
+        endpointing_value,
         endpointing_resolution.source,
         endpointing_resolution.env_name or "omitted",
     )
@@ -2559,6 +2874,25 @@ async def stream_stt_chunk(
             type(exc).__name__,
             safe_error_message(exc),
         )
+        logger.warning(
+            "event=REALTIME_STT_DIAGNOSTIC_FAILED traceId={} requestId={} meetingId={} source=realtime requestedLanguage={} effectiveLanguage={} deepgramLanguage={} model={} endpointing={} finalSegmentCount={} speechFinalCount={} isFinalCount={} transcriptLength={} transcriptHashPrefix={} durationMs={} errorCode={} error={}",
+            trace_id,
+            request_id,
+            meeting_id,
+            request_language,
+            normalized_language,
+            normalized_language,
+            realtime_model,
+            endpointing_value,
+            0,
+            0,
+            0,
+            0,
+            transcript_hash_prefix(""),
+            int((time.time() - started_at) * 1000),
+            type(exc).__name__,
+            safe_error_message(exc),
+        )
         raise HTTPException(
             status_code=503,
             detail=f"Failed to initialize STT: {safe_error_message(exc)}",
@@ -2587,6 +2921,7 @@ async def stream_stt_chunk(
                 is_final=False,
             )
     except Exception as exc:
+        realtime_diagnostics = _resolve_realtime_session_diagnostics(actor)
         if is_terminal_error(exc) or not is_transient_error(exc):
             code, reason, error_name = _describe_terminal_error(exc)
             logger.warning(
@@ -2646,6 +2981,25 @@ async def stream_stt_chunk(
                 trace_id,
                 request_id,
                 meeting_key,
+                type(exc).__name__,
+                safe_error_message(exc),
+            )
+            logger.warning(
+                "event=REALTIME_STT_DIAGNOSTIC_FAILED traceId={} requestId={} meetingId={} source=realtime requestedLanguage={} effectiveLanguage={} deepgramLanguage={} model={} endpointing={} finalSegmentCount={} speechFinalCount={} isFinalCount={} transcriptLength={} transcriptHashPrefix={} durationMs={} errorCode={} error={}",
+                trace_id,
+                request_id,
+                meeting_key,
+                request_language,
+                normalized_language,
+                normalized_language,
+                realtime_model,
+                endpointing_value,
+                realtime_diagnostics.get("final_segment_count", 0),
+                realtime_diagnostics.get("speech_final_count", 0),
+                realtime_diagnostics.get("is_final_count", 0),
+                realtime_diagnostics.get("transcript_length", 0),
+                realtime_diagnostics.get("transcript_hash_prefix", ""),
+                int((time.time() - started_at) * 1000),
                 type(exc).__name__,
                 safe_error_message(exc),
             )
@@ -2730,12 +3084,34 @@ async def stream_stt_chunk(
             type(exc).__name__,
             safe_error_message(exc),
         )
+        logger.warning(
+            "event=REALTIME_STT_DIAGNOSTIC_FAILED traceId={} requestId={} meetingId={} source=realtime requestedLanguage={} effectiveLanguage={} deepgramLanguage={} model={} endpointing={} finalSegmentCount={} speechFinalCount={} isFinalCount={} transcriptLength={} transcriptHashPrefix={} durationMs={} errorCode={} error={}",
+            trace_id,
+            request_id,
+            meeting_key,
+            request_language,
+            normalized_language,
+            normalized_language,
+            realtime_model,
+            endpointing_value,
+            realtime_diagnostics.get("final_segment_count", 0),
+            realtime_diagnostics.get("speech_final_count", 0),
+            realtime_diagnostics.get("is_final_count", 0),
+            realtime_diagnostics.get("transcript_length", 0),
+            realtime_diagnostics.get("transcript_hash_prefix", ""),
+            int((time.time() - started_at) * 1000),
+            type(exc).__name__,
+            safe_error_message(exc),
+        )
         raise HTTPException(
             status_code=502,
             detail=f"STT stream failed for meeting_id={meeting_id}: {safe_error_message(exc)}",
         ) from exc
 
     if is_final:
+        realtime_diagnostics = _resolve_realtime_session_diagnostics(
+            actor, fallback_transcript=response.transcript
+        )
         _store_final_response(meeting_key, response)
         _stt_stream_sessions.pop(meeting_key, None)
         _clear_stream_retry_guard(meeting_key)
@@ -2748,6 +3124,41 @@ async def stream_stt_chunk(
             len(response.transcript),
         )
         logger.info(
+            "event=REALTIME_STT_SEGMENT_FINAL traceId={} requestId={} meetingId={} source=realtime isFinal={} speechFinal={} segmentTextLength={} segmentHashPrefix={} finalSegmentCount={} speechFinalCount={} isFinalCount={}",
+            trace_id,
+            request_id,
+            meeting_key,
+            bool(response.is_final),
+            bool(response.is_final),
+            len(response.transcript or ""),
+            transcript_hash_prefix(response.transcript or ""),
+            realtime_diagnostics.get("final_segment_count", 0),
+            realtime_diagnostics.get("speech_final_count", 0),
+            realtime_diagnostics.get("is_final_count", 0),
+        )
+        logger.info(
+            "event=REALTIME_STT_DIAGNOSTIC_COMPLETED traceId={} requestId={} meetingId={} source=realtime requestedLanguage={} effectiveLanguage={} deepgramLanguage={} model={} endpointing={} finalSegmentCount={} speechFinalCount={} isFinalCount={} transcriptLength={} transcriptHashPrefix={} durationMs={}",
+            trace_id,
+            request_id,
+            meeting_key,
+            request_language,
+            normalized_language,
+            normalized_language,
+            realtime_model,
+            endpointing_value,
+            realtime_diagnostics.get("final_segment_count", 0),
+            realtime_diagnostics.get("speech_final_count", 0),
+            realtime_diagnostics.get("is_final_count", 0),
+            realtime_diagnostics.get(
+                "transcript_length", len(response.transcript or "")
+            ),
+            realtime_diagnostics.get(
+                "transcript_hash_prefix",
+                transcript_hash_prefix(response.transcript or ""),
+            ),
+            int((time.time() - started_at) * 1000),
+        )
+        logger.info(
             "STT_FINALIZATION_END meeting_id={} session_id={} seq={} transcript_length={}",
             meeting_key,
             actor.session_id,
@@ -2756,6 +3167,9 @@ async def stream_stt_chunk(
         )
         return response
 
+    realtime_diagnostics = _resolve_realtime_session_diagnostics(
+        actor, fallback_transcript=response.transcript or ""
+    )
     logger.info(
         "event=DEEPGRAM_STT_COMPLETED traceId={} requestId={} meetingId={} source=realtime durationMs={} transcriptLength={}",
         trace_id,
@@ -2763,5 +3177,25 @@ async def stream_stt_chunk(
         meeting_key,
         int((time.time() - started_at) * 1000),
         len(response.transcript or ""),
+    )
+    logger.info(
+        "event=REALTIME_STT_DIAGNOSTIC_COMPLETED traceId={} requestId={} meetingId={} source=realtime requestedLanguage={} effectiveLanguage={} deepgramLanguage={} model={} endpointing={} finalSegmentCount={} speechFinalCount={} isFinalCount={} transcriptLength={} transcriptHashPrefix={} durationMs={}",
+        trace_id,
+        request_id,
+        meeting_key,
+        request_language,
+        normalized_language,
+        normalized_language,
+        realtime_model,
+        endpointing_value,
+        realtime_diagnostics.get("final_segment_count", 0),
+        realtime_diagnostics.get("speech_final_count", 0),
+        realtime_diagnostics.get("is_final_count", 0),
+        realtime_diagnostics.get("transcript_length", len(response.transcript or "")),
+        realtime_diagnostics.get(
+            "transcript_hash_prefix",
+            transcript_hash_prefix(response.transcript or ""),
+        ),
+        int((time.time() - started_at) * 1000),
     )
     return response

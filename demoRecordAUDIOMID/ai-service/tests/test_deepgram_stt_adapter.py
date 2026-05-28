@@ -1,5 +1,7 @@
 import asyncio
 import json
+import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 
@@ -582,3 +584,59 @@ def test_deepgram_raw_message_preview_is_debug_gated(monkeypatch):
 
     assert logged
     assert logged[0][0] == "DG RAW MESSAGE session_id={} len={} preview={}"
+
+
+def test_deepgram_batch_failure_logs_timeout_and_audio_diagnostics(monkeypatch):
+    from app.services import stt_adapter as stt_module
+
+    class WriteTimeout(Exception):
+        pass
+
+    class _FailingClient:
+        def __init__(self, timeout=None):
+            self.timeout = timeout
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def post(self, url, content=None, headers=None):
+            raise WriteTimeout("write timeout while sending body")
+
+    captured_logs: list[str] = []
+    monkeypatch.setattr(
+        stt_module,
+        "logger",
+        SimpleNamespace(
+            info=lambda message, *args: None,
+            warning=lambda *args, **kwargs: None,
+            error=lambda message, *args: captured_logs.append(
+                message.format(*args) if args else str(message)
+            ),
+            exception=lambda *args, **kwargs: None,
+        ),
+    )
+    monkeypatch.setattr(stt_module.httpx, "Client", _FailingClient)
+
+    adapter = DeepgramSTTAdapter(api_key="dg-test-key", timeout_seconds=17)
+    with tempfile.NamedTemporaryFile(suffix=".m4a", delete=False) as temp_file:
+        temp_file.write(b"abc")
+        temp_audio_path = temp_file.name
+
+    try:
+        with pytest.raises(RuntimeError, match="Deepgram batch transcription failed"):
+            adapter.batch_transcribe_file(file_path=temp_audio_path, language="multi")
+    finally:
+        Path(temp_audio_path).unlink()
+
+    assert any(
+        log.startswith("BATCH_STT_PROVIDER_FAILED")
+        and "audioBytes=3" in log
+        and "deepgramTimeoutSeconds=17" in log
+        and "timeoutType=write" in log
+        and "providerStatus=unavailable" in log
+        and "errorCode=WriteTimeout" in log
+        for log in captured_logs
+    )

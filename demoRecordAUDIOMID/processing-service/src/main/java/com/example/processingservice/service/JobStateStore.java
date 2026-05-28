@@ -131,6 +131,10 @@ public class JobStateStore {
             return "FAILED".equals(status);
         }
 
+        boolean isSkipped() {
+            return "SKIPPED".equals(status);
+        }
+
         boolean isCompleted() {
             return "COMPLETED".equals(status);
         }
@@ -275,6 +279,16 @@ public class JobStateStore {
                 int retryAfter = lockRetryAfterSeconds(meetingId);
                 return new AnalysisTriggerDecision(false, snapshot.status(), "in_progress", null, retryAfter, null);
             }
+            if (snapshot.isSkipped() && snapshot.retryAfterSeconds() > 0) {
+                return new AnalysisTriggerDecision(
+                        false,
+                        snapshot.status(),
+                        "in_progress",
+                        null,
+                        snapshot.retryAfterSeconds(),
+                        null
+                );
+            }
             if (snapshot.isFailed() && snapshot.retryAfterSeconds() > 0) {
                 return new AnalysisTriggerDecision(
                         false,
@@ -370,6 +384,47 @@ public class JobStateStore {
                 String.valueOf(cooldownUntilMs),
                 Duration.ofSeconds(Math.max(1, analysisFailureCooldownSeconds))
         );
+        releaseAnalysisLock(meetingId, lockToken);
+    }
+
+    public void markAnalysisSkipped(
+            Long meetingId,
+            String transcriptHash,
+            String source,
+            String triggeredBy,
+            String lockToken,
+            String reason,
+            int retryAfterSeconds
+    ) {
+        long nowMs = System.currentTimeMillis();
+        Map<String, String> state = new HashMap<>();
+        state.put("meetingId", String.valueOf(meetingId));
+        state.put("status", "SKIPPED");
+        state.put("source", safeText(source));
+        state.put("transcriptHash", normalizeTranscriptHash(transcriptHash));
+        state.put("updatedAtMs", String.valueOf(nowMs));
+        state.put("lastTriggeredBy", safeText(triggeredBy));
+        state.put("errorCode", safeText(reason));
+        state.put("errorMessage", safeText(reason));
+
+        int normalizedRetryAfter = Math.max(0, retryAfterSeconds);
+        if (normalizedRetryAfter > 0) {
+            long cooldownUntilMs = nowMs + normalizedRetryAfter * 1000L;
+            state.put("cooldownUntilMs", String.valueOf(cooldownUntilMs));
+            state.put("retryAfterSeconds", String.valueOf(normalizedRetryAfter));
+            redisTemplate.opsForValue().set(
+                    analysisCooldownKey(meetingId),
+                    String.valueOf(cooldownUntilMs),
+                    Duration.ofSeconds(normalizedRetryAfter)
+            );
+        } else {
+            state.put("cooldownUntilMs", "0");
+            state.put("retryAfterSeconds", "0");
+            redisTemplate.delete(analysisCooldownKey(meetingId));
+        }
+
+        redisTemplate.opsForHash().putAll(analysisStateKey(meetingId), state);
+        redisTemplate.expire(analysisStateKey(meetingId), jobStateTtl());
         releaseAnalysisLock(meetingId, lockToken);
     }
 

@@ -347,6 +347,13 @@ class ProcessingServiceTest {
                 eq("trace-608"),
                 eq(AUTH_HEADER)
         );
+        verify(jobStateStore, timeout(1000)).markAnalysisCompleted(
+                eq(608L),
+                anyString(),
+                eq("get_analysis_lazy"),
+                eq("processing_service_lazy_poll"),
+                eq("lock-token")
+        );
     }
 
     @Test
@@ -440,6 +447,98 @@ class ProcessingServiceTest {
                 anyString(),
                 eq("trace-611"),
                 eq(AUTH_HEADER)
+        );
+    }
+
+    @Test
+    void getAnalysis_shouldNotMarkCompletedWhenRealtimeAnalysisSkippedInProgress() {
+        when(jobStateStore.getJobState(612L)).thenReturn(Optional.empty());
+        when(aiServiceClient.getAnalysis(612L, "trace-612"))
+                .thenThrow(new HttpClientErrorException(HttpStatus.NOT_FOUND));
+        when(aiServiceClient.getTranscript(612L, "trace-612")).thenReturn(Map.of(
+                "meeting_id", 612L,
+                "transcripts", List.of(
+                        Map.of("speaker", "SPEAKER_1", "text", "pending transcript row")
+                )
+        ));
+        when(aiServiceClient.analyzeRealtimeTranscript(
+                eq(612L),
+                anyString(),
+                eq("it"),
+                eq("realtime"),
+                anyString(),
+                eq("trace-612"),
+                eq(AUTH_HEADER)
+        )).thenReturn(Map.of(
+                "status", "skipped",
+                "reason", "in_progress",
+                "retryAfterSeconds", 30
+        ));
+
+        Map<String, Object> response = processingService.getAnalysis(612L, "trace-612", AUTH_HEADER);
+
+        assertEquals("NOT_FOUND", response.get("status"));
+        verify(jobStateStore, timeout(1000)).markAnalysisSkipped(
+                eq(612L),
+                anyString(),
+                eq("get_analysis_lazy"),
+                eq("processing_service_lazy_poll"),
+                eq("lock-token"),
+                eq("in_progress"),
+                eq(30)
+        );
+        verify(jobStateStore, never()).markAnalysisCompleted(
+                eq(612L),
+                anyString(),
+                eq("get_analysis_lazy"),
+                eq("processing_service_lazy_poll"),
+                eq("lock-token")
+        );
+    }
+
+    @Test
+    void getAnalysis_shouldKeepNotReadyWhenRealtimeAnalysisSkippedAlreadyExistsWithoutResult() {
+        when(jobStateStore.getJobState(613L)).thenReturn(Optional.empty());
+        when(aiServiceClient.getAnalysis(613L, "trace-613"))
+                .thenThrow(new HttpClientErrorException(HttpStatus.NOT_FOUND))
+                .thenThrow(new HttpClientErrorException(HttpStatus.NOT_FOUND));
+        when(aiServiceClient.getTranscript(613L, "trace-613")).thenReturn(Map.of(
+                "meeting_id", 613L,
+                "transcripts", List.of(
+                        Map.of("speaker", "SPEAKER_1", "text", "no persisted analysis yet")
+                )
+        ));
+        when(aiServiceClient.analyzeRealtimeTranscript(
+                eq(613L),
+                anyString(),
+                eq("it"),
+                eq("realtime"),
+                anyString(),
+                eq("trace-613"),
+                eq(AUTH_HEADER)
+        )).thenReturn(Map.of(
+                "status", "skipped",
+                "reason", "already_exists"
+        ));
+
+        Map<String, Object> response = processingService.getAnalysis(613L, "trace-613", AUTH_HEADER);
+
+        assertEquals("NOT_FOUND", response.get("status"));
+        verify(jobStateStore, timeout(1000)).markAnalysisSkipped(
+                eq(613L),
+                anyString(),
+                eq("get_analysis_lazy"),
+                eq("processing_service_lazy_poll"),
+                eq("lock-token"),
+                eq("already_exists"),
+                eq(0)
+        );
+        verify(jobStateStore, never()).markAnalysisCompleted(
+                eq(613L),
+                anyString(),
+                eq("get_analysis_lazy"),
+                eq("processing_service_lazy_poll"),
+                eq("lock-token")
         );
     }
 
