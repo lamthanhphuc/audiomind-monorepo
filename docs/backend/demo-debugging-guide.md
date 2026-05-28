@@ -184,6 +184,9 @@ docker compose --env-file infra/.env -f infra/docker-compose.dev.yml logs proces
 docker compose --env-file infra/.env -f infra/docker-compose.dev.yml logs processing-api ai-api | findstr /I "REALTIME_STT_DIAGNOSTIC_CONFIG REALTIME_STT_SEGMENT_FINAL REALTIME_STT_DIAGNOSTIC_COMPLETED requestedLanguage effectiveLanguage deepgramLanguage endpointing"
 ```
 
+Result reference:
+- `docs/reports/realtime-stt-optimization-results.md`
+
 ## 4.3 Multilingual STT investigation smoke
 
 Use this when checking vi, en, and multi transcript behavior before any 7G implementation.

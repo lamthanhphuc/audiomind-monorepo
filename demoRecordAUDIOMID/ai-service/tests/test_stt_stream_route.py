@@ -783,6 +783,51 @@ def test_stream_stt_chunk_uses_language_specific_endpointing(
     assert f"endpointing={expected_endpointing}" in log_line
     assert "endpointing_source=language_specific" in log_line
     assert f"endpointing_env={expected_env}" in log_line
+    diagnostics_line = next(
+        message
+        for message in capture_logger.messages
+        if message.startswith("event=REALTIME_STT_DIAGNOSTIC_CONFIG")
+    )
+    assert f"requestedLanguage={language}" in diagnostics_line
+    assert f"effectiveLanguage={language}" in diagnostics_line
+    assert f"deepgramLanguage={language}" in diagnostics_line
+    assert f"endpointing={expected_endpointing}" in diagnostics_line
+
+
+@pytest.mark.parametrize("language", ["vi", "en"])
+def test_stream_stt_chunk_vi_en_ignore_multi_only_endpointing(monkeypatch, language):
+    _reset_state(monkeypatch)
+    capture_logger = _CaptureLogger()
+    monkeypatch.setattr(main_module, "logger", capture_logger)
+    _set_realtime_endpointing_settings(
+        monkeypatch,
+        default="250",
+        multi="410",
+        legacy="900",
+    )
+
+    async def run_flow():
+        return await main_module.stream_stt_chunk(
+            meeting_id=88,
+            audio_chunk=_make_upload_file(b"xyz"),
+            seq=8,
+            language=language,
+            speaker_mode="single",
+            is_final=False,
+        )
+
+    response = asyncio.run(run_flow())
+
+    assert response.transcript == "Xin chao audiomind"
+    assert FakeAdapter.instances[0].kwargs["endpointing"] == 250
+    log_line = next(
+        message
+        for message in capture_logger.messages
+        if message.startswith("STT_STREAM_EFFECTIVE_CONFIG")
+    )
+    assert "endpointing=250" in log_line
+    assert "endpointing_source=realtime_default" in log_line
+    assert "endpointing_env=DEEPGRAM_REALTIME_ENDPOINTING_DEFAULT" in log_line
 
 
 def test_stream_stt_chunk_uses_realtime_default_then_legacy_fallback(monkeypatch):
