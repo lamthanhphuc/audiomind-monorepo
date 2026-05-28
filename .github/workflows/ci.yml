@@ -160,7 +160,7 @@ jobs:
 
       - name: Check client drift
         run: |
-          git diff --exit-code
+          git diff --exit-code -- packages/api-clients
 
   commit-check:
     runs-on: ubuntu-latest
