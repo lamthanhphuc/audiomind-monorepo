@@ -25,6 +25,9 @@ from app.logging_utils import safe_error_message, transcript_hash_prefix
 
 
 class AIAnalyzer:
+    PROMPT_VERSION = "gemini-business-v1"
+    SCHEMA_VERSION = "gemini-business-v1"
+
     STOPWORDS = {
         "trong",
         "va",
@@ -61,6 +64,15 @@ class AIAnalyzer:
 
     STRUCTURED_DOMAIN_MODES = {"general", "it", "business", "education"}
     STRUCTURED_SEVERITIES = {"low", "medium", "high"}
+    ACTION_ITEM_PRIORITIES = {"low", "medium", "high"}
+    ACTION_ITEM_STATUSES = {
+        "open",
+        "in_progress",
+        "blocked",
+        "done",
+        "pending",
+        "cancelled",
+    }
 
     def __init__(
         self,
@@ -279,11 +291,35 @@ class AIAnalyzer:
             },
         }
 
+    def _action_item_schema(self) -> Dict[str, Any]:
+        return {
+            "type": "OBJECT",
+            "properties": {
+                "task": {"type": "STRING"},
+                "owner": {"type": "STRING"},
+                "dueDate": {"type": "STRING"},
+                "priority": {"type": "STRING", "enum": ["low", "medium", "high"]},
+                "status": {
+                    "type": "STRING",
+                    "enum": [
+                        "open",
+                        "in_progress",
+                        "blocked",
+                        "done",
+                        "pending",
+                        "cancelled",
+                    ],
+                },
+                "evidence": {"type": "STRING"},
+            },
+        }
+
     def _build_gemini_response_schema(self) -> Dict[str, Any]:
         return {
             "type": "OBJECT",
             "properties": {
                 "summary": {"type": "STRING"},
+                "meetingSummary": {"type": "STRING"},
                 "keywords": {"type": "ARRAY", "items": {"type": "STRING"}},
                 "technicalTerms": {
                     "type": "ARRAY",
@@ -293,7 +329,20 @@ class AIAnalyzer:
                     "type": "ARRAY",
                     "items": self._pain_point_schema(),
                 },
-                "actionItems": {"type": "ARRAY", "items": {"type": "STRING"}},
+                "actionItems": {"type": "ARRAY", "items": self._action_item_schema()},
+                "keyDecisions": {"type": "ARRAY", "items": {"type": "STRING"}},
+                "risks": {"type": "ARRAY", "items": {"type": "STRING"}},
+                "blockers": {"type": "ARRAY", "items": {"type": "STRING"}},
+                "questions": {"type": "ARRAY", "items": {"type": "STRING"}},
+                "deadlines": {"type": "ARRAY", "items": {"type": "STRING"}},
+                "owners": {"type": "ARRAY", "items": {"type": "STRING"}},
+                "nextSteps": {"type": "ARRAY", "items": {"type": "STRING"}},
+                "businessImpact": {"type": "STRING"},
+                "customerImpact": {"type": "STRING"},
+                "technicalImpact": {"type": "STRING"},
+                "confidence": {"type": "NUMBER"},
+                "promptVersion": {"type": "STRING"},
+                "schemaVersion": {"type": "STRING"},
                 "domainMode": {
                     "type": "STRING",
                     "enum": ["general", "it", "business", "education"],
@@ -393,18 +442,141 @@ class AIAnalyzer:
 
         return items
 
+    def _normalize_optional_text(
+        self, value: Any, max_chars: int = 240
+    ) -> Optional[str]:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        if len(text) > max_chars:
+            return text[:max_chars].rstrip() + "..."
+        return text
+
+    def _normalize_confidence(self, value: Any) -> Optional[float]:
+        if isinstance(value, bool) or value is None:
+            return None
+
+        parsed: Optional[float] = None
+        if isinstance(value, (int, float)):
+            parsed = float(value)
+        elif isinstance(value, str):
+            raw = value.strip().replace("%", "")
+            if not raw:
+                return None
+            try:
+                parsed = float(raw)
+            except ValueError:
+                return None
+
+        if parsed is None:
+            return None
+
+        if parsed > 1.0 and parsed <= 100.0:
+            parsed = parsed / 100.0
+
+        parsed = max(0.0, min(1.0, parsed))
+        return round(parsed, 3)
+
+    def _normalize_action_item_priority(self, value: Any) -> Optional[str]:
+        normalized = str(value or "").strip().lower()
+        if normalized in self.ACTION_ITEM_PRIORITIES:
+            return normalized
+        return None
+
+    def _normalize_action_item_status(self, value: Any) -> Optional[str]:
+        normalized = str(value or "").strip().lower()
+        if normalized in self.ACTION_ITEM_STATUSES:
+            return normalized
+        return None
+
+    def _normalize_business_action_items(self, values: Any) -> List[Dict[str, Any]]:
+        normalized: List[Dict[str, Any]] = []
+        seen: Set[str] = set()
+        for item in values or []:
+            if isinstance(item, dict):
+                task = str(
+                    item.get("task")
+                    or item.get("description")
+                    or item.get("text")
+                    or item.get("title")
+                    or ""
+                ).strip()
+                if not task:
+                    continue
+                key = task.lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+
+                owner = self._normalize_optional_text(item.get("owner"))
+                due_date = self._normalize_optional_text(
+                    item.get("dueDate") or item.get("due_date") or item.get("deadline")
+                )
+                evidence = self._normalize_optional_text(item.get("evidence"))
+                priority = self._normalize_action_item_priority(item.get("priority"))
+                status = self._normalize_action_item_status(item.get("status"))
+
+                normalized.append(
+                    {
+                        "task": task,
+                        "owner": owner,
+                        "dueDate": due_date,
+                        "deadline": due_date,
+                        "priority": priority,
+                        "status": status,
+                        "evidence": evidence,
+                    }
+                )
+                continue
+
+            task = str(item or "").strip()
+            if not task:
+                continue
+            key = task.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            normalized.append(
+                {
+                    "task": task,
+                    "owner": None,
+                    "dueDate": None,
+                    "deadline": None,
+                    "priority": None,
+                    "status": None,
+                    "evidence": None,
+                }
+            )
+        return normalized
+
     def _default_structured_analysis(
         self, transcript: str, reason: str
     ) -> Dict[str, Any]:
         summary = self._build_concise_fallback_summary(transcript)
+        confidence = 0.2 if str(transcript or "").strip() else 0.0
 
         logger.warning("GEMINI_ANALYSIS_FALLBACK reason={}", safe_error_message(reason))
         return {
             "summary": summary,
+            "meetingSummary": summary,
             "keywords": [],
             "technicalTerms": [],
             "painPoints": [],
             "actionItems": [],
+            "businessActionItems": [],
+            "keyDecisions": [],
+            "risks": [],
+            "blockers": [],
+            "questions": [],
+            "deadlines": [],
+            "owners": [],
+            "nextSteps": [],
+            "businessImpact": "",
+            "customerImpact": "",
+            "technicalImpact": "",
+            "confidence": confidence,
+            "promptVersion": self.PROMPT_VERSION,
+            "schemaVersion": self.SCHEMA_VERSION,
             "domainMode": self.analysis_domain_mode,
             "technical_terms": [],
             "pain_points": [],
@@ -414,6 +586,7 @@ class AIAnalyzer:
             "decisions": [],
             "risks_blockers": [],
             "topics": [],
+            "transcriptHash": None,
         }
 
     def _build_concise_fallback_summary(self, transcript: str) -> str:
@@ -469,14 +642,22 @@ YÊU CẦU:
 - No explanation.
 - Do not copy transcript.
 - Tất cả nội dung trong value phải bằng tiếng Việt (trừ tên riêng/thuật ngữ kỹ thuật).
-- summary tối đa 3 câu.
+- summary và meetingSummary mỗi mục tối đa 3 câu.
 - keywords tối đa 8.
 - technicalTerms tối đa 8.
 - painPoints tối đa 5.
 - actionItems tối đa 5.
+- keyDecisions, risks, blockers, questions, deadlines, owners, nextSteps: mỗi mục tối đa 5.
 - Nếu không đủ bằng chứng, dùng mảng rỗng.
 - severity chỉ dùng: low, medium, high.
-- domainMode phải là "it".
+- owner chỉ điền khi transcript/speaker nêu rõ người chịu trách nhiệm.
+- dueDate chỉ điền khi transcript có ngày hoặc deadline rõ ràng.
+- Không suy đoán owner/dueDate khi thiếu bằng chứng.
+- evidence nên là trích dẫn ngắn hoặc mô tả rất ngắn từ transcript.
+- confidence phải phản ánh độ chắc chắn của transcript, không mặc định luôn cao.
+- domainMode phải là một trong: general, it, business, education.
+- promptVersion phải là "{self.PROMPT_VERSION}".
+- schemaVersion phải là "{self.SCHEMA_VERSION}".
 
 {metadata_text}
 
@@ -485,6 +666,7 @@ YÊU CẦU:
 Schema:
 {{
     "summary": "string",
+    "meetingSummary": "string",
     "keywords": ["string"],
     "technicalTerms": [
         {{
@@ -500,8 +682,30 @@ Schema:
             "severity": "low|medium|high"
         }}
     ],
-    "actionItems": ["string"],
-    "domainMode": "it"
+    "actionItems": [
+        {{
+            "task": "string",
+            "owner": "string|null",
+            "dueDate": "string|null",
+            "priority": "low|medium|high|null",
+            "status": "open|in_progress|blocked|done|pending|cancelled|null",
+            "evidence": "string|null"
+        }}
+    ],
+    "keyDecisions": ["string"],
+    "risks": ["string"],
+    "blockers": ["string"],
+    "questions": ["string"],
+    "deadlines": ["string"],
+    "owners": ["string"],
+    "nextSteps": ["string"],
+    "businessImpact": "string",
+    "customerImpact": "string",
+    "technicalImpact": "string",
+    "confidence": 0.0,
+    "promptVersion": "{self.PROMPT_VERSION}",
+    "schemaVersion": "{self.SCHEMA_VERSION}",
+    "domainMode": "general|it|business|education"
 }}
 
 TEXT:
@@ -548,10 +752,12 @@ TEXT:
         payload = data if isinstance(data, dict) else {}
         summary = str(
             payload.get("summary")
+            or payload.get("meetingSummary")
             or payload.get("overview")
             or payload.get("synthesis")
             or ""
         ).strip()
+        meeting_summary = str(payload.get("meetingSummary") or summary).strip()
         keywords = self._coerce_string_list(
             payload.get("keywords")
             or payload.get("keyPoints")
@@ -568,38 +774,123 @@ TEXT:
         pain_points = self._coerce_structured_pain_points(
             payload.get("painPoints") or payload.get("pain_points") or []
         )
-        action_items = self._coerce_action_item_strings(
+        business_action_items = self._normalize_business_action_items(
             payload.get("actionItems")
             or payload.get("action_items")
             or payload.get("nextSteps")
             or []
         )
+        action_items = [
+            str(item.get("task") or "").strip() for item in business_action_items
+        ]
+        action_items = [item for item in action_items if item]
         domain_mode = self._normalize_domain_mode(
             payload.get("domainMode")
             or payload.get("domain_mode")
             or self.analysis_domain_mode,
             default=self.analysis_domain_mode,
         )
+        key_decisions = self._coerce_string_list(
+            payload.get("keyDecisions") or payload.get("decisions") or []
+        )
+        blockers = self._coerce_string_list(payload.get("blockers") or [])
+        risks = self._coerce_string_list(
+            payload.get("risks") or payload.get("risks_blockers") or []
+        )
+        questions = self._coerce_string_list(payload.get("questions") or [])
+        deadlines = self._coerce_string_list(payload.get("deadlines") or [])
+        owners = self._coerce_string_list(payload.get("owners") or [])
+        next_steps = self._coerce_string_list(
+            payload.get("nextSteps")
+            or payload.get("next_steps")
+            or payload.get("followUps")
+            or []
+        )
+        if not next_steps and action_items:
+            next_steps = action_items[:3]
+
+        if not owners:
+            owners = self._coerce_string_list(
+                [
+                    item.get("owner")
+                    for item in business_action_items
+                    if item.get("owner")
+                ]
+            )
+        if not deadlines:
+            deadlines = self._coerce_string_list(
+                [
+                    item.get("dueDate") or item.get("deadline")
+                    for item in business_action_items
+                    if item.get("dueDate") or item.get("deadline")
+                ]
+            )
+
+        business_impact = (
+            self._normalize_optional_text(payload.get("businessImpact")) or ""
+        )
+        customer_impact = (
+            self._normalize_optional_text(payload.get("customerImpact")) or ""
+        )
+        technical_impact = (
+            self._normalize_optional_text(payload.get("technicalImpact")) or ""
+        )
+        confidence = self._normalize_confidence(payload.get("confidence"))
+        prompt_version = (
+            str(
+                payload.get("promptVersion") or payload.get("prompt_version") or ""
+            ).strip()
+            or self.PROMPT_VERSION
+        )
+        schema_version = (
+            str(
+                payload.get("schemaVersion") or payload.get("schema_version") or ""
+            ).strip()
+            or self.SCHEMA_VERSION
+        )
+        transcript_hash = (
+            str(
+                payload.get("transcriptHash") or payload.get("transcript_hash") or ""
+            ).strip()
+            or None
+        )
 
         term_keys = {item["term"].lower() for item in technical_terms}
         keywords = [item for item in keywords if item.lower() not in term_keys]
+        risks_blockers = self._coerce_string_list(
+            risks + blockers + [item["title"] for item in pain_points]
+        )
 
         return {
             "summary": summary,
+            "meetingSummary": meeting_summary or summary,
             "keywords": keywords,
             "technicalTerms": technical_terms,
             "painPoints": pain_points,
             "actionItems": action_items,
+            "businessActionItems": business_action_items,
             "domainMode": domain_mode,
             "technical_terms": [item["term"] for item in technical_terms],
             "pain_points": pain_points,
-            "action_items": [
-                {"task": item, "owner": None, "deadline": None} for item in action_items
-            ],
+            "action_items": business_action_items,
             "domain_mode": domain_mode,
             "key_points": keywords,
-            "decisions": [],
-            "risks_blockers": [item["title"] for item in pain_points],
+            "decisions": key_decisions,
+            "keyDecisions": key_decisions,
+            "risks": risks,
+            "blockers": blockers,
+            "questions": questions,
+            "deadlines": deadlines,
+            "owners": owners,
+            "nextSteps": next_steps,
+            "risks_blockers": risks_blockers,
+            "businessImpact": business_impact,
+            "customerImpact": customer_impact,
+            "technicalImpact": technical_impact,
+            "confidence": confidence,
+            "promptVersion": prompt_version,
+            "schemaVersion": schema_version,
+            "transcriptHash": transcript_hash,
             "topics": self._coerce_string_list(
                 payload.get("topics")
                 or keywords
@@ -631,20 +922,39 @@ TEXT:
                 ).strip()
                 if not task:
                     continue
-                owner = item.get("owner")
-                deadline = item.get("deadline")
+                owner = self._normalize_optional_text(item.get("owner"))
+                due_date = self._normalize_optional_text(
+                    item.get("dueDate") or item.get("due_date") or item.get("deadline")
+                )
+                priority = self._normalize_action_item_priority(item.get("priority"))
+                status = self._normalize_action_item_status(item.get("status"))
+                evidence = self._normalize_optional_text(item.get("evidence"))
                 normalized.append(
                     {
                         "task": task,
-                        "owner": owner if str(owner).strip() else None,
-                        "deadline": deadline if str(deadline).strip() else None,
+                        "owner": owner,
+                        "dueDate": due_date,
+                        "deadline": due_date,
+                        "priority": priority,
+                        "status": status,
+                        "evidence": evidence,
                     }
                 )
                 continue
 
             task = str(item).strip()
             if task:
-                normalized.append({"task": task, "owner": None, "deadline": None})
+                normalized.append(
+                    {
+                        "task": task,
+                        "owner": None,
+                        "dueDate": None,
+                        "deadline": None,
+                        "priority": None,
+                        "status": None,
+                        "evidence": None,
+                    }
+                )
         return normalized
 
     def _loads_json_safe(self, text: str) -> Dict:
@@ -1202,11 +1512,12 @@ NỘI DUNG:
             f"domainMode hiện tại là {domain_mode}."
         )
         metadata_text = self._metadata_to_prompt_lines(metadata)
-        it_guidance = (
-            "Nếu domainMode=it, ưu tiên thuật ngữ công nghệ, API, framework, giao thức, chuẩn, hệ thống, bảo mật và từ viết tắt kỹ thuật."
-            if domain_mode == "it"
-            else "Chỉ suy luận trong phạm vi domainMode đã nêu và không thêm chi tiết ngoài transcript."
-        )
+        if domain_mode == "it":
+            it_guidance = "Nếu domainMode=it, ưu tiên thuật ngữ công nghệ, API, framework, giao thức, chuẩn, hệ thống, bảo mật và từ viết tắt kỹ thuật."
+        elif domain_mode == "business":
+            it_guidance = "Nếu domainMode=business, ưu tiên quyết định, rủi ro, blocker, owner, deadline, tác động kinh doanh và bước tiếp theo có thể thực thi."
+        else:
+            it_guidance = "Chỉ suy luận trong phạm vi domainMode đã nêu và không thêm chi tiết ngoài transcript."
         json_prompt = self._build_gemini_analysis_json_prompt(
             transcript=prompt,
             metadata_text=metadata_text,
@@ -1232,6 +1543,16 @@ NỘI DUNG:
             )
             raise
         structured = self._normalize_gemini_structured_analysis(prompt, parsed)
+        structured["promptVersion"] = (
+            str(structured.get("promptVersion") or "").strip() or self.PROMPT_VERSION
+        )
+        structured["schemaVersion"] = (
+            str(structured.get("schemaVersion") or "").strip() or self.SCHEMA_VERSION
+        )
+        if metadata:
+            metadata_hash = str(metadata.get("transcriptHash") or "").strip()
+            if metadata_hash:
+                structured["transcriptHash"] = metadata_hash
         if not str(structured.get("summary") or "").strip():
             raise AnalysisParseError("missing_summary", provider=self.provider)
         logger.info(
@@ -1271,15 +1592,31 @@ NỘI DUNG:
         logger.warning(f"Using fallback analysis: {reason}")
         return {
             "summary": preview,
+            "meetingSummary": preview,
             "keywords": keywords,
             "technical_terms": [],
             "action_items": [],
             "technicalTerms": [],
             "painPoints": [],
             "actionItems": [],
+            "businessActionItems": [],
             "domainMode": self.analysis_domain_mode,
             "pain_points": [],
             "domain_mode": self.analysis_domain_mode,
+            "keyDecisions": [],
+            "decisions": [],
+            "risks": [],
+            "blockers": [],
+            "questions": [],
+            "deadlines": [],
+            "owners": [],
+            "nextSteps": [],
+            "businessImpact": "",
+            "customerImpact": "",
+            "technicalImpact": "",
+            "confidence": 0.2 if text else 0.0,
+            "promptVersion": self.PROMPT_VERSION,
+            "schemaVersion": self.SCHEMA_VERSION,
         }
 
     def _local_analysis(self, transcript: str) -> Dict:
@@ -1301,19 +1638,34 @@ NỘI DUNG:
 
         return {
             "summary": summary,
+            "meetingSummary": summary,
             "keywords": keywords,
             "technical_terms": self._extract_technical_terms_fallback(text, keywords),
             "action_items": self._extract_action_items_fallback(text, summary),
             "technicalTerms": [],
             "painPoints": [],
             "actionItems": self._extract_action_items_fallback(text, summary),
+            "businessActionItems": self._extract_action_items_fallback(text, summary),
             "domainMode": self.analysis_domain_mode,
             "pain_points": [],
             "domain_mode": self.analysis_domain_mode,
             "key_points": keywords,
             "decisions": [],
+            "keyDecisions": [],
+            "risks": [],
+            "blockers": [],
+            "questions": [],
+            "deadlines": [],
+            "owners": [],
+            "nextSteps": [],
             "risks_blockers": [],
             "topics": keywords,
+            "businessImpact": "",
+            "customerImpact": "",
+            "technicalImpact": "",
+            "confidence": 0.35 if text else 0.0,
+            "promptVersion": self.PROMPT_VERSION,
+            "schemaVersion": self.SCHEMA_VERSION,
         }
 
     def _extract_technical_terms_fallback(
@@ -1352,7 +1704,18 @@ NỘI DUNG:
                 )
                 tasks = [default_task]
 
-        return [{"task": task, "owner": None, "deadline": None} for task in tasks[:3]]
+        return [
+            {
+                "task": task,
+                "owner": None,
+                "dueDate": None,
+                "deadline": None,
+                "priority": None,
+                "status": None,
+                "evidence": None,
+            }
+            for task in tasks[:3]
+        ]
 
     def _ensure_analysis_completeness(self, transcript: str, data: Dict) -> Dict:
         if not isinstance(data, dict):
@@ -1425,8 +1788,22 @@ NỘI DUNG:
         if self.provider == "gemini":
             if not isinstance(data, dict):
                 data = {}
+            business_action_items = self._normalize_business_action_items(
+                data.get("businessActionItems")
+                or data.get("action_items")
+                or data.get("actionItems")
+                or []
+            )
+            action_item_strings = [
+                str(item.get("task") or "").strip()
+                for item in business_action_items
+                if str(item.get("task") or "").strip()
+            ]
             legacy_payload = {
                 "summary": str(data.get("summary", "")),
+                "meetingSummary": str(
+                    data.get("meetingSummary") or data.get("summary") or ""
+                ).strip(),
                 "keywords": self._coerce_string_list(
                     data.get("keywords")
                     or data.get("key_points")
@@ -1442,14 +1819,48 @@ NỘI DUNG:
                     or data.get("technical_terms")
                     or []
                 ),
-                "action_items": self._normalize_action_items(
-                    data.get("actionItems") or data.get("action_items") or []
+                "technicalTerms": self._coerce_structured_technical_terms(
+                    data.get("technicalTerms") or []
+                ),
+                "painPoints": self._coerce_structured_pain_points(
+                    data.get("painPoints") or data.get("pain_points") or []
+                ),
+                "action_items": business_action_items,
+                "actionItems": action_item_strings,
+                "businessActionItems": business_action_items,
+                "keyDecisions": self._coerce_string_list(
+                    data.get("keyDecisions") or data.get("decisions") or []
+                ),
+                "decisions": self._coerce_string_list(
+                    data.get("decisions") or data.get("keyDecisions") or []
+                ),
+                "risks": self._coerce_string_list(data.get("risks") or []),
+                "blockers": self._coerce_string_list(data.get("blockers") or []),
+                "questions": self._coerce_string_list(data.get("questions") or []),
+                "deadlines": self._coerce_string_list(data.get("deadlines") or []),
+                "owners": self._coerce_string_list(data.get("owners") or []),
+                "nextSteps": self._coerce_string_list(data.get("nextSteps") or []),
+                "businessImpact": str(data.get("businessImpact") or "").strip(),
+                "customerImpact": str(data.get("customerImpact") or "").strip(),
+                "technicalImpact": str(data.get("technicalImpact") or "").strip(),
+                "confidence": self._normalize_confidence(data.get("confidence")),
+                "promptVersion": (
+                    str(data.get("promptVersion") or "").strip() or self.PROMPT_VERSION
+                ),
+                "schemaVersion": (
+                    str(data.get("schemaVersion") or "").strip() or self.SCHEMA_VERSION
+                ),
+                "transcriptHash": (
+                    str(data.get("transcriptHash") or "").strip() or None
                 ),
             }
             return self._ensure_analysis_completeness(transcript, legacy_payload)
 
         if self.provider in {"ollama", "local"}:
-            return self._ensure_analysis_completeness(transcript, data)
+            prepared = self._ensure_analysis_completeness(transcript, data)
+            prepared.setdefault("promptVersion", self.PROMPT_VERSION)
+            prepared.setdefault("schemaVersion", self.SCHEMA_VERSION)
+            return prepared
 
         raise AnalysisNotImplementedError(
             "OpenAI analysis provider is not implemented yet",

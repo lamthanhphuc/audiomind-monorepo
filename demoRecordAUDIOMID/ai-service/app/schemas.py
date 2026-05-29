@@ -15,7 +15,11 @@ class TranscriptSegment(BaseModel):
 class ActionItem(BaseModel):
     task: str
     owner: Optional[str] = None
+    dueDate: Optional[str] = None
     deadline: Optional[str] = None
+    priority: Optional[str] = None
+    status: Optional[str] = None
+    evidence: Optional[str] = None
 
 
 class AnalysisTechnicalTerm(BaseModel):
@@ -103,9 +107,24 @@ class TranscriptResponse(BaseModel):
 class AnalysisResponse(BaseModel):
     meeting_id: int
     summary: str
+    meetingSummary: Optional[str] = None
     keywords: List[str]
     technical_terms: List[Any]
     action_items: List[ActionItem]
+    businessActionItems: List[ActionItem] = []
+    keyDecisions: List[str] = []
+    risks: List[str] = []
+    blockers: List[str] = []
+    questions: List[str] = []
+    deadlines: List[str] = []
+    owners: List[str] = []
+    nextSteps: List[str] = []
+    businessImpact: Optional[str] = None
+    customerImpact: Optional[str] = None
+    technicalImpact: Optional[str] = None
+    confidence: Optional[float] = None
+    promptVersion: Optional[str] = None
+    schemaVersion: Optional[str] = None
     created_at: datetime
     technicalTerms: List[AnalysisTechnicalTerm] = []
     painPoints: List[AnalysisPainPoint] = []
@@ -125,6 +144,8 @@ class RealtimeTranscriptAnalysisRequest(BaseModel):
     domain_mode: Optional[str] = "it"
     source: Optional[str] = "realtime"
     transcript_hash: Optional[str] = None
+    prompt_version: Optional[str] = None
+    schema_version: Optional[str] = None
 
 
 class RealtimeTranscriptAnalysisResponse(BaseModel):
@@ -133,6 +154,8 @@ class RealtimeTranscriptAnalysisResponse(BaseModel):
     reason: Optional[str] = None
     transcript_hash: Optional[str] = None
     source: Optional[str] = None
+    promptVersion: Optional[str] = None
+    schemaVersion: Optional[str] = None
     retryAfterSeconds: Optional[int] = None
     errorCode: Optional[str] = None
 

@@ -109,6 +109,14 @@ class FakeRedisClient:
         self.ttls.pop(key, None)
 
 
+def _default_cache_key(transcript_hash: str) -> str:
+    return main_module._analysis_cache_key(
+        transcript_hash,
+        main_module.AIAnalyzer.PROMPT_VERSION,
+        main_module.AIAnalyzer.SCHEMA_VERSION,
+    )
+
+
 @pytest.fixture
 def db_session():
     engine = create_engine("sqlite+pysqlite:///:memory:")
@@ -159,14 +167,26 @@ def test_realtime_analysis_persists_and_is_idempotent_for_same_hash(db_session):
     second = asyncio.run(main_module.analyze_realtime_transcript(request, db_session))
 
     assert first.status == "completed"
+    assert first.promptVersion == main_module.AIAnalyzer.PROMPT_VERSION
+    assert first.schemaVersion == main_module.AIAnalyzer.SCHEMA_VERSION
     assert second.status == "skipped"
     assert second.reason == "already_exists"
+    assert second.promptVersion == main_module.AIAnalyzer.PROMPT_VERSION
+    assert second.schemaVersion == main_module.AIAnalyzer.SCHEMA_VERSION
 
     saved = db_session.query(Analysis).filter(Analysis.meeting_id == 902).first()
     assert saved is not None
     assert saved.summary == "Realtime summary"
     assert isinstance(saved.technical_terms, dict)
     assert saved.technical_terms.get("transcript_hash") == "a" * 64
+    assert (
+        saved.technical_terms.get("promptVersion")
+        == main_module.AIAnalyzer.PROMPT_VERSION
+    )
+    assert (
+        saved.technical_terms.get("schemaVersion")
+        == main_module.AIAnalyzer.SCHEMA_VERSION
+    )
     assert len(main_module._realtime_analysis_analyzer.calls) == 1
 
 
@@ -220,7 +240,7 @@ def test_realtime_analysis_cooldown_active_returns_failed_without_new_call(
     monkeypatch.setattr(
         main_module,
         "_try_begin_realtime_analysis",
-        lambda meeting_id, transcript_hash, source: (
+        lambda meeting_id, analysis_cache_key, source, prompt_version, schema_version: (
             False,
             "cooldown_active",
             "GEMINI_UNAVAILABLE",
@@ -248,7 +268,7 @@ def test_realtime_analysis_in_progress_returns_skipped_shape(db_session, monkeyp
     monkeypatch.setattr(
         main_module,
         "_try_begin_realtime_analysis",
-        lambda meeting_id, transcript_hash, source: (
+        lambda meeting_id, analysis_cache_key, source, prompt_version, schema_version: (
             False,
             "in_progress",
             None,
@@ -272,12 +292,14 @@ def test_realtime_analysis_in_progress_fresh_state_returns_skipped_with_retry(
     meeting_id = 907
     transcript = "Speaker 1: fresh in-progress"
     transcript_hash = main_module._compute_transcript_hash(transcript, None)
+    cache_key = _default_cache_key(transcript_hash)
     client = FakeRedisClient()
     now = time.time()
     client.hashes[main_module._analysis_state_key(meeting_id)] = {
         "meeting_id": str(meeting_id),
         "status": "RUNNING",
-        "transcript_hash": transcript_hash,
+        "analysis_cache_key": cache_key,
+        "transcript_hash": cache_key,
         "started_at": str(now),
         "updated_at": str(now),
     }
@@ -309,12 +331,14 @@ def test_realtime_analysis_in_progress_stale_state_allows_retry_and_completes(
     meeting_id = 908
     transcript = "Speaker 1: stale guard should recover"
     transcript_hash = main_module._compute_transcript_hash(transcript, None)
+    cache_key = _default_cache_key(transcript_hash)
     client = FakeRedisClient()
     stale_started = time.time() - (main_module._REALTIME_ANALYSIS_STALE_SECONDS + 10)
     client.hashes[main_module._analysis_state_key(meeting_id)] = {
         "meeting_id": str(meeting_id),
         "status": "RUNNING",
-        "transcript_hash": transcript_hash,
+        "analysis_cache_key": cache_key,
+        "transcript_hash": cache_key,
         "started_at": str(stale_started),
         "updated_at": str(stale_started),
     }
@@ -359,11 +383,16 @@ def test_realtime_analysis_existing_result_returns_already_exists_even_when_runn
 ):
     meeting_id = 910
     transcript_hash = "f" * 64
+    cache_key = _default_cache_key(transcript_hash)
     existing = Analysis(
         meeting_id=meeting_id,
         summary="cached summary",
         keywords=[],
-        technical_terms={"transcript_hash": transcript_hash},
+        technical_terms={
+            "transcript_hash": transcript_hash,
+            "promptVersion": main_module.AIAnalyzer.PROMPT_VERSION,
+            "schemaVersion": main_module.AIAnalyzer.SCHEMA_VERSION,
+        },
         action_items=[],
     )
     db_session.add(existing)
@@ -373,7 +402,8 @@ def test_realtime_analysis_existing_result_returns_already_exists_even_when_runn
     client.hashes[main_module._analysis_state_key(meeting_id)] = {
         "meeting_id": str(meeting_id),
         "status": "RUNNING",
-        "transcript_hash": transcript_hash,
+        "analysis_cache_key": cache_key,
+        "transcript_hash": cache_key,
         "started_at": str(time.time()),
         "updated_at": str(time.time()),
     }
@@ -400,12 +430,14 @@ def test_realtime_analysis_foreign_running_state_is_cleared_and_retried(
     meeting_id = 912
     transcript = "Speaker 1: foreign lock should be recovered"
     transcript_hash = main_module._compute_transcript_hash(transcript, None)
+    cache_key = _default_cache_key(transcript_hash)
     client = FakeRedisClient()
     now_ms = int(time.time() * 1000)
     client.hashes[main_module._analysis_state_key(meeting_id)] = {
         "meetingId": str(meeting_id),
         "status": "RUNNING",
-        "transcriptHash": transcript_hash,
+        "analysis_cache_key": cache_key,
+        "transcriptHash": cache_key,
         "startedAtMs": str(now_ms - 60_000),
         "updatedAtMs": str(now_ms - 30_000),
     }
@@ -461,15 +493,14 @@ def test_try_begin_does_not_refresh_redis_lock_when_local_in_progress_is_fresh(
 ):
     meeting_id = 911
     transcript_hash = "1" * 64
+    cache_key = _default_cache_key(transcript_hash)
     client = FakeRedisClient()
     monkeypatch.setattr(main_module, "_get_client", lambda: client)
     now = time.time()
-    main_module._realtime_analysis_in_progress[meeting_id] = (transcript_hash, now)
+    main_module._realtime_analysis_in_progress[meeting_id] = (cache_key, now)
 
     allowed, skip_reason, _, retry_after, lock_token = (
-        main_module._try_begin_realtime_analysis(
-            meeting_id, transcript_hash, "realtime"
-        )
+        main_module._try_begin_realtime_analysis(meeting_id, cache_key, "realtime")
     )
 
     assert not allowed
