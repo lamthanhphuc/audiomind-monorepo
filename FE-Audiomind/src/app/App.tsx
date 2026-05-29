@@ -5,7 +5,7 @@ import FeatureAnalysis from '../components/features/FeatureAnalysis'
 import FeatureUpload from '../components/features/FeatureUpload'
 import MeetingHistoryScene from '../components/features/MeetingHistoryScene'
 import RealtimeDashboardScene from '../components/features/RealtimeDashboardScene'
-import { useAudioRecorder } from '../hooks/useAudioRecorder'
+import { useAudioRecorder, type AudioRecorderState } from '../hooks/useAudioRecorder'
 import {
     DEFAULT_REALTIME_LANGUAGE,
     DEFAULT_REALTIME_SPEAKER_MODE,
@@ -17,7 +17,16 @@ import {
     type TranscriptSegment,
     useRealtimeMeetingStream,
 } from '../hooks/useRealtimeMeetingStream'
-import { type VoiceActivityState, useVoiceActivityDetection } from '../hooks/useVoiceActivityDetection'
+import {
+  DEFAULT_VAD_RESUMED_LABEL_MS,
+  DEFAULT_VAD_RESUME_DURATION_MS,
+  DEFAULT_VAD_SAMPLE_INTERVAL_MS,
+  DEFAULT_VAD_SILENCE_DURATION_MS,
+  DEFAULT_VAD_SILENCE_THRESHOLD,
+  DEFAULT_VAD_SPEECH_THRESHOLD,
+  type VoiceActivityState,
+  useVoiceActivityDetection,
+} from '../hooks/useVoiceActivityDetection'
 import { ApiError, getAnalysis, getProcessingStatus, getTranscript, startProcessingByPath, uploadToMeetingApi } from '../services/api'
 import { clearAccessToken, getAccessToken, getCurrentUserId, login, setAccessToken } from '../services/auth'
 import { REALTIME_WS_ENABLED } from '../services/config'
@@ -35,7 +44,7 @@ type ResultView = {
   analysis: AiAnalysis
 }
 
-type LiveLifecycleState =
+export type LiveLifecycleState =
   | 'idle'
   | 'connecting'
   | 'recording'
@@ -168,6 +177,75 @@ const HYDRATION_MIN_ATTEMPTS_AFTER_FIRST_FRAGMENTS = 2
 const LIVE_STATUS_LISTENING = 'Đang lắng nghe...'
 const LIVE_STATUS_PAUSED = 'Paused while silent — speak to continue'
 const LIVE_STATUS_RESUMED = 'Resumed — continuing to listen...'
+
+type ResolveVoiceActivityLifecycleInput = {
+  recorderState: AudioRecorderState
+  liveLifecycleState: LiveLifecycleState
+  previousVoiceActivityState: VoiceActivityState | null
+  voiceActivityState: VoiceActivityState
+}
+
+type ResolveVoiceActivityLifecycleResult = {
+  nextTrackedVoiceActivityState: VoiceActivityState | null
+  nextLifecycleState: LiveLifecycleState | null
+  nextStatusMessage: string | null
+}
+
+export const resolveVoiceActivityLifecycleUpdate = ({
+  recorderState,
+  liveLifecycleState,
+  previousVoiceActivityState,
+  voiceActivityState,
+}: ResolveVoiceActivityLifecycleInput): ResolveVoiceActivityLifecycleResult => {
+  if (recorderState !== 'recording') {
+    return {
+      nextTrackedVoiceActivityState: null,
+      nextLifecycleState: null,
+      nextStatusMessage: null,
+    }
+  }
+
+  if (liveLifecycleState === 'stopping' || liveLifecycleState === 'stopped' || liveLifecycleState === 'error') {
+    return {
+      nextTrackedVoiceActivityState: previousVoiceActivityState,
+      nextLifecycleState: null,
+      nextStatusMessage: null,
+    }
+  }
+
+  if (previousVoiceActivityState === voiceActivityState) {
+    return {
+      nextTrackedVoiceActivityState: previousVoiceActivityState,
+      nextLifecycleState: null,
+      nextStatusMessage: null,
+    }
+  }
+
+  if (voiceActivityState === 'silent_paused') {
+    return {
+      nextTrackedVoiceActivityState: voiceActivityState,
+      nextLifecycleState: 'silent_paused',
+      nextStatusMessage: LIVE_STATUS_PAUSED,
+    }
+  }
+
+  if (voiceActivityState === 'listening_resumed') {
+    return {
+      nextTrackedVoiceActivityState: voiceActivityState,
+      nextLifecycleState: 'listening_resumed',
+      nextStatusMessage: LIVE_STATUS_RESUMED,
+    }
+  }
+
+  return {
+    nextTrackedVoiceActivityState: voiceActivityState,
+    nextLifecycleState:
+      liveLifecycleState === 'silent_paused' || liveLifecycleState === 'listening_resumed'
+        ? 'recording'
+        : null,
+    nextStatusMessage: LIVE_STATUS_LISTENING,
+  }
+}
 
 export const isCurrentLiveRecordingSession = (
   completedSessionId: number,
@@ -585,12 +663,12 @@ export default function App() {
   const voiceActivity = useVoiceActivityDetection({
     enabled: audioRecorder.state === 'recording',
     getRmsLevel: audioRecorder.getCurrentRms,
-    silenceThreshold: 0.012,
-    speechThreshold: 0.02,
-    silenceDurationMs: 2000,
-    resumeDurationMs: 300,
-    sampleIntervalMs: 100,
-    resumedLabelMs: 900,
+    silenceThreshold: DEFAULT_VAD_SILENCE_THRESHOLD,
+    speechThreshold: DEFAULT_VAD_SPEECH_THRESHOLD,
+    silenceDurationMs: DEFAULT_VAD_SILENCE_DURATION_MS,
+    resumeDurationMs: DEFAULT_VAD_RESUME_DURATION_MS,
+    sampleIntervalMs: DEFAULT_VAD_SAMPLE_INTERVAL_MS,
+    resumedLabelMs: DEFAULT_VAD_RESUMED_LABEL_MS,
   })
   const realtimeStream = useRealtimeMeetingStream({
     meetingId: liveMeetingId,
@@ -751,41 +829,22 @@ export default function App() {
   }, [audioRecorder.state])
 
   useEffect(() => {
-    if (audioRecorder.state !== 'recording') {
-      lastVoiceActivityStateRef.current = null
-      return
+    const voiceActivityUpdate = resolveVoiceActivityLifecycleUpdate({
+      recorderState: audioRecorder.state,
+      liveLifecycleState,
+      previousVoiceActivityState: lastVoiceActivityStateRef.current,
+      voiceActivityState: voiceActivity.state,
+    })
+
+    lastVoiceActivityStateRef.current = voiceActivityUpdate.nextTrackedVoiceActivityState
+
+    if (voiceActivityUpdate.nextLifecycleState !== null) {
+      setLiveLifecycleState(voiceActivityUpdate.nextLifecycleState)
     }
 
-    if (
-      liveLifecycleState === 'stopping'
-      || liveLifecycleState === 'stopped'
-      || liveLifecycleState === 'error'
-    ) {
-      return
+    if (voiceActivityUpdate.nextStatusMessage !== null) {
+      setLiveStatusMessage(voiceActivityUpdate.nextStatusMessage)
     }
-
-    if (lastVoiceActivityStateRef.current === voiceActivity.state) {
-      return
-    }
-
-    lastVoiceActivityStateRef.current = voiceActivity.state
-
-    if (voiceActivity.state === 'silent_paused') {
-      setLiveLifecycleState('silent_paused')
-      setLiveStatusMessage(LIVE_STATUS_PAUSED)
-      return
-    }
-
-    if (voiceActivity.state === 'listening_resumed') {
-      setLiveLifecycleState('listening_resumed')
-      setLiveStatusMessage(LIVE_STATUS_RESUMED)
-      return
-    }
-
-    setLiveLifecycleState((current) => (
-      current === 'silent_paused' || current === 'listening_resumed' ? 'recording' : current
-    ))
-    setLiveStatusMessage(LIVE_STATUS_LISTENING)
   }, [audioRecorder.state, liveLifecycleState, voiceActivity.state])
 
   useEffect(() => {

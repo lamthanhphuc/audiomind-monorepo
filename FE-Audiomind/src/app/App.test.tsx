@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { DEFAULT_REALTIME_LANGUAGE, REALTIME_LANGUAGE_OPTIONS, getRealtimeConnectionView, getStatusBadgeClass, hydrateLiveTranscriptSegments, isCurrentLiveRecordingSession, isRealtimeLanguageSelectorDisabled, mergeHydratedTranscriptWithLive, pollRealtimeAnalysisAfterStop } from './App'
+import { DEFAULT_REALTIME_LANGUAGE, REALTIME_LANGUAGE_OPTIONS, getRealtimeConnectionView, getStatusBadgeClass, hydrateLiveTranscriptSegments, isCurrentLiveRecordingSession, isRealtimeLanguageSelectorDisabled, mergeHydratedTranscriptWithLive, pollRealtimeAnalysisAfterStop, resolveVoiceActivityLifecycleUpdate } from './App'
 import { ApiError } from '../services/api'
 import { mergeTranscriptSegmentsForDisplay, normalizePersistedTranscriptSegments, upsertTranscriptSegment } from '../utils/transcript'
 
@@ -597,6 +597,95 @@ describe('getRealtimeConnectionView', () => {
 
     expect(view.title).toBe('Resumed')
     expect(view.detail).toContain('lắng nghe trở lại')
+  })
+})
+
+describe('resolveVoiceActivityLifecycleUpdate', () => {
+  it('transitions to silent_paused and keeps it as a soft UI-only state', () => {
+    const update = resolveVoiceActivityLifecycleUpdate({
+      recorderState: 'recording',
+      liveLifecycleState: 'recording',
+      previousVoiceActivityState: 'listening',
+      voiceActivityState: 'silent_paused',
+    })
+
+    expect(update.nextLifecycleState).toBe('silent_paused')
+    expect(update.nextStatusMessage).toBe('Paused while silent — speak to continue')
+    expect(update.nextLifecycleState).not.toBe('stopping')
+    expect(update.nextLifecycleState).not.toBe('stopped')
+  })
+
+  it('transitions to listening_resumed and never treats resume as stop/finalize', () => {
+    const update = resolveVoiceActivityLifecycleUpdate({
+      recorderState: 'recording',
+      liveLifecycleState: 'silent_paused',
+      previousVoiceActivityState: 'silent_paused',
+      voiceActivityState: 'listening_resumed',
+    })
+
+    expect(update.nextLifecycleState).toBe('listening_resumed')
+    expect(update.nextStatusMessage).toBe('Resumed — continuing to listen...')
+    expect(update.nextLifecycleState).not.toBe('stopping')
+    expect(update.nextLifecycleState).not.toBe('stopped')
+  })
+
+  it('returns from paused/resumed back to recording when speech normalizes', () => {
+    const fromPaused = resolveVoiceActivityLifecycleUpdate({
+      recorderState: 'recording',
+      liveLifecycleState: 'silent_paused',
+      previousVoiceActivityState: 'listening_resumed',
+      voiceActivityState: 'listening',
+    })
+    const fromResumed = resolveVoiceActivityLifecycleUpdate({
+      recorderState: 'recording',
+      liveLifecycleState: 'listening_resumed',
+      previousVoiceActivityState: 'listening_resumed',
+      voiceActivityState: 'listening',
+    })
+
+    expect(fromPaused.nextLifecycleState).toBe('recording')
+    expect(fromResumed.nextLifecycleState).toBe('recording')
+    expect(fromPaused.nextStatusMessage).toContain('lắng nghe')
+    expect(fromResumed.nextStatusMessage).toContain('lắng nghe')
+  })
+
+  it('does not update lifecycle when recorder is not actively recording', () => {
+    const update = resolveVoiceActivityLifecycleUpdate({
+      recorderState: 'stopped',
+      liveLifecycleState: 'stopped',
+      previousVoiceActivityState: 'silent_paused',
+      voiceActivityState: 'silent_paused',
+    })
+
+    expect(update.nextTrackedVoiceActivityState).toBeNull()
+    expect(update.nextLifecycleState).toBeNull()
+    expect(update.nextStatusMessage).toBeNull()
+  })
+
+  it('ignores VAD transitions once stop/finalize flow has started', () => {
+    const update = resolveVoiceActivityLifecycleUpdate({
+      recorderState: 'recording',
+      liveLifecycleState: 'stopping',
+      previousVoiceActivityState: 'listening',
+      voiceActivityState: 'silent_paused',
+    })
+
+    expect(update.nextTrackedVoiceActivityState).toBe('listening')
+    expect(update.nextLifecycleState).toBeNull()
+    expect(update.nextStatusMessage).toBeNull()
+  })
+
+  it('does not emit duplicate updates for the same voice activity state', () => {
+    const update = resolveVoiceActivityLifecycleUpdate({
+      recorderState: 'recording',
+      liveLifecycleState: 'recording',
+      previousVoiceActivityState: 'listening',
+      voiceActivityState: 'listening',
+    })
+
+    expect(update.nextTrackedVoiceActivityState).toBe('listening')
+    expect(update.nextLifecycleState).toBeNull()
+    expect(update.nextStatusMessage).toBeNull()
   })
 })
 
