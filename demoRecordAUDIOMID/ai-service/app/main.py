@@ -42,6 +42,7 @@ from app.job_status_store import (
 from app.metrics import stt_metrics
 from app.models import Analysis
 from app.logging_utils import safe_error_message, transcript_hash_prefix
+from app.services.ai_analyzer import AIAnalyzer
 from app.schemas import (
     ActionItem,
     AnalysisPainPoint,
@@ -1268,12 +1269,38 @@ def _coerce_action_items(values: Any) -> list[dict[str, Any]]:
             if not task:
                 continue
             owner = str(item.get("owner") or "").strip() or None
-            deadline = str(item.get("deadline") or "").strip() or None
-            normalized.append({"task": task, "owner": owner, "deadline": deadline})
+            due_date = (
+                str(item.get("dueDate") or item.get("due_date") or item.get("deadline") or "").strip()
+                or None
+            )
+            priority = str(item.get("priority") or "").strip() or None
+            status = str(item.get("status") or "").strip() or None
+            evidence = str(item.get("evidence") or "").strip() or None
+            normalized.append(
+                {
+                    "task": task,
+                    "owner": owner,
+                    "dueDate": due_date,
+                    "deadline": due_date,
+                    "priority": priority,
+                    "status": status,
+                    "evidence": evidence,
+                }
+            )
             continue
         task = str(item or "").strip()
         if task:
-            normalized.append({"task": task, "owner": None, "deadline": None})
+            normalized.append(
+                {
+                    "task": task,
+                    "owner": None,
+                    "dueDate": None,
+                    "deadline": None,
+                    "priority": None,
+                    "status": None,
+                    "evidence": None,
+                }
+            )
     return normalized
 
 
@@ -1292,7 +1319,10 @@ def _extract_analysis_from_job_state(
 
 
 def _normalize_analysis_payload(raw_analysis: dict[str, Any]) -> dict[str, Any]:
-    summary = str(raw_analysis.get("summary") or "").strip()
+    summary = str(
+        raw_analysis.get("summary") or raw_analysis.get("meetingSummary") or ""
+    ).strip()
+    meeting_summary = str(raw_analysis.get("meetingSummary") or summary).strip()
     keywords = _coerce_string_list(
         raw_analysis.get("keywords")
         or raw_analysis.get("key_points")
@@ -1311,28 +1341,114 @@ def _normalize_analysis_payload(raw_analysis: dict[str, Any]) -> dict[str, Any]:
         raw_analysis.get("painPoints") or raw_analysis.get("pain_points") or []
     )
     action_items_structured = _coerce_action_items(
-        raw_analysis.get("action_items") or raw_analysis.get("actionItems") or []
+        raw_analysis.get("action_items")
+        or raw_analysis.get("businessActionItems")
+        or raw_analysis.get("actionItems")
+        or []
     )
     action_items = [
         str(item.get("task") or "").strip() for item in action_items_structured
     ]
     action_items = [item for item in action_items if item]
+    key_decisions = _coerce_string_list(
+        raw_analysis.get("keyDecisions") or raw_analysis.get("decisions") or []
+    )
+    risks = _coerce_string_list(
+        raw_analysis.get("risks") or raw_analysis.get("risks_blockers") or []
+    )
+    blockers = _coerce_string_list(raw_analysis.get("blockers") or [])
+    questions = _coerce_string_list(raw_analysis.get("questions") or [])
+    deadlines = _coerce_string_list(raw_analysis.get("deadlines") or [])
+    owners = _coerce_string_list(raw_analysis.get("owners") or [])
+    next_steps = _coerce_string_list(raw_analysis.get("nextSteps") or [])
+    if not next_steps and action_items:
+        next_steps = action_items[:3]
+    if not owners:
+        owners = _coerce_string_list(
+            [item.get("owner") for item in action_items_structured if item.get("owner")]
+        )
+    if not deadlines:
+        deadlines = _coerce_string_list(
+            [
+                item.get("dueDate") or item.get("deadline")
+                for item in action_items_structured
+                if item.get("dueDate") or item.get("deadline")
+            ]
+        )
+    confidence_raw = raw_analysis.get("confidence")
+    confidence: float | None = None
+    if isinstance(confidence_raw, (int, float)) and not isinstance(confidence_raw, bool):
+        confidence = float(confidence_raw)
+    elif isinstance(confidence_raw, str):
+        trimmed = confidence_raw.strip().replace("%", "")
+        if trimmed:
+            try:
+                confidence = float(trimmed)
+            except ValueError:
+                confidence = None
+    if confidence is not None:
+        if confidence > 1.0 and confidence <= 100.0:
+            confidence = confidence / 100.0
+        confidence = max(0.0, min(1.0, confidence))
+
     domain_mode = _normalize_domain_mode(
         raw_analysis.get("domainMode") or raw_analysis.get("domain_mode") or "it"
     )
-    transcript_hash = str(raw_analysis.get("transcript_hash") or "").strip() or None
+    transcript_hash = (
+        str(
+            raw_analysis.get("transcript_hash")
+            or raw_analysis.get("transcriptHash")
+            or ""
+        ).strip()
+        or None
+    )
     source = str(raw_analysis.get("source") or "").strip() or None
+    prompt_version = (
+        str(
+            raw_analysis.get("promptVersion")
+            or raw_analysis.get("prompt_version")
+            or ""
+        ).strip()
+        or AIAnalyzer.PROMPT_VERSION
+    )
+    schema_version = (
+        str(
+            raw_analysis.get("schemaVersion")
+            or raw_analysis.get("schema_version")
+            or ""
+        ).strip()
+        or AIAnalyzer.SCHEMA_VERSION
+    )
+    risks_blockers = _coerce_string_list(risks + blockers)
     return {
         "summary": summary,
+        "meetingSummary": meeting_summary or summary,
         "keywords": keywords,
         "technical_terms": technical_terms,
         "technicalTerms": technical_terms_structured,
         "painPoints": pain_points,
+        "businessActionItems": action_items_structured,
         "action_items": action_items_structured,
         "actionItems": action_items,
         "domainMode": domain_mode,
         "domain_mode": domain_mode,
+        "keyDecisions": key_decisions,
+        "decisions": key_decisions,
+        "risks": risks,
+        "blockers": blockers,
+        "questions": questions,
+        "deadlines": deadlines,
+        "owners": owners,
+        "nextSteps": next_steps,
+        "risks_blockers": risks_blockers,
+        "businessImpact": str(raw_analysis.get("businessImpact") or "").strip(),
+        "customerImpact": str(raw_analysis.get("customerImpact") or "").strip(),
+        "technicalImpact": str(raw_analysis.get("technicalImpact") or "").strip(),
+        "confidence": confidence,
+        "promptVersion": prompt_version,
+        "schemaVersion": schema_version,
         "transcript_hash": transcript_hash,
+        "transcriptHash": transcript_hash,
         "source": source,
     }
 
@@ -1349,6 +1465,77 @@ def _compute_transcript_hash(transcript: str, provided_hash: str | None) -> str:
     if normalized and re.fullmatch(r"[a-f0-9]{64}", normalized):
         return normalized
     return hashlib.sha256(transcript.encode("utf-8")).hexdigest()
+
+
+def _normalize_analysis_version(value: Any, default: str) -> str:
+    normalized = str(value or "").strip()
+    if not normalized:
+        return default
+    return normalized
+
+
+def _analysis_cache_key(
+    transcript_hash: str, prompt_version: str, schema_version: str
+) -> str:
+    return (
+        f"{str(transcript_hash or '').strip().lower()}|"
+        f"{str(prompt_version or '').strip().lower()}|"
+        f"{str(schema_version or '').strip().lower()}"
+    )
+
+
+def _analysis_identity_from_row(analysis_row: Analysis | None) -> tuple[str, str, str]:
+    transcript_hash = ""
+    prompt_version = ""
+    schema_version = ""
+    if analysis_row is None:
+        return transcript_hash, prompt_version, schema_version
+
+    technical_terms_value = getattr(analysis_row, "technical_terms", None)
+    if isinstance(technical_terms_value, dict):
+        transcript_hash = str(
+            technical_terms_value.get("transcript_hash")
+            or technical_terms_value.get("transcriptHash")
+            or ""
+        ).strip().lower()
+        prompt_version = str(
+            technical_terms_value.get("promptVersion")
+            or technical_terms_value.get("prompt_version")
+            or ""
+        ).strip()
+        schema_version = str(
+            technical_terms_value.get("schemaVersion")
+            or technical_terms_value.get("schema_version")
+            or ""
+        ).strip()
+    return transcript_hash, prompt_version, schema_version
+
+
+def _is_matching_completed_analysis(
+    analysis_row: Analysis | None,
+    *,
+    transcript_hash: str,
+    prompt_version: str,
+    schema_version: str,
+) -> bool:
+    stored_hash, stored_prompt_version, stored_schema_version = _analysis_identity_from_row(
+        analysis_row
+    )
+    if not stored_hash:
+        return False
+    if stored_hash != str(transcript_hash or "").strip().lower():
+        return False
+    if (
+        str(stored_prompt_version or "").strip()
+        != str(prompt_version or "").strip()
+    ):
+        return False
+    if (
+        str(stored_schema_version or "").strip()
+        != str(schema_version or "").strip()
+    ):
+        return False
+    return True
 
 
 def _analysis_lock_key(meeting_id: int) -> str:
@@ -1458,7 +1645,11 @@ def _purge_realtime_analysis_guards(now: float) -> None:
 
 
 def _try_begin_realtime_analysis(
-    meeting_id: int, transcript_hash: str, source: str
+    meeting_id: int,
+    analysis_cache_key: str,
+    source: str,
+    prompt_version: str = AIAnalyzer.PROMPT_VERSION,
+    schema_version: str = AIAnalyzer.SCHEMA_VERSION,
 ) -> tuple[bool, str | None, str | None, int, str | None]:
     now = time.time()
     state: dict[str, str] = {}
@@ -1469,7 +1660,7 @@ def _try_begin_realtime_analysis(
     with _realtime_analysis_guard_lock:
         _purge_realtime_analysis_guards(now)
         completed = _realtime_analysis_completed_hash.get(meeting_id)
-        if completed is not None and completed[0] == transcript_hash:
+        if completed is not None and completed[0] == analysis_cache_key:
             return False, "already_exists", None, 0, None
 
         in_progress = _realtime_analysis_in_progress.get(meeting_id)
@@ -1477,7 +1668,7 @@ def _try_begin_realtime_analysis(
             active_hash, created_at = in_progress
             age_seconds = max(0.0, now - created_at)
             if (
-                active_hash == transcript_hash
+                active_hash == analysis_cache_key
                 and age_seconds <= _REALTIME_ANALYSIS_STALE_SECONDS
             ):
                 retry_after = max(
@@ -1511,7 +1702,13 @@ def _try_begin_realtime_analysis(
         status = str(state.get("status") or "").strip().upper()
         state_owner = _analysis_state_owner(state)
         state_hash = (
-            str(state.get("transcript_hash") or state.get("transcriptHash") or "")
+            str(
+                state.get("analysis_cache_key")
+                or state.get("analysisCacheKey")
+                or state.get("transcript_hash")
+                or state.get("transcriptHash")
+                or ""
+            )
             .strip()
             .lower()
         )
@@ -1523,7 +1720,7 @@ def _try_begin_realtime_analysis(
             status == "COMPLETED"
             and state_owner in {"", _REALTIME_ANALYSIS_STATE_OWNER}
             and state_hash
-            and state_hash == transcript_hash
+            and state_hash == analysis_cache_key
         ):
             return False, "already_exists", error_code, 0, None
         if status in {"RUNNING", "PENDING", "QUEUED"}:
@@ -1635,7 +1832,7 @@ def _try_begin_realtime_analysis(
                 active_hash, created_at = in_progress
                 age_seconds = max(0.0, now - created_at)
                 if (
-                    active_hash == transcript_hash
+                    active_hash == analysis_cache_key
                     and age_seconds <= _REALTIME_ANALYSIS_STALE_SECONDS
                 ):
                     _release_realtime_analysis_lock(client, meeting_id)
@@ -1646,18 +1843,21 @@ def _try_begin_realtime_analysis(
                 _realtime_analysis_in_progress.pop(meeting_id, None)
 
             completed = _realtime_analysis_completed_hash.get(meeting_id)
-            if completed is not None and completed[0] == transcript_hash:
+            if completed is not None and completed[0] == analysis_cache_key:
                 _release_realtime_analysis_lock(client, meeting_id)
                 return False, "already_exists", error_code, 0, None
 
-            _realtime_analysis_in_progress[meeting_id] = (transcript_hash, now)
+            _realtime_analysis_in_progress[meeting_id] = (analysis_cache_key, now)
 
         client.hset(
             _analysis_state_key(meeting_id),
             mapping={
                 "meeting_id": str(meeting_id),
                 "status": "RUNNING",
-                "transcript_hash": transcript_hash,
+                "transcript_hash": analysis_cache_key,
+                "analysis_cache_key": analysis_cache_key,
+                "prompt_version": prompt_version,
+                "schema_version": schema_version,
                 "source": source,
                 "updated_at": str(now),
                 "started_at": str(now),
@@ -1683,10 +1883,12 @@ def _try_begin_realtime_analysis(
 
 def _finish_realtime_analysis(
     meeting_id: int,
-    transcript_hash: str,
+    analysis_cache_key: str,
     success: bool,
     source: str,
     lock_token: str | None,
+    prompt_version: str = AIAnalyzer.PROMPT_VERSION,
+    schema_version: str = AIAnalyzer.SCHEMA_VERSION,
     error_code: str | None = None,
     error_reason: str | None = None,
     retry_after_seconds: int = 0,
@@ -1700,7 +1902,10 @@ def _finish_realtime_analysis(
                 mapping={
                     "meeting_id": str(meeting_id),
                     "status": "COMPLETED",
-                    "transcript_hash": transcript_hash,
+                    "transcript_hash": analysis_cache_key,
+                    "analysis_cache_key": analysis_cache_key,
+                    "prompt_version": prompt_version,
+                    "schema_version": schema_version,
                     "source": source,
                     "updated_at": str(now),
                     "completed_at": str(now),
@@ -1724,7 +1929,10 @@ def _finish_realtime_analysis(
                 mapping={
                     "meeting_id": str(meeting_id),
                     "status": "FAILED",
-                    "transcript_hash": transcript_hash,
+                    "transcript_hash": analysis_cache_key,
+                    "analysis_cache_key": analysis_cache_key,
+                    "prompt_version": prompt_version,
+                    "schema_version": schema_version,
                     "source": source,
                     "updated_at": str(now),
                     "failed_at": str(now),
@@ -1759,7 +1967,7 @@ def _finish_realtime_analysis(
     with _realtime_analysis_guard_lock:
         _realtime_analysis_in_progress.pop(meeting_id, None)
         if success:
-            _realtime_analysis_completed_hash[meeting_id] = (transcript_hash, now)
+            _realtime_analysis_completed_hash[meeting_id] = (analysis_cache_key, now)
 
 
 def _analyze_and_persist_realtime_transcript(
@@ -1767,6 +1975,8 @@ def _analyze_and_persist_realtime_transcript(
     meeting_id: int,
     transcript_text: str,
     transcript_hash: str,
+    prompt_version: str,
+    schema_version: str,
     source: str,
     domain_mode: str | None,
     db: Session,
@@ -1786,6 +1996,8 @@ def _analyze_and_persist_realtime_transcript(
         "source": source,
         "transcriptHash": transcript_hash,
         "domainMode": requested_domain_mode,
+        "promptVersion": prompt_version,
+        "schemaVersion": schema_version,
     }
 
     if getattr(analyzer, "provider", "") == "gemini":
@@ -1816,8 +2028,22 @@ def _analyze_and_persist_realtime_transcript(
         "technical_terms": clean_terms,
         "technicalTerms": normalized["technicalTerms"],
         "painPoints": normalized["painPoints"],
+        "meetingSummary": normalized["meetingSummary"],
+        "keyDecisions": normalized["keyDecisions"],
+        "risks": normalized["risks"],
+        "blockers": normalized["blockers"],
+        "questions": normalized["questions"],
+        "deadlines": normalized["deadlines"],
+        "owners": normalized["owners"],
+        "nextSteps": normalized["nextSteps"],
+        "businessImpact": normalized["businessImpact"],
+        "customerImpact": normalized["customerImpact"],
+        "technicalImpact": normalized["technicalImpact"],
+        "confidence": normalized["confidence"],
         "domainMode": normalized["domainMode"],
         "transcript_hash": transcript_hash,
+        "promptVersion": prompt_version,
+        "schemaVersion": schema_version,
         "source": source,
     }
     action_items_payload = prepared.get("action_items", [])
@@ -1834,10 +2060,17 @@ def _analyze_and_persist_realtime_transcript(
     analysis_row.created_at = datetime.now(timezone.utc)
     db.commit()
 
+    analysis_for_job_state = dict(normalized)
+    analysis_for_job_state["transcriptHash"] = transcript_hash
+    analysis_for_job_state["transcript_hash"] = transcript_hash
+    analysis_for_job_state["promptVersion"] = prompt_version
+    analysis_for_job_state["schemaVersion"] = schema_version
+    analysis_for_job_state["source"] = source
+
     set_job_status(
         meeting_id=meeting_id,
         status="COMPLETED",
-        result={"analysis": structured_analysis, "source": source},
+        result={"analysis": analysis_for_job_state, "source": source},
         stage="completed",
         progress=100,
     )
@@ -1849,6 +2082,8 @@ def _analyze_and_persist_realtime_transcript(
         status="completed",
         transcript_hash=transcript_hash,
         source=source,
+        promptVersion=prompt_version,
+        schemaVersion=schema_version,
     )
 
 
@@ -1996,9 +2231,26 @@ async def get_analysis(meeting_id: int, db: Session = Depends(get_db)):
             return AnalysisResponse(
                 meeting_id=meeting_id,
                 summary=normalized["summary"],
+                meetingSummary=normalized["meetingSummary"],
                 keywords=normalized["keywords"],
                 technical_terms=normalized["technical_terms"],
                 action_items=action_items,
+                businessActionItems=[
+                    ActionItem(**item) for item in normalized["businessActionItems"]
+                ],
+                keyDecisions=normalized["keyDecisions"],
+                risks=normalized["risks"],
+                blockers=normalized["blockers"],
+                questions=normalized["questions"],
+                deadlines=normalized["deadlines"],
+                owners=normalized["owners"],
+                nextSteps=normalized["nextSteps"],
+                businessImpact=normalized["businessImpact"],
+                customerImpact=normalized["customerImpact"],
+                technicalImpact=normalized["technicalImpact"],
+                confidence=normalized["confidence"],
+                promptVersion=normalized["promptVersion"],
+                schemaVersion=normalized["schemaVersion"],
                 created_at=datetime.now(timezone.utc),
                 technicalTerms=technical_terms,
                 painPoints=pain_points,
@@ -2048,9 +2300,26 @@ async def get_analysis(meeting_id: int, db: Session = Depends(get_db)):
         return AnalysisResponse(
             meeting_id=meeting_id,
             summary=normalized["summary"],
+            meetingSummary=normalized["meetingSummary"],
             keywords=normalized["keywords"],
             technical_terms=normalized["technical_terms"],
             action_items=action_items,
+            businessActionItems=[
+                ActionItem(**item) for item in normalized["businessActionItems"]
+            ],
+            keyDecisions=normalized["keyDecisions"],
+            risks=normalized["risks"],
+            blockers=normalized["blockers"],
+            questions=normalized["questions"],
+            deadlines=normalized["deadlines"],
+            owners=normalized["owners"],
+            nextSteps=normalized["nextSteps"],
+            businessImpact=normalized["businessImpact"],
+            customerImpact=normalized["customerImpact"],
+            technicalImpact=normalized["technicalImpact"],
+            confidence=normalized["confidence"],
+            promptVersion=normalized["promptVersion"],
+            schemaVersion=normalized["schemaVersion"],
             created_at=analysis.created_at or datetime.now(timezone.utc),
             technicalTerms=technical_terms,
             painPoints=pain_points,
@@ -2104,26 +2373,37 @@ async def analyze_realtime_transcript(
         transcript_hash = _compute_transcript_hash(
             transcript_text, request.transcript_hash
         )
+        prompt_version = _normalize_analysis_version(
+            request.prompt_version, AIAnalyzer.PROMPT_VERSION
+        )
+        schema_version = _normalize_analysis_version(
+            request.schema_version, AIAnalyzer.SCHEMA_VERSION
+        )
+        analysis_cache_key = _analysis_cache_key(
+            transcript_hash, prompt_version, schema_version
+        )
         existing = db.query(Analysis).filter(Analysis.meeting_id == meeting_id).first()
-        if existing is not None:
-            existing_hash: str | None = None
-            if isinstance(existing.technical_terms, dict):
-                existing_hash = (
-                    str(existing.technical_terms.get("transcript_hash") or "").strip()
-                    or None
-                )
-            if existing_hash is None or existing_hash == transcript_hash:
-                logger.info(
-                    "REALTIME_ANALYSIS_SKIPPED reason=already_exists meetingId={}",
-                    meeting_id,
-                )
-                return RealtimeTranscriptAnalysisResponse(
-                    meeting_id=meeting_id,
-                    status="skipped",
-                    reason="already_exists",
-                    transcript_hash=transcript_hash,
-                    source=source,
-                )
+        if _is_matching_completed_analysis(
+            existing,
+            transcript_hash=transcript_hash,
+            prompt_version=prompt_version,
+            schema_version=schema_version,
+        ):
+            logger.info(
+                "REALTIME_ANALYSIS_SKIPPED reason=already_exists meetingId={} promptVersion={} schemaVersion={}",
+                meeting_id,
+                prompt_version,
+                schema_version,
+            )
+            return RealtimeTranscriptAnalysisResponse(
+                meeting_id=meeting_id,
+                status="skipped",
+                reason="already_exists",
+                transcript_hash=transcript_hash,
+                source=source,
+                promptVersion=prompt_version,
+                schemaVersion=schema_version,
+            )
 
         (
             allowed,
@@ -2131,36 +2411,39 @@ async def analyze_realtime_transcript(
             skip_error_code,
             retry_after_seconds,
             lock_token,
-        ) = _try_begin_realtime_analysis(meeting_id, transcript_hash, source)
+        ) = _try_begin_realtime_analysis(
+            meeting_id,
+            analysis_cache_key,
+            source,
+            prompt_version,
+            schema_version,
+        )
         if not allowed:
             if skip_reason in {"in_progress", "already_exists"}:
                 existing_now = (
                     db.query(Analysis).filter(Analysis.meeting_id == meeting_id).first()
                 )
-                if existing_now is not None:
-                    existing_hash: str | None = None
-                    if isinstance(existing_now.technical_terms, dict):
-                        existing_hash = (
-                            str(
-                                existing_now.technical_terms.get("transcript_hash")
-                                or ""
-                            )
-                            .strip()
-                            .lower()
-                            or None
-                        )
-                    if existing_hash is None or existing_hash == transcript_hash:
-                        logger.info(
-                            "REALTIME_ANALYSIS_SKIPPED reason=already_exists meetingId={}",
-                            meeting_id,
-                        )
-                        return RealtimeTranscriptAnalysisResponse(
-                            meeting_id=meeting_id,
-                            status="skipped",
-                            reason="already_exists",
-                            transcript_hash=transcript_hash,
-                            source=source,
-                        )
+                if _is_matching_completed_analysis(
+                    existing_now,
+                    transcript_hash=transcript_hash,
+                    prompt_version=prompt_version,
+                    schema_version=schema_version,
+                ):
+                    logger.info(
+                        "REALTIME_ANALYSIS_SKIPPED reason=already_exists meetingId={} promptVersion={} schemaVersion={}",
+                        meeting_id,
+                        prompt_version,
+                        schema_version,
+                    )
+                    return RealtimeTranscriptAnalysisResponse(
+                        meeting_id=meeting_id,
+                        status="skipped",
+                        reason="already_exists",
+                        transcript_hash=transcript_hash,
+                        source=source,
+                        promptVersion=prompt_version,
+                        schemaVersion=schema_version,
+                    )
             logger.info(
                 "event=REALTIME_ANALYSIS_SKIPPED reason={} meetingId={} retryAfterSeconds={}",
                 skip_reason,
@@ -2174,6 +2457,8 @@ async def analyze_realtime_transcript(
                     reason=skip_reason,
                     transcript_hash=transcript_hash,
                     source=source,
+                    promptVersion=prompt_version,
+                    schemaVersion=schema_version,
                     retryAfterSeconds=retry_after_seconds,
                     errorCode=skip_error_code or "GEMINI_ANALYSIS_FAILED",
                 )
@@ -2183,6 +2468,8 @@ async def analyze_realtime_transcript(
                 reason=skip_reason,
                 transcript_hash=transcript_hash,
                 source=source,
+                promptVersion=prompt_version,
+                schemaVersion=schema_version,
                 retryAfterSeconds=retry_after_seconds or None,
                 errorCode=skip_error_code,
             )
@@ -2201,6 +2488,8 @@ async def analyze_realtime_transcript(
                 meeting_id=meeting_id,
                 transcript_text=transcript_text,
                 transcript_hash=transcript_hash,
+                prompt_version=prompt_version,
+                schema_version=schema_version,
                 source=source,
                 domain_mode=request.domain_mode,
                 db=db,
@@ -2261,10 +2550,12 @@ async def analyze_realtime_transcript(
         finally:
             _finish_realtime_analysis(
                 meeting_id,
-                transcript_hash,
+                analysis_cache_key,
                 success=success,
                 source=source,
                 lock_token=lock_token,
+                prompt_version=prompt_version,
+                schema_version=schema_version,
                 error_code=finish_error_code,
                 error_reason=finish_error_reason,
                 retry_after_seconds=finish_retry_after_seconds,

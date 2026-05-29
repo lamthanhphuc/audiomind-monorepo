@@ -155,6 +155,8 @@ def test_gemini_analyzer_parses_valid_json(monkeypatch):
     assert result["domainMode"] == "it"
     assert result["key_points"] == ["deployment"]
     assert result["risks_blockers"] == ["Thieu API key"]
+    assert result["promptVersion"] == AI_MODULE.AIAnalyzer.PROMPT_VERSION
+    assert result["schemaVersion"] == AI_MODULE.AIAnalyzer.SCHEMA_VERSION
 
 
 def test_gemini_analyzer_uses_api_key_header(monkeypatch):
@@ -307,6 +309,46 @@ def test_gemini_analyzer_fills_missing_fields(monkeypatch):
     assert result["painPoints"] == []
     assert result["actionItems"] == []
     assert result["domainMode"] == "it"
+    assert result["promptVersion"] == AI_MODULE.AIAnalyzer.PROMPT_VERSION
+    assert result["schemaVersion"] == AI_MODULE.AIAnalyzer.SCHEMA_VERSION
+
+
+def test_gemini_analyzer_does_not_invent_owner_or_due_date(monkeypatch):
+    response = _FakeResponse(
+        200,
+        {
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [
+                            {
+                                "text": json.dumps(
+                                    {
+                                        "summary": "Tong hop cuoc hop",
+                                        "keywords": ["planning"],
+                                        "technicalTerms": [],
+                                        "painPoints": [],
+                                        "actionItems": [{"task": "Cap nhat backlog"}],
+                                        "domainMode": "business",
+                                    }
+                                )
+                            }
+                        ]
+                    }
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        AI_MODULE.httpx, "Client", lambda timeout: _FakeClient(response)
+    )
+
+    analyzer = GeminiAnalyzer(api_key="test-gemini-key", analysis_domain_mode="business")
+    result = analyzer.analyze_meeting("Speaker 1: cap nhat backlog")
+
+    assert result["actionItems"] == ["Cap nhat backlog"]
+    assert result["businessActionItems"][0]["owner"] is None
+    assert result["businessActionItems"][0]["dueDate"] is None
 
 
 def test_gemini_analyzer_rejects_invalid_json(monkeypatch):

@@ -308,6 +308,8 @@ class ProcessingServiceTest {
                                 eq("it"),
                                 eq("realtime"),
                                 anyString(),
+                                anyString(),
+                                anyString(),
                                 eq("trace-700"),
                                 eq(AUTH_HEADER)
                 );
@@ -350,6 +352,8 @@ class ProcessingServiceTest {
                 eq("it"),
                 eq("realtime"),
                 anyString(),
+                anyString(),
+                anyString(),
                 eq("trace-608"),
                 eq(AUTH_HEADER)
         )).thenReturn(Map.of("status", "completed"));
@@ -362,6 +366,8 @@ class ProcessingServiceTest {
                 anyString(),
                 eq("it"),
                 eq("realtime"),
+                anyString(),
+                anyString(),
                 anyString(),
                 eq("trace-608"),
                 eq(AUTH_HEADER)
@@ -391,6 +397,8 @@ class ProcessingServiceTest {
                 anyString(),
                 eq("it"),
                 eq("realtime"),
+                anyString(),
+                anyString(),
                 anyString(),
                 eq("trace-609"),
                 eq(AUTH_HEADER)
@@ -426,6 +434,8 @@ class ProcessingServiceTest {
                 anyString(),
                 eq("it"),
                 eq("realtime"),
+                anyString(),
+                anyString(),
                 anyString(),
                 eq("trace-609"),
                 eq(AUTH_HEADER)
@@ -464,6 +474,8 @@ class ProcessingServiceTest {
                 eq("it"),
                 eq("realtime"),
                 anyString(),
+                anyString(),
+                anyString(),
                 eq("trace-611"),
                 eq(AUTH_HEADER)
         );
@@ -485,6 +497,8 @@ class ProcessingServiceTest {
                 anyString(),
                 eq("it"),
                 eq("realtime"),
+                anyString(),
+                anyString(),
                 anyString(),
                 eq("trace-612"),
                 eq(AUTH_HEADER)
@@ -533,6 +547,8 @@ class ProcessingServiceTest {
                 eq("it"),
                 eq("realtime"),
                 anyString(),
+                anyString(),
+                anyString(),
                 eq("trace-613"),
                 eq(AUTH_HEADER)
         )).thenReturn(Map.of(
@@ -579,6 +595,8 @@ class ProcessingServiceTest {
                 anyString(),
                 eq("it"),
                 eq("realtime"),
+                anyString(),
+                anyString(),
                 anyString(),
                 eq("trace-610"),
                 eq(AUTH_HEADER)

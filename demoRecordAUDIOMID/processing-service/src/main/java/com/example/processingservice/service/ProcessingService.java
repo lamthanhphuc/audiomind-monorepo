@@ -21,6 +21,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.HttpStatusCodeException;
@@ -50,6 +51,10 @@ public class ProcessingService {
     private final MeetingServiceClient meetingServiceClient;
     private final JobStateStore jobStateStore;
     private final MeterRegistry meterRegistry;
+    @Value("${processing.analysis.prompt-version:gemini-business-v1}")
+    private String analysisPromptVersion;
+    @Value("${processing.analysis.schema-version:gemini-business-v1}")
+    private String analysisSchemaVersion;
 
     private final AtomicInteger runningGauge = new AtomicInteger(0);
     private final Set<Long> activeJobs = Collections.newSetFromMap(new ConcurrentHashMap<>());
@@ -711,9 +716,12 @@ public class ProcessingService {
         }
 
         String transcriptHash = computeTranscriptHash(transcriptText);
+        String promptVersion = resolvePromptVersion(null);
+        String schemaVersion = resolveSchemaVersion(null);
+        String analysisCacheKey = buildAnalysisCacheKey(transcriptHash, promptVersion, schemaVersion);
         JobStateStore.AnalysisTriggerDecision decision = jobStateStore.tryStartAnalysis(
                 meetingId,
-                transcriptHash,
+                analysisCacheKey,
                 source,
                 "processing_service_lazy_poll"
         );
@@ -739,6 +747,7 @@ public class ProcessingService {
                     meetingId,
                     finalTranscriptText,
                     transcriptHash,
+                    analysisCacheKey,
                     traceId,
                     authorization,
                     source,
@@ -750,7 +759,7 @@ public class ProcessingService {
             String errorCode = mapAnalysisFailureCode(ex);
             jobStateStore.markAnalysisFailed(
                     meetingId,
-                    transcriptHash,
+                    analysisCacheKey,
                     source,
                     "processing_service_lazy_poll",
                     decision.lockToken(),
@@ -771,20 +780,32 @@ public class ProcessingService {
             Long meetingId,
             String transcriptText,
             String transcriptHash,
+            String analysisCacheKey,
             String traceId,
             String authorization,
             String source,
             String lockToken
     ) {
         try {
+            String promptVersion = resolvePromptVersion(null);
+            String schemaVersion = resolveSchemaVersion(null);
             Map<String, Object> response = aiServiceClient.analyzeRealtimeTranscript(
                     meetingId,
                     transcriptText,
                     "it",
                     "realtime",
                     transcriptHash,
+                    promptVersion,
+                    schemaVersion,
                     traceId,
                     authorization
+            );
+            String responsePromptVersion = resolvePromptVersion(response);
+            String responseSchemaVersion = resolveSchemaVersion(response);
+            String responseCacheKey = buildAnalysisCacheKey(
+                    transcriptHash,
+                    responsePromptVersion,
+                    responseSchemaVersion
             );
             String status = normalizeStatus(response == null ? null : response.get("status"));
             String reason = normalizeRealtimeSkipReason(response);
@@ -793,7 +814,7 @@ public class ProcessingService {
                 String errorCode = mapRealtimeFailureCode(response);
                 jobStateStore.markAnalysisFailed(
                         meetingId,
-                        transcriptHash,
+                        responseCacheKey,
                         source,
                         "processing_service_lazy_poll",
                         lockToken,
@@ -813,7 +834,7 @@ public class ProcessingService {
             if ("COMPLETED".equals(status)) {
                 jobStateStore.markAnalysisCompleted(
                         meetingId,
-                        transcriptHash,
+                        responseCacheKey,
                         source,
                         "processing_service_lazy_poll",
                         lockToken
@@ -826,7 +847,7 @@ public class ProcessingService {
                 if ("already_exists".equals(reason) && hasPersistedAnalysisResult(meetingId, traceId)) {
                     jobStateStore.markAnalysisCompleted(
                             meetingId,
-                            transcriptHash,
+                            responseCacheKey,
                             source,
                             "processing_service_lazy_poll",
                             lockToken
@@ -841,7 +862,7 @@ public class ProcessingService {
 
                 jobStateStore.markAnalysisSkipped(
                         meetingId,
-                        transcriptHash,
+                        responseCacheKey,
                         source,
                         "processing_service_lazy_poll",
                         lockToken,
@@ -860,7 +881,7 @@ public class ProcessingService {
 
             jobStateStore.markAnalysisSkipped(
                     meetingId,
-                    transcriptHash,
+                    responseCacheKey,
                     source,
                     "processing_service_lazy_poll",
                     lockToken,
@@ -878,7 +899,7 @@ public class ProcessingService {
             String errorCode = mapAnalysisFailureCode(ex);
             jobStateStore.markAnalysisFailed(
                     meetingId,
-                    transcriptHash,
+                    analysisCacheKey,
                     source,
                     "processing_service_lazy_poll",
                     lockToken,
@@ -896,7 +917,7 @@ public class ProcessingService {
             String errorCode = mapAnalysisFailureCode(ex);
             jobStateStore.markAnalysisFailed(
                     meetingId,
-                    transcriptHash,
+                    analysisCacheKey,
                     source,
                     "processing_service_lazy_poll",
                     lockToken,
@@ -939,6 +960,43 @@ public class ProcessingService {
         } catch (NoSuchAlgorithmException ex) {
             return Integer.toHexString(transcriptText.hashCode());
         }
+    }
+
+    private String resolvePromptVersion(Map<String, Object> response) {
+        if (response != null) {
+            Object value = response.get("promptVersion");
+            if (value != null && !String.valueOf(value).trim().isBlank()) {
+                return String.valueOf(value).trim();
+            }
+            Object snake = response.get("prompt_version");
+            if (snake != null && !String.valueOf(snake).trim().isBlank()) {
+                return String.valueOf(snake).trim();
+            }
+        }
+        String fallback = analysisPromptVersion == null ? "" : analysisPromptVersion.trim();
+        return fallback.isBlank() ? "gemini-business-v1" : fallback;
+    }
+
+    private String resolveSchemaVersion(Map<String, Object> response) {
+        if (response != null) {
+            Object value = response.get("schemaVersion");
+            if (value != null && !String.valueOf(value).trim().isBlank()) {
+                return String.valueOf(value).trim();
+            }
+            Object snake = response.get("schema_version");
+            if (snake != null && !String.valueOf(snake).trim().isBlank()) {
+                return String.valueOf(snake).trim();
+            }
+        }
+        String fallback = analysisSchemaVersion == null ? "" : analysisSchemaVersion.trim();
+        return fallback.isBlank() ? "gemini-business-v1" : fallback;
+    }
+
+    private String buildAnalysisCacheKey(String transcriptHash, String promptVersion, String schemaVersion) {
+        String normalizedHash = transcriptHash == null ? "" : transcriptHash.trim().toLowerCase(Locale.ROOT);
+        String normalizedPromptVersion = promptVersion == null ? "" : promptVersion.trim().toLowerCase(Locale.ROOT);
+        String normalizedSchemaVersion = schemaVersion == null ? "" : schemaVersion.trim().toLowerCase(Locale.ROOT);
+        return normalizedHash + "|" + normalizedPromptVersion + "|" + normalizedSchemaVersion;
     }
 
     private void logRealtimeAnalysisSkipThrottled(Long meetingId, String source, String reason) {
@@ -1021,6 +1079,11 @@ public class ProcessingService {
                 || (payload.get("technicalTerms") instanceof List<?> technicalTerms && !technicalTerms.isEmpty())
                 || (payload.get("painPoints") instanceof List<?> painPoints && !painPoints.isEmpty())
                 || (payload.get("actionItems") instanceof List<?> actionItems && !actionItems.isEmpty())
+                || (payload.get("businessActionItems") instanceof List<?> businessActionItems && !businessActionItems.isEmpty())
+                || (payload.get("keyDecisions") instanceof List<?> keyDecisions && !keyDecisions.isEmpty())
+                || (payload.get("risks") instanceof List<?> risks && !risks.isEmpty())
+                || (payload.get("blockers") instanceof List<?> blockers && !blockers.isEmpty())
+                || (payload.get("nextSteps") instanceof List<?> nextSteps && !nextSteps.isEmpty())
                 || (payload.get("technical_terms") instanceof List<?> technicalTermsSnake && !technicalTermsSnake.isEmpty())
                 || (payload.get("action_items") instanceof List<?> actionItemsSnake && !actionItemsSnake.isEmpty());
     }

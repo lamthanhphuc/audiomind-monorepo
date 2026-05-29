@@ -185,3 +185,23 @@
 .analysis-action-list li::marker {
   color: var(--color-brand-500);
 }
+
+.analysis-action-item__task {
+  color: var(--color-ink);
+  font-weight: 600;
+}
+
+.analysis-action-item__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: 4px;
+  color: var(--color-ink-subtle);
+  font-size: var(--text-xs);
+}
+
+.analysis-action-item__evidence {
+  margin-top: 4px;
+  color: var(--color-ink-muted);
+  font-size: var(--text-xs);
+}

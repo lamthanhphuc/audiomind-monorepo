@@ -70,6 +70,29 @@ export const AnalysisPanel = ({
   const technicalTerms = analysis.technicalTerms ?? []
   const painPoints = analysis.painPoints ?? []
   const actionItems = analysis.actionItems ?? []
+  const businessActionItems = analysis.businessActionItems ?? []
+  const decisions = analysis.keyDecisions ?? analysis.decisions ?? []
+  const risks = analysis.risks ?? []
+  const blockers = analysis.blockers ?? []
+  const nextSteps = analysis.nextSteps ?? []
+  const hasImpact = Boolean(
+    analysis.businessImpact?.trim() || analysis.customerImpact?.trim() || analysis.technicalImpact?.trim(),
+  )
+  const normalizedConfidence = typeof analysis.confidence === 'number'
+    ? Math.max(0, Math.min(1, analysis.confidence > 1 && analysis.confidence <= 100 ? analysis.confidence / 100 : analysis.confidence))
+    : undefined
+  const actionItemDetails = businessActionItems.length > 0
+    ? businessActionItems
+    : actionItems.map((task) => ({
+      task,
+      owner: undefined,
+      dueDate: undefined,
+      deadline: undefined,
+      priority: undefined,
+      status: undefined,
+      evidence: undefined,
+    }))
+  const summaryText = analysis.meetingSummary || analysis.summary
 
   return (
     <section className="analysis-panel" data-testid={testId}>
@@ -78,13 +101,21 @@ export const AnalysisPanel = ({
         <span className="analysis-panel__domain">{analysis.domainMode ?? 'it'}</span>
       </header>
 
-      <AnalysisSection title="Tóm tắt" isEmpty={!analysis.summary}>
+      <AnalysisSection title="Tóm tắt" isEmpty={!summaryText}>
         <p
           className="analysis-panel__summary"
           data-testid={summaryTestId ?? (testId ? `${testId}-summary` : undefined)}
         >
-          {analysis.summary || summaryFallback}
+          {summaryText || summaryFallback}
         </p>
+      </AnalysisSection>
+
+      <AnalysisSection title="Quyết định chính" isEmpty={decisions.length === 0} emptyMessage="Không có quyết định chính">
+        <ul className="analysis-action-list">
+          {decisions.map((item) => (
+            <li key={item}>{item}</li>
+          ))}
+        </ul>
       </AnalysisSection>
 
       <AnalysisSection title="Từ khóa" isEmpty={keywords.length === 0} emptyMessage="Không có từ khóa">
@@ -107,12 +138,63 @@ export const AnalysisPanel = ({
         ))}
       </AnalysisSection>
 
-      <AnalysisSection title="Đầu việc" isEmpty={actionItems.length === 0} emptyMessage="Không có đầu việc">
+      <AnalysisSection title="Đầu việc" isEmpty={actionItemDetails.length === 0} emptyMessage="Không có đầu việc">
         <ul className="analysis-action-list">
-          {actionItems.map((item) => (
+          {actionItemDetails.map((item) => (
+            <li key={`${item.task}-${item.owner ?? 'none'}-${item.dueDate ?? item.deadline ?? 'none'}`}>
+              <div className="analysis-action-item__task">{item.task}</div>
+              {(item.owner || item.dueDate || item.deadline || item.priority || item.status) && (
+                <div className="analysis-action-item__meta">
+                  {item.owner && <span>Owner: {item.owner}</span>}
+                  {(item.dueDate || item.deadline) && <span>Due: {item.dueDate ?? item.deadline}</span>}
+                  {item.priority && <span>Priority: {item.priority}</span>}
+                  {item.status && <span>Status: {item.status}</span>}
+                </div>
+              )}
+              {item.evidence && <div className="analysis-action-item__evidence">Evidence: {item.evidence}</div>}
+            </li>
+          ))}
+        </ul>
+      </AnalysisSection>
+
+      <AnalysisSection title="Rủi ro" isEmpty={risks.length === 0} emptyMessage="Không có rủi ro">
+        <ul className="analysis-action-list">
+          {risks.map((item) => (
             <li key={item}>{item}</li>
           ))}
         </ul>
+      </AnalysisSection>
+
+      <AnalysisSection title="Blockers" isEmpty={blockers.length === 0} emptyMessage="Không có blockers">
+        <ul className="analysis-action-list">
+          {blockers.map((item) => (
+            <li key={item}>{item}</li>
+          ))}
+        </ul>
+      </AnalysisSection>
+
+      <AnalysisSection title="Bước tiếp theo" isEmpty={nextSteps.length === 0} emptyMessage="Không có bước tiếp theo">
+        <ul className="analysis-action-list">
+          {nextSteps.map((item) => (
+            <li key={item}>{item}</li>
+          ))}
+        </ul>
+      </AnalysisSection>
+
+      <AnalysisSection title="Tác động" isEmpty={!hasImpact} emptyMessage="Không có thông tin tác động">
+        {analysis.businessImpact && <p className="analysis-panel__summary"><strong>Business:</strong> {analysis.businessImpact}</p>}
+        {analysis.customerImpact && <p className="analysis-panel__summary"><strong>Customer:</strong> {analysis.customerImpact}</p>}
+        {analysis.technicalImpact && <p className="analysis-panel__summary"><strong>Technical:</strong> {analysis.technicalImpact}</p>}
+      </AnalysisSection>
+
+      <AnalysisSection
+        title="Độ tin cậy"
+        isEmpty={normalizedConfidence === undefined}
+        emptyMessage="Không có độ tin cậy"
+      >
+        {normalizedConfidence !== undefined && (
+          <p className="analysis-panel__summary">{Math.round(normalizedConfidence * 100)}%</p>
+        )}
       </AnalysisSection>
     </section>
   )

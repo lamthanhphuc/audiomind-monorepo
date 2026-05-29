@@ -30,19 +30,30 @@ describe('AnalysisPanel', () => {
     renderPanel({
       analysis: {
         summary: 'Tong hop',
+        meetingSummary: 'Tong hop',
         keywords: ['api'],
         technicalTerms: [{ term: 'API', meaning: 'Giao dien', category: 'protocol' }],
         painPoints: [{ title: 'Do tre', evidence: 'API cham', severity: 'high' }],
         actionItems: ['Toi uu cache'],
+        businessActionItems: [{ task: 'Toi uu cache', owner: 'Lan', dueDate: '2026-06-01', priority: 'high', status: 'open', evidence: 'Speaker 1: Lan chiu trach nhiem' }],
+        keyDecisions: ['Uu tien cache'],
+        risks: ['Co the tre release'],
+        blockers: ['Cho access production'],
+        nextSteps: ['Deploy sau khi smoke test'],
+        confidence: 0.72,
         domainMode: 'it',
       },
       status: 'ready',
     })
 
     expect(container.textContent).toContain('Tong hop')
+    expect(container.textContent).toContain('Uu tien cache')
     expect(container.textContent).toContain('API')
     expect(container.textContent).toContain('Do tre')
     expect(container.textContent).toContain('Toi uu cache')
+    expect(container.textContent).toContain('Owner: Lan')
+    expect(container.textContent).toContain('Due: 2026-06-01')
+    expect(container.textContent).toContain('72%')
   })
 
   it('renders loading state', () => {
@@ -85,11 +96,72 @@ describe('AnalysisPanel', () => {
         technicalTerms: [],
         painPoints: [],
         actionItems: [],
+        businessActionItems: [],
         domainMode: 'it',
       },
       summaryTestId: 'e2e-summary',
     })
 
     expect(container.querySelector('[data-testid="e2e-summary"]')?.textContent).toContain('Summary line')
+  })
+
+  it('renders legacy record without business fields', () => {
+    renderPanel({
+      analysis: {
+        summary: 'Legacy summary',
+        keywords: ['legacy'],
+        technicalTerms: [],
+        painPoints: [],
+        actionItems: ['Legacy task'],
+        domainMode: 'it',
+      },
+      status: 'ready',
+    })
+
+    expect(container.textContent).toContain('Legacy summary')
+    expect(container.textContent).toContain('Legacy task')
+  })
+
+  it('does not crash when owner and due date are missing', () => {
+    renderPanel({
+      analysis: {
+        summary: 'Business summary',
+        keywords: [],
+        technicalTerms: [],
+        painPoints: [],
+        actionItems: ['Cap nhat ke hoach'],
+        businessActionItems: [{ task: 'Cap nhat ke hoach' }],
+        domainMode: 'business',
+      },
+      status: 'ready',
+    })
+
+    expect(container.textContent).toContain('Cap nhat ke hoach')
+    expect(container.textContent).not.toContain('Owner:')
+    expect(container.textContent).not.toContain('Due:')
+  })
+
+  it('renders empty business arrays gracefully', () => {
+    renderPanel({
+      analysis: {
+        summary: 'Summary',
+        keywords: [],
+        technicalTerms: [],
+        painPoints: [],
+        actionItems: [],
+        businessActionItems: [],
+        keyDecisions: [],
+        risks: [],
+        blockers: [],
+        nextSteps: [],
+        domainMode: 'business',
+      },
+      status: 'ready',
+    })
+
+    expect(container.textContent).toContain('Không có quyết định chính')
+    expect(container.textContent).toContain('Không có rủi ro')
+    expect(container.textContent).toContain('Không có blockers')
+    expect(container.textContent).toContain('Không có bước tiếp theo')
   })
 })

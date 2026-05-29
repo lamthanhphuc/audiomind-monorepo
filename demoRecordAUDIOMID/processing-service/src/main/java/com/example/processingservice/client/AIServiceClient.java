@@ -190,6 +190,31 @@ public class AIServiceClient {
                 domainMode,
                 source,
                 transcriptHash,
+                null,
+                null,
+                traceId,
+                null
+        );
+    }
+
+    public Map<String, Object> analyzeRealtimeTranscript(
+            Long meetingId,
+            String transcript,
+            String domainMode,
+            String source,
+            String transcriptHash,
+            String promptVersion,
+            String schemaVersion,
+            String traceId
+    ) {
+        return analyzeRealtimeTranscript(
+                meetingId,
+                transcript,
+                domainMode,
+                source,
+                transcriptHash,
+                promptVersion,
+                schemaVersion,
                 traceId,
                 null
         );
@@ -208,6 +233,37 @@ public class AIServiceClient {
             String domainMode,
             String source,
             String transcriptHash,
+            String traceId,
+            String authorization
+    ) {
+        return analyzeRealtimeTranscript(
+                meetingId,
+                transcript,
+                domainMode,
+                source,
+                transcriptHash,
+                null,
+                null,
+                traceId,
+                authorization
+        );
+    }
+
+    @Retry(name = "ai-service")
+    @CircuitBreaker(name = "ai-service")
+    @Retryable(
+        retryFor = { RestClientException.class, IllegalStateException.class },
+        maxAttempts = 3,
+        backoff = @Backoff(delay = 1000, multiplier = 2.0)
+    )
+    public Map<String, Object> analyzeRealtimeTranscript(
+            Long meetingId,
+            String transcript,
+            String domainMode,
+            String source,
+            String transcriptHash,
+            String promptVersion,
+            String schemaVersion,
             String traceId,
             String authorization
     ) {
@@ -232,6 +288,12 @@ public class AIServiceClient {
         }
         if (StringUtils.hasText(transcriptHash)) {
             request.put("transcript_hash", transcriptHash);
+        }
+        if (StringUtils.hasText(promptVersion)) {
+            request.put("prompt_version", promptVersion);
+        }
+        if (StringUtils.hasText(schemaVersion)) {
+            request.put("schema_version", schemaVersion);
         }
 
         ResponseEntity<Map<String, Object>> response = executeAiServiceCall(

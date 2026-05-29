@@ -1,4 +1,5 @@
 import json
+import hashlib
 import re
 import time
 from datetime import datetime
@@ -914,11 +915,61 @@ class ProcessingPipeline:
                     technical_terms=clean_technical_terms,
                     keywords=clean_keywords,
                 )
+            transcript_hash = (
+                hashlib.sha256(transcript_text.encode("utf-8")).hexdigest()
+                if transcript_text.strip()
+                else None
+            )
+            prompt_version = str(
+                clean_analysis.get("promptVersion")
+                or getattr(self.ai_analyzer, "PROMPT_VERSION", "")
+                or ""
+            ).strip()
+            schema_version = str(
+                clean_analysis.get("schemaVersion")
+                or getattr(self.ai_analyzer, "SCHEMA_VERSION", "")
+                or ""
+            ).strip()
+            technical_terms_payload: object = clean_technical_terms
+            if isinstance(clean_analysis, dict):
+                technical_terms_payload = {
+                    "technical_terms": clean_technical_terms,
+                    "technicalTerms": clean_analysis.get("technicalTerms", []),
+                    "painPoints": clean_analysis.get("painPoints", []),
+                    "meetingSummary": str(
+                        clean_analysis.get("meetingSummary")
+                        or clean_analysis.get("summary")
+                        or ""
+                    ).strip(),
+                    "keyDecisions": clean_analysis.get("keyDecisions", []),
+                    "risks": clean_analysis.get("risks", []),
+                    "blockers": clean_analysis.get("blockers", []),
+                    "questions": clean_analysis.get("questions", []),
+                    "deadlines": clean_analysis.get("deadlines", []),
+                    "owners": clean_analysis.get("owners", []),
+                    "nextSteps": clean_analysis.get("nextSteps", []),
+                    "businessImpact": str(clean_analysis.get("businessImpact") or ""),
+                    "customerImpact": str(clean_analysis.get("customerImpact") or ""),
+                    "technicalImpact": str(clean_analysis.get("technicalImpact") or ""),
+                    "confidence": clean_analysis.get("confidence"),
+                    "domainMode": str(
+                        clean_analysis.get("domainMode")
+                        or clean_analysis.get("domain_mode")
+                        or "it"
+                    ),
+                    "transcript_hash": str(
+                        clean_analysis.get("transcriptHash") or transcript_hash or ""
+                    ).strip()
+                    or None,
+                    "promptVersion": prompt_version or None,
+                    "schemaVersion": schema_version or None,
+                    "source": str(clean_analysis.get("source") or "batch"),
+                }
             analysis = Analysis(
                 meeting_id=meeting_id,
                 summary=str(clean_analysis.get("summary", "")),
                 keywords=clean_keywords,
-                technical_terms=clean_technical_terms,
+                technical_terms=technical_terms_payload,
                 action_items=clean_analysis.get("action_items", []),
                 glossary_domain=(glossary_context or {}).get("domain"),
                 glossary_version_id=(glossary_context or {}).get("version_id"),

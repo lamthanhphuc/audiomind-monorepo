@@ -80,22 +80,70 @@ def test_normalize_gemini_structured_analysis_handles_defaults_and_legacy_aliase
         "painPoints": [
             {"title": "Do tre", "evidence": "phuc hoi cham", "severity": "urgent"}
         ],
-        "actionItems": ["Toi uu cache"],
-        "domainMode": "it",
+        "actionItems": [
+            {
+                "task": "Toi uu cache",
+                "priority": "high",
+                "status": "open",
+                "evidence": "Speaker 2: can toi uu cache",
+            }
+        ],
+        "keyDecisions": ["Uu tien cache truoc"],
+        "risks": ["Do tre cao gio cao diem"],
+        "blockers": ["Chua co monitoring day du"],
+        "questions": ["Can bo sung autoscaling khong"],
+        "nextSteps": ["Cap nhat cau hinh cache"],
+        "businessImpact": "Giam thoi gian cho cua khach hang",
+        "customerImpact": "Trai nghiem on dinh hon",
+        "technicalImpact": "Giam tai backend",
+        "confidence": 0.62,
+        "promptVersion": "gemini-business-v1",
+        "schemaVersion": "gemini-business-v1",
+        "domainMode": "business",
         "topics": ["van de hien thi"],
     }
 
     result = analyzer._normalize_gemini_structured_analysis(transcript, payload)
 
     assert result["summary"] == "Tong hop san pham"
-    assert result["domainMode"] == "it"
+    assert result["domainMode"] == "business"
+    assert result["meetingSummary"] == "Tong hop san pham"
     assert result["keywords"] == []
     assert result["technicalTerms"][0]["term"] == "API"
     assert result["painPoints"][0]["severity"] == "medium"
     assert result["actionItems"] == ["Toi uu cache"]
+    assert result["businessActionItems"][0]["priority"] == "high"
+    assert result["businessActionItems"][0]["status"] == "open"
     assert result["key_points"] == []
-    assert result["risks_blockers"] == ["Do tre"]
+    assert result["keyDecisions"] == ["Uu tien cache truoc"]
+    assert result["risks"] == ["Do tre cao gio cao diem"]
+    assert result["blockers"] == ["Chua co monitoring day du"]
+    assert result["risks_blockers"] == [
+        "Do tre cao gio cao diem",
+        "Chua co monitoring day du",
+        "Do tre",
+    ]
+    assert result["businessImpact"] == "Giam thoi gian cho cua khach hang"
+    assert result["confidence"] == 0.62
+    assert result["promptVersion"] == "gemini-business-v1"
+    assert result["schemaVersion"] == "gemini-business-v1"
     assert result["topics"] == ["van de hien thi"]
+
+
+def test_normalize_gemini_structured_analysis_does_not_invent_owner_or_due_date():
+    analyzer = AIAnalyzer(api_key="", provider="gemini")
+    payload = {
+        "summary": "Ban ve backlog sprint",
+        "actionItems": [{"task": "Cap nhat backlog"}],
+        "domainMode": "business",
+    }
+
+    result = analyzer._normalize_gemini_structured_analysis("transcript", payload)
+    item = result["businessActionItems"][0]
+    assert item["task"] == "Cap nhat backlog"
+    assert item["owner"] is None
+    assert item["dueDate"] is None
+    assert item["deadline"] is None
 
 
 def test_default_structured_analysis_uses_concise_fallback_summary():
