@@ -1270,7 +1270,12 @@ def _coerce_action_items(values: Any) -> list[dict[str, Any]]:
                 continue
             owner = str(item.get("owner") or "").strip() or None
             due_date = (
-                str(item.get("dueDate") or item.get("due_date") or item.get("deadline") or "").strip()
+                str(
+                    item.get("dueDate")
+                    or item.get("due_date")
+                    or item.get("deadline")
+                    or ""
+                ).strip()
                 or None
             )
             priority = str(item.get("priority") or "").strip() or None
@@ -1377,7 +1382,9 @@ def _normalize_analysis_payload(raw_analysis: dict[str, Any]) -> dict[str, Any]:
         )
     confidence_raw = raw_analysis.get("confidence")
     confidence: float | None = None
-    if isinstance(confidence_raw, (int, float)) and not isinstance(confidence_raw, bool):
+    if isinstance(confidence_raw, (int, float)) and not isinstance(
+        confidence_raw, bool
+    ):
         confidence = float(confidence_raw)
     elif isinstance(confidence_raw, str):
         trimmed = confidence_raw.strip().replace("%", "")
@@ -1493,11 +1500,15 @@ def _analysis_identity_from_row(analysis_row: Analysis | None) -> tuple[str, str
 
     technical_terms_value = getattr(analysis_row, "technical_terms", None)
     if isinstance(technical_terms_value, dict):
-        transcript_hash = str(
-            technical_terms_value.get("transcript_hash")
-            or technical_terms_value.get("transcriptHash")
-            or ""
-        ).strip().lower()
+        transcript_hash = (
+            str(
+                technical_terms_value.get("transcript_hash")
+                or technical_terms_value.get("transcriptHash")
+                or ""
+            )
+            .strip()
+            .lower()
+        )
         prompt_version = str(
             technical_terms_value.get("promptVersion")
             or technical_terms_value.get("prompt_version")
@@ -1518,22 +1529,16 @@ def _is_matching_completed_analysis(
     prompt_version: str,
     schema_version: str,
 ) -> bool:
-    stored_hash, stored_prompt_version, stored_schema_version = _analysis_identity_from_row(
-        analysis_row
+    stored_hash, stored_prompt_version, stored_schema_version = (
+        _analysis_identity_from_row(analysis_row)
     )
     if not stored_hash:
         return False
     if stored_hash != str(transcript_hash or "").strip().lower():
         return False
-    if (
-        str(stored_prompt_version or "").strip()
-        != str(prompt_version or "").strip()
-    ):
+    if str(stored_prompt_version or "").strip() != str(prompt_version or "").strip():
         return False
-    if (
-        str(stored_schema_version or "").strip()
-        != str(schema_version or "").strip()
-    ):
+    if str(stored_schema_version or "").strip() != str(schema_version or "").strip():
         return False
     return True
 

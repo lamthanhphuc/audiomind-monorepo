@@ -343,7 +343,9 @@ def test_gemini_analyzer_does_not_invent_owner_or_due_date(monkeypatch):
         AI_MODULE.httpx, "Client", lambda timeout: _FakeClient(response)
     )
 
-    analyzer = GeminiAnalyzer(api_key="test-gemini-key", analysis_domain_mode="business")
+    analyzer = GeminiAnalyzer(
+        api_key="test-gemini-key", analysis_domain_mode="business"
+    )
     result = analyzer.analyze_meeting("Speaker 1: cap nhat backlog")
 
     assert result["actionItems"] == ["Cap nhat backlog"]

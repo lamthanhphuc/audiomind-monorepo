@@ -442,7 +442,9 @@ class AIAnalyzer:
 
         return items
 
-    def _normalize_optional_text(self, value: Any, max_chars: int = 240) -> Optional[str]:
+    def _normalize_optional_text(
+        self, value: Any, max_chars: int = 240
+    ) -> Optional[str]:
         text = str(value or "").strip()
         if not text:
             return None
@@ -778,7 +780,9 @@ TEXT:
             or payload.get("nextSteps")
             or []
         )
-        action_items = [str(item.get("task") or "").strip() for item in business_action_items]
+        action_items = [
+            str(item.get("task") or "").strip() for item in business_action_items
+        ]
         action_items = [item for item in action_items if item]
         domain_mode = self._normalize_domain_mode(
             payload.get("domainMode")
@@ -807,7 +811,11 @@ TEXT:
 
         if not owners:
             owners = self._coerce_string_list(
-                [item.get("owner") for item in business_action_items if item.get("owner")]
+                [
+                    item.get("owner")
+                    for item in business_action_items
+                    if item.get("owner")
+                ]
             )
         if not deadlines:
             deadlines = self._coerce_string_list(
@@ -818,29 +826,39 @@ TEXT:
                 ]
             )
 
-        business_impact = self._normalize_optional_text(payload.get("businessImpact")) or ""
-        customer_impact = self._normalize_optional_text(payload.get("customerImpact")) or ""
-        technical_impact = self._normalize_optional_text(payload.get("technicalImpact")) or ""
+        business_impact = (
+            self._normalize_optional_text(payload.get("businessImpact")) or ""
+        )
+        customer_impact = (
+            self._normalize_optional_text(payload.get("customerImpact")) or ""
+        )
+        technical_impact = (
+            self._normalize_optional_text(payload.get("technicalImpact")) or ""
+        )
         confidence = self._normalize_confidence(payload.get("confidence"))
         prompt_version = (
-            str(payload.get("promptVersion") or payload.get("prompt_version") or "").strip()
+            str(
+                payload.get("promptVersion") or payload.get("prompt_version") or ""
+            ).strip()
             or self.PROMPT_VERSION
         )
         schema_version = (
-            str(payload.get("schemaVersion") or payload.get("schema_version") or "").strip()
+            str(
+                payload.get("schemaVersion") or payload.get("schema_version") or ""
+            ).strip()
             or self.SCHEMA_VERSION
         )
         transcript_hash = (
-            str(payload.get("transcriptHash") or payload.get("transcript_hash") or "").strip()
+            str(
+                payload.get("transcriptHash") or payload.get("transcript_hash") or ""
+            ).strip()
             or None
         )
 
         term_keys = {item["term"].lower() for item in technical_terms}
         keywords = [item for item in keywords if item.lower() not in term_keys]
         risks_blockers = self._coerce_string_list(
-            risks
-            + blockers
-            + [item["title"] for item in pain_points]
+            risks + blockers + [item["title"] for item in pain_points]
         )
 
         return {
@@ -1495,17 +1513,11 @@ NỘI DUNG:
         )
         metadata_text = self._metadata_to_prompt_lines(metadata)
         if domain_mode == "it":
-            it_guidance = (
-                "Nếu domainMode=it, ưu tiên thuật ngữ công nghệ, API, framework, giao thức, chuẩn, hệ thống, bảo mật và từ viết tắt kỹ thuật."
-            )
+            it_guidance = "Nếu domainMode=it, ưu tiên thuật ngữ công nghệ, API, framework, giao thức, chuẩn, hệ thống, bảo mật và từ viết tắt kỹ thuật."
         elif domain_mode == "business":
-            it_guidance = (
-                "Nếu domainMode=business, ưu tiên quyết định, rủi ro, blocker, owner, deadline, tác động kinh doanh và bước tiếp theo có thể thực thi."
-            )
+            it_guidance = "Nếu domainMode=business, ưu tiên quyết định, rủi ro, blocker, owner, deadline, tác động kinh doanh và bước tiếp theo có thể thực thi."
         else:
-            it_guidance = (
-                "Chỉ suy luận trong phạm vi domainMode đã nêu và không thêm chi tiết ngoài transcript."
-            )
+            it_guidance = "Chỉ suy luận trong phạm vi domainMode đã nêu và không thêm chi tiết ngoài transcript."
         json_prompt = self._build_gemini_analysis_json_prompt(
             transcript=prompt,
             metadata_text=metadata_text,
@@ -1833,12 +1845,10 @@ NỘI DUNG:
                 "technicalImpact": str(data.get("technicalImpact") or "").strip(),
                 "confidence": self._normalize_confidence(data.get("confidence")),
                 "promptVersion": (
-                    str(data.get("promptVersion") or "").strip()
-                    or self.PROMPT_VERSION
+                    str(data.get("promptVersion") or "").strip() or self.PROMPT_VERSION
                 ),
                 "schemaVersion": (
-                    str(data.get("schemaVersion") or "").strip()
-                    or self.SCHEMA_VERSION
+                    str(data.get("schemaVersion") or "").strip() or self.SCHEMA_VERSION
                 ),
                 "transcriptHash": (
                     str(data.get("transcriptHash") or "").strip() or None

@@ -500,9 +500,7 @@ def test_try_begin_does_not_refresh_redis_lock_when_local_in_progress_is_fresh(
     main_module._realtime_analysis_in_progress[meeting_id] = (cache_key, now)
 
     allowed, skip_reason, _, retry_after, lock_token = (
-        main_module._try_begin_realtime_analysis(
-            meeting_id, cache_key, "realtime"
-        )
+        main_module._try_begin_realtime_analysis(meeting_id, cache_key, "realtime")
     )
 
     assert not allowed
