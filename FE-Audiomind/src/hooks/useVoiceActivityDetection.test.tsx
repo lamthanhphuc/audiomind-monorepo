@@ -12,7 +12,7 @@ describe('useVoiceActivityDetection', () => {
   let container: HTMLDivElement
   let root: ReturnType<typeof createRoot>
   let latest: UseVoiceActivityDetectionResult | null = null
-  let rms = 0.03
+  let rms: number | null = 0.03
   let enabled = true
 
   const renderHarness = () => {
@@ -109,6 +109,14 @@ describe('useVoiceActivityDetection', () => {
     await moveToPausedState()
     enabled = false
     renderHarness()
+
+    expect(latest?.state).toBe('listening')
+  })
+
+  it('does not auto-pause when RMS samples are unavailable', async () => {
+    rms = null
+
+    await advance(2500)
 
     expect(latest?.state).toBe('listening')
   })

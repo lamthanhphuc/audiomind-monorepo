@@ -24,9 +24,9 @@ export const DEFAULT_VAD_RESUME_DURATION_MS = 300
 export const DEFAULT_VAD_SAMPLE_INTERVAL_MS = 100
 export const DEFAULT_VAD_RESUMED_LABEL_MS = 900
 
-const normalizeRms = (value: number | null | undefined): number => {
+const normalizeRms = (value: number | null | undefined): number | null => {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
-    return 0
+    return null
   }
   return Math.max(0, value)
 }
@@ -80,6 +80,14 @@ export const useVoiceActivityDetection = ({
       const rms = normalizeRms(getRmsLevel())
       const now = Date.now()
       const currentState = stateRef.current
+
+      if (rms === null) {
+        // No valid sample available (for example analyser is not ready yet):
+        // keep session state stable and avoid false auto-pause transitions.
+        silenceStartMsRef.current = null
+        speechStartMsRef.current = null
+        return
+      }
 
       if (currentState === 'silent_paused') {
         if (rms >= speechThreshold) {
