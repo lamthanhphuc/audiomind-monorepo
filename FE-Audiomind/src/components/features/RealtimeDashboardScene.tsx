@@ -17,7 +17,15 @@ const REALTIME_SPEAKER_MODE_OPTIONS: Array<{ value: RealtimeSpeakerMode; label: 
   { value: 'multiple', label: 'Multiple speakers' },
 ]
 
-type LiveLifecycleState = 'idle' | 'connecting' | 'recording' | 'stopping' | 'stopped' | 'error'
+type LiveLifecycleState =
+  | 'idle'
+  | 'connecting'
+  | 'recording'
+  | 'silent_paused'
+  | 'listening_resumed'
+  | 'stopping'
+  | 'stopped'
+  | 'error'
 
 type RealtimeConnectionView = {
   title: string
@@ -58,6 +66,40 @@ type RealtimeDashboardSceneProps = {
   showLiveAnalysis: boolean
 }
 
+const resolveRealtimeLifecycleBadge = (
+  liveLifecycleState: LiveLifecycleState,
+  liveAnalysisStatus: 'idle' | 'polling' | 'completed' | 'pending' | 'failed',
+): { label: string; tone: 'listening' | 'paused' | 'resumed' | 'stopped' | 'analyzing' | 'idle' | 'error' } => {
+  if (liveLifecycleState === 'error') {
+    return { label: 'Error', tone: 'error' }
+  }
+
+  if (liveLifecycleState === 'silent_paused') {
+    return { label: 'Paused', tone: 'paused' }
+  }
+
+  if (liveLifecycleState === 'listening_resumed') {
+    return { label: 'Resumed', tone: 'resumed' }
+  }
+
+  if (liveLifecycleState === 'recording') {
+    return { label: 'Listening', tone: 'listening' }
+  }
+
+  if (liveLifecycleState === 'stopped') {
+    if (liveAnalysisStatus === 'polling') {
+      return { label: 'Analyzing', tone: 'analyzing' }
+    }
+    return { label: 'Stopped', tone: 'stopped' }
+  }
+
+  if (liveLifecycleState === 'stopping') {
+    return { label: 'Stopped', tone: 'stopped' }
+  }
+
+  return { label: 'Idle', tone: 'idle' }
+}
+
 export default function RealtimeDashboardScene({
   liveStatusMessage,
   connectionView,
@@ -89,6 +131,12 @@ export default function RealtimeDashboardScene({
   liveAnalysisError,
   showLiveAnalysis,
 }: RealtimeDashboardSceneProps) {
+  const lifecycleBadge = resolveRealtimeLifecycleBadge(liveLifecycleState, liveAnalysisStatus)
+  const recorderLifecycleState =
+    liveLifecycleState === 'silent_paused' || liveLifecycleState === 'listening_resumed'
+      ? 'recording'
+      : liveLifecycleState
+
   return (
     <div className="dashboard-page bg-gray-light">
       <header className="dashboard-header border-b">
@@ -106,9 +154,14 @@ export default function RealtimeDashboardScene({
           <div className="realtime-panel__header">
             <div>
               <h2 className="realtime-panel__title">Ghi âm trực tiếp</h2>
-              <p className="realtime-panel__status">
-                {liveStatusMessage || connectionView.detail || 'Sẵn sàng tạo meeting và bắt đầu ghi âm'}
-              </p>
+              <div className="realtime-panel__status-row">
+                <span className={`realtime-status-badge realtime-status-badge--${lifecycleBadge.tone}`}>
+                  {lifecycleBadge.label}
+                </span>
+                <p className="realtime-panel__status">
+                  {liveStatusMessage || connectionView.detail || 'Sẵn sàng tạo meeting và bắt đầu ghi âm'}
+                </p>
+              </div>
               <div className="realtime-panel__settings">
                 <label className="upload-panel__label">
                   <span className="upload-panel__label-text">Ngôn ngữ</span>
@@ -150,7 +203,7 @@ export default function RealtimeDashboardScene({
           <div className="realtime-panel__recorder-wrap">
             <AudioRecorderButton
               recorder={audioRecorder}
-              lifecycleState={liveLifecycleState}
+              lifecycleState={recorderLifecycleState}
               onBeforeStartRecording={onBeforeStartRecording}
               onChunkReady={onChunkReady}
               onRecordingComplete={onRecordingComplete}
@@ -179,6 +232,7 @@ export default function RealtimeDashboardScene({
         <div className="realtime-panel__grid">
           <RealtimeTranscript
             segments={liveTranscriptSegments}
+            isPaused={liveLifecycleState === 'silent_paused'}
             highlightKeywords={liveTranscriptKeywords}
             maxHeight="620px"
           />
