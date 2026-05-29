@@ -6,6 +6,24 @@
 - Target phase: `7N — Meeting Management UX + Duplicate Upload Guard`
 - Status: audit only, no runtime implementation
 
+### MVP scope confirmed
+
+- Duplicate upload guard for same user + same audioHash
+- Search/filter/sort meeting list
+- Rename meeting
+- Soft delete meeting
+- Duplicate banner/redirect UX
+- Empty/loading/error polish
+
+### Later scope (out of MVP)
+
+- Hard delete
+- Restore deleted meeting
+- Retry failed duplicate
+- Realtime recording duplicate detection
+- Cross-user dedup
+- Advanced race-condition handling if DB unique index is too risky
+
 ## Method
 
 - CodeGraph commands used: `codegraph status`, `codegraph context`, `codegraph query`, `codegraph affected`
@@ -33,6 +51,19 @@
 - Processing idempotency exists for batch job state, but it is keyed by file id, not by duplicate audio uploads in meeting flow.
 - No upload response currently returns `duplicate`, `reused`, or an existing meeting reference.
 - No policy exists yet for failed or processing duplicates in the meeting upload path.
+
+### Status source clarification
+
+- `processing`: can be derived from active Redis/job state when available.
+- `completed`: should require transcript + analysis completed.
+- `failed`: must not be reused as completed.
+- If status is uncertain, FE should show a clear fallback state/message.
+
+### Old records clarification
+
+- Old meetings without audioHash cannot be deduped safely.
+- MVP should dedupe only new uploads after audioHash is available.
+- No mandatory backfill of audioHash for legacy records in MVP.
 
 ## Data model gaps
 
@@ -63,6 +94,13 @@
 3. FE history management UX
 4. Duplicate upload UX
 5. Tests + browser smoke
+
+Validation emphasis for implementation phase:
+
+- Prove duplicate completed upload does not call STT.
+- Prove duplicate completed upload does not call Gemini.
+- Browser smoke should include log verification that second upload does not trigger STT/Gemini.
+- Deleted meeting must be excluded from normal list.
 
 ## Open questions / blockers
 

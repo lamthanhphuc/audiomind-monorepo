@@ -35,6 +35,24 @@
 - No cross-user duplicate sharing unless privacy is solved
 - No full upload pipeline rewrite
 
+## 4.1 MVP scope
+
+- Duplicate upload guard for same user + same audioHash.
+- Search/filter/sort meeting list.
+- Rename meeting.
+- Soft delete meeting.
+- Duplicate banner/redirect UX.
+- Empty/loading/error polish.
+
+## 4.2 Later scope
+
+- Hard delete.
+- Restore deleted meeting.
+- Retry failed duplicate.
+- Realtime recording duplicate detection.
+- Cross-user dedup.
+- Advanced race-condition handling if DB unique index is too risky.
+
 ## 5. Current system audit
 
 ### Backend inventory
@@ -119,6 +137,19 @@ Flow:
    - create new meeting
    - run upload pipeline normally
 
+### Status source clarification
+
+- `processing` can be resolved from active Redis/job state when available.
+- `completed` requires transcript + analysis completed.
+- `failed` must not be reused as `completed`.
+- If status certainty is low, FE must show an explicit fallback message instead of silently treating as completed.
+
+### Old records clarification
+
+- Old meetings without `audioHash` cannot be deduplicated safely.
+- MVP deduplicates only new uploads after hash/field support is added.
+- Do not backfill legacy `audioHash` unless later phases explicitly require it.
+
 ## 7. Meeting Management UX
 
 MVP:
@@ -191,17 +222,16 @@ Mitigation options:
 
 ## 11. Risk matrix
 
-RiskImpactLikelihoodMitigationInclude:
-
-- hash not stored for old meetings
-- duplicate by filename only is unsafe
-- deleted meeting duplicate behavior unclear
-- failed analysis reused incorrectly
-- duplicate processing race condition
-- privacy issue if dedup crosses users
-- STT/Gemini still triggered by wrong path
-- FE confusing user by jumping to existing meeting
-- old meetings missing audioHash
+| Risk | Impact | Likelihood | Mitigation |
+| ---- | ------ | ---------- | ---------- |
+| Old meetings missing audioHash | Duplicate guard cannot match historical uploads | Medium | Only dedupe records with audioHash; document legacy fallback |
+| Filename-based duplicate is unsafe | Different files can share a name | High | Use SHA-256 file bytes as source of truth |
+| Deleted meeting duplicate behavior unclear | User may be redirected to hidden/deleted record | Medium | Exclude deleted records in MVP; decide restore later |
+| Failed analysis reused incorrectly | User may see failed result as completed | High | Treat failed as failed; do not mark reused completed |
+| Duplicate processing race condition | Two same uploads may create two jobs | Medium | Prefer unique ownerId+audioHash for non-deleted rows or transactional guard |
+| Cross-user dedup privacy risk | One user could infer another user’s upload | High | No cross-user dedup in MVP |
+| STT/Gemini still triggered by wrong path | Cost still duplicated | High | Add tests/log smoke proving duplicate completed skips STT/Gemini |
+| FE redirect confusing | User may not understand why old result opens | Medium | Show duplicate/reuse banner |
 
 ## 12. Acceptance criteria
 
@@ -211,9 +241,11 @@ RiskImpactLikelihoodMitigationInclude:
 - Duplicate response points to existing meeting.
 - If first meeting is processing, second upload shows processing state.
 - If first meeting failed, second upload does not silently reuse as completed.
+- Duplicate completed upload does not call STT.
+- Duplicate completed upload does not call Gemini.
 - Search/filter/sort works on meeting list.
 - Rename works and persists.
-- Delete hides meeting from list.
+- Deleted meeting does not appear in normal list.
 - User cannot access another user’s meeting.
 - No STT routing/default/multi changes.
 - No Gemini schema rewrite.
@@ -237,10 +269,11 @@ Manual browser smoke:
 4. Confirm second upload reuses existing meeting.
 5. Confirm no STT call on duplicate completed upload.
 6. Confirm no Gemini call on duplicate completed upload.
-7. Rename meeting.
-8. Search renamed meeting.
-9. Delete meeting.
-10. Confirm deleted meeting hidden from list.
+7. Confirm logs show no STT/Gemini call for the second upload.
+8. Rename meeting.
+9. Search renamed meeting.
+10. Delete meeting.
+11. Confirm deleted meeting hidden from list.
 
 ## 14. Open questions
 
