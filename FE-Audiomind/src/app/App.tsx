@@ -621,6 +621,7 @@ export default function App() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [status, setStatus] = useState('idle')
   const [result, setResult] = useState<ResultView | null>(null)
+  const [uploadNotice, setUploadNotice] = useState<string | null>(null)
   const [liveMeetingId, setLiveMeetingId] = useState<number | null>(null)
   const [liveError, setLiveError] = useState<string | null>(null)
   const [livePartialWarning, setLivePartialWarning] = useState<string | null>(null)
@@ -909,6 +910,7 @@ export default function App() {
     setLiveLifecycleState('idle')
     setPassword('')
     setJoinMeetingIdInput('')
+    setUploadNotice(null)
     setShowJoinOtherMeeting(false)
     setFeatureScene('upload')
   }
@@ -945,6 +947,33 @@ export default function App() {
     }
   }, [liveMeetingId, featureScene])
 
+  const openAnalysisForMeeting = async (meetingId: number, statusValue: string = 'COMPLETED') => {
+    setStatus('fetching-result')
+    const [transcript, analysis] = await Promise.all([
+      getTranscript(meetingId),
+      getAnalysis(meetingId),
+    ])
+
+    const mergedTranscriptSegments = mergeTranscriptSegments(
+      normalizePersistedTranscriptSegments(transcript.transcripts || []),
+    )
+
+    const mergedTranscript = mergedTranscriptSegments
+      .map((segment) => `${segment.speaker}: ${segment.text}`)
+      .join(' ')
+      .trim()
+
+    setResult({
+      meetingId,
+      status: statusValue,
+      transcript: mergedTranscript,
+      transcriptSegments: mergedTranscriptSegments,
+      analysis,
+    })
+    setStatus('completed')
+    setFeatureScene('analysis')
+  }
+
   const handleProcess = async (fileOverride?: File) => {
     const file = fileOverride ?? selectedFile
     if (!file) {
@@ -954,6 +983,7 @@ export default function App() {
 
     setBusy(true)
     setErrorMessage(null)
+    setUploadNotice(null)
     setResult(null)
     abortControllerRef.current?.abort()
     abortControllerRef.current = new AbortController()
@@ -966,37 +996,36 @@ export default function App() {
       setFeatureScene('upload')
       console.info('UPLOAD_REQUEST_SEND language=' + effectiveUploadLanguage)
       const meeting = await uploadToMeetingApi(file.name, file, effectiveUploadLanguage)
-      meetingId = meeting.id
+      meetingId = Number(meeting.existingMeetingId ?? meeting.id)
+      if (!Number.isFinite(meetingId) || meetingId <= 0) {
+        throw new Error('Meeting ID trả về không hợp lệ')
+      }
+      const duplicateStatus = String(meeting.status ?? '').trim().toLowerCase()
+      const isDuplicate = Boolean(meeting.duplicate)
+
+      if (isDuplicate) {
+        if (duplicateStatus === 'completed' && meeting.reused && meetingId > 0) {
+          setUploadNotice('This audio was already analyzed. Opening previous result.')
+          await openAnalysisForMeeting(meetingId, 'COMPLETED')
+          return
+        }
+
+        if (duplicateStatus === 'failed') {
+          setUploadNotice('This audio was processed before but failed.')
+          setStatus('failed')
+          return
+        }
+
+        setUploadNotice('This audio is already being processed.')
+        setStatus('processing')
+        return
+      }
 
       setStatus('processing')
       await startProcessingByPath(meetingId, effectiveUploadLanguage)
 
       await pollUntilCompleted(meetingId, abortControllerRef.current.signal)
-
-      setStatus('fetching-result')
-      const [transcript, analysis] = await Promise.all([
-        getTranscript(meetingId),
-        getAnalysis(meetingId),
-      ])
-
-      const mergedTranscriptSegments = mergeTranscriptSegments(
-        normalizePersistedTranscriptSegments(transcript.transcripts || []),
-      )
-
-      const mergedTranscript = mergedTranscriptSegments
-        .map((segment) => `${segment.speaker}: ${segment.text}`)
-        .join(' ')
-        .trim()
-
-      setResult({
-        meetingId,
-        status: 'COMPLETED',
-        transcript: mergedTranscript,
-        transcriptSegments: mergedTranscriptSegments,
-        analysis,
-      })
-      setStatus('completed')
-      setFeatureScene('analysis')
+      await openAnalysisForMeeting(meetingId, 'COMPLETED')
     } catch (error: any) {
       setStatus('failed')
       if (error instanceof DOMException && error.name === 'AbortError') {
@@ -1139,6 +1168,7 @@ export default function App() {
         onUploadLanguageChange={setSelectedUploadLanguage}
         status={status}
         errorMessage={errorMessage}
+        duplicateNotice={uploadNotice}
         onUpload={handleDashboardUpload}
         onCancel={handleCancel}
       />

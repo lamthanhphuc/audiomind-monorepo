@@ -1,6 +1,7 @@
 package com.example.meetingservice.entity;
 
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
@@ -34,4 +35,18 @@ public class Meeting {
 
     @Column(name = "language")
     private String language;
+
+    @JsonIgnore
+    @Column(name = "audio_hash")
+    private String audioHash;
+
+    @Column(name = "file_size")
+    private Long fileSize;
+
+    @Column(name = "status")
+    private String status;
+
+    @JsonIgnore
+    @Column(name = "deleted_at")
+    private LocalDateTime deletedAt;
 }

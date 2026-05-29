@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { getMeetingDetail, getSavedAnalysis, listMeetings, startProcessingByPath, uploadToMeetingApi } from './api'
+import { deleteMeeting, getMeetingDetail, getSavedAnalysis, listMeetings, listMeetingsWithParams, renameMeeting, startProcessingByPath, uploadToMeetingApi } from './api'
 
 describe('upload language request wiring', () => {
   const fetchMock = vi.fn()
@@ -45,6 +45,50 @@ describe('upload language request wiring', () => {
 
     const [url] = fetchMock.mock.calls[0] as [string]
     expect(url).toContain('/meetings')
+  })
+
+  it('applies query filters when loading meeting history', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ([]),
+      headers: new Headers(),
+    })
+
+    await listMeetingsWithParams({
+      query: 'demo',
+      status: 'completed',
+      language: 'vi',
+      sort: 'created_desc',
+    })
+
+    const [url] = fetchMock.mock.calls[0] as [string]
+    expect(url).toContain('/meetings?')
+    expect(url).toContain('query=demo')
+    expect(url).toContain('status=completed')
+    expect(url).toContain('language=vi')
+    expect(url).toContain('sort=created_desc')
+  })
+
+  it('renames and soft deletes meeting through management endpoints', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ id: 9, title: 'Renamed', audioPath: '/tmp/a.wav', createdAt: '2026-05-28T00:00:00Z' }),
+      headers: new Headers(),
+    })
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ id: 9, deleted: true }),
+      headers: new Headers(),
+    })
+
+    const renamed = await renameMeeting(9, 'Renamed')
+    expect(renamed.title).toBe('Renamed')
+
+    const deleted = await deleteMeeting(9)
+    expect(deleted.deleted).toBe(true)
+
+    const urls = fetchMock.mock.calls.map((call) => call[0] as string)
+    expect(urls.some((url) => url.endsWith('/meetings/9'))).toBe(true)
   })
 
   it('loads meeting detail and saved analysis from read-only endpoints', async () => {

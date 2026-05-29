@@ -10,6 +10,7 @@ type FeatureUploadProps = {
   onUploadLanguageChange: (language: RealtimeLanguage) => void
   status?: string
   errorMessage?: string | null
+  duplicateNotice?: string | null
   onUpload: (title: string, file: File) => Promise<void>
   onCancel?: () => void
 }
@@ -21,6 +22,7 @@ export default function FeatureUpload({
   onUploadLanguageChange,
   status = 'idle',
   errorMessage,
+  duplicateNotice,
   onUpload,
   onCancel,
 }: FeatureUploadProps) {
@@ -140,6 +142,12 @@ export default function FeatureUpload({
             <span>Trạng thái</span>
             <span className={getStatusBadgeClass(status)}>{status}</span>
           </p>
+
+          {duplicateNotice && (
+            <div className="ui-state ui-state--empty" data-testid="duplicate-upload-banner" style={{ marginBottom: '12px' }}>
+              <p>{duplicateNotice}</p>
+            </div>
+          )}
 
           {errorMessage && <ErrorState message={errorMessage} title="Lỗi xử lý" />}
 
