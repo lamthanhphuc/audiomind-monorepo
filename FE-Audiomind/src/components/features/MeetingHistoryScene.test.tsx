@@ -180,4 +180,53 @@ describe('MeetingHistoryScene', () => {
     await flush()
     expect(container.textContent).toContain('Không thể tải lịch sử')
   })
+
+  it('shows only completed meetings when completed filter is selected', async () => {
+    const dataset = [
+      { ...baseMeeting, id: 1, title: 'Processing one', status: 'processing' },
+      { ...baseMeeting, id: 2, title: 'Completed one', status: 'completed' },
+      { ...baseMeeting, id: 3, title: 'Unknown one', status: undefined as any },
+    ]
+    ;(api.listMeetingsWithParams as any).mockImplementation(async (params?: { status?: string }) => {
+      if (params?.status === 'completed') {
+        return dataset.filter((meeting) => meeting.status === 'completed')
+      }
+      if (params?.status === 'processing') {
+        return dataset.filter((meeting) => meeting.status === 'processing')
+      }
+      return dataset
+    })
+    vi.spyOn(api, 'getMeetingDetail').mockResolvedValue(dataset[0] as any)
+
+    await act(async () => {
+      root.render(<MeetingHistoryScene />)
+    })
+    await flush()
+
+    const statusFilter = container.querySelector('[data-testid="meeting-status-filter"]') as HTMLSelectElement
+    await act(async () => {
+      setNativeValue(statusFilter, 'completed')
+      statusFilter.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    await flush()
+
+    expect(container.textContent).toContain('Completed one')
+    expect(container.textContent).not.toContain('Processing one')
+    expect(container.textContent).not.toContain('Unknown one')
+  })
+
+  it('does not treat unknown or missing status as processing in history list', async () => {
+    const unknownOnly = [{ ...baseMeeting, id: 8, title: 'Legacy row', status: undefined as any }]
+    ;(api.listMeetingsWithParams as any).mockResolvedValue(unknownOnly)
+    vi.spyOn(api, 'getMeetingDetail').mockResolvedValue(unknownOnly[0] as any)
+
+    await act(async () => {
+      root.render(<MeetingHistoryScene />)
+    })
+    await flush()
+
+    expect(container.textContent).toContain('Legacy row')
+    expect(container.textContent).toContain('unknown')
+    expect(container.textContent).not.toContain('Legacy row•vi•processing')
+  })
 })

@@ -1,7 +1,7 @@
 package com.example.processingservice.client;
 
-import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
@@ -17,10 +17,13 @@ import java.util.Map;
 import java.util.UUID;
 
 @Service
-@RequiredArgsConstructor
 public class MeetingServiceClient {
 
     private final RestTemplate restTemplate;
+
+    public MeetingServiceClient(@Qualifier("meetingServiceRestTemplate") RestTemplate restTemplate) {
+        this.restTemplate = restTemplate;
+    }
 
     @Value("${meeting.service.url}")
     private String meetingServiceUrl;

@@ -286,6 +286,7 @@ public class ProcessingService {
             String updatedAt = state.get("updatedAt") == null ? null : String.valueOf(state.get("updatedAt"));
 
             updateMetricsForState(meetingId, status, state);
+            syncMeetingStatusSafely(meetingId, status, traceId, authorization);
             log.info("[traceId={}] [jobId={}] status read from redis={}", traceId, meetingId, status);
 
             return new ProcessingStatusResponse(meetingId, status, progress, stage, error, updatedAt);

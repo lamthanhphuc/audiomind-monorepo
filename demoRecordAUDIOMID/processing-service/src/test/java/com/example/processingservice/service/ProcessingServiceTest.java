@@ -117,6 +117,20 @@ class ProcessingServiceTest {
     }
 
     @Test
+    void getProcessingStatus_shouldSyncCompletedMeetingStatus() {
+        Map<String, Object> state = new HashMap<>();
+        state.put("status", "COMPLETED");
+        state.put("updatedAt", "2026-04-10T00:00:00Z");
+
+        when(jobStateStore.getJobState(304L)).thenReturn(Optional.of(state));
+
+        ProcessingStatusResponse response = processingService.getProcessingStatus(304L, "trace-304", AUTH_HEADER);
+
+        assertEquals("COMPLETED", response.status());
+        verify(meetingServiceClient).updateMeetingStatus(304L, "completed", "trace-304", AUTH_HEADER);
+    }
+
+    @Test
     void getTranscript_shouldReturnNotFoundWhenStateMissing() {
         when(jobStateStore.getJobState(404L)).thenReturn(Optional.empty());
 

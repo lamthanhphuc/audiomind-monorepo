@@ -47,7 +47,11 @@ const getMeetingLanguage = (meeting: Meeting): string => {
 }
 
 const getMeetingStatus = (meeting: Meeting): string => {
-  return String(meeting.status ?? 'processing').trim().toLowerCase() || 'processing'
+  const normalized = String(meeting.status ?? '').trim().toLowerCase()
+  if (normalized === 'completed' || normalized === 'processing' || normalized === 'failed') {
+    return normalized
+  }
+  return 'unknown'
 }
 
 const getAnalysisStateFromResponse = (analysis: AiAnalysis | null): { state: DetailAnalysisState; analysis: AiAnalysis | null; error: string | null } => {
