@@ -44,6 +44,9 @@ import lombok.RequiredArgsConstructor;
 public class ProcessingService {
     private static final Set<String> ALLOWED_UPLOAD_LANGUAGES = Set.of("vi", "en", "multi");
     private static final String REALTIME_ANALYSIS_SOURCE_GET_ANALYSIS_LAZY = "get_analysis_lazy";
+    private static final String MEETING_STATUS_PROCESSING = "processing";
+    private static final String MEETING_STATUS_COMPLETED = "completed";
+    private static final String MEETING_STATUS_FAILED = "failed";
 
     private static final Logger log = LoggerFactory.getLogger(ProcessingService.class);
 
@@ -102,11 +105,13 @@ public class ProcessingService {
                         existingJobId
                 );
                 ProcessingStatusResponse existing = getProcessingStatus(existingJobId, traceId, authorization);
+                syncMeetingStatusSafely(existingJobId, existing.status(), traceId, authorization);
                 return new ProcessStartResponse(existing.meetingId(), existing.status(), existing.error(), existing.updatedAt());
             }
 
             jobStateStore.upsertJobState(meetingId, "QUEUED", resolvedFileId, null, null, traceId);
             incrementJobsTotal("QUEUED");
+            syncMeetingStatusSafely(meetingId, "QUEUED", traceId, authorization);
             log.info(
                     "event=ANALYSIS_TRIGGER_REQUEST traceId={} requestId={} meetingId={} source=batch analysisStatus=QUEUED",
                     traceId,
@@ -119,6 +124,7 @@ public class ProcessingService {
             } catch (HttpStatusCodeException ex) {
                 jobStateStore.upsertJobState(meetingId, "FAILED", resolvedFileId, null, ex.getMessage(), traceId);
                 incrementJobsTotal("FAILED");
+                syncMeetingStatusSafely(meetingId, "FAILED", traceId, authorization);
                 int downstreamStatus = ex.getStatusCode().value();
                 log.warn(
                         "event=AI_SERVICE_CALL_FAILED traceId={} requestId={} meetingId={} source=batch httpStatus={} errorCode=DOWNSTREAM_HTTP_ERROR",
@@ -134,6 +140,7 @@ public class ProcessingService {
             } catch (Exception ex) {
                 jobStateStore.upsertJobState(meetingId, "FAILED", resolvedFileId, null, ex.getMessage(), traceId);
                 incrementJobsTotal("FAILED");
+                syncMeetingStatusSafely(meetingId, "FAILED", traceId, authorization);
                 log.warn(
                         "event=ANALYSIS_TRIGGER_FAILED traceId={} requestId={} meetingId={} source=batch errorCode={}",
                         traceId,
@@ -145,6 +152,7 @@ public class ProcessingService {
             }
 
             ProcessingStatusResponse status = getProcessingStatus(meetingId, traceId, authorization);
+            syncMeetingStatusSafely(meetingId, status.status(), traceId, authorization);
             return new ProcessStartResponse(status.meetingId(), status.status(), status.error(), status.updatedAt());
         }
     }
@@ -278,6 +286,7 @@ public class ProcessingService {
             String updatedAt = state.get("updatedAt") == null ? null : String.valueOf(state.get("updatedAt"));
 
             updateMetricsForState(meetingId, status, state);
+            syncMeetingStatusSafely(meetingId, status, traceId, authorization);
             log.info("[traceId={}] [jobId={}] status read from redis={}", traceId, meetingId, status);
 
             return new ProcessingStatusResponse(meetingId, status, progress, stage, error, updatedAt);
@@ -516,6 +525,36 @@ public class ProcessingService {
             return normalized;
         }
         return "vi";
+    }
+
+    private void syncMeetingStatusSafely(Long meetingId, String processingStatus, String traceId, String authorization) {
+        if (meetingId == null || authorization == null || authorization.isBlank()) {
+            return;
+        }
+        String meetingStatus = toMeetingStatus(processingStatus);
+        try {
+            meetingServiceClient.updateMeetingStatus(meetingId, meetingStatus, traceId, authorization);
+        } catch (Exception ex) {
+            log.warn(
+                    "event=MEETING_STATUS_SYNC_FAILED traceId={} requestId={} meetingId={} status={} errorCode={}",
+                    traceId,
+                    currentRequestId(traceId),
+                    meetingId,
+                    meetingStatus,
+                    ex.getClass().getSimpleName()
+            );
+        }
+    }
+
+    private String toMeetingStatus(String processingStatus) {
+        String normalized = normalizeStatus(processingStatus);
+        if ("COMPLETED".equals(normalized)) {
+            return MEETING_STATUS_COMPLETED;
+        }
+        if ("FAILED".equals(normalized)) {
+            return MEETING_STATUS_FAILED;
+        }
+        return MEETING_STATUS_PROCESSING;
     }
 
     private void assertMeetingAccess(Long meetingId, String traceId, String authorization) {

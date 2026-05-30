@@ -6,6 +6,8 @@ export type Meeting = {
   originalFileName?: string | null
   ownerUserId?: number | null
   language?: string | null
+  status?: string | null
+  fileSize?: number | null
 }
 
 export type AnalysisTechnicalTerm = {

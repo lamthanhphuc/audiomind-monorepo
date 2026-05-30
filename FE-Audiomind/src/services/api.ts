@@ -211,6 +211,45 @@ export const getMeetingDetail = async (meetingId: number): Promise<Meeting> => {
   return fetchJson<Meeting>(`${MEETING_API_BASE}/meetings/${meetingId}`)
 }
 
+export type ListMeetingsParams = {
+  query?: string
+  status?: string
+  language?: string
+  sort?: string
+}
+
+export const listMeetingsWithParams = async (params: ListMeetingsParams = {}): Promise<Meeting[]> => {
+  const query = new URLSearchParams()
+  if (params.query?.trim()) {
+    query.set('query', params.query.trim())
+  }
+  if (params.status?.trim()) {
+    query.set('status', params.status.trim())
+  }
+  if (params.language?.trim()) {
+    query.set('language', params.language.trim())
+  }
+  if (params.sort?.trim()) {
+    query.set('sort', params.sort.trim())
+  }
+  const suffix = query.toString() ? `?${query.toString()}` : ''
+  return fetchJson<Meeting[]>(`${MEETING_API_BASE}/meetings${suffix}`)
+}
+
+export const renameMeeting = async (meetingId: number, title: string): Promise<Meeting> => {
+  return fetchJson<Meeting>(`${MEETING_API_BASE}/meetings/${meetingId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title }),
+  })
+}
+
+export const deleteMeeting = async (meetingId: number): Promise<{ id: number; deleted: boolean }> => {
+  return fetchJson<{ id: number; deleted: boolean }>(`${MEETING_API_BASE}/meetings/${meetingId}`, {
+    method: 'DELETE',
+  })
+}
+
 /**
  * Returns standard auth + trace headers for API calls.
  * Use this when calling APIs outside of fetchJson (e.g. WebSocket, direct fetch).
@@ -234,7 +273,20 @@ export const uploadToMeetingApi = async (
   title: string,
   file: File,
   language?: string,
-): Promise<{ id: number; audioPath: string; title: string }> => {
+): Promise<{
+  id: number
+  audioPath: string
+  title: string
+  duplicate?: boolean
+  reused?: boolean
+  existingMeetingId?: number | null
+  status?: string
+  createdAt?: string
+  originalFileName?: string | null
+  ownerUserId?: number | null
+  language?: string | null
+  fileSize?: number | null
+}> => {
   const body = new FormData()
   body.append('title', title)
   body.append('file', file)
@@ -242,7 +294,20 @@ export const uploadToMeetingApi = async (
     body.append('language', language.trim())
   }
   // Do NOT set Content-Type manually — browser auto-adds multipart boundary
-  return fetchJson<{ id: number; audioPath: string; title: string }>(
+  return fetchJson<{
+    id: number
+    audioPath: string
+    title: string
+    duplicate?: boolean
+    reused?: boolean
+    existingMeetingId?: number | null
+    status?: string
+    createdAt?: string
+    originalFileName?: string | null
+    ownerUserId?: number | null
+    language?: string | null
+    fileSize?: number | null
+  }>(
     `${MEETING_API_BASE}/meetings/upload`,
     { method: 'POST', body }
   )

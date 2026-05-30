@@ -2,7 +2,9 @@ package com.example.meetingservice.service;
 
 import com.example.meetingservice.entity.Meeting;
 import com.example.meetingservice.repository.MeetingRepository;
+import java.time.LocalDateTime;
 import java.util.List;
+import java.util.NoSuchElementException;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -112,5 +114,131 @@ class MeetingServiceTest {
         assertEquals(2, result.size());
         assertEquals(5L, result.get(0).getId());
         assertEquals(4L, result.get(1).getId());
+    }
+
+    @Test
+    void findActiveDuplicateForOwner_shouldReturnReusedWhenCompleted() {
+        Meeting duplicate = new Meeting();
+        duplicate.setId(22L);
+        duplicate.setStatus("completed");
+
+        when(meetingRepository.findFirstByOwnerUserIdAndAudioHashAndDeletedAtIsNullOrderByIdDesc(9L, "abc"))
+                .thenReturn(Optional.of(duplicate));
+
+        MeetingService.DuplicateMatch result = meetingService.findActiveDuplicateForOwner(9L, "abc").orElseThrow();
+
+        assertEquals(22L, result.meeting().getId());
+        assertEquals("completed", result.status());
+        assertTrue(result.reused());
+    }
+
+    @Test
+    void findActiveDuplicateForOwner_shouldReturnProcessingWhenStatusUncertain() {
+        Meeting duplicate = new Meeting();
+        duplicate.setId(23L);
+        duplicate.setStatus(null);
+
+        when(meetingRepository.findFirstByOwnerUserIdAndAudioHashAndDeletedAtIsNullOrderByIdDesc(9L, "hash"))
+                .thenReturn(Optional.of(duplicate));
+
+        MeetingService.DuplicateMatch result = meetingService.findActiveDuplicateForOwner(9L, "hash").orElseThrow();
+
+        assertEquals("processing", result.status());
+        assertTrue(!result.reused());
+    }
+
+    @Test
+    void findActiveDuplicateForOwner_shouldReturnFailedWithoutReuse() {
+        Meeting duplicate = new Meeting();
+        duplicate.setId(24L);
+        duplicate.setStatus("FAILED");
+
+        when(meetingRepository.findFirstByOwnerUserIdAndAudioHashAndDeletedAtIsNullOrderByIdDesc(9L, "xyz"))
+                .thenReturn(Optional.of(duplicate));
+
+        MeetingService.DuplicateMatch result = meetingService.findActiveDuplicateForOwner(9L, "xyz").orElseThrow();
+
+        assertEquals("failed", result.status());
+        assertTrue(!result.reused());
+    }
+
+    @Test
+    void renameMeetingForOwner_shouldUpdateTitle() {
+        Meeting meeting = new Meeting();
+        meeting.setId(30L);
+        meeting.setTitle("old");
+
+        when(meetingRepository.findByIdAndOwnerUserIdAndDeletedAtIsNull(30L, 5L)).thenReturn(Optional.of(meeting));
+        when(meetingRepository.save(any(Meeting.class))).thenAnswer((invocation) -> invocation.getArgument(0));
+
+        Meeting result = meetingService.renameMeetingForOwner(30L, 5L, "new title");
+
+        assertEquals("new title", result.getTitle());
+        verify(meetingRepository).save(meeting);
+    }
+
+    @Test
+    void softDeleteForOwner_shouldSetDeletedAt() {
+        Meeting meeting = new Meeting();
+        meeting.setId(31L);
+
+        when(meetingRepository.findByIdAndOwnerUserIdAndDeletedAtIsNull(31L, 5L)).thenReturn(Optional.of(meeting));
+        when(meetingRepository.save(any(Meeting.class))).thenAnswer((invocation) -> invocation.getArgument(0));
+
+        Meeting deleted = meetingService.softDeleteForOwner(31L, 5L);
+
+        assertEquals(31L, deleted.getId());
+        assertTrue(deleted.getDeletedAt() != null);
+    }
+
+    @Test
+    void findMeetingsForOwner_shouldHideDeletedAndApplySortAndFilters() {
+        Meeting processing = new Meeting();
+        processing.setId(1L);
+        processing.setTitle("Planning");
+        processing.setOriginalFileName("meeting-a.wav");
+        processing.setLanguage("vi");
+        processing.setStatus("processing");
+        processing.setCreatedAt(LocalDateTime.now().minusDays(2));
+
+        Meeting completed = new Meeting();
+        completed.setId(2L);
+        completed.setTitle("Retrospective");
+        completed.setOriginalFileName("meeting-b.wav");
+        completed.setLanguage("en");
+        completed.setStatus("completed");
+        completed.setCreatedAt(LocalDateTime.now().minusDays(1));
+
+        when(meetingRepository.findByOwnerUserIdAndDeletedAtIsNullOrderByCreatedAtDescIdDesc(8L))
+                .thenReturn(List.of(completed, processing));
+
+        List<Meeting> filtered = meetingService.findMeetingsForOwner(8L, "retro", "completed", "en", "created_desc");
+
+        assertEquals(1, filtered.size());
+        assertEquals(2L, filtered.getFirst().getId());
+    }
+
+    @Test
+    void ownerScopedOperations_shouldRejectAnotherUser() {
+        when(meetingRepository.findByIdAndOwnerUserIdAndDeletedAtIsNull(40L, 1L)).thenReturn(Optional.empty());
+
+        assertThrows(NoSuchElementException.class, () -> meetingService.findByIdForOwner(40L, 1L));
+        assertThrows(NoSuchElementException.class, () -> meetingService.renameMeetingForOwner(40L, 1L, "x"));
+        assertThrows(NoSuchElementException.class, () -> meetingService.softDeleteForOwner(40L, 1L));
+        assertThrows(NoSuchElementException.class, () -> meetingService.updateMeetingStatusForOwner(40L, 1L, "completed"));
+    }
+
+    @Test
+    void updateMeetingStatusForOwner_shouldNormalizeIncomingStatus() {
+        Meeting meeting = new Meeting();
+        meeting.setId(50L);
+        meeting.setStatus("processing");
+
+        when(meetingRepository.findByIdAndOwnerUserIdAndDeletedAtIsNull(50L, 2L)).thenReturn(Optional.of(meeting));
+        when(meetingRepository.save(any(Meeting.class))).thenAnswer((invocation) -> invocation.getArgument(0));
+
+        Meeting updated = meetingService.updateMeetingStatusForOwner(50L, 2L, "COMPLETED");
+
+        assertEquals("completed", updated.getStatus());
     }
 }

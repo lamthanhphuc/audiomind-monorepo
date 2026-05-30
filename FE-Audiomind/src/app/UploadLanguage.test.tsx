@@ -76,4 +76,72 @@ describe('Upload language selector (integration)', () => {
     expect(foundUploadLog).toBeDefined()
     expect(String(foundUploadLog)).toContain('language=en')
   })
+
+  it('does not call startProcessingByPath when duplicate upload is already completed', async () => {
+    vi.spyOn(api, 'uploadToMeetingApi').mockResolvedValue({
+      id: 42,
+      audioPath: '/tmp',
+      title: 'f',
+      duplicate: true,
+      reused: true,
+      existingMeetingId: 42,
+      status: 'completed',
+    })
+    const startSpy = vi.spyOn(api, 'startProcessingByPath').mockResolvedValue({} as any)
+    vi.spyOn(api, 'getTranscript').mockResolvedValue({ meeting_id: 42, transcripts: [] } as any)
+    vi.spyOn(api, 'getAnalysis').mockResolvedValue({ summary: '', domainMode: 'it' } as any)
+
+    await act(async () => {
+      root.render(<App />)
+    })
+
+    const fileInput = container.querySelector('[data-testid="e2e-upload-input"]') as HTMLInputElement
+    const testFile = new File(['abc'], 'test.wav', { type: 'audio/wav' })
+    await act(async () => {
+      Object.defineProperty(fileInput, 'files', { value: [testFile], writable: false })
+      fileInput.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+
+    const submit = container.querySelector('[data-testid="e2e-process-submit"]') as HTMLButtonElement
+    await act(async () => {
+      submit.click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(startSpy).not.toHaveBeenCalled()
+  })
+
+  it('renders duplicate banner when duplicate upload is still processing', async () => {
+    vi.spyOn(api, 'uploadToMeetingApi').mockResolvedValue({
+      id: 55,
+      audioPath: '/tmp',
+      title: 'f',
+      duplicate: true,
+      reused: false,
+      existingMeetingId: 55,
+      status: 'processing',
+    })
+    const startSpy = vi.spyOn(api, 'startProcessingByPath').mockResolvedValue({} as any)
+
+    await act(async () => {
+      root.render(<App />)
+    })
+
+    const fileInput = container.querySelector('[data-testid="e2e-upload-input"]') as HTMLInputElement
+    const testFile = new File(['abc'], 'test.wav', { type: 'audio/wav' })
+    await act(async () => {
+      Object.defineProperty(fileInput, 'files', { value: [testFile], writable: false })
+      fileInput.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+
+    const submit = container.querySelector('[data-testid="e2e-process-submit"]') as HTMLButtonElement
+    await act(async () => {
+      submit.click()
+      await Promise.resolve()
+    })
+
+    expect(startSpy).not.toHaveBeenCalled()
+    expect(container.textContent).toContain('This audio is already being processed.')
+  })
 })
