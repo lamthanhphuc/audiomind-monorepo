@@ -33,6 +33,7 @@ Thumbs.db
 **/logs/
 logs/ci-fix/
 *.log
+/debug-logs/
 
 # Environment files
 .env
