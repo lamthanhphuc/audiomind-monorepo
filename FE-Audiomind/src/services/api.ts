@@ -79,6 +79,28 @@ const fetchJson = async <T>(input: RequestInfo | URL, init?: RequestInit): Promi
   return response.json() as Promise<T>
 }
 
+const parseFilenameFromContentDisposition = (headerValue: string | null): string | null => {
+  if (!headerValue) {
+    return null
+  }
+
+  const utf8Match = headerValue.match(/filename\\*=UTF-8''([^;]+)/i)
+  if (utf8Match?.[1]) {
+    try {
+      return decodeURIComponent(utf8Match[1]).replace(/^\"|\"$/g, '')
+    } catch {
+      return utf8Match[1].replace(/^\"|\"$/g, '')
+    }
+  }
+
+  const asciiMatch = headerValue.match(/filename=([^;]+)/i)
+  if (asciiMatch?.[1]) {
+    return asciiMatch[1].trim().replace(/^\"|\"$/g, '')
+  }
+
+  return null
+}
+
 export const processAudio = async (payload: {
   meeting_id: number
   audio_path: string
@@ -159,6 +181,39 @@ export const getSavedAnalysis = async (meetingId: number): Promise<AiAnalysis> =
     ;(normalized as AiAnalysis & { status?: string }).status = statusValue
   }
   return normalized
+}
+
+export const downloadMeetingReport = async (
+  meetingId: number,
+  format: 'docx' | string = 'docx',
+): Promise<{ blob: Blob; filename: string }> => {
+  const response = await fetch(
+    `${API_BASE}/processing/${meetingId}/report?format=${encodeURIComponent(format)}`,
+    {
+      method: 'GET',
+      headers: withTraceHeaders(),
+    },
+  )
+
+  if (!response.ok) {
+    const text = await response.text()
+    const traceId = response.headers.get('x-trace-id') ?? response.headers.get('x-request-id') ?? undefined
+    let message = text || response.statusText
+
+    try {
+      const parsed = JSON.parse(text) as { detail?: string; message?: string }
+      message = parsed.detail || parsed.message || message
+    } catch {
+      // Use raw text when response is not JSON.
+    }
+
+    throw new ApiError(message, response.status, traceId)
+  }
+
+  const blob = await response.blob()
+  const filename = parseFilenameFromContentDisposition(response.headers.get('content-disposition'))
+    || `meeting-${meetingId}-report.${format}`
+  return { blob, filename }
 }
 
 export const getProcessingStatus = async (meetingId: number): Promise<{

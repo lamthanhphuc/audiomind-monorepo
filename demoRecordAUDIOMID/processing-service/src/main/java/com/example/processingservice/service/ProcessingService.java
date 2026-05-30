@@ -10,6 +10,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HexFormat;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -32,6 +33,8 @@ import com.example.processingservice.client.AIServiceClient;
 import com.example.processingservice.client.MeetingServiceClient;
 import com.example.processingservice.controller.dto.ProcessStartResponse;
 import com.example.processingservice.controller.dto.ProcessingStatusResponse;
+import com.example.processingservice.service.report.MeetingReportData;
+import com.example.processingservice.service.report.MeetingReportDocxGenerator;
 
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -47,6 +50,15 @@ public class ProcessingService {
     private static final String MEETING_STATUS_PROCESSING = "processing";
     private static final String MEETING_STATUS_COMPLETED = "completed";
     private static final String MEETING_STATUS_FAILED = "failed";
+    private static final int MAX_REPORT_HIGHLIGHT_ROWS = 50;
+    private static final double APPENDIX_NEAR_WINDOW_SECONDS = 90d;
+    private static final double APPENDIX_COVERAGE_THRESHOLD = 0.85d;
+    private static final int APPENDIX_SHORT_FRAGMENT_MAX_CHARS = 40;
+    private static final double APPENDIX_MAX_BLOCK_SECONDS = 45d;
+    private static final int APPENDIX_MAX_BLOCK_CHARS = 700;
+    private static final double APPENDIX_MERGE_GAP_SECONDS = 3d;
+    private static final double APPENDIX_NEAR_DUPLICATE_WINDOW_SECONDS = APPENDIX_NEAR_WINDOW_SECONDS;
+    private static final int APPENDIX_SHORT_FRAGMENT_MAX_NORMALIZED_LEN = APPENDIX_SHORT_FRAGMENT_MAX_CHARS;
 
     private static final Logger log = LoggerFactory.getLogger(ProcessingService.class);
 
@@ -54,6 +66,7 @@ public class ProcessingService {
     private final MeetingServiceClient meetingServiceClient;
     private final JobStateStore jobStateStore;
     private final MeterRegistry meterRegistry;
+    private final MeetingReportDocxGenerator meetingReportDocxGenerator;
     @Value("${processing.analysis.prompt-version:gemini-business-v1}")
     private String analysisPromptVersion;
     @Value("${processing.analysis.schema-version:gemini-business-v1}")
@@ -374,6 +387,727 @@ public class ProcessingService {
 
     public Map<String, Object> getAnalysisReadOnly(Long meetingId, String traceId, String authorization) {
         return getAnalysisInternal(meetingId, traceId, authorization, false);
+    }
+
+    public byte[] generateMeetingReportDocx(Long meetingId, String traceId, String authorization) {
+        assertMeetingAccess(meetingId, traceId, authorization);
+
+        Map<String, Object> meeting = meetingServiceClient.getMeetingById(meetingId, traceId, authorization);
+        Map<String, Object> transcriptPayload = getTranscript(meetingId, traceId, authorization);
+        Map<String, Object> analysisPayload = getAnalysisReadOnly(meetingId, traceId, authorization);
+
+        List<Map<String, Object>> transcriptRows = normalizeTranscriptRows(transcriptPayload.get("transcripts"));
+        boolean analysisAvailable = hasStructuredAnalysis(analysisPayload);
+
+        if (transcriptRows.isEmpty() && !analysisAvailable) {
+            throw new ResponseStatusException(
+                    HttpStatus.NOT_FOUND,
+                    "No saved transcript or analysis available for this meeting"
+            );
+        }
+
+        MeetingReportData reportData = assembleMeetingReportData(
+                meetingId,
+                meeting,
+                transcriptRows,
+                analysisPayload,
+                analysisAvailable
+        );
+        return meetingReportDocxGenerator.generate(reportData);
+    }
+
+    private MeetingReportData assembleMeetingReportData(
+            Long meetingId,
+            Map<String, Object> meeting,
+            List<Map<String, Object>> transcriptRows,
+            Map<String, Object> analysisPayload,
+            boolean analysisAvailable
+    ) {
+        MeetingReportData.MeetingMetadata metadata = new MeetingReportData.MeetingMetadata(
+                meetingId,
+                safeCell(meeting.get("title")),
+                safeCell(meeting.get("createdAt")),
+                safeCell(meeting.get("language")),
+                detectTranscriptLanguage(transcriptRows),
+                safeCell(meeting.get("status")),
+                safeCell(meeting.get("originalFileName")),
+                safeCell(meeting.get("ownerUserId")),
+                safeCell(meeting.get("fileSize"))
+        );
+
+        RawTranscriptPreview rawTranscriptPreview = buildRawTranscriptRowsForAppendix(transcriptRows);
+
+        List<String> decisions = extractStringList(analysisPayload, "keyDecisions", "decisions");
+        List<MeetingReportData.ReportActionItem> actionItems = extractReportActionItems(analysisPayload);
+        List<String> risks = extractStringList(analysisPayload, "risks");
+        List<String> blockers = extractStringList(analysisPayload, "blockers");
+        List<String> questions = extractStringList(analysisPayload, "questions");
+        List<String> nextSteps = extractStringList(analysisPayload, "nextSteps", "next_steps");
+        String summary = resolveSummary(analysisPayload, analysisAvailable);
+
+        List<MeetingReportData.AnalyzedHighlightRow> analyzedHighlightRows = buildAnalyzedHighlights(
+                summary,
+                decisions,
+                actionItems,
+                risks,
+                blockers,
+                questions,
+                nextSteps
+        );
+
+        MeetingReportData.AnalysisMetadata analysisMetadata = new MeetingReportData.AnalysisMetadata(
+                normalizeStatus(analysisPayload.get("status")),
+                firstNonBlank(analysisPayload.get("promptVersion"), analysisPayload.get("prompt_version")),
+                firstNonBlank(analysisPayload.get("schemaVersion"), analysisPayload.get("schema_version")),
+                firstNonBlank(analysisPayload.get("transcriptHash"), analysisPayload.get("transcript_hash")),
+                safeCell(analysisPayload.get("confidence")),
+                firstNonBlank(analysisPayload.get("domainMode"), analysisPayload.get("domain_mode")),
+                safeCell(analysisPayload.get("source"))
+        );
+
+        return new MeetingReportData(
+                metadata,
+                summary,
+                decisions,
+                actionItems,
+                risks,
+                blockers,
+                questions,
+                nextSteps,
+                rawTranscriptPreview.rows(),
+                rawTranscriptPreview.previewLimited(),
+                analyzedHighlightRows,
+                analysisMetadata,
+                analysisAvailable
+        );
+    }
+
+    private RawTranscriptPreview buildRawTranscriptRowsForAppendix(List<Map<String, Object>> transcriptRows) {
+        if (transcriptRows == null || transcriptRows.isEmpty()) {
+            return new RawTranscriptPreview(List.of(), false);
+        }
+
+        List<RawTranscriptCandidate> candidates = new ArrayList<>();
+        for (Map<String, Object> row : transcriptRows) {
+            String text = row.get("text") == null ? "" : String.valueOf(row.get("text"));
+            if (text.isBlank()) {
+                continue;
+            }
+            double start = parseTimeSeconds(row.get("start_time"), row.get("startTime"));
+            double end = parseTimeSeconds(row.get("end_time"), row.get("endTime"));
+            String speaker = safeCell(row.get("speaker"));
+            candidates.add(new RawTranscriptCandidate(start, end, speaker, text));
+        }
+
+        candidates.sort((a, b) -> {
+            int byStart = Double.compare(a.startTimeSeconds(), b.startTimeSeconds());
+            if (byStart != 0) {
+                return byStart;
+            }
+            int byEnd = Double.compare(a.endTimeSeconds(), b.endTimeSeconds());
+            if (byEnd != 0) {
+                return byEnd;
+            }
+            int bySpeaker = a.speaker().compareToIgnoreCase(b.speaker());
+            if (bySpeaker != 0) {
+                return bySpeaker;
+            }
+            return a.rawText().compareToIgnoreCase(b.rawText());
+        });
+
+        List<RawTranscriptCandidate> previewCandidates = new ArrayList<>();
+        java.util.LinkedHashSet<String> seenNormalizedTexts = new java.util.LinkedHashSet<>();
+        boolean previewLimited = false;
+        for (RawTranscriptCandidate candidate : candidates) {
+            String normalizedText = normalizeTranscriptForCompare(candidate.rawText());
+            if (normalizedText.isBlank()) {
+                continue;
+            }
+            if (normalizedTokenCount(normalizedText) < 4) {
+                previewLimited = true;
+                continue;
+            }
+            if (isObviouslyIncompleteTranscriptRow(candidate.rawText(), normalizedText)) {
+                previewLimited = true;
+                continue;
+            }
+            if (!seenNormalizedTexts.add(normalizedText)) {
+                previewLimited = true;
+                continue;
+            }
+            previewCandidates.add(candidate);
+            if (previewCandidates.size() == 30) {
+                break;
+            }
+        }
+
+        if (previewCandidates.size() < seenNormalizedTexts.size() || candidates.size() > previewCandidates.size()) {
+            previewLimited = true;
+        }
+
+        List<MeetingReportData.RawTranscriptRow> rows = new ArrayList<>();
+        int index = 1;
+        for (RawTranscriptCandidate row : previewCandidates) {
+            rows.add(new MeetingReportData.RawTranscriptRow(
+                    index++,
+                    formatTranscriptTime(row.startTimeSeconds()),
+                    formatTranscriptTime(row.endTimeSeconds()),
+                    row.speaker(),
+                    row.rawText()
+            ));
+        }
+        return new RawTranscriptPreview(rows, previewLimited);
+    }
+
+    private boolean isObviouslyIncompleteTranscriptRow(String text, String normalizedText) {
+        String trimmed = text == null ? "" : text.trim();
+        if (trimmed.isBlank()) {
+            return true;
+        }
+        if (normalizedTokenCount(normalizedText) < 4) {
+            return true;
+        }
+        char lastCharacter = trimmed.charAt(trimmed.length() - 1);
+        boolean endsLikeSentence = lastCharacter == '.' || lastCharacter == '!' || lastCharacter == '?';
+        if (endsLikeSentence) {
+            return false;
+        }
+        return trimmed.length() < 80;
+    }
+
+    private int normalizedTokenCount(String normalizedValue) {
+        if (normalizedValue == null || normalizedValue.isBlank()) {
+            return 0;
+        }
+        return normalizedValue.trim().split("\\s+").length;
+    }
+
+    private List<RawTranscriptCandidate> deduplicateExactCandidates(List<RawTranscriptCandidate> candidates) {
+        if (candidates.isEmpty()) {
+            return List.of();
+        }
+
+        List<RawTranscriptCandidate> deduplicated = new ArrayList<>();
+        for (RawTranscriptCandidate candidate : candidates) {
+            String currentNormalized = normalizeTranscriptForCompare(candidate.rawText());
+            if (currentNormalized.isBlank()) {
+                continue;
+            }
+            RawTranscriptCandidate previous = deduplicated.isEmpty() ? null : deduplicated.get(deduplicated.size() - 1);
+            if (previous == null) {
+                deduplicated.add(candidate);
+                continue;
+            }
+            String previousNormalized = normalizeTranscriptForCompare(previous.rawText());
+            boolean sameText = previousNormalized.equals(currentNormalized);
+            boolean sameSpeaker = previous.speaker().equalsIgnoreCase(candidate.speaker());
+            boolean sameTiming = Math.abs(previous.startTimeSeconds() - candidate.startTimeSeconds()) <= 0.2d
+                    && Math.abs(resolveEnd(previous.startTimeSeconds(), previous.endTimeSeconds())
+                    - resolveEnd(candidate.startTimeSeconds(), candidate.endTimeSeconds())) <= 0.2d;
+            if (sameText && sameSpeaker && sameTiming) {
+                continue;
+            }
+            deduplicated.add(candidate);
+        }
+        return deduplicated;
+    }
+
+    private List<RawTranscriptCandidate> dropShortContainedFragments(List<RawTranscriptCandidate> rows) {
+        if (rows.size() <= 1) {
+            return rows;
+        }
+
+        List<RawTranscriptCandidate> filtered = new ArrayList<>();
+        for (int i = 0; i < rows.size(); i++) {
+            RawTranscriptCandidate current = rows.get(i);
+            String currentNormalized = normalizeTranscriptForCompare(current.rawText());
+            if (currentNormalized.isBlank()) {
+                continue;
+            }
+
+            boolean shortFragment = currentNormalized.length() < APPENDIX_SHORT_FRAGMENT_MAX_NORMALIZED_LEN;
+            if (!shortFragment) {
+                filtered.add(current);
+                continue;
+            }
+
+            if (isContainedInNearbyLonger(current, currentNormalized, rows, i)) {
+                continue;
+            }
+            filtered.add(current);
+        }
+        return filtered;
+    }
+
+    private boolean isContainedInNearbyLonger(
+            RawTranscriptCandidate current,
+            String currentNormalized,
+            List<RawTranscriptCandidate> rows,
+            int index
+    ) {
+        for (int i = 0; i < rows.size(); i++) {
+            if (i == index) {
+                continue;
+            }
+            RawTranscriptCandidate other = rows.get(i);
+            double timeDelta = Math.abs(other.startTimeSeconds() - current.startTimeSeconds());
+            if (timeDelta > APPENDIX_NEAR_DUPLICATE_WINDOW_SECONDS) {
+                continue;
+            }
+            String otherNormalized = normalizeTranscriptForCompare(other.rawText());
+            if (otherNormalized.length() <= currentNormalized.length()) {
+                continue;
+            }
+            if (otherNormalized.contains(currentNormalized)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private List<RawTranscriptCandidate> mergeCandidatesIntoBlocks(List<RawTranscriptCandidate> rows) {
+        if (rows.isEmpty()) {
+            return List.of();
+        }
+
+        List<RawTranscriptCandidate> blocks = new ArrayList<>();
+        RawTranscriptCandidate block = rows.get(0);
+        for (int i = 1; i < rows.size(); i++) {
+            RawTranscriptCandidate next = rows.get(i);
+            if (!canMergeIntoBlock(block, next)) {
+                blocks.add(block);
+                block = next;
+                continue;
+            }
+            block = mergeIntoBlock(block, next);
+        }
+        blocks.add(block);
+        return blocks;
+    }
+
+    private boolean canMergeIntoBlock(RawTranscriptCandidate currentBlock, RawTranscriptCandidate next) {
+        double blockStart = currentBlock.startTimeSeconds();
+        double blockEnd = resolveEnd(currentBlock.startTimeSeconds(), currentBlock.endTimeSeconds());
+        double nextStart = next.startTimeSeconds();
+        double nextEnd = resolveEnd(next.startTimeSeconds(), next.endTimeSeconds());
+
+        boolean nearOrOverlap = nextStart <= blockEnd + APPENDIX_MERGE_GAP_SECONDS;
+        if (!nearOrOverlap) {
+            return false;
+        }
+
+        boolean speakerCompatible = hasSpeakerContinuity(currentBlock.speaker(), next.speaker())
+                || Math.abs(nextStart - blockEnd) <= 1.0d;
+        if (!speakerCompatible) {
+            return false;
+        }
+
+        double mergedDuration = Math.max(blockEnd, nextEnd) - Math.min(blockStart, nextStart);
+        if (mergedDuration > APPENDIX_MAX_BLOCK_SECONDS) {
+            return false;
+        }
+
+        String mergedText = appendRawText(currentBlock.rawText(), next.rawText());
+        return mergedText.length() <= APPENDIX_MAX_BLOCK_CHARS;
+    }
+
+    private RawTranscriptCandidate mergeIntoBlock(RawTranscriptCandidate block, RawTranscriptCandidate next) {
+        double mergedStart = Math.min(block.startTimeSeconds(), next.startTimeSeconds());
+        double mergedEnd = Math.max(resolveEnd(block.startTimeSeconds(), block.endTimeSeconds()),
+                resolveEnd(next.startTimeSeconds(), next.endTimeSeconds()));
+        String mergedSpeaker = mergeSpeakerLabels(block.speaker(), next.speaker());
+        String mergedText = appendRawText(block.rawText(), next.rawText());
+        return new RawTranscriptCandidate(mergedStart, mergedEnd, mergedSpeaker, mergedText);
+    }
+
+    private boolean hasSpeakerContinuity(String left, String right) {
+        if (left == null || right == null) {
+            return true;
+        }
+        if ("N/A".equalsIgnoreCase(left) || "N/A".equalsIgnoreCase(right)) {
+            return true;
+        }
+        String[] leftParts = left.split("/");
+        String[] rightParts = right.split("/");
+        for (String lp : leftParts) {
+            String normalizedLeft = lp.trim();
+            for (String rp : rightParts) {
+                String normalizedRight = rp.trim();
+                if (!normalizedLeft.isBlank() && normalizedLeft.equalsIgnoreCase(normalizedRight)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private String mergeSpeakerLabels(String left, String right) {
+        if (left == null || left.isBlank() || "N/A".equalsIgnoreCase(left)) {
+            return safeCell(right);
+        }
+        if (right == null || right.isBlank() || "N/A".equalsIgnoreCase(right)) {
+            return safeCell(left);
+        }
+        if (left.equalsIgnoreCase(right)) {
+            return left;
+        }
+        LinkedHashSet<String> merged = new LinkedHashSet<>();
+        for (String part : left.split("/")) {
+            String value = part.trim();
+            if (!value.isBlank()) {
+                merged.add(value);
+            }
+        }
+        for (String part : right.split("/")) {
+            String value = part.trim();
+            if (!value.isBlank()) {
+                merged.add(value);
+            }
+        }
+        return String.join("/", merged);
+    }
+
+    private String appendRawText(String current, String next) {
+        String left = current == null ? "" : current.trim();
+        String right = next == null ? "" : next.trim();
+        if (left.isBlank()) {
+            return right;
+        }
+        if (right.isBlank()) {
+            return left;
+        }
+
+        String normalizedLeft = normalizeTranscriptForCompare(left);
+        String normalizedRight = normalizeTranscriptForCompare(right);
+        if (normalizedLeft.equals(normalizedRight)) {
+            return left.length() >= right.length() ? left : right;
+        }
+        if (normalizedLeft.contains(normalizedRight)) {
+            return left;
+        }
+        if (normalizedRight.contains(normalizedLeft)) {
+            return right;
+        }
+        return left + " " + right;
+    }
+
+    private String normalizeTranscriptForCompare(String value) {
+        if (value == null) {
+            return "";
+        }
+        String normalized = value.trim().toLowerCase(Locale.ROOT);
+        normalized = normalized.replaceAll("[\\p{Punct}]+", " ");
+        return normalized.replaceAll("\\s+", " ").trim();
+    }
+
+    private double parseTimeSeconds(Object primaryValue, Object fallbackValue) {
+        String raw = firstNonBlank(primaryValue, fallbackValue);
+        if (raw.isBlank()) {
+            return 0d;
+        }
+        try {
+            return Math.max(0d, Double.parseDouble(raw));
+        } catch (NumberFormatException ex) {
+            return 0d;
+        }
+    }
+
+    private double resolveEnd(double start, double end) {
+        return end >= start ? end : start;
+    }
+
+    private String formatTranscriptTime(double seconds) {
+        long totalSeconds = Math.max(0L, Math.round(seconds));
+        long hours = totalSeconds / 3600L;
+        long minutes = (totalSeconds % 3600L) / 60L;
+        long secs = totalSeconds % 60L;
+        if (hours > 0L) {
+            return String.format(Locale.ROOT, "%02d:%02d:%02d", hours, minutes, secs);
+        }
+        return String.format(Locale.ROOT, "%02d:%02d", minutes, secs);
+    }
+
+    private String detectTranscriptLanguage(List<Map<String, Object>> transcriptRows) {
+        if (transcriptRows == null || transcriptRows.isEmpty()) {
+            return "Unknown";
+        }
+
+        StringBuilder transcriptBuilder = new StringBuilder();
+        for (Map<String, Object> row : transcriptRows) {
+            if (row == null) {
+                continue;
+            }
+            Object text = row.get("text");
+            if (text != null) {
+                transcriptBuilder.append(String.valueOf(text)).append(' ');
+            }
+        }
+        String transcript = transcriptBuilder.toString().trim();
+        if (transcript.isBlank()) {
+            return "Unknown";
+        }
+
+        int englishScore = scoreEnglish(transcript);
+        int vietnameseScore = scoreVietnamese(transcript);
+        if (englishScore < 3 && vietnameseScore < 3) {
+            return "Unknown";
+        }
+        if (englishScore >= 3 && vietnameseScore >= 3) {
+            return "Mixed";
+        }
+        if (englishScore >= Math.max(3, vietnameseScore * 2)) {
+            return "English";
+        }
+        if (vietnameseScore >= Math.max(3, englishScore * 2)) {
+            return "Vietnamese";
+        }
+        if (englishScore > 0 && vietnameseScore > 0) {
+            return "Mixed";
+        }
+        return englishScore > 0 ? "English" : "Vietnamese";
+    }
+
+    private int scoreEnglish(String transcript) {
+        if (transcript == null || transcript.isBlank()) {
+            return 0;
+        }
+        String normalized = transcript.toLowerCase(Locale.ROOT);
+        String[] tokens = normalized.split("[^a-z]+");
+        if (tokens.length == 0) {
+            return 0;
+        }
+        Set<String> commonWords = Set.of(
+                "the", "and", "to", "of", "in", "for", "on", "with", "we", "you",
+                "is", "are", "this", "that", "it", "as", "at", "be", "from", "by"
+        );
+        int asciiWordCount = 0;
+        int commonWordHits = 0;
+        for (String token : tokens) {
+            if (token.length() < 2) {
+                continue;
+            }
+            asciiWordCount += 1;
+            if (commonWords.contains(token)) {
+                commonWordHits += 1;
+            }
+        }
+        return commonWordHits * 3 + Math.min(20, asciiWordCount / 6);
+    }
+
+    private int scoreVietnamese(String transcript) {
+        if (transcript == null || transcript.isBlank()) {
+            return 0;
+        }
+        String lower = transcript.toLowerCase(Locale.ROOT);
+        int diacriticHits = 0;
+        String vietnameseDiacritics = "ăâđêôơưáàảãạắằẳẵặấầẩẫậéèẻẽẹếềểễệíìỉĩịóòỏõọốồổỗộớờởỡợúùủũụứừửữựýỳỷỹỵ";
+        for (int i = 0; i < lower.length(); i++) {
+            if (vietnameseDiacritics.indexOf(lower.charAt(i)) >= 0) {
+                diacriticHits += 1;
+            }
+        }
+        int commonWordHits = 0;
+        Set<String> commonWords = Set.of(
+                "và", "là", "của", "cho", "không", "được", "trong", "với", "những", "chúng",
+                "tôi", "bạn", "anh", "chị", "đã", "đang", "sẽ", "này", "đó", "một"
+        );
+        for (String token : lower.split("[^\\p{L}]+")) {
+            if (commonWords.contains(token)) {
+                commonWordHits += 1;
+            }
+        }
+        return diacriticHits * 2 + commonWordHits * 3;
+    }
+
+    private List<MeetingReportData.AnalyzedHighlightRow> buildAnalyzedHighlights(
+            String summary,
+            List<String> decisions,
+            List<MeetingReportData.ReportActionItem> actionItems,
+            List<String> risks,
+            List<String> blockers,
+            List<String> questions,
+            List<String> nextSteps
+    ) {
+        List<MeetingReportData.AnalyzedHighlightRow> rows = new ArrayList<>();
+        int index = 1;
+
+        if (summary != null && !summary.isBlank() && !"Analysis not available".equals(summary) && !"N/A".equals(summary)) {
+            rows.add(new MeetingReportData.AnalyzedHighlightRow(
+                    index++,
+                    "Summary",
+                    summary,
+                    "N/A",
+                    "N/A",
+                    "N/A"
+            ));
+        }
+
+        index = appendStringHighlights(rows, index, "Decision", decisions);
+        index = appendActionItemHighlights(rows, index, actionItems);
+        index = appendStringHighlights(rows, index, "Risk", risks);
+        index = appendStringHighlights(rows, index, "Blocker", blockers);
+        index = appendStringHighlights(rows, index, "Question", questions);
+        appendStringHighlights(rows, index, "Next Step", nextSteps);
+
+        if (rows.size() > MAX_REPORT_HIGHLIGHT_ROWS) {
+            return List.copyOf(rows.subList(0, MAX_REPORT_HIGHLIGHT_ROWS));
+        }
+        return rows;
+    }
+
+    private List<MeetingReportData.ReportActionItem> extractReportActionItems(Map<String, Object> analysisPayload) {
+        Object raw = analysisPayload.get("businessActionItems");
+        if (!(raw instanceof List<?>)) {
+            raw = analysisPayload.get("action_items");
+        }
+        if (!(raw instanceof List<?>)) {
+            raw = analysisPayload.get("actionItems");
+        }
+        if (!(raw instanceof List<?> items) || items.isEmpty()) {
+            return List.of();
+        }
+
+        List<MeetingReportData.ReportActionItem> results = new ArrayList<>();
+        Set<String> seen = new LinkedHashSet<>();
+        for (Object item : items) {
+            String task = "";
+            String owner = "";
+            String dueDate = "";
+            String evidence = "";
+
+            if (item instanceof Map<?, ?> map) {
+                task = firstNonBlank(map.get("task"), map.get("description"), map.get("text"), map.get("title"));
+                owner = firstNonBlank(map.get("owner"));
+                dueDate = firstNonBlank(map.get("dueDate"), map.get("due_date"), map.get("deadline"));
+                evidence = firstNonBlank(map.get("evidence"));
+            } else if (item != null) {
+                task = String.valueOf(item).trim();
+            }
+
+            if (task.isBlank()) {
+                continue;
+            }
+            String key = task.toLowerCase(Locale.ROOT);
+            if (seen.contains(key)) {
+                continue;
+            }
+            seen.add(key);
+            results.add(new MeetingReportData.ReportActionItem(
+                    task,
+                    safeCell(owner),
+                    safeCell(dueDate),
+                    safeCell(evidence)
+            ));
+        }
+        return results;
+    }
+
+    private List<String> extractStringList(Map<String, Object> payload, String... keys) {
+        for (String key : keys) {
+            Object value = payload.get(key);
+            if (!(value instanceof List<?> list) || list.isEmpty()) {
+                continue;
+            }
+            List<String> normalized = new ArrayList<>();
+            Set<String> seen = new LinkedHashSet<>();
+            for (Object item : list) {
+                String text = item == null ? "" : String.valueOf(item).trim();
+                if (text.isBlank()) {
+                    continue;
+                }
+                String lowered = text.toLowerCase(Locale.ROOT);
+                if (seen.contains(lowered)) {
+                    continue;
+                }
+                seen.add(lowered);
+                normalized.add(text);
+            }
+            if (!normalized.isEmpty()) {
+                return normalized;
+            }
+        }
+        return List.of();
+    }
+
+    private String resolveSummary(Map<String, Object> analysisPayload, boolean analysisAvailable) {
+        String summary = firstNonBlank(
+                analysisPayload.get("meetingSummary"),
+                analysisPayload.get("summary")
+        );
+        if (!summary.isBlank()) {
+            return summary;
+        }
+        return analysisAvailable ? "N/A" : "Analysis not available";
+    }
+
+    private String firstNonBlank(Object... values) {
+        if (values == null) {
+            return "";
+        }
+        for (Object value : values) {
+            if (value == null) {
+                continue;
+            }
+            String text = String.valueOf(value).trim();
+            if (!text.isBlank()) {
+                return text;
+            }
+        }
+        return "";
+    }
+
+    private String safeCell(Object value) {
+        String text = firstNonBlank(value);
+        return text.isBlank() ? "N/A" : text;
+    }
+
+    private int appendStringHighlights(
+            List<MeetingReportData.AnalyzedHighlightRow> rows,
+            int index,
+            String category,
+            List<String> values
+    ) {
+        if (values == null || values.isEmpty()) {
+            return index;
+        }
+        for (String value : values) {
+            if (rows.size() >= MAX_REPORT_HIGHLIGHT_ROWS) {
+                return index;
+            }
+            rows.add(new MeetingReportData.AnalyzedHighlightRow(
+                    index++,
+                    category,
+                    safeCell(value),
+                    "N/A",
+                    "N/A",
+                    "N/A"
+            ));
+        }
+        return index;
+    }
+
+    private int appendActionItemHighlights(
+            List<MeetingReportData.AnalyzedHighlightRow> rows,
+            int index,
+            List<MeetingReportData.ReportActionItem> actionItems
+    ) {
+        if (actionItems == null || actionItems.isEmpty()) {
+            return index;
+        }
+        for (MeetingReportData.ReportActionItem actionItem : actionItems) {
+            if (rows.size() >= MAX_REPORT_HIGHLIGHT_ROWS) {
+                return index;
+            }
+            rows.add(new MeetingReportData.AnalyzedHighlightRow(
+                    index++,
+                    "Action Item",
+                    safeCell(actionItem.task()),
+                    safeCell(actionItem.owner()),
+                    safeCell(actionItem.dueDate()),
+                    safeCell(actionItem.evidence())
+            ));
+        }
+        return index;
     }
 
     private Map<String, Object> getAnalysisInternal(Long meetingId, String traceId, String authorization, boolean allowLazyTrigger) {
@@ -1187,6 +1921,17 @@ public class ProcessingService {
     }
 
     private record AnalysisTriggerResult(String status, String errorCode, int retryAfterSeconds) {
+    }
+
+    private record RawTranscriptPreview(List<MeetingReportData.RawTranscriptRow> rows, boolean previewLimited) {
+    }
+
+    private record RawTranscriptCandidate(
+            double startTimeSeconds,
+            double endTimeSeconds,
+            String speaker,
+            String rawText
+    ) {
     }
 
     private void updateMetricsForState(Long meetingId, String status, Map<String, Object> state) {

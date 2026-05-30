@@ -5,8 +5,12 @@ import java.util.Map;
 import java.util.UUID;
 
 import org.slf4j.MDC;
+import org.springframework.core.io.ByteArrayResource;
+import org.springframework.core.io.Resource;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.CrossOrigin;
@@ -134,6 +138,26 @@ public class ProcessingController {
             @RequestHeader(HttpHeaders.AUTHORIZATION) String authorization) {
         requirePrincipal();
         return new AnalysisResponse(meetingId, processingService.getAnalysisReadOnly(meetingId, ensureTraceId(traceId), authorization));
+    }
+
+    @GetMapping("/{meetingId}/report")
+    public ResponseEntity<Resource> exportReport(
+            @PathVariable Long meetingId,
+            @RequestParam(defaultValue = "docx") String format,
+            @RequestHeader(value = "x-trace-id", required = false) String traceId,
+            @RequestHeader(HttpHeaders.AUTHORIZATION) String authorization) {
+        requirePrincipal();
+        if (!"docx".equalsIgnoreCase(format)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Only docx format is supported");
+        }
+
+        byte[] reportBytes = processingService.generateMeetingReportDocx(meetingId, ensureTraceId(traceId), authorization);
+        String filename = "meeting-" + meetingId + "-report.docx";
+        return ResponseEntity.ok()
+                .contentType(MediaType.parseMediaType("application/vnd.openxmlformats-officedocument.wordprocessingml.document"))
+                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + filename + "\"")
+                .contentLength(reportBytes.length)
+                .body(new ByteArrayResource(reportBytes));
     }
 
     private UserPrincipal requirePrincipal() {

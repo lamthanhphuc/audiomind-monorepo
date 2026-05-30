@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
   deleteMeeting,
+  downloadMeetingReport,
   getMeetingDetail,
   getSavedAnalysis,
   getTranscript,
@@ -99,6 +100,8 @@ export default function MeetingHistoryScene() {
   const [renameValue, setRenameValue] = useState('')
   const [renameBusy, setRenameBusy] = useState(false)
   const [deleteBusy, setDeleteBusy] = useState(false)
+  const [exportBusy, setExportBusy] = useState(false)
+  const [exportError, setExportError] = useState<string | null>(null)
   const [reloadTick, setReloadTick] = useState(0)
 
   const selectedMeetingSummary = useMemo(() => {
@@ -272,6 +275,30 @@ export default function MeetingHistoryScene() {
     }
   }
 
+  const handleExport = async () => {
+    if (!selectedMeetingSummary || detail.transcriptState !== 'ready') {
+      return
+    }
+
+    setExportBusy(true)
+    setExportError(null)
+    try {
+      const { blob, filename } = await downloadMeetingReport(selectedMeetingSummary.id, 'docx')
+      const objectUrl = URL.createObjectURL(blob)
+      const anchor = document.createElement('a')
+      anchor.href = objectUrl
+      anchor.download = filename
+      document.body.appendChild(anchor)
+      anchor.click()
+      anchor.remove()
+      URL.revokeObjectURL(objectUrl)
+    } catch (error) {
+      setExportError(error instanceof Error ? error.message : 'Không thể xuất report')
+    } finally {
+      setExportBusy(false)
+    }
+  }
+
   const meetingCards = meetings.map((meeting) => ({
     id: meeting.id,
     title: getMeetingLabel(meeting),
@@ -393,8 +420,22 @@ export default function MeetingHistoryScene() {
                   <button type="button" onClick={handleDelete} disabled={deleteBusy} data-testid="meeting-delete-submit">
                     {deleteBusy ? 'Đang xoá...' : 'Xoá mềm'}
                   </button>
+                  <button
+                    type="button"
+                    onClick={handleExport}
+                    disabled={exportBusy || detail.transcriptState !== 'ready'}
+                    data-testid="meeting-export-report"
+                  >
+                    {exportBusy ? 'Đang xuất...' : 'Export report'}
+                  </button>
                 </div>
                 {listError && <ErrorState title="Thao tác thất bại" message={listError} />}
+                {exportError && <ErrorState title="Xuất report thất bại" message={exportError} />}
+                {detail.transcriptState !== 'ready' && (
+                  <p style={{ margin: 0, color: '#64748b', fontSize: '12px' }} data-testid="meeting-export-hint">
+                    Cần transcript đã lưu để export report.
+                  </p>
+                )}
               </div>
 
               <div style={{ display: 'grid', gap: '16px' }}>
