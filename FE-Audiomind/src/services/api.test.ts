@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { deleteMeeting, getMeetingDetail, getSavedAnalysis, listMeetings, listMeetingsWithParams, renameMeeting, startProcessingByPath, uploadToMeetingApi } from './api'
+import { deleteMeeting, downloadMeetingReport, getMeetingDetail, getSavedAnalysis, listMeetings, listMeetingsWithParams, renameMeeting, startProcessingByPath, uploadToMeetingApi } from './api'
 
 describe('upload language request wiring', () => {
   const fetchMock = vi.fn()
@@ -112,5 +112,25 @@ describe('upload language request wiring', () => {
     const urls = fetchMock.mock.calls.map((call) => call[0] as string)
     expect(urls.some((url) => url.includes('/meetings/7'))).toBe(true)
     expect(urls.some((url) => url.includes('/processing/7/analysis/saved'))).toBe(true)
+  })
+
+  it('downloads meeting report as blob and reads filename from content-disposition', async () => {
+    const blob = new Blob(['fake-docx'], {
+      type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    })
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      blob: async () => blob,
+      headers: new Headers({
+        'content-disposition': 'attachment; filename=\"meeting-7-report.docx\"',
+      }),
+    })
+
+    const result = await downloadMeetingReport(7, 'docx')
+    expect(result.blob).toBe(blob)
+    expect(result.filename).toBe('meeting-7-report.docx')
+
+    const [url] = fetchMock.mock.calls[0] as [string]
+    expect(url).toContain('/processing/7/report?format=docx')
   })
 })

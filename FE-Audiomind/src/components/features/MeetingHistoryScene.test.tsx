@@ -54,8 +54,22 @@ describe('MeetingHistoryScene', () => {
     vi.spyOn(api, 'getMeetingDetail').mockResolvedValue(baseMeeting as any)
     vi.spyOn(api, 'getTranscript').mockResolvedValue({ meeting_id: 7, transcripts: [] } as any)
     vi.spyOn(api, 'getSavedAnalysis').mockResolvedValue(baseAnalysis as any)
+    vi.spyOn(api, 'downloadMeetingReport').mockResolvedValue({
+      blob: new Blob(['fake-docx'], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' }),
+      filename: 'meeting-7-report.docx',
+    } as any)
     vi.spyOn(api, 'renameMeeting').mockResolvedValue({ ...baseMeeting, title: 'Renamed item' } as any)
     vi.spyOn(api, 'deleteMeeting').mockResolvedValue({ id: 7, deleted: true })
+    Object.defineProperty(URL, 'createObjectURL', {
+      configurable: true,
+      writable: true,
+      value: vi.fn(() => 'blob:mock-report'),
+    })
+    Object.defineProperty(URL, 'revokeObjectURL', {
+      configurable: true,
+      writable: true,
+      value: vi.fn(),
+    })
   })
 
   afterEach(() => {
@@ -228,5 +242,89 @@ describe('MeetingHistoryScene', () => {
     expect(container.textContent).toContain('Legacy row')
     expect(container.textContent).toContain('unknown')
     expect(container.textContent).not.toContain('Legacy row•vi•processing')
+  })
+
+  it('renders export report button in detail actions', async () => {
+    await act(async () => {
+      root.render(<MeetingHistoryScene />)
+    })
+    await flush()
+
+    const exportButton = container.querySelector('[data-testid="meeting-export-report"]') as HTMLButtonElement
+    expect(exportButton).toBeTruthy()
+  })
+
+  it('clicking export calls meeting report download helper', async () => {
+    ;(api.getTranscript as any).mockResolvedValueOnce({
+      meeting_id: 7,
+      transcripts: [{ speaker: 'SPEAKER_1', start_time: 0, end_time: 1, text: 'row 1' }],
+    })
+
+    await act(async () => {
+      root.render(<MeetingHistoryScene />)
+    })
+    await flush()
+
+    const exportButton = container.querySelector('[data-testid="meeting-export-report"]') as HTMLButtonElement
+    await act(async () => {
+      exportButton.click()
+    })
+    await flush()
+
+    expect(api.downloadMeetingReport).toHaveBeenCalledWith(7, 'docx')
+  })
+
+  it('shows loading state while exporting report', async () => {
+    ;(api.getTranscript as any).mockResolvedValueOnce({
+      meeting_id: 7,
+      transcripts: [{ speaker: 'SPEAKER_1', start_time: 0, end_time: 1, text: 'row 1' }],
+    })
+
+    let resolveExport: ((value: any) => void) | null = null
+    ;(api.downloadMeetingReport as any).mockImplementationOnce(() => new Promise((resolve) => {
+      resolveExport = resolve
+    }))
+
+    await act(async () => {
+      root.render(<MeetingHistoryScene />)
+    })
+    await flush()
+
+    const exportButton = container.querySelector('[data-testid="meeting-export-report"]') as HTMLButtonElement
+    await act(async () => {
+      exportButton.click()
+    })
+
+    expect(container.textContent).toContain('Đang xuất...')
+
+    await act(async () => {
+      resolveExport?.({
+        blob: new Blob(['done']),
+        filename: 'meeting-7-report.docx',
+      })
+    })
+    await flush()
+  })
+
+  it('shows error state when export fails', async () => {
+    ;(api.getTranscript as any).mockResolvedValueOnce({
+      meeting_id: 7,
+      transcripts: [{ speaker: 'SPEAKER_1', start_time: 0, end_time: 1, text: 'row 1' }],
+    })
+    ;(api.downloadMeetingReport as any).mockRejectedValueOnce(new Error('cannot-export'))
+
+    await act(async () => {
+      root.render(<MeetingHistoryScene />)
+    })
+    await flush()
+
+    const exportButton = container.querySelector('[data-testid="meeting-export-report"]') as HTMLButtonElement
+    await act(async () => {
+      exportButton.click()
+    })
+    await flush()
+
+    expect(container.textContent).toContain('Xuất report thất bại')
+    expect(container.textContent).toContain('cannot-export')
   })
 })

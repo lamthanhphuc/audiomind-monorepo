@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -14,11 +15,15 @@ import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.io.ByteArrayInputStream;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.stream.Collectors;
 
+import org.apache.poi.xwpf.extractor.XWPFWordExtractor;
+import org.apache.poi.xwpf.usermodel.XWPFDocument;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -31,6 +36,7 @@ import org.springframework.web.server.ResponseStatusException;
 import com.example.processingservice.client.AIServiceClient;
 import com.example.processingservice.client.MeetingServiceClient;
 import com.example.processingservice.controller.dto.ProcessingStatusResponse;
+import com.example.processingservice.service.report.MeetingReportDocxGenerator;
 
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -58,7 +64,8 @@ class ProcessingServiceTest {
                 aiServiceClient,
                 meetingServiceClient,
                 jobStateStore,
-            meterRegistry);
+                meterRegistry,
+                new MeetingReportDocxGenerator());
         processingService.initMetrics();
 
         when(meetingServiceClient.getMeetingById(anyLong(), anyString(), anyString()))
@@ -328,6 +335,305 @@ class ProcessingServiceTest {
                                 eq(AUTH_HEADER)
                 );
         }
+
+    @Test
+    void generateMeetingReportDocx_shouldIncludeAppendixAndAnalyzedHighlights() throws Exception {
+        Map<String, Object> transcriptEarly = new HashMap<>();
+        transcriptEarly.put("speaker", "SPEAKER_00");
+        transcriptEarly.put("text", "Let's review blockers and dependencies.");
+        transcriptEarly.put("start_time", 12.2d);
+        transcriptEarly.put("end_time", 14.0d);
+
+        Map<String, Object> transcriptMain = new HashMap<>();
+        transcriptMain.put("speaker", "SPEAKER_00");
+        transcriptMain.put("text", "We should finalize the launch plan.");
+        transcriptMain.put("start_time", 35.829998d);
+        transcriptMain.put("end_time", 37.120001d);
+
+        Map<String, Object> transcriptDuplicate = new HashMap<>();
+        transcriptDuplicate.put("speaker", "SPEAKER_00");
+        transcriptDuplicate.put("text", "We should finalize the launch plan.");
+        transcriptDuplicate.put("start_time", 35.91d);
+        transcriptDuplicate.put("end_time", 37.11d);
+
+        Map<String, Object> transcriptNearDuplicate = new HashMap<>();
+        transcriptNearDuplicate.put("speaker", "SPEAKER_00");
+        transcriptNearDuplicate.put("text", "finalize the launch plan");
+        transcriptNearDuplicate.put("start_time", 36.05d);
+        transcriptNearDuplicate.put("end_time", 36.81d);
+
+        Map<String, Object> analysis = new HashMap<>();
+        analysis.put("summary", "Discussion about release planning");
+        analysis.put("keyDecisions", List.of("Ship on Friday"));
+        analysis.put("risks", List.of("Vendor delay"));
+        analysis.put("nextSteps", List.of("Share launch notes"));
+        analysis.put("businessActionItems", List.of(
+                Map.of("task", "Prepare rollout checklist", "owner", "Alice", "dueDate", "2026-06-01", "evidence", "Confirmed by team")
+        ));
+        analysis.put("promptVersion", "gemini-business-v1");
+        analysis.put("schemaVersion", "gemini-business-v1");
+        analysis.put("status", "COMPLETED");
+
+        Map<String, Object> state = new HashMap<>();
+        state.put("status", "COMPLETED");
+        state.put("result", Map.of("transcripts", List.of(
+                transcriptMain,
+                transcriptDuplicate,
+                transcriptEarly,
+                transcriptNearDuplicate
+        ), "analysis", analysis));
+        when(jobStateStore.getJobState(920L)).thenReturn(Optional.of(state));
+        when(meetingServiceClient.getMeetingById(920L, "trace-920", AUTH_HEADER)).thenReturn(Map.of(
+                "id", 920L,
+                "title", "Weekly planning",
+                "createdAt", "2026-05-30T10:00:00Z",
+                "language", "multi",
+                "status", "completed",
+                "originalFileName", "planning.wav",
+                "ownerUserId", 77L,
+                "fileSize", 12345L
+        ));
+
+        byte[] report = processingService.generateMeetingReportDocx(920L, "trace-920", AUTH_HEADER);
+
+        assertTrue(report.length > 0);
+        try (XWPFDocument doc = new XWPFDocument(new ByteArrayInputStream(report));
+             XWPFWordExtractor extractor = new XWPFWordExtractor(doc)) {
+            String content = extractor.getText();
+            var tables = doc.getTables();
+            var appendixTable = tables.get(tables.size() - 1);
+            var appendixRows = appendixTable.getRows().stream()
+                    .skip(1)
+                    .map((row) -> row.getCell(3).getText().trim())
+                    .collect(Collectors.toList());
+            var appendixTimes = appendixTable.getRows().stream()
+                    .skip(1)
+                    .map((row) -> row.getCell(1).getText().trim())
+                    .collect(Collectors.toList());
+
+            assertTrue(content.contains("Recognition Mode"));
+            assertTrue(content.contains("multi"));
+            assertTrue(content.contains("Detected Transcript Language"));
+            assertTrue(content.contains("English"));
+            assertTrue(content.contains("Analyzed Highlights Table"));
+            assertTrue(content.contains("Appendix A — Transcript Evidence Preview"));
+            assertTrue(content.contains("This section shows a short preview of transcript evidence from saved STT output."));
+            assertTrue(content.contains("Preview limited because the saved transcript contains overlapping STT fragments."));
+            assertTrue(content.contains("Let's review blockers and dependencies."));
+            assertTrue(content.contains("We should finalize the launch plan."));
+            assertTrue(content.contains("Ship on Friday"));
+            assertTrue(content.contains("Prepare rollout checklist"));
+            assertTrue(content.contains("Vendor delay"));
+            assertTrue(content.contains("Share launch notes"));
+            assertTrue(content.contains("Action Item"));
+            assertTrue(!content.contains("35.829998"));
+            assertTrue(appendixRows.size() <= 30);
+            assertEquals(2, appendixRows.size());
+            assertTrue(appendixRows.contains("Let's review blockers and dependencies."));
+            assertTrue(appendixRows.contains("We should finalize the launch plan."));
+            assertTrue(!appendixRows.contains("finalize the launch plan"));
+            assertTrue(appendixTimes.contains("00:12–00:14"));
+            assertTrue(appendixTimes.contains("00:36–00:37"));
+            assertEquals(content.indexOf("We should finalize the launch plan."), content.lastIndexOf("We should finalize the launch plan."));
+            assertTrue(!content.contains("Cleaned/Analyzed Transcript Table"));
+            assertTrue(!content.contains("Mapped conservatively from saved transcript"));
+            assertTrue(!content.contains("Appendix A — Raw Transcript"));
+        }
+        verify(aiServiceClient, never()).analyzeRealtimeTranscript(
+                eq(920L),
+                anyString(),
+                eq("it"),
+                eq("realtime"),
+                anyString(),
+                anyString(),
+                anyString(),
+                eq("trace-920"),
+                eq(AUTH_HEADER)
+        );
+        verify(aiServiceClient, never()).processAudio(anyLong(), anyString(), anyString(), anyString(), any(), anyString(), anyString(), anyString());
+    }
+
+    @Test
+    void generateMeetingReportDocx_shouldAllowTranscriptOnlyWhenAnalysisMissing() throws Exception {
+        Map<String, Object> transcriptRow = new HashMap<>();
+        transcriptRow.put("speaker", "SPEAKER_01");
+        transcriptRow.put("text", "Transcript-only export is allowed.");
+        transcriptRow.put("start_time", 3.0d);
+        transcriptRow.put("end_time", 5.0d);
+
+        Map<String, Object> state = new HashMap<>();
+        state.put("status", "COMPLETED");
+        state.put("result", Map.of("transcripts", List.of(transcriptRow)));
+        when(jobStateStore.getJobState(921L)).thenReturn(Optional.of(state));
+        when(aiServiceClient.getAnalysis(921L, "trace-921")).thenThrow(new HttpClientErrorException(HttpStatus.NOT_FOUND));
+        when(meetingServiceClient.getMeetingById(921L, "trace-921", AUTH_HEADER)).thenReturn(Map.of(
+                "id", 921L,
+                "title", "Transcript only",
+                "createdAt", "2026-05-30T10:30:00Z",
+                "language", "vi",
+                "status", "completed"
+        ));
+
+        byte[] report = processingService.generateMeetingReportDocx(921L, "trace-921", AUTH_HEADER);
+
+        assertTrue(report.length > 0);
+        try (XWPFDocument doc = new XWPFDocument(new ByteArrayInputStream(report));
+             XWPFWordExtractor extractor = new XWPFWordExtractor(doc)) {
+            String content = extractor.getText();
+            assertTrue(content.contains("Transcript-only export is allowed."));
+            assertTrue(content.contains("Analysis not available"));
+            assertTrue(content.contains("No analyzed highlights available."));
+                        assertTrue(content.contains("Appendix A — Transcript Evidence Preview"));
+                        assertTrue(content.contains("This section shows a short preview of transcript evidence from saved STT output."));
+        }
+        verify(aiServiceClient, never()).analyzeRealtimeTranscript(
+                eq(921L),
+                anyString(),
+                eq("it"),
+                eq("realtime"),
+                anyString(),
+                anyString(),
+                anyString(),
+                eq("trace-921"),
+                eq(AUTH_HEADER)
+        );
+    }
+
+    @Test
+    void generateMeetingReportDocx_shouldLimitTranscriptPreviewRowsToThirty() throws Exception {
+        List<Map<String, Object>> transcriptRows = new java.util.ArrayList<>();
+        for (int i = 1; i <= 35; i++) {
+            transcriptRows.add(Map.of(
+                    "speaker", "SPEAKER_" + (i % 3),
+                    "text", "Preview sentence number " + i + " includes enough words for the preview.",
+                    "start_time", (double) (i * 5),
+                    "end_time", (double) (i * 5 + 2)
+            ));
+        }
+        transcriptRows.add(Map.of(
+                "speaker", "SPEAKER_DUP",
+                "text", "Preview sentence number 5 includes enough words for the preview.",
+                "start_time", 999.0d,
+                "end_time", 1001.0d
+        ));
+        transcriptRows.add(Map.of(
+                "speaker", "SPEAKER_SHORT",
+                "text", "To have",
+                "start_time", 1002.0d,
+                "end_time", 1003.0d
+        ));
+
+        Map<String, Object> state = new HashMap<>();
+        state.put("status", "COMPLETED");
+        state.put("result", Map.of("transcripts", transcriptRows, "analysis", Map.of("summary", "ok", "status", "COMPLETED")));
+        when(jobStateStore.getJobState(924L)).thenReturn(Optional.of(state));
+        when(meetingServiceClient.getMeetingById(924L, "trace-924", AUTH_HEADER)).thenReturn(Map.of(
+                "id", 924L,
+                "title", "Preview limit check",
+                "createdAt", "2026-05-30T10:40:00Z",
+                "language", "multi",
+                "status", "completed"
+        ));
+
+        byte[] report = processingService.generateMeetingReportDocx(924L, "trace-924", AUTH_HEADER);
+
+        try (XWPFDocument doc = new XWPFDocument(new ByteArrayInputStream(report));
+             XWPFWordExtractor extractor = new XWPFWordExtractor(doc)) {
+            String content = extractor.getText();
+            var tables = doc.getTables();
+            var appendixTable = tables.get(tables.size() - 1);
+            var appendixTimes = appendixTable.getRows().stream()
+                    .skip(1)
+                    .map((row) -> row.getCell(1).getText().trim())
+                    .collect(Collectors.toList());
+            var appendixRows = appendixTable.getRows().stream()
+                    .skip(1)
+                    .map((row) -> row.getCell(3).getText().trim())
+                    .collect(Collectors.toList());
+            assertTrue(content.contains("Appendix A — Transcript Evidence Preview"));
+            assertEquals(30, appendixRows.size());
+            assertEquals(30, appendixTimes.size());
+            assertTrue(!content.contains("To have"));
+            assertTrue(!content.contains("not big problem. not a big"));
+        }
+    }
+
+    @Test
+    void generateMeetingReportDocx_shouldCollapseSameTextAcrossSpeakersWithinWindow() throws Exception {
+        Map<String, Object> speakerOne = new HashMap<>();
+        speakerOne.put("speaker", "SPEAKER_1");
+        speakerOne.put("text", "The technique is very simple.");
+        speakerOne.put("start_time", 10.0d);
+        speakerOne.put("end_time", 12.0d);
+
+        Map<String, Object> speakerTwo = new HashMap<>();
+        speakerTwo.put("speaker", "SPEAKER_2");
+        speakerTwo.put("text", "The technique is very simple.");
+        speakerTwo.put("start_time", 25.0d);
+        speakerTwo.put("end_time", 27.0d);
+
+        Map<String, Object> state = new HashMap<>();
+        state.put("status", "COMPLETED");
+        state.put("result", Map.of("transcripts", List.of(speakerOne, speakerTwo), "analysis", Map.of("summary", "ok", "status", "COMPLETED")));
+        when(jobStateStore.getJobState(925L)).thenReturn(Optional.of(state));
+        when(meetingServiceClient.getMeetingById(925L, "trace-925", AUTH_HEADER)).thenReturn(Map.of(
+                "id", 925L,
+                "title", "Speaker collapse",
+                "createdAt", "2026-05-30T10:50:00Z",
+                "language", "multi",
+                "status", "completed"
+        ));
+
+        byte[] report = processingService.generateMeetingReportDocx(925L, "trace-925", AUTH_HEADER);
+
+        try (XWPFDocument doc = new XWPFDocument(new ByteArrayInputStream(report));
+             XWPFWordExtractor extractor = new XWPFWordExtractor(doc)) {
+            String content = extractor.getText();
+            assertTrue(content.contains("The technique is very simple."));
+            var tables = doc.getTables();
+            var appendixTable = tables.get(tables.size() - 1);
+            var appendixRows = appendixTable.getRows().stream()
+                    .skip(1)
+                    .map((row) -> row.getCell(3).getText().trim())
+                    .collect(Collectors.toList());
+            assertEquals(1, appendixRows.size());
+            assertTrue(appendixRows.contains("The technique is very simple."));
+        }
+    }
+
+    @Test
+    void generateMeetingReportDocx_shouldRejectForbiddenMeetingAccess() {
+        when(meetingServiceClient.getMeetingById(922L, "trace-922", AUTH_HEADER))
+                .thenThrow(new HttpClientErrorException(HttpStatus.FORBIDDEN));
+
+        ResponseStatusException ex = assertThrows(
+                ResponseStatusException.class,
+                () -> processingService.generateMeetingReportDocx(922L, "trace-922", AUTH_HEADER)
+        );
+
+        assertEquals(HttpStatus.FORBIDDEN, ex.getStatusCode());
+    }
+
+    @Test
+    void generateMeetingReportDocx_shouldReturnNotFoundWhenTranscriptAndAnalysisMissing() {
+        when(jobStateStore.getJobState(923L)).thenReturn(Optional.empty());
+        when(aiServiceClient.getTranscript(923L, "trace-923")).thenReturn(Map.of(
+                "meeting_id", 923L,
+                "transcripts", List.of()
+        ));
+        when(aiServiceClient.getAnalysis(923L, "trace-923")).thenThrow(new HttpClientErrorException(HttpStatus.NOT_FOUND));
+        when(meetingServiceClient.getMeetingById(923L, "trace-923", AUTH_HEADER)).thenReturn(Map.of(
+                "id", 923L,
+                "title", "No data"
+        ));
+
+        ResponseStatusException ex = assertThrows(
+                ResponseStatusException.class,
+                () -> processingService.generateMeetingReportDocx(923L, "trace-923", AUTH_HEADER)
+        );
+
+        assertEquals(HttpStatus.NOT_FOUND, ex.getStatusCode());
+    }
 
     @Test
     void getAnalysis_shouldFallbackToAiServiceWhenStateExistsButAnalysisMissing() {
