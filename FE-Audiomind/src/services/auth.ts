@@ -17,6 +17,18 @@ export type AuthResponse = {
   expiresInSeconds: number
 }
 
+export type RegisterRequest = {
+  username: string
+  email: string
+  password: string
+}
+
+export type RegisterResponse = {
+  userId: number
+  accessToken?: string
+  expiresInSeconds?: number
+}
+
 const USER_API_BASE = resolveUserApiBase()
 const TOKEN_STORAGE_KEY = 'audiomind.access_token'
 const TOKEN_EXPIRY_STORAGE_KEY = 'audiomind.access_token_expiry'
@@ -131,6 +143,22 @@ export const login = async (payload: LoginRequest): Promise<AuthResponse> => {
   }
 
   return data
+}
+
+export const register = async (payload: RegisterRequest): Promise<RegisterResponse> => {
+  const response = await fetch(`${USER_API_BASE}/api/users/register`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  })
+
+  if (!response.ok) {
+    throw new Error(`Register failed: ${response.status}`)
+  }
+
+  return response.json() as Promise<RegisterResponse>
 }
 
 export const logout = async (): Promise<void> => {

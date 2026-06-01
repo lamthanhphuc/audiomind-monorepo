@@ -122,6 +122,42 @@ public class ProcessingController {
         return new TranscriptResponse(meetingId, processingService.getTranscript(meetingId, ensureTraceId(traceId), authorization));
     }
 
+    @GetMapping("/{meetingId}/transcript/export")
+    public ResponseEntity<Resource> exportTranscript(
+            @PathVariable Long meetingId,
+            @RequestParam(defaultValue = "txt") String format,
+            @RequestParam(defaultValue = "readable") String mode,
+            @RequestHeader(value = "x-trace-id", required = false) String traceId,
+            @RequestHeader(HttpHeaders.AUTHORIZATION) String authorization) {
+        requirePrincipal();
+
+        String normalizedFormat = format == null ? "txt" : format.trim().toLowerCase();
+        String normalizedMode = mode == null ? "readable" : mode.trim().toLowerCase();
+        byte[] exportBytes;
+        String filename;
+        MediaType mediaType;
+
+        switch (normalizedFormat) {
+            case "txt" -> {
+                exportBytes = processingService.generateMeetingTranscriptTxt(meetingId, ensureTraceId(traceId), authorization, normalizedMode);
+                filename = "meeting-" + meetingId + "-transcript-" + normalizedMode + ".txt";
+                mediaType = MediaType.parseMediaType("text/plain; charset=utf-8");
+            }
+            case "csv" -> {
+                exportBytes = processingService.generateMeetingTranscriptCsv(meetingId, ensureTraceId(traceId), authorization, normalizedMode);
+                filename = "meeting-" + meetingId + "-transcript-" + normalizedMode + ".csv";
+                mediaType = MediaType.parseMediaType("text/csv; charset=utf-8");
+            }
+            default -> throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Only txt and csv formats are supported");
+        }
+
+        return ResponseEntity.ok()
+                .contentType(mediaType)
+                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + filename + "\"")
+                .contentLength(exportBytes.length)
+                .body(new ByteArrayResource(exportBytes));
+    }
+
     @GetMapping("/{meetingId}/analysis")
     public AnalysisResponse analysis(
             @PathVariable Long meetingId,

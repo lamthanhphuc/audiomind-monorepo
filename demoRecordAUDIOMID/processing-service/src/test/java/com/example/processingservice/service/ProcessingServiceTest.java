@@ -16,6 +16,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.io.ByteArrayInputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -275,6 +276,367 @@ class ProcessingServiceTest {
     }
 
     @Test
+    void generateMeetingTranscriptTxt_shouldUseReadableTranscriptByDefault() {
+        Map<String, Object> mainRow = new HashMap<>();
+        mainRow.put("speaker", "SPEAKER_1");
+        mainRow.put("text", "We should finalize the launch plan.");
+        mainRow.put("start_time", 35.829998d);
+        mainRow.put("end_time", 37.120001d);
+
+        Map<String, Object> duplicateRow = new HashMap<>();
+        duplicateRow.put("speaker", "SPEAKER_2");
+        duplicateRow.put("text", "We should finalize the launch plan.");
+        duplicateRow.put("start_time", 35.91d);
+        duplicateRow.put("end_time", 37.11d);
+
+        Map<String, Object> shortRow = new HashMap<>();
+        shortRow.put("speaker", "SPEAKER_2");
+        shortRow.put("text", "launch plan");
+        shortRow.put("start_time", 36.05d);
+        shortRow.put("end_time", 36.81d);
+
+        Map<String, Object> state = new HashMap<>();
+        state.put("status", "COMPLETED");
+        state.put("result", Map.of("transcripts", List.of(mainRow, duplicateRow, shortRow)));
+
+        when(jobStateStore.getJobState(900L)).thenReturn(Optional.of(state));
+        when(meetingServiceClient.getMeetingById(900L, "trace-txt", AUTH_HEADER)).thenReturn(Map.of(
+                "id", 900L,
+                "title", "Weekly planning",
+                "language", "en",
+                "status", "completed"
+        ));
+
+        String content = new String(processingService.generateMeetingTranscriptTxt(900L, "trace-txt", AUTH_HEADER), StandardCharsets.UTF_8);
+
+        assertTrue(content.contains("Meeting: Weekly planning"));
+        assertTrue(content.contains("Transcript export mode: readable"));
+        assertTrue(content.contains("Recognition Mode: en"));
+        assertTrue(content.contains("Detected Transcript Language:"));
+        assertTrue(content.contains("Readable transcript export generated from saved STT output. Obvious repeated fragments may be collapsed for readability. This is a best-effort readable export; full canonical transcript cleanup is planned separately. Raw export is available with mode=raw."));
+        assertTrue(content.contains("[00:36–00:37] SPEAKER_1: We should finalize the launch plan."));
+        assertTrue(!content.contains("[00:36–00:37] SPEAKER_2: launch plan"));
+        verify(aiServiceClient, never()).getTranscript(anyLong(), anyString());
+    }
+
+    @Test
+    void generateMeetingTranscriptTxt_shouldCollapseContainedReadableFragmentsLongerThanTinyThreshold() {
+        Map<String, Object> longerRow = new HashMap<>();
+        longerRow.put("speaker", "SPEAKER_1");
+        longerRow.put("text", "The customer requested a faster onboarding flow for new users.");
+        longerRow.put("start_time", 20.0d);
+        longerRow.put("end_time", 24.0d);
+
+        Map<String, Object> containedRow = new HashMap<>();
+        containedRow.put("speaker", "SPEAKER_2");
+        containedRow.put("text", "requested a faster onboarding flow for new users");
+        containedRow.put("start_time", 20.6d);
+        containedRow.put("end_time", 23.2d);
+
+        Map<String, Object> distinctRow = new HashMap<>();
+        distinctRow.put("speaker", "SPEAKER_2");
+        distinctRow.put("text", "The launch checklist is still pending legal approval.");
+        distinctRow.put("start_time", 29.0d);
+        distinctRow.put("end_time", 33.0d);
+
+        Map<String, Object> state = new HashMap<>();
+        state.put("status", "COMPLETED");
+        state.put("result", Map.of("transcripts", List.of(longerRow, containedRow, distinctRow)));
+
+        when(jobStateStore.getJobState(9002L)).thenReturn(Optional.of(state));
+        when(meetingServiceClient.getMeetingById(9002L, "trace-txt-readable-collapse", AUTH_HEADER)).thenReturn(Map.of(
+                "id", 9002L,
+                "title", "Readable collapse check",
+                "language", "en",
+                "status", "completed"
+        ));
+
+        String content = new String(
+                processingService.generateMeetingTranscriptTxt(9002L, "trace-txt-readable-collapse", AUTH_HEADER),
+                StandardCharsets.UTF_8
+        );
+
+        assertTrue(content.contains("The customer requested a faster onboarding flow for new users."));
+        assertTrue(content.contains("The launch checklist is still pending legal approval."));
+        assertTrue(!content.contains("[00:21–00:23] SPEAKER_2: requested a faster onboarding flow for new users"));
+        verify(aiServiceClient, never()).getTranscript(anyLong(), anyString());
+    }
+
+    @Test
+    void generateMeetingTranscriptTxt_shouldPreserveRawTranscriptWhenRequested() {
+        Map<String, Object> firstRow = new HashMap<>();
+        firstRow.put("speaker", "SPEAKER_1");
+        firstRow.put("text", "raw txt row 1");
+        firstRow.put("start_time", 1.5d);
+        firstRow.put("end_time", 4.0d);
+
+        Map<String, Object> secondRow = new HashMap<>();
+        secondRow.put("speaker", "SPEAKER_2");
+        secondRow.put("text", "raw txt row 2");
+        secondRow.put("start_time", 4.5d);
+        secondRow.put("end_time", 6.0d);
+
+        Map<String, Object> state = new HashMap<>();
+        state.put("status", "COMPLETED");
+        state.put("result", Map.of("transcripts", List.of(firstRow, secondRow)));
+
+        when(jobStateStore.getJobState(9001L)).thenReturn(Optional.of(state));
+        when(meetingServiceClient.getMeetingById(9001L, "trace-txt-raw", AUTH_HEADER)).thenReturn(Map.of(
+                "id", 9001L,
+                "title", "Weekly planning",
+                "language", "en",
+                "status", "completed"
+        ));
+
+        String content = new String(processingService.generateMeetingTranscriptTxt(9001L, "trace-txt-raw", AUTH_HEADER, "raw"), StandardCharsets.UTF_8);
+
+        assertTrue(content.contains("Transcript export mode: raw"));
+        assertTrue(content.contains("Raw transcript export from saved STT output. May contain overlapping STT fragments."));
+        assertTrue(content.contains("[00:02–00:04] SPEAKER_1: raw txt row 1"));
+        assertTrue(content.contains("[00:05–00:06] SPEAKER_2: raw txt row 2"));
+        verify(aiServiceClient, never()).getTranscript(anyLong(), anyString());
+    }
+
+    @Test
+    void generateMeetingTranscriptCsv_shouldUseReadableTranscriptByDefault() {
+        Map<String, Object> firstRow = new HashMap<>();
+        firstRow.put("speaker", "SPEAKER_1");
+        firstRow.put("text", "raw csv row 1");
+        firstRow.put("start_time", 1.0d);
+        firstRow.put("end_time", 3.0d);
+
+        Map<String, Object> duplicateRow = new HashMap<>();
+        duplicateRow.put("speaker", "SPEAKER_2");
+        duplicateRow.put("text", "raw csv row 1");
+        duplicateRow.put("start_time", 1.1d);
+        duplicateRow.put("end_time", 3.1d);
+
+        Map<String, Object> shortRow = new HashMap<>();
+        shortRow.put("speaker", "SPEAKER_3");
+        shortRow.put("text", "raw csv row");
+        shortRow.put("start_time", 3.5d);
+        shortRow.put("end_time", 4.0d);
+
+        Map<String, Object> state = new HashMap<>();
+        state.put("status", "COMPLETED");
+        state.put("result", Map.of("transcripts", List.of(firstRow, duplicateRow, shortRow)));
+
+        when(jobStateStore.getJobState(901L)).thenReturn(Optional.of(state));
+        when(meetingServiceClient.getMeetingById(901L, "trace-csv", AUTH_HEADER)).thenReturn(Map.of(
+                "id", 901L,
+                "title", "Weekly planning",
+                "language", "vi",
+                "status", "completed"
+        ));
+
+        String content = new String(processingService.generateMeetingTranscriptCsv(901L, "trace-csv", AUTH_HEADER), StandardCharsets.UTF_8);
+
+        assertTrue(content.startsWith("index,startTime,endTime,speaker,text"));
+        assertTrue(content.contains("1,\"00:01\",\"00:03\",\"SPEAKER_1\",\"raw csv row 1\""));
+        assertEquals(2, content.lines().count());
+        assertTrue(!content.contains("SPEAKER_3"));
+        verify(aiServiceClient, never()).getTranscript(anyLong(), anyString());
+    }
+
+    @Test
+    void generateMeetingTranscriptCsv_shouldPreserveRawTranscriptWhenRequested() {
+        Map<String, Object> firstRow = new HashMap<>();
+        firstRow.put("speaker", "SPEAKER_1");
+        firstRow.put("text", "raw csv row 1");
+        firstRow.put("start_time", 1.0d);
+        firstRow.put("end_time", 3.0d);
+
+        Map<String, Object> secondRow = new HashMap<>();
+        secondRow.put("speaker", "SPEAKER_2");
+        secondRow.put("text", "raw csv, row 2 \"quoted\"");
+        secondRow.put("start_time", 3.5d);
+        secondRow.put("end_time", 7.25d);
+
+        Map<String, Object> state = new HashMap<>();
+        state.put("status", "COMPLETED");
+        state.put("result", Map.of("transcripts", List.of(firstRow, secondRow)));
+
+        when(jobStateStore.getJobState(9011L)).thenReturn(Optional.of(state));
+        when(meetingServiceClient.getMeetingById(9011L, "trace-csv-raw", AUTH_HEADER)).thenReturn(Map.of(
+                "id", 9011L,
+                "title", "Weekly planning",
+                "language", "vi",
+                "status", "completed"
+        ));
+
+        String content = new String(processingService.generateMeetingTranscriptCsv(9011L, "trace-csv-raw", AUTH_HEADER, "raw"), StandardCharsets.UTF_8);
+
+        assertTrue(content.startsWith("index,startTime,endTime,speaker,text"));
+        assertTrue(content.contains("1,\"00:01\",\"00:03\",\"SPEAKER_1\",\"raw csv row 1\""));
+        assertTrue(content.contains("2,\"00:04\",\"00:07\",\"SPEAKER_2\",\"raw csv, row 2 \""));
+        assertTrue(content.contains("\"\"quoted\"\""));
+        verify(aiServiceClient, never()).getTranscript(anyLong(), anyString());
+    }
+
+    @Test
+    void generateMeetingTranscriptTxt_shouldUseAiPersistedTranscriptWhenJobStateMissing() {
+        when(jobStateStore.getJobState(903L)).thenReturn(Optional.empty());
+        when(meetingServiceClient.getMeetingById(903L, "trace-ai-readable", AUTH_HEADER)).thenReturn(Map.of(
+                "id", 903L,
+                "title", "AI persisted transcript",
+                "language", "en",
+                "status", "completed"
+        ));
+        when(aiServiceClient.getTranscript(903L, "trace-ai-readable")).thenReturn(Map.of(
+                "meeting_id", 903L,
+                "transcripts", List.of(
+                        Map.of(
+                                "speaker", "SPEAKER_1",
+                                "text", "We should publish the onboarding update this week.",
+                                "start_time", 12.0d,
+                                "end_time", 15.0d
+                        ),
+                        Map.of(
+                                "speaker", "SPEAKER_2",
+                                "text", "onboarding update",
+                                "start_time", 12.4d,
+                                "end_time", 13.2d
+                        )
+                )
+        ));
+
+        String content = new String(
+                processingService.generateMeetingTranscriptTxt(903L, "trace-ai-readable", AUTH_HEADER, "readable"),
+                StandardCharsets.UTF_8
+        );
+
+        assertTrue(content.contains("We should publish the onboarding update this week."));
+        assertTrue(!content.contains("[00:12–00:13] SPEAKER_2: onboarding update"));
+        verify(aiServiceClient).getTranscript(903L, "trace-ai-readable");
+        verify(aiServiceClient, never()).processAudio(anyLong(), anyString(), anyString(), anyString(), any(), anyString(), anyString(), anyString());
+        verify(aiServiceClient, never()).analyzeRealtimeTranscript(
+                anyLong(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString()
+        );
+    }
+
+    @Test
+    void generateMeetingTranscriptCsv_shouldUseAiPersistedTranscriptWhenJobStateMissingAndRawRequested() {
+        when(jobStateStore.getJobState(904L)).thenReturn(Optional.empty());
+        when(meetingServiceClient.getMeetingById(904L, "trace-ai-raw-csv", AUTH_HEADER)).thenReturn(Map.of(
+                "id", 904L,
+                "title", "AI persisted transcript raw",
+                "language", "en",
+                "status", "completed"
+        ));
+        when(aiServiceClient.getTranscript(904L, "trace-ai-raw-csv")).thenReturn(Map.of(
+                "meeting_id", 904L,
+                "transcripts", List.of(
+                        Map.of(
+                                "speaker", "SPEAKER_1",
+                                "text", "raw row from ai source",
+                                "start_time", 2.0d,
+                                "end_time", 3.0d
+                        ),
+                        Map.of(
+                                "speaker", "SPEAKER_2",
+                                "text", "second raw row from ai source",
+                                "start_time", 3.2d,
+                                "end_time", 4.1d
+                        )
+                )
+        ));
+
+        String content = new String(
+                processingService.generateMeetingTranscriptCsv(904L, "trace-ai-raw-csv", AUTH_HEADER, "raw"),
+                StandardCharsets.UTF_8
+        );
+
+        assertTrue(content.contains("1,\"00:02\",\"00:03\",\"SPEAKER_1\",\"raw row from ai source\""));
+        assertTrue(content.contains("2,\"00:03\",\"00:04\",\"SPEAKER_2\",\"second raw row from ai source\""));
+        verify(aiServiceClient).getTranscript(904L, "trace-ai-raw-csv");
+        verify(aiServiceClient, never()).processAudio(anyLong(), anyString(), anyString(), anyString(), any(), anyString(), anyString(), anyString());
+        verify(aiServiceClient, never()).analyzeRealtimeTranscript(
+                anyLong(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString()
+        );
+    }
+
+    @Test
+    void generateMeetingTranscriptTxt_shouldPreferProcessingJobStateOverAiPersistedTranscript() {
+        Map<String, Object> stateRow = new HashMap<>();
+        stateRow.put("speaker", "SPEAKER_1");
+        stateRow.put("text", "row from processing job state");
+        stateRow.put("start_time", 1.0d);
+        stateRow.put("end_time", 2.0d);
+
+        Map<String, Object> state = new HashMap<>();
+        state.put("status", "COMPLETED");
+        state.put("result", Map.of("transcripts", List.of(stateRow)));
+
+        when(jobStateStore.getJobState(905L)).thenReturn(Optional.of(state));
+        when(meetingServiceClient.getMeetingById(905L, "trace-state-first", AUTH_HEADER)).thenReturn(Map.of(
+                "id", 905L,
+                "title", "State preferred",
+                "language", "en",
+                "status", "completed"
+        ));
+
+        String content = new String(
+                processingService.generateMeetingTranscriptTxt(905L, "trace-state-first", AUTH_HEADER, "raw"),
+                StandardCharsets.UTF_8
+        );
+
+        assertTrue(content.contains("row from processing job state"));
+        verify(aiServiceClient, never()).getTranscript(905L, "trace-state-first");
+    }
+
+    @Test
+    void generateMeetingTranscriptTxt_shouldReturnNotFoundWhenSavedTranscriptMissing() {
+        when(jobStateStore.getJobState(902L)).thenReturn(Optional.empty());
+        when(meetingServiceClient.getMeetingById(902L, "trace-missing", AUTH_HEADER)).thenReturn(Map.of(
+                "id", 902L,
+                "title", "Weekly planning",
+                "language", "en",
+                "status", "completed"
+        ));
+        when(aiServiceClient.getTranscript(902L, "trace-missing")).thenReturn(Map.of(
+                "meeting_id", 902L,
+                "transcripts", List.of()
+        ));
+
+        ResponseStatusException ex = assertThrows(
+                ResponseStatusException.class,
+                () -> processingService.generateMeetingTranscriptTxt(902L, "trace-missing", AUTH_HEADER)
+        );
+
+        assertEquals(HttpStatus.NOT_FOUND, ex.getStatusCode());
+        assertEquals("Transcript is not ready yet.", ex.getReason());
+        verify(aiServiceClient).getTranscript(902L, "trace-missing");
+        verify(aiServiceClient, never()).processAudio(anyLong(), anyString(), anyString(), anyString(), any(), anyString(), anyString(), anyString());
+        verify(aiServiceClient, never()).analyzeRealtimeTranscript(
+                anyLong(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString()
+        );
+    }
+
+    @Test
     void getAnalysis_shouldFlattenAnalysisMapAndNormalizeStatus() {
         Map<String, Object> state = new HashMap<>();
         state.put("status", "pending");
@@ -358,7 +720,7 @@ class ProcessingServiceTest {
 
         Map<String, Object> transcriptNearDuplicate = new HashMap<>();
         transcriptNearDuplicate.put("speaker", "SPEAKER_00");
-        transcriptNearDuplicate.put("text", "finalize the launch plan");
+        transcriptNearDuplicate.put("text", "launch plan");
         transcriptNearDuplicate.put("start_time", 36.05d);
         transcriptNearDuplicate.put("end_time", 36.81d);
 
@@ -417,7 +779,7 @@ class ProcessingServiceTest {
             assertTrue(content.contains("English"));
             assertTrue(content.contains("Analyzed Highlights Table"));
             assertTrue(content.contains("Appendix A — Transcript Evidence Preview"));
-            assertTrue(content.contains("This section shows a short preview of transcript evidence from saved STT output."));
+            assertTrue(content.contains("This section shows a short best-effort readable preview from saved STT output. Obvious repeated fragments may be collapsed for readability; full canonical transcript cleanup is planned separately."));
             assertTrue(content.contains("Preview limited because the saved transcript contains overlapping STT fragments."));
             assertTrue(content.contains("Let's review blockers and dependencies."));
             assertTrue(content.contains("We should finalize the launch plan."));
@@ -431,7 +793,7 @@ class ProcessingServiceTest {
             assertEquals(2, appendixRows.size());
             assertTrue(appendixRows.contains("Let's review blockers and dependencies."));
             assertTrue(appendixRows.contains("We should finalize the launch plan."));
-            assertTrue(!appendixRows.contains("finalize the launch plan"));
+            assertTrue(!appendixRows.contains("launch plan"));
             assertTrue(appendixTimes.contains("00:12–00:14"));
             assertTrue(appendixTimes.contains("00:36–00:37"));
             assertEquals(content.indexOf("We should finalize the launch plan."), content.lastIndexOf("We should finalize the launch plan."));
@@ -465,7 +827,6 @@ class ProcessingServiceTest {
         state.put("status", "COMPLETED");
         state.put("result", Map.of("transcripts", List.of(transcriptRow)));
         when(jobStateStore.getJobState(921L)).thenReturn(Optional.of(state));
-        when(aiServiceClient.getAnalysis(921L, "trace-921")).thenThrow(new HttpClientErrorException(HttpStatus.NOT_FOUND));
         when(meetingServiceClient.getMeetingById(921L, "trace-921", AUTH_HEADER)).thenReturn(Map.of(
                 "id", 921L,
                 "title", "Transcript only",
@@ -483,8 +844,8 @@ class ProcessingServiceTest {
             assertTrue(content.contains("Transcript-only export is allowed."));
             assertTrue(content.contains("Analysis not available"));
             assertTrue(content.contains("No analyzed highlights available."));
-                        assertTrue(content.contains("Appendix A — Transcript Evidence Preview"));
-                        assertTrue(content.contains("This section shows a short preview of transcript evidence from saved STT output."));
+            assertTrue(content.contains("Appendix A — Transcript Evidence Preview"));
+            assertTrue(content.contains("This section shows a short best-effort readable preview from saved STT output. Obvious repeated fragments may be collapsed for readability; full canonical transcript cleanup is planned separately."));
         }
         verify(aiServiceClient, never()).analyzeRealtimeTranscript(
                 eq(921L),
@@ -496,6 +857,51 @@ class ProcessingServiceTest {
                 anyString(),
                 eq("trace-921"),
                 eq(AUTH_HEADER)
+        );
+    }
+
+    @Test
+    void generateMeetingReportDocx_shouldUseAiPersistedTranscriptWhenJobStateMissing() throws Exception {
+        when(jobStateStore.getJobState(926L)).thenReturn(Optional.empty());
+        when(meetingServiceClient.getMeetingById(926L, "trace-926", AUTH_HEADER)).thenReturn(Map.of(
+                "id", 926L,
+                "title", "AI persisted report transcript",
+                "createdAt", "2026-06-01T12:00:00Z",
+                "language", "multi",
+                "status", "completed"
+        ));
+        when(aiServiceClient.getTranscript(926L, "trace-926")).thenReturn(Map.of(
+                "meeting_id", 926L,
+                "transcripts", List.of(
+                        Map.of(
+                                "speaker", "SPEAKER_1",
+                                "text", "Report row from ai persisted transcript.",
+                                "start_time", 6.0d,
+                                "end_time", 8.0d
+                        )
+                )
+        ));
+
+        byte[] report = processingService.generateMeetingReportDocx(926L, "trace-926", AUTH_HEADER);
+
+        try (XWPFDocument doc = new XWPFDocument(new ByteArrayInputStream(report));
+             XWPFWordExtractor extractor = new XWPFWordExtractor(doc)) {
+            String content = extractor.getText();
+            assertTrue(content.contains("Appendix A — Transcript Evidence Preview"));
+            assertTrue(content.contains("Report row from ai persisted transcript."));
+        }
+        verify(aiServiceClient).getTranscript(926L, "trace-926");
+        verify(aiServiceClient, never()).processAudio(anyLong(), anyString(), anyString(), anyString(), any(), anyString(), anyString(), anyString());
+        verify(aiServiceClient, never()).analyzeRealtimeTranscript(
+                anyLong(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString()
         );
     }
 
@@ -617,14 +1023,13 @@ class ProcessingServiceTest {
     @Test
     void generateMeetingReportDocx_shouldReturnNotFoundWhenTranscriptAndAnalysisMissing() {
         when(jobStateStore.getJobState(923L)).thenReturn(Optional.empty());
-        when(aiServiceClient.getTranscript(923L, "trace-923")).thenReturn(Map.of(
-                "meeting_id", 923L,
-                "transcripts", List.of()
-        ));
-        when(aiServiceClient.getAnalysis(923L, "trace-923")).thenThrow(new HttpClientErrorException(HttpStatus.NOT_FOUND));
         when(meetingServiceClient.getMeetingById(923L, "trace-923", AUTH_HEADER)).thenReturn(Map.of(
                 "id", 923L,
                 "title", "No data"
+        ));
+        when(aiServiceClient.getTranscript(923L, "trace-923")).thenReturn(Map.of(
+                "meeting_id", 923L,
+                "transcripts", List.of()
         ));
 
         ResponseStatusException ex = assertThrows(
@@ -633,6 +1038,8 @@ class ProcessingServiceTest {
         );
 
         assertEquals(HttpStatus.NOT_FOUND, ex.getStatusCode());
+        assertEquals("Transcript is not ready yet.", ex.getReason());
+        verify(aiServiceClient).getTranscript(923L, "trace-923");
     }
 
     @Test

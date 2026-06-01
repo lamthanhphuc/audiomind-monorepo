@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { clearAccessToken, getAccessToken, getCurrentUserId, login, parseJwt, setAccessToken } from './auth'
+import { clearAccessToken, getAccessToken, getCurrentUserId, login, parseJwt, register, setAccessToken } from './auth'
 
 const originalFetch = global.fetch
 
@@ -79,6 +79,29 @@ describe('auth service', () => {
     expect(result.userId).toBe(1)
     expect(result.accessToken).toBe('access-1')
     expect(result.expiresInSeconds).toBe(120)
+  })
+
+  it('posts register payload to the register endpoint', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        userId: 2,
+      }),
+    })
+
+    const result = await register({
+      username: 'new-user',
+      email: 'new-user@example.com',
+      password: 'secret-pass',
+    })
+
+    expect(result.userId).toBe(2)
+    expect(global.fetch).toHaveBeenCalledWith(
+      expect.stringContaining('/api/users/register'),
+      expect.objectContaining({
+        method: 'POST',
+      }),
+    )
   })
 
   it('throws when login response misses access token', async () => {

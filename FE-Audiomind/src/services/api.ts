@@ -216,6 +216,40 @@ export const downloadMeetingReport = async (
   return { blob, filename }
 }
 
+export const downloadMeetingTranscript = async (
+  meetingId: number,
+  format: 'txt' | 'csv',
+  mode: 'readable' | 'raw' = 'readable',
+): Promise<{ blob: Blob; filename: string }> => {
+  const response = await fetch(
+    `${API_BASE}/processing/${meetingId}/transcript/export?format=${encodeURIComponent(format)}&mode=${encodeURIComponent(mode)}`,
+    {
+      method: 'GET',
+      headers: withTraceHeaders(),
+    },
+  )
+
+  if (!response.ok) {
+    const text = await response.text()
+    const traceId = response.headers.get('x-trace-id') ?? response.headers.get('x-request-id') ?? undefined
+    let message = text || response.statusText
+
+    try {
+      const parsed = JSON.parse(text) as { detail?: string; message?: string }
+      message = parsed.detail || parsed.message || message
+    } catch {
+      // Use raw text when response is not JSON.
+    }
+
+    throw new ApiError(message, response.status, traceId)
+  }
+
+  const blob = await response.blob()
+  const filename = parseFilenameFromContentDisposition(response.headers.get('content-disposition'))
+    || `meeting-${meetingId}-transcript-${mode}.${format}`
+  return { blob, filename }
+}
+
 export const getProcessingStatus = async (meetingId: number): Promise<{
   meeting_id: number
   status: 'QUEUED' | 'RUNNING' | 'COMPLETED' | 'FAILED' | string

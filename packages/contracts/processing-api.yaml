@@ -103,6 +103,44 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AnalysisPayload"
+  /processing/{meetingId}/transcript/export:
+    get:
+      summary: Export saved transcript as readable or raw TXT/CSV
+      operationId: exportRawTranscript
+      parameters:
+        - in: path
+          name: meetingId
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - in: query
+          name: format
+          required: true
+          schema:
+            type: string
+            enum:
+              - txt
+              - csv
+        - in: query
+          name: mode
+          required: false
+          schema:
+            type: string
+            enum:
+              - readable
+              - raw
+            default: readable
+      responses:
+        "200":
+          description: Transcript export payload
+          content:
+            text/plain:
+              schema:
+                type: string
+            text/csv:
+              schema:
+                type: string
   /api/v1/jobs:
     post:
       summary: Create processing job
