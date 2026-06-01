@@ -11,24 +11,24 @@ import {
     DEFAULT_REALTIME_SPEAKER_MODE,
     normalizeRealtimeLanguage,
     normalizeRealtimeSpeakerMode,
+    useRealtimeMeetingStream,
     type RealtimeLanguage,
     type RealtimeSessionToken,
     type RealtimeSpeakerMode,
     type TranscriptSegment,
-    useRealtimeMeetingStream,
 } from '../hooks/useRealtimeMeetingStream'
 import {
-  DEFAULT_VAD_RESUMED_LABEL_MS,
-  DEFAULT_VAD_RESUME_DURATION_MS,
-  DEFAULT_VAD_SAMPLE_INTERVAL_MS,
-  DEFAULT_VAD_SILENCE_DURATION_MS,
-  DEFAULT_VAD_SILENCE_THRESHOLD,
-  DEFAULT_VAD_SPEECH_THRESHOLD,
-  type VoiceActivityState,
-  useVoiceActivityDetection,
+    DEFAULT_VAD_RESUMED_LABEL_MS,
+    DEFAULT_VAD_RESUME_DURATION_MS,
+    DEFAULT_VAD_SAMPLE_INTERVAL_MS,
+    DEFAULT_VAD_SILENCE_DURATION_MS,
+    DEFAULT_VAD_SILENCE_THRESHOLD,
+    DEFAULT_VAD_SPEECH_THRESHOLD,
+    useVoiceActivityDetection,
+    type VoiceActivityState,
 } from '../hooks/useVoiceActivityDetection'
 import { ApiError, getAnalysis, getProcessingStatus, getTranscript, startProcessingByPath, uploadToMeetingApi } from '../services/api'
-import { clearAccessToken, getAccessToken, getCurrentUserId, login, setAccessToken } from '../services/auth'
+import { clearAccessToken, getAccessToken, getCurrentUserId, login, register, setAccessToken } from '../services/auth'
 import { REALTIME_WS_ENABLED } from '../services/config'
 import type { AiAnalysis } from '../types'
 import { mergeTranscriptSegments, mergeTranscriptSegmentsForDisplay, normalizePersistedTranscriptSegments } from '../utils/transcript'
@@ -59,6 +59,19 @@ type RealtimeConnectionView = {
   detail: string
   closeReason: string | null
   closeReasonIsError: boolean
+}
+
+type AuthRoute = 'login' | 'register'
+
+const resolveAuthRouteFromLocation = (): AuthRoute => {
+  if (typeof window !== 'undefined' && window.location.pathname === '/register') {
+    return 'register'
+  }
+  return 'login'
+}
+
+const resolveAuthPath = (route: AuthRoute): string => {
+  return route === 'register' ? '/register' : '/'
 }
 
 export const REALTIME_LANGUAGE_OPTIONS: Array<{ value: RealtimeLanguage; label: string }> = [
@@ -632,6 +645,14 @@ export default function App() {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [authError, setAuthError] = useState('')
+  const [authNotice, setAuthNotice] = useState('')
+  const [authRoute, setAuthRoute] = useState<AuthRoute>(resolveAuthRouteFromLocation)
+  const [registerUsername, setRegisterUsername] = useState('')
+  const [registerEmail, setRegisterEmail] = useState('')
+  const [registerPassword, setRegisterPassword] = useState('')
+  const [registerConfirmPassword, setRegisterConfirmPassword] = useState('')
+  const [registerError, setRegisterError] = useState('')
+  const [registerBusy, setRegisterBusy] = useState(false)
   const [isAuthenticated, setIsAuthenticated] = useState(false)
   const [featureScene, setFeatureScene] = useState<DashboardScene>('upload')
   const [joinMeetingIdInput, setJoinMeetingIdInput] = useState('')
@@ -857,8 +878,30 @@ export default function App() {
   }, [])
 
   useEffect(() => {
+    const syncAuthRoute = () => {
+      setAuthRoute(resolveAuthRouteFromLocation())
+    }
+
+    window.addEventListener('popstate', syncAuthRoute)
+    syncAuthRoute()
+
+    return () => {
+      window.removeEventListener('popstate', syncAuthRoute)
+    }
+  }, [])
+
+  useEffect(() => {
     liveMeetingIdRef.current = liveMeetingId
   }, [liveMeetingId])
+
+  const navigateAuthRoute = (route: AuthRoute, replace = false) => {
+    const nextPath = resolveAuthPath(route)
+    if (typeof window !== 'undefined') {
+      const historyMethod = replace ? 'replaceState' : 'pushState'
+      window.history[historyMethod]({}, '', nextPath)
+    }
+    setAuthRoute(route)
+  }
 
   useEffect(() => {
     if (featureScene !== 'realtime' && (audioRecorder.state === 'recording' || audioRecorder.state === 'paused')) {
@@ -874,14 +917,65 @@ export default function App() {
 
     try {
       setAuthError('')
+      setAuthNotice('')
       const auth = await login({
         username: username.trim(),
         password,
       })
       setAccessToken(auth.accessToken, auth.expiresInSeconds)
       setIsAuthenticated(true)
+      navigateAuthRoute('login', true)
     } catch (loginError) {
       setAuthError(loginError instanceof Error ? loginError.message : 'Đăng nhập thất bại')
+    }
+  }
+
+  const handleRegister = async () => {
+    const normalizedUsername = registerUsername.trim()
+    const normalizedEmail = registerEmail.trim()
+
+    if (!normalizedUsername) {
+      setRegisterError('Vui lòng nhập username')
+      return
+    }
+    if (!normalizedEmail) {
+      setRegisterError('Vui lòng nhập email')
+      return
+    }
+    if (!registerPassword) {
+      setRegisterError('Vui lòng nhập mật khẩu')
+      return
+    }
+    if (registerPassword !== registerConfirmPassword) {
+      setRegisterError('Mật khẩu xác nhận không khớp')
+      return
+    }
+
+    try {
+      setRegisterBusy(true)
+      setRegisterError('')
+      setAuthError('')
+      const response = await register({
+        username: normalizedUsername,
+        email: normalizedEmail,
+        password: registerPassword,
+      })
+
+      if (response.accessToken) {
+        setAccessToken(response.accessToken, response.expiresInSeconds)
+        setIsAuthenticated(true)
+        navigateAuthRoute('login', true)
+        return
+      }
+
+      setAuthNotice('Đăng ký thành công. Vui lòng đăng nhập.')
+      setUsername(normalizedUsername)
+      setPassword('')
+      navigateAuthRoute('login', true)
+    } catch (registerError) {
+      setRegisterError(registerError instanceof Error ? registerError.message : 'Đăng ký thất bại')
+    } finally {
+      setRegisterBusy(false)
     }
   }
 
@@ -909,10 +1003,17 @@ export default function App() {
     setLiveAnalysisError(null)
     setLiveLifecycleState('idle')
     setPassword('')
+    setRegisterPassword('')
+    setRegisterConfirmPassword('')
+    setRegisterEmail('')
+    setRegisterUsername('')
+    setRegisterError('')
+    setAuthNotice('')
     setJoinMeetingIdInput('')
     setUploadNotice(null)
     setShowJoinOtherMeeting(false)
     setFeatureScene('upload')
+    navigateAuthRoute('login', true)
   }
 
   const analysis = result?.analysis
@@ -1498,25 +1599,89 @@ export default function App() {
               <span className="login-panel__logo" aria-hidden="true">🎙</span>
               <h2>AudioMind</h2>
             </div>
-            <p>Đăng nhập để upload audio, ghi âm realtime và nhận phân tích AI.</p>
-            <input
-              type="text"
-              placeholder="Username"
-              data-testid="e2e-login-username"
-              value={username}
-              onChange={(event) => setUsername(event.target.value)}
-            />
-            <input
-              type="password"
-              placeholder="Password"
-              data-testid="e2e-login-password"
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-            />
-            <button type="button" data-testid="e2e-login-submit" onClick={handleLogin}>
-              Đăng nhập
-            </button>
-            {authError && <p className="login-panel__error">{authError}</p>}
+            {authRoute === 'login' ? (
+              <>
+                <p>Đăng nhập để upload audio, ghi âm realtime và nhận phân tích AI.</p>
+                {authNotice && <p className="login-panel__success">{authNotice}</p>}
+                <input
+                  type="text"
+                  placeholder="Username"
+                  data-testid="e2e-login-username"
+                  value={username}
+                  onChange={(event) => setUsername(event.target.value)}
+                />
+                <input
+                  type="password"
+                  placeholder="Password"
+                  data-testid="e2e-login-password"
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                />
+                <button type="button" data-testid="e2e-login-submit" onClick={handleLogin}>
+                  Đăng nhập
+                </button>
+                <button type="button" className="auth-link" onClick={() => navigateAuthRoute('register')}>
+                  Chưa có tài khoản? Đăng ký
+                </button>
+                {authError && <p className="login-panel__error">{authError}</p>}
+              </>
+            ) : (
+              <>
+                <p>Tạo tài khoản để bắt đầu sử dụng AudioMind.</p>
+                {authNotice && <p className="login-panel__success">{authNotice}</p>}
+                <div className="auth-tabs">
+                  <button
+                    type="button"
+                    className="auth-tab"
+                    onClick={() => navigateAuthRoute('login')}
+                  >
+                    Đăng nhập
+                  </button>
+                  <button
+                    type="button"
+                    className="auth-tab auth-tab--active"
+                    onClick={() => navigateAuthRoute('register')}
+                  >
+                    Đăng ký
+                  </button>
+                </div>
+                <input
+                  type="text"
+                  placeholder="Username"
+                  data-testid="e2e-register-username"
+                  value={registerUsername}
+                  onChange={(event) => setRegisterUsername(event.target.value)}
+                />
+                <input
+                  type="email"
+                  placeholder="Email"
+                  data-testid="e2e-register-email"
+                  value={registerEmail}
+                  onChange={(event) => setRegisterEmail(event.target.value)}
+                />
+                <input
+                  type="password"
+                  placeholder="Password"
+                  data-testid="e2e-register-password"
+                  value={registerPassword}
+                  onChange={(event) => setRegisterPassword(event.target.value)}
+                />
+                <input
+                  type="password"
+                  placeholder="Confirm password"
+                  data-testid="e2e-register-confirm-password"
+                  value={registerConfirmPassword}
+                  onChange={(event) => setRegisterConfirmPassword(event.target.value)}
+                />
+                <button type="button" data-testid="e2e-register-submit" onClick={handleRegister} disabled={registerBusy}>
+                  {registerBusy ? 'Đang đăng ký...' : 'Đăng ký'}
+                </button>
+                <button type="button" className="auth-link" onClick={() => navigateAuthRoute('login')}>
+                  Đã có tài khoản? Đăng nhập
+                </button>
+                {registerError && <p className="login-panel__error">{registerError}</p>}
+              </>
+            )}
           </main>
         </div>
       </div>

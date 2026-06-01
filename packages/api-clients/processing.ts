@@ -89,6 +89,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/processing/{meetingId}/transcript/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Export saved transcript as readable or raw TXT/CSV */
+        get: operations["exportRawTranscript"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/jobs": {
         parameters: {
             query?: never;
@@ -345,6 +362,32 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AnalysisPayload"];
+                };
+            };
+        };
+    };
+    exportRawTranscript: {
+        parameters: {
+            query: {
+                format: "txt" | "csv";
+                mode?: "readable" | "raw";
+            };
+            header?: never;
+            path: {
+                meetingId: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Transcript export payload */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                    "text/csv": string;
                 };
             };
         };

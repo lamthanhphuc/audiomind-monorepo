@@ -51,6 +51,9 @@ public class ProcessingService {
     private static final String MEETING_STATUS_COMPLETED = "completed";
     private static final String MEETING_STATUS_FAILED = "failed";
     private static final int MAX_REPORT_HIGHLIGHT_ROWS = 50;
+    private static final double READABLE_DUPLICATE_WINDOW_SECONDS = 20d;
+    private static final int READABLE_TINY_FRAGMENT_MAX_WORDS = 3;
+    private static final int READABLE_COLLAPSIBLE_FRAGMENT_MAX_WORDS = 18;
     private static final double APPENDIX_NEAR_WINDOW_SECONDS = 90d;
     private static final double APPENDIX_COVERAGE_THRESHOLD = 0.85d;
     private static final int APPENDIX_SHORT_FRAGMENT_MAX_CHARS = 40;
@@ -390,19 +393,22 @@ public class ProcessingService {
     }
 
     public byte[] generateMeetingReportDocx(Long meetingId, String traceId, String authorization) {
-        assertMeetingAccess(meetingId, traceId, authorization);
-
-        Map<String, Object> meeting = meetingServiceClient.getMeetingById(meetingId, traceId, authorization);
-        Map<String, Object> transcriptPayload = getTranscript(meetingId, traceId, authorization);
-        Map<String, Object> analysisPayload = getAnalysisReadOnly(meetingId, traceId, authorization);
-
-        List<Map<String, Object>> transcriptRows = normalizeTranscriptRows(transcriptPayload.get("transcripts"));
+        Map<String, Object> meeting = fetchAccessibleMeeting(meetingId, traceId, authorization);
+        List<Map<String, Object>> transcriptRows = loadSavedTranscriptRowsForExport(
+                meetingId,
+                traceId,
+                authorization,
+                false
+        );
+        Map<String, Object> state = jobStateStore.getJobState(meetingId).orElse(null);
+        Map<String, Object> analysisPayload = extractAnalysisFromState(state);
         boolean analysisAvailable = hasStructuredAnalysis(analysisPayload);
+        RawTranscriptPreview readablePreview = buildReadableTranscriptPreviewRows(transcriptRows);
 
         if (transcriptRows.isEmpty() && !analysisAvailable) {
             throw new ResponseStatusException(
                     HttpStatus.NOT_FOUND,
-                    "No saved transcript or analysis available for this meeting"
+                    "Transcript is not ready yet."
             );
         }
 
@@ -410,19 +416,63 @@ public class ProcessingService {
                 meetingId,
                 meeting,
                 transcriptRows,
+                readablePreview.rows(),
+                readablePreview.previewLimited(),
                 analysisPayload,
                 analysisAvailable
         );
         return meetingReportDocxGenerator.generate(reportData);
     }
 
-    private MeetingReportData assembleMeetingReportData(
+    public byte[] generateMeetingTranscriptTxt(Long meetingId, String traceId, String authorization) {
+        return generateMeetingTranscriptTxt(meetingId, traceId, authorization, "readable");
+    }
+
+    public byte[] generateMeetingTranscriptTxt(Long meetingId, String traceId, String authorization, String mode) {
+        TranscriptExportMode exportMode = TranscriptExportMode.from(mode);
+        Map<String, Object> meeting = fetchAccessibleMeeting(meetingId, traceId, authorization);
+        List<Map<String, Object>> savedTranscriptRows = loadSavedTranscriptRowsForExport(
+                meetingId,
+                traceId,
+                authorization,
+                true
+        );
+        List<MeetingReportData.RawTranscriptRow> transcriptRows = exportMode == TranscriptExportMode.RAW
+                ? buildRawTranscriptRows(savedTranscriptRows)
+                : buildReadableTranscriptRows(savedTranscriptRows);
+        String content = buildTranscriptTxt(meetingId, meeting, savedTranscriptRows, transcriptRows, exportMode);
+        return content.getBytes(StandardCharsets.UTF_8);
+    }
+
+    public byte[] generateMeetingTranscriptCsv(Long meetingId, String traceId, String authorization) {
+        return generateMeetingTranscriptCsv(meetingId, traceId, authorization, "readable");
+    }
+
+    public byte[] generateMeetingTranscriptCsv(Long meetingId, String traceId, String authorization, String mode) {
+        TranscriptExportMode exportMode = TranscriptExportMode.from(mode);
+        Map<String, Object> meeting = fetchAccessibleMeeting(meetingId, traceId, authorization);
+        List<Map<String, Object>> savedTranscriptRows = loadSavedTranscriptRowsForExport(
+                meetingId,
+                traceId,
+                authorization,
+                true
+        );
+        List<MeetingReportData.RawTranscriptRow> transcriptRows = exportMode == TranscriptExportMode.RAW
+                ? buildRawTranscriptRows(savedTranscriptRows)
+                : buildReadableTranscriptRows(savedTranscriptRows);
+        String content = buildTranscriptCsv(transcriptRows);
+        return content.getBytes(StandardCharsets.UTF_8);
+    }
+
+        private MeetingReportData assembleMeetingReportData(
             Long meetingId,
             Map<String, Object> meeting,
             List<Map<String, Object>> transcriptRows,
+            List<MeetingReportData.RawTranscriptRow> transcriptPreviewRows,
+            boolean transcriptPreviewLimited,
             Map<String, Object> analysisPayload,
             boolean analysisAvailable
-    ) {
+        ) {
         MeetingReportData.MeetingMetadata metadata = new MeetingReportData.MeetingMetadata(
                 meetingId,
                 safeCell(meeting.get("title")),
@@ -434,8 +484,6 @@ public class ProcessingService {
                 safeCell(meeting.get("ownerUserId")),
                 safeCell(meeting.get("fileSize"))
         );
-
-        RawTranscriptPreview rawTranscriptPreview = buildRawTranscriptRowsForAppendix(transcriptRows);
 
         List<String> decisions = extractStringList(analysisPayload, "keyDecisions", "decisions");
         List<MeetingReportData.ReportActionItem> actionItems = extractReportActionItems(analysisPayload);
@@ -474,17 +522,41 @@ public class ProcessingService {
                 blockers,
                 questions,
                 nextSteps,
-                rawTranscriptPreview.rows(),
-                rawTranscriptPreview.previewLimited(),
+                transcriptPreviewRows,
+                transcriptPreviewLimited,
                 analyzedHighlightRows,
                 analysisMetadata,
                 analysisAvailable
         );
     }
 
-    private RawTranscriptPreview buildRawTranscriptRowsForAppendix(List<Map<String, Object>> transcriptRows) {
+    private RawTranscriptPreview buildReadableTranscriptPreviewRows(List<Map<String, Object>> transcriptRows) {
+        List<MeetingReportData.RawTranscriptRow> readableRows = buildReadableTranscriptRows(transcriptRows);
+        boolean previewLimited = transcriptRows != null
+                && !transcriptRows.isEmpty()
+                && (readableRows.size() != transcriptRows.size() || readableRows.size() > 30);
+        if (readableRows.size() > 30) {
+            return new RawTranscriptPreview(new ArrayList<>(readableRows.subList(0, 30)), true);
+        }
+        return new RawTranscriptPreview(readableRows, previewLimited);
+    }
+
+    private List<MeetingReportData.RawTranscriptRow> buildRawTranscriptRows(List<Map<String, Object>> transcriptRows) {
         if (transcriptRows == null || transcriptRows.isEmpty()) {
-            return new RawTranscriptPreview(List.of(), false);
+            return List.of();
+        }
+
+        List<MeetingReportData.RawTranscriptRow> rows = new ArrayList<>();
+        int index = 1;
+        for (Map<String, Object> row : transcriptRows) {
+            rows.add(toTranscriptRow(index++, row));
+        }
+        return rows;
+    }
+
+    private List<MeetingReportData.RawTranscriptRow> buildReadableTranscriptRows(List<Map<String, Object>> transcriptRows) {
+        if (transcriptRows == null || transcriptRows.isEmpty()) {
+            return List.of();
         }
 
         List<RawTranscriptCandidate> candidates = new ArrayList<>();
@@ -495,7 +567,7 @@ public class ProcessingService {
             }
             double start = parseTimeSeconds(row.get("start_time"), row.get("startTime"));
             double end = parseTimeSeconds(row.get("end_time"), row.get("endTime"));
-            String speaker = safeCell(row.get("speaker"));
+            String speaker = rawText(row.get("speaker"));
             candidates.add(new RawTranscriptCandidate(start, end, speaker, text));
         }
 
@@ -515,39 +587,16 @@ public class ProcessingService {
             return a.rawText().compareToIgnoreCase(b.rawText());
         });
 
-        List<RawTranscriptCandidate> previewCandidates = new ArrayList<>();
-        java.util.LinkedHashSet<String> seenNormalizedTexts = new java.util.LinkedHashSet<>();
-        boolean previewLimited = false;
-        for (RawTranscriptCandidate candidate : candidates) {
-            String normalizedText = normalizeTranscriptForCompare(candidate.rawText());
-            if (normalizedText.isBlank()) {
-                continue;
-            }
-            if (normalizedTokenCount(normalizedText) < 4) {
-                previewLimited = true;
-                continue;
-            }
-            if (isObviouslyIncompleteTranscriptRow(candidate.rawText(), normalizedText)) {
-                previewLimited = true;
-                continue;
-            }
-            if (!seenNormalizedTexts.add(normalizedText)) {
-                previewLimited = true;
-                continue;
-            }
-            previewCandidates.add(candidate);
-            if (previewCandidates.size() == 30) {
-                break;
-            }
-        }
-
-        if (previewCandidates.size() < seenNormalizedTexts.size() || candidates.size() > previewCandidates.size()) {
-            previewLimited = true;
+        List<RawTranscriptCandidate> deduplicated = deduplicateExactCandidates(candidates);
+        List<RawTranscriptCandidate> filtered = dropShortContainedFragments(deduplicated);
+        List<RawTranscriptCandidate> collapsed = collapseContainedNearDuplicates(filtered);
+        if (collapsed.isEmpty()) {
+            collapsed = filtered.isEmpty() ? (deduplicated.isEmpty() ? candidates : deduplicated) : filtered;
         }
 
         List<MeetingReportData.RawTranscriptRow> rows = new ArrayList<>();
         int index = 1;
-        for (RawTranscriptCandidate row : previewCandidates) {
+        for (RawTranscriptCandidate row : collapsed) {
             rows.add(new MeetingReportData.RawTranscriptRow(
                     index++,
                     formatTranscriptTime(row.startTimeSeconds()),
@@ -556,7 +605,19 @@ public class ProcessingService {
                     row.rawText()
             ));
         }
-        return new RawTranscriptPreview(rows, previewLimited);
+        return rows;
+    }
+
+    private MeetingReportData.RawTranscriptRow toTranscriptRow(int index, Map<String, Object> row) {
+        double start = parseTimeSeconds(row.get("start_time"), row.get("startTime"));
+        double end = parseTimeSeconds(row.get("end_time"), row.get("endTime"));
+        return new MeetingReportData.RawTranscriptRow(
+                index,
+                formatTranscriptTime(start),
+                formatTranscriptTime(end),
+                rawText(row.get("speaker")),
+                row.get("text") == null ? "" : String.valueOf(row.get("text"))
+        );
     }
 
     private boolean isObviouslyIncompleteTranscriptRow(String text, String normalizedText) {
@@ -593,18 +654,22 @@ public class ProcessingService {
             if (currentNormalized.isBlank()) {
                 continue;
             }
-            RawTranscriptCandidate previous = deduplicated.isEmpty() ? null : deduplicated.get(deduplicated.size() - 1);
-            if (previous == null) {
-                deduplicated.add(candidate);
-                continue;
+            boolean isDuplicate = false;
+            for (int i = deduplicated.size() - 1; i >= 0; i--) {
+                RawTranscriptCandidate existing = deduplicated.get(i);
+                if (candidate.startTimeSeconds() - existing.startTimeSeconds() > READABLE_DUPLICATE_WINDOW_SECONDS) {
+                    break;
+                }
+                String existingNormalized = normalizeTranscriptForCompare(existing.rawText());
+                if (!existingNormalized.equals(currentNormalized)) {
+                    continue;
+                }
+                if (isWithinReadableWindow(existing, candidate)) {
+                    isDuplicate = true;
+                    break;
+                }
             }
-            String previousNormalized = normalizeTranscriptForCompare(previous.rawText());
-            boolean sameText = previousNormalized.equals(currentNormalized);
-            boolean sameSpeaker = previous.speaker().equalsIgnoreCase(candidate.speaker());
-            boolean sameTiming = Math.abs(previous.startTimeSeconds() - candidate.startTimeSeconds()) <= 0.2d
-                    && Math.abs(resolveEnd(previous.startTimeSeconds(), previous.endTimeSeconds())
-                    - resolveEnd(candidate.startTimeSeconds(), candidate.endTimeSeconds())) <= 0.2d;
-            if (sameText && sameSpeaker && sameTiming) {
+            if (isDuplicate) {
                 continue;
             }
             deduplicated.add(candidate);
@@ -625,13 +690,14 @@ public class ProcessingService {
                 continue;
             }
 
-            boolean shortFragment = currentNormalized.length() < APPENDIX_SHORT_FRAGMENT_MAX_NORMALIZED_LEN;
-            if (!shortFragment) {
+            int currentWordCount = normalizedTokenCount(currentNormalized);
+            boolean tinyFragment = currentWordCount > 0 && currentWordCount <= READABLE_TINY_FRAGMENT_MAX_WORDS;
+            if (!tinyFragment) {
                 filtered.add(current);
                 continue;
             }
 
-            if (isContainedInNearbyLonger(current, currentNormalized, rows, i)) {
+            if (isContainedInNearbyLonger(current, currentNormalized, currentWordCount, rows, i)) {
                 continue;
             }
             filtered.add(current);
@@ -639,9 +705,38 @@ public class ProcessingService {
         return filtered;
     }
 
+    private List<RawTranscriptCandidate> collapseContainedNearDuplicates(List<RawTranscriptCandidate> rows) {
+        if (rows.size() <= 1) {
+            return rows;
+        }
+
+        List<RawTranscriptCandidate> collapsed = new ArrayList<>();
+        for (int i = 0; i < rows.size(); i++) {
+            RawTranscriptCandidate current = rows.get(i);
+            String currentNormalized = normalizeTranscriptForCompare(current.rawText());
+            if (currentNormalized.isBlank()) {
+                continue;
+            }
+
+            int currentWordCount = normalizedTokenCount(currentNormalized);
+            if (currentWordCount <= READABLE_TINY_FRAGMENT_MAX_WORDS
+                    || currentWordCount > READABLE_COLLAPSIBLE_FRAGMENT_MAX_WORDS) {
+                collapsed.add(current);
+                continue;
+            }
+
+            if (isContainedInNearbyLonger(current, currentNormalized, currentWordCount, rows, i)) {
+                continue;
+            }
+            collapsed.add(current);
+        }
+        return collapsed;
+    }
+
     private boolean isContainedInNearbyLonger(
             RawTranscriptCandidate current,
             String currentNormalized,
+            int currentWordCount,
             List<RawTranscriptCandidate> rows,
             int index
     ) {
@@ -650,12 +745,16 @@ public class ProcessingService {
                 continue;
             }
             RawTranscriptCandidate other = rows.get(i);
-            double timeDelta = Math.abs(other.startTimeSeconds() - current.startTimeSeconds());
-            if (timeDelta > APPENDIX_NEAR_DUPLICATE_WINDOW_SECONDS) {
+            if (!isWithinReadableWindow(other, current)) {
                 continue;
             }
             String otherNormalized = normalizeTranscriptForCompare(other.rawText());
-            if (otherNormalized.length() <= currentNormalized.length()) {
+            int otherWordCount = normalizedTokenCount(otherNormalized);
+            if (otherWordCount < 4 || otherWordCount <= currentWordCount) {
+                continue;
+            }
+            if (currentWordCount > READABLE_TINY_FRAGMENT_MAX_WORDS
+                    && otherWordCount > currentWordCount + 6) {
                 continue;
             }
             if (otherNormalized.contains(currentNormalized)) {
@@ -798,6 +897,18 @@ public class ProcessingService {
         String normalized = value.trim().toLowerCase(Locale.ROOT);
         normalized = normalized.replaceAll("[\\p{Punct}]+", " ");
         return normalized.replaceAll("\\s+", " ").trim();
+    }
+
+    private boolean isWithinReadableWindow(RawTranscriptCandidate left, RawTranscriptCandidate right) {
+        double leftStart = left.startTimeSeconds();
+        double leftEnd = resolveEnd(left.startTimeSeconds(), left.endTimeSeconds());
+        double rightStart = right.startTimeSeconds();
+        double rightEnd = resolveEnd(right.startTimeSeconds(), right.endTimeSeconds());
+        if (leftStart <= rightEnd && rightStart <= leftEnd) {
+            return true;
+        }
+        double gapSeconds = leftEnd < rightStart ? rightStart - leftEnd : leftStart - rightEnd;
+        return gapSeconds <= READABLE_DUPLICATE_WINDOW_SECONDS;
     }
 
     private double parseTimeSeconds(Object primaryValue, Object fallbackValue) {
@@ -1291,12 +1402,12 @@ public class ProcessingService {
         return MEETING_STATUS_PROCESSING;
     }
 
-    private void assertMeetingAccess(Long meetingId, String traceId, String authorization) {
+    private Map<String, Object> fetchAccessibleMeeting(Long meetingId, String traceId, String authorization) {
         if (authorization == null || authorization.isBlank()) {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Missing authorization");
         }
         try {
-            meetingServiceClient.getMeetingById(meetingId, traceId, authorization);
+            return meetingServiceClient.getMeetingById(meetingId, traceId, authorization);
         } catch (HttpStatusCodeException ex) {
             int status = ex.getStatusCode().value();
             if (status == HttpStatus.FORBIDDEN.value()) {
@@ -1307,6 +1418,10 @@ public class ProcessingService {
             }
             throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "Meeting service error");
         }
+    }
+
+    private void assertMeetingAccess(Long meetingId, String traceId, String authorization) {
+        fetchAccessibleMeeting(meetingId, traceId, authorization);
     }
 
     @SuppressWarnings("unchecked")
@@ -1367,17 +1482,205 @@ public class ProcessingService {
         return rows;
     }
 
+    private List<Map<String, Object>> loadSavedTranscriptRowsForExport(Long meetingId, String traceId, String authorization) {
+        return loadSavedTranscriptRowsForExport(meetingId, traceId, authorization, true);
+    }
+
+    private List<Map<String, Object>> loadSavedTranscriptRowsForExport(
+            Long meetingId,
+            String traceId,
+            String authorization,
+            boolean required
+    ) {
+        assertMeetingAccess(meetingId, traceId, authorization);
+        Map<String, Object> state = jobStateStore.getJobState(meetingId).orElse(null);
+        List<Map<String, Object>> stateTranscriptRows = extractTranscriptRowsFromState(state);
+        if (!stateTranscriptRows.isEmpty()) {
+            log.info(
+                    "TRANSCRIPT_EXPORT_SOURCE meetingId={} source=processing_job_state rows={}",
+                    meetingId,
+                    stateTranscriptRows.size()
+            );
+            return stateTranscriptRows;
+        }
+
+        List<Map<String, Object>> persistedTranscriptRows = fetchPersistedTranscriptRowsForExport(meetingId, traceId);
+        if (!persistedTranscriptRows.isEmpty()) {
+            log.info(
+                    "TRANSCRIPT_EXPORT_SOURCE meetingId={} source=ai_persisted_transcript rows={}",
+                    meetingId,
+                    persistedTranscriptRows.size()
+            );
+            return persistedTranscriptRows;
+        }
+
+        log.info("TRANSCRIPT_EXPORT_NOT_READY meetingId={}", meetingId);
+        if (required) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Transcript is not ready yet.");
+        }
+        return List.of();
+    }
+
+    private List<Map<String, Object>> fetchPersistedTranscriptRowsForExport(Long meetingId, String traceId) {
+        try {
+            // This endpoint reads persisted transcript rows only; it does not trigger STT/processing start.
+            Map<String, Object> aiResponse = aiServiceClient.getTranscript(meetingId, traceId);
+            return normalizeTranscriptRows(aiResponse == null ? null : aiResponse.get("transcripts"));
+        } catch (HttpStatusCodeException ex) {
+            if (ex.getStatusCode().value() == HttpStatus.NOT_FOUND.value()) {
+                return List.of();
+            }
+            throw ex;
+        }
+    }
+
+    private List<Map<String, Object>> sortTranscriptRowsForExport(List<Map<String, Object>> transcriptRows) {
+        if (transcriptRows.size() <= 1) {
+            return transcriptRows;
+        }
+
+        boolean hasTiming = transcriptRows.stream().anyMatch(this::hasTranscriptTiming);
+        if (!hasTiming) {
+            return transcriptRows;
+        }
+
+        List<Map<String, Object>> sorted = new ArrayList<>(transcriptRows);
+        sorted.sort((left, right) -> {
+            int byStart = Double.compare(
+                    parseTimeSeconds(left.get("start_time"), left.get("startTime")),
+                    parseTimeSeconds(right.get("start_time"), right.get("startTime"))
+            );
+            if (byStart != 0) {
+                return byStart;
+            }
+
+            int byEnd = Double.compare(
+                    parseTimeSeconds(left.get("end_time"), left.get("endTime")),
+                    parseTimeSeconds(right.get("end_time"), right.get("endTime"))
+            );
+            if (byEnd != 0) {
+                return byEnd;
+            }
+
+            int bySpeaker = safeCell(left.get("speaker")).compareToIgnoreCase(safeCell(right.get("speaker")));
+            if (bySpeaker != 0) {
+                return bySpeaker;
+            }
+
+            return safeCell(left.get("text")).compareToIgnoreCase(safeCell(right.get("text")));
+        });
+        return sorted;
+    }
+
+    private boolean hasTranscriptTiming(Map<String, Object> row) {
+        if (row == null) {
+            return false;
+        }
+        return row.containsKey("start_time") || row.containsKey("startTime")
+                || row.containsKey("end_time") || row.containsKey("endTime");
+    }
+
+    private String buildTranscriptTxt(
+            Long meetingId,
+            Map<String, Object> meeting,
+            List<Map<String, Object>> savedTranscriptRows,
+            List<MeetingReportData.RawTranscriptRow> transcriptRows,
+            TranscriptExportMode exportMode
+    ) {
+        StringBuilder builder = new StringBuilder();
+        String meetingTitle = safeCell(meeting.get("title"));
+        if (meetingTitle.isBlank()) {
+            meetingTitle = "Meeting #" + meetingId;
+        }
+        String recognitionMode = safeCell(meeting.get("language"));
+        if (recognitionMode.isBlank()) {
+            recognitionMode = "unknown";
+        }
+
+        builder.append("Meeting: ").append(meetingTitle).append('\n');
+        builder.append("Transcript export mode: ")
+                .append(exportMode == TranscriptExportMode.READABLE ? "readable" : "raw")
+                .append('\n');
+        builder.append("Recognition Mode: ").append(recognitionMode).append('\n');
+        builder.append("Detected Transcript Language: ").append(detectTranscriptLanguage(savedTranscriptRows)).append('\n');
+        builder.append("Generated At: ").append(Instant.now()).append('\n');
+        builder.append('\n');
+
+        if (exportMode == TranscriptExportMode.READABLE) {
+            builder.append("Readable transcript export generated from saved STT output. Obvious repeated fragments may be collapsed for readability. This is a best-effort readable export; full canonical transcript cleanup is planned separately. Raw export is available with mode=raw.")
+                    .append('\n');
+        } else {
+            builder.append("Raw transcript export from saved STT output. May contain overlapping STT fragments.")
+                    .append('\n');
+        }
+        builder.append('\n');
+
+        for (MeetingReportData.RawTranscriptRow row : transcriptRows) {
+            builder.append('[')
+                    .append(rawText(row.startTime()))
+                    .append('–')
+                    .append(rawText(row.endTime()))
+                    .append("] ")
+                    .append(rawText(row.speaker()))
+                    .append(": ")
+                    .append(rawText(row.rawText()))
+                    .append('\n');
+        }
+
+        return builder.toString();
+    }
+
+    private String buildTranscriptCsv(List<MeetingReportData.RawTranscriptRow> transcriptRows) {
+        StringBuilder builder = new StringBuilder();
+        builder.append("index,startTime,endTime,speaker,text\n");
+
+        int index = 1;
+        for (MeetingReportData.RawTranscriptRow row : transcriptRows) {
+            builder.append(index++)
+                    .append(',')
+                    .append(csvEscape(rawText(row.startTime())))
+                    .append(',')
+                    .append(csvEscape(rawText(row.endTime())))
+                    .append(',')
+                    .append(csvEscape(rawText(row.speaker())))
+                    .append(',')
+                    .append(csvEscape(rawText(row.rawText())))
+                    .append('\n');
+        }
+
+        return builder.toString();
+    }
+
+    private String rawText(Object value) {
+        return value == null ? "" : String.valueOf(value);
+    }
+
+    private String csvEscape(String value) {
+        String safe = value == null ? "" : value;
+        return "\"" + safe.replace("\"", "\"\"") + "\"";
+    }
+
     private List<Map<String, Object>> fetchTranscriptRowsFromAiService(Long meetingId, String traceId) {
         try {
             Map<String, Object> aiResponse = aiServiceClient.getTranscript(meetingId, traceId);
-            List<Map<String, Object>> rows = normalizeTranscriptRows(aiResponse.get("transcripts"));
-            log.info(
-                    "[traceId={}] [jobId={}] ai-service transcript fallback rows={}",
-                    traceId,
-                    meetingId,
-                    rows.size()
+            List<Map<String, Object>> transcriptRows = normalizeTranscriptRows(
+                    aiResponse == null ? null : aiResponse.get("transcripts")
             );
-            return rows;
+            if (!transcriptRows.isEmpty()) {
+                log.info(
+                        "[traceId={}] [jobId={}] ai-service transcript fallback rows={}",
+                        traceId,
+                        meetingId,
+                        transcriptRows.size()
+                );
+                return transcriptRows;
+            }
+            log.info(
+                    "[traceId={}] [jobId={}] ai-service transcript fallback returned empty transcript list",
+                    traceId,
+                    meetingId
+            );
+            return List.of();
         } catch (HttpStatusCodeException ex) {
             if (ex.getStatusCode().value() == HttpStatus.NOT_FOUND.value()) {
                 log.info(
@@ -1921,6 +2224,25 @@ public class ProcessingService {
     }
 
     private record AnalysisTriggerResult(String status, String errorCode, int retryAfterSeconds) {
+    }
+
+    private enum TranscriptExportMode {
+        READABLE,
+        RAW;
+
+        static TranscriptExportMode from(String value) {
+            if (value == null) {
+                return READABLE;
+            }
+            String normalized = value.trim().toLowerCase(Locale.ROOT);
+            if (normalized.isBlank() || "readable".equals(normalized)) {
+                return READABLE;
+            }
+            if ("raw".equals(normalized)) {
+                return RAW;
+            }
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Only readable and raw transcript modes are supported");
+        }
     }
 
     private record RawTranscriptPreview(List<MeetingReportData.RawTranscriptRow> rows, boolean previewLimited) {

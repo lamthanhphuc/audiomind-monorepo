@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { deleteMeeting, downloadMeetingReport, getMeetingDetail, getSavedAnalysis, listMeetings, listMeetingsWithParams, renameMeeting, startProcessingByPath, uploadToMeetingApi } from './api'
+import { deleteMeeting, downloadMeetingReport, downloadMeetingTranscript, getMeetingDetail, getSavedAnalysis, listMeetings, listMeetingsWithParams, renameMeeting, startProcessingByPath, uploadToMeetingApi } from './api'
 
 describe('upload language request wiring', () => {
   const fetchMock = vi.fn()
@@ -132,5 +132,59 @@ describe('upload language request wiring', () => {
 
     const [url] = fetchMock.mock.calls[0] as [string]
     expect(url).toContain('/processing/7/report?format=docx')
+  })
+
+  it('downloads transcript as readable and raw txt/csv blobs', async () => {
+    const txtBlob = new Blob(['meeting transcript'], { type: 'text/plain' })
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      blob: async () => txtBlob,
+      headers: new Headers({
+        'content-disposition': 'attachment; filename="meeting-7-transcript-readable.txt"',
+      }),
+    })
+
+    const txtResult = await downloadMeetingTranscript(7, 'txt')
+    expect(txtResult.blob).toBe(txtBlob)
+    expect(txtResult.filename).toBe('meeting-7-transcript-readable.txt')
+
+    const csvBlob = new Blob(['index,startTime,endTime,speaker,text'], { type: 'text/csv' })
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      blob: async () => csvBlob,
+      headers: new Headers(),
+    })
+
+    const csvResult = await downloadMeetingTranscript(7, 'csv')
+    expect(csvResult.blob).toBe(csvBlob)
+    expect(csvResult.filename).toBe('meeting-7-transcript-readable.csv')
+
+    const rawTxtBlob = new Blob(['raw transcript'], { type: 'text/plain' })
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      blob: async () => rawTxtBlob,
+      headers: new Headers(),
+    })
+
+    const rawTxtResult = await downloadMeetingTranscript(7, 'txt', 'raw')
+    expect(rawTxtResult.blob).toBe(rawTxtBlob)
+    expect(rawTxtResult.filename).toBe('meeting-7-transcript-raw.txt')
+
+    const rawCsvBlob = new Blob(['index,startTime,endTime,speaker,text'], { type: 'text/csv' })
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      blob: async () => rawCsvBlob,
+      headers: new Headers(),
+    })
+
+    const rawCsvResult = await downloadMeetingTranscript(7, 'csv', 'raw')
+    expect(rawCsvResult.blob).toBe(rawCsvBlob)
+    expect(rawCsvResult.filename).toBe('meeting-7-transcript-raw.csv')
+
+    const urls = fetchMock.mock.calls.map((call) => call[0] as string)
+    expect(urls.some((url) => url.includes('/processing/7/transcript/export?format=txt&mode=readable'))).toBe(true)
+    expect(urls.some((url) => url.includes('/processing/7/transcript/export?format=csv&mode=readable'))).toBe(true)
+    expect(urls.some((url) => url.includes('/processing/7/transcript/export?format=txt&mode=raw'))).toBe(true)
+    expect(urls.some((url) => url.includes('/processing/7/transcript/export?format=csv&mode=raw'))).toBe(true)
   })
 })

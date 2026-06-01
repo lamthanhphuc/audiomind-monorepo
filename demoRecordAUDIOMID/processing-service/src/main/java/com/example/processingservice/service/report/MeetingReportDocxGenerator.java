@@ -87,7 +87,7 @@ public class MeetingReportDocxGenerator {
             appendRow(analysisMetadataTable, "Source", report.analysisMetadata().source());
 
             addHeading(doc, "Appendix A — Transcript Evidence Preview");
-            addParagraph(doc, "This section shows a short preview of transcript evidence from saved STT output. The full raw transcript may contain overlapping STT fragments and should be exported separately in a later raw transcript export feature.");
+            addParagraph(doc, "This section shows a short best-effort readable preview from saved STT output. Obvious repeated fragments may be collapsed for readability; full canonical transcript cleanup is planned separately.");
             if (report.transcriptPreviewLimited()) {
                 addParagraph(doc, "Preview limited because the saved transcript contains overlapping STT fragments.");
             }

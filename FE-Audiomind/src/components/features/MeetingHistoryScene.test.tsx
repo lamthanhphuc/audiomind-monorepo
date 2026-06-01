@@ -58,6 +58,10 @@ describe('MeetingHistoryScene', () => {
       blob: new Blob(['fake-docx'], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' }),
       filename: 'meeting-7-report.docx',
     } as any)
+    vi.spyOn(api, 'downloadMeetingTranscript').mockResolvedValue({
+      blob: new Blob(['meeting transcript'], { type: 'text/plain' }),
+      filename: 'meeting-7-transcript.txt',
+    } as any)
     vi.spyOn(api, 'renameMeeting').mockResolvedValue({ ...baseMeeting, title: 'Renamed item' } as any)
     vi.spyOn(api, 'deleteMeeting').mockResolvedValue({ id: 7, deleted: true })
     Object.defineProperty(URL, 'createObjectURL', {
@@ -252,6 +256,105 @@ describe('MeetingHistoryScene', () => {
 
     const exportButton = container.querySelector('[data-testid="meeting-export-report"]') as HTMLButtonElement
     expect(exportButton).toBeTruthy()
+  })
+
+  it('renders transcript export menu and downloads readable or raw TXT/CSV', async () => {
+    (api.getTranscript as any).mockResolvedValueOnce({
+      meeting_id: 7,
+      transcripts: [{ speaker: 'SPEAKER_1', start_time: 0, end_time: 1, text: 'row 1' }],
+    })
+    const startProcessingSpy = vi.spyOn(api, 'startProcessingByPath')
+
+    await act(async () => {
+      root.render(<MeetingHistoryScene />)
+    })
+    await flush()
+    expect(container.textContent).toContain('Readable is best-effort; Raw is for audit/debug.')
+
+    const exportButton = container.querySelector('[data-testid="meeting-export-transcript"]') as HTMLButtonElement
+    await act(async () => {
+      exportButton.click()
+    })
+    await flush()
+
+    const menu = container.querySelector('[data-testid="meeting-export-transcript-menu"]')
+    expect(menu).toBeTruthy()
+
+    const readableTxtButton = container.querySelector('[data-testid="meeting-export-transcript-readable-txt"]') as HTMLButtonElement
+    await act(async () => {
+      readableTxtButton.click()
+    })
+    await flush()
+
+    expect(api.downloadMeetingTranscript).toHaveBeenCalledWith(7, 'txt', 'readable')
+
+    await act(async () => {
+      exportButton.click()
+    })
+    await flush()
+
+    const readableCsvButton = container.querySelector('[data-testid="meeting-export-transcript-readable-csv"]') as HTMLButtonElement
+    await act(async () => {
+      readableCsvButton.click()
+    })
+    await flush()
+
+    expect(api.downloadMeetingTranscript).toHaveBeenCalledWith(7, 'csv', 'readable')
+
+    await act(async () => {
+      exportButton.click()
+    })
+    await flush()
+
+    const rawTxtButton = container.querySelector('[data-testid="meeting-export-transcript-raw-txt"]') as HTMLButtonElement
+    await act(async () => {
+      rawTxtButton.click()
+    })
+    await flush()
+
+    expect(api.downloadMeetingTranscript).toHaveBeenCalledWith(7, 'txt', 'raw')
+
+    await act(async () => {
+      exportButton.click()
+    })
+    await flush()
+
+    const rawCsvButton = container.querySelector('[data-testid="meeting-export-transcript-raw-csv"]') as HTMLButtonElement
+    await act(async () => {
+      rawCsvButton.click()
+    })
+    await flush()
+
+    expect(api.downloadMeetingTranscript).toHaveBeenCalledWith(7, 'csv', 'raw')
+    expect(startProcessingSpy).not.toHaveBeenCalled()
+  })
+
+  it('shows transcript export error state when the download fails', async () => {
+    (api.getTranscript as any).mockResolvedValueOnce({
+      meeting_id: 7,
+      transcripts: [{ speaker: 'SPEAKER_1', start_time: 0, end_time: 1, text: 'row 1' }],
+    })
+    ;(api.downloadMeetingTranscript as any).mockRejectedValueOnce(new Error('cannot-export'))
+
+    await act(async () => {
+      root.render(<MeetingHistoryScene />)
+    })
+    await flush()
+
+    const exportButton = container.querySelector('[data-testid="meeting-export-transcript"]') as HTMLButtonElement
+    await act(async () => {
+      exportButton.click()
+    })
+    await flush()
+
+    const txtButton = container.querySelector('[data-testid="meeting-export-transcript-readable-txt"]') as HTMLButtonElement
+    await act(async () => {
+      txtButton.click()
+    })
+    await flush()
+
+    expect(container.textContent).toContain('Xuất transcript thất bại')
+    expect(container.textContent).toContain('cannot-export')
   })
 
   it('clicking export calls meeting report download helper', async () => {

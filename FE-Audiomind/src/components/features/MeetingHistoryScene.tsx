@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
-  deleteMeeting,
-  downloadMeetingReport,
-  getMeetingDetail,
-  getSavedAnalysis,
-  getTranscript,
-  listMeetingsWithParams,
-  renameMeeting,
+    deleteMeeting,
+    downloadMeetingReport,
+    downloadMeetingTranscript,
+    getMeetingDetail,
+    getSavedAnalysis,
+    getTranscript,
+    listMeetingsWithParams,
+    renameMeeting,
 } from '../../services/api'
 import type { AiAnalysis, Meeting } from '../../types'
 import { mergeTranscriptSegments, normalizePersistedTranscriptSegments } from '../../utils/transcript'
@@ -18,6 +19,12 @@ import { LoadingState } from '../ui/LoadingState'
 
 type DetailAnalysisState = 'idle' | 'processing' | 'completed' | 'failed' | 'missing'
 type ListState = 'idle' | 'loading' | 'ready' | 'empty' | 'error'
+type TranscriptExportFormat = 'txt' | 'csv'
+type TranscriptExportMode = 'readable' | 'raw'
+type TranscriptExportRequest = {
+  mode: TranscriptExportMode
+  format: TranscriptExportFormat
+}
 
 type SelectedMeetingDetail = {
   meeting: Meeting | null
@@ -102,6 +109,9 @@ export default function MeetingHistoryScene() {
   const [deleteBusy, setDeleteBusy] = useState(false)
   const [exportBusy, setExportBusy] = useState(false)
   const [exportError, setExportError] = useState<string | null>(null)
+  const [transcriptExportBusy, setTranscriptExportBusy] = useState<TranscriptExportRequest | null>(null)
+  const [transcriptExportError, setTranscriptExportError] = useState<string | null>(null)
+  const [transcriptExportMenuOpen, setTranscriptExportMenuOpen] = useState(false)
   const [reloadTick, setReloadTick] = useState(0)
 
   const selectedMeetingSummary = useMemo(() => {
@@ -299,6 +309,32 @@ export default function MeetingHistoryScene() {
     }
   }
 
+  const handleTranscriptExport = async (mode: TranscriptExportMode, format: TranscriptExportFormat) => {
+    if (!selectedMeetingSummary || detail.transcriptState !== 'ready') {
+      return
+    }
+
+    setTranscriptExportBusy({ mode, format })
+    setTranscriptExportError(null)
+    setTranscriptExportMenuOpen(false)
+
+    try {
+      const { blob, filename } = await downloadMeetingTranscript(selectedMeetingSummary.id, format, mode)
+      const objectUrl = URL.createObjectURL(blob)
+      const anchor = document.createElement('a')
+      anchor.href = objectUrl
+      anchor.download = filename
+      document.body.appendChild(anchor)
+      anchor.click()
+      anchor.remove()
+      URL.revokeObjectURL(objectUrl)
+    } catch (error) {
+      setTranscriptExportError(error instanceof Error ? error.message : 'Không thể xuất transcript')
+    } finally {
+      setTranscriptExportBusy(null)
+    }
+  }
+
   const meetingCards = meetings.map((meeting) => ({
     id: meeting.id,
     title: getMeetingLabel(meeting),
@@ -428,9 +464,60 @@ export default function MeetingHistoryScene() {
                   >
                     {exportBusy ? 'Đang xuất...' : 'Export report'}
                   </button>
+                  <div style={{ position: 'relative' }}>
+                    <button
+                      type="button"
+                      onClick={() => setTranscriptExportMenuOpen((value) => !value)}
+                      disabled={transcriptExportBusy !== null || detail.transcriptState !== 'ready'}
+                      data-testid="meeting-export-transcript"
+                    >
+                      {transcriptExportBusy ? `Đang xuất ${transcriptExportBusy.mode.toUpperCase()} ${transcriptExportBusy.format.toUpperCase()}...` : 'Export transcript'}
+                    </button>
+                    {transcriptExportMenuOpen && detail.transcriptState === 'ready' && transcriptExportBusy === null && (
+                      <div
+                        data-testid="meeting-export-transcript-menu"
+                        style={{
+                          position: 'absolute',
+                          top: 'calc(100% + 8px)',
+                          right: 0,
+                          display: 'grid',
+                          gap: '8px',
+                          minWidth: '180px',
+                          padding: '10px',
+                          background: '#fff',
+                          border: '1px solid #e5e7eb',
+                          borderRadius: '12px',
+                          boxShadow: '0 12px 32px rgba(15, 23, 42, 0.12)',
+                          zIndex: 2,
+                        }}
+                      >
+                        <button type="button" data-testid="meeting-export-transcript-readable-txt" onClick={() => void handleTranscriptExport('readable', 'txt')}>
+                          Readable TXT
+                        </button>
+                        <button type="button" data-testid="meeting-export-transcript-readable-csv" onClick={() => void handleTranscriptExport('readable', 'csv')}>
+                          Readable CSV
+                        </button>
+                        <button type="button" data-testid="meeting-export-transcript-raw-txt" onClick={() => void handleTranscriptExport('raw', 'txt')}>
+                          Raw TXT
+                        </button>
+                        <button type="button" data-testid="meeting-export-transcript-raw-csv" onClick={() => void handleTranscriptExport('raw', 'csv')}>
+                          Raw CSV
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 </div>
                 {listError && <ErrorState title="Thao tác thất bại" message={listError} />}
                 {exportError && <ErrorState title="Xuất report thất bại" message={exportError} />}
+                {transcriptExportError && <ErrorState title="Xuất transcript thất bại" message={transcriptExportError} />}
+                {detail.transcriptState === 'ready' && (
+                  <p
+                    style={{ margin: 0, color: '#64748b', fontSize: '12px' }}
+                    data-testid="meeting-export-transcript-helper"
+                  >
+                    Readable is best-effort; Raw is for audit/debug.
+                  </p>
+                )}
                 {detail.transcriptState !== 'ready' && (
                   <p style={{ margin: 0, color: '#64748b', fontSize: '12px' }} data-testid="meeting-export-hint">
                     Cần transcript đã lưu để export report.
