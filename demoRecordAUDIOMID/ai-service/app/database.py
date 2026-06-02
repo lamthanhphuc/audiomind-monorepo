@@ -53,8 +53,7 @@ def ensure_bigint_meeting_id() -> None:
 
 def ensure_transcript_canonical_sidecar_columns() -> None:
     if engine.dialect.name == "postgresql":
-        migration_sql = text(
-            """
+        migration_sql = text("""
             DO $$
             BEGIN
                 IF EXISTS (
@@ -124,8 +123,7 @@ def ensure_transcript_canonical_sidecar_columns() -> None:
                     END IF;
                 END IF;
             END$$;
-            """
-        )
+            """)
 
         with engine.begin() as connection:
             connection.execute(migration_sql)
@@ -145,7 +143,8 @@ def ensure_transcript_canonical_sidecar_columns() -> None:
             return
 
         existing_columns = {
-            str(row[1]) for row in connection.execute(text("PRAGMA table_info(transcripts)"))
+            str(row[1])
+            for row in connection.execute(text("PRAGMA table_info(transcripts)"))
         }
 
         statements = []

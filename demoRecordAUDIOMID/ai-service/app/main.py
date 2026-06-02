@@ -2113,6 +2113,7 @@ async def get_transcript(meeting_id: int, db: Session = Depends(get_db)):
 
     Returns all transcript segments with speaker labels and timestamps
     """
+
     def _build_segment_id(
         *,
         meeting_id_value: int,
@@ -2261,9 +2262,12 @@ async def get_transcript(meeting_id: int, db: Session = Depends(get_db)):
 
         canonical_payload = _resolve_canonical_sidecar(transcript_rows, raw_segments)
         if canonical_payload is not None:
-            canonical_segments, canonical_version, canonical_hash, canonical_generated_at = (
-                canonical_payload
-            )
+            (
+                canonical_segments,
+                canonical_version,
+                canonical_hash,
+                canonical_generated_at,
+            ) = canonical_payload
             logger.info(
                 "STT_TRANSCRIPT_GET meeting_id={} source={} rows={}",
                 meeting_id,

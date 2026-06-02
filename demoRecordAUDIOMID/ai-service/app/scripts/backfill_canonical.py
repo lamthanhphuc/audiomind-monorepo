@@ -2,6 +2,7 @@
 
 Usage: python -m app.scripts.backfill_canonical <meeting_id>
 """
+
 from __future__ import annotations
 
 import sys

@@ -6,7 +6,6 @@ from typing import List, Dict, Any
 import json
 import re
 
-
 CANONICAL_VERSION = "canonical-transcript-v2"
 ADJACENT_MERGE_MAX_GAP_SECONDS = 2.0
 ADJACENT_MERGE_MAX_OVERLAP_SECONDS = 0.25

@@ -38,7 +38,9 @@ def upgrade() -> None:
     if "canonical_transcript_version" not in columns:
         op.add_column(
             "transcripts",
-            sa.Column("canonical_transcript_version", sa.String(length=64), nullable=True),
+            sa.Column(
+                "canonical_transcript_version", sa.String(length=64), nullable=True
+            ),
         )
     if "canonical_transcript_hash" not in columns:
         op.add_column(

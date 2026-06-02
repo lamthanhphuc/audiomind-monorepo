@@ -204,7 +204,12 @@ def test_canonicalizer_is_deterministic_and_keeps_input_unchanged():
         {"speaker": "alice", "start_time": 0.0, "end_time": 1.0, "text": "Hello world"},
         {"speaker": "alice", "start_time": 0.5, "end_time": 1.5, "text": "hello world"},
         {"speaker": "bob", "start_time": 2.0, "end_time": 3.0, "text": "  "},
-        {"speaker": "alice", "start_time": 3.0, "end_time": 4.0, "text": "This is a test"},
+        {
+            "speaker": "alice",
+            "start_time": 3.0,
+            "end_time": 4.0,
+            "text": "This is a test",
+        },
         {"speaker": "alice", "start_time": 3.2, "end_time": 3.8, "text": "a test"},
     ]
     snapshot = copy.deepcopy(segments)
@@ -401,7 +406,9 @@ def test_backfill_rebuilds_when_canonical_version_changes(monkeypatch):
                 canonical_transcript_hash=canonicalizer.build_canonical_transcript_hash(
                     raw_rows, version="canonical-transcript-v1"
                 ),
-                canonical_generated_at=datetime(2026, 6, 1, 6, 0, 0, tzinfo=timezone.utc),
+                canonical_generated_at=datetime(
+                    2026, 6, 1, 6, 0, 0, tzinfo=timezone.utc
+                ),
             )
         )
         session.commit()
@@ -584,11 +591,20 @@ def test_backfill_does_not_overwrite_newer_canonical_version(monkeypatch):
                 start_time=1.0,
                 end_time=3.0,
                 text="We should finalize the launch plan.",
-                canonical_transcript_rows=[{"speaker": "SPEAKER_1", "start_time": 1.0, "end_time": 3.0, "text": "already canonical"}],
+                canonical_transcript_rows=[
+                    {
+                        "speaker": "SPEAKER_1",
+                        "start_time": 1.0,
+                        "end_time": 3.0,
+                        "text": "already canonical",
+                    }
+                ],
                 canonical_transcript_version="canonical-transcript-v3",
                 canonical_transcript_hash="newerhash",
                 raw_transcript_hash="newerrawhash",
-                canonical_generated_at=datetime(2026, 6, 1, 6, 0, 0, tzinfo=timezone.utc),
+                canonical_generated_at=datetime(
+                    2026, 6, 1, 6, 0, 0, tzinfo=timezone.utc
+                ),
             )
         )
         session.commit()
@@ -655,7 +671,12 @@ def test_backfill_uses_persisted_segments_without_external_processing(monkeypatc
             rows=segments,
             canonical_hash="c" * 64,
             raw_hash="r" * 64,
-            stats={"input_rows": 1, "output_rows": 1, "dropped_duplicates": 0, "dropped_contained": 0},
+            stats={
+                "input_rows": 1,
+                "output_rows": 1,
+                "dropped_duplicates": 0,
+                "dropped_contained": 0,
+            },
         )
 
     try:
@@ -672,7 +693,9 @@ def test_backfill_uses_persisted_segments_without_external_processing(monkeypatc
         session.close()
 
         monkeypatch.setattr(backfill_module, "SessionLocal", session_local)
-        monkeypatch.setattr(backfill_module, "TranscriptPersistenceRepository", FakeRepo)
+        monkeypatch.setattr(
+            backfill_module, "TranscriptPersistenceRepository", FakeRepo
+        )
         monkeypatch.setattr(backfill_module, "canonicalize_segments", fake_canonicalize)
 
         result = backfill_module.backfill(4204)

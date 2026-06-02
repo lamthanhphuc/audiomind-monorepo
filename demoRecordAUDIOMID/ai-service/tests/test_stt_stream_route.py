@@ -1168,7 +1168,9 @@ def test_get_transcript_returns_canonical_rows_when_sidecar_is_valid(monkeypatch
         first.canonical_transcript_rows = canonical.rows
         first.canonical_transcript_version = canonical.version
         first.canonical_transcript_hash = canonical.canonical_hash
-        first.canonical_generated_at = datetime(2026, 6, 1, 10, 0, 0, tzinfo=timezone.utc)
+        first.canonical_generated_at = datetime(
+            2026, 6, 1, 10, 0, 0, tzinfo=timezone.utc
+        )
         db.commit()
 
         monkeypatch.setattr(main_module, "pipeline", None)
