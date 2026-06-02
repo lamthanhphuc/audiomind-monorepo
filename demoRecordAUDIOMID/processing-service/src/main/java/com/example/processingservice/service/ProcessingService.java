@@ -10,6 +10,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HexFormat;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -66,6 +67,7 @@ public class ProcessingService {
     private static final String TRANSCRIPT_MODE_CANONICAL = "canonical";
     private static final String READABLE_TRANSCRIPT_EXPORT_NOTE =
             "Readable transcript export is generated from saved STT output and canonical transcript data when available.";
+    private static final String DEFAULT_SPEAKER_STABILIZATION_VERSION = "speaker-stabilization-v1";
 
     private static final Logger log = LoggerFactory.getLogger(ProcessingService.class);
 
@@ -78,6 +80,24 @@ public class ProcessingService {
     private String analysisPromptVersion;
     @Value("${processing.analysis.schema-version:gemini-business-v1}")
     private String analysisSchemaVersion;
+    @Value("${speaker.stabilization.enabled:true}")
+    private boolean speakerStabilizationEnabled = true;
+    @Value("${speaker.stabilization.version:" + DEFAULT_SPEAKER_STABILIZATION_VERSION + "}")
+    private String speakerStabilizationVersion = DEFAULT_SPEAKER_STABILIZATION_VERSION;
+    @Value("${speaker.stabilization.min-segment-seconds:1.2}")
+    private double speakerMinSegmentSeconds = 1.2d;
+    @Value("${speaker.stabilization.max-gap-seconds:1.0}")
+    private double speakerMaxGapSeconds = 1.0d;
+    @Value("${speaker.stabilization.island-max-seconds:2.0}")
+    private double speakerIslandMaxSeconds = 2.0d;
+    @Value("${speaker.stabilization.max-merged-turn-seconds:20.0}")
+    private double speakerMaxMergedTurnSeconds = 20.0d;
+    @Value("${speaker.stabilization.max-reasonable-count:8}")
+    private int speakerMaxReasonableCount = 8;
+    @Value("${speaker.stabilization.dry-run:false}")
+    private boolean speakerStabilizationDryRun = false;
+    @Value("${speaker.stabilization.log-stats:true}")
+    private boolean speakerStabilizationLogStats = true;
 
     private final AtomicInteger runningGauge = new AtomicInteger(0);
     private final Set<Long> activeJobs = Collections.newSetFromMap(new ConcurrentHashMap<>());
@@ -385,13 +405,15 @@ public class ProcessingService {
                 false,
                 TranscriptExportMode.READABLE
         );
-        List<Map<String, Object>> transcriptRows = transcriptPayload.readableRows();
+        List<Map<String, Object>> originalTranscriptRows = transcriptPayload.readableRows();
+        StabilizedTranscriptResult stabilizedTranscript = stabilizeReadableTranscriptRows(originalTranscriptRows);
+        List<Map<String, Object>> transcriptRows = stabilizedTranscript.rows();
         Map<String, Object> state = jobStateStore.getJobState(meetingId).orElse(null);
         Map<String, Object> analysisPayload = extractAnalysisFromState(state);
         boolean analysisAvailable = hasStructuredAnalysis(analysisPayload);
         RawTranscriptPreview readablePreview = transcriptPayload.isCanonicalMode()
                 ? buildCanonicalTranscriptPreviewRows(transcriptRows)
-                : buildReadableTranscriptPreviewRows(transcriptRows);
+                : buildReadableTranscriptPreviewRows(transcriptRows, originalTranscriptRows);
 
         if (transcriptRows.isEmpty() && !analysisAvailable) {
             throw new ResponseStatusException(
@@ -430,7 +452,7 @@ public class ProcessingService {
         );
         List<Map<String, Object>> selectedRows = exportMode == TranscriptExportMode.RAW
                 ? savedTranscriptPayload.rawRows()
-                : savedTranscriptPayload.readableRows();
+                : stabilizeReadableTranscriptRows(savedTranscriptPayload.readableRows()).rows();
         List<MeetingReportData.RawTranscriptRow> transcriptRows = exportMode == TranscriptExportMode.RAW
                 ? buildRawTranscriptRows(selectedRows)
                 : savedTranscriptPayload.isCanonicalMode()
@@ -456,7 +478,7 @@ public class ProcessingService {
         );
         List<Map<String, Object>> selectedRows = exportMode == TranscriptExportMode.RAW
                 ? savedTranscriptPayload.rawRows()
-                : savedTranscriptPayload.readableRows();
+                : stabilizeReadableTranscriptRows(savedTranscriptPayload.readableRows()).rows();
         List<MeetingReportData.RawTranscriptRow> transcriptRows = exportMode == TranscriptExportMode.RAW
                 ? buildRawTranscriptRows(selectedRows)
                 : savedTranscriptPayload.isCanonicalMode()
@@ -550,10 +572,18 @@ public class ProcessingService {
     }
 
     private RawTranscriptPreview buildReadableTranscriptPreviewRows(List<Map<String, Object>> transcriptRows) {
+        return buildReadableTranscriptPreviewRows(transcriptRows, transcriptRows);
+    }
+
+    private RawTranscriptPreview buildReadableTranscriptPreviewRows(
+            List<Map<String, Object>> transcriptRows,
+            List<Map<String, Object>> sourceRowsForLimit
+    ) {
         List<MeetingReportData.RawTranscriptRow> readableRows = buildReadableTranscriptRows(transcriptRows);
-        boolean previewLimited = transcriptRows != null
-                && !transcriptRows.isEmpty()
-                && (readableRows.size() != transcriptRows.size() || readableRows.size() > 30);
+        List<Map<String, Object>> sourceRows = sourceRowsForLimit == null ? transcriptRows : sourceRowsForLimit;
+        boolean previewLimited = sourceRows != null
+                && !sourceRows.isEmpty()
+                && (readableRows.size() != sourceRows.size() || readableRows.size() > 30);
         if (readableRows.size() > 30) {
             return new RawTranscriptPreview(new ArrayList<>(readableRows.subList(0, 30)), true);
         }
@@ -645,6 +675,487 @@ public class ProcessingService {
                 rawText(row.get("speaker")),
                 row.get("text") == null ? "" : String.valueOf(row.get("text"))
         );
+    }
+
+    private StabilizedTranscriptResult stabilizeReadableTranscriptRows(List<Map<String, Object>> transcriptRows) {
+        if (transcriptRows == null || transcriptRows.isEmpty()) {
+            return new StabilizedTranscriptResult(List.of(), Map.of(), null);
+        }
+        if (!speakerStabilizationEnabled) {
+            return fallbackSortedReadableTranscriptRows(transcriptRows);
+        }
+
+        try {
+            List<SpeakerDisplaySegment> segments = new ArrayList<>();
+            LinkedHashSet<String> rawSpeakers = new LinkedHashSet<>();
+            int largestObservedSpeakerLabelCount = 0;
+            int originalIndex = 0;
+            for (Map<String, Object> row : transcriptRows) {
+                if (row == null) {
+                    originalIndex++;
+                    continue;
+                }
+                String text = row.get("text") == null ? "" : String.valueOf(row.get("text"));
+                if (text.isBlank()) {
+                    originalIndex++;
+                    continue;
+                }
+                String rawSpeaker = resolveProviderSpeaker(row);
+                String rawSpeakerKey = canonicalSpeakerKey(rawSpeaker);
+                if (!rawSpeakerKey.isBlank() && !"UNKNOWN".equals(rawSpeakerKey)) {
+                    rawSpeakers.add(rawSpeakerKey);
+                }
+                largestObservedSpeakerLabelCount = Math.max(
+                        largestObservedSpeakerLabelCount,
+                        parseSpeakerOrdinal(rawSpeaker)
+                );
+
+                segments.add(SpeakerDisplaySegment.fromRow(
+                        row,
+                        originalIndex++,
+                        text,
+                        rawSpeaker,
+                        parseTimeSeconds(row.get("start_time"), row.get("startTime"), row.get("start")),
+                        parseTimeSeconds(row.get("end_time"), row.get("endTime"), row.get("end")),
+                        hasTranscriptTiming(row)
+                ));
+            }
+
+            if (segments.isEmpty()) {
+                return fallbackSortedReadableTranscriptRows(transcriptRows);
+            }
+
+            sortSpeakerSegments(segments);
+            assignStableSpeakers(segments);
+
+            SpeakerStabilizationCounters counters = new SpeakerStabilizationCounters();
+            mergeShortSpeakerIslands(segments, counters);
+            List<SpeakerDisplaySegment> mergedSegments = mergeStableSpeakerSegments(segments, counters);
+            sortSpeakerSegments(mergedSegments);
+
+            LinkedHashSet<String> stableSpeakers = new LinkedHashSet<>();
+            for (SpeakerDisplaySegment segment : mergedSegments) {
+                stableSpeakers.add(segment.stableSpeaker);
+            }
+
+            Map<String, Object> speakerStats = buildSpeakerStats(
+                    rawSpeakers.size(),
+                    stableSpeakers.size(),
+                    counters.mergedIslandCount,
+                    counters.mergedTinyFragmentCount,
+                    largestObservedSpeakerLabelCount
+            );
+
+            if (speakerStabilizationLogStats) {
+                log.info(
+                        "SPEAKER_STABILIZATION_STATS rawSpeakerCount={} stableSpeakerCount={} mergedIslandCount={} mergedTinyFragmentCount={} version={} dryRun={}",
+                        speakerStats.get("rawSpeakerCount"),
+                        speakerStats.get("stableSpeakerCount"),
+                        speakerStats.get("mergedIslandCount"),
+                        speakerStats.get("mergedTinyFragmentCount"),
+                        speakerStats.get("stabilizationVersion"),
+                        speakerStabilizationDryRun
+                );
+            }
+
+            List<Map<String, Object>> outputRows = speakerStabilizationDryRun
+                    ? copyRowsWithSpeakerMetadata(transcriptRows)
+                    : mergedSegments.stream().map(this::toStabilizedTranscriptRow).toList();
+            return new StabilizedTranscriptResult(
+                    sortTranscriptRowsByTimeline(outputRows),
+                    speakerStats,
+                    normalizedSpeakerStabilizationVersion()
+            );
+        } catch (RuntimeException ex) {
+            log.warn(
+                    "SPEAKER_STABILIZATION_FALLBACK errorCode={} reason=timeline_sort_preserved",
+                    ex.getClass().getSimpleName(),
+                    ex
+            );
+            return fallbackSortedReadableTranscriptRows(transcriptRows);
+        }
+    }
+
+    private StabilizedTranscriptResult fallbackSortedReadableTranscriptRows(List<Map<String, Object>> transcriptRows) {
+        return new StabilizedTranscriptResult(sortTranscriptRowsByTimeline(copyTranscriptRows(transcriptRows)), Map.of(), null);
+    }
+
+    private List<Map<String, Object>> copyTranscriptRows(List<Map<String, Object>> transcriptRows) {
+        if (transcriptRows == null || transcriptRows.isEmpty()) {
+            return List.of();
+        }
+        List<Map<String, Object>> copied = new ArrayList<>();
+        for (Map<String, Object> row : transcriptRows) {
+            if (row != null) {
+                copied.add(new HashMap<>(row));
+            }
+        }
+        return copied;
+    }
+
+    private List<Map<String, Object>> copyRowsWithSpeakerMetadata(List<Map<String, Object>> transcriptRows) {
+        List<Map<String, Object>> copied = new ArrayList<>();
+        for (Map<String, Object> row : transcriptRows) {
+            if (row == null) {
+                continue;
+            }
+            Map<String, Object> copy = new HashMap<>(row);
+            String rawSpeaker = resolveProviderSpeaker(row);
+            if (!rawSpeaker.isBlank()) {
+                copy.putIfAbsent("providerSpeaker", rawSpeaker);
+                copy.putIfAbsent("originalSpeaker", rawSpeaker);
+            }
+            copy.put("speakerStabilizationVersion", normalizedSpeakerStabilizationVersion());
+            copied.add(copy);
+        }
+        return copied;
+    }
+
+    private void sortSpeakerSegments(List<SpeakerDisplaySegment> segments) {
+        boolean hasTiming = segments.stream().anyMatch(segment -> segment.hasTiming);
+        if (!hasTiming) {
+            return;
+        }
+        segments.sort((left, right) -> {
+            int byStart = Double.compare(left.startTimeSeconds, right.startTimeSeconds);
+            if (byStart != 0) {
+                return byStart;
+            }
+            int byEnd = Double.compare(left.endTimeSeconds, right.endTimeSeconds);
+            if (byEnd != 0) {
+                return byEnd;
+            }
+            return Integer.compare(left.originalIndex, right.originalIndex);
+        });
+    }
+
+    private List<Map<String, Object>> sortTranscriptRowsByTimeline(List<Map<String, Object>> transcriptRows) {
+        if (transcriptRows == null || transcriptRows.size() <= 1) {
+            return transcriptRows == null ? List.of() : transcriptRows;
+        }
+        boolean hasTiming = transcriptRows.stream().anyMatch(this::hasTranscriptTiming);
+        if (!hasTiming) {
+            return transcriptRows;
+        }
+        List<Map<String, Object>> sorted = new ArrayList<>(transcriptRows);
+        sorted.sort((left, right) -> {
+            int byStart = Double.compare(
+                    parseTranscriptStartTime(left),
+                    parseTranscriptStartTime(right)
+            );
+            if (byStart != 0) {
+                return byStart;
+            }
+
+            int byEnd = Double.compare(
+                    parseTranscriptEndTime(left),
+                    parseTranscriptEndTime(right)
+            );
+            if (byEnd != 0) {
+                return byEnd;
+            }
+
+            int byOriginalIndex = Double.compare(
+                    parseTranscriptOriginalIndex(left),
+                    parseTranscriptOriginalIndex(right)
+            );
+            if (byOriginalIndex != 0) {
+                return byOriginalIndex;
+            }
+
+            return 0;
+        });
+        return sorted;
+    }
+
+    private double parseTranscriptStartTime(Map<String, Object> row) {
+        if (row == null) {
+            return 0d;
+        }
+        return parseTimeSeconds(row.get("start_time"), row.get("startTime"), row.get("start"));
+    }
+
+    private double parseTranscriptEndTime(Map<String, Object> row) {
+        if (row == null) {
+            return 0d;
+        }
+        return parseTimeSeconds(row.get("end_time"), row.get("endTime"), row.get("end"));
+    }
+
+    private double parseTranscriptOriginalIndex(Map<String, Object> row) {
+        if (row == null) {
+            return Double.POSITIVE_INFINITY;
+        }
+        String raw = firstNonBlank(row.get("originalIndex"), row.get("original_index"));
+        if (raw.isBlank()) {
+            return Double.POSITIVE_INFINITY;
+        }
+        try {
+            return Double.parseDouble(raw);
+        } catch (NumberFormatException ex) {
+            return Double.POSITIVE_INFINITY;
+        }
+    }
+
+    private void assignStableSpeakers(List<SpeakerDisplaySegment> segments) {
+        Map<String, String> stableSpeakerMap = new LinkedHashMap<>();
+        int maxSpeakers = Math.max(1, speakerMaxReasonableCount);
+        for (SpeakerDisplaySegment segment : segments) {
+            String speakerKey = canonicalSpeakerKey(segment.originalSpeaker());
+            String stableSpeaker = stableSpeakerMap.get(speakerKey);
+            if (stableSpeaker == null) {
+                int nextOrdinal = stableSpeakerMap.size() >= maxSpeakers
+                        ? maxSpeakers
+                        : stableSpeakerMap.size() + 1;
+                stableSpeaker = "SPEAKER_" + nextOrdinal;
+                stableSpeakerMap.put(speakerKey, stableSpeaker);
+            }
+            segment.stableSpeaker = stableSpeaker;
+        }
+    }
+
+    private void mergeShortSpeakerIslands(
+            List<SpeakerDisplaySegment> segments,
+            SpeakerStabilizationCounters counters
+    ) {
+        if (segments.size() < 3) {
+            return;
+        }
+
+        int index = 1;
+        while (index < segments.size() - 1) {
+            int runStart = index;
+            String islandSpeaker = segments.get(index).stableSpeaker;
+            int runEnd = runStart;
+            while (runEnd + 1 < segments.size()
+                    && islandSpeaker.equals(segments.get(runEnd + 1).stableSpeaker)) {
+                runEnd++;
+            }
+
+            if (runStart == 0 || runEnd >= segments.size() - 1) {
+                index = runEnd + 1;
+                continue;
+            }
+
+            SpeakerDisplaySegment before = segments.get(runStart - 1);
+            SpeakerDisplaySegment after = segments.get(runEnd + 1);
+            if (!before.stableSpeaker.equals(after.stableSpeaker)
+                    || before.stableSpeaker.equals(islandSpeaker)) {
+                index = runEnd + 1;
+                continue;
+            }
+
+            SpeakerDisplaySegment firstIsland = segments.get(runStart);
+            SpeakerDisplaySegment lastIsland = segments.get(runEnd);
+            double islandDuration = Math.max(
+                    0d,
+                    resolveEnd(lastIsland.startTimeSeconds, lastIsland.endTimeSeconds) - firstIsland.startTimeSeconds
+            );
+            double beforeGap = gapBetween(before, firstIsland);
+            double afterGap = gapBetween(lastIsland, after);
+            double mergedDuration = combinedDuration(before, after);
+            String islandText = combineSegmentText(segments, runStart, runEnd);
+
+            if (islandDuration <= speakerIslandMaxSeconds
+                    && beforeGap <= speakerMaxGapSeconds
+                    && afterGap <= speakerMaxGapSeconds
+                    && mergedDuration <= speakerMaxMergedTurnSeconds
+                    && isFragmentLikeSpeakerIsland(islandText)) {
+                for (int rewriteIndex = runStart; rewriteIndex <= runEnd; rewriteIndex++) {
+                    SpeakerDisplaySegment segment = segments.get(rewriteIndex);
+                    segment.stableSpeaker = before.stableSpeaker;
+                    segment.mergedIsland = true;
+                }
+                counters.mergedIslandCount++;
+            }
+
+            index = runEnd + 1;
+        }
+    }
+
+    private List<SpeakerDisplaySegment> mergeStableSpeakerSegments(
+            List<SpeakerDisplaySegment> segments,
+            SpeakerStabilizationCounters counters
+    ) {
+        if (segments.isEmpty()) {
+            return List.of();
+        }
+
+        List<SpeakerDisplaySegment> merged = new ArrayList<>();
+        SpeakerDisplaySegment current = segments.get(0);
+        for (int index = 1; index < segments.size(); index++) {
+            SpeakerDisplaySegment next = segments.get(index);
+            if (!canMergeStableSpeakerSegments(current, next)) {
+                merged.add(current);
+                current = next;
+                continue;
+            }
+            if (isTinySpeakerSegment(current) || isTinySpeakerSegment(next)) {
+                counters.mergedTinyFragmentCount++;
+            }
+            current = current.merge(next);
+        }
+        merged.add(current);
+        return merged;
+    }
+
+    private boolean canMergeStableSpeakerSegments(SpeakerDisplaySegment current, SpeakerDisplaySegment next) {
+        if (!current.stableSpeaker.equals(next.stableSpeaker)) {
+            return false;
+        }
+        if (!current.hasTiming && !next.hasTiming && !isTinySpeakerSegment(current) && !isTinySpeakerSegment(next)) {
+            return false;
+        }
+        if (gapBetween(current, next) > speakerMaxGapSeconds) {
+            return false;
+        }
+        if (hasContainedSpeakerText(current.text, next.text)) {
+            return false;
+        }
+        return combinedDuration(current, next) <= speakerMaxMergedTurnSeconds;
+    }
+
+    private Map<String, Object> toStabilizedTranscriptRow(SpeakerDisplaySegment segment) {
+        Map<String, Object> row = new HashMap<>(segment.row);
+        row.put("speaker", segment.stableSpeaker);
+        row.put("text", segment.text);
+        row.put("start_time", segment.startTimeSeconds);
+        row.put("end_time", resolveEnd(segment.startTimeSeconds, segment.endTimeSeconds));
+        if (segment.row.containsKey("startTime")) {
+            row.put("startTime", segment.startTimeSeconds);
+        }
+        if (segment.row.containsKey("endTime")) {
+            row.put("endTime", resolveEnd(segment.startTimeSeconds, segment.endTimeSeconds));
+        }
+        if (!segment.providerSpeakers.isEmpty()) {
+            row.put("providerSpeaker", String.join("/", segment.providerSpeakers));
+            row.put("providerSpeakers", new ArrayList<>(segment.providerSpeakers));
+        }
+        if (!segment.originalSpeakers.isEmpty()) {
+            row.put("originalSpeaker", String.join("/", segment.originalSpeakers));
+            row.put("originalSpeakers", new ArrayList<>(segment.originalSpeakers));
+        }
+        row.put("speakerStabilizationVersion", normalizedSpeakerStabilizationVersion());
+        return row;
+    }
+
+    private Map<String, Object> buildSpeakerStats(
+            int rawSpeakerCount,
+            int stableSpeakerCount,
+            int mergedIslandCount,
+            int mergedTinyFragmentCount,
+            int largestObservedSpeakerLabelCount
+    ) {
+        Map<String, Object> stats = new LinkedHashMap<>();
+        stats.put("rawSpeakerCount", rawSpeakerCount);
+        stats.put("stableSpeakerCount", stableSpeakerCount);
+        stats.put("mergedIslandCount", mergedIslandCount);
+        stats.put("mergedTinyFragmentCount", mergedTinyFragmentCount);
+        stats.put("stabilizationVersion", normalizedSpeakerStabilizationVersion());
+        stats.put("largestObservedSpeakerLabelCount", largestObservedSpeakerLabelCount);
+        return stats;
+    }
+
+    private String resolveProviderSpeaker(Map<String, Object> row) {
+        return firstNonBlank(
+                row.get("providerSpeaker"),
+                row.get("provider_speaker"),
+                row.get("originalSpeaker"),
+                row.get("original_speaker"),
+                row.get("speaker")
+        );
+    }
+
+    private String canonicalSpeakerKey(String value) {
+        String normalized = firstNonBlank(value).trim();
+        if (normalized.isBlank()
+                || "system".equalsIgnoreCase(normalized)
+                || "unknown".equalsIgnoreCase(normalized)
+                || "n/a".equalsIgnoreCase(normalized)) {
+            return "UNKNOWN";
+        }
+        return normalized.replaceAll("\\s+", " ").toUpperCase(Locale.ROOT);
+    }
+
+    private int parseSpeakerOrdinal(String value) {
+        String normalized = firstNonBlank(value);
+        if (normalized.isBlank()) {
+            return 0;
+        }
+        String candidate = normalized
+                .replaceFirst("(?i)^speaker[_\\s-]*", "")
+                .trim();
+        if (!candidate.matches("\\d+")) {
+            return 0;
+        }
+        try {
+            return Integer.parseInt(candidate);
+        } catch (NumberFormatException ex) {
+            return 0;
+        }
+    }
+
+    private boolean isTinySpeakerSegment(SpeakerDisplaySegment segment) {
+        double duration = Math.max(
+                0d,
+                resolveEnd(segment.startTimeSeconds, segment.endTimeSeconds) - segment.startTimeSeconds
+        );
+        String normalizedText = normalizeTranscriptForCompare(segment.text);
+        return duration <= speakerMinSegmentSeconds
+                || normalizedTokenCount(normalizedText) <= READABLE_TINY_FRAGMENT_MAX_WORDS;
+    }
+
+    private boolean isFragmentLikeSpeakerIsland(String text) {
+        String trimmed = text == null ? "" : text.trim();
+        if (trimmed.isBlank()) {
+            return true;
+        }
+        char lastCharacter = trimmed.charAt(trimmed.length() - 1);
+        if (lastCharacter == '.' || lastCharacter == '!' || lastCharacter == '?') {
+            return false;
+        }
+        String normalizedText = normalizeTranscriptForCompare(text);
+        return isObviouslyIncompleteTranscriptRow(text, normalizedText);
+    }
+
+    private boolean hasContainedSpeakerText(String left, String right) {
+        String normalizedLeft = normalizeTranscriptForCompare(left);
+        String normalizedRight = normalizeTranscriptForCompare(right);
+        if (normalizedLeft.isBlank() || normalizedRight.isBlank()) {
+            return false;
+        }
+        return normalizedLeft.contains(normalizedRight) || normalizedRight.contains(normalizedLeft);
+    }
+
+    private String combineSegmentText(List<SpeakerDisplaySegment> segments, int start, int end) {
+        String combined = "";
+        for (int index = start; index <= end; index++) {
+            combined = appendRawText(combined, segments.get(index).text);
+        }
+        return combined;
+    }
+
+    private double gapBetween(SpeakerDisplaySegment left, SpeakerDisplaySegment right) {
+        double leftEnd = resolveEnd(left.startTimeSeconds, left.endTimeSeconds);
+        double rightStart = right.startTimeSeconds;
+        if (leftEnd >= rightStart) {
+            return 0d;
+        }
+        return rightStart - leftEnd;
+    }
+
+    private double combinedDuration(SpeakerDisplaySegment left, SpeakerDisplaySegment right) {
+        double start = Math.min(left.startTimeSeconds, right.startTimeSeconds);
+        double end = Math.max(
+                resolveEnd(left.startTimeSeconds, left.endTimeSeconds),
+                resolveEnd(right.startTimeSeconds, right.endTimeSeconds)
+        );
+        return Math.max(0d, end - start);
+    }
+
+    private String normalizedSpeakerStabilizationVersion() {
+        String version = firstNonBlank(speakerStabilizationVersion);
+        return version.isBlank() ? DEFAULT_SPEAKER_STABILIZATION_VERSION : version;
     }
 
     private boolean isObviouslyIncompleteTranscriptRow(String text, String normalizedText) {
@@ -938,8 +1449,8 @@ public class ProcessingService {
         return gapSeconds <= READABLE_DUPLICATE_WINDOW_SECONDS;
     }
 
-    private double parseTimeSeconds(Object primaryValue, Object fallbackValue) {
-        String raw = firstNonBlank(primaryValue, fallbackValue);
+    private double parseTimeSeconds(Object... values) {
+        String raw = firstNonBlank(values);
         if (raw.isBlank()) {
             return 0d;
         }
@@ -1627,11 +2138,18 @@ public class ProcessingService {
             String status,
             TranscriptPayload payload
     ) {
+        StabilizedTranscriptResult stabilizedTranscript = stabilizeReadableTranscriptRows(payload.readableRows());
         Map<String, Object> response = new HashMap<>();
         response.put("meeting_id", meetingId);
         response.put("status", status);
-        response.put("transcripts", payload.readableRows());
+        response.put("transcripts", stabilizedTranscript.rows());
         response.put("transcriptMode", payload.transcriptMode());
+        if (stabilizedTranscript.stabilizationVersion() != null) {
+            response.put("speakerStabilizationVersion", stabilizedTranscript.stabilizationVersion());
+        }
+        if (stabilizedTranscript.speakerStats() != null && !stabilizedTranscript.speakerStats().isEmpty()) {
+            response.put("speakerStats", stabilizedTranscript.speakerStats());
+        }
 
         if (payload.isCanonicalMode()) {
             if (payload.canonicalTranscriptVersion() != null) {
@@ -1731,41 +2249,7 @@ public class ProcessingService {
     }
 
     private List<Map<String, Object>> sortTranscriptRowsForExport(List<Map<String, Object>> transcriptRows) {
-        if (transcriptRows.size() <= 1) {
-            return transcriptRows;
-        }
-
-        boolean hasTiming = transcriptRows.stream().anyMatch(this::hasTranscriptTiming);
-        if (!hasTiming) {
-            return transcriptRows;
-        }
-
-        List<Map<String, Object>> sorted = new ArrayList<>(transcriptRows);
-        sorted.sort((left, right) -> {
-            int byStart = Double.compare(
-                    parseTimeSeconds(left.get("start_time"), left.get("startTime")),
-                    parseTimeSeconds(right.get("start_time"), right.get("startTime"))
-            );
-            if (byStart != 0) {
-                return byStart;
-            }
-
-            int byEnd = Double.compare(
-                    parseTimeSeconds(left.get("end_time"), left.get("endTime")),
-                    parseTimeSeconds(right.get("end_time"), right.get("endTime"))
-            );
-            if (byEnd != 0) {
-                return byEnd;
-            }
-
-            int bySpeaker = safeCell(left.get("speaker")).compareToIgnoreCase(safeCell(right.get("speaker")));
-            if (bySpeaker != 0) {
-                return bySpeaker;
-            }
-
-            return safeCell(left.get("text")).compareToIgnoreCase(safeCell(right.get("text")));
-        });
-        return sorted;
+        return sortTranscriptRowsByTimeline(transcriptRows);
     }
 
     private boolean hasTranscriptTiming(Map<String, Object> row) {
@@ -1773,7 +2257,9 @@ public class ProcessingService {
             return false;
         }
         return row.containsKey("start_time") || row.containsKey("startTime")
-                || row.containsKey("end_time") || row.containsKey("endTime");
+                || row.containsKey("start")
+                || row.containsKey("end_time") || row.containsKey("endTime")
+                || row.containsKey("end");
     }
 
     private String buildTranscriptTxt(
@@ -2471,12 +2957,128 @@ public class ProcessingService {
     private record RawTranscriptPreview(List<MeetingReportData.RawTranscriptRow> rows, boolean previewLimited) {
     }
 
+    private record StabilizedTranscriptResult(
+            List<Map<String, Object>> rows,
+            Map<String, Object> speakerStats,
+            String stabilizationVersion
+    ) {
+    }
+
     private record RawTranscriptCandidate(
             double startTimeSeconds,
             double endTimeSeconds,
             String speaker,
             String rawText
     ) {
+    }
+
+    private static final class SpeakerStabilizationCounters {
+        private int mergedIslandCount;
+        private int mergedTinyFragmentCount;
+    }
+
+    private static final class SpeakerDisplaySegment {
+        private final Map<String, Object> row;
+        private final int originalIndex;
+        private final boolean hasTiming;
+        private final LinkedHashSet<String> providerSpeakers;
+        private final LinkedHashSet<String> originalSpeakers;
+        private double startTimeSeconds;
+        private double endTimeSeconds;
+        private String stableSpeaker;
+        private String text;
+        private boolean mergedIsland;
+
+        private SpeakerDisplaySegment(
+                Map<String, Object> row,
+                int originalIndex,
+                boolean hasTiming,
+                LinkedHashSet<String> providerSpeakers,
+                LinkedHashSet<String> originalSpeakers,
+                double startTimeSeconds,
+                double endTimeSeconds,
+                String stableSpeaker,
+                String text
+        ) {
+            this.row = row;
+            this.originalIndex = originalIndex;
+            this.hasTiming = hasTiming;
+            this.providerSpeakers = providerSpeakers;
+            this.originalSpeakers = originalSpeakers;
+            this.startTimeSeconds = startTimeSeconds;
+            this.endTimeSeconds = endTimeSeconds;
+            this.stableSpeaker = stableSpeaker;
+            this.text = text;
+        }
+
+        private static SpeakerDisplaySegment fromRow(
+                Map<String, Object> row,
+                int originalIndex,
+                String text,
+                String originalSpeaker,
+                double startTimeSeconds,
+                double endTimeSeconds,
+                boolean hasTiming
+        ) {
+            LinkedHashSet<String> providerSpeakers = new LinkedHashSet<>();
+            LinkedHashSet<String> originalSpeakers = new LinkedHashSet<>();
+            String speaker = originalSpeaker == null ? "" : originalSpeaker.trim();
+            if (!speaker.isBlank()) {
+                providerSpeakers.add(speaker);
+                originalSpeakers.add(speaker);
+            }
+            return new SpeakerDisplaySegment(
+                    new HashMap<>(row),
+                    originalIndex,
+                    hasTiming,
+                    providerSpeakers,
+                    originalSpeakers,
+                    startTimeSeconds,
+                    endTimeSeconds,
+                    "",
+                    text
+            );
+        }
+
+        private String originalSpeaker() {
+            if (!originalSpeakers.isEmpty()) {
+                return originalSpeakers.iterator().next();
+            }
+            return "";
+        }
+
+        private SpeakerDisplaySegment merge(SpeakerDisplaySegment next) {
+            Map<String, Object> mergedRow = new HashMap<>(row);
+            LinkedHashSet<String> mergedProviderSpeakers = new LinkedHashSet<>(providerSpeakers);
+            mergedProviderSpeakers.addAll(next.providerSpeakers);
+            LinkedHashSet<String> mergedOriginalSpeakers = new LinkedHashSet<>(originalSpeakers);
+            mergedOriginalSpeakers.addAll(next.originalSpeakers);
+            SpeakerDisplaySegment merged = new SpeakerDisplaySegment(
+                    mergedRow,
+                    originalIndex,
+                    hasTiming || next.hasTiming,
+                    mergedProviderSpeakers,
+                    mergedOriginalSpeakers,
+                    Math.min(startTimeSeconds, next.startTimeSeconds),
+                    Math.max(endTimeSeconds, next.endTimeSeconds),
+                    stableSpeaker,
+                    appendText(text, next.text)
+            );
+            merged.mergedIsland = mergedIsland || next.mergedIsland;
+            return merged;
+        }
+
+        private static String appendText(String current, String next) {
+            String left = current == null ? "" : current.trim();
+            String right = next == null ? "" : next.trim();
+            if (left.isBlank()) {
+                return right;
+            }
+            if (right.isBlank()) {
+                return left;
+            }
+            return left + " " + right;
+        }
     }
 
     private void updateMetricsForState(Long meetingId, String status, Map<String, Object> state) {

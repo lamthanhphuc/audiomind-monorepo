@@ -15,6 +15,11 @@ export interface TranscriptSegment {
   language?: string
   isFinal?: boolean
   source?: 'live' | 'hydration'
+  providerSpeaker?: string
+  originalSpeaker?: string
+  providerSpeakers?: string[]
+  originalSpeakers?: string[]
+  originalIndex?: number
 }
 
 export interface KeywordHit {

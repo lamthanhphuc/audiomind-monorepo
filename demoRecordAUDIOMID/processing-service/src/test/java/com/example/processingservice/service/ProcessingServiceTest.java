@@ -402,6 +402,113 @@ class ProcessingServiceTest {
     }
 
     @Test
+    void getTranscript_shouldStabilizeSpeakerIslandAndPreserveProviderSpeakerMetadata() {
+        Map<String, Object> firstRow = new HashMap<>();
+        firstRow.put("speaker", "SPEAKER_1");
+        firstRow.put("text", "We should review");
+        firstRow.put("start_time", 0.0d);
+        firstRow.put("end_time", 1.0d);
+
+        Map<String, Object> islandRow = new HashMap<>();
+        islandRow.put("speaker", "SPEAKER_17");
+        islandRow.put("text", "the launch");
+        islandRow.put("start_time", 1.1d);
+        islandRow.put("end_time", 1.6d);
+
+        Map<String, Object> lastRow = new HashMap<>();
+        lastRow.put("speaker", "SPEAKER_1");
+        lastRow.put("text", "plan today.");
+        lastRow.put("start_time", 1.7d);
+        lastRow.put("end_time", 3.0d);
+
+        Map<String, Object> state = new HashMap<>();
+        state.put("status", "COMPLETED");
+        state.put("result", Map.of("transcripts", List.of(firstRow, islandRow, lastRow)));
+        when(jobStateStore.getJobState(894L)).thenReturn(Optional.of(state));
+
+        Map<String, Object> response = processingService.getTranscript(894L, "trace-speaker-stable", AUTH_HEADER);
+
+        assertEquals("COMPLETED", response.get("status"));
+        assertEquals("speaker-stabilization-v1", response.get("speakerStabilizationVersion"));
+        List<?> transcripts = (List<?>) response.get("transcripts");
+        assertEquals(1, transcripts.size());
+        Map<?, ?> row = (Map<?, ?>) transcripts.get(0);
+        assertEquals("SPEAKER_1", row.get("speaker"));
+        assertEquals("SPEAKER_1/SPEAKER_17", row.get("providerSpeaker"));
+        assertEquals("SPEAKER_1/SPEAKER_17", row.get("originalSpeaker"));
+        assertEquals("speaker-stabilization-v1", row.get("speakerStabilizationVersion"));
+        assertEquals("We should review the launch plan today.", row.get("text"));
+
+        Map<?, ?> stats = (Map<?, ?>) response.get("speakerStats");
+        assertEquals(2, ((Number) stats.get("rawSpeakerCount")).intValue());
+        assertEquals(1, ((Number) stats.get("stableSpeakerCount")).intValue());
+        assertEquals(1, ((Number) stats.get("mergedIslandCount")).intValue());
+        assertTrue(((Number) stats.get("mergedTinyFragmentCount")).intValue() >= 1);
+        assertEquals("speaker-stabilization-v1", stats.get("stabilizationVersion"));
+        assertEquals(17, ((Number) stats.get("largestObservedSpeakerLabelCount")).intValue());
+    }
+
+    @Test
+    void getTranscript_shouldReturnStabilizedRowsInTimelineOrderForUploadRegression() {
+        Map<String, Object> state = new HashMap<>();
+        state.put("status", "COMPLETED");
+        state.put("result", Map.of("transcripts", List.of(
+                transcriptRow("SPEAKER_1", 62.0d, 63.0d, "row at 1:02"),
+                transcriptRow("SPEAKER_17", 393.0d, 394.0d, "row at 6:33"),
+                transcriptRow("SPEAKER_1", 65.0d, 66.0d, "row at 1:05"),
+                transcriptRow("SPEAKER_1", 118.0d, 118.8d, "row at 1:58"),
+                transcriptRow("SPEAKER_17", 450.0d, 451.0d, "row at 7:30"),
+                transcriptRow("SPEAKER_1", 120.0d, 121.0d, "row at 2:00")
+        )));
+        when(jobStateStore.getJobState(895L)).thenReturn(Optional.of(state));
+
+        Map<String, Object> response = processingService.getTranscript(895L, "trace-speaker-order", AUTH_HEADER);
+
+        List<?> transcripts = (List<?>) response.get("transcripts");
+        assertEquals(6, transcripts.size());
+        assertNonDecreasingStartTimes(transcripts);
+        assertEquals(List.of(62.0d, 65.0d, 118.0d, 120.0d, 393.0d, 450.0d), transcriptStartTimes(transcripts));
+        assertTrue(indexOfText(transcripts, "row at 6:33") > indexOfText(transcripts, "row at 1:05"));
+        assertTrue(indexOfText(transcripts, "row at 7:30") > indexOfText(transcripts, "row at 2:00"));
+
+        Map<?, ?> stats = (Map<?, ?>) response.get("speakerStats");
+        assertEquals(2, ((Number) stats.get("rawSpeakerCount")).intValue());
+        assertEquals(2, ((Number) stats.get("stableSpeakerCount")).intValue());
+        assertEquals(0, ((Number) stats.get("mergedIslandCount")).intValue());
+        assertEquals(0, ((Number) stats.get("mergedTinyFragmentCount")).intValue());
+        assertEquals("speaker-stabilization-v1", stats.get("stabilizationVersion"));
+    }
+
+    @Test
+    void getTranscript_shouldSortPhase7SRegressionPairsBeforeDisplay() {
+        Map<String, Object> state = new HashMap<>();
+        state.put("status", "COMPLETED");
+        state.put("result", Map.of("transcripts", List.of(
+                transcriptRow("SPEAKER_1", 91.0d, 92.0d, "row at 1:31"),
+                transcriptRow("SPEAKER_3", 272.0d, 273.0d, "row at 4:32"),
+                transcriptRow("SPEAKER_4", 441.0d, 442.0d, "row at 7:21"),
+                transcriptRow("SPEAKER_1", 119.0d, 120.0d, "row at 1:59"),
+                transcriptRow("SPEAKER_2", 135.0d, 136.0d, "row at 2:15"),
+                transcriptRow("SPEAKER_3", 306.0d, 307.0d, "row at 5:06"),
+                transcriptRow("SPEAKER_2", 144.0d, 145.0d, "row at 2:24"),
+                transcriptRow("SPEAKER_1", 62.0d, 63.0d, "row at 1:02"),
+                transcriptRow("SPEAKER_5", 393.0d, 394.0d, "row at 6:33"),
+                transcriptRow("SPEAKER_1", 65.0d, 66.0d, "row at 1:05")
+        )));
+        when(jobStateStore.getJobState(896L)).thenReturn(Optional.of(state));
+
+        Map<String, Object> response = processingService.getTranscript(896L, "trace-speaker-order-pairs", AUTH_HEADER);
+
+        List<?> transcripts = (List<?>) response.get("transcripts");
+        assertNonDecreasingStartTimes(transcripts);
+        assertEquals(List.of(62.0d, 65.0d, 91.0d, 119.0d, 135.0d, 144.0d, 272.0d, 306.0d, 393.0d, 441.0d), transcriptStartTimes(transcripts));
+        assertTrue(indexOfText(transcripts, "row at 1:59") < indexOfText(transcripts, "row at 4:32"));
+        assertTrue(indexOfText(transcripts, "row at 1:59") < indexOfText(transcripts, "row at 7:21"));
+        assertTrue(indexOfText(transcripts, "row at 2:24") < indexOfText(transcripts, "row at 5:06"));
+        assertTrue(indexOfText(transcripts, "row at 1:05") < indexOfText(transcripts, "row at 6:33"));
+    }
+
+    @Test
     void generateMeetingTranscriptTxt_shouldUseReadableTranscriptByDefault() {
         Map<String, Object> mainRow = new HashMap<>();
         mainRow.put("speaker", "SPEAKER_1");
@@ -521,6 +628,212 @@ class ProcessingServiceTest {
         assertTrue(content.contains("[00:02–00:04] SPEAKER_1: raw txt row 1"));
         assertTrue(content.contains("[00:05–00:06] SPEAKER_2: raw txt row 2"));
         verify(aiServiceClient, never()).getTranscript(anyLong(), anyString());
+    }
+
+    @Test
+    void generateMeetingTranscriptTxt_shouldUseStableSpeakerForShortIsland() {
+        Map<String, Object> firstRow = new HashMap<>();
+        firstRow.put("speaker", "SPEAKER_1");
+        firstRow.put("text", "We should review");
+        firstRow.put("start_time", 0.0d);
+        firstRow.put("end_time", 1.0d);
+
+        Map<String, Object> islandRow = new HashMap<>();
+        islandRow.put("speaker", "SPEAKER_17");
+        islandRow.put("text", "the launch");
+        islandRow.put("start_time", 1.1d);
+        islandRow.put("end_time", 1.6d);
+
+        Map<String, Object> lastRow = new HashMap<>();
+        lastRow.put("speaker", "SPEAKER_1");
+        lastRow.put("text", "plan today.");
+        lastRow.put("start_time", 1.7d);
+        lastRow.put("end_time", 3.0d);
+
+        Map<String, Object> state = new HashMap<>();
+        state.put("status", "COMPLETED");
+        state.put("result", Map.of("transcripts", List.of(firstRow, islandRow, lastRow)));
+
+        when(jobStateStore.getJobState(9003L)).thenReturn(Optional.of(state));
+        when(meetingServiceClient.getMeetingById(9003L, "trace-speaker-readable", AUTH_HEADER)).thenReturn(Map.of(
+                "id", 9003L,
+                "title", "Speaker readable",
+                "language", "en",
+                "status", "completed"
+        ));
+
+        String content = new String(
+                processingService.generateMeetingTranscriptTxt(9003L, "trace-speaker-readable", AUTH_HEADER),
+                StandardCharsets.UTF_8
+        );
+
+        assertTrue(content.contains("[00:00–00:03] SPEAKER_1: We should review the launch plan today."));
+        assertTrue(!content.contains("SPEAKER_17"));
+        verify(aiServiceClient).getTranscript(9003L, "trace-speaker-readable");
+    }
+
+    @Test
+    void generateMeetingTranscriptTxt_shouldKeepRawSpeakerJumpWhenRawModeRequested() {
+        Map<String, Object> firstRow = new HashMap<>();
+        firstRow.put("speaker", "SPEAKER_1");
+        firstRow.put("text", "We should review");
+        firstRow.put("start_time", 0.0d);
+        firstRow.put("end_time", 1.0d);
+
+        Map<String, Object> islandRow = new HashMap<>();
+        islandRow.put("speaker", "SPEAKER_17");
+        islandRow.put("text", "the launch");
+        islandRow.put("start_time", 1.1d);
+        islandRow.put("end_time", 1.6d);
+
+        Map<String, Object> lastRow = new HashMap<>();
+        lastRow.put("speaker", "SPEAKER_1");
+        lastRow.put("text", "plan today.");
+        lastRow.put("start_time", 1.7d);
+        lastRow.put("end_time", 3.0d);
+
+        Map<String, Object> state = new HashMap<>();
+        state.put("status", "COMPLETED");
+        state.put("result", Map.of("transcripts", List.of(firstRow, islandRow, lastRow)));
+
+        when(jobStateStore.getJobState(9004L)).thenReturn(Optional.of(state));
+        when(meetingServiceClient.getMeetingById(9004L, "trace-speaker-raw", AUTH_HEADER)).thenReturn(Map.of(
+                "id", 9004L,
+                "title", "Speaker raw",
+                "language", "en",
+                "status", "completed"
+        ));
+
+        String content = new String(
+                processingService.generateMeetingTranscriptTxt(9004L, "trace-speaker-raw", AUTH_HEADER, "raw"),
+                StandardCharsets.UTF_8
+        );
+
+        assertTrue(content.contains("Transcript export mode: raw"));
+        assertTrue(content.contains("[00:01–00:02] SPEAKER_17: the launch"));
+        assertTrue(!content.contains("We should review the launch plan today."));
+        verify(aiServiceClient, never()).getTranscript(anyLong(), anyString());
+    }
+
+    @Test
+    void generateMeetingTranscriptTxt_shouldSortReadableRowsButKeepRawProviderOrder() {
+        Map<String, Object> state = new HashMap<>();
+        state.put("status", "COMPLETED");
+        state.put("result", Map.of("transcripts", List.of(
+                transcriptRow("SPEAKER_1", 62.0d, 63.0d, "row at 1:02"),
+                transcriptRow("SPEAKER_17", 393.0d, 394.0d, "row at 6:33"),
+                transcriptRow("SPEAKER_1", 65.0d, 66.0d, "row at 1:05"),
+                transcriptRow("SPEAKER_1", 118.0d, 118.8d, "row at 1:58"),
+                transcriptRow("SPEAKER_17", 450.0d, 451.0d, "row at 7:30"),
+                transcriptRow("SPEAKER_1", 120.0d, 121.0d, "row at 2:00")
+        )));
+
+        when(jobStateStore.getJobState(9007L)).thenReturn(Optional.of(state));
+        when(meetingServiceClient.getMeetingById(9007L, "trace-speaker-order-export", AUTH_HEADER)).thenReturn(Map.of(
+                "id", 9007L,
+                "title", "Speaker order export",
+                "language", "en",
+                "status", "completed"
+        ));
+
+        String readableContent = new String(
+                processingService.generateMeetingTranscriptTxt(9007L, "trace-speaker-order-export", AUTH_HEADER),
+                StandardCharsets.UTF_8
+        );
+        assertTrue(readableContent.indexOf("row at 1:05") < readableContent.indexOf("row at 6:33"));
+        assertTrue(readableContent.indexOf("row at 2:00") < readableContent.indexOf("row at 7:30"));
+
+        String rawContent = new String(
+                processingService.generateMeetingTranscriptTxt(9007L, "trace-speaker-order-export", AUTH_HEADER, "raw"),
+                StandardCharsets.UTF_8
+        );
+        assertTrue(rawContent.indexOf("row at 6:33") < rawContent.indexOf("row at 1:05"));
+        assertTrue(rawContent.indexOf("row at 7:30") < rawContent.indexOf("row at 2:00"));
+        assertTrue(rawContent.contains("[06:33–06:34] SPEAKER_17: row at 6:33"));
+        assertTrue(rawContent.contains("[07:30–07:31] SPEAKER_17: row at 7:30"));
+    }
+
+    @Test
+    void generateMeetingTranscriptTxt_shouldNotMergeSpeakerIslandAcrossLargeGap() {
+        Map<String, Object> firstRow = new HashMap<>();
+        firstRow.put("speaker", "SPEAKER_1");
+        firstRow.put("text", "We opened the meeting");
+        firstRow.put("start_time", 0.0d);
+        firstRow.put("end_time", 1.0d);
+
+        Map<String, Object> separateRow = new HashMap<>();
+        separateRow.put("speaker", "SPEAKER_17");
+        separateRow.put("text", "This is a separate update");
+        separateRow.put("start_time", 3.2d);
+        separateRow.put("end_time", 4.0d);
+
+        Map<String, Object> lastRow = new HashMap<>();
+        lastRow.put("speaker", "SPEAKER_1");
+        lastRow.put("text", "Then we moved on.");
+        lastRow.put("start_time", 4.2d);
+        lastRow.put("end_time", 5.0d);
+
+        Map<String, Object> state = new HashMap<>();
+        state.put("status", "COMPLETED");
+        state.put("result", Map.of("transcripts", List.of(firstRow, separateRow, lastRow)));
+
+        when(jobStateStore.getJobState(9005L)).thenReturn(Optional.of(state));
+        when(meetingServiceClient.getMeetingById(9005L, "trace-speaker-gap", AUTH_HEADER)).thenReturn(Map.of(
+                "id", 9005L,
+                "title", "Speaker gap",
+                "language", "en",
+                "status", "completed"
+        ));
+
+        String content = new String(
+                processingService.generateMeetingTranscriptTxt(9005L, "trace-speaker-gap", AUTH_HEADER),
+                StandardCharsets.UTF_8
+        );
+
+        assertTrue(content.contains("SPEAKER_1: We opened the meeting"));
+        assertTrue(content.contains("SPEAKER_2: This is a separate update"));
+        assertTrue(content.contains("SPEAKER_1: Then we moved on."));
+    }
+
+    @Test
+    void generateMeetingTranscriptTxt_shouldNotMergeIndependentSpeakerTurn() {
+        Map<String, Object> firstRow = new HashMap<>();
+        firstRow.put("speaker", "SPEAKER_1");
+        firstRow.put("text", "We opened the topic");
+        firstRow.put("start_time", 0.0d);
+        firstRow.put("end_time", 1.0d);
+
+        Map<String, Object> independentRow = new HashMap<>();
+        independentRow.put("speaker", "SPEAKER_17");
+        independentRow.put("text", "I disagree.");
+        independentRow.put("start_time", 1.1d);
+        independentRow.put("end_time", 1.8d);
+
+        Map<String, Object> lastRow = new HashMap<>();
+        lastRow.put("speaker", "SPEAKER_1");
+        lastRow.put("text", "Let's capture both views.");
+        lastRow.put("start_time", 1.9d);
+        lastRow.put("end_time", 3.0d);
+
+        Map<String, Object> state = new HashMap<>();
+        state.put("status", "COMPLETED");
+        state.put("result", Map.of("transcripts", List.of(firstRow, independentRow, lastRow)));
+
+        when(jobStateStore.getJobState(9006L)).thenReturn(Optional.of(state));
+        when(meetingServiceClient.getMeetingById(9006L, "trace-speaker-turn", AUTH_HEADER)).thenReturn(Map.of(
+                "id", 9006L,
+                "title", "Speaker turn",
+                "language", "en",
+                "status", "completed"
+        ));
+
+        String content = new String(
+                processingService.generateMeetingTranscriptTxt(9006L, "trace-speaker-turn", AUTH_HEADER),
+                StandardCharsets.UTF_8
+        );
+
+        assertTrue(content.contains("SPEAKER_2: I disagree."));
+        assertTrue(!content.contains("We opened the topic I disagree. Let's capture both views."));
     }
 
     @Test
@@ -933,7 +1246,7 @@ class ProcessingServiceTest {
                 StandardCharsets.UTF_8
         );
 
-        assertTrue(content.contains("1,\"00:10\",\"00:12\",\"SPEAKER_9\",\"canonical csv row\""));
+        assertTrue(content.contains("1,\"00:10\",\"00:12\",\"SPEAKER_1\",\"canonical csv row\""));
         assertTrue(!content.contains("state csv row should not be used"));
         verify(aiServiceClient).getTranscript(909L, "trace-state-canonical-csv");
     }
@@ -1193,6 +1506,7 @@ class ProcessingServiceTest {
             assertTrue(!appendixRows.contains("launch plan"));
             assertTrue(appendixTimes.contains("00:12–00:14"));
             assertTrue(appendixTimes.contains("00:36–00:37"));
+            assertEquals(List.of("00:12–00:14", "00:36–00:37"), appendixTimes);
             assertEquals(content.indexOf("We should finalize the launch plan."), content.lastIndexOf("We should finalize the launch plan."));
             assertTrue(!content.contains("Cleaned/Analyzed Transcript Table"));
             assertTrue(!content.contains("Mapped conservatively from saved transcript"));
@@ -1255,6 +1569,50 @@ class ProcessingServiceTest {
                 eq("trace-921"),
                 eq(AUTH_HEADER)
         );
+    }
+
+    @Test
+    void generateMeetingReportDocx_shouldUseStableSpeakerForTranscriptPreview() throws Exception {
+        Map<String, Object> firstRow = new HashMap<>();
+        firstRow.put("speaker", "SPEAKER_1");
+        firstRow.put("text", "We should review");
+        firstRow.put("start_time", 0.0d);
+        firstRow.put("end_time", 1.0d);
+
+        Map<String, Object> islandRow = new HashMap<>();
+        islandRow.put("speaker", "SPEAKER_17");
+        islandRow.put("text", "the launch");
+        islandRow.put("start_time", 1.1d);
+        islandRow.put("end_time", 1.6d);
+
+        Map<String, Object> lastRow = new HashMap<>();
+        lastRow.put("speaker", "SPEAKER_1");
+        lastRow.put("text", "plan today.");
+        lastRow.put("start_time", 1.7d);
+        lastRow.put("end_time", 3.0d);
+
+        Map<String, Object> state = new HashMap<>();
+        state.put("status", "COMPLETED");
+        state.put("result", Map.of("transcripts", List.of(firstRow, islandRow, lastRow)));
+        when(jobStateStore.getJobState(9261L)).thenReturn(Optional.of(state));
+        when(meetingServiceClient.getMeetingById(9261L, "trace-9261", AUTH_HEADER)).thenReturn(Map.of(
+                "id", 9261L,
+                "title", "Speaker docx preview",
+                "createdAt", "2026-06-01T12:30:00Z",
+                "language", "en",
+                "status", "completed"
+        ));
+
+        byte[] report = processingService.generateMeetingReportDocx(9261L, "trace-9261", AUTH_HEADER);
+
+        try (XWPFDocument doc = new XWPFDocument(new ByteArrayInputStream(report));
+             XWPFWordExtractor extractor = new XWPFWordExtractor(doc)) {
+            String content = extractor.getText();
+            assertTrue(content.contains("SPEAKER_1"));
+            assertTrue(content.contains("We should review the launch plan today."));
+            assertTrue(!content.contains("SPEAKER_17"));
+        }
+        verify(aiServiceClient).getTranscript(9261L, "trace-9261");
     }
 
     @Test
@@ -2106,5 +2464,47 @@ class ProcessingServiceTest {
         processingService.startProcessing(2002L, null, null, null, null, null, "trace-2002", AUTH_HEADER);
 
         verify(aiServiceClient).processAudio(2002L, "/app/uploads/d.wav", "legacy-meeting:2002", null, null, "multi", "trace-2002", AUTH_HEADER);
+    }
+
+    private static Map<String, Object> transcriptRow(String speaker, double startTime, double endTime, String text) {
+        Map<String, Object> row = new HashMap<>();
+        row.put("speaker", speaker);
+        row.put("start_time", startTime);
+        row.put("end_time", endTime);
+        row.put("text", text);
+        return row;
+    }
+
+    private static void assertNonDecreasingStartTimes(List<?> rows) {
+        double previous = -1.0d;
+        for (Object row : rows) {
+            double current = transcriptStartTime(row);
+            assertTrue(current >= previous, "Expected transcript row start times to be non-decreasing");
+            previous = current;
+        }
+    }
+
+    private static List<Double> transcriptStartTimes(List<?> rows) {
+        return rows.stream()
+                .map(ProcessingServiceTest::transcriptStartTime)
+                .collect(Collectors.toList());
+    }
+
+    private static double transcriptStartTime(Object row) {
+        Object value = ((Map<?, ?>) row).get("start_time");
+        if (value instanceof Number number) {
+            return number.doubleValue();
+        }
+        return Double.parseDouble(String.valueOf(value));
+    }
+
+    private static int indexOfText(List<?> rows, String text) {
+        for (int index = 0; index < rows.size(); index++) {
+            Object value = ((Map<?, ?>) rows.get(index)).get("text");
+            if (text.equals(String.valueOf(value))) {
+                return index;
+            }
+        }
+        return -1;
     }
 }

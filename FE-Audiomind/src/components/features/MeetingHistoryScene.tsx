@@ -10,7 +10,7 @@ import {
     renameMeeting,
 } from '../../services/api'
 import type { AiAnalysis, Meeting } from '../../types'
-import { mergeTranscriptSegments, normalizePersistedTranscriptSegments } from '../../utils/transcript'
+import { mergeTranscriptSegments, normalizePersistedTranscriptSegments, sortTranscriptSegmentsByTimeline } from '../../utils/transcript'
 import { AnalysisPanel } from '../analysis/AnalysisPanel'
 import { TranscriptDisplay } from '../transcript/TranscriptDisplay'
 import { EmptyState } from '../ui/EmptyState'
@@ -196,8 +196,10 @@ export default function MeetingHistoryScene() {
           return
         }
 
-        const transcriptSegments = mergeTranscriptSegments(
-          normalizePersistedTranscriptSegments(transcriptResponse.transcripts || []),
+        const transcriptSegments = sortTranscriptSegmentsByTimeline(
+          mergeTranscriptSegments(
+            normalizePersistedTranscriptSegments(transcriptResponse.transcripts || []),
+          ),
         )
         const transcriptState: SelectedMeetingDetail['transcriptState'] = transcriptSegments.length > 0 ? 'ready' : 'empty'
         const analysisState = getAnalysisStateFromResponse(analysisResponse)

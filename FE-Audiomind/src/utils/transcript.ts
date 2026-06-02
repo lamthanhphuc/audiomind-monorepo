@@ -68,6 +68,22 @@ const toNumber = (...values: unknown[]): number => {
   return 0
 }
 
+const toOptionalNumber = (...values: unknown[]): number | undefined => {
+  for (const value of values) {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value
+    }
+    if (typeof value === 'string' && value.trim().length > 0) {
+      const parsed = Number(value)
+      if (Number.isFinite(parsed)) {
+        return parsed
+      }
+    }
+  }
+
+  return undefined
+}
+
 const toStringValue = (...values: unknown[]): string => {
   for (const value of values) {
     if (typeof value === 'string' && value.trim().length > 0) {
@@ -79,6 +95,22 @@ const toStringValue = (...values: unknown[]): string => {
   }
 
   return ''
+}
+
+const toStringArray = (...values: unknown[]): string[] | undefined => {
+  for (const value of values) {
+    if (!Array.isArray(value)) {
+      continue
+    }
+    const normalized = value
+      .map((item) => toStringValue(item))
+      .filter((item) => item.length > 0)
+    if (normalized.length > 0) {
+      return normalized
+    }
+  }
+
+  return undefined
 }
 
 const isLikelySequenceId = (value: string): boolean => /^seq-\d+$/i.test(value) || /^-?\d+$/.test(value)
@@ -97,6 +129,51 @@ export const canonicalizeSegmentId = (value: string): string => {
     return `meeting-${legacyMatch[1]}-start-${Number(legacyMatch[2]).toFixed(3)}-${legacyMatch[3].toLowerCase()}`
   }
   return raw
+}
+
+const resolveSegmentStartForSort = (segment: TranscriptSegment): number => {
+  const start = toOptionalNumber(segment.start, segment.timestamp)
+  return start ?? 0
+}
+
+const resolveSegmentEndForSort = (segment: TranscriptSegment, start: number): number => {
+  const end = toOptionalNumber(segment.end)
+  return end ?? start
+}
+
+const resolveSegmentOriginalIndexForSort = (segment: TranscriptSegment): number => {
+  return toOptionalNumber(segment.originalIndex) ?? Number.POSITIVE_INFINITY
+}
+
+export const sortTranscriptSegmentsByTimeline = (segments: TranscriptSegment[]): TranscriptSegment[] => {
+  if (!Array.isArray(segments) || segments.length === 0) {
+    return []
+  }
+
+  return segments
+    .map((segment, inputIndex) => ({ segment, inputIndex }))
+    .sort((left, right) => {
+      const leftStart = resolveSegmentStartForSort(left.segment)
+      const rightStart = resolveSegmentStartForSort(right.segment)
+      if (leftStart !== rightStart) {
+        return leftStart - rightStart
+      }
+
+      const leftEnd = resolveSegmentEndForSort(left.segment, leftStart)
+      const rightEnd = resolveSegmentEndForSort(right.segment, rightStart)
+      if (leftEnd !== rightEnd) {
+        return leftEnd - rightEnd
+      }
+
+      const leftOriginalIndex = resolveSegmentOriginalIndexForSort(left.segment)
+      const rightOriginalIndex = resolveSegmentOriginalIndexForSort(right.segment)
+      if (leftOriginalIndex !== rightOriginalIndex) {
+        return leftOriginalIndex - rightOriginalIndex
+      }
+
+      return left.inputIndex - right.inputIndex
+    })
+    .map(({ segment }) => segment)
 }
 
 const resolveTiming = (data: TranscriptSource): { start: number; end: number } | null => {
@@ -426,6 +503,11 @@ export const normalizeTranscriptEvent = (
     language: toStringValue(data.language) || undefined,
     isFinal,
     source: options?.source ?? 'live',
+    providerSpeaker: toStringValue(data.providerSpeaker, data.provider_speaker) || undefined,
+    originalSpeaker: toStringValue(data.originalSpeaker, data.original_speaker) || undefined,
+    providerSpeakers: toStringArray(data.providerSpeakers, data.provider_speakers),
+    originalSpeakers: toStringArray(data.originalSpeakers, data.original_speakers),
+    originalIndex: toOptionalNumber(data.originalIndex, data.original_index),
   }
 }
 
@@ -452,6 +534,11 @@ export const normalizePersistedTranscriptSegments = (
         start: segment.start_time,
         end: segment.end_time,
         isFinal: segment.is_final ?? segment.isFinal ?? true,
+        providerSpeaker: segment.providerSpeaker ?? segment.provider_speaker,
+        originalSpeaker: segment.originalSpeaker ?? segment.original_speaker,
+        providerSpeakers: segment.providerSpeakers ?? segment.provider_speakers,
+        originalSpeakers: segment.originalSpeakers ?? segment.original_speakers,
+        originalIndex: segment.originalIndex ?? segment.original_index,
       }, undefined, { fallbackSpeaker: options?.fallbackSpeaker, source: 'hydration' })
 
       if (!normalized) {
@@ -736,9 +823,11 @@ export const groupUploadTranscriptSegmentsForDisplay = (
   }
 
   try {
-    const source: TranscriptSegment[] = segments
-      .filter((segment): segment is TranscriptSegment => Boolean(segment) && typeof segment === 'object')
-      .map((segment) => ({ ...segment }))
+    const source = sortTranscriptSegmentsByTimeline(
+      segments
+        .filter((segment): segment is TranscriptSegment => Boolean(segment) && typeof segment === 'object')
+        .map((segment) => ({ ...segment })),
+    )
 
     const grouped: TranscriptSegment[] = []
     let index = 0
@@ -797,11 +886,13 @@ export const groupUploadTranscriptSegmentsForDisplay = (
       index += 1
     }
 
-    return grouped
+    return sortTranscriptSegmentsByTimeline(grouped)
   } catch {
-    return segments
-      .filter((segment): segment is TranscriptSegment => Boolean(segment) && typeof segment === 'object')
-      .map((segment) => ({ ...segment }))
+    return sortTranscriptSegmentsByTimeline(
+      segments
+        .filter((segment): segment is TranscriptSegment => Boolean(segment) && typeof segment === 'object')
+        .map((segment) => ({ ...segment })),
+    )
   }
 }
 
@@ -824,7 +915,7 @@ export const mergeTranscriptSegmentsForDisplay = (
   const maxSegmentsPerMerge = options.maxSegmentsPerMerge ?? 3
   const shortSegmentSeconds = options.shortSegmentSeconds ?? 4.0
   const shortSegmentChars = options.shortSegmentChars ?? 100
-  const ordered = [...segments].sort((a, b) => (a.start ?? 0) - (b.start ?? 0))
+  const ordered = sortTranscriptSegmentsByTimeline(segments)
   const merged: TranscriptSegment[] = []
   const mergedSegmentCounts: number[] = []
   const hasStrongPunctuationEnd = (text: string): boolean => /[.!?;]\s*$/.test(text.trim())
@@ -932,7 +1023,7 @@ export const mergeTranscriptSegmentsForDisplay = (
     mergedSegmentCounts[mergedSegmentCounts.length - 1] = currentCount + 1
   }
 
-  return merged
+  return sortTranscriptSegmentsByTimeline(merged)
 }
 
 export const formatTranscriptTimestamp = (secondsValue: number): string => {

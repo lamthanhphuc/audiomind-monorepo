@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest'
 import type { TranscriptSegment } from '../hooks/useRealtimeMeetingStream'
 import {
   groupUploadTranscriptSegmentsForDisplay,
+  mergeTranscriptSegmentsForDisplay,
   normalizeSpeakerBadge,
   parsePlainTranscriptText,
+  sortTranscriptSegmentsByTimeline,
 } from './transcript'
 
 describe('parsePlainTranscriptText', () => {
@@ -46,6 +48,37 @@ describe('normalizeSpeakerBadge', () => {
   })
 })
 
+describe('sortTranscriptSegmentsByTimeline', () => {
+  it('orders Phase 7S regression pairs by start and preserves stable speakers', () => {
+    const sorted = sortTranscriptSegmentsByTimeline([
+      makeSegment({ speaker: 'SPEAKER_1', text: 'row at 1:31', start: 91, end: 92 }),
+      makeSegment({ speaker: 'SPEAKER_3', text: 'row at 4:32', start: 272, end: 273 }),
+      makeSegment({ speaker: 'SPEAKER_4', text: 'row at 7:21', start: 441, end: 442 }),
+      makeSegment({ speaker: 'SPEAKER_1', text: 'row at 1:59', start: 119, end: 120 }),
+      makeSegment({ speaker: 'SPEAKER_2', text: 'row at 2:15', start: 135, end: 136 }),
+      makeSegment({ speaker: 'SPEAKER_3', text: 'row at 5:06', start: 306, end: 307 }),
+      makeSegment({ speaker: 'SPEAKER_2', text: 'row at 2:24', start: 144, end: 145 }),
+      makeSegment({ speaker: 'SPEAKER_1', text: 'row at 1:02', start: 62, end: 63 }),
+      makeSegment({ speaker: 'SPEAKER_5', text: 'row at 6:33', start: 393, end: 394 }),
+      makeSegment({ speaker: 'SPEAKER_1', text: 'row at 1:05', start: 65, end: 66 }),
+    ])
+
+    expect(sorted.map((segment) => segment.text)).toEqual([
+      'row at 1:02',
+      'row at 1:05',
+      'row at 1:31',
+      'row at 1:59',
+      'row at 2:15',
+      'row at 2:24',
+      'row at 4:32',
+      'row at 5:06',
+      'row at 6:33',
+      'row at 7:21',
+    ])
+    expect(sorted.find((segment) => segment.text === 'row at 1:59')?.speaker).toBe('SPEAKER_1')
+  })
+})
+
 const makeSegment = (
   overrides: Partial<TranscriptSegment> & Pick<TranscriptSegment, 'text'>,
 ): TranscriptSegment => ({
@@ -60,6 +93,30 @@ const makeSegment = (
   language: overrides.language,
   isFinal: overrides.isFinal ?? true,
   source: overrides.source ?? 'hydration',
+})
+
+describe('mergeTranscriptSegmentsForDisplay', () => {
+  it('returns non-decreasing timeline order after display merge', () => {
+    const merged = mergeTranscriptSegmentsForDisplay([
+      makeSegment({ speaker: 'SPEAKER_1', text: 'row at 1:31', start: 91, end: 92 }),
+      makeSegment({ speaker: 'SPEAKER_3', text: 'row at 4:32', start: 272, end: 273 }),
+      makeSegment({ speaker: 'SPEAKER_4', text: 'row at 7:21', start: 441, end: 442 }),
+      makeSegment({ speaker: 'SPEAKER_1', text: 'row at 1:59', start: 119, end: 120 }),
+      makeSegment({ speaker: 'SPEAKER_2', text: 'row at 2:15', start: 135, end: 136 }),
+      makeSegment({ speaker: 'SPEAKER_3', text: 'row at 5:06', start: 306, end: 307 }),
+      makeSegment({ speaker: 'SPEAKER_2', text: 'row at 2:24', start: 144, end: 145 }),
+    ])
+
+    expect(merged.map((segment) => segment.text)).toEqual([
+      'row at 1:31',
+      'row at 1:59',
+      'row at 2:15',
+      'row at 2:24',
+      'row at 4:32',
+      'row at 5:06',
+      'row at 7:21',
+    ])
+  })
 })
 
 describe('groupUploadTranscriptSegmentsForDisplay', () => {

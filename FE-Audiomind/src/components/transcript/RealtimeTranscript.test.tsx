@@ -55,6 +55,50 @@ describe('RealtimeTranscript', () => {
     expect(timestamps).toEqual(['0:07 - 0:12', '0:18'])
   })
 
+  it('renders final realtime rows in timeline order', () => {
+    act(() => {
+      root.render(
+        <RealtimeTranscript
+          segments={[
+            {
+              id: 'meeting-2-start-272.000-speaker_3',
+              mergeKey: 'segment:meeting-2-start-272.000-speaker_3',
+              speaker: 'SPEAKER_3',
+              text: 'row at 4:32',
+              start: 272,
+              end: 273,
+              timestamp: 272,
+            },
+            {
+              id: 'meeting-2-start-441.000-speaker_4',
+              mergeKey: 'segment:meeting-2-start-441.000-speaker_4',
+              speaker: 'SPEAKER_4',
+              text: 'row at 7:21',
+              start: 441,
+              end: 442,
+              timestamp: 441,
+            },
+            {
+              id: 'meeting-2-start-119.000-speaker_1',
+              mergeKey: 'segment:meeting-2-start-119.000-speaker_1',
+              speaker: 'SPEAKER_1',
+              text: 'row at 1:59',
+              start: 119,
+              end: 120,
+              timestamp: 119,
+            },
+          ]}
+        />,
+      )
+    })
+
+    const rows = Array.from(container.querySelectorAll('.segment-text')).map((node) => node.textContent)
+    const timestamps = Array.from(container.querySelectorAll('.segment-timestamp')).map((node) => node.textContent)
+
+    expect(rows).toEqual(['row at 1:59', 'row at 4:32', 'row at 7:21'])
+    expect(timestamps).toEqual(['1:59 - 2:00', '4:32 - 4:33', '7:21 - 7:22'])
+  })
+
   it('renders multiple rows from hydrated persisted fragments', () => {
     const hydratedSegments = mergeTranscriptSegments(
       normalizePersistedTranscriptSegments([

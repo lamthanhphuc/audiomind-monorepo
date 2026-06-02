@@ -5,6 +5,7 @@ import {
   groupUploadTranscriptSegmentsForDisplay,
   normalizeSpeakerBadge,
   parsePlainTranscriptText,
+  sortTranscriptSegmentsByTimeline,
 } from '../../utils/transcript'
 import { HighlightedTranscriptText } from './HighlightedTranscriptText'
 import './TranscriptDisplay.css'
@@ -39,11 +40,13 @@ export const TranscriptDisplay: React.FC<TranscriptDisplayProps> = ({
   maxHeight = '480px',
   enableDisplayGrouping = false,
 }) => {
-  const displaySegments = segments.length > 0
-    ? (enableDisplayGrouping ? groupUploadTranscriptSegmentsForDisplay(segments) : segments)
-    : transcriptTextFallback
-      ? parsePlainTranscriptText(transcriptTextFallback)
-      : []
+  const displaySegments = sortTranscriptSegmentsByTimeline(
+    segments.length > 0
+      ? (enableDisplayGrouping ? groupUploadTranscriptSegmentsForDisplay(segments) : segments)
+      : transcriptTextFallback
+        ? parsePlainTranscriptText(transcriptTextFallback)
+        : [],
+  )
 
   if (displaySegments.length === 0) {
     return (

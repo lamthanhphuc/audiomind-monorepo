@@ -31,7 +31,12 @@ import { ApiError, getAnalysis, getProcessingStatus, getTranscript, startProcess
 import { clearAccessToken, getAccessToken, getCurrentUserId, login, register, setAccessToken } from '../services/auth'
 import { REALTIME_WS_ENABLED } from '../services/config'
 import type { AiAnalysis } from '../types'
-import { mergeTranscriptSegments, mergeTranscriptSegmentsForDisplay, normalizePersistedTranscriptSegments } from '../utils/transcript'
+import {
+    mergeTranscriptSegments,
+    mergeTranscriptSegmentsForDisplay,
+    normalizePersistedTranscriptSegments,
+    sortTranscriptSegmentsByTimeline,
+} from '../utils/transcript'
 
 export { DEFAULT_REALTIME_LANGUAGE } from '../hooks/useRealtimeMeetingStream'
 export { getStatusBadgeClass } from '../utils/statusBadge'
@@ -460,8 +465,10 @@ export const hydrateLiveTranscriptSegments = async (
       return []
     }
 
-    const hydratedSegments = mergeTranscriptSegments(
-      normalizePersistedTranscriptSegments(transcript.transcripts || [], { fallbackSpeaker: 'SPEAKER_1' }),
+    const hydratedSegments = sortTranscriptSegmentsByTimeline(
+      mergeTranscriptSegments(
+        normalizePersistedTranscriptSegments(transcript.transcripts || [], { fallbackSpeaker: 'SPEAKER_1' }),
+      ),
     )
 
     console.info('[Realtime] Post-stop transcript hydration attempt', {
@@ -624,7 +631,7 @@ export const mergeHydratedTranscriptWithLive = (
       mergedFragments: filteredHydration.length,
     })
   }
-  return filteredHydration
+  return sortTranscriptSegmentsByTimeline(filteredHydration)
 }
 
 export default function App() {
@@ -1022,7 +1029,7 @@ export default function App() {
   const liveTranscriptSegmentsForDisplay = useMemo(() => {
     const shouldMergeForDisplay = hydratedLiveTranscriptSegments !== null || liveLifecycleState === 'stopped'
     if (!shouldMergeForDisplay) {
-      return liveTranscriptSegments
+      return sortTranscriptSegmentsByTimeline(liveTranscriptSegments)
     }
     return mergeTranscriptSegmentsForDisplay(liveTranscriptSegments, { maxGapSeconds: 1.0 })
   }, [hydratedLiveTranscriptSegments, liveLifecycleState, liveTranscriptSegments])
@@ -1055,8 +1062,10 @@ export default function App() {
       getAnalysis(meetingId),
     ])
 
-    const mergedTranscriptSegments = mergeTranscriptSegments(
-      normalizePersistedTranscriptSegments(transcript.transcripts || []),
+    const mergedTranscriptSegments = sortTranscriptSegmentsByTimeline(
+      mergeTranscriptSegments(
+        normalizePersistedTranscriptSegments(transcript.transcripts || []),
+      ),
     )
 
     const mergedTranscript = mergedTranscriptSegments

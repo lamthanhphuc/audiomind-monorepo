@@ -213,6 +213,20 @@ describe('hydrateLiveTranscriptSegments', () => {
 })
 
 describe('mergeHydratedTranscriptWithLive', () => {
+  it('returns merged live and hydrated rows in timeline order', () => {
+    const live = [
+      { id: 'meeting-1-start-272.000-speaker_3', mergeKey: 'segment:meeting-1-start-272.000-speaker_3', speaker: 'SPEAKER_3', text: 'row at 4:32', start: 272, end: 273, isFinal: true, source: 'live' as const },
+      { id: 'meeting-1-start-441.000-speaker_4', mergeKey: 'segment:meeting-1-start-441.000-speaker_4', speaker: 'SPEAKER_4', text: 'row at 7:21', start: 441, end: 442, isFinal: true, source: 'live' as const },
+    ]
+    const hydrated = normalizePersistedTranscriptSegments([
+      { speaker: 'SPEAKER_1', start_time: 119, end_time: 120, text: 'row at 1:59' },
+    ])
+
+    const merged = mergeHydratedTranscriptWithLive(live, hydrated)
+
+    expect(merged.map((segment) => segment.text)).toEqual(['row at 1:59', 'row at 4:32', 'row at 7:21'])
+  })
+
   it('keeps live-only final segment when hydrated snapshot is behind', () => {
     const live = [
       { id: 'meeting-1-start-1.000-speaker_1', mergeKey: 'segment:meeting-1-start-1.000-speaker_1', speaker: 'Speaker 1', text: 'one', start: 1, end: 2, isFinal: true, source: 'live' as const },

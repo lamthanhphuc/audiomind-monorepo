@@ -48,6 +48,18 @@ meeting:
   service:
     url: ${AUDIOMIND_MEETING_API_BASE_URL:http://localhost:8081}
 
+speaker:
+  stabilization:
+    enabled: ${SPEAKER_STABILIZATION_ENABLED:true}
+    version: ${SPEAKER_STABILIZATION_VERSION:speaker-stabilization-v1}
+    min-segment-seconds: ${SPEAKER_MIN_SEGMENT_SECONDS:1.2}
+    max-gap-seconds: ${SPEAKER_MAX_GAP_SECONDS:1.0}
+    island-max-seconds: ${SPEAKER_ISLAND_MAX_SECONDS:2.0}
+    max-merged-turn-seconds: ${SPEAKER_MAX_MERGED_TURN_SECONDS:20.0}
+    max-reasonable-count: ${SPEAKER_MAX_REASONABLE_COUNT:8}
+    dry-run: ${SPEAKER_STABILIZATION_DRY_RUN:false}
+    log-stats: ${SPEAKER_STABILIZATION_LOG_STATS:true}
+
 management:
   endpoints:
     web:
