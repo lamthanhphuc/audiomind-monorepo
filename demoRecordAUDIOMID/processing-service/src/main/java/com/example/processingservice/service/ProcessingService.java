@@ -62,6 +62,8 @@ public class ProcessingService {
     private static final double APPENDIX_MERGE_GAP_SECONDS = 3d;
     private static final double APPENDIX_NEAR_DUPLICATE_WINDOW_SECONDS = APPENDIX_NEAR_WINDOW_SECONDS;
     private static final int APPENDIX_SHORT_FRAGMENT_MAX_NORMALIZED_LEN = APPENDIX_SHORT_FRAGMENT_MAX_CHARS;
+    private static final String TRANSCRIPT_MODE_RAW = "raw";
+    private static final String TRANSCRIPT_MODE_CANONICAL = "canonical";
 
     private static final Logger log = LoggerFactory.getLogger(ProcessingService.class);
 
@@ -324,42 +326,22 @@ public class ProcessingService {
         Map<String, Object> state = jobStateStore.getJobState(meetingId).orElse(null);
 
         String stateStatus = state == null ? "NOT_FOUND" : normalizeStatus(state.get("status"));
-        List<Map<String, Object>> batchTranscripts = extractTranscriptRowsFromState(state);
-        if (!batchTranscripts.isEmpty()) {
-            log.info(
-                    "event=UPLOAD_TRANSCRIPT_COMPLETED traceId={} requestId={} meetingId={} source=upload",
-                    traceId,
-                    currentRequestId(traceId),
-                    meetingId
-            );
-            return Map.of(
-                    "meeting_id", meetingId,
-                    "status", stateStatus,
-                    "transcripts", batchTranscripts
-            );
-        }
-
-        log.info(
-                "[traceId={}] [jobId={}] transcript job-state missing_or_empty status={} -> fallback to ai-service transcript",
-                traceId,
-                meetingId,
-                stateStatus
+        TranscriptPayload stateTranscriptPayload = buildStateTranscriptPayload(state);
+        TranscriptPayload aiTranscriptPayload = fetchTranscriptPayloadFromAiService(meetingId, traceId);
+        TranscriptSourceDecision transcriptDecision = selectReadableTranscriptSource(
+                stateTranscriptPayload,
+                aiTranscriptPayload
         );
-
-        List<Map<String, Object>> aiTranscripts = fetchTranscriptRowsFromAiService(meetingId, traceId);
-        if (!aiTranscripts.isEmpty()) {
+        if (!transcriptDecision.payload().readableRows().isEmpty()) {
             String responseStatus = "NOT_FOUND".equals(stateStatus) ? "COMPLETED" : stateStatus;
             log.info(
-                    "event=UPLOAD_TRANSCRIPT_COMPLETED traceId={} requestId={} meetingId={} source=upload",
+                    "event=UPLOAD_TRANSCRIPT_COMPLETED traceId={} requestId={} meetingId={} source={}",
                     traceId,
                     currentRequestId(traceId),
-                    meetingId
+                    meetingId,
+                    transcriptDecision.source()
             );
-            return Map.of(
-                    "meeting_id", meetingId,
-                    "status", responseStatus,
-                    "transcripts", aiTranscripts
-            );
+            return buildTranscriptResponse(meetingId, responseStatus, transcriptDecision.payload());
         }
 
         log.info(
@@ -373,10 +355,10 @@ public class ProcessingService {
                 currentRequestId(traceId),
                 meetingId
         );
-        return Map.of(
-                "meeting_id", meetingId,
-                "status", stateStatus,
-                "transcripts", List.of()
+        return buildTranscriptResponse(
+                meetingId,
+                stateStatus,
+                TranscriptPayload.empty()
         );
     }
 
@@ -394,16 +376,20 @@ public class ProcessingService {
 
     public byte[] generateMeetingReportDocx(Long meetingId, String traceId, String authorization) {
         Map<String, Object> meeting = fetchAccessibleMeeting(meetingId, traceId, authorization);
-        List<Map<String, Object>> transcriptRows = loadSavedTranscriptRowsForExport(
+        TranscriptPayload transcriptPayload = loadSavedTranscriptPayloadForExport(
                 meetingId,
                 traceId,
                 authorization,
-                false
+                false,
+                TranscriptExportMode.READABLE
         );
+        List<Map<String, Object>> transcriptRows = transcriptPayload.readableRows();
         Map<String, Object> state = jobStateStore.getJobState(meetingId).orElse(null);
         Map<String, Object> analysisPayload = extractAnalysisFromState(state);
         boolean analysisAvailable = hasStructuredAnalysis(analysisPayload);
-        RawTranscriptPreview readablePreview = buildReadableTranscriptPreviewRows(transcriptRows);
+        RawTranscriptPreview readablePreview = transcriptPayload.isCanonicalMode()
+                ? buildCanonicalTranscriptPreviewRows(transcriptRows)
+                : buildReadableTranscriptPreviewRows(transcriptRows);
 
         if (transcriptRows.isEmpty() && !analysisAvailable) {
             throw new ResponseStatusException(
@@ -431,16 +417,22 @@ public class ProcessingService {
     public byte[] generateMeetingTranscriptTxt(Long meetingId, String traceId, String authorization, String mode) {
         TranscriptExportMode exportMode = TranscriptExportMode.from(mode);
         Map<String, Object> meeting = fetchAccessibleMeeting(meetingId, traceId, authorization);
-        List<Map<String, Object>> savedTranscriptRows = loadSavedTranscriptRowsForExport(
+        TranscriptPayload savedTranscriptPayload = loadSavedTranscriptPayloadForExport(
                 meetingId,
                 traceId,
                 authorization,
-                true
+                true,
+                exportMode
         );
+        List<Map<String, Object>> selectedRows = exportMode == TranscriptExportMode.RAW
+                ? savedTranscriptPayload.rawRows()
+                : savedTranscriptPayload.readableRows();
         List<MeetingReportData.RawTranscriptRow> transcriptRows = exportMode == TranscriptExportMode.RAW
-                ? buildRawTranscriptRows(savedTranscriptRows)
-                : buildReadableTranscriptRows(savedTranscriptRows);
-        String content = buildTranscriptTxt(meetingId, meeting, savedTranscriptRows, transcriptRows, exportMode);
+                ? buildRawTranscriptRows(selectedRows)
+                : savedTranscriptPayload.isCanonicalMode()
+                        ? buildRawTranscriptRows(selectedRows)
+                        : buildReadableTranscriptRows(selectedRows);
+        String content = buildTranscriptTxt(meetingId, meeting, selectedRows, transcriptRows, exportMode);
         return content.getBytes(StandardCharsets.UTF_8);
     }
 
@@ -451,15 +443,21 @@ public class ProcessingService {
     public byte[] generateMeetingTranscriptCsv(Long meetingId, String traceId, String authorization, String mode) {
         TranscriptExportMode exportMode = TranscriptExportMode.from(mode);
         Map<String, Object> meeting = fetchAccessibleMeeting(meetingId, traceId, authorization);
-        List<Map<String, Object>> savedTranscriptRows = loadSavedTranscriptRowsForExport(
+        TranscriptPayload savedTranscriptPayload = loadSavedTranscriptPayloadForExport(
                 meetingId,
                 traceId,
                 authorization,
-                true
+                true,
+                exportMode
         );
+        List<Map<String, Object>> selectedRows = exportMode == TranscriptExportMode.RAW
+                ? savedTranscriptPayload.rawRows()
+                : savedTranscriptPayload.readableRows();
         List<MeetingReportData.RawTranscriptRow> transcriptRows = exportMode == TranscriptExportMode.RAW
-                ? buildRawTranscriptRows(savedTranscriptRows)
-                : buildReadableTranscriptRows(savedTranscriptRows);
+                ? buildRawTranscriptRows(selectedRows)
+                : savedTranscriptPayload.isCanonicalMode()
+                        ? buildRawTranscriptRows(selectedRows)
+                        : buildReadableTranscriptRows(selectedRows);
         String content = buildTranscriptCsv(transcriptRows);
         return content.getBytes(StandardCharsets.UTF_8);
     }
@@ -539,6 +537,14 @@ public class ProcessingService {
             return new RawTranscriptPreview(new ArrayList<>(readableRows.subList(0, 30)), true);
         }
         return new RawTranscriptPreview(readableRows, previewLimited);
+    }
+
+    private RawTranscriptPreview buildCanonicalTranscriptPreviewRows(List<Map<String, Object>> transcriptRows) {
+        List<MeetingReportData.RawTranscriptRow> canonicalRows = buildRawTranscriptRows(transcriptRows);
+        if (canonicalRows.size() > 30) {
+            return new RawTranscriptPreview(new ArrayList<>(canonicalRows.subList(0, 30)), true);
+        }
+        return new RawTranscriptPreview(canonicalRows, false);
     }
 
     private List<MeetingReportData.RawTranscriptRow> buildRawTranscriptRows(List<Map<String, Object>> transcriptRows) {
@@ -1482,53 +1488,177 @@ public class ProcessingService {
         return rows;
     }
 
-    private List<Map<String, Object>> loadSavedTranscriptRowsForExport(Long meetingId, String traceId, String authorization) {
-        return loadSavedTranscriptRowsForExport(meetingId, traceId, authorization, true);
+    private TranscriptPayload buildStateTranscriptPayload(Map<String, Object> state) {
+        List<Map<String, Object>> stateTranscriptRows = extractTranscriptRowsFromState(state);
+        if (stateTranscriptRows.isEmpty()) {
+            return TranscriptPayload.empty();
+        }
+        return new TranscriptPayload(
+                stateTranscriptRows,
+                stateTranscriptRows,
+                TRANSCRIPT_MODE_RAW,
+                null,
+                null,
+                null
+        );
     }
 
-    private List<Map<String, Object>> loadSavedTranscriptRowsForExport(
+    private TranscriptPayload normalizeTranscriptPayload(Map<String, Object> payload) {
+        if (payload == null || payload.isEmpty()) {
+            return TranscriptPayload.empty();
+        }
+
+        List<Map<String, Object>> readableRows = normalizeTranscriptRows(payload.get("transcripts"));
+        List<Map<String, Object>> rawRows = normalizeTranscriptRows(
+                payload.containsKey("rawTranscripts")
+                        ? payload.get("rawTranscripts")
+                        : payload.get("raw_transcripts")
+        );
+        if (rawRows.isEmpty()) {
+            rawRows = readableRows;
+        }
+        if (readableRows.isEmpty() && !rawRows.isEmpty()) {
+            readableRows = rawRows;
+        }
+
+        String canonicalVersion = firstNonBlank(
+                payload.get("canonicalTranscriptVersion"),
+                payload.get("canonical_transcript_version")
+        );
+        String canonicalHash = firstNonBlank(
+                payload.get("canonicalTranscriptHash"),
+                payload.get("canonical_transcript_hash")
+        );
+        String canonicalGeneratedAt = firstNonBlank(
+                payload.get("canonicalGeneratedAt"),
+                payload.get("canonical_generated_at")
+        );
+
+        String transcriptMode = firstNonBlank(
+                payload.get("transcriptMode"),
+                payload.get("transcript_mode")
+        ).toLowerCase(Locale.ROOT);
+        if (transcriptMode.isBlank()) {
+            transcriptMode = (!canonicalVersion.isBlank() || !canonicalHash.isBlank()) && !readableRows.isEmpty()
+                    ? TRANSCRIPT_MODE_CANONICAL
+                    : TRANSCRIPT_MODE_RAW;
+        } else if (!TRANSCRIPT_MODE_CANONICAL.equals(transcriptMode)) {
+            transcriptMode = TRANSCRIPT_MODE_RAW;
+        }
+
+        return new TranscriptPayload(
+                readableRows,
+                rawRows,
+                transcriptMode,
+                canonicalVersion.isBlank() ? null : canonicalVersion,
+                canonicalHash.isBlank() ? null : canonicalHash,
+                canonicalGeneratedAt.isBlank() ? null : canonicalGeneratedAt
+        );
+    }
+
+    private Map<String, Object> buildTranscriptResponse(
+            Long meetingId,
+            String status,
+            TranscriptPayload payload
+    ) {
+        Map<String, Object> response = new HashMap<>();
+        response.put("meeting_id", meetingId);
+        response.put("status", status);
+        response.put("transcripts", payload.readableRows());
+        response.put("transcriptMode", payload.transcriptMode());
+
+        if (payload.isCanonicalMode()) {
+            if (payload.canonicalTranscriptVersion() != null) {
+                response.put("canonicalTranscriptVersion", payload.canonicalTranscriptVersion());
+            }
+            if (payload.canonicalTranscriptHash() != null) {
+                response.put("canonicalTranscriptHash", payload.canonicalTranscriptHash());
+            }
+            if (payload.canonicalGeneratedAt() != null) {
+                response.put("canonicalGeneratedAt", payload.canonicalGeneratedAt());
+            }
+            if (!payload.rawRows().isEmpty()) {
+                response.put("rawTranscripts", payload.rawRows());
+                response.put("raw_transcripts", payload.rawRows());
+            }
+        }
+
+        return response;
+    }
+
+    private TranscriptPayload loadSavedTranscriptPayloadForExport(
             Long meetingId,
             String traceId,
             String authorization,
-            boolean required
+            boolean required,
+            TranscriptExportMode exportMode
     ) {
         assertMeetingAccess(meetingId, traceId, authorization);
         Map<String, Object> state = jobStateStore.getJobState(meetingId).orElse(null);
-        List<Map<String, Object>> stateTranscriptRows = extractTranscriptRowsFromState(state);
-        if (!stateTranscriptRows.isEmpty()) {
-            log.info(
-                    "TRANSCRIPT_EXPORT_SOURCE meetingId={} source=processing_job_state rows={}",
-                    meetingId,
-                    stateTranscriptRows.size()
-            );
-            return stateTranscriptRows;
-        }
+        TranscriptPayload statePayload = buildStateTranscriptPayload(state);
+        boolean shouldFetchPersisted = exportMode == TranscriptExportMode.READABLE || statePayload.rawRows().isEmpty();
+        TranscriptPayload persistedTranscriptPayload = shouldFetchPersisted
+                ? fetchPersistedTranscriptPayloadForExport(meetingId, traceId)
+                : TranscriptPayload.empty();
+        TranscriptSourceDecision decision = exportMode == TranscriptExportMode.READABLE
+                ? selectReadableTranscriptSource(statePayload, persistedTranscriptPayload)
+                : selectRawTranscriptSource(statePayload, persistedTranscriptPayload);
 
-        List<Map<String, Object>> persistedTranscriptRows = fetchPersistedTranscriptRowsForExport(meetingId, traceId);
-        if (!persistedTranscriptRows.isEmpty()) {
+        if (!decision.payload().readableRows().isEmpty()) {
             log.info(
-                    "TRANSCRIPT_EXPORT_SOURCE meetingId={} source=ai_persisted_transcript rows={}",
+                    "TRANSCRIPT_EXPORT_SOURCE meetingId={} mode={} source={} rows={}",
                     meetingId,
-                    persistedTranscriptRows.size()
+                    exportMode == TranscriptExportMode.READABLE ? "readable" : "raw",
+                    decision.source(),
+                    decision.payload().readableRows().size()
             );
-            return persistedTranscriptRows;
+            return decision.payload();
         }
 
         log.info("TRANSCRIPT_EXPORT_NOT_READY meetingId={}", meetingId);
         if (required) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Transcript is not ready yet.");
         }
-        return List.of();
+        return TranscriptPayload.empty();
     }
 
-    private List<Map<String, Object>> fetchPersistedTranscriptRowsForExport(Long meetingId, String traceId) {
+    private TranscriptSourceDecision selectReadableTranscriptSource(
+            TranscriptPayload statePayload,
+            TranscriptPayload persistedPayload
+    ) {
+        if (persistedPayload.isCanonicalMode() && !persistedPayload.readableRows().isEmpty()) {
+            return new TranscriptSourceDecision(persistedPayload, "ai_persisted_canonical");
+        }
+        if (!statePayload.rawRows().isEmpty()) {
+            return new TranscriptSourceDecision(statePayload, "processing_job_state");
+        }
+        if (!persistedPayload.readableRows().isEmpty()) {
+            return new TranscriptSourceDecision(persistedPayload, "ai_persisted_transcript");
+        }
+        return new TranscriptSourceDecision(TranscriptPayload.empty(), "none");
+    }
+
+    private TranscriptSourceDecision selectRawTranscriptSource(
+            TranscriptPayload statePayload,
+            TranscriptPayload persistedPayload
+    ) {
+        if (!statePayload.rawRows().isEmpty()) {
+            return new TranscriptSourceDecision(statePayload, "processing_job_state");
+        }
+        if (!persistedPayload.rawRows().isEmpty()) {
+            return new TranscriptSourceDecision(persistedPayload, "ai_persisted_transcript");
+        }
+        return new TranscriptSourceDecision(TranscriptPayload.empty(), "none");
+    }
+
+    private TranscriptPayload fetchPersistedTranscriptPayloadForExport(Long meetingId, String traceId) {
         try {
             // This endpoint reads persisted transcript rows only; it does not trigger STT/processing start.
             Map<String, Object> aiResponse = aiServiceClient.getTranscript(meetingId, traceId);
-            return normalizeTranscriptRows(aiResponse == null ? null : aiResponse.get("transcripts"));
+            return normalizeTranscriptPayload(aiResponse);
         } catch (HttpStatusCodeException ex) {
             if (ex.getStatusCode().value() == HttpStatus.NOT_FOUND.value()) {
-                return List.of();
+                return TranscriptPayload.empty();
             }
             throw ex;
         }
@@ -1660,27 +1790,26 @@ public class ProcessingService {
         return "\"" + safe.replace("\"", "\"\"") + "\"";
     }
 
-    private List<Map<String, Object>> fetchTranscriptRowsFromAiService(Long meetingId, String traceId) {
+    private TranscriptPayload fetchTranscriptPayloadFromAiService(Long meetingId, String traceId) {
         try {
             Map<String, Object> aiResponse = aiServiceClient.getTranscript(meetingId, traceId);
-            List<Map<String, Object>> transcriptRows = normalizeTranscriptRows(
-                    aiResponse == null ? null : aiResponse.get("transcripts")
-            );
-            if (!transcriptRows.isEmpty()) {
+            TranscriptPayload payload = normalizeTranscriptPayload(aiResponse);
+            if (!payload.readableRows().isEmpty()) {
                 log.info(
-                        "[traceId={}] [jobId={}] ai-service transcript fallback rows={}",
+                        "[traceId={}] [jobId={}] ai-service transcript fallback rows={} mode={}",
                         traceId,
                         meetingId,
-                        transcriptRows.size()
+                        payload.readableRows().size(),
+                        payload.transcriptMode()
                 );
-                return transcriptRows;
+                return payload;
             }
             log.info(
                     "[traceId={}] [jobId={}] ai-service transcript fallback returned empty transcript list",
                     traceId,
                     meetingId
             );
-            return List.of();
+            return TranscriptPayload.empty();
         } catch (HttpStatusCodeException ex) {
             if (ex.getStatusCode().value() == HttpStatus.NOT_FOUND.value()) {
                 log.info(
@@ -1688,7 +1817,7 @@ public class ProcessingService {
                         traceId,
                         meetingId
                 );
-                return List.of();
+                return TranscriptPayload.empty();
             }
             log.warn(
                     "event=AI_SERVICE_CALL_FAILED traceId={} requestId={} meetingId={} source=transcript_fallback httpStatus={} errorCode=DOWNSTREAM_HTTP_ERROR",
@@ -1697,7 +1826,7 @@ public class ProcessingService {
                     meetingId,
                     ex.getStatusCode().value()
             );
-            return List.of();
+            return TranscriptPayload.empty();
         } catch (Exception ex) {
             log.warn(
                     "event=AI_SERVICE_CALL_FAILED traceId={} requestId={} meetingId={} source=transcript_fallback errorCode={}",
@@ -1706,7 +1835,7 @@ public class ProcessingService {
                     meetingId,
                     ex.getClass().getSimpleName()
             );
-            return List.of();
+            return TranscriptPayload.empty();
         }
     }
 
@@ -1776,10 +1905,10 @@ public class ProcessingService {
                 currentRequestId(traceId)
         );
 
-        List<Map<String, Object>> transcriptRows = extractTranscriptRowsFromState(state);
-        if (transcriptRows.isEmpty()) {
-            transcriptRows = fetchTranscriptRowsFromAiService(meetingId, traceId);
-        }
+        TranscriptPayload statePayload = buildStateTranscriptPayload(state);
+        TranscriptPayload persistedPayload = fetchTranscriptPayloadFromAiService(meetingId, traceId);
+        TranscriptSourceDecision transcriptDecision = selectReadableTranscriptSource(statePayload, persistedPayload);
+        List<Map<String, Object>> transcriptRows = transcriptDecision.payload().readableRows();
 
         String transcriptText = buildTranscriptText(transcriptRows);
         if (transcriptText.isBlank()) {
@@ -2221,6 +2350,33 @@ public class ProcessingService {
             return text;
         }
         return text.substring(0, 180);
+    }
+
+    private record TranscriptPayload(
+            List<Map<String, Object>> readableRows,
+            List<Map<String, Object>> rawRows,
+            String transcriptMode,
+            String canonicalTranscriptVersion,
+            String canonicalTranscriptHash,
+            String canonicalGeneratedAt
+    ) {
+        static TranscriptPayload empty() {
+            return new TranscriptPayload(
+                    List.of(),
+                    List.of(),
+                    TRANSCRIPT_MODE_RAW,
+                    null,
+                    null,
+                    null
+            );
+        }
+
+        boolean isCanonicalMode() {
+            return TRANSCRIPT_MODE_CANONICAL.equals(transcriptMode);
+        }
+    }
+
+    private record TranscriptSourceDecision(TranscriptPayload payload, String source) {
     }
 
     private record AnalysisTriggerResult(String status, String errorCode, int retryAfterSeconds) {

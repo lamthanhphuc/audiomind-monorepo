@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.lenient;
@@ -172,7 +173,7 @@ class ProcessingServiceTest {
         assertEquals("batch transcript", row.get("text"));
         assertEquals(1.25d, row.get("start_time"));
 
-        verify(aiServiceClient, never()).getTranscript(anyLong(), anyString());
+        verify(aiServiceClient).getTranscript(777L, "trace-batch");
     }
 
     @Test
@@ -276,6 +277,131 @@ class ProcessingServiceTest {
     }
 
     @Test
+    void getTranscript_shouldPreferCanonicalRowsFromAiFallbackWhenAvailable() {
+        when(jobStateStore.getJobState(892L)).thenReturn(Optional.empty());
+        Map<String, Object> aiPayload = new HashMap<>();
+        aiPayload.put("meeting_id", 892L);
+        aiPayload.put("transcriptMode", "canonical");
+        aiPayload.put("canonicalTranscriptVersion", "canonical-transcript-v1");
+        aiPayload.put("canonicalTranscriptHash", "canonical-hash-892");
+        aiPayload.put("canonicalGeneratedAt", "2026-06-01T10:00:00Z");
+        aiPayload.put("transcripts", List.of(
+                Map.of(
+                        "speaker", "SPEAKER_1",
+                        "text", "Canonical cleaned transcript row.",
+                        "start_time", 1.0d,
+                        "end_time", 2.5d
+                )
+        ));
+        aiPayload.put("rawTranscripts", List.of(
+                Map.of(
+                        "speaker", "SPEAKER_1",
+                        "text", "Raw overlapping row one.",
+                        "start_time", 1.0d,
+                        "end_time", 2.0d
+                ),
+                Map.of(
+                        "speaker", "SPEAKER_2",
+                        "text", "Raw overlapping row two.",
+                        "start_time", 1.4d,
+                        "end_time", 2.6d
+                )
+        ));
+        when(aiServiceClient.getTranscript(892L, "trace-canonical-fallback")).thenReturn(aiPayload);
+
+        Map<String, Object> response = processingService.getTranscript(892L, "trace-canonical-fallback", AUTH_HEADER);
+
+        assertEquals("COMPLETED", response.get("status"));
+        assertEquals("canonical", response.get("transcriptMode"));
+        List<?> transcripts = (List<?>) response.get("transcripts");
+        assertEquals(1, transcripts.size());
+        Map<?, ?> row = (Map<?, ?>) transcripts.get(0);
+        assertEquals("Canonical cleaned transcript row.", row.get("text"));
+        assertTrue(response.get("rawTranscripts") instanceof List<?>);
+        assertEquals(2, ((List<?>) response.get("rawTranscripts")).size());
+        verify(aiServiceClient).getTranscript(892L, "trace-canonical-fallback");
+        verify(aiServiceClient, never()).processAudio(anyLong(), anyString(), anyString(), anyString(), any(), anyString(), anyString(), anyString());
+        verify(aiServiceClient, never()).analyzeRealtimeTranscript(
+                anyLong(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString()
+        );
+    }
+
+    @Test
+    void getTranscript_shouldPreferAiCanonicalRowsOverStateRowsWhenAvailable() {
+        Map<String, Object> stateRow = new HashMap<>();
+        stateRow.put("speaker", "SPEAKER_1");
+        stateRow.put("text", "state raw transcript row");
+        stateRow.put("start_time", 1.0d);
+        stateRow.put("end_time", 2.0d);
+
+        Map<String, Object> state = new HashMap<>();
+        state.put("status", "COMPLETED");
+        state.put("result", Map.of("transcripts", List.of(stateRow)));
+        when(jobStateStore.getJobState(893L)).thenReturn(Optional.of(state));
+
+        Map<String, Object> aiPayload = new HashMap<>();
+        aiPayload.put("meeting_id", 893L);
+        aiPayload.put("transcriptMode", "canonical");
+        aiPayload.put("canonicalTranscriptVersion", "canonical-transcript-v1");
+        aiPayload.put("canonicalTranscriptHash", "canonical-hash-893");
+        aiPayload.put("canonicalGeneratedAt", "2026-06-01T11:00:00Z");
+        aiPayload.put("transcripts", List.of(
+                Map.of(
+                        "speaker", "SPEAKER_9",
+                        "text", "canonical readable row",
+                        "start_time", 1.0d,
+                        "end_time", 2.0d
+                )
+        ));
+        aiPayload.put("rawTranscripts", List.of(
+                Map.of(
+                        "speaker", "SPEAKER_1",
+                        "text", "raw overlap A",
+                        "start_time", 1.0d,
+                        "end_time", 1.8d
+                ),
+                Map.of(
+                        "speaker", "SPEAKER_2",
+                        "text", "raw overlap B",
+                        "start_time", 1.1d,
+                        "end_time", 2.1d
+                )
+        ));
+        when(aiServiceClient.getTranscript(893L, "trace-state-canonical")).thenReturn(aiPayload);
+
+        Map<String, Object> response = processingService.getTranscript(893L, "trace-state-canonical", AUTH_HEADER);
+
+        assertEquals("COMPLETED", response.get("status"));
+        assertEquals("canonical", response.get("transcriptMode"));
+        List<?> transcripts = (List<?>) response.get("transcripts");
+        assertEquals(1, transcripts.size());
+        Map<?, ?> row = (Map<?, ?>) transcripts.get(0);
+        assertEquals("canonical readable row", row.get("text"));
+        assertEquals(2, ((List<?>) response.get("rawTranscripts")).size());
+        verify(aiServiceClient).getTranscript(893L, "trace-state-canonical");
+        verify(aiServiceClient, never()).processAudio(anyLong(), anyString(), anyString(), anyString(), any(), anyString(), anyString(), anyString());
+        verify(aiServiceClient, never()).analyzeRealtimeTranscript(
+                anyLong(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString()
+        );
+    }
+
+    @Test
     void generateMeetingTranscriptTxt_shouldUseReadableTranscriptByDefault() {
         Map<String, Object> mainRow = new HashMap<>();
         mainRow.put("speaker", "SPEAKER_1");
@@ -316,7 +442,7 @@ class ProcessingServiceTest {
         assertTrue(content.contains("Readable transcript export generated from saved STT output. Obvious repeated fragments may be collapsed for readability. This is a best-effort readable export; full canonical transcript cleanup is planned separately. Raw export is available with mode=raw."));
         assertTrue(content.contains("[00:36–00:37] SPEAKER_1: We should finalize the launch plan."));
         assertTrue(!content.contains("[00:36–00:37] SPEAKER_2: launch plan"));
-        verify(aiServiceClient, never()).getTranscript(anyLong(), anyString());
+        verify(aiServiceClient).getTranscript(900L, "trace-txt");
     }
 
     @Test
@@ -359,7 +485,7 @@ class ProcessingServiceTest {
         assertTrue(content.contains("The customer requested a faster onboarding flow for new users."));
         assertTrue(content.contains("The launch checklist is still pending legal approval."));
         assertTrue(!content.contains("[00:21–00:23] SPEAKER_2: requested a faster onboarding flow for new users"));
-        verify(aiServiceClient, never()).getTranscript(anyLong(), anyString());
+        verify(aiServiceClient).getTranscript(9002L, "trace-txt-readable-collapse");
     }
 
     @Test
@@ -435,7 +561,7 @@ class ProcessingServiceTest {
         assertTrue(content.contains("1,\"00:01\",\"00:03\",\"SPEAKER_1\",\"raw csv row 1\""));
         assertEquals(2, content.lines().count());
         assertTrue(!content.contains("SPEAKER_3"));
-        verify(aiServiceClient, never()).getTranscript(anyLong(), anyString());
+        verify(aiServiceClient).getTranscript(901L, "trace-csv");
     }
 
     @Test
@@ -569,6 +695,276 @@ class ProcessingServiceTest {
                 anyString(),
                 anyString()
         );
+    }
+
+    @Test
+    void generateMeetingTranscriptTxt_shouldUseCanonicalRowsFromAiPersistedTranscriptWhenAvailable() {
+        when(jobStateStore.getJobState(906L)).thenReturn(Optional.empty());
+        when(meetingServiceClient.getMeetingById(906L, "trace-ai-canonical-readable", AUTH_HEADER)).thenReturn(Map.of(
+                "id", 906L,
+                "title", "AI canonical readable transcript",
+                "language", "en",
+                "status", "completed"
+        ));
+        Map<String, Object> aiPayload = new HashMap<>();
+        aiPayload.put("meeting_id", 906L);
+        aiPayload.put("transcriptMode", "canonical");
+        aiPayload.put("canonicalTranscriptVersion", "canonical-transcript-v1");
+        aiPayload.put("canonicalTranscriptHash", "canonical-hash-906");
+        aiPayload.put("transcripts", List.of(
+                Map.of(
+                        "speaker", "SPEAKER_1",
+                        "text", "Vocabulary is a nightmare.",
+                        "start_time", 4.0d,
+                        "end_time", 6.0d
+                )
+        ));
+        aiPayload.put("rawTranscripts", List.of(
+                Map.of(
+                        "speaker", "SPEAKER_1",
+                        "text", "Vocabulary",
+                        "start_time", 4.0d,
+                        "end_time", 5.0d
+                ),
+                Map.of(
+                        "speaker", "SPEAKER_2",
+                        "text", "is a nightmare.",
+                        "start_time", 5.2d,
+                        "end_time", 6.0d
+                )
+        ));
+        when(aiServiceClient.getTranscript(906L, "trace-ai-canonical-readable")).thenReturn(aiPayload);
+
+        String content = new String(
+                processingService.generateMeetingTranscriptTxt(906L, "trace-ai-canonical-readable", AUTH_HEADER),
+                StandardCharsets.UTF_8
+        );
+
+        assertTrue(content.contains("Transcript export mode: readable"));
+        assertTrue(content.contains("SPEAKER_1: Vocabulary is a nightmare."));
+        assertTrue(!content.contains("SPEAKER_1: Vocabulary\n"));
+        assertTrue(!content.contains("SPEAKER_2: is a nightmare."));
+        verify(aiServiceClient).getTranscript(906L, "trace-ai-canonical-readable");
+        verify(aiServiceClient, never()).processAudio(anyLong(), anyString(), anyString(), anyString(), any(), anyString(), anyString(), anyString());
+        verify(aiServiceClient, never()).analyzeRealtimeTranscript(
+                anyLong(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString()
+        );
+    }
+
+    @Test
+    void generateMeetingTranscriptTxt_rawMode_shouldUseRawRowsWhenAiTranscriptIsCanonical() {
+        when(jobStateStore.getJobState(907L)).thenReturn(Optional.empty());
+        when(meetingServiceClient.getMeetingById(907L, "trace-ai-canonical-raw", AUTH_HEADER)).thenReturn(Map.of(
+                "id", 907L,
+                "title", "AI canonical raw transcript",
+                "language", "en",
+                "status", "completed"
+        ));
+        Map<String, Object> aiPayload = new HashMap<>();
+        aiPayload.put("meeting_id", 907L);
+        aiPayload.put("transcriptMode", "canonical");
+        aiPayload.put("canonicalTranscriptVersion", "canonical-transcript-v1");
+        aiPayload.put("canonicalTranscriptHash", "canonical-hash-907");
+        aiPayload.put("transcripts", List.of(
+                Map.of(
+                        "speaker", "SPEAKER_1",
+                        "text", "Vocabulary is a nightmare.",
+                        "start_time", 7.0d,
+                        "end_time", 9.0d
+                )
+        ));
+        aiPayload.put("rawTranscripts", List.of(
+                Map.of(
+                        "speaker", "SPEAKER_1",
+                        "text", "Vocabulary",
+                        "start_time", 7.0d,
+                        "end_time", 8.0d
+                ),
+                Map.of(
+                        "speaker", "SPEAKER_2",
+                        "text", "is a nightmare.",
+                        "start_time", 8.2d,
+                        "end_time", 9.0d
+                )
+        ));
+        when(aiServiceClient.getTranscript(907L, "trace-ai-canonical-raw")).thenReturn(aiPayload);
+
+        String content = new String(
+                processingService.generateMeetingTranscriptTxt(907L, "trace-ai-canonical-raw", AUTH_HEADER, "raw"),
+                StandardCharsets.UTF_8
+        );
+
+        assertTrue(content.contains("Transcript export mode: raw"));
+        assertTrue(content.contains("SPEAKER_1: Vocabulary"));
+        assertTrue(content.contains("SPEAKER_2: is a nightmare."));
+        assertTrue(!content.contains("SPEAKER_1: Vocabulary is a nightmare."));
+        verify(aiServiceClient).getTranscript(907L, "trace-ai-canonical-raw");
+        verify(aiServiceClient, never()).processAudio(anyLong(), anyString(), anyString(), anyString(), any(), anyString(), anyString(), anyString());
+        verify(aiServiceClient, never()).analyzeRealtimeTranscript(
+                anyLong(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString()
+        );
+    }
+
+    @Test
+    void generateMeetingTranscriptTxt_readable_shouldPreferCanonicalRowsOverJobStateRowsWhenAvailable() {
+        Map<String, Object> stateRow = new HashMap<>();
+        stateRow.put("speaker", "SPEAKER_1");
+        stateRow.put("text", "state raw row should be hidden by canonical");
+        stateRow.put("start_time", 2.0d);
+        stateRow.put("end_time", 3.0d);
+
+        Map<String, Object> state = new HashMap<>();
+        state.put("status", "COMPLETED");
+        state.put("result", Map.of("transcripts", List.of(stateRow)));
+        when(jobStateStore.getJobState(908L)).thenReturn(Optional.of(state));
+        when(meetingServiceClient.getMeetingById(908L, "trace-state-canonical-readable", AUTH_HEADER)).thenReturn(Map.of(
+                "id", 908L,
+                "title", "State plus canonical",
+                "language", "en",
+                "status", "completed"
+        ));
+
+        Map<String, Object> aiPayload = new HashMap<>();
+        aiPayload.put("meeting_id", 908L);
+        aiPayload.put("transcriptMode", "canonical");
+        aiPayload.put("canonicalTranscriptVersion", "canonical-transcript-v1");
+        aiPayload.put("canonicalTranscriptHash", "canonical-hash-908");
+        aiPayload.put("transcripts", List.of(
+                Map.of(
+                        "speaker", "SPEAKER_9",
+                        "text", "canonical readable row for export",
+                        "start_time", 2.0d,
+                        "end_time", 3.0d
+                )
+        ));
+        aiPayload.put("rawTranscripts", List.of(
+                Map.of(
+                        "speaker", "SPEAKER_1",
+                        "text", "raw overlap one",
+                        "start_time", 2.0d,
+                        "end_time", 2.6d
+                ),
+                Map.of(
+                        "speaker", "SPEAKER_2",
+                        "text", "raw overlap two",
+                        "start_time", 2.1d,
+                        "end_time", 3.1d
+                )
+        ));
+        when(aiServiceClient.getTranscript(908L, "trace-state-canonical-readable")).thenReturn(aiPayload);
+
+        String content = new String(
+                processingService.generateMeetingTranscriptTxt(908L, "trace-state-canonical-readable", AUTH_HEADER),
+                StandardCharsets.UTF_8
+        );
+
+        assertTrue(content.contains("Transcript export mode: readable"));
+        assertTrue(content.contains("canonical readable row for export"));
+        assertTrue(!content.contains("state raw row should be hidden by canonical"));
+        assertTrue(!content.contains("raw overlap one"));
+        assertTrue(!content.contains("raw overlap two"));
+        verify(aiServiceClient).getTranscript(908L, "trace-state-canonical-readable");
+        verify(aiServiceClient, never()).processAudio(anyLong(), anyString(), anyString(), anyString(), any(), anyString(), anyString(), anyString());
+        verify(aiServiceClient, never()).analyzeRealtimeTranscript(
+                anyLong(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString()
+        );
+    }
+
+    @Test
+    void generateMeetingTranscriptCsv_readable_shouldPreferCanonicalRowsOverJobStateRowsWhenAvailable() {
+        Map<String, Object> stateRow = new HashMap<>();
+        stateRow.put("speaker", "SPEAKER_1");
+        stateRow.put("text", "state csv row should not be used");
+        stateRow.put("start_time", 10.0d);
+        stateRow.put("end_time", 11.0d);
+
+        Map<String, Object> state = new HashMap<>();
+        state.put("status", "COMPLETED");
+        state.put("result", Map.of("transcripts", List.of(stateRow)));
+        when(jobStateStore.getJobState(909L)).thenReturn(Optional.of(state));
+        when(meetingServiceClient.getMeetingById(909L, "trace-state-canonical-csv", AUTH_HEADER)).thenReturn(Map.of(
+                "id", 909L,
+                "title", "State plus canonical csv",
+                "language", "en",
+                "status", "completed"
+        ));
+
+        Map<String, Object> aiPayload = new HashMap<>();
+        aiPayload.put("meeting_id", 909L);
+        aiPayload.put("transcriptMode", "canonical");
+        aiPayload.put("canonicalTranscriptVersion", "canonical-transcript-v1");
+        aiPayload.put("canonicalTranscriptHash", "canonical-hash-909");
+        aiPayload.put("transcripts", List.of(
+                Map.of(
+                        "speaker", "SPEAKER_9",
+                        "text", "canonical csv row",
+                        "start_time", 10.0d,
+                        "end_time", 12.0d
+                )
+        ));
+        when(aiServiceClient.getTranscript(909L, "trace-state-canonical-csv")).thenReturn(aiPayload);
+
+        String content = new String(
+                processingService.generateMeetingTranscriptCsv(909L, "trace-state-canonical-csv", AUTH_HEADER),
+                StandardCharsets.UTF_8
+        );
+
+        assertTrue(content.contains("1,\"00:10\",\"00:12\",\"SPEAKER_9\",\"canonical csv row\""));
+        assertTrue(!content.contains("state csv row should not be used"));
+        verify(aiServiceClient).getTranscript(909L, "trace-state-canonical-csv");
+    }
+
+    @Test
+    void generateMeetingTranscriptTxt_rawMode_shouldKeepStateRawRowsWhenAvailable() {
+        Map<String, Object> stateRow = new HashMap<>();
+        stateRow.put("speaker", "SPEAKER_1");
+        stateRow.put("text", "state raw row remains for raw mode");
+        stateRow.put("start_time", 4.0d);
+        stateRow.put("end_time", 5.0d);
+
+        Map<String, Object> state = new HashMap<>();
+        state.put("status", "COMPLETED");
+        state.put("result", Map.of("transcripts", List.of(stateRow)));
+        when(jobStateStore.getJobState(910L)).thenReturn(Optional.of(state));
+        when(meetingServiceClient.getMeetingById(910L, "trace-raw-state-priority", AUTH_HEADER)).thenReturn(Map.of(
+                "id", 910L,
+                "title", "Raw state priority",
+                "language", "en",
+                "status", "completed"
+        ));
+
+        String content = new String(
+                processingService.generateMeetingTranscriptTxt(910L, "trace-raw-state-priority", AUTH_HEADER, "raw"),
+                StandardCharsets.UTF_8
+        );
+
+        assertTrue(content.contains("Transcript export mode: raw"));
+        assertTrue(content.contains("state raw row remains for raw mode"));
+        verify(aiServiceClient, never()).getTranscript(910L, "trace-raw-state-priority");
     }
 
     @Test
@@ -906,6 +1302,143 @@ class ProcessingServiceTest {
     }
 
     @Test
+    void generateMeetingReportDocx_shouldUseCanonicalPreviewWhenAiTranscriptIsCanonical() throws Exception {
+        when(jobStateStore.getJobState(927L)).thenReturn(Optional.empty());
+        when(meetingServiceClient.getMeetingById(927L, "trace-927", AUTH_HEADER)).thenReturn(Map.of(
+                "id", 927L,
+                "title", "AI canonical report transcript",
+                "createdAt", "2026-06-01T12:20:00Z",
+                "language", "multi",
+                "status", "completed"
+        ));
+        Map<String, Object> aiPayload = new HashMap<>();
+        aiPayload.put("meeting_id", 927L);
+        aiPayload.put("transcriptMode", "canonical");
+        aiPayload.put("canonicalTranscriptVersion", "canonical-transcript-v1");
+        aiPayload.put("canonicalTranscriptHash", "canonical-hash-927");
+        aiPayload.put("transcripts", List.of(
+                Map.of(
+                        "speaker", "SPEAKER_1",
+                        "text", "Canonical report row from ai transcript.",
+                        "start_time", 6.0d,
+                        "end_time", 8.0d
+                )
+        ));
+        aiPayload.put("rawTranscripts", List.of(
+                Map.of(
+                        "speaker", "SPEAKER_1",
+                        "text", "Raw report row duplicate A.",
+                        "start_time", 6.0d,
+                        "end_time", 7.0d
+                ),
+                Map.of(
+                        "speaker", "SPEAKER_2",
+                        "text", "Raw report row duplicate B.",
+                        "start_time", 6.2d,
+                        "end_time", 7.2d
+                )
+        ));
+        when(aiServiceClient.getTranscript(927L, "trace-927")).thenReturn(aiPayload);
+
+        byte[] report = processingService.generateMeetingReportDocx(927L, "trace-927", AUTH_HEADER);
+
+        try (XWPFDocument doc = new XWPFDocument(new ByteArrayInputStream(report));
+             XWPFWordExtractor extractor = new XWPFWordExtractor(doc)) {
+            String content = extractor.getText();
+            assertTrue(content.contains("Canonical report row from ai transcript."));
+            assertTrue(!content.contains("Raw report row duplicate A."));
+            assertTrue(!content.contains("Raw report row duplicate B."));
+        }
+        verify(aiServiceClient).getTranscript(927L, "trace-927");
+        verify(aiServiceClient, never()).processAudio(anyLong(), anyString(), anyString(), anyString(), any(), anyString(), anyString(), anyString());
+        verify(aiServiceClient, never()).analyzeRealtimeTranscript(
+                anyLong(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString()
+        );
+    }
+
+    @Test
+    void generateMeetingReportDocx_shouldPreferAiCanonicalPreviewOverStateRowsWhenAvailable() throws Exception {
+        Map<String, Object> stateRow = new HashMap<>();
+        stateRow.put("speaker", "SPEAKER_1");
+        stateRow.put("text", "state preview row should be hidden");
+        stateRow.put("start_time", 9.0d);
+        stateRow.put("end_time", 10.0d);
+
+        Map<String, Object> state = new HashMap<>();
+        state.put("status", "COMPLETED");
+        state.put("result", Map.of("transcripts", List.of(stateRow)));
+        when(jobStateStore.getJobState(928L)).thenReturn(Optional.of(state));
+        when(meetingServiceClient.getMeetingById(928L, "trace-928", AUTH_HEADER)).thenReturn(Map.of(
+                "id", 928L,
+                "title", "State and canonical report",
+                "createdAt", "2026-06-01T12:40:00Z",
+                "language", "multi",
+                "status", "completed"
+        ));
+
+        Map<String, Object> aiPayload = new HashMap<>();
+        aiPayload.put("meeting_id", 928L);
+        aiPayload.put("transcriptMode", "canonical");
+        aiPayload.put("canonicalTranscriptVersion", "canonical-transcript-v1");
+        aiPayload.put("canonicalTranscriptHash", "canonical-hash-928");
+        aiPayload.put("transcripts", List.of(
+                Map.of(
+                        "speaker", "SPEAKER_9",
+                        "text", "canonical preview row should be visible",
+                        "start_time", 9.0d,
+                        "end_time", 10.0d
+                )
+        ));
+        aiPayload.put("rawTranscripts", List.of(
+                Map.of(
+                        "speaker", "SPEAKER_1",
+                        "text", "raw preview duplicate A",
+                        "start_time", 9.0d,
+                        "end_time", 9.5d
+                ),
+                Map.of(
+                        "speaker", "SPEAKER_2",
+                        "text", "raw preview duplicate B",
+                        "start_time", 9.1d,
+                        "end_time", 10.2d
+                )
+        ));
+        when(aiServiceClient.getTranscript(928L, "trace-928")).thenReturn(aiPayload);
+
+        byte[] report = processingService.generateMeetingReportDocx(928L, "trace-928", AUTH_HEADER);
+
+        try (XWPFDocument doc = new XWPFDocument(new ByteArrayInputStream(report));
+             XWPFWordExtractor extractor = new XWPFWordExtractor(doc)) {
+            String content = extractor.getText();
+            assertTrue(content.contains("canonical preview row should be visible"));
+            assertTrue(!content.contains("state preview row should be hidden"));
+            assertTrue(!content.contains("raw preview duplicate A"));
+            assertTrue(!content.contains("raw preview duplicate B"));
+        }
+        verify(aiServiceClient).getTranscript(928L, "trace-928");
+        verify(aiServiceClient, never()).processAudio(anyLong(), anyString(), anyString(), anyString(), any(), anyString(), anyString(), anyString());
+        verify(aiServiceClient, never()).analyzeRealtimeTranscript(
+                anyLong(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString()
+        );
+    }
+
+    @Test
     void generateMeetingReportDocx_shouldLimitTranscriptPreviewRowsToThirty() throws Exception {
         List<Map<String, Object>> transcriptRows = new java.util.ArrayList<>();
         for (int i = 1; i <= 35; i++) {
@@ -1105,6 +1638,132 @@ class ProcessingServiceTest {
                 eq("get_analysis_lazy"),
                 eq("processing_service_lazy_poll"),
                 eq("lock-token")
+        );
+    }
+
+    @Test
+    void getAnalysis_lazyPath_shouldUseCanonicalTranscriptWhenAvailable() {
+        when(jobStateStore.getJobState(614L)).thenReturn(Optional.empty());
+        when(aiServiceClient.getAnalysis(614L, "trace-614"))
+                .thenThrow(new HttpClientErrorException(HttpStatus.NOT_FOUND));
+        Map<String, Object> aiPayload = new HashMap<>();
+        aiPayload.put("meeting_id", 614L);
+        aiPayload.put("transcriptMode", "canonical");
+        aiPayload.put("canonicalTranscriptVersion", "canonical-transcript-v1");
+        aiPayload.put("canonicalTranscriptHash", "canonical-hash-614");
+        aiPayload.put("transcripts", List.of(
+                Map.of(
+                        "speaker", "SPEAKER_1",
+                        "text", "Canonical cleaned sentence.",
+                        "start_time", 1.0d,
+                        "end_time", 2.0d
+                )
+        ));
+        aiPayload.put("rawTranscripts", List.of(
+                Map.of(
+                        "speaker", "SPEAKER_1",
+                        "text", "raw noisy sentence.",
+                        "start_time", 1.0d,
+                        "end_time", 2.0d
+                )
+        ));
+        when(aiServiceClient.getTranscript(614L, "trace-614")).thenReturn(aiPayload);
+        when(aiServiceClient.analyzeRealtimeTranscript(
+                eq(614L),
+                anyString(),
+                eq("it"),
+                eq("realtime"),
+                anyString(),
+                anyString(),
+                anyString(),
+                eq("trace-614"),
+                eq(AUTH_HEADER)
+        )).thenReturn(Map.of("status", "completed"));
+
+        Map<String, Object> response = processingService.getAnalysis(614L, "trace-614", AUTH_HEADER);
+
+        assertEquals("NOT_FOUND", response.get("status"));
+        verify(aiServiceClient, timeout(1000)).analyzeRealtimeTranscript(
+                eq(614L),
+                argThat(value -> value != null
+                        && value.contains("Canonical cleaned sentence.")
+                        && !value.contains("raw noisy sentence.")),
+                eq("it"),
+                eq("realtime"),
+                anyString(),
+                anyString(),
+                anyString(),
+                eq("trace-614"),
+                eq(AUTH_HEADER)
+        );
+    }
+
+    @Test
+    void getAnalysis_lazyPath_shouldPreferCanonicalTranscriptOverStateRowsWhenAvailable() {
+        Map<String, Object> stateRow = new HashMap<>();
+        stateRow.put("speaker", "SPEAKER_1");
+        stateRow.put("text", "state raw sentence that should not be analyzed");
+        stateRow.put("start_time", 1.0d);
+        stateRow.put("end_time", 2.0d);
+
+        Map<String, Object> state = new HashMap<>();
+        state.put("status", "RUNNING");
+        state.put("result", Map.of("transcripts", List.of(stateRow)));
+        when(jobStateStore.getJobState(615L)).thenReturn(Optional.of(state));
+        when(aiServiceClient.getAnalysis(615L, "trace-615"))
+                .thenThrow(new HttpClientErrorException(HttpStatus.NOT_FOUND));
+
+        Map<String, Object> aiPayload = new HashMap<>();
+        aiPayload.put("meeting_id", 615L);
+        aiPayload.put("transcriptMode", "canonical");
+        aiPayload.put("canonicalTranscriptVersion", "canonical-transcript-v1");
+        aiPayload.put("canonicalTranscriptHash", "canonical-hash-615");
+        aiPayload.put("transcripts", List.of(
+                Map.of(
+                        "speaker", "SPEAKER_9",
+                        "text", "canonical sentence from ai sidecar",
+                        "start_time", 1.0d,
+                        "end_time", 2.0d
+                )
+        ));
+        aiPayload.put("rawTranscripts", List.of(
+                Map.of(
+                        "speaker", "SPEAKER_1",
+                        "text", "raw noisy sentence from ai",
+                        "start_time", 1.0d,
+                        "end_time", 2.0d
+                )
+        ));
+        when(aiServiceClient.getTranscript(615L, "trace-615")).thenReturn(aiPayload);
+        when(aiServiceClient.analyzeRealtimeTranscript(
+                eq(615L),
+                anyString(),
+                eq("it"),
+                eq("realtime"),
+                anyString(),
+                anyString(),
+                anyString(),
+                eq("trace-615"),
+                eq(AUTH_HEADER)
+        )).thenReturn(Map.of("status", "completed"));
+
+        Map<String, Object> response = processingService.getAnalysis(615L, "trace-615", AUTH_HEADER);
+
+        assertEquals("RUNNING", response.get("status"));
+        verify(aiServiceClient).getTranscript(615L, "trace-615");
+        verify(aiServiceClient, timeout(1000)).analyzeRealtimeTranscript(
+                eq(615L),
+                argThat(value -> value != null
+                        && value.contains("canonical sentence from ai sidecar")
+                        && !value.contains("state raw sentence that should not be analyzed")
+                        && !value.contains("raw noisy sentence from ai")),
+                eq("it"),
+                eq("realtime"),
+                anyString(),
+                anyString(),
+                anyString(),
+                eq("trace-615"),
+                eq(AUTH_HEADER)
         );
     }
 

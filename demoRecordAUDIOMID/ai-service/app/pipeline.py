@@ -1012,6 +1012,7 @@ class ProcessingPipeline:
             .all()
         )
         if fragment_rows:
+            # When live fragments exist, prefer fragments (raw) as before
             return fragment_rows
 
         transcripts = (

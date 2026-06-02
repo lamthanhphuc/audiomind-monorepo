@@ -28,6 +28,7 @@ from app.database import (
     Base,
     engine,
     ensure_bigint_meeting_id,
+    ensure_transcript_canonical_sidecar_columns,
     get_db,
     wait_for_database,
 )
@@ -40,7 +41,7 @@ from app.job_status_store import (
     set_job_status,
 )
 from app.metrics import stt_metrics
-from app.models import Analysis
+from app.models import Analysis, Transcript
 from app.logging_utils import safe_error_message, transcript_hash_prefix
 from app.services.ai_analyzer import AIAnalyzer
 from app.schemas import (
@@ -79,6 +80,7 @@ from app.services.stt_ownership import (
     get_stt_ownership_manager,
 )
 from app.services.stt_persistence import TranscriptPersistenceRepository
+from app.services.transcript_canonicalizer import build_raw_transcript_hash
 from app.services.stt_session_actor import MeetingSessionActor, MeetingSessionState
 from app.tasks import process_meeting
 
@@ -122,6 +124,18 @@ async def lifespan(_: FastAPI):
                 "Database migration step failed during production startup"
             ) from e
         logger.warning("Database migration step skipped: {}", safe_error_message(e))
+
+    try:
+        ensure_transcript_canonical_sidecar_columns()
+    except Exception as e:
+        if is_production:
+            raise RuntimeError(
+                "Canonical transcript sidecar migration failed during production startup"
+            ) from e
+        logger.warning(
+            "Canonical transcript sidecar migration skipped: {}",
+            safe_error_message(e),
+        )
 
     try:
         Base.metadata.create_all(bind=engine)
@@ -2099,10 +2113,122 @@ async def get_transcript(meeting_id: int, db: Session = Depends(get_db)):
 
     Returns all transcript segments with speaker labels and timestamps
     """
+    def _build_segment_id(
+        *,
+        meeting_id_value: int,
+        speaker_value: str,
+        start_time_value: float,
+        explicit_segment_id: Any,
+    ) -> str:
+        segment_id = str(explicit_segment_id or "").strip()
+        if segment_id:
+            return segment_id
+        return (
+            f"meeting-{meeting_id_value}-start-{float(start_time_value):.3f}-"
+            f"{speaker_value.strip().lower().replace(' ', '_')}"
+        )
+
+    def _segment_from_mapping(row: dict[str, Any]) -> TranscriptSegment:
+        speaker = str(row.get("speaker") or "SPEAKER_1")
+        start_time = float(row.get("start_time") or row.get("startTime") or 0.0)
+        end_time = float(row.get("end_time") or row.get("endTime") or 0.0)
+        text = str(row.get("text") or "")
+        return TranscriptSegment(
+            speaker=speaker,
+            start_time=start_time,
+            end_time=end_time,
+            text=text,
+            segment_id=_build_segment_id(
+                meeting_id_value=meeting_id,
+                speaker_value=speaker,
+                start_time_value=start_time,
+                explicit_segment_id=row.get("segment_id"),
+            ),
+        )
+
+    def _segment_from_model(row: Transcript) -> TranscriptSegment:
+        speaker = str(getattr(row, "speaker", None) or "SPEAKER_1")
+        start_time = float(getattr(row, "start_time", None) or 0.0)
+        end_time = float(getattr(row, "end_time", None) or 0.0)
+        text = str(getattr(row, "text", None) or "")
+        return TranscriptSegment(
+            speaker=speaker,
+            start_time=start_time,
+            end_time=end_time,
+            text=text,
+            segment_id=_build_segment_id(
+                meeting_id_value=meeting_id,
+                speaker_value=speaker,
+                start_time_value=start_time,
+                explicit_segment_id=getattr(row, "segment_id", None),
+            ),
+        )
+
+    def _resolve_canonical_sidecar(
+        transcript_rows: list[Transcript],
+        raw_rows: list[TranscriptSegment],
+    ) -> tuple[list[TranscriptSegment], str, str, datetime | None] | None:
+        if not transcript_rows:
+            return None
+
+        raw_hash = ""
+        if raw_rows:
+            raw_hash = build_raw_transcript_hash(
+                [
+                    {
+                        "speaker": segment.speaker,
+                        "start_time": segment.start_time,
+                        "end_time": segment.end_time,
+                        "text": segment.text,
+                    }
+                    for segment in raw_rows
+                ]
+            )
+
+        for row in transcript_rows:
+            canonical_rows = getattr(row, "canonical_transcript_rows", None)
+            if not isinstance(canonical_rows, list) or not canonical_rows:
+                continue
+
+            canonical_version = str(
+                getattr(row, "canonical_transcript_version", None) or ""
+            ).strip()
+            canonical_hash = str(
+                getattr(row, "canonical_transcript_hash", None) or ""
+            ).strip()
+            stored_raw_hash = str(
+                getattr(row, "raw_transcript_hash", None) or ""
+            ).strip()
+
+            if not canonical_version or not canonical_hash:
+                continue
+            if raw_hash and stored_raw_hash and stored_raw_hash != raw_hash:
+                continue
+
+            normalized_rows: list[TranscriptSegment] = []
+            for item in canonical_rows:
+                if not isinstance(item, dict):
+                    continue
+                segment = _segment_from_mapping(item)
+                if segment.text.strip():
+                    normalized_rows.append(segment)
+
+            if not normalized_rows:
+                continue
+
+            return (
+                normalized_rows,
+                canonical_version,
+                canonical_hash,
+                getattr(row, "canonical_generated_at", None),
+            )
+
+        return None
+
     try:
         logger.info(f"Fetching transcript for meeting {meeting_id}")
 
-        fragment_segments = []
+        fragment_segments: list[dict[str, Any]] = []
         try:
             fragment_repository = TranscriptPersistenceRepository(db)
             fragment_segments = (
@@ -2111,79 +2237,72 @@ async def get_transcript(meeting_id: int, db: Session = Depends(get_db)):
         except AttributeError:
             fragment_segments = []
 
+        transcript_rows = (
+            db.query(Transcript)
+            .filter(Transcript.meeting_id == meeting_id)
+            .order_by(Transcript.start_time.asc(), Transcript.id.asc())
+            .all()
+        )
+
         if fragment_segments:
+            raw_segments = [
+                _segment_from_mapping(segment)
+                for segment in fragment_segments
+                if str(segment.get("text") or "").strip()
+            ]
+            raw_source = "transcript_fragments_visible"
+        else:
+            raw_segments = [
+                _segment_from_model(row)
+                for row in transcript_rows
+                if str(getattr(row, "text", None) or "").strip()
+            ]
+            raw_source = "transcripts"
+
+        canonical_payload = _resolve_canonical_sidecar(transcript_rows, raw_segments)
+        if canonical_payload is not None:
+            canonical_segments, canonical_version, canonical_hash, canonical_generated_at = (
+                canonical_payload
+            )
             logger.info(
                 "STT_TRANSCRIPT_GET meeting_id={} source={} rows={}",
                 meeting_id,
-                "transcript_fragments_visible",
-                len(fragment_segments),
+                "canonical_transcript_sidecar",
+                len(canonical_segments),
             )
             return TranscriptResponse(
                 meeting_id=meeting_id,
-                transcripts=[
-                    TranscriptSegment(
-                        speaker=str(segment.get("speaker") or "SPEAKER_1"),
-                        start_time=float(segment.get("start_time") or 0.0),
-                        end_time=float(segment.get("end_time") or 0.0),
-                        text=str(segment.get("text") or ""),
-                        segment_id=(
-                            str(segment.get("segment_id") or "").strip()
-                            or f"meeting-{meeting_id}-start-{float(segment.get('start_time') or 0.0):.3f}-{str(segment.get('speaker') or 'SPEAKER_1').strip().lower().replace(' ', '_')}"
-                        ),
-                    )
-                    for segment in fragment_segments
-                    if str(segment.get("text") or "").strip()
-                ],
+                transcripts=canonical_segments,
+                transcriptMode="canonical",
+                canonicalTranscriptVersion=canonical_version,
+                canonicalTranscriptHash=canonical_hash,
+                canonicalGeneratedAt=canonical_generated_at,
+                rawTranscripts=raw_segments or None,
             )
 
-        if pipeline is None:
+        if raw_segments:
             logger.info(
                 "STT_TRANSCRIPT_GET meeting_id={} source={} rows={}",
                 meeting_id,
-                "none",
-                0,
+                raw_source,
+                len(raw_segments),
             )
-            raise HTTPException(
-                status_code=404,
-                detail="No transcript found for meeting; no speech was detected or no transcript fragments were persisted",
-            )
-
-        transcripts = pipeline.get_transcript(meeting_id, db)
-
-        if not transcripts:
-            logger.info(
-                "STT_TRANSCRIPT_GET meeting_id={} source={} rows={}",
-                meeting_id,
-                "none",
-                0,
-            )
-            raise HTTPException(
-                status_code=404,
-                detail="No transcript found for meeting; no speech was detected or no transcript fragments were persisted",
+            return TranscriptResponse(
+                meeting_id=meeting_id,
+                transcripts=raw_segments,
+                transcriptMode="raw",
             )
 
         logger.info(
             "STT_TRANSCRIPT_GET meeting_id={} source={} rows={}",
             meeting_id,
-            "transcripts",
-            len(transcripts),
+            "none",
+            0,
         )
-
-        segments = [
-            TranscriptSegment(
-                speaker=t.speaker,
-                start_time=t.start_time,
-                end_time=t.end_time,
-                text=t.text,
-                segment_id=(
-                    str(getattr(t, "segment_id", "") or "").strip()
-                    or f"meeting-{meeting_id}-start-{float(getattr(t, 'start_time', 0.0) or 0.0):.3f}-{str(getattr(t, 'speaker', 'SPEAKER_1') or 'SPEAKER_1').strip().lower().replace(' ', '_')}"
-                ),
-            )
-            for t in transcripts
-        ]
-
-        return TranscriptResponse(meeting_id=meeting_id, transcripts=segments)
+        raise HTTPException(
+            status_code=404,
+            detail="No transcript found for meeting; no speech was detected or no transcript fragments were persisted",
+        )
 
     except HTTPException:
         raise
