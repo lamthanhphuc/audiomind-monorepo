@@ -64,6 +64,8 @@ public class ProcessingService {
     private static final int APPENDIX_SHORT_FRAGMENT_MAX_NORMALIZED_LEN = APPENDIX_SHORT_FRAGMENT_MAX_CHARS;
     private static final String TRANSCRIPT_MODE_RAW = "raw";
     private static final String TRANSCRIPT_MODE_CANONICAL = "canonical";
+    private static final String READABLE_TRANSCRIPT_EXPORT_NOTE =
+            "Readable transcript export is generated from saved STT output and canonical transcript data when available.";
 
     private static final Logger log = LoggerFactory.getLogger(ProcessingService.class);
 
@@ -401,6 +403,8 @@ public class ProcessingService {
         MeetingReportData reportData = assembleMeetingReportData(
                 meetingId,
                 meeting,
+                state,
+                transcriptPayload,
                 transcriptRows,
                 readablePreview.rows(),
                 readablePreview.previewLimited(),
@@ -462,15 +466,17 @@ public class ProcessingService {
         return content.getBytes(StandardCharsets.UTF_8);
     }
 
-        private MeetingReportData assembleMeetingReportData(
+    private MeetingReportData assembleMeetingReportData(
             Long meetingId,
             Map<String, Object> meeting,
+            Map<String, Object> state,
+            TranscriptPayload transcriptPayload,
             List<Map<String, Object>> transcriptRows,
             List<MeetingReportData.RawTranscriptRow> transcriptPreviewRows,
             boolean transcriptPreviewLimited,
             Map<String, Object> analysisPayload,
             boolean analysisAvailable
-        ) {
+    ) {
         MeetingReportData.MeetingMetadata metadata = new MeetingReportData.MeetingMetadata(
                 meetingId,
                 safeCell(meeting.get("title")),
@@ -501,14 +507,29 @@ public class ProcessingService {
                 nextSteps
         );
 
+        String promptVersion = analysisAvailable
+                ? resolvePromptVersion(analysisPayload)
+                : firstNonBlank(analysisPayload.get("promptVersion"), analysisPayload.get("prompt_version"));
+        String schemaVersion = analysisAvailable
+                ? resolveSchemaVersion(analysisPayload)
+                : firstNonBlank(analysisPayload.get("schemaVersion"), analysisPayload.get("schema_version"));
+        String transcriptHash = firstNonBlank(
+                analysisPayload.get("transcriptHash"),
+                analysisPayload.get("transcript_hash"),
+                analysisPayload.get("canonicalTranscriptHash"),
+                analysisPayload.get("canonical_transcript_hash"),
+                transcriptPayload == null ? null : transcriptPayload.canonicalTranscriptHash()
+        );
+        String source = resolveAnalysisMetadataSource(analysisPayload, promptVersion, schemaVersion, analysisAvailable);
+
         MeetingReportData.AnalysisMetadata analysisMetadata = new MeetingReportData.AnalysisMetadata(
-                normalizeStatus(analysisPayload.get("status")),
-                firstNonBlank(analysisPayload.get("promptVersion"), analysisPayload.get("prompt_version")),
-                firstNonBlank(analysisPayload.get("schemaVersion"), analysisPayload.get("schema_version")),
-                firstNonBlank(analysisPayload.get("transcriptHash"), analysisPayload.get("transcript_hash")),
+                resolveAnalysisMetadataStatus(analysisPayload, state, analysisAvailable),
+                promptVersion,
+                schemaVersion,
+                transcriptHash,
                 safeCell(analysisPayload.get("confidence")),
                 firstNonBlank(analysisPayload.get("domainMode"), analysisPayload.get("domain_mode")),
-                safeCell(analysisPayload.get("source"))
+                source
         );
 
         return new MeetingReportData(
@@ -1157,6 +1178,51 @@ public class ProcessingService {
         return analysisAvailable ? "N/A" : "Analysis not available";
     }
 
+    private String resolveAnalysisMetadataStatus(
+            Map<String, Object> analysisPayload,
+            Map<String, Object> state,
+            boolean analysisAvailable
+    ) {
+        String status = firstNonBlank(
+                analysisPayload.get("status"),
+                analysisPayload.get("analysisStatus"),
+                analysisPayload.get("analysis_status")
+        );
+        if (status.isBlank() && analysisAvailable && state != null) {
+            status = firstNonBlank(
+                    state.get("analysisStatus"),
+                    state.get("analysis_status"),
+                    state.get("status")
+            );
+        }
+        return status.isBlank() ? "" : status.toLowerCase(Locale.ROOT);
+    }
+
+    private String resolveAnalysisMetadataSource(
+            Map<String, Object> analysisPayload,
+            String promptVersion,
+            String schemaVersion,
+            boolean analysisAvailable
+    ) {
+        String source = firstNonBlank(
+                analysisPayload.get("source"),
+                analysisPayload.get("provider"),
+                analysisPayload.get("analysisProvider"),
+                analysisPayload.get("analysis_provider")
+        );
+        if (!source.isBlank()) {
+            return source;
+        }
+        if (!analysisAvailable) {
+            return "";
+        }
+        String metadata = (firstNonBlank(promptVersion) + " " + firstNonBlank(schemaVersion)).toLowerCase(Locale.ROOT);
+        if (metadata.contains("gemini")) {
+            return "gemini";
+        }
+        return "";
+    }
+
     private String firstNonBlank(Object... values) {
         if (values == null) {
             return "";
@@ -1737,7 +1803,8 @@ public class ProcessingService {
         builder.append('\n');
 
         if (exportMode == TranscriptExportMode.READABLE) {
-            builder.append("Readable transcript export generated from saved STT output. Obvious repeated fragments may be collapsed for readability. This is a best-effort readable export; full canonical transcript cleanup is planned separately. Raw export is available with mode=raw.")
+            builder.append(READABLE_TRANSCRIPT_EXPORT_NOTE)
+                    .append(" Raw export is available with mode=raw.")
                     .append('\n');
         } else {
             builder.append("Raw transcript export from saved STT output. May contain overlapping STT fragments.")

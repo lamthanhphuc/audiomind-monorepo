@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import app.main as main_module
 import pytest
+from fastapi import HTTPException
 from app.models import Base, Transcript
 from app.schemas import SttStreamResponse
 from app.services.stt_persistence import (
@@ -663,12 +664,47 @@ def test_open_stt_session_falls_back_to_vi_for_invalid_language_and_invalid_defa
     assert FakeActor.instances[0].language == "vi"
 
 
-def test_stream_stt_chunk_uses_local_whisper_fallback(monkeypatch):
+def test_stream_stt_chunk_blocks_local_whisper_fallback_without_legacy_opt_in(
+    monkeypatch,
+):
     fake_recognizer = FakeWhisperRecognizer()
     monkeypatch.setattr(
         main_module, "pipeline", SimpleNamespace(speech_recognizer=fake_recognizer)
     )
     monkeypatch.setattr(main_module.settings, "deepgram_api_key", "")
+    monkeypatch.setattr(main_module.settings, "local_whisper_enabled", True)
+    monkeypatch.setattr(main_module.settings, "allow_legacy_local_stt", False)
+    main_module._stt_adapter = None
+    main_module._stt_stream_sessions.clear()
+    main_module._stt_finalized_responses.clear()
+
+    async def run_flow():
+        return await main_module.stream_stt_chunk(
+            meeting_id=77,
+            audio_chunk=_make_upload_file(b"\x01\x00\x02\x00\x03\x00\x04\x00"),
+            seq=3,
+            language="vi",
+            is_final=False,
+        )
+
+    with pytest.raises(HTTPException) as error_info:
+        asyncio.run(run_flow())
+
+    assert error_info.value.status_code == 503
+    assert "Failed to initialize STT" in str(error_info.value.detail)
+    assert fake_recognizer.calls == []
+
+
+def test_stream_stt_chunk_uses_local_whisper_fallback_with_legacy_opt_in(
+    monkeypatch,
+):
+    fake_recognizer = FakeWhisperRecognizer()
+    monkeypatch.setattr(
+        main_module, "pipeline", SimpleNamespace(speech_recognizer=fake_recognizer)
+    )
+    monkeypatch.setattr(main_module.settings, "deepgram_api_key", "")
+    monkeypatch.setattr(main_module.settings, "local_whisper_enabled", True)
+    monkeypatch.setattr(main_module.settings, "allow_legacy_local_stt", True)
     main_module._stt_adapter = None
     main_module._stt_stream_sessions.clear()
     main_module._stt_finalized_responses.clear()

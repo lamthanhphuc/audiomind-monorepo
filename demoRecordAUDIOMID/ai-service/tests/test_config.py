@@ -14,15 +14,18 @@ def test_provider_defaults_load_for_mvp():
     settings = Settings(_env_file=None)
 
     assert settings.stt_provider == "deepgram"
-    assert settings.analysis_provider == "openai"
+    assert settings.analysis_provider == "gemini"
     assert settings.gemini_api_key == ""
     assert settings.gemini_analysis_model == "gemini-2.5-flash"
     assert settings.gemini_summary_model == "gemini-2.5-flash"
     assert settings.gemini_max_single_request_chars == 50000
     assert settings.gemini_request_delay_seconds == 15.0
-    assert settings.deepgram_realtime_model == "nova-2"
-    assert settings.deepgram_batch_model == "nova-2"
+    assert settings.deepgram_realtime_model == "nova-3"
+    assert settings.deepgram_batch_model == "nova-3"
     assert settings.deepgram_language == "vi"
+    assert settings.deepgram_smart_format is True
+    assert settings.deepgram_utterances is True
+    assert settings.deepgram_paragraphs is True
     assert settings.deepgram_realtime_endpointing_default is None
     assert settings.deepgram_realtime_endpointing_vi is None
     assert settings.deepgram_realtime_endpointing_en is None
@@ -30,6 +33,8 @@ def test_provider_defaults_load_for_mvp():
     assert settings.deepgram_endpointing is None
     assert settings.local_whisper_enabled is False
     assert settings.ollama_enabled is False
+    assert settings.allow_legacy_local_stt is False
+    assert settings.allow_legacy_local_ai is False
 
 
 def test_invalid_provider_values_normalize_to_safe_defaults(monkeypatch):
@@ -39,7 +44,17 @@ def test_invalid_provider_values_normalize_to_safe_defaults(monkeypatch):
     settings = Settings(_env_file=None)
 
     assert settings.stt_provider == "deepgram"
-    assert settings.analysis_provider == "openai"
+    assert settings.analysis_provider == "gemini"
+
+
+def test_legacy_provider_opt_in_flags_load_from_env(monkeypatch):
+    monkeypatch.setenv("ALLOW_LEGACY_LOCAL_STT", "true")
+    monkeypatch.setenv("ALLOW_LEGACY_LOCAL_AI", "true")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.allow_legacy_local_stt is True
+    assert settings.allow_legacy_local_ai is True
 
 
 def test_gemini_provider_values_load_from_env(monkeypatch):

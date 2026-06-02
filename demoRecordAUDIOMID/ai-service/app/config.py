@@ -41,10 +41,13 @@ class Settings(BaseSettings):
 
     # Deepgram
     deepgram_api_key: str = ""
-    deepgram_model: str = "nova-2"
-    deepgram_realtime_model: str = "nova-2"
-    deepgram_batch_model: str = "nova-2"
+    deepgram_model: str = "nova-3"
+    deepgram_realtime_model: str = "nova-3"
+    deepgram_batch_model: str = "nova-3"
     deepgram_language: str = "vi"
+    deepgram_smart_format: bool = True
+    deepgram_utterances: bool = True
+    deepgram_paragraphs: bool = True
     deepgram_base_url: str = "https://api.deepgram.com/v1/listen"
     deepgram_timeout_seconds: int = 30
     deepgram_simplify_streaming_url: bool = False
@@ -58,10 +61,12 @@ class Settings(BaseSettings):
 
     # Provider selection (MVP defaults)
     stt_provider: str = "deepgram"
-    analysis_provider: str = "openai"
-    ai_provider: str = "ollama"  # Ollama-only mode
+    analysis_provider: str = "gemini"
+    ai_provider: str = "gemini"  # Backward-compatible legacy setting.
     local_whisper_enabled: bool = False
     ollama_enabled: bool = False
+    allow_legacy_local_stt: bool = False
+    allow_legacy_local_ai: bool = False
 
     # Ollama (local LLM)
     ollama_base_url: str = "http://ollama-service:11434"
@@ -161,9 +166,9 @@ class Settings(BaseSettings):
         if self.stt_provider not in {"deepgram", "local_whisper"}:
             self.stt_provider = "deepgram"
 
-        self.analysis_provider = (self.analysis_provider or "openai").strip().lower()
+        self.analysis_provider = (self.analysis_provider or "gemini").strip().lower()
         if self.analysis_provider not in {"openai", "gemini", "ollama", "local"}:
-            self.analysis_provider = "openai"
+            self.analysis_provider = "gemini"
 
         self.gemini_analysis_domain_mode = (
             (self.gemini_analysis_domain_mode or "it").strip().lower()
@@ -190,9 +195,9 @@ class Settings(BaseSettings):
         )
 
         # Backward-compatible normalization for legacy variable usage.
-        self.ai_provider = (self.ai_provider or "ollama").strip().lower()
-        if self.ai_provider not in {"openai", "ollama", "local"}:
-            self.ai_provider = "ollama"
+        self.ai_provider = (self.ai_provider or "gemini").strip().lower()
+        if self.ai_provider not in {"openai", "gemini", "ollama", "local"}:
+            self.ai_provider = "gemini"
 
         return self
 

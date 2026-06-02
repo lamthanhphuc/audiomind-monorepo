@@ -1,13 +1,23 @@
 from loguru import logger
 
 from app.services.ai_analyzer import AIAnalyzer
+from app.services.analysis_errors import AnalysisConfigError
 from app.services.gemini_analyzer import GeminiAnalyzer
 
 
 def build_analysis_analyzer(settings):
-    provider = (settings.analysis_provider or "openai").strip().lower()
+    provider = (settings.analysis_provider or "gemini").strip().lower()
 
     if provider in {"ollama", "local"}:
+        if not bool(getattr(settings, "allow_legacy_local_ai", False)):
+            logger.error(
+                "Selected analysis provider=ollama blocked reason=legacy_local_ai_disabled allowLegacyLocalAi={}",
+                bool(getattr(settings, "allow_legacy_local_ai", False)),
+            )
+            raise AnalysisConfigError(
+                "LEGACY_LOCAL_AI_DISABLED: set ALLOW_LEGACY_LOCAL_AI=true to use Ollama",
+                provider="ollama",
+            )
         logger.info(
             "Selected analysis provider=ollama model={} timeout_seconds={}",
             settings.ollama_model,
@@ -22,6 +32,14 @@ def build_analysis_analyzer(settings):
         )
 
     if provider == "gemini":
+        if not (settings.gemini_api_key or "").strip():
+            logger.error(
+                "Selected analysis provider=gemini blocked reason=missing_api_key"
+            )
+            raise AnalysisConfigError(
+                "GEMINI_CONFIG_MISSING: GEMINI_API_KEY is required when ANALYSIS_PROVIDER=gemini",
+                provider="gemini",
+            )
         analysis_domain_mode = getattr(settings, "gemini_analysis_domain_mode", "it")
         analysis_max_input_tokens = getattr(
             settings, "gemini_analysis_max_input_tokens", 12000
@@ -54,15 +72,21 @@ def build_analysis_analyzer(settings):
             timeout_seconds=settings.ollama_timeout_seconds,
         )
 
-    logger.info(
-        "Selected analysis provider=openai model={} summary_model={}",
-        settings.openai_model,
-        settings.openai_summary_model,
-    )
-    return AIAnalyzer(
-        api_key=settings.openai_api_key,
-        model=settings.openai_model,
-        provider="openai",
-        summary_model=settings.openai_summary_model or settings.openai_analysis_model,
-        timeout_seconds=settings.ollama_timeout_seconds,
+    if provider == "openai":
+        logger.info(
+            "Selected analysis provider=openai model={} summary_model={}",
+            settings.openai_model,
+            settings.openai_summary_model,
+        )
+        return AIAnalyzer(
+            api_key=settings.openai_api_key,
+            model=settings.openai_model,
+            provider="openai",
+            summary_model=settings.openai_summary_model
+            or settings.openai_analysis_model,
+            timeout_seconds=settings.ollama_timeout_seconds,
+        )
+
+    raise AnalysisConfigError(
+        f"Unsupported analysis provider: {provider}", provider=provider
     )
