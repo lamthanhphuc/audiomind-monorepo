@@ -99,6 +99,11 @@ class ProcessResponse(BaseModel):
 class TranscriptResponse(BaseModel):
     meeting_id: int
     transcripts: List[TranscriptSegment]
+    transcriptMode: Optional[str] = None
+    canonicalTranscriptVersion: Optional[str] = None
+    canonicalTranscriptHash: Optional[str] = None
+    canonicalGeneratedAt: Optional[datetime] = None
+    rawTranscripts: Optional[List[TranscriptSegment]] = None
 
     class Config:
         from_attributes = True

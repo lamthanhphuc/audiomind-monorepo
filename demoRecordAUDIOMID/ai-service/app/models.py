@@ -27,6 +27,14 @@ class Transcript(Base):
     text = Column(Text)
     created_at = Column(DateTime, default=datetime.utcnow)
 
+    # Canonical sidecar metadata (7Q MVP)
+    raw_transcript_hash = Column(String(64), nullable=True)
+    canonical_transcript_rows = Column(JSON, nullable=True)
+    canonical_transcript_version = Column(String(64), nullable=True)
+    canonical_transcript_hash = Column(String(64), nullable=True)
+    canonical_generated_at = Column(DateTime, nullable=True)
+    canonical_stats = Column(JSON, nullable=True)
+
     # Relationship
     analysis = relationship("Analysis", back_populates="transcript", uselist=False)
 

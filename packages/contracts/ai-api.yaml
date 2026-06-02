@@ -210,6 +210,26 @@ components:
           items:
             type: object
             additionalProperties: true
+        transcriptMode:
+          type: string
+          enum:
+            - canonical
+            - raw
+        canonicalTranscriptVersion:
+          type: string
+          nullable: true
+        canonicalTranscriptHash:
+          type: string
+          nullable: true
+        canonicalGeneratedAt:
+          type: string
+          format: date-time
+          nullable: true
+        rawTranscripts:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
     AnalysisResponse:
       type: object
       required:

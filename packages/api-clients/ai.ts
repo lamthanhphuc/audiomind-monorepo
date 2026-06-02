@@ -186,6 +186,15 @@ export interface components {
             transcripts: {
                 [key: string]: unknown;
             }[];
+            /** @enum {string} */
+            transcriptMode?: "canonical" | "raw";
+            canonicalTranscriptVersion?: string | null;
+            canonicalTranscriptHash?: string | null;
+            /** Format: date-time */
+            canonicalGeneratedAt?: string | null;
+            rawTranscripts?: {
+                [key: string]: unknown;
+            }[];
         };
         AnalysisResponse: {
             /** Format: int64 */

@@ -1,10 +1,9 @@
 from datetime import datetime
 
-from fastapi.testclient import TestClient
-
+import app.main as main_module
 from app.database import get_db
 from app.main import app
-import app.main as main_module
+from fastapi.testclient import TestClient
 
 
 class DummyAnalysis:
@@ -35,8 +34,27 @@ class DummyPipeline:
         return DummyAnalysis()
 
 
+class _FakeTranscriptQuery:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def filter(self, *args, **kwargs):
+        return self
+
+    def order_by(self, *args, **kwargs):
+        return self
+
+    def all(self):
+        return self._rows
+
+
+class _FakeDbSession:
+    def query(self, _model):
+        return _FakeTranscriptQuery([DummyTranscript()])
+
+
 def _override_db():
-    yield object()
+    yield _FakeDbSession()
 
 
 def test_endpoints_async_flow(monkeypatch):

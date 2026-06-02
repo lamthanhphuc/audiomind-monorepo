@@ -1,15 +1,17 @@
 import asyncio
+from datetime import datetime, timezone
 from tempfile import SpooledTemporaryFile
 from types import SimpleNamespace
 
 import app.main as main_module
 import pytest
-from app.models import Base
+from app.models import Base, Transcript
 from app.schemas import SttStreamResponse
 from app.services.stt_persistence import (
     TranscriptFragmentInput,
     TranscriptPersistenceRepository,
 )
+from app.services.transcript_canonicalizer import canonicalize_segments
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -1101,6 +1103,146 @@ def test_get_transcript_empty_recording_returns_explicit_404(monkeypatch):
             )
         else:
             raise AssertionError("Expected 404 for empty transcript")
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_get_transcript_returns_canonical_rows_when_sidecar_is_valid(monkeypatch):
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    SessionLocal = sessionmaker(bind=engine)
+    db = SessionLocal()
+
+    try:
+        meeting_id = 125
+        first = Transcript(
+            meeting_id=meeting_id,
+            speaker="SPEAKER_1",
+            start_time=1.0,
+            end_time=1.5,
+            text="Vocabulary",
+        )
+        second = Transcript(
+            meeting_id=meeting_id,
+            speaker="SPEAKER_2",
+            start_time=1.8,
+            end_time=2.5,
+            text="is a nightmare.",
+        )
+        third = Transcript(
+            meeting_id=meeting_id,
+            speaker="SPEAKER_1",
+            start_time=4.0,
+            end_time=5.0,
+            text="Independent sentence.",
+        )
+        db.add(first)
+        db.add(second)
+        db.add(third)
+        db.flush()
+
+        canonical = canonicalize_segments(
+            [
+                {
+                    "speaker": "SPEAKER_1",
+                    "start_time": 1.0,
+                    "end_time": 1.5,
+                    "text": "Vocabulary",
+                },
+                {
+                    "speaker": "SPEAKER_2",
+                    "start_time": 1.8,
+                    "end_time": 2.5,
+                    "text": "is a nightmare.",
+                },
+                {
+                    "speaker": "SPEAKER_1",
+                    "start_time": 4.0,
+                    "end_time": 5.0,
+                    "text": "Independent sentence.",
+                },
+            ]
+        )
+        first.raw_transcript_hash = canonical.raw_hash
+        first.canonical_transcript_rows = canonical.rows
+        first.canonical_transcript_version = canonical.version
+        first.canonical_transcript_hash = canonical.canonical_hash
+        first.canonical_generated_at = datetime(
+            2026, 6, 1, 10, 0, 0, tzinfo=timezone.utc
+        )
+        db.commit()
+
+        monkeypatch.setattr(main_module, "pipeline", None)
+
+        async def run_flow():
+            return await main_module.get_transcript(meeting_id, db=db)
+
+        response = asyncio.run(run_flow())
+
+        assert response.meeting_id == meeting_id
+        assert response.transcriptMode == "canonical"
+        assert response.canonicalTranscriptVersion == canonical.version
+        assert response.canonicalTranscriptHash == canonical.canonical_hash
+        assert response.rawTranscripts is not None
+        assert len(response.transcripts) < len(response.rawTranscripts)
+        assert [segment.text for segment in response.transcripts] == [
+            "Vocabulary is a nightmare.",
+            "Independent sentence.",
+        ]
+        assert [segment.text for segment in response.rawTranscripts] == [
+            "Vocabulary",
+            "is a nightmare.",
+            "Independent sentence.",
+        ]
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_get_transcript_falls_back_to_raw_when_canonical_sidecar_absent(monkeypatch):
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    SessionLocal = sessionmaker(bind=engine)
+    db = SessionLocal()
+
+    try:
+        meeting_id = 126
+        db.add(
+            Transcript(
+                meeting_id=meeting_id,
+                speaker="SPEAKER_1",
+                start_time=1.0,
+                end_time=2.0,
+                text="raw row one",
+            )
+        )
+        db.add(
+            Transcript(
+                meeting_id=meeting_id,
+                speaker="SPEAKER_2",
+                start_time=2.2,
+                end_time=3.3,
+                text="raw row two",
+            )
+        )
+        db.commit()
+
+        monkeypatch.setattr(main_module, "pipeline", None)
+
+        async def run_flow():
+            return await main_module.get_transcript(meeting_id, db=db)
+
+        response = asyncio.run(run_flow())
+
+        assert response.meeting_id == meeting_id
+        assert response.transcriptMode == "raw"
+        assert response.rawTranscripts is None
+        assert response.canonicalTranscriptVersion is None
+        assert [segment.text for segment in response.transcripts] == [
+            "raw row one",
+            "raw row two",
+        ]
     finally:
         db.close()
         engine.dispose()
