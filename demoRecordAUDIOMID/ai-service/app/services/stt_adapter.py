@@ -207,7 +207,7 @@ class DeepgramSTTAdapter:
     def __init__(
         self,
         api_key: str,
-        model: str = "nova-2",
+        model: str = "nova-3",
         base_url: str = "https://api.deepgram.com/v1/listen",
         timeout_seconds: int = 30,
         sample_rate: int = 16000,
@@ -216,9 +216,12 @@ class DeepgramSTTAdapter:
         debug_raw_messages: bool = False,
         enable_speaker_diarization: bool = False,
         deepgram_diarize: bool = False,
+        smart_format: bool = True,
+        utterances: bool = True,
+        paragraphs: bool = True,
     ) -> None:
         self.api_key = (api_key or "").strip()
-        self.model = (model or "nova-2").strip() or "nova-2"
+        self.model = (model or "nova-3").strip() or "nova-3"
         self.base_url = (base_url or "https://api.deepgram.com/v1/listen").rstrip("/")
         self.timeout_seconds = timeout_seconds
         self.sample_rate = sample_rate
@@ -227,6 +230,9 @@ class DeepgramSTTAdapter:
         self.debug_raw_messages = bool(debug_raw_messages)
         self.enable_speaker_diarization = bool(enable_speaker_diarization)
         self.deepgram_diarize = bool(deepgram_diarize)
+        self.smart_format = bool(smart_format)
+        self.utterances = bool(utterances)
+        self.paragraphs = bool(paragraphs)
         self._sessions: dict[str, _SessionBuffer] = {}
         self._closed_responses: OrderedDict[str, dict[str, Any]] = OrderedDict()
         # Don't force an encoding; frontend sends webm/opus and Deepgram will infer from container
@@ -868,6 +874,16 @@ class DeepgramSTTAdapter:
         else:
             logger.info("DIARIZATION_SKIPPED reason=disabled mode=realtime")
         logger.info(
+            "event=DEEPGRAM_STT_EFFECTIVE_CONFIG provider=deepgram model={} language={} recognitionMode={} endpointing={} diarization={} utterances={} paragraphs={} path=realtime",
+            self.model,
+            session.language,
+            session.language,
+            self.endpointing if self.endpointing is not None else "omitted",
+            bool(session.diarize),
+            bool((not self.simplify_streaming_url) and self.utterances),
+            False,
+        )
+        logger.info(
             "DG CONNECT session_id={} meeting_id={} language={} url={}",
             session_id,
             session.meeting_id,
@@ -998,12 +1014,10 @@ class DeepgramSTTAdapter:
             }
         )
         if not self.simplify_streaming_url:
-            query_pairs.update(
-                {
-                    "smart_format": "true",
-                    "utterances": "true",
-                }
-            )
+            if self.smart_format:
+                query_pairs["smart_format"] = "true"
+            if self.utterances:
+                query_pairs["utterances"] = "true"
         diarize_enabled = (
             self._speaker_diarization_enabled() if diarize is None else bool(diarize)
         )
@@ -1705,7 +1719,7 @@ class DeepgramSTTAdapter:
         Args:
             file_path: Path to audio file (e.g., .m4a, .mp3, .wav)
             language: Language code (e.g., 'vi')
-            model: Deepgram model to use (defaults to nova-2)
+            model: Deepgram model to use (defaults to nova-3)
 
         Returns:
             Dictionary with transcription results including segments, text, timing
@@ -1721,7 +1735,7 @@ class DeepgramSTTAdapter:
                 "Deepgram API key is not configured; batch transcription unavailable"
             )
 
-        api_model = (model or self.model or "nova-2").strip() or "nova-2"
+        api_model = (model or self.model or "nova-3").strip() or "nova-3"
         safe_language = normalize_batch_language(language)
         diarization_enabled = self._speaker_diarization_enabled()
 
@@ -1754,12 +1768,28 @@ class DeepgramSTTAdapter:
         query_pairs = {
             "model": api_model,
             "language": safe_language,
-            "smart_format": "true",
-            "utterances": "true",
         }
+        if self.smart_format:
+            query_pairs["smart_format"] = "true"
+        if self.utterances:
+            query_pairs["utterances"] = "true"
+        if self.paragraphs:
+            query_pairs["paragraphs"] = "true"
         if diarization_enabled:
             query_pairs["diarize"] = "true"
         url = f"{self.base_url}?{urlencode(query_pairs)}"
+        logger.info(
+            "event=DEEPGRAM_STT_EFFECTIVE_CONFIG provider=deepgram model={} language={} recognitionMode={} endpointing={} diarization={} utterances={} paragraphs={} path=batch audioBytes={} deepgramTimeoutSeconds={}",
+            api_model,
+            safe_language,
+            safe_language,
+            "omitted",
+            diarization_enabled,
+            bool(self.utterances),
+            bool(self.paragraphs),
+            audio_bytes,
+            self.timeout_seconds,
+        )
 
         headers = {
             "Authorization": f"Token {self.api_key}",

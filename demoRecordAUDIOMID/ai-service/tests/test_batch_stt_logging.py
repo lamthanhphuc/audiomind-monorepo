@@ -61,6 +61,7 @@ def test_batch_effective_config_log_includes_job_and_trace_context(monkeypatch):
             deepgram_base_url="https://api.deepgram.com/v1/listen",
             deepgram_timeout_seconds=30,
             local_whisper_enabled=False,
+            allow_legacy_local_stt=False,
             enable_speaker_diarization=False,
             deepgram_diarize=False,
             whisper_model="base",
@@ -156,6 +157,7 @@ def test_batch_multi_failure_skips_whisper_fallback_with_safe_error(monkeypatch)
             deepgram_base_url="https://api.deepgram.com/v1/listen",
             deepgram_timeout_seconds=30,
             local_whisper_enabled=True,
+            allow_legacy_local_stt=False,
             enable_speaker_diarization=False,
             deepgram_diarize=False,
             whisper_model="base",
@@ -205,7 +207,7 @@ def test_batch_multi_failure_skips_whisper_fallback_with_safe_error(monkeypatch)
     )
 
 
-def test_batch_vi_failure_keeps_existing_whisper_fallback(monkeypatch):
+def test_batch_vi_failure_blocks_whisper_without_legacy_opt_in(monkeypatch):
     monkeypatch.setitem(sys.modules, "librosa", ModuleType("librosa"))
     monkeypatch.setitem(sys.modules, "soundfile", ModuleType("soundfile"))
     monkeypatch.setitem(sys.modules, "whisper", ModuleType("whisper"))
@@ -219,10 +221,57 @@ def test_batch_vi_failure_keeps_existing_whisper_fallback(monkeypatch):
             stt_provider="deepgram",
             deepgram_api_key="test-key",
             deepgram_batch_model="nova-3",
-            deepgram_model="nova-2",
+            deepgram_model="nova-3",
             deepgram_base_url="https://api.deepgram.com/v1/listen",
             deepgram_timeout_seconds=30,
             local_whisper_enabled=True,
+            allow_legacy_local_stt=False,
+            enable_speaker_diarization=False,
+            deepgram_diarize=False,
+            whisper_model="base",
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(pipeline_module, "DeepgramSTTAdapter", _FailingDeepgramAdapter)
+
+    whisper = _RecordingWhisperRecognizer()
+    pipeline = pipeline_module.ProcessingPipeline.__new__(
+        pipeline_module.ProcessingPipeline
+    )
+    pipeline._ensure_models_loaded = lambda: None  # type: ignore[attr-defined]
+    pipeline.speech_recognizer = whisper
+
+    with pytest.raises(RuntimeError, match="legacy local STT fallback disabled"):
+        pipeline._transcribe_with_provider_selection(  # type: ignore[attr-defined]
+            audio_path="/tmp/audio.wav",
+            language="vi",
+            initial_prompt="prompt",
+            meeting_id=123,
+            trace_id="trace-123",
+        )
+
+    assert whisper.transcribe_calls == []
+
+
+def test_batch_vi_failure_allows_whisper_with_legacy_opt_in(monkeypatch):
+    monkeypatch.setitem(sys.modules, "librosa", ModuleType("librosa"))
+    monkeypatch.setitem(sys.modules, "soundfile", ModuleType("soundfile"))
+    monkeypatch.setitem(sys.modules, "whisper", ModuleType("whisper"))
+
+    import app.pipeline as pipeline_module
+
+    monkeypatch.setattr(
+        pipeline_module,
+        "settings",
+        SimpleNamespace(
+            stt_provider="deepgram",
+            deepgram_api_key="test-key",
+            deepgram_batch_model="nova-3",
+            deepgram_model="nova-3",
+            deepgram_base_url="https://api.deepgram.com/v1/listen",
+            deepgram_timeout_seconds=30,
+            local_whisper_enabled=True,
+            allow_legacy_local_stt=True,
             enable_speaker_diarization=False,
             deepgram_diarize=False,
             whisper_model="base",

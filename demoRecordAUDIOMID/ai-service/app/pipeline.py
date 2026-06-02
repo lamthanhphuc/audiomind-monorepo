@@ -28,6 +28,10 @@ settings = get_settings()
 ALLOWED_BATCH_LANGUAGES = {"vi", "en", "multi"}
 
 
+def _legacy_local_stt_allowed() -> bool:
+    return bool(getattr(settings, "allow_legacy_local_stt", False))
+
+
 class ProcessingPipeline:
     """
     Main processing pipeline orchestrating all services
@@ -387,8 +391,8 @@ class ProcessingPipeline:
 
         Provider selection order:
         1. If STT_PROVIDER=deepgram and DEEPGRAM_API_KEY exists: use Deepgram batch
-        2. If Deepgram fails and LOCAL_WHISPER_ENABLED=true: fallback to Whisper
-        3. If STT_PROVIDER=local_whisper: use Whisper
+        2. If Deepgram fails and legacy local STT is explicitly allowed: fallback to Whisper
+        3. If STT_PROVIDER=local_whisper and ALLOW_LEGACY_LOCAL_STT=true: use Whisper
         4. Otherwise: raise error
 
         Args:
@@ -402,10 +406,16 @@ class ProcessingPipeline:
         stt_provider = (settings.stt_provider or "deepgram").strip().lower()
         deepgram_api_key = (settings.deepgram_api_key or "").strip()
         deepgram_batch_model = (
-            settings.deepgram_batch_model or settings.deepgram_model or "nova-2"
-        ).strip() or "nova-2"
+            settings.deepgram_batch_model or settings.deepgram_model or "nova-3"
+        ).strip() or "nova-3"
         deepgram_language = self._normalize_batch_language(language)
-        local_whisper_enabled = settings.local_whisper_enabled
+        local_whisper_enabled = bool(getattr(settings, "local_whisper_enabled", False))
+        legacy_local_stt_allowed = _legacy_local_stt_allowed()
+        local_whisper_requested = stt_provider == "local_whisper"
+        local_whisper_runtime_enabled = bool(
+            legacy_local_stt_allowed
+            and (local_whisper_requested or local_whisper_enabled)
+        )
         deepgram_timeout_seconds = int(settings.deepgram_timeout_seconds)
 
         transcript_segments = []
@@ -414,6 +424,27 @@ class ProcessingPipeline:
             audio_bytes = max(0, int(Path(audio_path).stat().st_size))
         except OSError:
             audio_bytes = -1
+
+        if local_whisper_requested and not legacy_local_stt_allowed:
+            logger.error(
+                "STT_PROVIDER_UNAVAILABLE provider=local_whisper reason=legacy_local_stt_disabled allowLegacyLocalStt={}",
+                legacy_local_stt_allowed,
+            )
+            raise RuntimeError(
+                "LEGACY_LOCAL_STT_DISABLED: set ALLOW_LEGACY_LOCAL_STT=true to use local Whisper"
+            )
+
+        if stt_provider == "deepgram" and not deepgram_api_key:
+            logger.error(
+                "STT_PROVIDER_UNAVAILABLE provider=deepgram reason=missing_api_key fallbackAllowed={} localWhisperEnabled={} allowLegacyLocalStt={}",
+                local_whisper_runtime_enabled,
+                local_whisper_enabled,
+                legacy_local_stt_allowed,
+            )
+            if not local_whisper_runtime_enabled:
+                raise RuntimeError(
+                    "DEEPGRAM_STT_CONFIG_MISSING: DEEPGRAM_API_KEY is required when STT_PROVIDER=deepgram"
+                )
 
         # Try Deepgram if configured
         if stt_provider == "deepgram" and deepgram_api_key:
@@ -474,7 +505,7 @@ class ProcessingPipeline:
                     deepgram_timeout_seconds,
                 )
                 logger.info(
-                    "event=BATCH_STT_DIAGNOSTIC_CONFIG traceId={} requestId={} jobId={} meetingId={} source=upload requestedLanguage={} effectiveLanguage={} deepgramLanguage={} model={} detectLanguage={} smartFormat={} utterances={} diarize={} punctuate={} audioBytes={} deepgramTimeoutSeconds={}",
+                    "event=BATCH_STT_DIAGNOSTIC_CONFIG traceId={} requestId={} jobId={} meetingId={} source=upload provider=deepgram requestedLanguage={} effectiveLanguage={} deepgramLanguage={} recognitionMode={} model={} endpointing={} detectLanguage={} smartFormat={} utterances={} paragraphs={} diarize={} punctuate={} audioBytes={} deepgramTimeoutSeconds={}",
                     trace_id or "",
                     request_id,
                     meeting_id if meeting_id is not None else "unknown",
@@ -482,10 +513,13 @@ class ProcessingPipeline:
                     requested_language,
                     deepgram_language,
                     deepgram_language,
+                    deepgram_language,
                     deepgram_batch_model,
+                    "omitted",
                     False,
-                    True,
-                    True,
+                    bool(getattr(settings, "deepgram_smart_format", True)),
+                    bool(getattr(settings, "deepgram_utterances", True)),
+                    bool(getattr(settings, "deepgram_paragraphs", True)),
                     effective_diarize,
                     "omitted",
                     audio_bytes,
@@ -519,6 +553,9 @@ class ProcessingPipeline:
                     timeout_seconds=deepgram_timeout_seconds,
                     enable_speaker_diarization=settings.enable_speaker_diarization,
                     deepgram_diarize=settings.deepgram_diarize,
+                    smart_format=bool(getattr(settings, "deepgram_smart_format", True)),
+                    utterances=bool(getattr(settings, "deepgram_utterances", True)),
+                    paragraphs=bool(getattr(settings, "deepgram_paragraphs", True)),
                 )
                 result = deepgram_adapter.batch_transcribe_file(
                     file_path=audio_path,
@@ -577,7 +614,7 @@ class ProcessingPipeline:
                     safe_error_message(e),
                 )
                 logger.warning(
-                    f"Deepgram batch transcription failed: {repr(e)}. Fallback decision: LOCAL_WHISPER_ENABLED={local_whisper_enabled}"
+                    f"Deepgram batch transcription failed: {repr(e)}. Fallback decision: LOCAL_WHISPER_ENABLED={local_whisper_enabled} ALLOW_LEGACY_LOCAL_STT={legacy_local_stt_allowed}"
                 )
 
                 if deepgram_language == "multi":
@@ -602,18 +639,27 @@ class ProcessingPipeline:
                         "STT_PROVIDER_UNAVAILABLE: DEEPGRAM_STT_FAILED (fallbackSkipped=true reason=multi_not_supported_by_local_whisper)"
                     ) from e
 
-                if not local_whisper_enabled:
+                if not local_whisper_runtime_enabled:
                     logger.error(
-                        "STT_PROVIDER=deepgram but LOCAL_WHISPER_ENABLED=false. Cannot continue."
+                        "STT_PROVIDER=deepgram but legacy local STT fallback is disabled. Cannot continue."
                     )
                     raise RuntimeError(
-                        "DEEPGRAM_STT_FAILED: Deepgram batch failed and fallback disabled"
+                        "DEEPGRAM_STT_FAILED: Deepgram batch failed and legacy local STT fallback disabled"
                     )
 
                 # Fall through to Whisper
 
         # Fallback to Whisper if enabled or explicitly selected
-        if stt_provider == "local_whisper" or local_whisper_enabled:
+        if local_whisper_requested or local_whisper_enabled:
+            if not legacy_local_stt_allowed:
+                logger.error(
+                    "STT_PROVIDER_UNAVAILABLE provider=local_whisper reason=legacy_local_stt_disabled localWhisperEnabled={} allowLegacyLocalStt={}",
+                    local_whisper_enabled,
+                    legacy_local_stt_allowed,
+                )
+                raise RuntimeError(
+                    "LEGACY_LOCAL_STT_DISABLED: set ALLOW_LEGACY_LOCAL_STT=true to use local Whisper"
+                )
             if deepgram_language == "multi":
                 logger.warning(
                     "event=BATCH_STT_FALLBACK_SKIPPED traceId={} requestId={} jobId={} meetingId={} source=upload fallbackSkipped={} fallbackReason={} requestedLanguage={} effectiveLanguage={} deepgramLanguage={} providerStatus={} errorCode={} timeoutType={} audioBytes={} deepgramTimeoutSeconds={}",
@@ -655,7 +701,8 @@ class ProcessingPipeline:
         raise RuntimeError(
             f"No STT provider available: STT_PROVIDER={stt_provider}, "
             f"DEEPGRAM_API_KEY_PRESENT={bool(deepgram_api_key)}, "
-            f"LOCAL_WHISPER_ENABLED={local_whisper_enabled}"
+            f"LOCAL_WHISPER_ENABLED={local_whisper_enabled}, "
+            f"ALLOW_LEGACY_LOCAL_STT={legacy_local_stt_allowed}"
         )
 
     def _normalize_batch_language(self, language: Optional[str]) -> str:

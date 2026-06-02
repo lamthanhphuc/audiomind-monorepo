@@ -67,8 +67,11 @@ services:
       - ../demoRecordAUDIOMID/ai-service/.env
     environment:
       - JWT_SECRET=${JWT_SECRET}
-      - DEEPGRAM_MODEL=nova-2
+      - DEEPGRAM_MODEL=${DEEPGRAM_MODEL:-nova-3}
       - DEEPGRAM_BASE_URL=${DEEPGRAM_BASE_URL:-https://api.deepgram.com/v1/listen}
+      - DEEPGRAM_SMART_FORMAT=${DEEPGRAM_SMART_FORMAT:-true}
+      - DEEPGRAM_UTTERANCES=${DEEPGRAM_UTTERANCES:-true}
+      - DEEPGRAM_PARAGRAPHS=${DEEPGRAM_PARAGRAPHS:-true}
       # Diagnostic only; keep false for normal dev/prod behavior.
       - DEEPGRAM_SIMPLIFY_STREAMING_URL=${DEEPGRAM_SIMPLIFY_STREAMING_URL:-false}
       # Diagnostic only; logs capped raw Deepgram text frames when true.
@@ -76,8 +79,8 @@ services:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-audiomind}:${POSTGRES_PASSWORD:-audiomind}@db:5432/${POSTGRES_DB:-audiomind}
       - STT_PROVIDER=${STT_PROVIDER:-deepgram}
       - DEEPGRAM_API_KEY=${DEEPGRAM_API_KEY:-}
-      - DEEPGRAM_REALTIME_MODEL=${DEEPGRAM_REALTIME_MODEL:-nova-2}
-      - DEEPGRAM_BATCH_MODEL=${DEEPGRAM_BATCH_MODEL:-nova-2}
+      - DEEPGRAM_REALTIME_MODEL=${DEEPGRAM_REALTIME_MODEL:-nova-3}
+      - DEEPGRAM_BATCH_MODEL=${DEEPGRAM_BATCH_MODEL:-nova-3}
       - DEEPGRAM_LANGUAGE=${DEEPGRAM_LANGUAGE:-vi}
       - DEEPGRAM_REALTIME_ENDPOINTING_DEFAULT=${DEEPGRAM_REALTIME_ENDPOINTING_DEFAULT:-}
       - DEEPGRAM_REALTIME_ENDPOINTING_VI=${DEEPGRAM_REALTIME_ENDPOINTING_VI:-}
@@ -86,20 +89,21 @@ services:
       - DEEPGRAM_ENDPOINTING=${DEEPGRAM_ENDPOINTING:-}
       - ENABLE_SPEAKER_DIARIZATION=${ENABLE_SPEAKER_DIARIZATION:-true}
       - DEEPGRAM_DIARIZE=${DEEPGRAM_DIARIZE:-true}
-      - AI_PROVIDER=${AI_PROVIDER:-ollama}
-      - ANALYSIS_PROVIDER=${ANALYSIS_PROVIDER:-openai}
+      - AI_PROVIDER=${AI_PROVIDER:-gemini}
+      - ANALYSIS_PROVIDER=${ANALYSIS_PROVIDER:-gemini}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - OPENAI_ANALYSIS_MODEL=${OPENAI_ANALYSIS_MODEL:-}
       - OPENAI_SUMMARY_MODEL=${OPENAI_SUMMARY_MODEL:-}
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - GEMINI_ANALYSIS_MODEL=${GEMINI_ANALYSIS_MODEL:-gemini-2.5-flash}
       - GEMINI_SUMMARY_MODEL=${GEMINI_SUMMARY_MODEL:-gemini-2.5-flash}
-      - LOCAL_WHISPER_ENABLED=${LOCAL_WHISPER_ENABLED:-true}
+      - LOCAL_WHISPER_ENABLED=${LOCAL_WHISPER_ENABLED:-false}
+      - ALLOW_LEGACY_LOCAL_STT=${ALLOW_LEGACY_LOCAL_STT:-false}
+      - ALLOW_LEGACY_LOCAL_AI=${ALLOW_LEGACY_LOCAL_AI:-false}
       - OLLAMA_ENABLED=${OLLAMA_ENABLED:-false}
-      - OLLAMA_BASE_URL=http://ollama-service:11434
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://ollama-service:11434}
       - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen2.5:3b-instruct}
       - HUGGINGFACE_TOKEN=${HUGGINGFACE_TOKEN:-}
-      - ENABLE_SPEAKER_DIARIZATION=${ENABLE_SPEAKER_DIARIZATION:-false}
       - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-http://127.0.0.1:5173,http://localhost:5173,http://127.0.0.1:8080,http://localhost:8080}
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/1
@@ -112,7 +116,6 @@ services:
       - STT_OWNERSHIP_COOLDOWN_TTL_SECONDS=${STT_OWNERSHIP_COOLDOWN_TTL_SECONDS:-300}
     depends_on:
       - db
-      - ollama-service
       - redis
     volumes:
       - model_cache:/app/models
@@ -130,15 +133,20 @@ services:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-audiomind}:${POSTGRES_PASSWORD:-audiomind}@db:5432/${POSTGRES_DB:-audiomind}
       - STT_PROVIDER=${STT_PROVIDER:-deepgram}
       - DEEPGRAM_API_KEY=${DEEPGRAM_API_KEY:-}
-      - DEEPGRAM_REALTIME_MODEL=${DEEPGRAM_REALTIME_MODEL:-nova-2}
-      - DEEPGRAM_BATCH_MODEL=${DEEPGRAM_BATCH_MODEL:-nova-2}
+      - DEEPGRAM_MODEL=${DEEPGRAM_MODEL:-nova-3}
+      - DEEPGRAM_REALTIME_MODEL=${DEEPGRAM_REALTIME_MODEL:-nova-3}
+      - DEEPGRAM_BATCH_MODEL=${DEEPGRAM_BATCH_MODEL:-nova-3}
       - DEEPGRAM_LANGUAGE=${DEEPGRAM_LANGUAGE:-vi}
       - DEEPGRAM_BASE_URL=${DEEPGRAM_BASE_URL:-https://api.deepgram.com/v1/listen}
+      - DEEPGRAM_SMART_FORMAT=${DEEPGRAM_SMART_FORMAT:-true}
+      - DEEPGRAM_UTTERANCES=${DEEPGRAM_UTTERANCES:-true}
+      - DEEPGRAM_PARAGRAPHS=${DEEPGRAM_PARAGRAPHS:-true}
       - ENABLE_SPEAKER_DIARIZATION=${ENABLE_SPEAKER_DIARIZATION:-true}
       - DEEPGRAM_DIARIZE=${DEEPGRAM_DIARIZE:-true}
-      - LOCAL_WHISPER_ENABLED=${LOCAL_WHISPER_ENABLED:-true}
-      - AI_PROVIDER=${AI_PROVIDER:-ollama}
-      - ANALYSIS_PROVIDER=${ANALYSIS_PROVIDER:-openai}
+      - LOCAL_WHISPER_ENABLED=${LOCAL_WHISPER_ENABLED:-false}
+      - ALLOW_LEGACY_LOCAL_STT=${ALLOW_LEGACY_LOCAL_STT:-false}
+      - AI_PROVIDER=${AI_PROVIDER:-gemini}
+      - ANALYSIS_PROVIDER=${ANALYSIS_PROVIDER:-gemini}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - OPENAI_ANALYSIS_MODEL=${OPENAI_ANALYSIS_MODEL:-}
       - OPENAI_SUMMARY_MODEL=${OPENAI_SUMMARY_MODEL:-}
@@ -146,10 +154,10 @@ services:
       - GEMINI_ANALYSIS_MODEL=${GEMINI_ANALYSIS_MODEL:-gemini-2.5-flash}
       - GEMINI_SUMMARY_MODEL=${GEMINI_SUMMARY_MODEL:-gemini-2.5-flash}
       - OLLAMA_ENABLED=${OLLAMA_ENABLED:-false}
-      - OLLAMA_BASE_URL=http://ollama-service:11434
+      - ALLOW_LEGACY_LOCAL_AI=${ALLOW_LEGACY_LOCAL_AI:-false}
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://ollama-service:11434}
       - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen2.5:3b-instruct}
       - HUGGINGFACE_TOKEN=${HUGGINGFACE_TOKEN:-}
-      - ENABLE_SPEAKER_DIARIZATION=${ENABLE_SPEAKER_DIARIZATION:-false}
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/1
       - JOB_STATE_REDIS_URL=redis://redis:6379/2
@@ -160,7 +168,6 @@ services:
       - ai-api
       - db
       - redis
-      - ollama-service
     volumes:
       - model_cache:/app/models
       - uploads:/app/uploads
@@ -169,6 +176,7 @@ services:
       - "8088:8080"
 
   whisper-service:
+    profiles: ["legacy-offline"]
     build: ../demoRecordAUDIOMID/whisper-service
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
@@ -180,6 +188,7 @@ services:
       - "8011:8011"
 
   diarization-service:
+    profiles: ["legacy-offline"]
     build: ../demoRecordAUDIOMID/diarization-service
     environment:
       - HUGGINGFACE_TOKEN=${HUGGINGFACE_TOKEN:-}
@@ -190,6 +199,7 @@ services:
       - "8012:8012"
 
   ollama-service:
+    profiles: ["legacy-offline"]
     image: ollama/ollama:0.5.1
     container_name: ollama-service
     volumes:
@@ -199,6 +209,7 @@ services:
     command: ["serve"]
 
   processing-service:
+    profiles: ["legacy-offline"]
     build: ../demoRecordAUDIOMID/ai-processing-service
     depends_on:
       - whisper-service

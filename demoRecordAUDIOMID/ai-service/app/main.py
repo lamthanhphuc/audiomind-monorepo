@@ -155,7 +155,10 @@ async def lifespan(_: FastAPI):
 
     logger.info("=" * 50)
     logger.info("AudioMind AI Service Starting...")
-    logger.info(f"Whisper Model: {settings.whisper_model}")
+    if _legacy_local_stt_enabled_for_startup_log():
+        logger.info(f"Whisper Model: {settings.whisper_model}")
+    else:
+        logger.info("Legacy local STT disabled")
     logger.info(f"Device: {get_runtime_device()}")
     logger.info(
         "STT CONFIG api_key_exists={} realtime_model={} batch_model={} language={} base_url={}",
@@ -346,7 +349,21 @@ def _resolve_realtime_model() -> str:
     return (
         (settings.deepgram_realtime_model or "").strip()
         or (settings.deepgram_model or "").strip()
-        or "nova-2"
+        or "nova-3"
+    )
+
+
+def _legacy_local_stt_allowed() -> bool:
+    return bool(getattr(settings, "allow_legacy_local_stt", False))
+
+
+def _legacy_local_stt_enabled_for_startup_log() -> bool:
+    return bool(
+        _legacy_local_stt_allowed()
+        and (
+            getattr(settings, "stt_provider", "") == "local_whisper"
+            or getattr(settings, "local_whisper_enabled", False)
+        )
     )
 
 
@@ -763,6 +780,9 @@ def _get_stt_adapter(endpointing: int | None = None) -> DeepgramSTTAdapter | Non
         debug_raw_messages=settings.deepgram_debug_raw_messages,
         enable_speaker_diarization=settings.enable_speaker_diarization,
         deepgram_diarize=settings.deepgram_diarize,
+        smart_format=bool(getattr(settings, "deepgram_smart_format", True)),
+        utterances=bool(getattr(settings, "deepgram_utterances", True)),
+        paragraphs=bool(getattr(settings, "deepgram_paragraphs", True)),
     )
 
     if endpointing is None:
@@ -3082,8 +3102,15 @@ async def stream_stt_chunk(
     )
     request_language = language or ""
     interim_results_enabled = True
-    smart_format_enabled = not settings.deepgram_simplify_streaming_url
-    utterances_enabled = not settings.deepgram_simplify_streaming_url
+    smart_format_enabled = bool(
+        (not settings.deepgram_simplify_streaming_url)
+        and getattr(settings, "deepgram_smart_format", True)
+    )
+    utterances_enabled = bool(
+        (not settings.deepgram_simplify_streaming_url)
+        and getattr(settings, "deepgram_utterances", True)
+    )
+    paragraphs_enabled = False
     detect_language_enabled = False
     sample_rate = 16000
     encoding = "webm"
@@ -3099,11 +3126,12 @@ async def stream_stt_chunk(
         realtime_model,
     )
     logger.info(
-        "event=REALTIME_STT_DIAGNOSTIC_CONFIG traceId={} requestId={} meetingId={} source=realtime requestedLanguage={} effectiveLanguage={} deepgramLanguage={} model={} endpointing={} interimResults={} smartFormat={} utterances={} diarize={} detectLanguage={} encoding={} sampleRate={} channels={}",
+        "event=REALTIME_STT_DIAGNOSTIC_CONFIG traceId={} requestId={} meetingId={} source=realtime provider=deepgram requestedLanguage={} effectiveLanguage={} deepgramLanguage={} recognitionMode={} model={} endpointing={} interimResults={} smartFormat={} utterances={} paragraphs={} diarize={} detectLanguage={} encoding={} sampleRate={} channels={}",
         trace_id,
         request_id,
         meeting_id,
         request_language,
+        normalized_language,
         normalized_language,
         normalized_language,
         realtime_model,
@@ -3111,6 +3139,7 @@ async def stream_stt_chunk(
         interim_results_enabled,
         smart_format_enabled,
         utterances_enabled,
+        paragraphs_enabled,
         effective_diarize,
         detect_language_enabled,
         encoding,
@@ -3125,13 +3154,17 @@ async def stream_stt_chunk(
         request_language,
     )
     logger.info(
-        "event=DEEPGRAM_STT_CONFIG traceId={} requestId={} meetingId={} source=realtime provider=deepgram language={} model={} endpointing={}",
+        "event=DEEPGRAM_STT_CONFIG traceId={} requestId={} meetingId={} source=realtime provider=deepgram language={} recognitionMode={} model={} endpointing={} diarization={} utterances={} paragraphs={} path=realtime",
         trace_id,
         request_id,
         meeting_id,
         normalized_language,
+        normalized_language,
         realtime_model,
         endpointing_value,
+        effective_diarize,
+        utterances_enabled,
+        paragraphs_enabled,
     )
     logger.info(
         "stream_stt_chunk received meeting_id={} seq={} byteLength={}",
@@ -3275,6 +3308,8 @@ async def stream_stt_chunk(
             "unavailable" in str(exc).lower()
             and pipeline is not None
             and getattr(pipeline, "speech_recognizer", None) is not None
+            and _legacy_local_stt_allowed()
+            and bool(getattr(settings, "local_whisper_enabled", False))
         ):
             logger.info(
                 "STT_LOCAL_FALLBACK meeting_id={} seq={} reason=deepgram_unavailable",
@@ -3282,8 +3317,13 @@ async def stream_stt_chunk(
                 seq,
             )
             return _transcribe_locally(chunk_bytes, normalized_language, is_final)
-            logger.exception(
-                "Failed to create STT session: {}", safe_error_message(exc)
+        if "unavailable" in str(exc).lower():
+            logger.warning(
+                "STT_LOCAL_FALLBACK_SKIPPED meeting_id={} seq={} reason=legacy_local_stt_disabled localWhisperEnabled={} allowLegacyLocalStt={}",
+                meeting_key,
+                seq,
+                bool(getattr(settings, "local_whisper_enabled", False)),
+                _legacy_local_stt_allowed(),
             )
         logger.warning(
             "event=DEEPGRAM_STT_FAILED traceId={} requestId={} meetingId={} source=realtime errorCode={} error={}",

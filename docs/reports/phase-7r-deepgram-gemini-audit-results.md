@@ -114,3 +114,10 @@ Audit-only review of the current architecture to prepare a Deepgram + Gemini mig
 7. Move Whisper/Ollama services out of the default compose path in a later cleanup phase.
 8. Run manual sample-audio benchmarks for `vi`, `en`, and `multi`.
 9. If needed, proceed to Phase 7S speaker stabilization.
+
+## 7R Implementation Notes
+
+- Default `ai-service` config now selects Deepgram STT and Gemini analysis.
+- Local Whisper/Ollama legacy paths remain available only behind explicit `ALLOW_LEGACY_LOCAL_STT=true` and `ALLOW_LEGACY_LOCAL_AI=true` opt-in flags.
+- Deepgram batch and realtime paths log the effective provider, model, language/recognition mode, endpointing, diarization, utterances, paragraphs, and request path without logging API keys.
+- Dev compose keeps `whisper-service`, `diarization-service`, `ollama-service`, and the legacy `ai-processing-service` under the `legacy-offline` profile so the default stack does not require them.

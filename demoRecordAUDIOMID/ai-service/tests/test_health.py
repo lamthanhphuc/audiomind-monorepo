@@ -53,6 +53,22 @@ def test_health_returns_standardized_payload(monkeypatch):
     assert payload["timestamp"].endswith("Z")
 
 
+def test_startup_log_treats_legacy_local_stt_as_disabled_without_opt_in(monkeypatch):
+    monkeypatch.setattr(main_module.settings, "allow_legacy_local_stt", False)
+    monkeypatch.setattr(main_module.settings, "local_whisper_enabled", False)
+    monkeypatch.setattr(main_module.settings, "stt_provider", "deepgram")
+
+    assert main_module._legacy_local_stt_enabled_for_startup_log() is False
+
+
+def test_startup_log_treats_local_whisper_as_enabled_with_explicit_opt_in(monkeypatch):
+    monkeypatch.setattr(main_module.settings, "allow_legacy_local_stt", True)
+    monkeypatch.setattr(main_module.settings, "local_whisper_enabled", True)
+    monkeypatch.setattr(main_module.settings, "stt_provider", "deepgram")
+
+    assert main_module._legacy_local_stt_enabled_for_startup_log() is True
+
+
 def test_ready_returns_up_when_required_dependencies_are_available(monkeypatch):
     monkeypatch.setattr(main_module, "_cleanup_stale_stt_actors", _noop_cleanup)
     monkeypatch.setattr(main_module, "_stt_registry_summary", lambda: {"total": 1})

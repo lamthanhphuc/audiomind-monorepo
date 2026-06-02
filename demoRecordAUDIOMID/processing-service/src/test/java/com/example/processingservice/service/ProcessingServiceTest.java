@@ -439,7 +439,7 @@ class ProcessingServiceTest {
         assertTrue(content.contains("Transcript export mode: readable"));
         assertTrue(content.contains("Recognition Mode: en"));
         assertTrue(content.contains("Detected Transcript Language:"));
-        assertTrue(content.contains("Readable transcript export generated from saved STT output. Obvious repeated fragments may be collapsed for readability. This is a best-effort readable export; full canonical transcript cleanup is planned separately. Raw export is available with mode=raw."));
+        assertTrue(content.contains("Readable transcript export is generated from saved STT output and canonical transcript data when available. Raw export is available with mode=raw."));
         assertTrue(content.contains("[00:36–00:37] SPEAKER_1: We should finalize the launch plan."));
         assertTrue(!content.contains("[00:36–00:37] SPEAKER_2: launch plan"));
         verify(aiServiceClient).getTranscript(900L, "trace-txt");
@@ -1130,7 +1130,6 @@ class ProcessingServiceTest {
         ));
         analysis.put("promptVersion", "gemini-business-v1");
         analysis.put("schemaVersion", "gemini-business-v1");
-        analysis.put("status", "COMPLETED");
 
         Map<String, Object> state = new HashMap<>();
         state.put("status", "COMPLETED");
@@ -1175,7 +1174,9 @@ class ProcessingServiceTest {
             assertTrue(content.contains("English"));
             assertTrue(content.contains("Analyzed Highlights Table"));
             assertTrue(content.contains("Appendix A — Transcript Evidence Preview"));
-            assertTrue(content.contains("This section shows a short best-effort readable preview from saved STT output. Obvious repeated fragments may be collapsed for readability; full canonical transcript cleanup is planned separately."));
+            assertTrue(content.contains("This section shows a short readable preview generated from saved STT output and canonical transcript data when available."));
+            assertTrue(content.contains("completed"));
+            assertTrue(content.contains("gemini"));
             assertTrue(content.contains("Preview limited because the saved transcript contains overlapping STT fragments."));
             assertTrue(content.contains("Let's review blockers and dependencies."));
             assertTrue(content.contains("We should finalize the launch plan."));
@@ -1241,7 +1242,7 @@ class ProcessingServiceTest {
             assertTrue(content.contains("Analysis not available"));
             assertTrue(content.contains("No analyzed highlights available."));
             assertTrue(content.contains("Appendix A — Transcript Evidence Preview"));
-            assertTrue(content.contains("This section shows a short best-effort readable preview from saved STT output. Obvious repeated fragments may be collapsed for readability; full canonical transcript cleanup is planned separately."));
+            assertTrue(content.contains("This section shows a short readable preview generated from saved STT output and canonical transcript data when available."));
         }
         verify(aiServiceClient, never()).analyzeRealtimeTranscript(
                 eq(921L),
@@ -1346,6 +1347,7 @@ class ProcessingServiceTest {
              XWPFWordExtractor extractor = new XWPFWordExtractor(doc)) {
             String content = extractor.getText();
             assertTrue(content.contains("Canonical report row from ai transcript."));
+            assertTrue(content.contains("canonical-hash-927"));
             assertTrue(!content.contains("Raw report row duplicate A."));
             assertTrue(!content.contains("Raw report row duplicate B."));
         }

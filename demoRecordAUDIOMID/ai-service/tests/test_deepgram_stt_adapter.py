@@ -640,3 +640,141 @@ def test_deepgram_batch_failure_logs_timeout_and_audio_diagnostics(monkeypatch):
         and "errorCode=WriteTimeout" in log
         for log in captured_logs
     )
+
+
+def test_deepgram_batch_response_maps_to_raw_transcript_rows(monkeypatch):
+    from app.services import stt_adapter as stt_module
+
+    response_payload = {
+        "results": {
+            "channels": [
+                {
+                    "alternatives": [
+                        {
+                            "transcript": "Xin chao Tam. Hello Alex.",
+                            "confidence": 0.94,
+                            "words": [
+                                {
+                                    "word": "Xin",
+                                    "start": 0.0,
+                                    "end": 0.2,
+                                    "speaker": 0,
+                                },
+                                {
+                                    "word": "Alex",
+                                    "start": 1.3,
+                                    "end": 1.7,
+                                    "speaker": 1,
+                                },
+                            ],
+                        }
+                    ]
+                }
+            ],
+            "utterances": [
+                {
+                    "speaker": 0,
+                    "start": 0.0,
+                    "end": 0.9,
+                    "transcript": "Xin chao Tam.",
+                    "confidence": 0.92,
+                    "words": [
+                        {"word": "Xin", "start": 0.0, "end": 0.2, "speaker": 0},
+                        {"word": "chao", "start": 0.2, "end": 0.4, "speaker": 0},
+                        {"word": "Tam", "start": 0.5, "end": 0.9, "speaker": 0},
+                    ],
+                },
+                {
+                    "speaker": 1,
+                    "start": 1.0,
+                    "end": 1.7,
+                    "transcript": "Hello Alex.",
+                    "confidence": 0.96,
+                    "words": [
+                        {"word": "Hello", "start": 1.0, "end": 1.3, "speaker": 1},
+                        {"word": "Alex", "start": 1.3, "end": 1.7, "speaker": 1},
+                    ],
+                },
+            ],
+        }
+    }
+
+    class _Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return response_payload
+
+    class _Client:
+        last_post = None
+
+        def __init__(self, timeout=None):
+            self.timeout = timeout
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def post(self, url, content=None, headers=None):
+            _Client.last_post = {
+                "url": url,
+                "content": content,
+                "headers": headers,
+                "timeout": self.timeout,
+            }
+            return _Response()
+
+    monkeypatch.setattr(stt_module.httpx, "Client", _Client)
+
+    adapter = DeepgramSTTAdapter(
+        api_key="dg-test-key",
+        model="nova-3",
+        enable_speaker_diarization=True,
+        deepgram_diarize=True,
+    )
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
+        temp_file.write(b"audio-bytes")
+        temp_audio_path = temp_file.name
+
+    try:
+        result = adapter.batch_transcribe_file(
+            file_path=temp_audio_path,
+            language="vi",
+        )
+    finally:
+        Path(temp_audio_path).unlink()
+
+    query = parse_qs(urlparse(_Client.last_post["url"]).query)
+    assert query["model"] == ["nova-3"]
+    assert query["language"] == ["vi"]
+    assert query["smart_format"] == ["true"]
+    assert query["utterances"] == ["true"]
+    assert query["paragraphs"] == ["true"]
+    assert query["diarize"] == ["true"]
+    assert _Client.last_post["headers"]["Authorization"] == "Token dg-test-key"
+
+    raw_transcript_rows = result["segments"]
+    assert raw_transcript_rows == [
+        {
+            "speaker": "SPEAKER_1",
+            "start": 0.0,
+            "end": 0.9,
+            "text": "Xin chao Tam.",
+            "confidence": 0.92,
+            "words": response_payload["results"]["utterances"][0]["words"],
+            "source": "deepgram_batch",
+        },
+        {
+            "speaker": "SPEAKER_2",
+            "start": 1.0,
+            "end": 1.7,
+            "text": "Hello Alex.",
+            "confidence": 0.96,
+            "words": response_payload["results"]["utterances"][1]["words"],
+            "source": "deepgram_batch",
+        },
+    ]
+    assert result["raw_response"] == response_payload
