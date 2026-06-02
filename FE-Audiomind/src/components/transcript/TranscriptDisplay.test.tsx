@@ -52,6 +52,39 @@ describe('TranscriptDisplay', () => {
     expect(container.textContent).toContain('Tom, I am so tired of learning English.')
   })
 
+  it('renders final display segments in timeline order and preserves stable speaker labels', () => {
+    const segments = normalizePersistedTranscriptSegments([
+      {
+        speaker: 'SPEAKER_3',
+        start_time: 272,
+        end_time: 273,
+        text: 'row at 4:32',
+      },
+      {
+        speaker: 'SPEAKER_4',
+        start_time: 441,
+        end_time: 442,
+        text: 'row at 7:21',
+      },
+      {
+        speaker: 'SPEAKER_1',
+        start_time: 119,
+        end_time: 120,
+        text: 'row at 1:59',
+      },
+    ])
+
+    act(() => {
+      root.render(<TranscriptDisplay segments={segments} />)
+    })
+
+    const rows = Array.from(container.querySelectorAll('.transcript-display__text')).map((node) => node.textContent)
+    const speakers = Array.from(container.querySelectorAll('.transcript-display__speaker')).map((node) => node.textContent)
+
+    expect(rows).toEqual(['row at 1:59', 'row at 4:32', 'row at 7:21'])
+    expect(speakers).toEqual(['SPEAKER_1', 'SPEAKER_3', 'SPEAKER_4'])
+  })
+
   it('renders grouped upload blocks when enableDisplayGrouping is true', () => {
     const segments = normalizePersistedTranscriptSegments([
       {

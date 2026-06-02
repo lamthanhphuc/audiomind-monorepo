@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef } from 'react'
 import { DEFAULT_IT_TERMS } from '../../constants/itTerms'
 import type { TranscriptSegment } from '../../hooks/useRealtimeMeetingStream'
-import { formatTranscriptTimestamp, normalizeSpeaker } from '../../utils/transcript'
+import { formatTranscriptTimestamp, normalizeSpeaker, sortTranscriptSegmentsByTimeline } from '../../utils/transcript'
 import { HighlightedTranscriptText } from './HighlightedTranscriptText'
 import './RealtimeTranscript.css'
 
@@ -48,6 +48,8 @@ export const RealtimeTranscript: React.FC<RealtimeTranscriptProps> = ({
     }
   }, [segments, isPaused])
 
+  const displaySegments = useMemo(() => sortTranscriptSegmentsByTimeline(segments), [segments])
+
   const mergedHighlightTerms = useMemo(() => {
     const normalizedKeywords = highlightKeywords
       .map((keyword) => keyword.trim())
@@ -61,7 +63,7 @@ export const RealtimeTranscript: React.FC<RealtimeTranscriptProps> = ({
     return [...DEFAULT_IT_TERMS, ...normalizedKeywords]
   }, [highlightKeywords])
 
-  if (segments.length === 0) {
+  if (displaySegments.length === 0) {
     return (
       <div className="realtime-transcript-empty">
         <p>Waiting for transcript...</p>
@@ -81,7 +83,7 @@ export const RealtimeTranscript: React.FC<RealtimeTranscriptProps> = ({
             {isPaused ? '▶' : '⏸'}
           </button>
         )}
-        <span className="segment-count">{segments.length} segments</span>
+        <span className="segment-count">{displaySegments.length} segments</span>
       </div>
 
       <div
@@ -89,7 +91,7 @@ export const RealtimeTranscript: React.FC<RealtimeTranscriptProps> = ({
         style={{ maxHeight }}
         ref={scrollContainerRef}
       >
-        {segments.map((segment) => {
+        {displaySegments.map((segment) => {
           const startSeconds = segment.start ?? segment.timestamp ?? 0
           const endSeconds = segment.end ?? startSeconds
           const timestampLabel = endSeconds > startSeconds
