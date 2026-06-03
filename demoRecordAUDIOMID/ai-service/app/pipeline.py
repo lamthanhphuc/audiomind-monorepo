@@ -14,7 +14,6 @@ from app.logging_utils import safe_error_message, transcript_hash_prefix
 from app.models import Analysis, Transcript, TranscriptFragment
 from app.services.analysis_factory import build_analysis_analyzer
 from app.services.audio_processor import AudioProcessor
-from app.services.speech_recognizer import SpeechRecognizer
 from app.services.stt_adapter import (
     DeepgramSTTAdapter,
     normalize_deepgram_speaker_label,
@@ -30,6 +29,13 @@ ALLOWED_BATCH_LANGUAGES = {"vi", "en", "multi"}
 
 def _legacy_local_stt_allowed() -> bool:
     return bool(getattr(settings, "allow_legacy_local_stt", False))
+
+
+def _normalized_stt_provider() -> str:
+    provider = (settings.stt_provider or "deepgram").strip().lower()
+    if provider == "whisper":
+        return "local_whisper"
+    return provider
 
 
 class ProcessingPipeline:
@@ -59,6 +65,7 @@ class ProcessingPipeline:
         """Load heavy models only when needed."""
         runtime_device = get_runtime_device()
         preferred_device = (settings.device or "auto").strip().lower()
+        stt_provider = _normalized_stt_provider()
 
         if preferred_device == "cuda" and runtime_device != "cuda":
             logger.warning(
@@ -69,14 +76,14 @@ class ProcessingPipeline:
             f"Runtime device selected for models: {runtime_device} (preferred={preferred_device})"
         )
 
-        if self.speech_recognizer is None:
-            self.speech_recognizer = SpeechRecognizer(
-                model_name=settings.whisper_model,
-                device=runtime_device,
-                no_speech_threshold=settings.whisper_no_speech_threshold,
-                logprob_threshold=settings.whisper_logprob_threshold,
-                cpu_chunk_duration_seconds=settings.whisper_cpu_chunk_seconds,
-                gpu_chunk_duration_seconds=settings.whisper_gpu_chunk_seconds,
+        if self._should_load_local_whisper(stt_provider):
+            self._ensure_speech_recognizer_loaded(runtime_device)
+        else:
+            if not _legacy_local_stt_allowed():
+                logger.info("Legacy local STT disabled")
+            logger.info(
+                "STT provider {}: no Whisper model loaded",
+                stt_provider,
             )
 
         if self.ai_analyzer is None:
@@ -101,6 +108,42 @@ class ProcessingPipeline:
                 logger.warning(
                     f"Speaker diarization auto-disabled due to initialization failure: {repr(e)}"
                 )
+
+    def _should_load_local_whisper(self, stt_provider: Optional[str] = None) -> bool:
+        provider = stt_provider or _normalized_stt_provider()
+        local_whisper_enabled = bool(getattr(settings, "local_whisper_enabled", False))
+        return bool(
+            _legacy_local_stt_allowed()
+            and (provider == "local_whisper" or local_whisper_enabled)
+        )
+
+    def _ensure_speech_recognizer_loaded(self, runtime_device: Optional[str] = None):
+        """Load Whisper only after the local STT opt-in gate is satisfied."""
+        stt_provider = _normalized_stt_provider()
+        if not self._should_load_local_whisper(stt_provider):
+            logger.info(
+                "STT provider {}: no Whisper model loaded",
+                stt_provider,
+            )
+            raise RuntimeError(
+                "LEGACY_LOCAL_STT_DISABLED: set ALLOW_LEGACY_LOCAL_STT=true to use local Whisper"
+            )
+
+        if self.speech_recognizer is not None:
+            return self.speech_recognizer
+
+        from app.services.speech_recognizer import SpeechRecognizer
+
+        selected_device = runtime_device or get_runtime_device()
+        self.speech_recognizer = SpeechRecognizer(
+            model_name=settings.whisper_model,
+            device=selected_device,
+            no_speech_threshold=settings.whisper_no_speech_threshold,
+            logprob_threshold=settings.whisper_logprob_threshold,
+            cpu_chunk_duration_seconds=settings.whisper_cpu_chunk_seconds,
+            gpu_chunk_duration_seconds=settings.whisper_gpu_chunk_seconds,
+        )
+        return self.speech_recognizer
 
     def _should_enable_diarization(self, runtime_device: str) -> bool:
         # GPU defaults to diarization enabled; CPU follows config toggle.
@@ -403,7 +446,7 @@ class ProcessingPipeline:
         Returns:
             List of transcript segments with timing
         """
-        stt_provider = (settings.stt_provider or "deepgram").strip().lower()
+        stt_provider = _normalized_stt_provider()
         deepgram_api_key = (settings.deepgram_api_key or "").strip()
         deepgram_batch_model = (
             settings.deepgram_batch_model or settings.deepgram_model or "nova-3"
@@ -684,7 +727,7 @@ class ProcessingPipeline:
             logger.info(
                 f"STT_PROVIDER_SELECTED provider=local_whisper model={settings.whisper_model} language={deepgram_language}"
             )
-            self._ensure_models_loaded()
+            self._ensure_speech_recognizer_loaded()
 
             transcript_result = self.speech_recognizer.transcribe(
                 audio_path,

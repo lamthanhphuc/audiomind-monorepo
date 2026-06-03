@@ -16,7 +16,7 @@ FROM eclipse-temurin:21-jre
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends gosu \
+RUN apt-get update && apt-get install -y --no-install-recommends curl gosu \
     && rm -rf /var/lib/apt/lists/*
 
 RUN groupadd -g 10001 app && useradd -u 10001 -g app -m app \
@@ -33,6 +33,6 @@ USER root
 
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 
-EXPOSE 8080
+EXPOSE 8081
 
 CMD ["java", "-jar", "/app/app.jar"]
