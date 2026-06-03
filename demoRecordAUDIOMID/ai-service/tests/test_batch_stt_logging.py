@@ -97,8 +97,7 @@ def test_ensure_models_loaded_skips_whisper_for_deepgram_default(monkeypatch):
     assert pipeline.speech_recognizer is None
     assert any("Legacy local STT disabled" in log for log in captured_logs)
     assert any(
-        "STT provider deepgram: no Whisper model loaded" in log
-        for log in captured_logs
+        "STT provider deepgram: no Whisper model loaded" in log for log in captured_logs
     )
 
 

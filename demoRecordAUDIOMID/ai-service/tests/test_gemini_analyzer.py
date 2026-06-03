@@ -664,9 +664,7 @@ def test_gemini_analyzer_max_tokens_retry_can_be_disabled(monkeypatch):
                     "candidates": [
                         {
                             "finishReason": "MAX_TOKENS",
-                            "content": {
-                                "parts": [{"text": '{"summary":"too short"}'}]
-                            },
+                            "content": {"parts": [{"text": '{"summary":"too short"}'}]},
                         }
                     ],
                     "usageMetadata": {
