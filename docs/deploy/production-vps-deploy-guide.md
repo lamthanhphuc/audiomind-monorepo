@@ -3,6 +3,11 @@
 This is the Phase 7T-Deploy artifact path for one Ubuntu VPS, Docker Compose,
 and Caddy HTTPS.
 
+For the AWS EC2 version of this path, use
+[aws-ec2-deploy-guide.md](aws-ec2-deploy-guide.md). The EC2 guide keeps the same
+Compose layering and public/private service shape, with AWS-specific instance,
+Security Group, Elastic IP, and cost-safety steps.
+
 ## Target Shape
 
 Public domains:

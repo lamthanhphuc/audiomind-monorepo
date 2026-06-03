@@ -24,7 +24,7 @@ For deeper service-level details, see [demoRecordAUDIOMID/ai-service/README.md](
 - Node.js and npm
 - Python 3.11
 - Java and Maven, if you want to run the Spring services outside Docker or build them locally; the service Maven wrappers are included
-- Optional: Deepgram or OpenAI-compatible API keys if you use realtime STT or AI features that require them
+- Optional: Deepgram and Gemini API keys if you use STT or AI features that require hosted providers
 
 ## Fresh Clone Setup
 
@@ -64,17 +64,21 @@ copy demoRecordAUDIOMID\ai-service\.env.example demoRecordAUDIOMID\ai-service\.e
 - Redis must be reachable when distributed STT ownership is enabled.
 - Current MVP defaults:
   - `STT_PROVIDER=deepgram`
-  - `ANALYSIS_PROVIDER=openai`
-  - `DEEPGRAM_REALTIME_MODEL=nova-2`
-  - `DEEPGRAM_BATCH_MODEL=nova-2`
+  - `ANALYSIS_PROVIDER=gemini`
+  - `AI_PROVIDER=gemini`
+  - `DEEPGRAM_REALTIME_MODEL=nova-3`
+  - `DEEPGRAM_BATCH_MODEL=nova-3`
   - `DEEPGRAM_LANGUAGE=vi`
   - `LOCAL_WHISPER_ENABLED=false`
   - `OLLAMA_ENABLED=false`
-- Gemini free-tier analysis is supported through:
+- Gemini analysis is configured through:
+  - `AI_PROVIDER=gemini`
   - `ANALYSIS_PROVIDER=gemini`
   - `GEMINI_API_KEY=your-gemini-api-key`
   - `GEMINI_ANALYSIS_MODEL=gemini-2.5-flash`
   - `GEMINI_SUMMARY_MODEL=gemini-2.5-flash`
+- Whisper and Ollama remain available only through explicit local or legacy
+  configuration; they are not the default MVP runtime.
 - Keep all real API keys in local `.env` files only; commit placeholders only in `.env.example`.
 - `.gitattributes` forces LF for Docker entrypoint scripts to prevent Windows CRLF runtime failures.
 
@@ -199,6 +203,12 @@ Expected ownership logs include:
 git status --short --branch
 git diff --check
 ```
+
+## Deploy Docs
+
+- [Production VPS deploy guide](docs/deploy/production-vps-deploy-guide.md)
+- [AWS EC2 deploy guide](docs/deploy/aws-ec2-deploy-guide.md)
+- [Production smoke checklist](docs/deploy/production-smoke-checklist.md)
 
 ## Service Docs
 
