@@ -53,10 +53,25 @@ def build_analysis_analyzer(settings):
         analysis_retry_max_attempts = getattr(
             settings, "gemini_analysis_retry_max_attempts", 3
         )
+        gemini_timeout_seconds = getattr(settings, "gemini_timeout_seconds", 300)
+        gemini_rate_limit_retry_base_seconds = getattr(
+            settings, "gemini_rate_limit_retry_base_seconds", 30.0
+        )
+        gemini_rate_limit_retry_max_seconds = getattr(
+            settings, "gemini_rate_limit_retry_max_seconds", 90.0
+        )
+        gemini_retry_quota_exceeded = getattr(
+            settings, "gemini_retry_quota_exceeded", False
+        )
+        gemini_max_tokens_retry_enabled = getattr(
+            settings, "gemini_max_tokens_retry_enabled", True
+        )
         logger.info(
-            "Selected analysis provider=gemini analysis_model={} summary_model={}",
+            "Selected analysis provider=gemini analysis_model={} summary_model={} timeout_seconds={} retry_max_attempts={}",
             settings.gemini_analysis_model,
             settings.gemini_summary_model,
+            gemini_timeout_seconds,
+            analysis_retry_max_attempts,
         )
         return GeminiAnalyzer(
             api_key=settings.gemini_api_key,
@@ -67,9 +82,13 @@ def build_analysis_analyzer(settings):
             analysis_max_output_tokens=analysis_max_output_tokens,
             analysis_thinking_budget=analysis_thinking_budget,
             analysis_retry_max_attempts=analysis_retry_max_attempts,
+            gemini_rate_limit_retry_base_seconds=gemini_rate_limit_retry_base_seconds,
+            gemini_rate_limit_retry_max_seconds=gemini_rate_limit_retry_max_seconds,
+            gemini_retry_quota_exceeded=gemini_retry_quota_exceeded,
+            gemini_max_tokens_retry_enabled=gemini_max_tokens_retry_enabled,
             gemini_max_single_request_chars=settings.gemini_max_single_request_chars,
             gemini_request_delay_seconds=settings.gemini_request_delay_seconds,
-            timeout_seconds=settings.ollama_timeout_seconds,
+            timeout_seconds=gemini_timeout_seconds,
         )
 
     if provider == "openai":

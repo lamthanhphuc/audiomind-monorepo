@@ -18,6 +18,12 @@ def test_provider_defaults_load_for_mvp():
     assert settings.gemini_api_key == ""
     assert settings.gemini_analysis_model == "gemini-2.5-flash"
     assert settings.gemini_summary_model == "gemini-2.5-flash"
+    assert settings.gemini_timeout_seconds == 300
+    assert settings.gemini_analysis_retry_max_attempts == 3
+    assert settings.gemini_rate_limit_retry_base_seconds == 30.0
+    assert settings.gemini_rate_limit_retry_max_seconds == 90.0
+    assert settings.gemini_retry_quota_exceeded is False
+    assert settings.gemini_max_tokens_retry_enabled is True
     assert settings.gemini_max_single_request_chars == 50000
     assert settings.gemini_request_delay_seconds == 15.0
     assert settings.deepgram_realtime_model == "nova-3"
@@ -47,6 +53,14 @@ def test_invalid_provider_values_normalize_to_safe_defaults(monkeypatch):
     assert settings.analysis_provider == "gemini"
 
 
+def test_whisper_provider_alias_normalizes_to_local_whisper(monkeypatch):
+    monkeypatch.setenv("STT_PROVIDER", "whisper")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.stt_provider == "local_whisper"
+
+
 def test_legacy_provider_opt_in_flags_load_from_env(monkeypatch):
     monkeypatch.setenv("ALLOW_LEGACY_LOCAL_STT", "true")
     monkeypatch.setenv("ALLOW_LEGACY_LOCAL_AI", "true")
@@ -62,6 +76,12 @@ def test_gemini_provider_values_load_from_env(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "test-gemini-key")
     monkeypatch.setenv("GEMINI_ANALYSIS_MODEL", "gemini-2.5-flash")
     monkeypatch.setenv("GEMINI_SUMMARY_MODEL", "gemini-2.5-flash")
+    monkeypatch.setenv("GEMINI_TIMEOUT_SECONDS", "45")
+    monkeypatch.setenv("GEMINI_ANALYSIS_RETRY_MAX_ATTEMPTS", "1")
+    monkeypatch.setenv("GEMINI_RATE_LIMIT_RETRY_BASE_SECONDS", "5")
+    monkeypatch.setenv("GEMINI_RATE_LIMIT_RETRY_MAX_SECONDS", "8")
+    monkeypatch.setenv("GEMINI_RETRY_QUOTA_EXCEEDED", "true")
+    monkeypatch.setenv("GEMINI_MAX_TOKENS_RETRY_ENABLED", "false")
     monkeypatch.setenv("GEMINI_MAX_SINGLE_REQUEST_CHARS", "30000")
     monkeypatch.setenv("GEMINI_REQUEST_DELAY_SECONDS", "20")
 
@@ -71,5 +91,11 @@ def test_gemini_provider_values_load_from_env(monkeypatch):
     assert settings.gemini_api_key == "test-gemini-key"
     assert settings.gemini_analysis_model == "gemini-2.5-flash"
     assert settings.gemini_summary_model == "gemini-2.5-flash"
+    assert settings.gemini_timeout_seconds == 45
+    assert settings.gemini_analysis_retry_max_attempts == 1
+    assert settings.gemini_rate_limit_retry_base_seconds == 5.0
+    assert settings.gemini_rate_limit_retry_max_seconds == 8.0
+    assert settings.gemini_retry_quota_exceeded is True
+    assert settings.gemini_max_tokens_retry_enabled is False
     assert settings.gemini_max_single_request_chars == 30000
     assert settings.gemini_request_delay_seconds == 20.0

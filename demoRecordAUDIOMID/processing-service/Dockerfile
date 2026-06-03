@@ -16,12 +16,15 @@ FROM eclipse-temurin:21-jre
 
 WORKDIR /app
 
+RUN apt-get update && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN groupadd -g 10001 app && useradd -u 10001 -g app -m app
 
 COPY --from=build --chown=10001:10001 /workspace/processing-service/target/processing-service-0.0.1-SNAPSHOT.jar app.jar
 
 USER 10001
 
-EXPOSE 8080
+EXPOSE 8082
 
 ENTRYPOINT ["java", "-jar", "/app/app.jar"]

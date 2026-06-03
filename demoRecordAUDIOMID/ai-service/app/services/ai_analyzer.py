@@ -85,6 +85,10 @@ class AIAnalyzer:
         analysis_max_output_tokens: int = 4096,
         analysis_thinking_budget: Optional[int] = 0,
         analysis_retry_max_attempts: int = 3,
+        gemini_rate_limit_retry_base_seconds: float = 30.0,
+        gemini_rate_limit_retry_max_seconds: float = 90.0,
+        gemini_retry_quota_exceeded: bool = False,
+        gemini_max_tokens_retry_enabled: bool = True,
         gemini_max_single_request_chars: int = 50000,
         gemini_request_delay_seconds: float = 15.0,
         ollama_base_url: str = "http://127.0.0.1:11434",
@@ -114,6 +118,14 @@ class AIAnalyzer:
             else max(0, int(analysis_thinking_budget))
         )
         self.analysis_retry_max_attempts = max(1, int(analysis_retry_max_attempts or 1))
+        self.gemini_rate_limit_retry_base_seconds = max(
+            0.0, float(gemini_rate_limit_retry_base_seconds or 0.0)
+        )
+        self.gemini_rate_limit_retry_max_seconds = max(
+            0.0, float(gemini_rate_limit_retry_max_seconds or 0.0)
+        )
+        self.gemini_retry_quota_exceeded = bool(gemini_retry_quota_exceeded)
+        self.gemini_max_tokens_retry_enabled = bool(gemini_max_tokens_retry_enabled)
         self.gemini_max_single_request_chars = max(
             1, int(gemini_max_single_request_chars or 50000)
         )
@@ -124,7 +136,7 @@ class AIAnalyzer:
         self.timeout_seconds = timeout_seconds
         if self.provider == "gemini":
             logger.info(
-                f"Initialized AI Analyzer provider=gemini, analysis_model={self.model}, summary_model={self.summary_model}, domain_mode={self.analysis_domain_mode}, max_input_tokens={self.analysis_max_input_tokens}, max_output_tokens={self.analysis_max_output_tokens}, retry_max_attempts={self.analysis_retry_max_attempts}, timeout_seconds={self.timeout_seconds}"
+                f"Initialized AI Analyzer provider=gemini, analysis_model={self.model}, summary_model={self.summary_model}, domain_mode={self.analysis_domain_mode}, max_input_tokens={self.analysis_max_input_tokens}, max_output_tokens={self.analysis_max_output_tokens}, retry_max_attempts={self.analysis_retry_max_attempts}, timeout_seconds={self.timeout_seconds}, rate_limit_retry_base_seconds={self.gemini_rate_limit_retry_base_seconds}, rate_limit_retry_max_seconds={self.gemini_rate_limit_retry_max_seconds}, retry_quota_exceeded={self.gemini_retry_quota_exceeded}, max_tokens_retry_enabled={self.gemini_max_tokens_retry_enabled}"
             )
         elif self.provider == "openai":
             logger.info(
@@ -1212,9 +1224,17 @@ NỘI DUNG:
             base_payload["generationConfig"]["responseMimeType"] = "application/json"
 
         class _GeminiMaxTokensError(Exception):
-            def __init__(self, response_chars: int, schema_mode: str):
+            def __init__(
+                self,
+                response_chars: int,
+                schema_mode: str,
+                output_tokens: Any,
+                max_output_tokens: Optional[int],
+            ):
                 self.response_chars = response_chars
                 self.schema_mode = schema_mode
+                self.output_tokens = output_tokens
+                self.max_output_tokens = max_output_tokens
                 super().__init__("Gemini response incomplete: finish_reason=MAX_TOKENS")
 
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
@@ -1231,12 +1251,31 @@ NỘI DUNG:
                 retry_after = str(retry_headers.get("Retry-After", "")).strip()
                 if retry_after:
                     try:
-                        return max(0.0, float(retry_after))
+                        parsed_retry_after = max(0.0, float(retry_after))
+                        if self.gemini_rate_limit_retry_max_seconds > 0:
+                            return min(
+                                parsed_retry_after,
+                                self.gemini_rate_limit_retry_max_seconds,
+                            )
+                        return parsed_retry_after
                     except ValueError:
                         pass
-                return float(30 * attempt)
+                wait_seconds = self.gemini_rate_limit_retry_base_seconds * attempt
+                if self.gemini_rate_limit_retry_max_seconds > 0:
+                    wait_seconds = min(
+                        wait_seconds, self.gemini_rate_limit_retry_max_seconds
+                    )
+                return float(wait_seconds)
 
             return float(2**attempt)
+
+        def _is_quota_exceeded_response(response_preview: str) -> bool:
+            preview = str(response_preview or "").lower()
+            return (
+                "quota" in preview
+                or "resource_exhausted" in preview
+                or "resource exhausted" in preview
+            )
 
         def _extract_response_text(body: Any) -> tuple[str, list[Any], Any]:
             if not isinstance(body, dict):
@@ -1313,6 +1352,9 @@ NỘI DUNG:
                             body = response.json()
                             text, candidates, body_dict = _extract_response_text(body)
 
+                            input_tokens = None
+                            output_tokens = None
+                            total_tokens = None
                             usage_metadata = body_dict.get(
                                 "usageMetadata"
                             ) or body_dict.get("usage_metadata")
@@ -1349,12 +1391,18 @@ NỘI DUNG:
                             )
                             if str(finish_reason or "").strip().upper() == "MAX_TOKENS":
                                 logger.warning(
-                                    "GEMINI_ANALYSIS_INCOMPLETE reason=max_tokens response_chars={}",
+                                    "GEMINI_ANALYSIS_INCOMPLETE reason=max_tokens attempt={} output_tokens={} max_output_tokens={} response_chars={} schema_mode={}",
+                                    attempt,
+                                    output_tokens,
+                                    request_max_output_tokens,
                                     len(text),
+                                    schema_mode,
                                 )
                                 raise _GeminiMaxTokensError(
                                     response_chars=len(text),
                                     schema_mode=schema_mode,
+                                    output_tokens=output_tokens,
+                                    max_output_tokens=request_max_output_tokens,
                                 )
                             logger.info(
                                 f"Gemini response parse success model={model} response_chars={len(text)}"
@@ -1367,6 +1415,22 @@ NỘI DUNG:
                             response.status_code,
                             response_preview,
                         )
+                        quota_exceeded = response.status_code == 429 and (
+                            _is_quota_exceeded_response(response_preview)
+                        )
+                        if quota_exceeded:
+                            logger.warning(
+                                "GEMINI_QUOTA_EXCEEDED status=429 attempt={} max_attempts={} retry_quota_exceeded={} response_preview={}",
+                                attempt,
+                                max_attempts,
+                                self.gemini_retry_quota_exceeded,
+                                response_preview,
+                            )
+                            if not self.gemini_retry_quota_exceeded:
+                                raise AnalysisUnavailableError(
+                                    "Gemini quota exceeded (HTTP 429)",
+                                    provider=self.provider,
+                                )
 
                         if response.status_code == 400:
                             raise AnalysisUnavailableError(
@@ -1381,8 +1445,9 @@ NỘI DUNG:
                             wait_seconds = _retry_after_seconds(response, attempt)
                             if response.status_code == 429:
                                 logger.warning(
-                                    "GEMINI_ANALYSIS_RATE_LIMIT_RETRY attempt={} reason=status_429 wait_seconds={}",
+                                    "GEMINI_ANALYSIS_RATE_LIMIT_RETRY attempt={} reason=status_429 quota_exceeded={} wait_seconds={}",
                                     attempt,
+                                    quota_exceeded,
                                     wait_seconds,
                                 )
                             else:
@@ -1461,12 +1526,26 @@ NỘI DUNG:
                 return _call_once(current_schema, variant_max_output_tokens)
             except _GeminiMaxTokensError as exc:
                 last_exc = AnalysisUnavailableError(
-                    f"Gemini response incomplete due to MAX_TOKENS (response_chars={exc.response_chars})",
+                    f"Gemini response incomplete due to MAX_TOKENS (output_tokens={exc.output_tokens}, max_output_tokens={exc.max_output_tokens}, response_chars={exc.response_chars})",
                     provider=self.provider,
                 )
+                if not self.gemini_max_tokens_retry_enabled:
+                    logger.warning(
+                        "GEMINI_ANALYSIS_MAX_TOKENS_RETRY_SKIPPED reason=disabled output_tokens={} max_output_tokens={} response_chars={}",
+                        exc.output_tokens,
+                        exc.max_output_tokens,
+                        exc.response_chars,
+                    )
+                    raise last_exc
                 if max_tokens_retry_enqueued:
                     raise last_exc
                 max_tokens_retry_enqueued = True
+                logger.warning(
+                    "GEMINI_ANALYSIS_MAX_TOKENS_RETRY_ENQUEUED output_tokens={} max_output_tokens={} retry_max_output_tokens={}",
+                    exc.output_tokens,
+                    exc.max_output_tokens,
+                    max_tokens_retry_output_budget,
+                )
                 attempt_variants.append(
                     {
                         "schema": None,

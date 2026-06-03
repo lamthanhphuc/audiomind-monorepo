@@ -36,6 +36,11 @@ class Settings(BaseSettings):
     gemini_analysis_max_output_tokens: int = 4096
     gemini_analysis_thinking_budget: int = 0
     gemini_analysis_retry_max_attempts: int = 3
+    gemini_timeout_seconds: int = 300
+    gemini_rate_limit_retry_base_seconds: float = 30.0
+    gemini_rate_limit_retry_max_seconds: float = 90.0
+    gemini_retry_quota_exceeded: bool = False
+    gemini_max_tokens_retry_enabled: bool = True
     gemini_max_single_request_chars: int = 50000
     gemini_request_delay_seconds: float = 15.0
 
@@ -163,6 +168,8 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def normalize_provider_settings(self) -> "Settings":
         self.stt_provider = (self.stt_provider or "deepgram").strip().lower()
+        if self.stt_provider == "whisper":
+            self.stt_provider = "local_whisper"
         if self.stt_provider not in {"deepgram", "local_whisper"}:
             self.stt_provider = "deepgram"
 
@@ -192,6 +199,13 @@ class Settings(BaseSettings):
         )
         self.gemini_analysis_retry_max_attempts = max(
             1, int(self.gemini_analysis_retry_max_attempts or 3)
+        )
+        self.gemini_timeout_seconds = max(1, int(self.gemini_timeout_seconds or 300))
+        self.gemini_rate_limit_retry_base_seconds = max(
+            0.0, float(self.gemini_rate_limit_retry_base_seconds or 0.0)
+        )
+        self.gemini_rate_limit_retry_max_seconds = max(
+            0.0, float(self.gemini_rate_limit_retry_max_seconds or 0.0)
         )
 
         # Backward-compatible normalization for legacy variable usage.

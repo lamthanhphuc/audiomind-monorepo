@@ -274,6 +274,32 @@ def test_gemini_analyzer_retries_429_without_retry_after_then_succeeds(monkeypat
     assert sleep_calls == [30, 60, 90]
 
 
+def test_gemini_analyzer_quota_429_fails_fast_by_default(monkeypatch):
+    fake_client = _FakeClient(
+        [
+            _FakeResponse(
+                429,
+                text='{"error":{"message":"Quota exceeded","status":"RESOURCE_EXHAUSTED"}}',
+            ),
+            _success_response(summary="Should not be called"),
+        ]
+    )
+    monkeypatch.setattr(AI_MODULE.httpx, "Client", lambda timeout: fake_client)
+
+    sleep_calls = []
+    monkeypatch.setattr(
+        AI_MODULE.time, "sleep", lambda seconds: sleep_calls.append(seconds)
+    )
+
+    analyzer = GeminiAnalyzer(api_key="test-gemini-key")
+    result = analyzer.analyze_meeting("hello world")
+
+    assert len(fake_client.calls) == 1
+    assert sleep_calls == []
+    assert result["summary"] != "Should not be called"
+    assert "hello world" in result["summary"]
+
+
 def test_gemini_analyzer_fills_missing_fields(monkeypatch):
     response = _FakeResponse(
         200,
@@ -627,6 +653,44 @@ def test_gemini_analyzer_max_tokens_retries_once_with_larger_budget_without_sche
     assert "responseSchema" in first_payload["generationConfig"]
     assert second_payload["generationConfig"]["maxOutputTokens"] == 2048
     assert "responseSchema" not in second_payload["generationConfig"]
+
+
+def test_gemini_analyzer_max_tokens_retry_can_be_disabled(monkeypatch):
+    fake_client = _FakeClient(
+        [
+            _FakeResponse(
+                200,
+                {
+                    "candidates": [
+                        {
+                            "finishReason": "MAX_TOKENS",
+                            "content": {
+                                "parts": [{"text": '{"summary":"too short"}'}]
+                            },
+                        }
+                    ],
+                    "usageMetadata": {
+                        "promptTokenCount": 10,
+                        "candidatesTokenCount": 512,
+                        "totalTokenCount": 522,
+                    },
+                },
+            ),
+            _success_response(summary="Should not be called"),
+        ]
+    )
+    monkeypatch.setattr(AI_MODULE.httpx, "Client", lambda timeout: fake_client)
+
+    analyzer = GeminiAnalyzer(
+        api_key="test-gemini-key",
+        analysis_max_output_tokens=512,
+        gemini_max_tokens_retry_enabled=False,
+    )
+    result = analyzer.analyze_meeting("hello world")
+
+    assert len(fake_client.calls) == 1
+    assert result["summary"] != "Should not be called"
+    assert "hello world" in result["summary"]
 
 
 def test_gemini_analyzer_schema_400_then_json_400_falls_back_safely(monkeypatch):

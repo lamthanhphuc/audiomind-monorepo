@@ -43,6 +43,65 @@ class _RecordingWhisperRecognizer:
         return transcript_result["segments"]
 
 
+class _ExplodingSpeechRecognizer:
+    def __init__(self, *args, **kwargs):
+        raise AssertionError("Whisper should not be loaded for Deepgram default")
+
+
+def test_ensure_models_loaded_skips_whisper_for_deepgram_default(monkeypatch):
+    monkeypatch.setitem(sys.modules, "librosa", ModuleType("librosa"))
+    monkeypatch.setitem(sys.modules, "soundfile", ModuleType("soundfile"))
+    monkeypatch.setitem(sys.modules, "whisper", ModuleType("whisper"))
+
+    import app.pipeline as pipeline_module
+
+    fake_speech_module = ModuleType("app.services.speech_recognizer")
+    fake_speech_module.SpeechRecognizer = _ExplodingSpeechRecognizer
+    monkeypatch.setitem(
+        sys.modules, "app.services.speech_recognizer", fake_speech_module
+    )
+    monkeypatch.setattr(
+        pipeline_module,
+        "settings",
+        SimpleNamespace(
+            stt_provider="deepgram",
+            local_whisper_enabled=False,
+            allow_legacy_local_stt=False,
+            device="cpu",
+            enable_speaker_diarization=False,
+            deepgram_diarize=False,
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(pipeline_module, "get_runtime_device", lambda: "cpu")
+
+    captured_logs: list[str] = []
+    fake_logger = SimpleNamespace(
+        info=lambda message, *args, **kwargs: captured_logs.append(
+            message.format(*args, **kwargs) if args or kwargs else str(message)
+        ),
+        warning=lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(pipeline_module, "logger", fake_logger, raising=False)
+
+    pipeline = pipeline_module.ProcessingPipeline.__new__(
+        pipeline_module.ProcessingPipeline
+    )
+    pipeline.speech_recognizer = None
+    pipeline.speaker_diarizer = None
+    pipeline.ai_analyzer = object()
+    pipeline.diarization_available = True
+
+    pipeline._ensure_models_loaded()  # type: ignore[attr-defined]
+
+    assert pipeline.speech_recognizer is None
+    assert any("Legacy local STT disabled" in log for log in captured_logs)
+    assert any(
+        "STT provider deepgram: no Whisper model loaded" in log
+        for log in captured_logs
+    )
+
+
 def test_batch_effective_config_log_includes_job_and_trace_context(monkeypatch):
     monkeypatch.setitem(sys.modules, "librosa", ModuleType("librosa"))
     monkeypatch.setitem(sys.modules, "soundfile", ModuleType("soundfile"))
