@@ -1,0 +1,20 @@
+# Production VPS override for infra/docker-compose.dev.yml plus
+# infra/docker-compose.mvp.yml.
+#
+# Usage:
+#   docker compose --env-file infra/.env -f infra/docker-compose.dev.yml -f infra/docker-compose.mvp.yml -f infra/docker-compose.prod.yml config
+#
+# Keep this file minimal. The MVP override already supplies healthchecks,
+# restart policy, production interpolation, and private exposure for db, redis,
+# ai-api, and celery-worker.
+
+name: audiomind-prod
+
+services:
+  ai-api:
+    environment:
+      APP_ENV: production
+
+  celery-worker:
+    environment:
+      APP_ENV: production

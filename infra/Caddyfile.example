@@ -1,0 +1,36 @@
+# AudioMind production Caddyfile example.
+#
+# Replace example.com with the real parent domain before installing this file.
+# Caddy must run on the VPS host with ports 80 and 443 reachable from the
+# internet. Docker Compose should keep app service ports bound to 127.0.0.1.
+
+{
+	email admin@example.com
+}
+
+app.example.com {
+	encode zstd gzip
+	reverse_proxy 127.0.0.1:8080
+}
+
+meeting.example.com {
+	encode zstd gzip
+	reverse_proxy 127.0.0.1:8081
+}
+
+processing.example.com {
+	encode zstd gzip
+
+	# Raise this if the production upload limit is larger than 512 MB.
+	request_body {
+		max_size 512MB
+	}
+
+	# Caddy's reverse_proxy preserves WebSocket upgrades by default.
+	reverse_proxy 127.0.0.1:8082
+}
+
+user.example.com {
+	encode zstd gzip
+	reverse_proxy 127.0.0.1:8083
+}
