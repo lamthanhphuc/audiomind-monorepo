@@ -71,6 +71,11 @@ docker compose --env-file infra/.env -f infra/docker-compose.dev.yml -f infra/do
 - `ALLOW_LEGACY_LOCAL_AI=false`.
 - The `legacy-offline` profile is not enabled.
 - Logs do not include `Loading Whisper model`.
+- Logs or job output show a successful Deepgram STT request for at least one
+  smoke upload.
+- Logs or job output show successful Gemini analysis for at least one smoke
+  upload, or a clear Gemini quota/rate-limit fallback message if the key is out
+  of quota during testing.
 - Logs do not expose provider keys, JWTs, raw Deepgram frames, or full
   transcript content.
 

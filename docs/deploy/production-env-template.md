@@ -3,7 +3,7 @@
 Use [infra/.env.production.example](../../infra/.env.production.example) as the
 production VPS template.
 
-Copy it to `infra/.env` on the VPS only:
+Copy it to `infra/.env` on the production server only:
 
 ```bash
 cp infra/.env.production.example infra/.env
@@ -55,4 +55,5 @@ by the current frontend build. The production VPS target keeps `ai-api` private,
 so leave them pointed at the unrouted placeholders from the template unless a
 separate protected AI route is intentionally introduced.
 
-Do not edit or commit any real `.env` file.
+Do not create or edit the real production `infra/.env` in a developer checkout
+unless that machine is the deployment host. Never commit any real `.env` file.
