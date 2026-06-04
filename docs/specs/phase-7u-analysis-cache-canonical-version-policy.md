@@ -390,6 +390,15 @@ Policy:
 - `owner_id` is nullable for the MVP because AI-service does not currently own user tenancy.
 - New batch and realtime completed analyses write durable run metadata; full cache hit/miss, stale, retry, and rerun policy is deferred to 7U-C/7U-D.
 
+7U-C implementation note:
+
+- AI-service now centralizes cache identity construction and completed-run lookup in `analysis_runs.py`.
+- Batch processing and realtime/lazy analysis check `meeting_analysis_runs` before calling the analysis provider; matching completed runs return `cacheHit=true` metadata and do not create duplicate run history.
+- Cache misses preserve existing provider behavior and persist a completed run through the 7U-B write path.
+- Identity matching is meeting-scoped and includes provider, model, prompt/schema, canonical transcript hash/version when available, fallback input mode, recognition mode, transcript language, and speaker stabilization version when provided.
+- Full rerun/idempotency policy, explicit stale lifecycle responses, and durable failed/quota transitions remain deferred to 7U-D.
+- DOCX/export DB fallback remains deferred to 7U-E.
+
 ## Test Matrix
 
 - Cache hit does not call Gemini.

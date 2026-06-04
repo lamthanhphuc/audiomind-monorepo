@@ -5,6 +5,7 @@ import pytest
 import app.main as main_module
 from app.models import Analysis, Base, MeetingAnalysisRun
 from app.schemas import RealtimeTranscriptAnalysisRequest
+from app.services.analysis_runs import persist_completed_analysis_run
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -169,8 +170,9 @@ def test_realtime_analysis_persists_and_is_idempotent_for_same_hash(db_session):
     assert first.status == "completed"
     assert first.promptVersion == main_module.AIAnalyzer.PROMPT_VERSION
     assert first.schemaVersion == main_module.AIAnalyzer.SCHEMA_VERSION
-    assert second.status == "skipped"
-    assert second.reason == "already_exists"
+    assert second.status == "completed"
+    assert second.cacheHit is True
+    assert second.analysisStatus == "COMPLETED"
     assert second.promptVersion == main_module.AIAnalyzer.PROMPT_VERSION
     assert second.schemaVersion == main_module.AIAnalyzer.SCHEMA_VERSION
 
@@ -411,6 +413,20 @@ def test_realtime_analysis_existing_result_returns_already_exists_even_when_runn
         action_items=[],
     )
     db_session.add(existing)
+    persist_completed_analysis_run(
+        db=db_session,
+        meeting_id=meeting_id,
+        analyzer=main_module._realtime_analysis_analyzer,
+        analysis_payload={
+            "summary": "cached summary",
+            "transcriptHash": transcript_hash,
+            "promptVersion": main_module.AIAnalyzer.PROMPT_VERSION,
+            "schemaVersion": main_module.AIAnalyzer.SCHEMA_VERSION,
+        },
+        summary="cached summary",
+        fallback_transcript_hash=transcript_hash,
+        fallback_text="Speaker 1: cached summary",
+    )
     db_session.commit()
 
     client = FakeRedisClient()
@@ -435,8 +451,9 @@ def test_realtime_analysis_existing_result_returns_already_exists_even_when_runn
 
     response = asyncio.run(main_module.analyze_realtime_transcript(request, db_session))
 
-    assert response.status == "skipped"
-    assert response.reason == "already_exists"
+    assert response.status == "completed"
+    assert response.cacheHit is True
+    assert response.analysisStatus == "COMPLETED"
 
 
 def test_realtime_analysis_foreign_running_state_is_cleared_and_retried(

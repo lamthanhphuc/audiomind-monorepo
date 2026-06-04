@@ -12,7 +12,13 @@ from sqlalchemy.orm import Session
 from app.config import get_runtime_device, get_settings
 from app.logging_utils import safe_error_message, transcript_hash_prefix
 from app.models import Analysis, Transcript, TranscriptFragment
-from app.services.analysis_runs import persist_completed_analysis_run
+from app.services.analysis_runs import (
+    analysis_payload_from_run,
+    analysis_run_response_metadata,
+    build_analysis_cache_identity,
+    find_completed_analysis_run_for_identity,
+    persist_completed_analysis_run,
+)
 from app.services.analysis_factory import build_analysis_analyzer
 from app.services.audio_processor import AudioProcessor
 from app.services.stt_adapter import (
@@ -890,18 +896,62 @@ class ProcessingPipeline:
             formatted_transcript = self.ai_analyzer.format_transcript_for_analysis(
                 aligned_segments
             )
-            analysis_result = self.ai_analyzer.analyze_meeting(formatted_transcript)
+            analysis_identity = build_analysis_cache_identity(
+                db=db,
+                meeting_id=meeting_id,
+                analyzer=self.ai_analyzer,
+                fallback_transcript_hash=None,
+                fallback_text=formatted_transcript,
+                recognition_mode=_normalized_stt_provider(),
+                transcript_language=self._normalize_batch_language(language),
+            )
+            cached_analysis_run = find_completed_analysis_run_for_identity(
+                db, analysis_identity
+            )
+            if cached_analysis_run is not None:
+                logger.info(
+                    "ANALYSIS_CACHE_HIT meetingId={} provider={} model={} promptVersion={} schemaVersion={} canonicalTranscriptHash={} canonicalTranscriptVersion={} analysisInputMode={}",
+                    meeting_id,
+                    analysis_identity.provider,
+                    analysis_identity.model,
+                    analysis_identity.prompt_version,
+                    analysis_identity.schema_version,
+                    analysis_identity.canonical_transcript_hash,
+                    analysis_identity.canonical_transcript_version,
+                    analysis_identity.analysis_input_mode,
+                )
+                analysis_result = analysis_payload_from_run(
+                    cached_analysis_run, cache_hit=True
+                )
+            else:
+                logger.info(
+                    "ANALYSIS_CACHE_MISS meetingId={} provider={} model={} promptVersion={} schemaVersion={} canonicalTranscriptHash={} canonicalTranscriptVersion={} analysisInputMode={}",
+                    meeting_id,
+                    analysis_identity.provider,
+                    analysis_identity.model,
+                    analysis_identity.prompt_version,
+                    analysis_identity.schema_version,
+                    analysis_identity.canonical_transcript_hash,
+                    analysis_identity.canonical_transcript_version,
+                    analysis_identity.analysis_input_mode,
+                )
+                analysis_result = self.ai_analyzer.analyze_meeting(formatted_transcript)
 
             # Step 6: Save to database
             logger.info("Step 6: Saving to database")
-            self._save_results(
+            analysis_metadata = self._save_results(
                 meeting_id,
                 aligned_segments,
                 analysis_result,
                 db,
                 glossary_context=glossary_context,
                 language=language,
+                analysis_input_text=formatted_transcript,
+                cached_analysis_run=cached_analysis_run,
             )
+            if analysis_metadata:
+                analysis_result = dict(analysis_result or {})
+                analysis_result.update(analysis_metadata)
 
             logger.info(f"Processing complete for meeting {meeting_id}")
 
@@ -928,7 +978,9 @@ class ProcessingPipeline:
         db: Session,
         glossary_context: Optional[Dict] = None,
         language: Optional[str] = None,
-    ):
+        analysis_input_text: Optional[str] = None,
+        cached_analysis_run=None,
+    ) -> dict:
         """
         Save processing results to database
 
@@ -991,12 +1043,13 @@ class ProcessingPipeline:
 
             # Save analysis
             clean_analysis = _to_builtin(analysis_result or {})
-            transcript_text = "\n".join(
+            readable_transcript_text = "\n".join(
                 str(segment.get("text", "")) for segment in aligned_segments
             )
+            analysis_input_text = str(analysis_input_text or readable_transcript_text)
             if self.ai_analyzer is not None:
                 clean_analysis = self.ai_analyzer.prepare_analysis_for_storage(
-                    transcript=transcript_text,
+                    transcript=analysis_input_text,
                     data=clean_analysis,
                 )
 
@@ -1004,13 +1057,13 @@ class ProcessingPipeline:
             clean_technical_terms = clean_analysis.get("technical_terms", [])
             if self.ai_analyzer is not None:
                 clean_technical_terms = self.ai_analyzer.sanitize_technical_terms(
-                    transcript=transcript_text,
+                    transcript=analysis_input_text,
                     technical_terms=clean_technical_terms,
                     keywords=clean_keywords,
                 )
             transcript_hash = (
-                hashlib.sha256(transcript_text.encode("utf-8")).hexdigest()
-                if transcript_text.strip()
+                hashlib.sha256(analysis_input_text.encode("utf-8")).hexdigest()
+                if analysis_input_text.strip()
                 else None
             )
             prompt_version = str(
@@ -1070,28 +1123,40 @@ class ProcessingPipeline:
             analysis_run_payload["source"] = str(
                 clean_analysis.get("source") or "batch"
             )
-            analysis = Analysis(
-                meeting_id=meeting_id,
-                summary=str(clean_analysis.get("summary", "")),
-                keywords=clean_keywords,
-                technical_terms=technical_terms_payload,
-                action_items=clean_analysis.get("action_items", []),
-                glossary_domain=(glossary_context or {}).get("domain"),
-                glossary_version_id=(glossary_context or {}).get("version_id"),
-                glossary_version_hash=(glossary_context or {}).get("version_hash"),
+            analysis = (
+                db.query(Analysis).filter(Analysis.meeting_id == meeting_id).first()
             )
-            db.add(analysis)
-            persist_completed_analysis_run(
-                db=db,
-                meeting_id=meeting_id,
-                analyzer=self.ai_analyzer,
-                analysis_payload=analysis_run_payload,
-                summary=analysis.summary,
-                fallback_transcript_hash=transcript_hash,
-                fallback_text=transcript_text,
-                recognition_mode=_normalized_stt_provider(),
-                transcript_language=self._normalize_batch_language(language),
+            if analysis is None:
+                analysis = Analysis(meeting_id=meeting_id)
+                db.add(analysis)
+            analysis.summary = str(clean_analysis.get("summary", ""))
+            analysis.keywords = clean_keywords
+            analysis.technical_terms = technical_terms_payload
+            analysis.action_items = clean_analysis.get("action_items", [])
+            analysis.glossary_domain = (glossary_context or {}).get("domain")
+            analysis.glossary_version_id = (glossary_context or {}).get("version_id")
+            analysis.glossary_version_hash = (glossary_context or {}).get(
+                "version_hash"
             )
+            if cached_analysis_run is not None:
+                run_metadata = analysis_run_response_metadata(
+                    cached_analysis_run, cache_hit=True
+                )
+            else:
+                analysis_run = persist_completed_analysis_run(
+                    db=db,
+                    meeting_id=meeting_id,
+                    analyzer=self.ai_analyzer,
+                    analysis_payload=analysis_run_payload,
+                    summary=analysis.summary,
+                    fallback_transcript_hash=transcript_hash,
+                    fallback_text=analysis_input_text,
+                    recognition_mode=_normalized_stt_provider(),
+                    transcript_language=self._normalize_batch_language(language),
+                )
+                run_metadata = analysis_run_response_metadata(
+                    analysis_run, cache_hit=False
+                )
 
             # Commit
             db.commit()
@@ -1100,6 +1165,7 @@ class ProcessingPipeline:
                 f"Saved {len(aligned_segments)} transcript segments and analysis"
             )
             logger.info(f"ANALYSIS_SAVED meetingId={meeting_id}")
+            return run_metadata
 
         except Exception as e:
             db.rollback()
