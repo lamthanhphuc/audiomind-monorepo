@@ -66,6 +66,11 @@ from app.services.analysis_errors import (
     AnalysisUnavailableError,
 )
 from app.services.analysis_factory import build_analysis_analyzer
+from app.services.analysis_runs import (
+    analysis_run_response_metadata,
+    latest_completed_analysis_run,
+    persist_completed_analysis_run,
+)
 from app.services.glossary_repository import GlossaryRepository
 from app.services.glossary_service import GlossaryService
 from app.services.grpc_stt_service import AiStreamServicer, create_grpc_server
@@ -2097,7 +2102,6 @@ def _analyze_and_persist_realtime_transcript(
     analysis_row.technical_terms = technical_terms_payload
     analysis_row.action_items = action_items_payload
     analysis_row.created_at = datetime.now(timezone.utc)
-    db.commit()
 
     analysis_for_job_state = dict(normalized)
     analysis_for_job_state["transcriptHash"] = transcript_hash
@@ -2105,6 +2109,23 @@ def _analyze_and_persist_realtime_transcript(
     analysis_for_job_state["promptVersion"] = prompt_version
     analysis_for_job_state["schemaVersion"] = schema_version
     analysis_for_job_state["source"] = source
+    analysis_run = persist_completed_analysis_run(
+        db=db,
+        meeting_id=meeting_id,
+        analyzer=analyzer,
+        analysis_payload=analysis_for_job_state,
+        summary=analysis_row.summary,
+        fallback_transcript_hash=transcript_hash,
+        fallback_text=transcript_text,
+        requested_by=source,
+    )
+    db.commit()
+    run_metadata = analysis_run_response_metadata(analysis_run)
+    job_state_metadata = dict(run_metadata)
+    last_analyzed_at = job_state_metadata.get("lastAnalyzedAt")
+    if isinstance(last_analyzed_at, datetime):
+        job_state_metadata["lastAnalyzedAt"] = last_analyzed_at.isoformat()
+    analysis_for_job_state.update(job_state_metadata)
 
     set_job_status(
         meeting_id=meeting_id,
@@ -2123,6 +2144,13 @@ def _analyze_and_persist_realtime_transcript(
         source=source,
         promptVersion=prompt_version,
         schemaVersion=schema_version,
+        analysisStatus=run_metadata.get("analysisStatus"),
+        provider=run_metadata.get("provider"),
+        model=run_metadata.get("model"),
+        canonicalTranscriptHash=run_metadata.get("canonicalTranscriptHash"),
+        canonicalTranscriptVersion=run_metadata.get("canonicalTranscriptVersion"),
+        analysisInputMode=run_metadata.get("analysisInputMode"),
+        lastAnalyzedAt=run_metadata.get("lastAnalyzedAt"),
     )
 
 
@@ -2369,6 +2397,14 @@ async def get_analysis(meeting_id: int, db: Session = Depends(get_db)):
         job_analysis = _extract_analysis_from_job_state(job_state)
         if job_analysis:
             normalized = _normalize_analysis_payload(job_analysis)
+            run_metadata = analysis_run_response_metadata(
+                latest_completed_analysis_run(db, meeting_id)
+            )
+            job_status = (
+                str(job_state.get("status") or "COMPLETED")
+                if isinstance(job_state, dict)
+                else "COMPLETED"
+            )
             action_items = [ActionItem(**item) for item in normalized["action_items"]]
             technical_terms = [
                 AnalysisTechnicalTerm(**item) for item in normalized["technicalTerms"]
@@ -2397,20 +2433,27 @@ async def get_analysis(meeting_id: int, db: Session = Depends(get_db)):
                 customerImpact=normalized["customerImpact"],
                 technicalImpact=normalized["technicalImpact"],
                 confidence=normalized["confidence"],
-                promptVersion=normalized["promptVersion"],
-                schemaVersion=normalized["schemaVersion"],
+                promptVersion=run_metadata.get("promptVersion")
+                or normalized["promptVersion"],
+                schemaVersion=run_metadata.get("schemaVersion")
+                or normalized["schemaVersion"],
                 created_at=datetime.now(timezone.utc),
                 technicalTerms=technical_terms,
                 painPoints=pain_points,
                 actionItems=normalized["actionItems"],
                 domainMode=normalized["domainMode"],
-                status=(
-                    str(job_state.get("status") or "COMPLETED")
-                    if isinstance(job_state, dict)
-                    else "COMPLETED"
-                ),
+                status=job_status,
                 source=normalized["source"] or "job_state",
                 transcript_hash=normalized["transcript_hash"],
+                analysisStatus=run_metadata.get("analysisStatus") or job_status,
+                provider=run_metadata.get("provider"),
+                model=run_metadata.get("model"),
+                canonicalTranscriptHash=run_metadata.get("canonicalTranscriptHash"),
+                canonicalTranscriptVersion=run_metadata.get(
+                    "canonicalTranscriptVersion"
+                ),
+                analysisInputMode=run_metadata.get("analysisInputMode"),
+                lastAnalyzedAt=run_metadata.get("lastAnalyzedAt"),
             )
 
         if pipeline is None:
@@ -2440,6 +2483,9 @@ async def get_analysis(meeting_id: int, db: Session = Depends(get_db)):
             raw_analysis["technical_terms"] = technical_terms_value
 
         normalized = _normalize_analysis_payload(raw_analysis)
+        run_metadata = analysis_run_response_metadata(
+            latest_completed_analysis_run(db, meeting_id)
+        )
         action_items = [ActionItem(**item) for item in normalized["action_items"]]
         technical_terms = [
             AnalysisTechnicalTerm(**item) for item in normalized["technicalTerms"]
@@ -2466,8 +2512,10 @@ async def get_analysis(meeting_id: int, db: Session = Depends(get_db)):
             customerImpact=normalized["customerImpact"],
             technicalImpact=normalized["technicalImpact"],
             confidence=normalized["confidence"],
-            promptVersion=normalized["promptVersion"],
-            schemaVersion=normalized["schemaVersion"],
+            promptVersion=run_metadata.get("promptVersion")
+            or normalized["promptVersion"],
+            schemaVersion=run_metadata.get("schemaVersion")
+            or normalized["schemaVersion"],
             created_at=analysis.created_at or datetime.now(timezone.utc),
             technicalTerms=technical_terms,
             painPoints=pain_points,
@@ -2476,6 +2524,13 @@ async def get_analysis(meeting_id: int, db: Session = Depends(get_db)):
             status="COMPLETED",
             source=normalized["source"] or "database",
             transcript_hash=normalized["transcript_hash"],
+            analysisStatus=run_metadata.get("analysisStatus") or "COMPLETED",
+            provider=run_metadata.get("provider"),
+            model=run_metadata.get("model"),
+            canonicalTranscriptHash=run_metadata.get("canonicalTranscriptHash"),
+            canonicalTranscriptVersion=run_metadata.get("canonicalTranscriptVersion"),
+            analysisInputMode=run_metadata.get("analysisInputMode"),
+            lastAnalyzedAt=run_metadata.get("lastAnalyzedAt"),
         )
 
     except HTTPException:
