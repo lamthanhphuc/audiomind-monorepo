@@ -1,7 +1,8 @@
-import hashlib
 from dataclasses import dataclass
 from datetime import datetime
+import hashlib
 from typing import Any
+from uuid import uuid4
 
 from sqlalchemy import and_
 from sqlalchemy.orm import Session
@@ -14,9 +15,31 @@ ANALYSIS_STATUS_COMPLETED = "COMPLETED"
 ANALYSIS_STATUS_FAILED = "FAILED"
 ANALYSIS_STATUS_QUOTA_BLOCKED = "QUOTA_BLOCKED"
 ANALYSIS_STATUS_RATE_LIMITED = "RATE_LIMITED"
+ANALYSIS_STATUS_NO_ANALYSIS = "NO_ANALYSIS"
+ANALYSIS_STATUS_STALE = "STALE"
 ANALYSIS_INPUT_MODE_CANONICAL = "canonical"
 ANALYSIS_INPUT_MODE_READABLE_FALLBACK = "readable_fallback"
 ANALYSIS_INPUT_MODE_LEGACY_FALLBACK = "legacy_fallback"
+ANALYSIS_MODE_AUTO = "auto"
+ANALYSIS_MODE_CACHE_ONLY = "cache_only"
+ANALYSIS_MODE_FORCE = "force"
+ANALYSIS_MODE_FAILED_RETRY = "failed_retry"
+ANALYSIS_IN_PROGRESS_STATUSES = {ANALYSIS_STATUS_ANALYZING}
+ANALYSIS_RETRYABLE_FAILURE_STATUSES = {
+    ANALYSIS_STATUS_FAILED,
+    ANALYSIS_STATUS_QUOTA_BLOCKED,
+    ANALYSIS_STATUS_RATE_LIMITED,
+}
+ANALYSIS_STALE_REASON_FIELDS = (
+    ("canonical_transcript_hash", "transcript_hash_changed"),
+    ("canonical_transcript_version", "canonical_version_changed"),
+    ("provider", "provider_changed"),
+    ("model", "model_changed"),
+    ("prompt_version", "prompt_version_changed"),
+    ("schema_version", "schema_version_changed"),
+    ("analysis_input_mode", "input_mode_changed"),
+    ("speaker_stabilization_version", "speaker_stabilization_version_changed"),
+)
 
 
 @dataclass(frozen=True)
@@ -158,6 +181,37 @@ def build_analysis_run_idempotency_key(
     return "analysis-run:" + hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
 
 
+def build_analysis_run_idempotency_key_for_identity(
+    identity: AnalysisCacheIdentity,
+) -> str:
+    return build_analysis_run_idempotency_key(
+        meeting_id=identity.meeting_id,
+        owner_id=identity.owner_id,
+        canonical_transcript_hash=identity.canonical_transcript_hash,
+        canonical_transcript_version=identity.canonical_transcript_version,
+        prompt_version=identity.prompt_version,
+        schema_version=identity.schema_version,
+        provider=identity.provider,
+        model=identity.model,
+        analysis_input_mode=identity.analysis_input_mode,
+        speaker_stabilization_version=identity.speaker_stabilization_version,
+        recognition_mode=identity.recognition_mode,
+        transcript_language=identity.transcript_language,
+    )
+
+
+def normalize_analysis_mode(value: Any) -> str:
+    mode = _clean_text(value).lower()
+    if mode in {
+        ANALYSIS_MODE_AUTO,
+        ANALYSIS_MODE_CACHE_ONLY,
+        ANALYSIS_MODE_FORCE,
+        ANALYSIS_MODE_FAILED_RETRY,
+    }:
+        return mode
+    return ANALYSIS_MODE_AUTO
+
+
 def build_analysis_cache_identity(
     *,
     db: Session,
@@ -247,6 +301,188 @@ def find_completed_analysis_run_for_identity(
     )
 
 
+def _identity_filters(identity: AnalysisCacheIdentity) -> list[Any]:
+    return [
+        MeetingAnalysisRun.meeting_id == identity.meeting_id,
+        _nullable_match(MeetingAnalysisRun.owner_id, identity.owner_id),
+        _nullable_match(
+            MeetingAnalysisRun.canonical_transcript_hash,
+            identity.canonical_transcript_hash,
+        ),
+        _nullable_match(
+            MeetingAnalysisRun.canonical_transcript_version,
+            identity.canonical_transcript_version,
+        ),
+        MeetingAnalysisRun.provider == identity.provider,
+        MeetingAnalysisRun.model == identity.model,
+        MeetingAnalysisRun.prompt_version == identity.prompt_version,
+        MeetingAnalysisRun.schema_version == identity.schema_version,
+        _nullable_match(
+            MeetingAnalysisRun.speaker_stabilization_version,
+            identity.speaker_stabilization_version,
+        ),
+        _nullable_match(
+            MeetingAnalysisRun.recognition_mode,
+            identity.recognition_mode,
+        ),
+        _nullable_match(
+            MeetingAnalysisRun.transcript_language,
+            identity.transcript_language,
+        ),
+        MeetingAnalysisRun.analysis_input_mode == identity.analysis_input_mode,
+    ]
+
+
+def find_latest_analysis_run_for_identity(
+    db: Session, identity: AnalysisCacheIdentity
+) -> MeetingAnalysisRun | None:
+    return (
+        db.query(MeetingAnalysisRun)
+        .filter(and_(*_identity_filters(identity)))
+        .order_by(MeetingAnalysisRun.updated_at.desc(), MeetingAnalysisRun.id.desc())
+        .first()
+    )
+
+
+def find_in_progress_analysis_run_for_identity(
+    db: Session, identity: AnalysisCacheIdentity
+) -> MeetingAnalysisRun | None:
+    return (
+        db.query(MeetingAnalysisRun)
+        .filter(
+            and_(
+                *_identity_filters(identity),
+                MeetingAnalysisRun.status.in_(ANALYSIS_IN_PROGRESS_STATUSES),
+            )
+        )
+        .order_by(MeetingAnalysisRun.updated_at.desc(), MeetingAnalysisRun.id.desc())
+        .first()
+    )
+
+
+def latest_analysis_run_for_meeting(
+    db: Session, meeting_id: int
+) -> MeetingAnalysisRun | None:
+    return (
+        db.query(MeetingAnalysisRun)
+        .filter(MeetingAnalysisRun.meeting_id == meeting_id)
+        .order_by(MeetingAnalysisRun.updated_at.desc(), MeetingAnalysisRun.id.desc())
+        .first()
+    )
+
+
+def _run_value(run: MeetingAnalysisRun, field_name: str) -> Any:
+    return getattr(run, field_name, None)
+
+
+def stale_reason_for_identity(
+    identity: AnalysisCacheIdentity, run: MeetingAnalysisRun | None
+) -> str | None:
+    if run is None:
+        return None
+    for field_name, reason in ANALYSIS_STALE_REASON_FIELDS:
+        if _run_value(run, field_name) != getattr(identity, field_name):
+            return reason
+    if (
+        run.owner_id != identity.owner_id
+        or run.recognition_mode != identity.recognition_mode
+        or run.transcript_language != identity.transcript_language
+    ):
+        return "identity_mismatch"
+    return None
+
+
+def analysis_miss_response_metadata(
+    db: Session, identity: AnalysisCacheIdentity
+) -> dict[str, Any]:
+    latest_run = latest_completed_analysis_run(db, identity.meeting_id)
+    stale_reason = stale_reason_for_identity(identity, latest_run)
+    status = ANALYSIS_STATUS_STALE if stale_reason else ANALYSIS_STATUS_NO_ANALYSIS
+    metadata = {
+        "analysisStatus": status,
+        "cacheHit": False,
+        "stale": bool(stale_reason),
+        "staleReason": stale_reason,
+        "provider": identity.provider,
+        "model": identity.model,
+        "promptVersion": identity.prompt_version,
+        "schemaVersion": identity.schema_version,
+        "canonicalTranscriptHash": identity.canonical_transcript_hash,
+        "canonicalTranscriptVersion": identity.canonical_transcript_version,
+        "analysisInputMode": identity.analysis_input_mode,
+        "lastAnalyzedAt": (
+            (latest_run.completed_at or latest_run.updated_at) if latest_run else None
+        ),
+    }
+    return metadata
+
+
+def _apply_identity_to_run(
+    run: MeetingAnalysisRun,
+    identity: AnalysisCacheIdentity,
+) -> None:
+    run.owner_id = identity.owner_id
+    run.provider = identity.provider
+    run.model = identity.model
+    run.prompt_version = identity.prompt_version
+    run.schema_version = identity.schema_version
+    run.canonical_transcript_hash = identity.canonical_transcript_hash
+    run.canonical_transcript_version = identity.canonical_transcript_version
+    run.speaker_stabilization_version = identity.speaker_stabilization_version
+    run.recognition_mode = identity.recognition_mode
+    run.transcript_language = identity.transcript_language
+    run.analysis_input_mode = identity.analysis_input_mode
+
+
+def begin_analysis_run(
+    *,
+    db: Session,
+    identity: AnalysisCacheIdentity,
+    mode: str = ANALYSIS_MODE_AUTO,
+    requested_by: str | None = None,
+    rerun_reason: str | None = None,
+) -> tuple[MeetingAnalysisRun, bool]:
+    normalized_mode = normalize_analysis_mode(mode)
+    existing_in_progress = find_in_progress_analysis_run_for_identity(db, identity)
+    if existing_in_progress is not None:
+        return existing_in_progress, False
+
+    if normalized_mode == ANALYSIS_MODE_FORCE:
+        idempotency_key = (
+            f"{build_analysis_run_idempotency_key_for_identity(identity)}:"
+            f"force:{uuid4().hex}"
+        )
+        run = None
+    else:
+        idempotency_key = build_analysis_run_idempotency_key_for_identity(identity)
+        run = (
+            db.query(MeetingAnalysisRun)
+            .filter(MeetingAnalysisRun.idempotency_key == idempotency_key)
+            .first()
+        )
+
+    now = datetime.utcnow()
+    if run is None:
+        run = MeetingAnalysisRun(
+            meeting_id=identity.meeting_id,
+            idempotency_key=idempotency_key,
+            created_at=now,
+        )
+        db.add(run)
+
+    _apply_identity_to_run(run, identity)
+    run.status = ANALYSIS_STATUS_ANALYZING
+    run.analysis_payload_json = None
+    run.summary = None
+    run.error_code = None
+    run.error_message = None
+    run.updated_at = now
+    run.completed_at = None
+    run.requested_by = _clean_text(requested_by) or None
+    run.rerun_reason = _clean_text(rerun_reason) or None
+    return run, True
+
+
 def persist_completed_analysis_run(
     *,
     db: Session,
@@ -262,6 +498,7 @@ def persist_completed_analysis_run(
     transcript_language: str | None = None,
     requested_by: str | None = None,
     rerun_reason: str | None = None,
+    run: MeetingAnalysisRun | None = None,
 ) -> MeetingAnalysisRun:
     payload = _json_safe(analysis_payload or {})
     if not isinstance(payload, dict):
@@ -279,26 +516,14 @@ def persist_completed_analysis_run(
         recognition_mode=recognition_mode,
         transcript_language=transcript_language,
     )
-    idempotency_key = build_analysis_run_idempotency_key(
-        meeting_id=meeting_id,
-        owner_id=identity.owner_id,
-        canonical_transcript_hash=identity.canonical_transcript_hash,
-        canonical_transcript_version=identity.canonical_transcript_version,
-        prompt_version=identity.prompt_version,
-        schema_version=identity.schema_version,
-        provider=identity.provider,
-        model=identity.model,
-        analysis_input_mode=identity.analysis_input_mode,
-        speaker_stabilization_version=identity.speaker_stabilization_version,
-        recognition_mode=identity.recognition_mode,
-        transcript_language=identity.transcript_language,
-    )
+    idempotency_key = build_analysis_run_idempotency_key_for_identity(identity)
     now = datetime.utcnow()
-    run = (
-        db.query(MeetingAnalysisRun)
-        .filter(MeetingAnalysisRun.idempotency_key == idempotency_key)
-        .first()
-    )
+    if run is None:
+        run = (
+            db.query(MeetingAnalysisRun)
+            .filter(MeetingAnalysisRun.idempotency_key == idempotency_key)
+            .first()
+        )
     if run is None:
         run = MeetingAnalysisRun(
             meeting_id=meeting_id,
@@ -307,18 +532,8 @@ def persist_completed_analysis_run(
         )
         db.add(run)
 
-    run.owner_id = identity.owner_id
+    _apply_identity_to_run(run, identity)
     run.status = ANALYSIS_STATUS_COMPLETED
-    run.provider = identity.provider
-    run.model = identity.model
-    run.prompt_version = identity.prompt_version
-    run.schema_version = identity.schema_version
-    run.canonical_transcript_hash = identity.canonical_transcript_hash
-    run.canonical_transcript_version = identity.canonical_transcript_version
-    run.speaker_stabilization_version = identity.speaker_stabilization_version
-    run.recognition_mode = identity.recognition_mode
-    run.transcript_language = identity.transcript_language
-    run.analysis_input_mode = identity.analysis_input_mode
     run.analysis_payload_json = payload
     run.summary = _clean_text(summary) or None
     run.error_code = None
@@ -327,6 +542,26 @@ def persist_completed_analysis_run(
     run.completed_at = now
     run.requested_by = _clean_text(requested_by) or None
     run.rerun_reason = _clean_text(rerun_reason) or None
+    return run
+
+
+def mark_analysis_run_failed(
+    *,
+    run: MeetingAnalysisRun | None,
+    status: str = ANALYSIS_STATUS_FAILED,
+    error_code: str | None = None,
+    error_message: str | None = None,
+) -> MeetingAnalysisRun | None:
+    if run is None:
+        return None
+    normalized_status = _clean_text(status).upper()
+    if normalized_status not in ANALYSIS_RETRYABLE_FAILURE_STATUSES:
+        normalized_status = ANALYSIS_STATUS_FAILED
+    run.status = normalized_status
+    run.error_code = _clean_text(error_code) or None
+    run.error_message = _clean_text(error_message)[:1000] or None
+    run.updated_at = datetime.utcnow()
+    run.completed_at = None
     return run
 
 
@@ -366,6 +601,8 @@ def analysis_run_response_metadata(
         return {}
     metadata = {
         "analysisStatus": run.status,
+        "stale": False,
+        "staleReason": None,
         "provider": run.provider,
         "model": run.model,
         "promptVersion": run.prompt_version,

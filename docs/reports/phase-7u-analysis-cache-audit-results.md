@@ -191,6 +191,17 @@ Recommended first PR after this docs polish:
 - Full rerun/idempotency policy and explicit stale lifecycle responses remain deferred to 7U-D.
 - DOCX/export DB fallback remains deferred to 7U-E.
 
+7U-D implementation note:
+
+- AI-service now implements `auto`, `cache_only`, `force`, and `failed_retry` mode policy around `meeting_analysis_runs`.
+- `cache_only` is provider-safe: it returns matching completed analysis, stale metadata, or no-analysis metadata without Gemini calls.
+- Same full identity double-submit is guarded by durable `ANALYZING` runs; callers receive in-progress metadata rather than a second provider call.
+- `force` reruns bypass completed cache hits and create a distinct run row while preserving older completed history; the compatibility `analysis` projection updates after successful completion.
+- Stale metadata now reports identity mismatch reasons for transcript hash, canonical version, provider, model, prompt/schema versions, input mode, and speaker stabilization version.
+- Realtime/lazy analysis keeps the existing Redis lock/cooldown guard, but uses the full durable analysis identity as the cache/idempotency key once resolved.
+- A minimal AI-service rerun endpoint was added at `POST /api/meeting/{meeting_id}/analysis/rerun`.
+- DOCX/export DB fallback is still deferred to 7U-E; FE status/reanalyze UI is still deferred to 7U-F.
+
 ## Risks If Extending Existing `analysis` Table
 
 - Relaxing unique `meeting_id` early can break existing readers that assume one current analysis row per meeting.
