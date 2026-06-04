@@ -47,10 +47,15 @@ class _FakeTranscriptQuery:
     def all(self):
         return self._rows
 
+    def first(self):
+        return self._rows[0] if self._rows else None
+
 
 class _FakeDbSession:
-    def query(self, _model):
-        return _FakeTranscriptQuery([DummyTranscript()])
+    def query(self, model):
+        if getattr(model, "__name__", "") == "Transcript":
+            return _FakeTranscriptQuery([DummyTranscript()])
+        return _FakeTranscriptQuery([])
 
 
 def _override_db():

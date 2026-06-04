@@ -10,15 +10,6 @@ from app.models import Analysis, Base, MeetingAnalysisRun
 from sqlalchemy import create_engine, inspect
 from sqlalchemy.orm import sessionmaker
 
-audio_processor_stub = types.ModuleType("app.services.audio_processor")
-audio_processor_stub.AudioProcessor = type("AudioProcessor", (), {})
-sys.modules["app.services.audio_processor"] = audio_processor_stub
-
-stt_adapter_stub = types.ModuleType("app.services.stt_adapter")
-stt_adapter_stub.DeepgramSTTAdapter = type("DeepgramSTTAdapter", (), {})
-stt_adapter_stub.normalize_deepgram_speaker_label = lambda label: label
-sys.modules["app.services.stt_adapter"] = stt_adapter_stub
-
 
 class FakeBatchAnalyzer:
     PROMPT_VERSION = "gemini-business-v1"
@@ -55,6 +46,22 @@ def db_session():
         session.close()
 
 
+def _load_processing_pipeline(monkeypatch):
+    existing_pipeline_module = sys.modules.get("app.pipeline")
+    if existing_pipeline_module is not None:
+        return existing_pipeline_module.ProcessingPipeline
+
+    audio_processor_stub = types.ModuleType("app.services.audio_processor")
+    audio_processor_stub.AudioProcessor = type("AudioProcessor", (), {})
+    monkeypatch.setitem(
+        sys.modules, "app.services.audio_processor", audio_processor_stub
+    )
+
+    pipeline_module = importlib.import_module("app.pipeline")
+    sys.modules.pop("app.pipeline", None)
+    return pipeline_module.ProcessingPipeline
+
+
 def test_meeting_analysis_runs_model_creates_table(db_session):
     inspector = inspect(db_session.bind)
 
@@ -79,8 +86,9 @@ def test_meeting_analysis_runs_model_creates_table(db_session):
 
 def test_batch_save_results_writes_analysis_run_and_keeps_current_projection(
     db_session,
+    monkeypatch,
 ):
-    ProcessingPipeline = importlib.import_module("app.pipeline").ProcessingPipeline
+    ProcessingPipeline = _load_processing_pipeline(monkeypatch)
     pipeline = object.__new__(ProcessingPipeline)
     pipeline.ai_analyzer = FakeBatchAnalyzer()
     segments = [
