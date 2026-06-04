@@ -1,9 +1,9 @@
 import asyncio
 import time
 
-import app.main as main_module
 import pytest
-from app.models import Analysis, Base
+import app.main as main_module
+from app.models import Analysis, Base, MeetingAnalysisRun
 from app.schemas import RealtimeTranscriptAnalysisRequest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -188,6 +188,21 @@ def test_realtime_analysis_persists_and_is_idempotent_for_same_hash(db_session):
         == main_module.AIAnalyzer.SCHEMA_VERSION
     )
     assert len(main_module._realtime_analysis_analyzer.calls) == 1
+
+    run = (
+        db_session.query(MeetingAnalysisRun)
+        .filter(MeetingAnalysisRun.meeting_id == 902)
+        .one()
+    )
+    assert run.status == "COMPLETED"
+    assert run.provider == "gemini"
+    assert run.model == "unknown"
+    assert run.prompt_version == main_module.AIAnalyzer.PROMPT_VERSION
+    assert run.schema_version == main_module.AIAnalyzer.SCHEMA_VERSION
+    assert run.canonical_transcript_hash == "a" * 64
+    assert run.canonical_transcript_version is None
+    assert run.analysis_input_mode == "readable_fallback"
+    assert run.analysis_payload_json["summary"] == "Realtime summary"
 
 
 def test_realtime_analysis_returns_503_when_analyzer_unavailable(

@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from app.config import get_runtime_device, get_settings
 from app.logging_utils import safe_error_message, transcript_hash_prefix
 from app.models import Analysis, Transcript, TranscriptFragment
+from app.services.analysis_runs import persist_completed_analysis_run
 from app.services.analysis_factory import build_analysis_analyzer
 from app.services.audio_processor import AudioProcessor
 from app.services.stt_adapter import (
@@ -899,6 +900,7 @@ class ProcessingPipeline:
                 analysis_result,
                 db,
                 glossary_context=glossary_context,
+                language=language,
             )
 
             logger.info(f"Processing complete for meeting {meeting_id}")
@@ -925,6 +927,7 @@ class ProcessingPipeline:
         analysis_result: Dict,
         db: Session,
         glossary_context: Optional[Dict] = None,
+        language: Optional[str] = None,
     ):
         """
         Save processing results to database
@@ -1055,6 +1058,18 @@ class ProcessingPipeline:
                     "schemaVersion": schema_version or None,
                     "source": str(clean_analysis.get("source") or "batch"),
                 }
+            analysis_run_payload = dict(clean_analysis)
+            analysis_run_payload["transcriptHash"] = (
+                str(
+                    clean_analysis.get("transcriptHash") or transcript_hash or ""
+                ).strip()
+                or None
+            )
+            analysis_run_payload["promptVersion"] = prompt_version or None
+            analysis_run_payload["schemaVersion"] = schema_version or None
+            analysis_run_payload["source"] = str(
+                clean_analysis.get("source") or "batch"
+            )
             analysis = Analysis(
                 meeting_id=meeting_id,
                 summary=str(clean_analysis.get("summary", "")),
@@ -1066,6 +1081,17 @@ class ProcessingPipeline:
                 glossary_version_hash=(glossary_context or {}).get("version_hash"),
             )
             db.add(analysis)
+            persist_completed_analysis_run(
+                db=db,
+                meeting_id=meeting_id,
+                analyzer=self.ai_analyzer,
+                analysis_payload=analysis_run_payload,
+                summary=analysis.summary,
+                fallback_transcript_hash=transcript_hash,
+                fallback_text=transcript_text,
+                recognition_mode=_normalized_stt_provider(),
+                transcript_language=self._normalize_batch_language(language),
+            )
 
             # Commit
             db.commit()

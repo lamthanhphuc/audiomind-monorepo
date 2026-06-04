@@ -138,6 +138,13 @@ class AnalysisResponse(BaseModel):
     status: Optional[str] = None
     source: Optional[str] = None
     transcript_hash: Optional[str] = None
+    analysisStatus: Optional[str] = None
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    canonicalTranscriptHash: Optional[str] = None
+    canonicalTranscriptVersion: Optional[str] = None
+    analysisInputMode: Optional[str] = None
+    lastAnalyzedAt: Optional[datetime] = None
 
     class Config:
         from_attributes = True
@@ -163,6 +170,13 @@ class RealtimeTranscriptAnalysisResponse(BaseModel):
     schemaVersion: Optional[str] = None
     retryAfterSeconds: Optional[int] = None
     errorCode: Optional[str] = None
+    analysisStatus: Optional[str] = None
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    canonicalTranscriptHash: Optional[str] = None
+    canonicalTranscriptVersion: Optional[str] = None
+    analysisInputMode: Optional[str] = None
+    lastAnalyzedAt: Optional[datetime] = None
 
 
 class SttStreamResponse(BaseModel):

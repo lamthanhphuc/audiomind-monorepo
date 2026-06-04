@@ -175,6 +175,13 @@ Recommended first PR after this docs polish:
 - Introduce response DTO metadata for `analysisStatus`, `cacheHit`, `stale`, `staleReason`, provider/model, prompt/schema, canonical transcript identity, input mode, `lastAnalyzedAt`, and `retryAfterSeconds`.
 - Do not centralize provider-call logic, rerun concurrency, DOCX fallback, or FE UI in the same PR unless the implementation remains small.
 
+7U-B implementation note:
+
+- The first foundation table is `meeting_analysis_runs`; the existing unique `analysis.meeting_id` projection is unchanged.
+- Batch and realtime completed analysis writes now persist provider/model, prompt/schema, transcript identity, input mode, payload, summary, idempotency, and timestamps.
+- `owner_id` remains nullable until owner/user scope is passed into AI-service safely.
+- Cache hit/miss service logic, stale detection, durable failure/quota transitions, retry/rerun modes, and DOCX DB fallback remain deferred to 7U-C/7U-D/7U-E.
+
 ## Risks If Extending Existing `analysis` Table
 
 - Relaxing unique `meeting_id` early can break existing readers that assume one current analysis row per meeting.

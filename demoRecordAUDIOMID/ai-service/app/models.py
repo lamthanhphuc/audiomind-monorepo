@@ -9,6 +9,7 @@ from sqlalchemy import (
     Boolean,
     ForeignKey,
     JSON,
+    Index,
     UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
@@ -88,6 +89,54 @@ class Analysis(Base):
     # Foreign key
     transcript_id = Column(Integer, ForeignKey("transcripts.id"))
     transcript = relationship("Transcript", back_populates="analysis")
+
+
+class MeetingAnalysisRun(Base):
+    __tablename__ = "meeting_analysis_runs"
+    __table_args__ = (
+        Index(
+            "ix_meeting_analysis_runs_meeting_status_updated",
+            "meeting_id",
+            "status",
+            "updated_at",
+        ),
+        Index(
+            "ix_meeting_analysis_runs_cache_lookup",
+            "meeting_id",
+            "canonical_transcript_hash",
+            "prompt_version",
+            "schema_version",
+            "provider",
+            "model",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    meeting_id = Column(BigInteger, nullable=False, index=True)
+    owner_id = Column(String(128), nullable=True, index=True)
+    status = Column(String(32), nullable=False, index=True)
+    provider = Column(String(32), nullable=False)
+    model = Column(String(128), nullable=False)
+    prompt_version = Column(String(64), nullable=False)
+    schema_version = Column(String(64), nullable=False)
+    canonical_transcript_hash = Column(String(64), nullable=True, index=True)
+    canonical_transcript_version = Column(String(64), nullable=True)
+    speaker_stabilization_version = Column(String(64), nullable=True)
+    recognition_mode = Column(String(64), nullable=True)
+    transcript_language = Column(String(16), nullable=True)
+    analysis_input_mode = Column(String(64), nullable=False)
+    analysis_payload_json = Column(JSON, nullable=True)
+    summary = Column(Text, nullable=True)
+    error_code = Column(String(64), nullable=True)
+    error_message = Column(Text, nullable=True)
+    idempotency_key = Column(String(256), nullable=False, unique=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
+    )
+    completed_at = Column(DateTime, nullable=True)
+    requested_by = Column(String(128), nullable=True)
+    rerun_reason = Column(Text, nullable=True)
 
 
 class GlossaryEntry(Base):

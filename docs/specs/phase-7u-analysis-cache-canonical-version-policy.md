@@ -383,6 +383,13 @@ Policy:
 - `7U-F FE status/reanalyze minimal`: expose cached/stale/quota states and re-analyze entry point.
 - `7U-G Tests/smoke checklist`: targeted service tests for cache hit/miss/stale/rerun/export.
 
+7U-B implementation note:
+
+- The foundation table is named `meeting_analysis_runs`.
+- `analysis` remains the compatibility/current projection with its unique `meeting_id`.
+- `owner_id` is nullable for the MVP because AI-service does not currently own user tenancy.
+- New batch and realtime completed analyses write durable run metadata; full cache hit/miss, stale, retry, and rerun policy is deferred to 7U-C/7U-D.
+
 ## Test Matrix
 
 - Cache hit does not call Gemini.
