@@ -176,6 +176,53 @@ public class AIServiceClient {
         return requireBody(response, "getAnalysis", meetingId);
     }
 
+    public Map<String, Object> getSavedAnalysisCacheOnly(
+            Long meetingId,
+            String transcript,
+            String transcriptHash,
+            String promptVersion,
+            String schemaVersion,
+            String traceId,
+            String authorization
+    ) {
+        HttpHeaders headers = new HttpHeaders();
+        String resolvedTraceId = resolveTraceId(traceId);
+        String resolvedRequestId = resolveRequestId(resolvedTraceId);
+        headers.add(TRACE_HEADER, resolvedTraceId);
+        headers.add(REQUEST_HEADER, resolvedRequestId);
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        if (StringUtils.hasText(authorization)) {
+            headers.add(HttpHeaders.AUTHORIZATION, authorization);
+        }
+
+        Map<String, Object> request = new HashMap<>();
+        request.put("meeting_id", meetingId);
+        request.put("transcript", transcript == null ? "" : transcript);
+        request.put("domain_mode", "it");
+        request.put("source", "export_report");
+        request.put("mode", "cache_only");
+        if (StringUtils.hasText(transcriptHash)) {
+            request.put("transcript_hash", transcriptHash);
+        }
+        if (StringUtils.hasText(promptVersion)) {
+            request.put("prompt_version", promptVersion);
+        }
+        if (StringUtils.hasText(schemaVersion)) {
+            request.put("schema_version", schemaVersion);
+        }
+
+        ResponseEntity<Map<String, Object>> response = executeAiServiceCall(
+                "getSavedAnalysisCacheOnly",
+                aiUrl + "/api/internal/realtime-analysis",
+                HttpMethod.POST,
+                new HttpEntity<>(request, headers),
+                resolvedTraceId,
+                resolvedRequestId,
+                meetingId
+        );
+        return requireBody(response, "getSavedAnalysisCacheOnly", meetingId);
+    }
+
     public Map<String, Object> analyzeRealtimeTranscript(
             Long meetingId,
             String transcript,

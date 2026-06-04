@@ -1443,6 +1443,12 @@ class ProcessingServiceTest {
         ));
         analysis.put("promptVersion", "gemini-business-v1");
         analysis.put("schemaVersion", "gemini-business-v1");
+        analysis.put("analysisStatus", "COMPLETED");
+        analysis.put("cacheHit", true);
+        analysis.put("provider", "gemini");
+        analysis.put("model", "gemini-2.5-flash");
+        analysis.put("canonicalTranscriptHash", "canonical-hash-920");
+        analysis.put("canonicalTranscriptVersion", "canonical-transcript-v1");
 
         Map<String, Object> state = new HashMap<>();
         state.put("status", "COMPLETED");
@@ -1898,6 +1904,307 @@ class ProcessingServiceTest {
             assertEquals(1, appendixRows.size());
             assertTrue(appendixRows.contains("The technique is very simple."));
         }
+    }
+
+    @Test
+    void generateMeetingReportDocx_shouldUseCacheOnlyAnalysisFallbackWhenStateAnalysisMissing() throws Exception {
+        Map<String, Object> transcriptRow = new HashMap<>();
+        transcriptRow.put("speaker", "SPEAKER_1");
+        transcriptRow.put("text", "We need to prepare the launch API checklist.");
+        transcriptRow.put("start_time", 1.0d);
+        transcriptRow.put("end_time", 4.0d);
+
+        Map<String, Object> state = new HashMap<>();
+        state.put("status", "COMPLETED");
+        state.put("result", Map.of("transcripts", List.of(transcriptRow)));
+        when(jobStateStore.getJobState(930L)).thenReturn(Optional.of(state));
+        when(meetingServiceClient.getMeetingById(930L, "trace-930", AUTH_HEADER)).thenReturn(Map.of(
+                "id", 930L,
+                "title", "Cache fallback",
+                "createdAt", "2026-06-02T09:00:00Z",
+                "language", "multi",
+                "status", "completed"
+        ));
+        Map<String, Object> cacheOnlyResponse = new HashMap<>();
+        cacheOnlyResponse.put("status", "completed");
+        cacheOnlyResponse.put("analysisStatus", "COMPLETED");
+        cacheOnlyResponse.put("cacheHit", true);
+        cacheOnlyResponse.put("provider", "gemini");
+        cacheOnlyResponse.put("model", "gemini-2.5-flash");
+        cacheOnlyResponse.put("promptVersion", "gemini-business-v1");
+        cacheOnlyResponse.put("schemaVersion", "analysis-schema-v1");
+        cacheOnlyResponse.put("canonicalTranscriptHash", "canonical-hash-930");
+        cacheOnlyResponse.put("canonicalTranscriptVersion", "canonical-transcript-v1");
+        cacheOnlyResponse.put("analysisInputMode", "canonical");
+        cacheOnlyResponse.put("lastAnalyzedAt", "2026-06-02T09:10:00Z");
+        cacheOnlyResponse.put("analysis", Map.of(
+                "meetingSummary", "Cached DB summary",
+                "keywords", List.of("launch", "API"),
+                "technicalTerms", List.of(Map.of("term", "API", "meaning", "application interface")),
+                "businessActionItems", List.of(Map.of(
+                        "task", "Prepare checklist",
+                        "owner", "Ann",
+                        "dueDate", "Friday"
+                ))
+        ));
+        when(aiServiceClient.getSavedAnalysisCacheOnly(
+                eq(930L),
+                anyString(),
+                anyString(),
+                eq("gemini-business-v1"),
+                eq("gemini-business-v1"),
+                eq("trace-930"),
+                eq(AUTH_HEADER)
+        )).thenReturn(cacheOnlyResponse);
+
+        byte[] report = processingService.generateMeetingReportDocx(930L, "trace-930", AUTH_HEADER);
+
+        try (XWPFDocument doc = new XWPFDocument(new ByteArrayInputStream(report));
+             XWPFWordExtractor extractor = new XWPFWordExtractor(doc)) {
+            String content = extractor.getText();
+            assertTrue(content.contains("Cached DB summary"));
+            assertTrue(content.contains("launch"));
+            assertTrue(content.contains("API - application interface"));
+            assertTrue(content.contains("Prepare checklist"));
+            assertTrue(content.contains("gemini-2.5-flash"));
+            assertTrue(content.contains("canonical-hash-930"));
+            assertTrue(content.contains("COMPLETED"));
+        }
+        verify(aiServiceClient).getSavedAnalysisCacheOnly(
+                eq(930L),
+                anyString(),
+                anyString(),
+                eq("gemini-business-v1"),
+                eq("gemini-business-v1"),
+                eq("trace-930"),
+                eq(AUTH_HEADER)
+        );
+        verify(aiServiceClient, never()).getAnalysis(anyLong(), anyString());
+        verify(aiServiceClient, never()).analyzeRealtimeTranscript(
+                anyLong(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString()
+        );
+    }
+
+    @Test
+    void generateMeetingReportDocx_shouldGenerateTranscriptWhenCacheOnlyAnalysisMissing() throws Exception {
+        Map<String, Object> transcriptRow = new HashMap<>();
+        transcriptRow.put("speaker", "SPEAKER_1");
+        transcriptRow.put("text", "Transcript should still export without analysis.");
+        transcriptRow.put("start_time", 5.0d);
+        transcriptRow.put("end_time", 7.0d);
+
+        Map<String, Object> state = new HashMap<>();
+        state.put("status", "COMPLETED");
+        state.put("result", Map.of("transcripts", List.of(transcriptRow)));
+        when(jobStateStore.getJobState(931L)).thenReturn(Optional.of(state));
+        when(meetingServiceClient.getMeetingById(931L, "trace-931", AUTH_HEADER)).thenReturn(Map.of(
+                "id", 931L,
+                "title", "No analysis fallback",
+                "createdAt", "2026-06-02T09:20:00Z",
+                "language", "multi",
+                "status", "completed"
+        ));
+        when(aiServiceClient.getSavedAnalysisCacheOnly(
+                eq(931L),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                eq("trace-931"),
+                eq(AUTH_HEADER)
+        )).thenThrow(new HttpClientErrorException(HttpStatus.NOT_FOUND));
+
+        byte[] report = processingService.generateMeetingReportDocx(931L, "trace-931", AUTH_HEADER);
+
+        try (XWPFDocument doc = new XWPFDocument(new ByteArrayInputStream(report));
+             XWPFWordExtractor extractor = new XWPFWordExtractor(doc)) {
+            String content = extractor.getText();
+            assertTrue(content.contains("Transcript should still export without analysis."));
+            assertTrue(content.contains("Analysis not available"));
+            assertTrue(content.contains("NO_ANALYSIS"));
+        }
+        verify(aiServiceClient, never()).analyzeRealtimeTranscript(
+                anyLong(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString()
+        );
+    }
+
+    @Test
+    void generateMeetingReportDocx_shouldShowStaleMetadataWithoutPresentingCurrentAnalysis() throws Exception {
+        Map<String, Object> transcriptRow = new HashMap<>();
+        transcriptRow.put("speaker", "SPEAKER_1");
+        transcriptRow.put("text", "The transcript changed after the last analysis.");
+        transcriptRow.put("start_time", 8.0d);
+        transcriptRow.put("end_time", 11.0d);
+
+        Map<String, Object> state = new HashMap<>();
+        state.put("status", "COMPLETED");
+        state.put("result", Map.of("transcripts", List.of(transcriptRow)));
+        when(jobStateStore.getJobState(932L)).thenReturn(Optional.of(state));
+        when(meetingServiceClient.getMeetingById(932L, "trace-932", AUTH_HEADER)).thenReturn(Map.of(
+                "id", 932L,
+                "title", "Stale fallback",
+                "createdAt", "2026-06-02T09:30:00Z",
+                "language", "multi",
+                "status", "completed"
+        ));
+        when(aiServiceClient.getSavedAnalysisCacheOnly(
+                eq(932L),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                eq("trace-932"),
+                eq(AUTH_HEADER)
+        )).thenReturn(Map.of(
+                "status", "stale",
+                "analysisStatus", "STALE",
+                "cacheHit", false,
+                "stale", true,
+                "staleReason", "transcript_hash_changed",
+                "provider", "gemini",
+                "model", "gemini-2.5-flash",
+                "retryAfterSeconds", 60
+        ));
+
+        byte[] report = processingService.generateMeetingReportDocx(932L, "trace-932", AUTH_HEADER);
+
+        try (XWPFDocument doc = new XWPFDocument(new ByteArrayInputStream(report));
+             XWPFWordExtractor extractor = new XWPFWordExtractor(doc)) {
+            String content = extractor.getText();
+            assertTrue(content.contains("The transcript changed after the last analysis."));
+            assertTrue(content.contains("Analysis not available"));
+            assertTrue(content.contains("STALE"));
+            assertTrue(content.contains("transcript_hash_changed"));
+            assertTrue(content.contains("60"));
+        }
+        verify(aiServiceClient, never()).analyzeRealtimeTranscript(
+                anyLong(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString()
+        );
+    }
+
+    @Test
+    void generateMeetingReportDocx_shouldUseCompatibleStateAnalysisBeforeCacheOnlyFallback() throws Exception {
+        Map<String, Object> transcriptRow = new HashMap<>();
+        transcriptRow.put("speaker", "SPEAKER_1");
+        transcriptRow.put("text", "State analysis is already complete.");
+        transcriptRow.put("start_time", 12.0d);
+        transcriptRow.put("end_time", 14.0d);
+
+        Map<String, Object> analysis = new HashMap<>();
+        analysis.put("meetingSummary", "State summary");
+        analysis.put("analysisStatus", "COMPLETED");
+        analysis.put("cacheHit", true);
+        analysis.put("provider", "gemini");
+        analysis.put("model", "gemini-2.5-flash");
+        analysis.put("canonicalTranscriptHash", "state-canonical-hash");
+
+        Map<String, Object> state = new HashMap<>();
+        state.put("status", "COMPLETED");
+        state.put("result", Map.of("transcripts", List.of(transcriptRow), "analysis", analysis));
+        when(jobStateStore.getJobState(933L)).thenReturn(Optional.of(state));
+        when(meetingServiceClient.getMeetingById(933L, "trace-933", AUTH_HEADER)).thenReturn(Map.of(
+                "id", 933L,
+                "title", "State compatible",
+                "createdAt", "2026-06-02T09:40:00Z",
+                "language", "multi",
+                "status", "completed"
+        ));
+        Map<String, Object> aiPayload = new HashMap<>();
+        aiPayload.put("meeting_id", 933L);
+        aiPayload.put("transcriptMode", "canonical");
+        aiPayload.put("canonicalTranscriptVersion", "canonical-transcript-v1");
+        aiPayload.put("canonicalTranscriptHash", "canonical-hash-933");
+        aiPayload.put("transcripts", List.of(
+                Map.of(
+                        "speaker", "SPEAKER_1",
+                        "text", "Canonical sidecar row for report metadata.",
+                        "start_time", 12.0d,
+                        "end_time", 14.0d
+                )
+        ));
+        when(aiServiceClient.getTranscript(933L, "trace-933")).thenReturn(aiPayload);
+
+        byte[] report = processingService.generateMeetingReportDocx(933L, "trace-933", AUTH_HEADER);
+
+        try (XWPFDocument doc = new XWPFDocument(new ByteArrayInputStream(report));
+             XWPFWordExtractor extractor = new XWPFWordExtractor(doc)) {
+            String content = extractor.getText();
+            assertTrue(content.contains("State summary"));
+            assertTrue(content.contains("state-canonical-hash"));
+            assertTrue(content.contains("canonical-transcript-v1"));
+            assertTrue(content.contains("canonical"));
+        }
+        verify(aiServiceClient).getTranscript(933L, "trace-933");
+        verify(aiServiceClient, never()).getSavedAnalysisCacheOnly(
+                anyLong(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString()
+        );
+    }
+
+    @Test
+    void generateMeetingTranscriptTxt_rawExportShouldNotFetchAnalysisCacheOnly() {
+        Map<String, Object> rawRow = new HashMap<>();
+        rawRow.put("speaker", "SPEAKER_1");
+        rawRow.put("text", "Raw transcript export stays unchanged.");
+        rawRow.put("start_time", 1.0d);
+        rawRow.put("end_time", 2.0d);
+
+        Map<String, Object> state = new HashMap<>();
+        state.put("status", "COMPLETED");
+        state.put("result", Map.of("transcripts", List.of(rawRow)));
+        when(jobStateStore.getJobState(934L)).thenReturn(Optional.of(state));
+        when(meetingServiceClient.getMeetingById(934L, "trace-934", AUTH_HEADER)).thenReturn(Map.of(
+                "id", 934L,
+                "title", "Raw unchanged",
+                "createdAt", "2026-06-02T09:50:00Z",
+                "language", "multi",
+                "status", "completed"
+        ));
+
+        String content = new String(
+                processingService.generateMeetingTranscriptTxt(934L, "trace-934", AUTH_HEADER, "raw"),
+                StandardCharsets.UTF_8
+        );
+
+        assertTrue(content.contains("Raw transcript export stays unchanged."));
+        verify(aiServiceClient, never()).getSavedAnalysisCacheOnly(
+                anyLong(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString()
+        );
     }
 
     @Test

@@ -14,7 +14,7 @@ For deeper service-level details, see [demoRecordAUDIOMID/ai-service/README.md](
 - celery-worker: background worker for AI jobs
 - Redis: job state, STT ownership, and worker coordination
 - Postgres: persistent application data
-- Supporting AI services: Whisper, diarization, and Ollama in local compose
+- Optional legacy/local AI services: Whisper, diarization, and Ollama
 
 ## Prerequisites
 

@@ -180,9 +180,11 @@ async def lifespan(_: FastAPI):
     logger.info("AudioMind AI Service Starting...")
     if _legacy_local_stt_enabled_for_startup_log():
         logger.info(f"Whisper Model: {settings.whisper_model}")
+        logger.info(f"Device: {get_runtime_device()}")
     else:
-        logger.info("Legacy local STT disabled")
-    logger.info(f"Device: {get_runtime_device()}")
+        logger.info(
+            "Legacy local STT disabled; cloud STT provider={}", settings.stt_provider
+        )
     logger.info(
         "STT CONFIG api_key_exists={} realtime_model={} batch_model={} language={} base_url={}",
         bool(settings.deepgram_api_key),
@@ -851,6 +853,24 @@ def _transcribe_locally(
 
 pipeline = ProcessingPipeline() if ProcessingPipeline is not None else None
 _realtime_analysis_analyzer = None
+
+
+class _AnalysisCacheMetadataAnalyzer:
+    PROMPT_VERSION = AIAnalyzer.PROMPT_VERSION
+    SCHEMA_VERSION = AIAnalyzer.SCHEMA_VERSION
+
+    def __init__(self, provider: str, model: str):
+        self.provider = provider
+        self.model = model
+
+
+def _analysis_cache_metadata_analyzer():
+    provider = (settings.analysis_provider or "gemini").strip().lower()
+    if provider in {"ollama", "local"}:
+        return _AnalysisCacheMetadataAnalyzer("ollama", settings.ollama_model)
+    if provider == "openai":
+        return _AnalysisCacheMetadataAnalyzer("openai", settings.openai_model)
+    return _AnalysisCacheMetadataAnalyzer("gemini", settings.gemini_analysis_model)
 
 
 def _get_realtime_analysis_analyzer():
@@ -2667,7 +2687,11 @@ async def analyze_realtime_transcript(
         analysis_cache_key = _analysis_cache_key(
             transcript_hash, prompt_version, schema_version
         )
-        analyzer = _get_realtime_analysis_analyzer()
+        analyzer = (
+            _analysis_cache_metadata_analyzer()
+            if mode == ANALYSIS_MODE_CACHE_ONLY
+            else _get_realtime_analysis_analyzer()
+        )
         cache_identity = None
         active_analysis_run = None
         if analyzer is None and mode == ANALYSIS_MODE_CACHE_ONLY:
@@ -2753,6 +2777,7 @@ async def analyze_realtime_transcript(
                 return RealtimeTranscriptAnalysisResponse(
                     meeting_id=meeting_id,
                     status="completed",
+                    analysis=cached_analysis,
                     transcript_hash=transcript_hash,
                     source=source,
                     promptVersion=cached_analysis.get("promptVersion"),
@@ -2912,6 +2937,7 @@ async def analyze_realtime_transcript(
                     return RealtimeTranscriptAnalysisResponse(
                         meeting_id=meeting_id,
                         status="completed",
+                        analysis=cached_analysis,
                         transcript_hash=transcript_hash,
                         source=source,
                         promptVersion=(

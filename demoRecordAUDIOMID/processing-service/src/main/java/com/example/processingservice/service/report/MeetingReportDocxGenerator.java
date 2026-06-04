@@ -39,6 +39,12 @@ public class MeetingReportDocxGenerator {
             addHeading(doc, "Executive Summary");
             addParagraph(doc, defaultText(report.businessSummary()));
 
+            addHeading(doc, "Keywords");
+            addBulletList(doc, report.keywords(), report.analysisAvailable());
+
+            addHeading(doc, "Technical Terms");
+            addBulletList(doc, report.technicalTerms(), report.analysisAvailable());
+
             addHeading(doc, "Key Decisions");
             addBulletList(doc, report.decisions(), report.analysisAvailable());
 
@@ -79,9 +85,19 @@ public class MeetingReportDocxGenerator {
             setCell(analysisMetadataTable.getRow(0), 0, "Field");
             setCell(analysisMetadataTable.getRow(0), 1, "Value");
             appendRow(analysisMetadataTable, "Status", report.analysisMetadata().status());
+            appendRow(analysisMetadataTable, "Cache Hit", report.analysisMetadata().cacheHit());
+            appendRow(analysisMetadataTable, "Stale", report.analysisMetadata().stale());
+            appendRow(analysisMetadataTable, "Stale Reason", report.analysisMetadata().staleReason());
+            appendRow(analysisMetadataTable, "Provider", report.analysisMetadata().provider());
+            appendRow(analysisMetadataTable, "Model", report.analysisMetadata().model());
             appendRow(analysisMetadataTable, "Prompt Version", report.analysisMetadata().promptVersion());
             appendRow(analysisMetadataTable, "Schema Version", report.analysisMetadata().schemaVersion());
             appendRow(analysisMetadataTable, "Transcript Hash", report.analysisMetadata().transcriptHash());
+            appendRow(analysisMetadataTable, "Canonical Transcript Hash", report.analysisMetadata().canonicalTranscriptHash());
+            appendRow(analysisMetadataTable, "Canonical Transcript Version", report.analysisMetadata().canonicalTranscriptVersion());
+            appendRow(analysisMetadataTable, "Analysis Input Mode", report.analysisMetadata().analysisInputMode());
+            appendRow(analysisMetadataTable, "Last Analyzed At", report.analysisMetadata().lastAnalyzedAt());
+            appendRow(analysisMetadataTable, "Retry After Seconds", report.analysisMetadata().retryAfterSeconds());
             appendRow(analysisMetadataTable, "Confidence", report.analysisMetadata().confidence());
             appendRow(analysisMetadataTable, "Domain Mode", report.analysisMetadata().domainMode());
             appendRow(analysisMetadataTable, "Source", report.analysisMetadata().source());

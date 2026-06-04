@@ -65,6 +65,8 @@ public class ProcessingService {
     private static final int APPENDIX_SHORT_FRAGMENT_MAX_NORMALIZED_LEN = APPENDIX_SHORT_FRAGMENT_MAX_CHARS;
     private static final String TRANSCRIPT_MODE_RAW = "raw";
     private static final String TRANSCRIPT_MODE_CANONICAL = "canonical";
+    private static final String ANALYSIS_STATUS_NO_ANALYSIS = "NO_ANALYSIS";
+    private static final String ANALYSIS_STATUS_STALE = "STALE";
     private static final String READABLE_TRANSCRIPT_EXPORT_NOTE =
             "Readable transcript export is generated from saved STT output and canonical transcript data when available.";
     private static final String DEFAULT_SPEAKER_STABILIZATION_VERSION = "speaker-stabilization-v1";
@@ -410,6 +412,16 @@ public class ProcessingService {
         List<Map<String, Object>> transcriptRows = stabilizedTranscript.rows();
         Map<String, Object> state = jobStateStore.getJobState(meetingId).orElse(null);
         Map<String, Object> analysisPayload = extractAnalysisFromState(state);
+        boolean stateAnalysisCompatible = hasStructuredAnalysis(analysisPayload) && hasAnalysisCacheMetadata(analysisPayload);
+        if (!stateAnalysisCompatible) {
+            analysisPayload = fetchSavedAnalysisCacheOnlyForReport(
+                    meetingId,
+                    traceId,
+                    authorization,
+                    transcriptPayload,
+                    transcriptRows
+            );
+        }
         boolean analysisAvailable = hasStructuredAnalysis(analysisPayload);
         RawTranscriptPreview readablePreview = transcriptPayload.isCanonicalMode()
                 ? buildCanonicalTranscriptPreviewRows(transcriptRows)
@@ -512,6 +524,8 @@ public class ProcessingService {
         );
 
         List<String> decisions = extractStringList(analysisPayload, "keyDecisions", "decisions");
+        List<String> keywords = extractStringList(analysisPayload, "keywords");
+        List<String> technicalTerms = extractTechnicalTerms(analysisPayload);
         List<MeetingReportData.ReportActionItem> actionItems = extractReportActionItems(analysisPayload);
         List<String> risks = extractStringList(analysisPayload, "risks");
         List<String> blockers = extractStringList(analysisPayload, "blockers");
@@ -542,13 +556,40 @@ public class ProcessingService {
                 analysisPayload.get("canonical_transcript_hash"),
                 transcriptPayload == null ? null : transcriptPayload.canonicalTranscriptHash()
         );
+        String canonicalTranscriptHash = firstNonBlank(
+                analysisPayload.get("canonicalTranscriptHash"),
+                analysisPayload.get("canonical_transcript_hash"),
+                transcriptPayload == null ? null : transcriptPayload.canonicalTranscriptHash()
+        );
+        String canonicalTranscriptVersion = firstNonBlank(
+                analysisPayload.get("canonicalTranscriptVersion"),
+                analysisPayload.get("canonical_transcript_version"),
+                transcriptPayload == null ? null : transcriptPayload.canonicalTranscriptVersion()
+        );
+        String analysisInputMode = firstNonBlank(
+                analysisPayload.get("analysisInputMode"),
+                analysisPayload.get("analysis_input_mode"),
+                transcriptPayload == null
+                        ? null
+                        : (transcriptPayload.isCanonicalMode() ? "canonical" : "readable_fallback")
+        );
         String source = resolveAnalysisMetadataSource(analysisPayload, promptVersion, schemaVersion, analysisAvailable);
 
         MeetingReportData.AnalysisMetadata analysisMetadata = new MeetingReportData.AnalysisMetadata(
                 resolveAnalysisMetadataStatus(analysisPayload, state, analysisAvailable),
+                safeCell(analysisPayload.get("cacheHit")),
+                safeCell(analysisPayload.get("stale")),
+                safeCell(analysisPayload.get("staleReason")),
+                safeCell(analysisPayload.get("provider")),
+                safeCell(analysisPayload.get("model")),
                 promptVersion,
                 schemaVersion,
                 transcriptHash,
+                canonicalTranscriptHash,
+                canonicalTranscriptVersion,
+                analysisInputMode,
+                safeCell(analysisPayload.get("lastAnalyzedAt")),
+                safeCell(analysisPayload.get("retryAfterSeconds")),
                 safeCell(analysisPayload.get("confidence")),
                 firstNonBlank(analysisPayload.get("domainMode"), analysisPayload.get("domain_mode")),
                 source
@@ -557,6 +598,8 @@ public class ProcessingService {
         return new MeetingReportData(
                 metadata,
                 summary,
+                keywords,
+                technicalTerms,
                 decisions,
                 actionItems,
                 risks,
@@ -1651,6 +1694,36 @@ public class ProcessingService {
         return results;
     }
 
+    private List<String> extractTechnicalTerms(Map<String, Object> analysisPayload) {
+        Object raw = analysisPayload.get("technicalTerms");
+        if (!(raw instanceof List<?>)) {
+            raw = analysisPayload.get("technical_terms");
+        }
+        if (!(raw instanceof List<?> terms) || terms.isEmpty()) {
+            return List.of();
+        }
+        List<String> results = new ArrayList<>();
+        Set<String> seen = new LinkedHashSet<>();
+        for (Object item : terms) {
+            String text;
+            if (item instanceof Map<?, ?> map) {
+                String term = firstNonBlank(map.get("term"), map.get("title"), map.get("name"));
+                String meaning = firstNonBlank(map.get("meaning"), map.get("description"));
+                text = meaning.isBlank() ? term : term + " - " + meaning;
+            } else {
+                text = item == null ? "" : String.valueOf(item).trim();
+            }
+            if (text.isBlank()) {
+                continue;
+            }
+            String key = text.toLowerCase(Locale.ROOT);
+            if (seen.add(key)) {
+                results.add(text);
+            }
+        }
+        return results;
+    }
+
     private List<String> extractStringList(Map<String, Object> payload, String... keys) {
         for (String key : keys) {
             Object value = payload.get(key);
@@ -1695,9 +1768,9 @@ public class ProcessingService {
             boolean analysisAvailable
     ) {
         String status = firstNonBlank(
-                analysisPayload.get("status"),
                 analysisPayload.get("analysisStatus"),
-                analysisPayload.get("analysis_status")
+                analysisPayload.get("analysis_status"),
+                analysisPayload.get("status")
         );
         if (status.isBlank() && analysisAvailable && state != null) {
             status = firstNonBlank(
@@ -1706,7 +1779,29 @@ public class ProcessingService {
                     state.get("status")
             );
         }
-        return status.isBlank() ? "" : status.toLowerCase(Locale.ROOT);
+        return status.isBlank() ? "" : status;
+    }
+
+    private boolean hasAnalysisCacheMetadata(Map<String, Object> analysisPayload) {
+        if (analysisPayload == null || analysisPayload.isEmpty()) {
+            return false;
+        }
+        return !firstNonBlank(
+                analysisPayload.get("analysisStatus"),
+                analysisPayload.get("analysis_status"),
+                analysisPayload.get("cacheHit"),
+                analysisPayload.get("stale"),
+                analysisPayload.get("staleReason"),
+                analysisPayload.get("provider"),
+                analysisPayload.get("model"),
+                analysisPayload.get("canonicalTranscriptHash"),
+                analysisPayload.get("canonical_transcript_hash"),
+                analysisPayload.get("canonicalTranscriptVersion"),
+                analysisPayload.get("canonical_transcript_version"),
+                analysisPayload.get("analysisInputMode"),
+                analysisPayload.get("analysis_input_mode"),
+                analysisPayload.get("lastAnalyzedAt")
+        ).isBlank();
     }
 
     private String resolveAnalysisMetadataSource(
@@ -2443,6 +2538,236 @@ public class ProcessingService {
         return Map.of();
     }
 
+    private Map<String, Object> fetchSavedAnalysisCacheOnlyForReport(
+            Long meetingId,
+            String traceId,
+            String authorization,
+            TranscriptPayload transcriptPayload,
+            List<Map<String, Object>> transcriptRows
+    ) {
+        String transcriptText = buildTranscriptText(transcriptRows);
+        String transcriptHash = resolveReportTranscriptHash(transcriptPayload, transcriptText);
+        String promptVersion = resolvePromptVersion(null);
+        String schemaVersion = resolveSchemaVersion(null);
+        if (transcriptText.isBlank()) {
+            return buildReportAnalysisMetadata(
+                    ANALYSIS_STATUS_NO_ANALYSIS,
+                    false,
+                    null,
+                    transcriptHash,
+                    transcriptPayload,
+                    promptVersion,
+                    schemaVersion,
+                    null,
+                    "empty_transcript"
+            );
+        }
+
+        try {
+            Map<String, Object> aiResponse = aiServiceClient.getSavedAnalysisCacheOnly(
+                    meetingId,
+                    transcriptText,
+                    transcriptHash,
+                    promptVersion,
+                    schemaVersion,
+                    traceId,
+                    authorization
+            );
+            return normalizeCacheOnlyAnalysisResponse(
+                    aiResponse,
+                    transcriptHash,
+                    transcriptPayload,
+                    promptVersion,
+                    schemaVersion
+            );
+        } catch (HttpStatusCodeException ex) {
+            if (ex.getStatusCode().value() == HttpStatus.NOT_FOUND.value()) {
+                return buildReportAnalysisMetadata(
+                        ANALYSIS_STATUS_NO_ANALYSIS,
+                        false,
+                        null,
+                        transcriptHash,
+                        transcriptPayload,
+                        promptVersion,
+                        schemaVersion,
+                        null,
+                        null
+                );
+            }
+            log.warn(
+                    "event=AI_SERVICE_CALL_FAILED traceId={} requestId={} meetingId={} source=report_cache_only httpStatus={} errorCode=DOWNSTREAM_HTTP_ERROR",
+                    traceId,
+                    currentRequestId(traceId),
+                    meetingId,
+                    ex.getStatusCode().value()
+            );
+            return buildReportAnalysisMetadata(
+                    ANALYSIS_STATUS_NO_ANALYSIS,
+                    false,
+                    null,
+                    transcriptHash,
+                    transcriptPayload,
+                    promptVersion,
+                    schemaVersion,
+                    ex.getStatusCode().value(),
+                    "cache_only_unavailable"
+            );
+        } catch (Exception ex) {
+            log.warn(
+                    "event=AI_SERVICE_CALL_FAILED traceId={} requestId={} meetingId={} source=report_cache_only errorCode={}",
+                    traceId,
+                    currentRequestId(traceId),
+                    meetingId,
+                    ex.getClass().getSimpleName()
+            );
+            return buildReportAnalysisMetadata(
+                    ANALYSIS_STATUS_NO_ANALYSIS,
+                    false,
+                    null,
+                    transcriptHash,
+                    transcriptPayload,
+                    promptVersion,
+                    schemaVersion,
+                    null,
+                    "cache_only_unavailable"
+            );
+        }
+    }
+
+    private Map<String, Object> normalizeCacheOnlyAnalysisResponse(
+            Map<String, Object> aiResponse,
+            String transcriptHash,
+            TranscriptPayload transcriptPayload,
+            String promptVersion,
+            String schemaVersion
+    ) {
+        if (aiResponse == null || aiResponse.isEmpty()) {
+            return buildReportAnalysisMetadata(
+                    ANALYSIS_STATUS_NO_ANALYSIS,
+                    false,
+                    null,
+                    transcriptHash,
+                    transcriptPayload,
+                    promptVersion,
+                    schemaVersion,
+                    null,
+                    null
+            );
+        }
+
+        Map<String, Object> payload = new HashMap<>();
+        Object nestedAnalysis = aiResponse.get("analysis");
+        if (nestedAnalysis instanceof Map<?, ?> nestedMap) {
+            for (Map.Entry<?, ?> entry : nestedMap.entrySet()) {
+                payload.put(String.valueOf(entry.getKey()), entry.getValue());
+            }
+        }
+
+        copyAnalysisMetadata(aiResponse, payload);
+        payload.putIfAbsent("transcriptHash", transcriptHash);
+        payload.putIfAbsent("transcript_hash", transcriptHash);
+        payload.putIfAbsent("promptVersion", promptVersion);
+        payload.putIfAbsent("schemaVersion", schemaVersion);
+        if (transcriptPayload != null) {
+            if (transcriptPayload.canonicalTranscriptHash() != null) {
+                payload.putIfAbsent("canonicalTranscriptHash", transcriptPayload.canonicalTranscriptHash());
+            }
+            if (transcriptPayload.canonicalTranscriptVersion() != null) {
+                payload.putIfAbsent("canonicalTranscriptVersion", transcriptPayload.canonicalTranscriptVersion());
+            }
+        }
+        payload.putIfAbsent("source", "export_report_cache_only");
+        String analysisStatus = firstNonBlank(payload.get("analysisStatus"), payload.get("status"));
+        if (analysisStatus.isBlank()) {
+            payload.put("analysisStatus", hasStructuredAnalysis(payload) ? "COMPLETED" : ANALYSIS_STATUS_NO_ANALYSIS);
+        }
+        if (!hasStructuredAnalysis(payload) && "completed".equalsIgnoreCase(firstNonBlank(payload.get("status")))) {
+            payload.put("analysisStatus", ANALYSIS_STATUS_NO_ANALYSIS);
+        }
+        return payload;
+    }
+
+    private void copyAnalysisMetadata(Map<String, Object> source, Map<String, Object> target) {
+        for (String key : List.of(
+                "status",
+                "analysisStatus",
+                "cacheHit",
+                "stale",
+                "staleReason",
+                "provider",
+                "model",
+                "promptVersion",
+                "schemaVersion",
+                "transcript_hash",
+                "transcriptHash",
+                "canonicalTranscriptHash",
+                "canonicalTranscriptVersion",
+                "analysisInputMode",
+                "lastAnalyzedAt",
+                "retryAfterSeconds",
+                "source",
+                "reason",
+                "errorCode"
+        )) {
+            if (source.containsKey(key) && source.get(key) != null) {
+                target.put(key, source.get(key));
+            }
+        }
+    }
+
+    private Map<String, Object> buildReportAnalysisMetadata(
+            String analysisStatus,
+            boolean stale,
+            String staleReason,
+            String transcriptHash,
+            TranscriptPayload transcriptPayload,
+            String promptVersion,
+            String schemaVersion,
+            Object retryAfterSeconds,
+            String reason
+    ) {
+        Map<String, Object> metadata = new HashMap<>();
+        metadata.put("status", analysisStatus == null ? ANALYSIS_STATUS_NO_ANALYSIS : analysisStatus);
+        metadata.put("analysisStatus", analysisStatus == null ? ANALYSIS_STATUS_NO_ANALYSIS : analysisStatus);
+        metadata.put("cacheHit", false);
+        metadata.put("stale", stale);
+        if (staleReason != null && !staleReason.isBlank()) {
+            metadata.put("staleReason", staleReason);
+        }
+        metadata.put("transcriptHash", transcriptHash);
+        metadata.put("transcript_hash", transcriptHash);
+        metadata.put("promptVersion", promptVersion);
+        metadata.put("schemaVersion", schemaVersion);
+        if (transcriptPayload != null) {
+            if (transcriptPayload.canonicalTranscriptHash() != null) {
+                metadata.put("canonicalTranscriptHash", transcriptPayload.canonicalTranscriptHash());
+            }
+            if (transcriptPayload.canonicalTranscriptVersion() != null) {
+                metadata.put("canonicalTranscriptVersion", transcriptPayload.canonicalTranscriptVersion());
+            }
+            metadata.put("analysisInputMode", transcriptPayload.isCanonicalMode() ? "canonical" : "readable_fallback");
+        }
+        if (retryAfterSeconds != null) {
+            metadata.put("retryAfterSeconds", retryAfterSeconds);
+        }
+        if (reason != null && !reason.isBlank()) {
+            metadata.put("reason", reason);
+        }
+        metadata.put("source", "export_report_cache_only");
+        return metadata;
+    }
+
+    private String resolveReportTranscriptHash(TranscriptPayload transcriptPayload, String transcriptText) {
+        String canonicalHash = transcriptPayload == null ? "" : firstNonBlank(transcriptPayload.canonicalTranscriptHash());
+        if (!canonicalHash.isBlank()) {
+            return canonicalHash;
+        }
+        if (transcriptText == null || transcriptText.isBlank()) {
+            return "";
+        }
+        return computeTranscriptHash(transcriptText);
+    }
+
     private AnalysisTriggerResult maybeTriggerRealtimeAnalysisLazy(
             Long meetingId,
             String traceId,
@@ -2824,6 +3149,9 @@ public class ProcessingService {
             return false;
         }
         String summary = safeErrorText(payload.get("summary"));
+        if (summary.isBlank()) {
+            summary = safeErrorText(payload.get("meetingSummary"));
+        }
         if (!summary.isBlank()) {
             return true;
         }

@@ -1,4 +1,7 @@
-from app.config import Settings
+import sys
+import builtins
+
+from app.config import Settings, get_runtime_device
 
 
 def test_distributed_ownership_rollback_alias_disables_stt_ownership(monkeypatch):
@@ -99,3 +102,27 @@ def test_gemini_provider_values_load_from_env(monkeypatch):
     assert settings.gemini_max_tokens_retry_enabled is False
     assert settings.gemini_max_single_request_chars == 30000
     assert settings.gemini_request_delay_seconds == 20.0
+
+
+def test_runtime_device_falls_back_to_cpu_without_torch(monkeypatch):
+    import app.config as config_module
+
+    real_import = builtins.__import__
+
+    monkeypatch.setattr(
+        config_module,
+        "get_settings",
+        lambda: Settings(_env_file=None, device="auto"),
+    )
+    monkeypatch.delitem(sys.modules, "torch", raising=False)
+    monkeypatch.setattr(
+        builtins,
+        "__import__",
+        lambda name, *args, **kwargs: (
+            (_ for _ in ()).throw(ModuleNotFoundError(name="torch"))
+            if name == "torch"
+            else real_import(name, *args, **kwargs)
+        ),
+    )
+
+    assert get_runtime_device() == "cpu"

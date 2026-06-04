@@ -61,7 +61,10 @@ services:
       - "8083:8083"
 
   ai-api:
-    build: ../demoRecordAUDIOMID/ai-service
+    build:
+      context: ../demoRecordAUDIOMID/ai-service
+      args:
+        INSTALL_OFFLINE_STT: "false"
     container_name: ai-api
     env_file:
       - ../demoRecordAUDIOMID/ai-service/.env
@@ -125,7 +128,10 @@ services:
       - "8000:8000"
 
   celery-worker:
-    build: ../demoRecordAUDIOMID/ai-service
+    build:
+      context: ../demoRecordAUDIOMID/ai-service
+      args:
+        INSTALL_OFFLINE_STT: "false"
     container_name: celery-worker
     command: sh -c "celery -A app.celery_app.celery_app worker --loglevel=INFO --concurrency=${CELERY_CONCURRENCY:-4} --prefetch-multiplier=${CELERY_PREFETCH_MULTIPLIER:-1}"
     environment:

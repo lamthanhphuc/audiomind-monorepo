@@ -374,3 +374,43 @@ def test_realtime_cache_hit_skips_provider_and_returns_metadata(
         .count()
         == 1
     )
+
+
+def test_realtime_cache_only_hit_does_not_initialize_provider(db_session, monkeypatch):
+    meeting_id = 7006
+    transcript = "Speaker 1: can cap nhat API gateway"
+    transcript_hash = main_module._compute_transcript_hash(transcript, None)
+    analyzer = FakeRealtimeAnalyzer()
+    _seed_completed_run(
+        db_session,
+        meeting_id=meeting_id,
+        analyzer=analyzer,
+        summary="Export cached summary",
+        fallback_text=transcript,
+        fallback_hash=transcript_hash,
+        recognition_mode=None,
+        transcript_language=None,
+    )
+    monkeypatch.setattr(
+        main_module,
+        "_get_realtime_analysis_analyzer",
+        lambda: (_ for _ in ()).throw(AssertionError("provider initialized")),
+    )
+    monkeypatch.setattr(main_module, "set_job_status", lambda **kwargs: None)
+    request = RealtimeTranscriptAnalysisRequest(
+        meeting_id=meeting_id,
+        transcript=transcript,
+        source="export_report",
+        transcript_hash=transcript_hash,
+        prompt_version="prompt-v1",
+        schema_version="schema-v1",
+        mode="cache_only",
+    )
+
+    response = asyncio.run(main_module.analyze_realtime_transcript(request, db_session))
+
+    assert analyzer.calls == []
+    assert response.status == "completed"
+    assert response.analysis["summary"] == "Export cached summary"
+    assert response.analysisStatus == "COMPLETED"
+    assert response.cacheHit is True
