@@ -2753,6 +2753,7 @@ async def analyze_realtime_transcript(
                 return RealtimeTranscriptAnalysisResponse(
                     meeting_id=meeting_id,
                     status="completed",
+                    analysis=cached_analysis,
                     transcript_hash=transcript_hash,
                     source=source,
                     promptVersion=cached_analysis.get("promptVersion"),
@@ -2912,6 +2913,7 @@ async def analyze_realtime_transcript(
                     return RealtimeTranscriptAnalysisResponse(
                         meeting_id=meeting_id,
                         status="completed",
+                        analysis=cached_analysis,
                         transcript_hash=transcript_hash,
                         source=source,
                         promptVersion=(

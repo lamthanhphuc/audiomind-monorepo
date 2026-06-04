@@ -5,6 +5,8 @@ import java.util.List;
 public record MeetingReportData(
         MeetingMetadata meetingMetadata,
         String businessSummary,
+        List<String> keywords,
+        List<String> technicalTerms,
         List<String> decisions,
         List<ReportActionItem> actionItems,
         List<String> risks,
@@ -59,9 +61,19 @@ public record MeetingReportData(
 
     public record AnalysisMetadata(
             String status,
+            String cacheHit,
+            String stale,
+            String staleReason,
+            String provider,
+            String model,
             String promptVersion,
             String schemaVersion,
             String transcriptHash,
+            String canonicalTranscriptHash,
+            String canonicalTranscriptVersion,
+            String analysisInputMode,
+            String lastAnalyzedAt,
+            String retryAfterSeconds,
             String confidence,
             String domainMode,
             String source

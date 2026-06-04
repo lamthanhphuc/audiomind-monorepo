@@ -174,6 +174,7 @@ class AnalysisRerunRequest(BaseModel):
 class RealtimeTranscriptAnalysisResponse(BaseModel):
     meeting_id: int
     status: str
+    analysis: Optional[Dict[str, Any]] = None
     reason: Optional[str] = None
     transcript_hash: Optional[str] = None
     source: Optional[str] = None

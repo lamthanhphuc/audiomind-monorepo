@@ -246,4 +246,55 @@ class AIServiceClientTest {
         assertEquals("Bearer test-token", entity.getHeaders().getFirst(HttpHeaders.AUTHORIZATION));
         assertEquals("application/json", entity.getHeaders().getContentType().toString());
     }
+
+    @Test
+    void getSavedAnalysisCacheOnly_shouldPostCacheOnlyPayloadToInternalEndpoint() {
+        RestTemplate restTemplate = mock(RestTemplate.class);
+        AIServiceClient client = new AIServiceClient(restTemplate);
+        ReflectionTestUtils.setField(client, "aiUrl", "http://ai-service");
+
+        ResponseEntity<Map<String, Object>> response = new ResponseEntity<>(
+                Map.of("status", "completed", "cacheHit", true),
+                HttpStatus.OK
+        );
+        when(restTemplate.exchange(
+                any(String.class),
+                eq(HttpMethod.POST),
+                any(HttpEntity.class),
+                any(org.springframework.core.ParameterizedTypeReference.class)
+        )).thenReturn(response);
+
+        Map<String, Object> result = client.getSavedAnalysisCacheOnly(
+                55L,
+                "Speaker 1: export text",
+                "hash-55",
+                "prompt-v1",
+                "schema-v1",
+                "trace-cache-only",
+                "Bearer test-token"
+        );
+
+        assertEquals("completed", result.get("status"));
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<HttpEntity<Map<String, Object>>> captor = ArgumentCaptor.forClass(HttpEntity.class);
+        verify(restTemplate).exchange(
+                eq("http://ai-service/api/internal/realtime-analysis"),
+                eq(HttpMethod.POST),
+                captor.capture(),
+                any(org.springframework.core.ParameterizedTypeReference.class)
+        );
+
+        HttpEntity<Map<String, Object>> entity = captor.getValue();
+        Map<String, Object> payload = entity.getBody();
+        assertEquals(55L, payload.get("meeting_id"));
+        assertEquals("Speaker 1: export text", payload.get("transcript"));
+        assertEquals("export_report", payload.get("source"));
+        assertEquals("cache_only", payload.get("mode"));
+        assertEquals("hash-55", payload.get("transcript_hash"));
+        assertEquals("prompt-v1", payload.get("prompt_version"));
+        assertEquals("schema-v1", payload.get("schema_version"));
+        assertEquals("Bearer test-token", entity.getHeaders().getFirst(HttpHeaders.AUTHORIZATION));
+        assertEquals("application/json", entity.getHeaders().getContentType().toString());
+    }
 }

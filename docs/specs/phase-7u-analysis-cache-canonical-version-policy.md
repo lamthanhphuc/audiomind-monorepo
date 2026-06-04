@@ -410,6 +410,17 @@ Policy:
 - A minimal AI-service `POST /api/meeting/{meeting_id}/analysis/rerun` route is available; processing-service/front-end wiring remains out of scope.
 - DOCX/export DB fallback remains deferred to 7U-E, and FE status/reanalyze UI remains deferred to 7U-F.
 
+7U-E implementation note:
+
+- Processing-service DOCX/report generation now uses this analysis source order: compatible Redis/job-state analysis first, then AI-service cache-only durable analysis lookup, then transcript-only export with explicit analysis metadata.
+- The fallback uses AI-service `/api/internal/realtime-analysis` with `mode=cache_only`, so export/report never starts Gemini/provider work.
+- Cache-hit DOCX reports can render durable cached summary, keywords, technical terms, action items, and full analysis metadata even when Redis job state lacks analysis.
+- Missing, stale, 404, or downstream-unavailable cache lookups do not fail report generation when transcript data exists; the report shows `NO_ANALYSIS` or `STALE` metadata, including `staleReason` and `retryAfterSeconds` when available.
+- DOCX analysis metadata now includes status, cache hit, stale state/reason, provider, model, prompt/schema versions, transcript/canonical hash and version, input mode, last analyzed timestamp, retry-after, confidence, domain mode, and source.
+- Raw TXT/CSV transcript export remains transcript-only and does not perform analysis fallback.
+- FE cached/stale/reanalyze status UI remains deferred to 7U-F.
+- Final smoke checklist remains deferred to 7U-G.
+
 ## Test Matrix
 
 - Cache hit does not call Gemini.

@@ -202,6 +202,17 @@ Recommended first PR after this docs polish:
 - A minimal AI-service rerun endpoint was added at `POST /api/meeting/{meeting_id}/analysis/rerun`.
 - DOCX/export DB fallback is still deferred to 7U-E; FE status/reanalyze UI is still deferred to 7U-F.
 
+7U-E implementation note:
+
+- DOCX/report DB fallback is implemented in processing-service using a cache-only AI-service analysis lookup when Redis/job-state analysis is missing or lacks cache metadata.
+- Export/report does not trigger Gemini/provider calls: the new processing client method posts to `/api/internal/realtime-analysis` with `mode=cache_only`, and report generation never calls the lazy `getAnalysis` path.
+- AI-service cache-hit responses now include the cached analysis payload alongside metadata so DOCX can render durable DB/cache summaries and sections after Redis job state expires.
+- Missing, stale, 404, and downstream-unavailable cache lookups still generate transcript reports when transcript data exists, with visible `NO_ANALYSIS` or `STALE` metadata and `staleReason`/`retryAfterSeconds` when supplied.
+- DOCX metadata now exposes analysis status, cache hit, stale state/reason, provider, model, prompt/schema versions, transcript/canonical hash and version, analysis input mode, last analyzed timestamp, retry-after, confidence, domain mode, and source.
+- Raw TXT/CSV transcript exports remain unchanged and do not request analysis fallback.
+- FE status/reanalyze UI remains deferred to 7U-F.
+- Final smoke checklist remains deferred to 7U-G.
+
 ## Risks If Extending Existing `analysis` Table
 
 - Relaxing unique `meeting_id` early can break existing readers that assume one current analysis row per meeting.
