@@ -146,6 +146,9 @@ class AnalysisResponse(BaseModel):
     canonicalTranscriptVersion: Optional[str] = None
     analysisInputMode: Optional[str] = None
     lastAnalyzedAt: Optional[datetime] = None
+    stale: Optional[bool] = None
+    staleReason: Optional[str] = None
+    retryAfterSeconds: Optional[int] = None
 
     class Config:
         from_attributes = True
@@ -159,6 +162,13 @@ class RealtimeTranscriptAnalysisRequest(BaseModel):
     transcript_hash: Optional[str] = None
     prompt_version: Optional[str] = None
     schema_version: Optional[str] = None
+    mode: Optional[str] = "auto"
+    reason: Optional[str] = None
+
+
+class AnalysisRerunRequest(BaseModel):
+    mode: Optional[str] = "force"
+    reason: Optional[str] = None
 
 
 class RealtimeTranscriptAnalysisResponse(BaseModel):
@@ -179,6 +189,8 @@ class RealtimeTranscriptAnalysisResponse(BaseModel):
     canonicalTranscriptVersion: Optional[str] = None
     analysisInputMode: Optional[str] = None
     lastAnalyzedAt: Optional[datetime] = None
+    stale: Optional[bool] = None
+    staleReason: Optional[str] = None
 
 
 class SttStreamResponse(BaseModel):

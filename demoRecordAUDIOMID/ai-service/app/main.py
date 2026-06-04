@@ -47,6 +47,7 @@ from app.services.ai_analyzer import AIAnalyzer
 from app.schemas import (
     ActionItem,
     AnalysisPainPoint,
+    AnalysisRerunRequest,
     AnalysisResponse,
     AnalysisTechnicalTerm,
     ProcessRequest,
@@ -67,11 +68,25 @@ from app.services.analysis_errors import (
 )
 from app.services.analysis_factory import build_analysis_analyzer
 from app.services.analysis_runs import (
+    ANALYSIS_MODE_CACHE_ONLY,
+    ANALYSIS_MODE_FAILED_RETRY,
+    ANALYSIS_MODE_FORCE,
+    ANALYSIS_RETRYABLE_FAILURE_STATUSES,
+    ANALYSIS_STATUS_ANALYZING,
+    ANALYSIS_STATUS_FAILED,
+    ANALYSIS_STATUS_RATE_LIMITED,
     analysis_payload_from_run,
+    analysis_miss_response_metadata,
     analysis_run_response_metadata,
+    begin_analysis_run,
     build_analysis_cache_identity,
+    build_analysis_run_idempotency_key_for_identity,
     find_completed_analysis_run_for_identity,
+    find_in_progress_analysis_run_for_identity,
+    find_latest_analysis_run_for_identity,
     latest_completed_analysis_run,
+    mark_analysis_run_failed,
+    normalize_analysis_mode,
     persist_completed_analysis_run,
 )
 from app.services.glossary_repository import GlossaryRepository
@@ -1500,6 +1515,10 @@ def _normalize_analysis_payload(raw_analysis: dict[str, Any]) -> dict[str, Any]:
         "transcriptHash": transcript_hash,
         "source": source,
         "cacheHit": raw_analysis.get("cacheHit"),
+        "analysisStatus": raw_analysis.get("analysisStatus"),
+        "stale": raw_analysis.get("stale"),
+        "staleReason": raw_analysis.get("staleReason"),
+        "retryAfterSeconds": raw_analysis.get("retryAfterSeconds"),
     }
 
 
@@ -1976,6 +1995,8 @@ def _analyze_and_persist_realtime_transcript(
     source: str,
     domain_mode: str | None,
     db: Session,
+    analysis_run=None,
+    rerun_reason: str | None = None,
 ):
     analyzer = _get_realtime_analysis_analyzer()
     if analyzer is None:
@@ -2070,6 +2091,8 @@ def _analyze_and_persist_realtime_transcript(
         fallback_transcript_hash=transcript_hash,
         fallback_text=transcript_text,
         requested_by=source,
+        rerun_reason=rerun_reason,
+        run=analysis_run,
     )
     db.commit()
     run_metadata = analysis_run_response_metadata(analysis_run, cache_hit=False)
@@ -2104,6 +2127,8 @@ def _analyze_and_persist_realtime_transcript(
         canonicalTranscriptVersion=run_metadata.get("canonicalTranscriptVersion"),
         analysisInputMode=run_metadata.get("analysisInputMode"),
         lastAnalyzedAt=run_metadata.get("lastAnalyzedAt"),
+        stale=run_metadata.get("stale"),
+        staleReason=run_metadata.get("staleReason"),
     )
 
 
@@ -2408,6 +2433,10 @@ async def get_analysis(meeting_id: int, db: Session = Depends(get_db)):
                 ),
                 analysisInputMode=run_metadata.get("analysisInputMode"),
                 lastAnalyzedAt=run_metadata.get("lastAnalyzedAt"),
+                stale=run_metadata.get("stale") or normalized.get("stale"),
+                staleReason=run_metadata.get("staleReason")
+                or normalized.get("staleReason"),
+                retryAfterSeconds=normalized.get("retryAfterSeconds"),
             )
 
         if pipeline is None:
@@ -2486,6 +2515,10 @@ async def get_analysis(meeting_id: int, db: Session = Depends(get_db)):
             canonicalTranscriptVersion=run_metadata.get("canonicalTranscriptVersion"),
             analysisInputMode=run_metadata.get("analysisInputMode"),
             lastAnalyzedAt=run_metadata.get("lastAnalyzedAt"),
+            stale=run_metadata.get("stale") or normalized.get("stale"),
+            staleReason=run_metadata.get("staleReason")
+            or normalized.get("staleReason"),
+            retryAfterSeconds=normalized.get("retryAfterSeconds"),
         )
 
     except HTTPException:
@@ -2503,6 +2536,99 @@ async def get_analysis(meeting_id: int, db: Session = Depends(get_db)):
             status_code=500,
             detail=f"Internal server error. request_id={request_id}",
         )
+
+
+def _meeting_transcript_text_for_analysis(db: Session, meeting_id: int) -> str:
+    latest_canonical = (
+        db.query(Transcript)
+        .filter(
+            Transcript.meeting_id == meeting_id,
+            Transcript.canonical_transcript_rows.isnot(None),
+        )
+        .order_by(Transcript.id.desc())
+        .first()
+    )
+    if latest_canonical and isinstance(
+        latest_canonical.canonical_transcript_rows, list
+    ):
+        canonical_lines = []
+        for row in latest_canonical.canonical_transcript_rows:
+            if not isinstance(row, dict):
+                continue
+            text = str(row.get("text") or "").strip()
+            if not text:
+                continue
+            speaker = str(row.get("speaker") or "SPEAKER_1").strip() or "SPEAKER_1"
+            canonical_lines.append(f"{speaker}: {text}")
+        if canonical_lines:
+            return "\n".join(canonical_lines)
+
+    rows = (
+        db.query(Transcript)
+        .filter(Transcript.meeting_id == meeting_id)
+        .order_by(Transcript.start_time.asc(), Transcript.id.asc())
+        .all()
+    )
+    lines = []
+    for row in rows:
+        text = str(row.text or "").strip()
+        if not text:
+            continue
+        speaker = str(row.speaker or "SPEAKER_1").strip() or "SPEAKER_1"
+        lines.append(f"{speaker}: {text}")
+    return "\n".join(lines).strip()
+
+
+@app.post("/api/meeting/{meeting_id}/analysis/rerun", response_model=AnalysisResponse)
+async def rerun_analysis(
+    meeting_id: int,
+    request: AnalysisRerunRequest,
+    db: Session = Depends(get_db),
+):
+    transcript_text = _meeting_transcript_text_for_analysis(db, meeting_id)
+    if not transcript_text:
+        raise HTTPException(status_code=404, detail="Transcript not found")
+
+    mode = normalize_analysis_mode(request.mode or ANALYSIS_MODE_FORCE)
+    realtime_response = await analyze_realtime_transcript(
+        RealtimeTranscriptAnalysisRequest(
+            meeting_id=meeting_id,
+            transcript=transcript_text,
+            source="rerun",
+            transcript_hash=_compute_transcript_hash(transcript_text, None),
+            mode=mode,
+            reason=request.reason,
+        ),
+        db,
+    )
+    if realtime_response.status == "completed":
+        return await get_analysis(meeting_id, db)
+
+    return AnalysisResponse(
+        meeting_id=meeting_id,
+        summary="",
+        meetingSummary="",
+        keywords=[],
+        technical_terms=[],
+        action_items=[],
+        created_at=datetime.now(timezone.utc),
+        status=realtime_response.status,
+        source=realtime_response.source,
+        transcript_hash=realtime_response.transcript_hash,
+        promptVersion=realtime_response.promptVersion,
+        schemaVersion=realtime_response.schemaVersion,
+        analysisStatus=realtime_response.analysisStatus,
+        cacheHit=realtime_response.cacheHit,
+        provider=realtime_response.provider,
+        model=realtime_response.model,
+        canonicalTranscriptHash=realtime_response.canonicalTranscriptHash,
+        canonicalTranscriptVersion=realtime_response.canonicalTranscriptVersion,
+        analysisInputMode=realtime_response.analysisInputMode,
+        lastAnalyzedAt=realtime_response.lastAnalyzedAt,
+        stale=realtime_response.stale,
+        staleReason=realtime_response.staleReason,
+        retryAfterSeconds=realtime_response.retryAfterSeconds,
+    )
 
 
 @app.post(
@@ -2537,11 +2663,26 @@ async def analyze_realtime_transcript(
         schema_version = _normalize_analysis_version(
             request.schema_version, AIAnalyzer.SCHEMA_VERSION
         )
+        mode = normalize_analysis_mode(request.mode)
         analysis_cache_key = _analysis_cache_key(
             transcript_hash, prompt_version, schema_version
         )
         analyzer = _get_realtime_analysis_analyzer()
         cache_identity = None
+        active_analysis_run = None
+        if analyzer is None and mode == ANALYSIS_MODE_CACHE_ONLY:
+            return RealtimeTranscriptAnalysisResponse(
+                meeting_id=meeting_id,
+                status="no_analysis",
+                transcript_hash=transcript_hash,
+                source=source,
+                promptVersion=prompt_version,
+                schemaVersion=schema_version,
+                analysisStatus="NO_ANALYSIS",
+                cacheHit=False,
+                stale=False,
+                staleReason=None,
+            )
         if analyzer is not None:
             cache_identity = build_analysis_cache_identity(
                 db=db,
@@ -2554,8 +2695,13 @@ async def analyze_realtime_transcript(
                     "schemaVersion": schema_version,
                 },
             )
-            cached_analysis_run = find_completed_analysis_run_for_identity(
-                db, cache_identity
+            analysis_cache_key = build_analysis_run_idempotency_key_for_identity(
+                cache_identity
+            )
+            cached_analysis_run = (
+                None
+                if mode == ANALYSIS_MODE_FORCE
+                else find_completed_analysis_run_for_identity(db, cache_identity)
             )
             if cached_analysis_run is not None:
                 logger.info(
@@ -2623,7 +2769,98 @@ async def analyze_realtime_transcript(
                     ),
                     analysisInputMode=cached_analysis.get("analysisInputMode"),
                     lastAnalyzedAt=cached_analysis.get("lastAnalyzedAt"),
+                    stale=cached_analysis.get("stale"),
+                    staleReason=cached_analysis.get("staleReason"),
                 )
+
+            in_progress_run = find_in_progress_analysis_run_for_identity(
+                db, cache_identity
+            )
+            if in_progress_run is not None:
+                run_metadata = analysis_run_response_metadata(
+                    in_progress_run, cache_hit=False
+                )
+                return RealtimeTranscriptAnalysisResponse(
+                    meeting_id=meeting_id,
+                    status="skipped",
+                    reason="in_progress",
+                    transcript_hash=transcript_hash,
+                    source=source,
+                    promptVersion=prompt_version,
+                    schemaVersion=schema_version,
+                    retryAfterSeconds=1,
+                    analysisStatus=run_metadata.get("analysisStatus"),
+                    cacheHit=False,
+                    provider=run_metadata.get("provider"),
+                    model=run_metadata.get("model"),
+                    canonicalTranscriptHash=run_metadata.get("canonicalTranscriptHash"),
+                    canonicalTranscriptVersion=run_metadata.get(
+                        "canonicalTranscriptVersion"
+                    ),
+                    analysisInputMode=run_metadata.get("analysisInputMode"),
+                    lastAnalyzedAt=run_metadata.get("lastAnalyzedAt"),
+                    stale=run_metadata.get("stale"),
+                    staleReason=run_metadata.get("staleReason"),
+                )
+
+            if mode == ANALYSIS_MODE_CACHE_ONLY:
+                miss_metadata = analysis_miss_response_metadata(db, cache_identity)
+                return RealtimeTranscriptAnalysisResponse(
+                    meeting_id=meeting_id,
+                    status=str(
+                        miss_metadata.get("analysisStatus") or "NO_ANALYSIS"
+                    ).lower(),
+                    transcript_hash=transcript_hash,
+                    source=source,
+                    promptVersion=prompt_version,
+                    schemaVersion=schema_version,
+                    analysisStatus=miss_metadata.get("analysisStatus"),
+                    cacheHit=False,
+                    provider=miss_metadata.get("provider"),
+                    model=miss_metadata.get("model"),
+                    canonicalTranscriptHash=miss_metadata.get(
+                        "canonicalTranscriptHash"
+                    ),
+                    canonicalTranscriptVersion=miss_metadata.get(
+                        "canonicalTranscriptVersion"
+                    ),
+                    analysisInputMode=miss_metadata.get("analysisInputMode"),
+                    lastAnalyzedAt=miss_metadata.get("lastAnalyzedAt"),
+                    stale=miss_metadata.get("stale"),
+                    staleReason=miss_metadata.get("staleReason"),
+                )
+
+            if mode == ANALYSIS_MODE_FAILED_RETRY:
+                retry_run = find_latest_analysis_run_for_identity(db, cache_identity)
+                if (
+                    retry_run is None
+                    or retry_run.status not in ANALYSIS_RETRYABLE_FAILURE_STATUSES
+                ):
+                    miss_metadata = analysis_miss_response_metadata(db, cache_identity)
+                    return RealtimeTranscriptAnalysisResponse(
+                        meeting_id=meeting_id,
+                        status=str(
+                            miss_metadata.get("analysisStatus") or "NO_ANALYSIS"
+                        ).lower(),
+                        transcript_hash=transcript_hash,
+                        source=source,
+                        promptVersion=prompt_version,
+                        schemaVersion=schema_version,
+                        analysisStatus=miss_metadata.get("analysisStatus"),
+                        cacheHit=False,
+                        provider=miss_metadata.get("provider"),
+                        model=miss_metadata.get("model"),
+                        canonicalTranscriptHash=miss_metadata.get(
+                            "canonicalTranscriptHash"
+                        ),
+                        canonicalTranscriptVersion=miss_metadata.get(
+                            "canonicalTranscriptVersion"
+                        ),
+                        analysisInputMode=miss_metadata.get("analysisInputMode"),
+                        lastAnalyzedAt=miss_metadata.get("lastAnalyzedAt"),
+                        stale=miss_metadata.get("stale"),
+                        staleReason=miss_metadata.get("staleReason"),
+                    )
 
             logger.info(
                 "ANALYSIS_CACHE_MISS meetingId={} provider={} model={} promptVersion={} schemaVersion={} canonicalTranscriptHash={} canonicalTranscriptVersion={} analysisInputMode={}",
@@ -2695,6 +2932,8 @@ async def analyze_realtime_transcript(
                         ),
                         analysisInputMode=cached_analysis.get("analysisInputMode"),
                         lastAnalyzedAt=cached_analysis.get("lastAnalyzedAt"),
+                        stale=cached_analysis.get("stale"),
+                        staleReason=cached_analysis.get("staleReason"),
                     )
             logger.info(
                 "event=REALTIME_ANALYSIS_SKIPPED reason={} meetingId={} retryAfterSeconds={}",
@@ -2724,6 +2963,10 @@ async def analyze_realtime_transcript(
                 schemaVersion=schema_version,
                 retryAfterSeconds=retry_after_seconds or None,
                 errorCode=skip_error_code,
+                analysisStatus=(
+                    ANALYSIS_STATUS_ANALYZING if skip_reason == "in_progress" else None
+                ),
+                cacheHit=False if skip_reason == "in_progress" else None,
             )
 
         logger.info(
@@ -2731,6 +2974,52 @@ async def analyze_realtime_transcript(
             meeting_id,
             source,
         )
+        if cache_identity is not None:
+            active_analysis_run, began_run = begin_analysis_run(
+                db=db,
+                identity=cache_identity,
+                mode=mode,
+                requested_by=source,
+                rerun_reason=request.reason,
+            )
+            db.commit()
+            if (
+                not began_run
+                and active_analysis_run.status == ANALYSIS_STATUS_ANALYZING
+            ):
+                run_metadata = analysis_run_response_metadata(
+                    active_analysis_run, cache_hit=False
+                )
+                try:
+                    client = _get_client()
+                    if lock_token:
+                        current_token = client.get(_analysis_lock_key(meeting_id))
+                        if current_token and str(current_token) == lock_token:
+                            client.delete(_analysis_lock_key(meeting_id))
+                except Exception:
+                    pass
+                return RealtimeTranscriptAnalysisResponse(
+                    meeting_id=meeting_id,
+                    status="skipped",
+                    reason="in_progress",
+                    transcript_hash=transcript_hash,
+                    source=source,
+                    promptVersion=prompt_version,
+                    schemaVersion=schema_version,
+                    retryAfterSeconds=1,
+                    analysisStatus=run_metadata.get("analysisStatus"),
+                    cacheHit=False,
+                    provider=run_metadata.get("provider"),
+                    model=run_metadata.get("model"),
+                    canonicalTranscriptHash=run_metadata.get("canonicalTranscriptHash"),
+                    canonicalTranscriptVersion=run_metadata.get(
+                        "canonicalTranscriptVersion"
+                    ),
+                    analysisInputMode=run_metadata.get("analysisInputMode"),
+                    lastAnalyzedAt=run_metadata.get("lastAnalyzedAt"),
+                    stale=run_metadata.get("stale"),
+                    staleReason=run_metadata.get("staleReason"),
+                )
         success = False
         finish_error_code: str | None = None
         finish_error_reason: str | None = None
@@ -2745,11 +3034,44 @@ async def analyze_realtime_transcript(
                 source=source,
                 domain_mode=request.domain_mode,
                 db=db,
+                analysis_run=active_analysis_run,
+                rerun_reason=request.reason,
             )
             success = True
             return response
+        except AnalysisRateLimitError as analysis_error:
+            db.rollback()
+            mark_analysis_run_failed(
+                run=active_analysis_run,
+                status=ANALYSIS_STATUS_RATE_LIMITED,
+                error_code="GEMINI_RATE_LIMITED",
+                error_message=safe_error_message(analysis_error),
+            )
+            db.commit()
+            logger.warning(
+                "event=REALTIME_ANALYSIS_FAILED meetingId={} source={} errorCode=GEMINI_RATE_LIMITED error={}",
+                meeting_id,
+                source,
+                safe_error_message(analysis_error),
+            )
+            finish_error_code = "GEMINI_RATE_LIMITED"
+            finish_error_reason = safe_error_message(analysis_error)
+            finish_retry_after_seconds = int(
+                _REALTIME_ANALYSIS_FAILURE_COOLDOWN_SECONDS
+            )
+            raise HTTPException(
+                status_code=429,
+                detail="Gemini rate limit reached",
+            ) from analysis_error
         except AnalysisParseError as analysis_error:
             db.rollback()
+            mark_analysis_run_failed(
+                run=active_analysis_run,
+                status=ANALYSIS_STATUS_FAILED,
+                error_code="GEMINI_ANALYSIS_FAILED",
+                error_message=safe_error_message(analysis_error),
+            )
+            db.commit()
             logger.warning(
                 "event=REALTIME_ANALYSIS_FAILED meetingId={} source={} errorCode=GEMINI_ANALYSIS_FAILED error={}",
                 meeting_id,
@@ -2767,6 +3089,13 @@ async def analyze_realtime_transcript(
             ) from analysis_error
         except (AnalysisConfigError, AnalysisUnavailableError) as analysis_error:
             db.rollback()
+            mark_analysis_run_failed(
+                run=active_analysis_run,
+                status=ANALYSIS_STATUS_FAILED,
+                error_code="GEMINI_UNAVAILABLE",
+                error_message=safe_error_message(analysis_error),
+            )
+            db.commit()
             logger.warning(
                 "event=REALTIME_ANALYSIS_FAILED meetingId={} source={} errorCode=GEMINI_UNAVAILABLE error={}",
                 meeting_id,
@@ -2784,6 +3113,13 @@ async def analyze_realtime_transcript(
             ) from analysis_error
         except Exception as analysis_error:
             db.rollback()
+            mark_analysis_run_failed(
+                run=active_analysis_run,
+                status=ANALYSIS_STATUS_FAILED,
+                error_code="GEMINI_ANALYSIS_FAILED",
+                error_message=safe_error_message(analysis_error),
+            )
+            db.commit()
             logger.warning(
                 "event=REALTIME_ANALYSIS_FAILED meetingId={} source={} errorCode=GEMINI_ANALYSIS_FAILED error={}",
                 meeting_id,

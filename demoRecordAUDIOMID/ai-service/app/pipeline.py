@@ -13,11 +13,22 @@ from app.config import get_runtime_device, get_settings
 from app.logging_utils import safe_error_message, transcript_hash_prefix
 from app.models import Analysis, Transcript, TranscriptFragment
 from app.services.analysis_runs import (
+    ANALYSIS_MODE_CACHE_ONLY,
+    ANALYSIS_MODE_FAILED_RETRY,
+    ANALYSIS_MODE_FORCE,
+    ANALYSIS_RETRYABLE_FAILURE_STATUSES,
+    ANALYSIS_STATUS_ANALYZING,
     analysis_payload_from_run,
+    analysis_miss_response_metadata,
     analysis_run_response_metadata,
+    begin_analysis_run,
     build_analysis_cache_identity,
     find_completed_analysis_run_for_identity,
+    find_in_progress_analysis_run_for_identity,
+    find_latest_analysis_run_for_identity,
+    mark_analysis_run_failed,
     persist_completed_analysis_run,
+    normalize_analysis_mode,
 )
 from app.services.analysis_factory import build_analysis_analyzer
 from app.services.audio_processor import AudioProcessor
@@ -772,6 +783,9 @@ class ProcessingPipeline:
         language: Optional[str] = "vi",
         precomputed_transcript_segments: Optional[List[Dict]] = None,
         trace_id: Optional[str] = None,
+        analysis_mode: str = "auto",
+        requested_by: Optional[str] = None,
+        rerun_reason: Optional[str] = None,
     ) -> Dict:
         """
         Complete processing pipeline for a meeting
@@ -792,6 +806,7 @@ class ProcessingPipeline:
         Returns:
             Processing result dictionary
         """
+        active_analysis_run = None
         try:
             logger.info(f"Starting processing pipeline for meeting {meeting_id}")
             runtime_device = get_runtime_device()
@@ -893,6 +908,7 @@ class ProcessingPipeline:
 
             # Step 5: AI Analysis
             logger.info("Step 5: AI analysis")
+            mode = normalize_analysis_mode(analysis_mode)
             formatted_transcript = self.ai_analyzer.format_transcript_for_analysis(
                 aligned_segments
             )
@@ -905,8 +921,10 @@ class ProcessingPipeline:
                 recognition_mode=_normalized_stt_provider(),
                 transcript_language=self._normalize_batch_language(language),
             )
-            cached_analysis_run = find_completed_analysis_run_for_identity(
-                db, analysis_identity
+            cached_analysis_run = (
+                None
+                if mode == ANALYSIS_MODE_FORCE
+                else find_completed_analysis_run_for_identity(db, analysis_identity)
             )
             if cached_analysis_run is not None:
                 logger.info(
@@ -924,6 +942,83 @@ class ProcessingPipeline:
                     cached_analysis_run, cache_hit=True
                 )
             else:
+                in_progress_run = find_in_progress_analysis_run_for_identity(
+                    db, analysis_identity
+                )
+                if in_progress_run is not None:
+                    run_metadata = analysis_run_response_metadata(
+                        in_progress_run, cache_hit=False
+                    )
+                    return {
+                        "meeting_id": meeting_id,
+                        "status": "analyzing",
+                        "transcript_segments": len(aligned_segments),
+                        "speaker_count": speaker_count,
+                        "diarization_enabled": diarization_enabled,
+                        "analysis": run_metadata,
+                    }
+
+                if mode == ANALYSIS_MODE_CACHE_ONLY:
+                    miss_metadata = analysis_miss_response_metadata(
+                        db, analysis_identity
+                    )
+                    return {
+                        "meeting_id": meeting_id,
+                        "status": str(
+                            miss_metadata.get("analysisStatus") or "NO_ANALYSIS"
+                        ).lower(),
+                        "transcript_segments": len(aligned_segments),
+                        "speaker_count": speaker_count,
+                        "diarization_enabled": diarization_enabled,
+                        "analysis": miss_metadata,
+                    }
+
+                if mode == ANALYSIS_MODE_FAILED_RETRY:
+                    retry_run = find_latest_analysis_run_for_identity(
+                        db, analysis_identity
+                    )
+                    if (
+                        retry_run is None
+                        or retry_run.status not in ANALYSIS_RETRYABLE_FAILURE_STATUSES
+                    ):
+                        miss_metadata = analysis_miss_response_metadata(
+                            db, analysis_identity
+                        )
+                        return {
+                            "meeting_id": meeting_id,
+                            "status": str(
+                                miss_metadata.get("analysisStatus") or "NO_ANALYSIS"
+                            ).lower(),
+                            "transcript_segments": len(aligned_segments),
+                            "speaker_count": speaker_count,
+                            "diarization_enabled": diarization_enabled,
+                            "analysis": miss_metadata,
+                        }
+
+                active_analysis_run, began_run = begin_analysis_run(
+                    db=db,
+                    identity=analysis_identity,
+                    mode=mode,
+                    requested_by=requested_by or "batch",
+                    rerun_reason=rerun_reason,
+                )
+                db.commit()
+                if (
+                    not began_run
+                    and active_analysis_run.status == ANALYSIS_STATUS_ANALYZING
+                ):
+                    run_metadata = analysis_run_response_metadata(
+                        active_analysis_run, cache_hit=False
+                    )
+                    return {
+                        "meeting_id": meeting_id,
+                        "status": "analyzing",
+                        "transcript_segments": len(aligned_segments),
+                        "speaker_count": speaker_count,
+                        "diarization_enabled": diarization_enabled,
+                        "analysis": run_metadata,
+                    }
+
                 logger.info(
                     "ANALYSIS_CACHE_MISS meetingId={} provider={} model={} promptVersion={} schemaVersion={} canonicalTranscriptHash={} canonicalTranscriptVersion={} analysisInputMode={}",
                     meeting_id,
@@ -948,6 +1043,9 @@ class ProcessingPipeline:
                 language=language,
                 analysis_input_text=formatted_transcript,
                 cached_analysis_run=cached_analysis_run,
+                analysis_run=active_analysis_run,
+                requested_by=requested_by,
+                rerun_reason=rerun_reason,
             )
             if analysis_metadata:
                 analysis_result = dict(analysis_result or {})
@@ -965,6 +1063,13 @@ class ProcessingPipeline:
             }
 
         except Exception as e:
+            if active_analysis_run is not None:
+                mark_analysis_run_failed(
+                    run=active_analysis_run,
+                    error_code=type(e).__name__,
+                    error_message=safe_error_message(e),
+                )
+                db.commit()
             logger.exception(
                 f"Processing pipeline error for meeting {meeting_id}: {repr(e)}"
             )
@@ -980,6 +1085,9 @@ class ProcessingPipeline:
         language: Optional[str] = None,
         analysis_input_text: Optional[str] = None,
         cached_analysis_run=None,
+        analysis_run=None,
+        requested_by: Optional[str] = None,
+        rerun_reason: Optional[str] = None,
     ) -> dict:
         """
         Save processing results to database
@@ -1153,6 +1261,9 @@ class ProcessingPipeline:
                     fallback_text=analysis_input_text,
                     recognition_mode=_normalized_stt_provider(),
                     transcript_language=self._normalize_batch_language(language),
+                    requested_by=requested_by,
+                    rerun_reason=rerun_reason,
+                    run=analysis_run,
                 )
                 run_metadata = analysis_run_response_metadata(
                     analysis_run, cache_hit=False

@@ -399,6 +399,17 @@ Policy:
 - Full rerun/idempotency policy, explicit stale lifecycle responses, and durable failed/quota transitions remain deferred to 7U-D.
 - DOCX/export DB fallback remains deferred to 7U-E.
 
+7U-D implementation note:
+
+- AI-service now supports explicit analysis modes `auto`, `cache_only`, `force`, and `failed_retry` in the shared analysis run policy.
+- `auto` returns matching completed cache hits, returns existing `ANALYZING` metadata for the same full identity, and starts provider work on misses.
+- `cache_only` never calls the provider; it returns `COMPLETED + cacheHit=true`, `STALE`, or `NO_ANALYSIS` metadata.
+- `force` bypasses completed cache hits, creates a distinct `meeting_analysis_runs` history row, stores `requested_by`/`rerun_reason`, and updates the existing `analysis` projection only after success.
+- Stale responses distinguish transcript hash, canonical version, provider, model, prompt version, schema version, input mode, speaker stabilization version, and generic identity mismatches.
+- Batch and realtime paths use the durable full identity idempotency key, with `ANALYZING` rows guarding same-identity double-submit before duplicate provider calls.
+- A minimal AI-service `POST /api/meeting/{meeting_id}/analysis/rerun` route is available; processing-service/front-end wiring remains out of scope.
+- DOCX/export DB fallback remains deferred to 7U-E, and FE status/reanalyze UI remains deferred to 7U-F.
+
 ## Test Matrix
 
 - Cache hit does not call Gemini.
