@@ -182,6 +182,15 @@ Recommended first PR after this docs polish:
 - `owner_id` remains nullable until owner/user scope is passed into AI-service safely.
 - Cache hit/miss service logic, stale detection, durable failure/quota transitions, retry/rerun modes, and DOCX DB fallback remain deferred to 7U-C/7U-D/7U-E.
 
+7U-C implementation note:
+
+- Cache hit/miss service logic is implemented in AI-service for both batch processing and realtime/lazy analysis.
+- Completed `meeting_analysis_runs` are reused only when the full current identity matches; hits skip Gemini/provider calls, refresh the compatibility projection when needed, expose `cacheHit=true`, and do not create duplicate run rows.
+- Misses keep the existing provider path and persist a completed run with the 7U-B metadata write helper.
+- Provider/model/prompt/schema and canonical hash/version mismatches are treated as misses, not silent reuse.
+- Full rerun/idempotency policy and explicit stale lifecycle responses remain deferred to 7U-D.
+- DOCX/export DB fallback remains deferred to 7U-E.
+
 ## Risks If Extending Existing `analysis` Table
 
 - Relaxing unique `meeting_id` early can break existing readers that assume one current analysis row per meeting.

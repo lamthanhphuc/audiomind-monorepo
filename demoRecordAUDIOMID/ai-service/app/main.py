@@ -67,7 +67,10 @@ from app.services.analysis_errors import (
 )
 from app.services.analysis_factory import build_analysis_analyzer
 from app.services.analysis_runs import (
+    analysis_payload_from_run,
     analysis_run_response_metadata,
+    build_analysis_cache_identity,
+    find_completed_analysis_run_for_identity,
     latest_completed_analysis_run,
     persist_completed_analysis_run,
 )
@@ -1496,6 +1499,7 @@ def _normalize_analysis_payload(raw_analysis: dict[str, Any]) -> dict[str, Any]:
         "transcript_hash": transcript_hash,
         "transcriptHash": transcript_hash,
         "source": source,
+        "cacheHit": raw_analysis.get("cacheHit"),
     }
 
 
@@ -1528,58 +1532,6 @@ def _analysis_cache_key(
         f"{str(prompt_version or '').strip().lower()}|"
         f"{str(schema_version or '').strip().lower()}"
     )
-
-
-def _analysis_identity_from_row(analysis_row: Analysis | None) -> tuple[str, str, str]:
-    transcript_hash = ""
-    prompt_version = ""
-    schema_version = ""
-    if analysis_row is None:
-        return transcript_hash, prompt_version, schema_version
-
-    technical_terms_value = getattr(analysis_row, "technical_terms", None)
-    if isinstance(technical_terms_value, dict):
-        transcript_hash = (
-            str(
-                technical_terms_value.get("transcript_hash")
-                or technical_terms_value.get("transcriptHash")
-                or ""
-            )
-            .strip()
-            .lower()
-        )
-        prompt_version = str(
-            technical_terms_value.get("promptVersion")
-            or technical_terms_value.get("prompt_version")
-            or ""
-        ).strip()
-        schema_version = str(
-            technical_terms_value.get("schemaVersion")
-            or technical_terms_value.get("schema_version")
-            or ""
-        ).strip()
-    return transcript_hash, prompt_version, schema_version
-
-
-def _is_matching_completed_analysis(
-    analysis_row: Analysis | None,
-    *,
-    transcript_hash: str,
-    prompt_version: str,
-    schema_version: str,
-) -> bool:
-    stored_hash, stored_prompt_version, stored_schema_version = (
-        _analysis_identity_from_row(analysis_row)
-    )
-    if not stored_hash:
-        return False
-    if stored_hash != str(transcript_hash or "").strip().lower():
-        return False
-    if str(stored_prompt_version or "").strip() != str(prompt_version or "").strip():
-        return False
-    if str(stored_schema_version or "").strip() != str(schema_version or "").strip():
-        return False
-    return True
 
 
 def _analysis_lock_key(meeting_id: int) -> str:
@@ -2120,7 +2072,7 @@ def _analyze_and_persist_realtime_transcript(
         requested_by=source,
     )
     db.commit()
-    run_metadata = analysis_run_response_metadata(analysis_run)
+    run_metadata = analysis_run_response_metadata(analysis_run, cache_hit=False)
     job_state_metadata = dict(run_metadata)
     last_analyzed_at = job_state_metadata.get("lastAnalyzedAt")
     if isinstance(last_analyzed_at, datetime):
@@ -2145,6 +2097,7 @@ def _analyze_and_persist_realtime_transcript(
         promptVersion=prompt_version,
         schemaVersion=schema_version,
         analysisStatus=run_metadata.get("analysisStatus"),
+        cacheHit=run_metadata.get("cacheHit"),
         provider=run_metadata.get("provider"),
         model=run_metadata.get("model"),
         canonicalTranscriptHash=run_metadata.get("canonicalTranscriptHash"),
@@ -2446,6 +2399,7 @@ async def get_analysis(meeting_id: int, db: Session = Depends(get_db)):
                 source=normalized["source"] or "job_state",
                 transcript_hash=normalized["transcript_hash"],
                 analysisStatus=run_metadata.get("analysisStatus") or job_status,
+                cacheHit=normalized.get("cacheHit"),
                 provider=run_metadata.get("provider"),
                 model=run_metadata.get("model"),
                 canonicalTranscriptHash=run_metadata.get("canonicalTranscriptHash"),
@@ -2525,6 +2479,7 @@ async def get_analysis(meeting_id: int, db: Session = Depends(get_db)):
             source=normalized["source"] or "database",
             transcript_hash=normalized["transcript_hash"],
             analysisStatus=run_metadata.get("analysisStatus") or "COMPLETED",
+            cacheHit=normalized.get("cacheHit"),
             provider=run_metadata.get("provider"),
             model=run_metadata.get("model"),
             canonicalTranscriptHash=run_metadata.get("canonicalTranscriptHash"),
@@ -2585,27 +2540,101 @@ async def analyze_realtime_transcript(
         analysis_cache_key = _analysis_cache_key(
             transcript_hash, prompt_version, schema_version
         )
-        existing = db.query(Analysis).filter(Analysis.meeting_id == meeting_id).first()
-        if _is_matching_completed_analysis(
-            existing,
-            transcript_hash=transcript_hash,
-            prompt_version=prompt_version,
-            schema_version=schema_version,
-        ):
-            logger.info(
-                "REALTIME_ANALYSIS_SKIPPED reason=already_exists meetingId={} promptVersion={} schemaVersion={}",
-                meeting_id,
-                prompt_version,
-                schema_version,
-            )
-            return RealtimeTranscriptAnalysisResponse(
+        analyzer = _get_realtime_analysis_analyzer()
+        cache_identity = None
+        if analyzer is not None:
+            cache_identity = build_analysis_cache_identity(
+                db=db,
                 meeting_id=meeting_id,
-                status="skipped",
-                reason="already_exists",
-                transcript_hash=transcript_hash,
-                source=source,
-                promptVersion=prompt_version,
-                schemaVersion=schema_version,
+                analyzer=analyzer,
+                fallback_transcript_hash=transcript_hash,
+                fallback_text=transcript_text,
+                analysis_payload={
+                    "promptVersion": prompt_version,
+                    "schemaVersion": schema_version,
+                },
+            )
+            cached_analysis_run = find_completed_analysis_run_for_identity(
+                db, cache_identity
+            )
+            if cached_analysis_run is not None:
+                logger.info(
+                    "ANALYSIS_CACHE_HIT meetingId={} provider={} model={} promptVersion={} schemaVersion={} canonicalTranscriptHash={} canonicalTranscriptVersion={} analysisInputMode={}",
+                    meeting_id,
+                    cache_identity.provider,
+                    cache_identity.model,
+                    cache_identity.prompt_version,
+                    cache_identity.schema_version,
+                    cache_identity.canonical_transcript_hash,
+                    cache_identity.canonical_transcript_version,
+                    cache_identity.analysis_input_mode,
+                )
+                cached_analysis = analysis_payload_from_run(
+                    cached_analysis_run, cache_hit=True
+                )
+                cached_analysis["transcriptHash"] = (
+                    cached_analysis.get("transcriptHash") or transcript_hash
+                )
+                cached_analysis["transcript_hash"] = (
+                    cached_analysis.get("transcript_hash") or transcript_hash
+                )
+                cached_analysis["promptVersion"] = (
+                    cached_analysis.get("promptVersion") or prompt_version
+                )
+                cached_analysis["schemaVersion"] = (
+                    cached_analysis.get("schemaVersion") or schema_version
+                )
+                cached_analysis["source"] = cached_analysis.get("source") or source
+                job_state_analysis = dict(cached_analysis)
+                last_analyzed_at = job_state_analysis.get("lastAnalyzedAt")
+                if isinstance(last_analyzed_at, datetime):
+                    job_state_analysis["lastAnalyzedAt"] = last_analyzed_at.isoformat()
+                set_job_status(
+                    meeting_id=meeting_id,
+                    status="COMPLETED",
+                    result={"analysis": job_state_analysis, "source": source},
+                    stage="completed",
+                    progress=100,
+                )
+                analysis_cache_key = _analysis_cache_key(
+                    transcript_hash, prompt_version, schema_version
+                )
+                with _realtime_analysis_guard_lock:
+                    _realtime_analysis_completed_hash[meeting_id] = (
+                        analysis_cache_key,
+                        time.time(),
+                    )
+                return RealtimeTranscriptAnalysisResponse(
+                    meeting_id=meeting_id,
+                    status="completed",
+                    transcript_hash=transcript_hash,
+                    source=source,
+                    promptVersion=cached_analysis.get("promptVersion"),
+                    schemaVersion=cached_analysis.get("schemaVersion"),
+                    analysisStatus=cached_analysis.get("analysisStatus"),
+                    cacheHit=True,
+                    provider=cached_analysis.get("provider"),
+                    model=cached_analysis.get("model"),
+                    canonicalTranscriptHash=cached_analysis.get(
+                        "canonicalTranscriptHash"
+                    ),
+                    canonicalTranscriptVersion=cached_analysis.get(
+                        "canonicalTranscriptVersion"
+                    ),
+                    analysisInputMode=cached_analysis.get("analysisInputMode"),
+                    lastAnalyzedAt=cached_analysis.get("lastAnalyzedAt"),
+                )
+
+            logger.info(
+                "ANALYSIS_CACHE_MISS meetingId={} provider={} model={} promptVersion={} schemaVersion={} canonicalTranscriptHash={} canonicalTranscriptVersion={} analysisInputMode={}",
+                meeting_id,
+                cache_identity.provider,
+                cache_identity.model,
+                cache_identity.prompt_version,
+                cache_identity.schema_version,
+                cache_identity.canonical_transcript_hash,
+                cache_identity.canonical_transcript_version,
+                cache_identity.analysis_input_mode,
             )
 
         (
@@ -2623,29 +2652,49 @@ async def analyze_realtime_transcript(
         )
         if not allowed:
             if skip_reason in {"in_progress", "already_exists"}:
-                existing_now = (
-                    db.query(Analysis).filter(Analysis.meeting_id == meeting_id).first()
+                cached_analysis_run = (
+                    find_completed_analysis_run_for_identity(db, cache_identity)
+                    if cache_identity is not None
+                    else None
                 )
-                if _is_matching_completed_analysis(
-                    existing_now,
-                    transcript_hash=transcript_hash,
-                    prompt_version=prompt_version,
-                    schema_version=schema_version,
-                ):
+                if cached_analysis_run is not None:
+                    cached_analysis = analysis_payload_from_run(
+                        cached_analysis_run, cache_hit=True
+                    )
                     logger.info(
-                        "REALTIME_ANALYSIS_SKIPPED reason=already_exists meetingId={} promptVersion={} schemaVersion={}",
+                        "ANALYSIS_CACHE_HIT meetingId={} provider={} model={} promptVersion={} schemaVersion={} canonicalTranscriptHash={} canonicalTranscriptVersion={} analysisInputMode={}",
                         meeting_id,
-                        prompt_version,
-                        schema_version,
+                        cache_identity.provider,
+                        cache_identity.model,
+                        cache_identity.prompt_version,
+                        cache_identity.schema_version,
+                        cache_identity.canonical_transcript_hash,
+                        cache_identity.canonical_transcript_version,
+                        cache_identity.analysis_input_mode,
                     )
                     return RealtimeTranscriptAnalysisResponse(
                         meeting_id=meeting_id,
-                        status="skipped",
-                        reason="already_exists",
+                        status="completed",
                         transcript_hash=transcript_hash,
                         source=source,
-                        promptVersion=prompt_version,
-                        schemaVersion=schema_version,
+                        promptVersion=(
+                            cached_analysis.get("promptVersion") or prompt_version
+                        ),
+                        schemaVersion=(
+                            cached_analysis.get("schemaVersion") or schema_version
+                        ),
+                        analysisStatus=cached_analysis.get("analysisStatus"),
+                        cacheHit=True,
+                        provider=cached_analysis.get("provider"),
+                        model=cached_analysis.get("model"),
+                        canonicalTranscriptHash=cached_analysis.get(
+                            "canonicalTranscriptHash"
+                        ),
+                        canonicalTranscriptVersion=cached_analysis.get(
+                            "canonicalTranscriptVersion"
+                        ),
+                        analysisInputMode=cached_analysis.get("analysisInputMode"),
+                        lastAnalyzedAt=cached_analysis.get("lastAnalyzedAt"),
                     )
             logger.info(
                 "event=REALTIME_ANALYSIS_SKIPPED reason={} meetingId={} retryAfterSeconds={}",

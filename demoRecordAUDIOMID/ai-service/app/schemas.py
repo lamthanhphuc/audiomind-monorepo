@@ -139,6 +139,7 @@ class AnalysisResponse(BaseModel):
     source: Optional[str] = None
     transcript_hash: Optional[str] = None
     analysisStatus: Optional[str] = None
+    cacheHit: Optional[bool] = None
     provider: Optional[str] = None
     model: Optional[str] = None
     canonicalTranscriptHash: Optional[str] = None
@@ -171,6 +172,7 @@ class RealtimeTranscriptAnalysisResponse(BaseModel):
     retryAfterSeconds: Optional[int] = None
     errorCode: Optional[str] = None
     analysisStatus: Optional[str] = None
+    cacheHit: Optional[bool] = None
     provider: Optional[str] = None
     model: Optional[str] = None
     canonicalTranscriptHash: Optional[str] = None
