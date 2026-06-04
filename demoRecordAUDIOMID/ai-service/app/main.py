@@ -855,6 +855,24 @@ pipeline = ProcessingPipeline() if ProcessingPipeline is not None else None
 _realtime_analysis_analyzer = None
 
 
+class _AnalysisCacheMetadataAnalyzer:
+    PROMPT_VERSION = AIAnalyzer.PROMPT_VERSION
+    SCHEMA_VERSION = AIAnalyzer.SCHEMA_VERSION
+
+    def __init__(self, provider: str, model: str):
+        self.provider = provider
+        self.model = model
+
+
+def _analysis_cache_metadata_analyzer():
+    provider = (settings.analysis_provider or "gemini").strip().lower()
+    if provider in {"ollama", "local"}:
+        return _AnalysisCacheMetadataAnalyzer("ollama", settings.ollama_model)
+    if provider == "openai":
+        return _AnalysisCacheMetadataAnalyzer("openai", settings.openai_model)
+    return _AnalysisCacheMetadataAnalyzer("gemini", settings.gemini_analysis_model)
+
+
 def _get_realtime_analysis_analyzer():
     global _realtime_analysis_analyzer
 
@@ -2669,7 +2687,11 @@ async def analyze_realtime_transcript(
         analysis_cache_key = _analysis_cache_key(
             transcript_hash, prompt_version, schema_version
         )
-        analyzer = _get_realtime_analysis_analyzer()
+        analyzer = (
+            _analysis_cache_metadata_analyzer()
+            if mode == ANALYSIS_MODE_CACHE_ONLY
+            else _get_realtime_analysis_analyzer()
+        )
         cache_identity = None
         active_analysis_run = None
         if analyzer is None and mode == ANALYSIS_MODE_CACHE_ONLY:

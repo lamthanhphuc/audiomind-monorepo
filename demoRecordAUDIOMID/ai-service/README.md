@@ -56,7 +56,7 @@ pip install -r requirements.txt
 For legacy/offline Whisper and pyannote support, install the optional stack:
 
 ```bash
-pip install -r requirements-offline.txt
+pip install -c constraints-offline.txt -r requirements-offline.txt
 ```
 
 3. Setup environment variables:
