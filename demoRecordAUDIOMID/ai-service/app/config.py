@@ -2,7 +2,6 @@ from functools import lru_cache
 from pathlib import Path
 from urllib.parse import urlparse
 
-import torch
 from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -293,6 +292,15 @@ def get_settings() -> Settings:
     return Settings()
 
 
+def _torch_cuda_is_available() -> bool:
+    try:
+        import torch
+    except ModuleNotFoundError:
+        return False
+
+    return bool(torch.cuda.is_available())
+
+
 def get_runtime_device() -> str:
     preferred = (get_settings().device or "auto").strip().lower()
 
@@ -300,7 +308,7 @@ def get_runtime_device() -> str:
         return "cpu"
 
     if preferred == "cuda":
-        return "cuda" if torch.cuda.is_available() else "cpu"
+        return "cuda" if _torch_cuda_is_available() else "cpu"
 
     # auto: prefer GPU when available, else fallback to CPU.
-    return "cuda" if torch.cuda.is_available() else "cpu"
+    return "cuda" if _torch_cuda_is_available() else "cpu"

@@ -1,0 +1,21 @@
+# Optional legacy/offline STT stack.
+# Default ai-api/celery images do not install this file.
+
+# PyTorch CUDA wheels are intentionally opt-in because they are large and not
+# needed for the Deepgram/Gemini cloud-first runtime.
+--extra-index-url https://download.pytorch.org/whl/cu121
+torch==2.5.1
+torchvision==0.20.1
+torchaudio==2.5.1
+
+# Local Whisper and related decoding utilities.
+openai-whisper==20231117
+tiktoken==0.5.2
+triton==3.1.0; platform_system == "Linux" and platform_machine == "x86_64"
+more-itertools
+
+# Local diarization / VAD.
+pyannote.audio==3.1.1
+pyannote.core==5.0.0
+huggingface-hub==0.24.6
+silero-vad==6.2.0

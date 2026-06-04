@@ -2133,6 +2133,20 @@ class ProcessingServiceTest {
                 "language", "multi",
                 "status", "completed"
         ));
+        Map<String, Object> aiPayload = new HashMap<>();
+        aiPayload.put("meeting_id", 933L);
+        aiPayload.put("transcriptMode", "canonical");
+        aiPayload.put("canonicalTranscriptVersion", "canonical-transcript-v1");
+        aiPayload.put("canonicalTranscriptHash", "canonical-hash-933");
+        aiPayload.put("transcripts", List.of(
+                Map.of(
+                        "speaker", "SPEAKER_1",
+                        "text", "Canonical sidecar row for report metadata.",
+                        "start_time", 12.0d,
+                        "end_time", 14.0d
+                )
+        ));
+        when(aiServiceClient.getTranscript(933L, "trace-933")).thenReturn(aiPayload);
 
         byte[] report = processingService.generateMeetingReportDocx(933L, "trace-933", AUTH_HEADER);
 
@@ -2141,7 +2155,10 @@ class ProcessingServiceTest {
             String content = extractor.getText();
             assertTrue(content.contains("State summary"));
             assertTrue(content.contains("state-canonical-hash"));
+            assertTrue(content.contains("canonical-transcript-v1"));
+            assertTrue(content.contains("canonical"));
         }
+        verify(aiServiceClient).getTranscript(933L, "trace-933");
         verify(aiServiceClient, never()).getSavedAnalysisCacheOnly(
                 anyLong(),
                 anyString(),

@@ -43,6 +43,10 @@ from app.services.stt_persistence import (
 
 settings = get_settings()
 ALLOWED_BATCH_LANGUAGES = {"vi", "en", "multi"}
+OFFLINE_STT_DEPENDENCIES_ERROR = (
+    "Offline Whisper dependencies are not installed. "
+    "Build with INSTALL_OFFLINE_STT=true."
+)
 
 
 def _legacy_local_stt_allowed() -> bool:
@@ -90,11 +94,11 @@ class ProcessingPipeline:
                 "Configured DEVICE=cuda but CUDA is unavailable. Falling back to CPU."
             )
 
-        logger.info(
-            f"Runtime device selected for models: {runtime_device} (preferred={preferred_device})"
-        )
-
-        if self._should_load_local_whisper(stt_provider):
+        load_local_whisper = self._should_load_local_whisper(stt_provider)
+        if load_local_whisper:
+            logger.info(
+                f"Runtime device selected for legacy local STT models: {runtime_device} (preferred={preferred_device})"
+            )
             self._ensure_speech_recognizer_loaded(runtime_device)
         else:
             if not _legacy_local_stt_allowed():
@@ -112,6 +116,10 @@ class ProcessingPipeline:
 
         diarization_enabled = self._should_enable_diarization(runtime_device)
         if diarization_enabled and self.speaker_diarizer is None:
+            if not load_local_whisper:
+                logger.info(
+                    f"Runtime device selected for local diarization: {runtime_device} (preferred={preferred_device})"
+                )
             try:
                 from app.services.speaker_diarizer import SpeakerDiarizer
 
@@ -150,7 +158,13 @@ class ProcessingPipeline:
         if self.speech_recognizer is not None:
             return self.speech_recognizer
 
-        from app.services.speech_recognizer import SpeechRecognizer
+        try:
+            from app.services.speech_recognizer import SpeechRecognizer
+        except ModuleNotFoundError as exc:
+            missing_module = (exc.name or "").split(".")[0]
+            if missing_module in {"whisper", "torch", "torchaudio"}:
+                raise RuntimeError(OFFLINE_STT_DEPENDENCIES_ERROR) from exc
+            raise
 
         selected_device = runtime_device or get_runtime_device()
         self.speech_recognizer = SpeechRecognizer(
@@ -173,17 +187,28 @@ class ProcessingPipeline:
         return bool(settings.enable_speaker_diarization and settings.deepgram_diarize)
 
     def _record_baseline_snapshot(self, meeting_id: int, runtime_device: str) -> None:
+        stt_provider = _normalized_stt_provider()
+        analysis_provider = (settings.analysis_provider or "gemini").strip().lower()
         payload = {
             "meeting_id": meeting_id,
-            "runtime_device": runtime_device,
-            "whisper_model": settings.whisper_model,
-            "enable_speaker_diarization": self._should_enable_diarization(
-                runtime_device
-            ),
+            "stt_provider": stt_provider,
+            "analysis_provider": analysis_provider,
+            "legacy_local_stt_enabled": self._should_load_local_whisper(stt_provider),
+            "enable_speaker_diarization": settings.enable_speaker_diarization,
+            "deepgram_diarize": settings.deepgram_diarize,
             "diarization_available": self.diarization_available,
-            "ollama_timeout_seconds": settings.ollama_timeout_seconds,
             "timestamp": datetime.utcnow().isoformat(),
         }
+        if payload["legacy_local_stt_enabled"]:
+            payload["runtime_device"] = runtime_device
+            payload["whisper_model"] = settings.whisper_model
+            payload["local_diarization_enabled"] = self._should_enable_diarization(
+                runtime_device
+            )
+        if analysis_provider in {"ollama", "local"} and bool(
+            getattr(settings, "allow_legacy_local_ai", False)
+        ):
+            payload["ollama_timeout_seconds"] = settings.ollama_timeout_seconds
 
         logger.info(f"Processing baseline snapshot: {payload}")
 

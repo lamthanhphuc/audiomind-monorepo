@@ -14,13 +14,15 @@ RUN if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
     gosu \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt constraints.txt ./
+COPY requirements.txt requirements-offline.txt constraints.txt constraints-offline.txt ./
+
+ARG INSTALL_OFFLINE_STT=false
 
 RUN pip install --no-cache-dir --upgrade pip setuptools==80.9.0 wheel \
-    && pip install --no-cache-dir torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 \
-        --index-url https://download.pytorch.org/whl/cu121 \
-    && pip install --no-cache-dir --no-deps --no-build-isolation openai-whisper==20231117 \
-    && pip install --no-cache-dir -c constraints.txt -r requirements.txt
+    && pip install --no-cache-dir -c constraints.txt -r requirements.txt \
+    && if [ "$INSTALL_OFFLINE_STT" = "true" ]; then \
+        pip install --no-cache-dir -c constraints-offline.txt -r requirements-offline.txt; \
+    fi
 
 COPY . .
 

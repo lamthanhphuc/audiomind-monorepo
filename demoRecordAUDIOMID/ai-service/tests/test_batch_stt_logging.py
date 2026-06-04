@@ -1,4 +1,6 @@
 import sys
+import builtins
+import json
 from types import ModuleType, SimpleNamespace
 
 import pytest
@@ -99,6 +101,56 @@ def test_ensure_models_loaded_skips_whisper_for_deepgram_default(monkeypatch):
     assert any(
         "STT provider deepgram: no Whisper model loaded" in log for log in captured_logs
     )
+    assert not any("Runtime device selected" in log for log in captured_logs)
+
+
+def test_baseline_snapshot_omits_legacy_fields_for_cloud_defaults(
+    monkeypatch, tmp_path
+):
+    import app.pipeline as pipeline_module
+
+    monkeypatch.setattr(
+        pipeline_module,
+        "settings",
+        SimpleNamespace(
+            stt_provider="deepgram",
+            analysis_provider="gemini",
+            local_whisper_enabled=False,
+            allow_legacy_local_stt=False,
+            allow_legacy_local_ai=False,
+            enable_speaker_diarization=True,
+            deepgram_diarize=True,
+            whisper_model="base",
+            ollama_timeout_seconds=300,
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        pipeline_module,
+        "Path",
+        lambda *_args, **_kwargs: tmp_path / "app" / "pipeline.py",
+    )
+    monkeypatch.setattr(
+        pipeline_module,
+        "logger",
+        SimpleNamespace(info=lambda *args, **kwargs: None),
+        raising=False,
+    )
+
+    pipeline = pipeline_module.ProcessingPipeline.__new__(
+        pipeline_module.ProcessingPipeline
+    )
+    pipeline.diarization_available = True
+
+    pipeline._record_baseline_snapshot(42, "cpu")  # type: ignore[attr-defined]
+
+    baseline = json.loads((tmp_path / "logs" / "baseline_42.json").read_text())
+    assert baseline["stt_provider"] == "deepgram"
+    assert baseline["analysis_provider"] == "gemini"
+    assert baseline["legacy_local_stt_enabled"] is False
+    assert "runtime_device" not in baseline
+    assert "whisper_model" not in baseline
+    assert "ollama_timeout_seconds" not in baseline
 
 
 def test_batch_effective_config_log_includes_job_and_trace_context(monkeypatch):
@@ -356,3 +408,44 @@ def test_batch_vi_failure_allows_whisper_with_legacy_opt_in(monkeypatch):
     assert result == [{"start": 0.0, "end": 1.0, "text": "fallback vi transcript"}]
     assert len(whisper.transcribe_calls) == 1
     assert whisper.transcribe_calls[0]["language"] == "vi"
+
+
+def test_local_whisper_opt_in_without_dependencies_has_clear_error(monkeypatch):
+    import app.pipeline as pipeline_module
+
+    real_import = builtins.__import__
+
+    monkeypatch.setattr(
+        pipeline_module,
+        "settings",
+        SimpleNamespace(
+            stt_provider="local_whisper",
+            local_whisper_enabled=True,
+            allow_legacy_local_stt=True,
+            whisper_model="base",
+            whisper_no_speech_threshold=0.7,
+            whisper_logprob_threshold=-0.8,
+            whisper_cpu_chunk_seconds=30,
+            whisper_gpu_chunk_seconds=60,
+        ),
+        raising=False,
+    )
+    monkeypatch.delitem(sys.modules, "app.services.speech_recognizer", raising=False)
+    monkeypatch.delitem(sys.modules, "whisper", raising=False)
+    monkeypatch.setattr(
+        builtins,
+        "__import__",
+        lambda name, *args, **kwargs: (
+            (_ for _ in ()).throw(ModuleNotFoundError(name="whisper"))
+            if name == "whisper"
+            else real_import(name, *args, **kwargs)
+        ),
+    )
+
+    pipeline = pipeline_module.ProcessingPipeline.__new__(
+        pipeline_module.ProcessingPipeline
+    )
+    pipeline.speech_recognizer = None
+
+    with pytest.raises(RuntimeError, match="INSTALL_OFFLINE_STT=true"):
+        pipeline._ensure_speech_recognizer_loaded(runtime_device="cpu")  # type: ignore[attr-defined]

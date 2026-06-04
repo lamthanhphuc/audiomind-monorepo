@@ -84,6 +84,13 @@ def _json_safe(value: Any) -> Any:
     return str(value)
 
 
+def _analysis_timestamp(value: Any) -> str | None:
+    if value is None:
+        return None
+    safe_value = _json_safe(value)
+    return str(safe_value) if safe_value is not None else None
+
+
 def _analysis_provider(analyzer: Any) -> str:
     return _normalize_lower(getattr(analyzer, "provider", None)) or "unknown"
 
@@ -410,7 +417,7 @@ def analysis_miss_response_metadata(
         "canonicalTranscriptHash": identity.canonical_transcript_hash,
         "canonicalTranscriptVersion": identity.canonical_transcript_version,
         "analysisInputMode": identity.analysis_input_mode,
-        "lastAnalyzedAt": (
+        "lastAnalyzedAt": _analysis_timestamp(
             (latest_run.completed_at or latest_run.updated_at) if latest_run else None
         ),
     }
@@ -610,7 +617,7 @@ def analysis_run_response_metadata(
         "canonicalTranscriptHash": run.canonical_transcript_hash,
         "canonicalTranscriptVersion": run.canonical_transcript_version,
         "analysisInputMode": run.analysis_input_mode,
-        "lastAnalyzedAt": run.completed_at or run.updated_at,
+        "lastAnalyzedAt": _analysis_timestamp(run.completed_at or run.updated_at),
     }
     if cache_hit is not None:
         metadata["cacheHit"] = cache_hit

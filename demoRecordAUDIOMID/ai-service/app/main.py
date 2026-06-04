@@ -180,9 +180,11 @@ async def lifespan(_: FastAPI):
     logger.info("AudioMind AI Service Starting...")
     if _legacy_local_stt_enabled_for_startup_log():
         logger.info(f"Whisper Model: {settings.whisper_model}")
+        logger.info(f"Device: {get_runtime_device()}")
     else:
-        logger.info("Legacy local STT disabled")
-    logger.info(f"Device: {get_runtime_device()}")
+        logger.info(
+            "Legacy local STT disabled; cloud STT provider={}", settings.stt_provider
+        )
     logger.info(
         "STT CONFIG api_key_exists={} realtime_model={} batch_model={} language={} base_url={}",
         bool(settings.deepgram_api_key),

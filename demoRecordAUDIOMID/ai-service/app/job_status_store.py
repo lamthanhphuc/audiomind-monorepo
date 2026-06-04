@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+from decimal import Decimal
 import json
 from typing import Any
+from uuid import UUID
 
 import redis
 from loguru import logger
@@ -38,8 +40,124 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _safe_str(value: Any) -> str:
+    try:
+        return str(value)
+    except Exception:
+        return repr(value)
+
+
+def _json_key_safe(value: Any) -> str:
+    safe_value = make_json_safe(value)
+    if isinstance(safe_value, (str, int, float, bool)) or safe_value is None:
+        return str(safe_value)
+    return _safe_str(safe_value)
+
+
+def make_json_safe(value: Any, _seen: set[int] | None = None) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, (Decimal, UUID)):
+        return str(value)
+
+    if _seen is None:
+        _seen = set()
+
+    if isinstance(value, dict):
+        value_id = id(value)
+        if value_id in _seen:
+            return "<circular>"
+        _seen.add(value_id)
+        try:
+            return {
+                _json_key_safe(key): make_json_safe(item, _seen)
+                for key, item in value.items()
+            }
+        finally:
+            _seen.discard(value_id)
+
+    if isinstance(value, (list, tuple, set)):
+        value_id = id(value)
+        if value_id in _seen:
+            return ["<circular>"]
+        _seen.add(value_id)
+        try:
+            return [make_json_safe(item, _seen) for item in value]
+        finally:
+            _seen.discard(value_id)
+
+    return _safe_str(value)
+
+
+def _find_non_json_safe_path(value: Any, path: str = "$") -> str | None:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return None
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                return f"{path}.{_safe_str(key)}"
+            nested_path = _find_non_json_safe_path(item, f"{path}.{key}")
+            if nested_path:
+                return nested_path
+        return None
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            nested_path = _find_non_json_safe_path(item, f"{path}[{index}]")
+            if nested_path:
+                return nested_path
+        return None
+    return path
+
+
 def _json_dump(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=True)
+    return json.dumps(make_json_safe(value), ensure_ascii=True)
+
+
+def _json_dump_job_field(value: Any, *, meeting_id: int, field_name: str) -> str:
+    safe_value = make_json_safe(value)
+    try:
+        return json.dumps(safe_value, ensure_ascii=True)
+    except (TypeError, ValueError) as serialization_error:
+        logger.warning(
+            "event=REDIS_SERIALIZATION_FAILED operation=set_job_status meetingId={} field={} valueType={} path={} errorCode={} error={}",
+            meeting_id,
+            field_name,
+            type(value).__name__,
+            _find_non_json_safe_path(safe_value) or "$",
+            type(serialization_error).__name__,
+            safe_error_message(serialization_error),
+        )
+        raise
+
+
+def _minimal_job_state_updates(
+    *,
+    meeting_id: int,
+    status: str,
+    created_at: str,
+    updated_at: str,
+    error: str | None,
+    message: str | None,
+) -> dict[str, str]:
+    updates = {
+        "jobId": str(meeting_id),
+        "meetingId": str(meeting_id),
+        "status": status,
+        "createdAt": created_at,
+        "updatedAt": updated_at,
+        "error": error or "",
+        "message": message or "",
+    }
+    if status == "COMPLETED":
+        updates["progress"] = "100"
+        updates["stage"] = "completed"
+    elif status == "FAILED":
+        updates["stage"] = "failed"
+    return updates
 
 
 def _json_load(value: str | None, fallback: Any) -> Any:
@@ -152,11 +270,12 @@ def set_job_status(
                 if progress is not None:
                     progress = min(100, max(0, int(progress)))
 
+                updated_at = _now_iso()
                 state_updates: dict[str, str] = {
                     "jobId": str(meeting_id),
                     "status": safe_status,
                     "createdAt": created_at,
-                    "updatedAt": _now_iso(),
+                    "updatedAt": updated_at,
                     "fileId": file_id if file_id else existing.get("fileId") or "",
                     "traceId": trace_id if trace_id else existing.get("traceId") or "",
                     "error": error or "",
@@ -172,11 +291,30 @@ def set_job_status(
                 elif "stage" not in existing:
                     state_updates["stage"] = "uploading"
 
-                if result is not None:
-                    state_updates["result"] = _json_dump(result)
+                try:
+                    if result is not None:
+                        state_updates["result"] = _json_dump_job_field(
+                            result, meeting_id=meeting_id, field_name="result"
+                        )
 
-                if failed_chunks is not None:
-                    state_updates["failed_chunks"] = _json_dump(failed_chunks)
+                    if failed_chunks is not None:
+                        state_updates["failed_chunks"] = _json_dump_job_field(
+                            failed_chunks,
+                            meeting_id=meeting_id,
+                            field_name="failed_chunks",
+                        )
+                except (TypeError, ValueError) as serialization_error:
+                    state_updates = _minimal_job_state_updates(
+                        meeting_id=meeting_id,
+                        status=safe_status,
+                        created_at=created_at,
+                        updated_at=updated_at,
+                        error=error,
+                        message=(
+                            "job status metadata omitted after serialization failure: "
+                            f"{safe_error_message(serialization_error)}"
+                        ),
+                    )
 
                 if attempts is not None:
                     state_updates["attempts"] = str(max(0, attempts))

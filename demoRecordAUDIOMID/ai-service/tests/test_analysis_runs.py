@@ -7,6 +7,7 @@ from datetime import datetime
 import pytest
 import app.main as main_module
 from app.models import Analysis, Base, MeetingAnalysisRun
+from app.services.analysis_runs import analysis_run_response_metadata
 from sqlalchemy import create_engine, inspect
 from sqlalchemy.orm import sessionmaker
 
@@ -175,28 +176,30 @@ def test_get_analysis_returns_run_metadata_with_legacy_payload(db_session, monke
     )
     db_session.add(current)
     completed_at = datetime.utcnow()
-    db_session.add(
-        MeetingAnalysisRun(
-            meeting_id=1301,
-            status="COMPLETED",
-            provider="gemini",
-            model="gemini-2.5-flash",
-            prompt_version="gemini-business-v1",
-            schema_version="gemini-business-v1",
-            canonical_transcript_hash="c" * 64,
-            canonical_transcript_version=None,
-            analysis_input_mode="readable_fallback",
-            analysis_payload_json={"summary": "Saved summary"},
-            summary="Saved summary",
-            idempotency_key="analysis-run-test-1301",
-            created_at=completed_at,
-            updated_at=completed_at,
-            completed_at=completed_at,
-        )
+    analysis_run = MeetingAnalysisRun(
+        meeting_id=1301,
+        status="COMPLETED",
+        provider="gemini",
+        model="gemini-2.5-flash",
+        prompt_version="gemini-business-v1",
+        schema_version="gemini-business-v1",
+        canonical_transcript_hash="c" * 64,
+        canonical_transcript_version=None,
+        analysis_input_mode="readable_fallback",
+        analysis_payload_json={"summary": "Saved summary"},
+        summary="Saved summary",
+        idempotency_key="analysis-run-test-1301",
+        created_at=completed_at,
+        updated_at=completed_at,
+        completed_at=completed_at,
     )
+    db_session.add(analysis_run)
     db_session.commit()
     monkeypatch.setattr(main_module, "get_job_status", lambda meeting_id: None)
     monkeypatch.setattr(main_module, "pipeline", FakePipeline(current))
+
+    metadata = analysis_run_response_metadata(analysis_run, cache_hit=True)
+    assert metadata["lastAnalyzedAt"] == completed_at.isoformat()
 
     response = asyncio.run(main_module.get_analysis(1301, db_session))
 

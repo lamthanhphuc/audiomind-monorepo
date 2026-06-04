@@ -556,6 +556,23 @@ public class ProcessingService {
                 analysisPayload.get("canonical_transcript_hash"),
                 transcriptPayload == null ? null : transcriptPayload.canonicalTranscriptHash()
         );
+        String canonicalTranscriptHash = firstNonBlank(
+                analysisPayload.get("canonicalTranscriptHash"),
+                analysisPayload.get("canonical_transcript_hash"),
+                transcriptPayload == null ? null : transcriptPayload.canonicalTranscriptHash()
+        );
+        String canonicalTranscriptVersion = firstNonBlank(
+                analysisPayload.get("canonicalTranscriptVersion"),
+                analysisPayload.get("canonical_transcript_version"),
+                transcriptPayload == null ? null : transcriptPayload.canonicalTranscriptVersion()
+        );
+        String analysisInputMode = firstNonBlank(
+                analysisPayload.get("analysisInputMode"),
+                analysisPayload.get("analysis_input_mode"),
+                transcriptPayload == null
+                        ? null
+                        : (transcriptPayload.isCanonicalMode() ? "canonical" : "readable_fallback")
+        );
         String source = resolveAnalysisMetadataSource(analysisPayload, promptVersion, schemaVersion, analysisAvailable);
 
         MeetingReportData.AnalysisMetadata analysisMetadata = new MeetingReportData.AnalysisMetadata(
@@ -568,9 +585,9 @@ public class ProcessingService {
                 promptVersion,
                 schemaVersion,
                 transcriptHash,
-                firstNonBlank(analysisPayload.get("canonicalTranscriptHash"), analysisPayload.get("canonical_transcript_hash")),
-                firstNonBlank(analysisPayload.get("canonicalTranscriptVersion"), analysisPayload.get("canonical_transcript_version")),
-                firstNonBlank(analysisPayload.get("analysisInputMode"), analysisPayload.get("analysis_input_mode")),
+                canonicalTranscriptHash,
+                canonicalTranscriptVersion,
+                analysisInputMode,
                 safeCell(analysisPayload.get("lastAnalyzedAt")),
                 safeCell(analysisPayload.get("retryAfterSeconds")),
                 safeCell(analysisPayload.get("confidence")),

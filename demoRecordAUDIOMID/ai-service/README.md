@@ -1,15 +1,15 @@
 # AudioMind AI Service
 
-Python FastAPI service for audio processing, speech recognition, speaker diarization, and AI analysis.
+Python FastAPI service for cloud-first transcription and AI analysis.
 
 ## Features
 
-- 🎤 Speech-to-Text (Whisper)
-- 👥 Speaker Diarization (pyannote.audio)
-- 🔊 Voice Activity Detection (Silero VAD)
-- 🤖 AI Meeting Analysis (Ollama)
+- 🎤 Speech-to-Text (Deepgram cloud STT)
+- 👥 Speaker Diarization (Deepgram native diarization by default)
+- 🤖 AI Meeting Analysis (Gemini by default)
 - ⚡ Realtime STT adapter (Deepgram)
 - 📊 Structured Meeting Notes
+- 🧪 Optional legacy/offline Whisper stack via explicit opt-in build
 
 ## Architecture
 
@@ -17,17 +17,18 @@ Python FastAPI service for audio processing, speech recognition, speaker diariza
 AI Service (Port 8000)
 │
 ├── Audio Processing
-│   ├── VAD
-│   └── Audio Segmentation
+│   └── Audio utilities
 │
 ├── Speech Recognition
-│   └── Whisper
+│   ├── Deepgram batch STT
+│   └── Whisper (legacy/offline opt-in only)
 │
 ├── Speaker Diarization
-│   └── pyannote.audio
+│   ├── Deepgram native diarization
+│   └── pyannote.audio (legacy/offline opt-in only)
 │
 ├── AI Analysis
-│   └── Ollama (local/runtime configurable)
+│   └── Gemini (cloud-first default)
 │
 ├── Realtime Streaming
 │   ├── gRPC StreamAudio
@@ -50,6 +51,12 @@ venv\Scripts\activate  # Windows
 2. Install dependencies:
 ```bash
 pip install -r requirements.txt
+```
+
+For legacy/offline Whisper and pyannote support, install the optional stack:
+
+```bash
+pip install -r requirements-offline.txt
 ```
 
 3. Setup environment variables:
@@ -79,8 +86,33 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 - Python 3.9+
 - PostgreSQL 14+
-- CUDA (optional, for GPU acceleration)
 - FFmpeg
+
+`requirements.txt` is the cloud-first runtime set. PyTorch, Whisper, pyannote,
+and Silero VAD live in `requirements-offline.txt` and are not installed by the
+default Docker image.
+
+## Docker Build Modes
+
+Default `ai-api` and `celery-worker` Docker builds are cloud-first:
+
+```bash
+docker compose -f infra/docker-compose.dev.yml build ai-api celery-worker
+```
+
+This default does not install Torch/CUDA, OpenAI Whisper, pyannote, or Silero
+VAD. Deepgram STT and Gemini analysis remain the default runtime path.
+
+Legacy/offline local Whisper support is opt-in:
+
+```bash
+docker compose -f infra/docker-compose.dev.yml build \
+  --build-arg INSTALL_OFFLINE_STT=true ai-api celery-worker
+```
+
+If `STT_PROVIDER=local_whisper` or `LOCAL_WHISPER_ENABLED=true` is enabled on a
+cloud-first image, the service raises a clear error asking to rebuild with
+`INSTALL_OFFLINE_STT=true`.
 
 ## Configuration
 
@@ -89,33 +121,32 @@ See `.env.example` for all configuration options.
 ### Required/Important Environment Variables
 
 - `DATABASE_URL`
-- `OLLAMA_BASE_URL`
-- `OLLAMA_MODEL`
-- `DEEPGRAM_API_KEY` (required for Deepgram realtime STT adapter)
+- `DEEPGRAM_API_KEY` (required for Deepgram batch and realtime STT)
 - `DEEPGRAM_MODEL` (optional, default defined in app config)
 - `DEEPGRAM_BASE_URL` (optional, default Deepgram listen endpoint)
 - `DEEPGRAM_TIMEOUT_SECONDS` (optional timeout tuning)
+- `GEMINI_API_KEY` (required when `ANALYSIS_PROVIDER=gemini`)
 
-### Runtime Modes (CPU vs GPU)
+### Runtime Modes
 
-- **GPU mode** (`torch.cuda.is_available() == true`):
-    - Speaker diarization is enabled by default.
-    - Whisper long-audio chunk size defaults to `60s`.
-- **CPU mode**:
-    - Speaker diarization follows `ENABLE_SPEAKER_DIARIZATION` config toggle.
-    - Whisper long-audio chunk size defaults to `30s`.
+- **Cloud-first default**: `STT_PROVIDER=deepgram`,
+  `ANALYSIS_PROVIDER=gemini`, `LOCAL_WHISPER_ENABLED=false`,
+  `ALLOW_LEGACY_LOCAL_STT=false`, and `OLLAMA_ENABLED=false`.
+- **Legacy/offline opt-in**: build with `INSTALL_OFFLINE_STT=true`, then enable
+  `ALLOW_LEGACY_LOCAL_STT=true` plus `STT_PROVIDER=local_whisper` or
+  `LOCAL_WHISPER_ENABLED=true`.
 
 ### Diarization Toggle and Fallback
 
 - Config key: `enable_speaker_diarization`.
 - Runtime behavior:
-    - GPU: force enable diarization by default.
-    - CPU: enable only when config is `true`.
-- If pyannote model/token is unavailable, pipeline auto-disables diarization and logs warning.
+    - Default compose enables Deepgram native diarization with `DEEPGRAM_DIARIZE=true`.
+    - Local pyannote diarization is legacy/offline only and requires the optional stack.
+- If pyannote model/token is unavailable in a legacy/offline run, pipeline auto-disables diarization and logs warning.
 
 ### Anti-loop STT Settings
 
-Whisper transcription uses anti-loop defaults for long audio processing:
+Legacy Whisper transcription uses anti-loop defaults for long audio processing:
 
 - `condition_on_previous_text = false`
 - `whisper_no_speech_threshold = 0.7`
@@ -153,8 +184,8 @@ For local integration testing, keep `DEEPGRAM_API_KEY` configured before startin
 
 ## Models
 
-- **Whisper**: large-v3
-- **Speaker Diarization**: pyannote/speaker-diarization-3.1
-- **VAD**: silero-vad
-- **LLM**: Ollama runtime models (for example `qwen2.5:3b-instruct`)
-- **Realtime STT**: Deepgram adapter (configurable model/base URL)
+- **Cloud STT**: Deepgram adapter (configurable model/base URL)
+- **Cloud analysis**: Gemini
+- **Legacy Whisper**: base/large-v3 depending on `WHISPER_MODEL`
+- **Legacy Speaker Diarization**: pyannote/speaker-diarization-3.1
+- **Legacy VAD**: silero-vad
