@@ -27,6 +27,7 @@ import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.server.ResponseStatusException;
 
 import com.example.processingservice.controller.dto.AnalysisResponse;
+import com.example.processingservice.controller.dto.AnalysisRerunRequest;
 import com.example.processingservice.controller.dto.ProcessStartRequest;
 import com.example.processingservice.controller.dto.ProcessStartResponse;
 import com.example.processingservice.controller.dto.ProcessingStatusResponse;
@@ -174,6 +175,21 @@ public class ProcessingController {
             @RequestHeader(HttpHeaders.AUTHORIZATION) String authorization) {
         requirePrincipal();
         return new AnalysisResponse(meetingId, processingService.getAnalysisReadOnly(meetingId, ensureTraceId(traceId), authorization));
+    }
+
+    @PostMapping("/{meetingId}/analysis/rerun")
+    public AnalysisResponse rerunAnalysis(
+            @PathVariable Long meetingId,
+            @RequestBody(required = false) AnalysisRerunRequest request,
+            @RequestHeader(value = "x-trace-id", required = false) String traceId,
+            @RequestHeader(HttpHeaders.AUTHORIZATION) String authorization) {
+        requirePrincipal();
+        String mode = request == null ? null : request.mode();
+        String reason = request == null ? null : request.reason();
+        return new AnalysisResponse(
+                meetingId,
+                processingService.reanalyzeMeetingAnalysis(meetingId, mode, reason, ensureTraceId(traceId), authorization)
+        );
     }
 
     @GetMapping("/{meetingId}/report")

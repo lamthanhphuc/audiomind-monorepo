@@ -2605,17 +2605,29 @@ async def rerun_analysis(
     request: AnalysisRerunRequest,
     db: Session = Depends(get_db),
 ):
-    transcript_text = _meeting_transcript_text_for_analysis(db, meeting_id)
+    supplied_transcript = _normalize_transcript_text(request.transcript)
+    transcript_text = supplied_transcript or _meeting_transcript_text_for_analysis(
+        db, meeting_id
+    )
     if not transcript_text:
-        raise HTTPException(status_code=404, detail="Transcript not found")
+        raise HTTPException(
+            status_code=404,
+            detail="Cannot re-analyze because saved transcript was not found.",
+        )
 
     mode = normalize_analysis_mode(request.mode or ANALYSIS_MODE_FORCE)
+    transcript_hash = (
+        (request.canonical_transcript_hash or "").strip()
+        or (request.transcript_hash or "").strip()
+    )
     realtime_response = await analyze_realtime_transcript(
         RealtimeTranscriptAnalysisRequest(
             meeting_id=meeting_id,
             transcript=transcript_text,
             source="rerun",
-            transcript_hash=_compute_transcript_hash(transcript_text, None),
+            transcript_hash=_compute_transcript_hash(transcript_text, transcript_hash),
+            prompt_version=request.prompt_version,
+            schema_version=request.schema_version,
             mode=mode,
             reason=request.reason,
         ),
@@ -3228,6 +3240,31 @@ def _health_payload(
     return payload
 
 
+def _runtime_metadata() -> dict[str, Any]:
+    stt_provider = (settings.stt_provider or "deepgram").strip().lower()
+    analysis_provider = (settings.analysis_provider or "gemini").strip().lower()
+    legacy_offline_stt_enabled = _legacy_local_stt_enabled_for_startup_log()
+
+    metadata: dict[str, Any] = {
+        "analysis_provider": analysis_provider,
+        "stt_provider": stt_provider,
+        "analysisProvider": analysis_provider,
+        "sttProvider": stt_provider,
+        "local_stt_enabled": legacy_offline_stt_enabled,
+        "offline_stt_enabled": legacy_offline_stt_enabled,
+        "legacy_offline_stt": {
+            "enabled": legacy_offline_stt_enabled,
+            "whisper_model": settings.whisper_model,
+            "device": get_runtime_device(),
+        },
+        "lazy_load_models": settings.lazy_load_models,
+        "enable_speaker_diarization": settings.enable_speaker_diarization,
+        "stt_actor_registry": _stt_registry_summary(),
+    }
+
+    return metadata
+
+
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
@@ -3236,15 +3273,7 @@ async def health_check():
         status="UP",
         dependencies={},
         legacy_status="healthy",
-        extras={
-            "analysisProvider": settings.analysis_provider,
-            "sttProvider": settings.stt_provider,
-            "whisper_model": settings.whisper_model,
-            "device": get_runtime_device(),
-            "lazy_load_models": settings.lazy_load_models,
-            "enable_speaker_diarization": settings.enable_speaker_diarization,
-            "stt_actor_registry": _stt_registry_summary(),
-        },
+        extras=_runtime_metadata(),
     )
 
 

@@ -176,6 +176,69 @@ public class AIServiceClient {
         return requireBody(response, "getAnalysis", meetingId);
     }
 
+    @Retry(name = "ai-service")
+    @CircuitBreaker(name = "ai-service")
+    @Retryable(
+        retryFor = { RestClientException.class, IllegalStateException.class },
+        maxAttempts = 3,
+        backoff = @Backoff(delay = 1000, multiplier = 2.0)
+    )
+    public Map<String, Object> rerunAnalysis(
+            Long meetingId,
+            String mode,
+            String reason,
+            String transcript,
+            String transcriptHash,
+            String promptVersion,
+            String schemaVersion,
+            String canonicalTranscriptHash,
+            String canonicalTranscriptVersion,
+            String traceId,
+            String authorization) {
+        HttpHeaders headers = new HttpHeaders();
+        String resolvedTraceId = resolveTraceId(traceId);
+        String resolvedRequestId = resolveRequestId(resolvedTraceId);
+        headers.add(TRACE_HEADER, resolvedTraceId);
+        headers.add(REQUEST_HEADER, resolvedRequestId);
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        if (StringUtils.hasText(authorization)) {
+            headers.add(HttpHeaders.AUTHORIZATION, authorization);
+        }
+
+        Map<String, Object> request = new HashMap<>();
+        request.put("mode", StringUtils.hasText(mode) ? mode : "force");
+        request.put("reason", StringUtils.hasText(reason) ? reason : "manual_reanalyze");
+        if (StringUtils.hasText(transcript)) {
+            request.put("transcript", transcript);
+        }
+        if (StringUtils.hasText(transcriptHash)) {
+            request.put("transcript_hash", transcriptHash);
+        }
+        if (StringUtils.hasText(promptVersion)) {
+            request.put("prompt_version", promptVersion);
+        }
+        if (StringUtils.hasText(schemaVersion)) {
+            request.put("schema_version", schemaVersion);
+        }
+        if (StringUtils.hasText(canonicalTranscriptHash)) {
+            request.put("canonical_transcript_hash", canonicalTranscriptHash);
+        }
+        if (StringUtils.hasText(canonicalTranscriptVersion)) {
+            request.put("canonical_transcript_version", canonicalTranscriptVersion);
+        }
+
+        ResponseEntity<Map<String, Object>> response = executeAiServiceCall(
+                "rerunAnalysis",
+                aiUrl + "/api/meeting/" + meetingId + "/analysis/rerun",
+                HttpMethod.POST,
+                new HttpEntity<>(request, headers),
+                resolvedTraceId,
+                resolvedRequestId,
+                meetingId
+        );
+        return requireBody(response, "rerunAnalysis", meetingId);
+    }
+
     public Map<String, Object> getSavedAnalysisCacheOnly(
             Long meetingId,
             String transcript,

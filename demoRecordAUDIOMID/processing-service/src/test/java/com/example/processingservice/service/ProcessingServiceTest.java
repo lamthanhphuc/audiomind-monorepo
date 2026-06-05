@@ -2657,6 +2657,153 @@ class ProcessingServiceTest {
     }
 
     @Test
+    void reanalyzeMeetingAnalysis_shouldVerifyAccessAndDelegateToAiService() {
+        when(meetingServiceClient.getMeetingById(616L, "trace-616", AUTH_HEADER))
+                .thenReturn(Map.of("id", 616L));
+        Map<String, Object> state = new HashMap<>();
+        state.put("status", "COMPLETED");
+        state.put("result", Map.of(
+                "analysis", Map.of("summary", "Previous summary"),
+                "transcripts", List.of(Map.of(
+                        "speaker", "SPEAKER_1",
+                        "text", "Saved transcript"
+                ))
+        ));
+        when(jobStateStore.getJobState(616L)).thenReturn(Optional.of(state));
+        when(aiServiceClient.rerunAnalysis(
+                616L,
+                "force",
+                "manual_reanalyze",
+                "SPEAKER_1: Saved transcript",
+                "37575315f5e3c1689f1ccc05fc23cf21f24a317834899b0c1b0aaffb48a7f555",
+                "gemini-business-v1",
+                "gemini-business-v1",
+                null,
+                null,
+                "trace-616",
+                AUTH_HEADER
+        )).thenReturn(Map.of(
+                "analysisStatus", "ANALYZING",
+                "cacheHit", false,
+                "retryAfterSeconds", 3
+        ));
+
+        Map<String, Object> response = processingService.reanalyzeMeetingAnalysis(
+                616L,
+                "force",
+                "manual_reanalyze",
+                "trace-616",
+                AUTH_HEADER
+        );
+
+        assertEquals("ANALYZING", response.get("analysisStatus"));
+        assertEquals(3, response.get("retryAfterSeconds"));
+        verify(meetingServiceClient).getMeetingById(616L, "trace-616", AUTH_HEADER);
+        verify(aiServiceClient).rerunAnalysis(
+                616L,
+                "force",
+                "manual_reanalyze",
+                "SPEAKER_1: Saved transcript",
+                "37575315f5e3c1689f1ccc05fc23cf21f24a317834899b0c1b0aaffb48a7f555",
+                "gemini-business-v1",
+                "gemini-business-v1",
+                null,
+                null,
+                "trace-616",
+                AUTH_HEADER
+        );
+        verify(aiServiceClient, never()).analyzeRealtimeTranscript(
+                anyLong(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString()
+        );
+    }
+
+    @Test
+    void reanalyzeMeetingAnalysis_shouldReturnClearNotFoundWhenSavedTranscriptMissing() {
+        when(meetingServiceClient.getMeetingById(617L, "trace-617", AUTH_HEADER))
+                .thenReturn(Map.of("id", 617L));
+        when(jobStateStore.getJobState(617L)).thenReturn(Optional.empty());
+        when(aiServiceClient.getTranscript(617L, "trace-617"))
+                .thenReturn(Map.of("meeting_id", 617L, "transcripts", List.of()));
+
+        ResponseStatusException ex = assertThrows(
+                ResponseStatusException.class,
+                () -> processingService.reanalyzeMeetingAnalysis(
+                        617L,
+                        "force",
+                        "manual_reanalyze",
+                        "trace-617",
+                        AUTH_HEADER
+                )
+        );
+
+        assertEquals(HttpStatus.NOT_FOUND, ex.getStatusCode());
+        assertEquals("Cannot re-analyze because saved transcript was not found.", ex.getReason());
+        verify(aiServiceClient, never()).rerunAnalysis(
+                anyLong(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString()
+        );
+    }
+
+    @Test
+    void reanalyzeMeetingAnalysis_shouldMapAiServiceNotFoundToClearDomainError() {
+        when(meetingServiceClient.getMeetingById(618L, "trace-618", AUTH_HEADER))
+                .thenReturn(Map.of("id", 618L));
+        Map<String, Object> state = new HashMap<>();
+        state.put("status", "COMPLETED");
+        state.put("result", Map.of(
+                "transcripts", List.of(Map.of(
+                        "speaker", "SPEAKER_1",
+                        "text", "Saved transcript"
+                ))
+        ));
+        when(jobStateStore.getJobState(618L)).thenReturn(Optional.of(state));
+        when(aiServiceClient.rerunAnalysis(
+                eq(618L),
+                eq("force"),
+                eq("manual_reanalyze"),
+                anyString(),
+                anyString(),
+                eq("gemini-business-v1"),
+                eq("gemini-business-v1"),
+                isNull(),
+                isNull(),
+                eq("trace-618"),
+                eq(AUTH_HEADER)
+        )).thenThrow(new HttpClientErrorException(HttpStatus.NOT_FOUND, "Not Found"));
+
+        ResponseStatusException ex = assertThrows(
+                ResponseStatusException.class,
+                () -> processingService.reanalyzeMeetingAnalysis(
+                        618L,
+                        "force",
+                        "manual_reanalyze",
+                        "trace-618",
+                        AUTH_HEADER
+                )
+        );
+
+        assertEquals(HttpStatus.NOT_FOUND, ex.getStatusCode());
+        assertEquals("Cannot re-analyze because saved transcript was not found.", ex.getReason());
+    }
+
+    @Test
     void getProcessingStatus_shouldTrackRunningGaugeByActiveJobs() {
         Map<String, Object> runningA = new HashMap<>();
         runningA.put("status", "RUNNING");

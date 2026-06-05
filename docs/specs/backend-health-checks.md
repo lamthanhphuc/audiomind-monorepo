@@ -17,7 +17,7 @@
 | Service | Current /health | Current /ready | Dependencies checked | Gaps |
 | ------- | --------------- | -------------- | -------------------- | ---- |
 | processing-api | Có, trả `{"status":"ok","service":"processing-service"}` | Có, trả `{"status":"ready","service":"processing-service"}` | Redis `ping()` + ai-api `/health` qua `AIServiceClient.health()` | Ready fail hiện tại không map 503, khả năng ra 500 (exception chung). Chưa có per-check detail trong response. |
-| ai-api | Có, trả `status`, runtime/device/model flags, registry (không trả key raw) | Có, check DB `SELECT 1`, Redis `ping`, `pipeline != None`; trả `{"status":"ready","service":"ai-service",...}` | DB + Redis + pipeline in-memory | Fail do DB/Redis có khả năng 500; 503 chỉ rõ cho trường hợp `pipeline is None`. Chưa có response `checks` rõ từng dependency. Chưa có boolean readiness cho `deepgramConfigured`/`geminiConfigured`. |
+| ai-api | Có, trả `status`, cloud-first provider metadata, legacy/offline STT metadata under `legacy_offline_stt`, registry (không trả key raw) | Có, check DB `SELECT 1`, Redis `ping`, `pipeline != None`; trả `{"status":"ready","service":"ai-service",...}` | DB + Redis + pipeline in-memory | Fail do DB/Redis có khả năng 500; 503 chỉ rõ cho trường hợp `pipeline is None`. Chưa có response `checks` rõ từng dependency. Chưa có boolean readiness cho `deepgramConfigured`/`geminiConfigured`. |
 | meeting-api | Có, trả `{"status":"ok","service":"meeting-service"}` | Có, trả `{"status":"ready","service":"meeting-service"}` | DB qua `meetingRepository.count()` | Ready fail hiện tại khả năng 500, chưa chuẩn 503; chưa có chi tiết check. |
 | user-api | Có, trả `{"status":"ok","service":"user-service"}` | Có, hiện tại trả ready tĩnh, không check dependency | Không check dependency trong `/ready` | Gap lớn nhất: `/ready` không xác minh DB/Redis dù service phụ thuộc db/redis trong compose. |
 | db | Không có app endpoint | Không có app endpoint | N/A | Chưa có compose `healthcheck` (`pg_isready`). |
@@ -98,6 +98,7 @@ Acceptance:
 ### 7.2 ai-api
 Plan:
 - `/health`: app alive only.
+- `/health` cloud-first metadata should expose `stt_provider`, `analysis_provider`, `local_stt_enabled`, and `offline_stt_enabled`; Whisper/device details, if present, belong only under disabled/legacy `legacy_offline_stt`.
 - `/ready`: check lightweight dependencies/config.
 - Return non-secret booleans:
   - `deepgramConfigured`

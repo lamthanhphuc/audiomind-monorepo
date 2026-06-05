@@ -4,7 +4,7 @@ import time
 import pytest
 import app.main as main_module
 from app.models import Analysis, Base, MeetingAnalysisRun
-from app.schemas import RealtimeTranscriptAnalysisRequest
+from app.schemas import AnalysisRerunRequest, RealtimeTranscriptAnalysisRequest
 from app.services.analysis_runs import persist_completed_analysis_run
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -154,6 +154,84 @@ def test_realtime_analysis_skips_empty_transcript(db_session):
     assert exc_info.value.status_code == 422
     assert exc_info.value.detail == "Empty transcript"
     assert db_session.query(Analysis).filter(Analysis.meeting_id == 901).first() is None
+
+
+def test_rerun_analysis_uses_supplied_transcript_when_local_transcript_missing(
+    db_session,
+    monkeypatch,
+):
+    monkeypatch.setattr(main_module, "_get_client", lambda: FakeRedisClient())
+    monkeypatch.setattr(main_module, "set_job_status", lambda **kwargs: None)
+    monkeypatch.setattr(
+        main_module,
+        "get_job_status",
+        lambda meeting_id: {
+            "status": "COMPLETED",
+            "result": {
+                "analysis": {
+                    "summary": "Realtime summary",
+                    "keywords": ["api"],
+                    "technicalTerms": [
+                        {
+                            "term": "API",
+                            "meaning": "Application Programming Interface",
+                            "category": "protocol",
+                        }
+                    ],
+                    "painPoints": [
+                        {"title": "Delay", "evidence": "queue lag", "severity": "high"}
+                    ],
+                    "actionItems": ["Scale workers"],
+                    "domainMode": "it",
+                    "technical_terms": ["API"],
+                    "action_items": [
+                        {"task": "Scale workers", "owner": None, "deadline": None}
+                    ],
+                    "source": "rerun",
+                    "transcript_hash": "c" * 64,
+                }
+            },
+        },
+    )
+    request = AnalysisRerunRequest(
+        mode="force",
+        reason="manual_reanalyze",
+        transcript="SPEAKER_1: proxy supplied transcript",
+        transcript_hash="c" * 64,
+        prompt_version="prompt-v1",
+        schema_version="schema-v1",
+    )
+
+    response = asyncio.run(main_module.rerun_analysis(906, request, db_session))
+
+    assert response.meeting_id == 906
+    assert response.analysisStatus == "COMPLETED"
+    assert response.source == "rerun"
+    assert response.transcript_hash == "c" * 64
+    assert main_module._realtime_analysis_analyzer.calls[0][0] == (
+        "SPEAKER_1: proxy supplied transcript"
+    )
+
+    run = (
+        db_session.query(MeetingAnalysisRun)
+        .filter(MeetingAnalysisRun.meeting_id == 906)
+        .one()
+    )
+    assert run.rerun_reason == "manual_reanalyze"
+
+
+def test_rerun_analysis_returns_clear_not_found_when_transcript_missing(db_session):
+    request = AnalysisRerunRequest(mode="force", reason="manual_reanalyze")
+
+    with pytest.raises(main_module.HTTPException) as exc_info:
+        asyncio.run(main_module.rerun_analysis(907, request, db_session))
+
+    assert exc_info.value.status_code == 404
+    assert (
+        exc_info.value.detail
+        == "Cannot re-analyze because saved transcript was not found."
+    )
+    assert db_session.query(Analysis).filter(Analysis.meeting_id == 907).first() is None
 
 
 def test_realtime_analysis_persists_and_is_idempotent_for_same_hash(db_session):
