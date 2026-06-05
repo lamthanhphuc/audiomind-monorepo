@@ -297,4 +297,66 @@ class AIServiceClientTest {
         assertEquals("Bearer test-token", entity.getHeaders().getFirst(HttpHeaders.AUTHORIZATION));
         assertEquals("application/json", entity.getHeaders().getContentType().toString());
     }
+
+    @Test
+    void rerunAnalysis_shouldPostModeReasonToRerunEndpointAndReturnMetadata() {
+        RestTemplate restTemplate = mock(RestTemplate.class);
+        AIServiceClient client = new AIServiceClient(restTemplate);
+        ReflectionTestUtils.setField(client, "aiUrl", "http://ai-service");
+
+        ResponseEntity<Map<String, Object>> response = new ResponseEntity<>(
+                Map.of(
+                        "analysisStatus", "ANALYZING",
+                        "cacheHit", false,
+                        "provider", "gemini",
+                        "retryAfterSeconds", 5
+                ),
+                HttpStatus.OK
+        );
+        when(restTemplate.exchange(
+                any(String.class),
+                eq(HttpMethod.POST),
+                any(HttpEntity.class),
+                any(org.springframework.core.ParameterizedTypeReference.class)
+        )).thenReturn(response);
+
+        Map<String, Object> result = client.rerunAnalysis(
+                77L,
+                "force",
+                "manual_reanalyze",
+                "SPEAKER_1: saved transcript",
+                "a".repeat(64),
+                "prompt-v1",
+                "schema-v1",
+                "b".repeat(64),
+                "canonical-v1",
+                "trace-rerun",
+                "Bearer test-token"
+        );
+
+        assertEquals("ANALYZING", result.get("analysisStatus"));
+        assertEquals("gemini", result.get("provider"));
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<HttpEntity<Map<String, Object>>> captor = ArgumentCaptor.forClass(HttpEntity.class);
+        verify(restTemplate).exchange(
+                eq("http://ai-service/api/meeting/77/analysis/rerun"),
+                eq(HttpMethod.POST),
+                captor.capture(),
+                any(org.springframework.core.ParameterizedTypeReference.class)
+        );
+
+        HttpEntity<Map<String, Object>> entity = captor.getValue();
+        Map<String, Object> payload = entity.getBody();
+        assertEquals("force", payload.get("mode"));
+        assertEquals("manual_reanalyze", payload.get("reason"));
+        assertEquals("SPEAKER_1: saved transcript", payload.get("transcript"));
+        assertEquals("a".repeat(64), payload.get("transcript_hash"));
+        assertEquals("prompt-v1", payload.get("prompt_version"));
+        assertEquals("schema-v1", payload.get("schema_version"));
+        assertEquals("b".repeat(64), payload.get("canonical_transcript_hash"));
+        assertEquals("canonical-v1", payload.get("canonical_transcript_version"));
+        assertEquals("Bearer test-token", entity.getHeaders().getFirst(HttpHeaders.AUTHORIZATION));
+        assertEquals("application/json", entity.getHeaders().getContentType().toString());
+    }
 }

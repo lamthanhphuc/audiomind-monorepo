@@ -169,6 +169,12 @@ class RealtimeTranscriptAnalysisRequest(BaseModel):
 class AnalysisRerunRequest(BaseModel):
     mode: Optional[str] = "force"
     reason: Optional[str] = None
+    transcript: Optional[str] = None
+    transcript_hash: Optional[str] = None
+    prompt_version: Optional[str] = None
+    schema_version: Optional[str] = None
+    canonical_transcript_hash: Optional[str] = None
+    canonical_transcript_version: Optional[str] = None
 
 
 class RealtimeTranscriptAnalysisResponse(BaseModel):

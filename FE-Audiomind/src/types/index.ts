@@ -36,6 +36,17 @@ export type AiAnalysis = {
   meetingId?: number
   meeting_id?: number
   status?: string
+  analysisStatus?: string
+  cacheHit?: boolean
+  stale?: boolean
+  staleReason?: string
+  provider?: string
+  model?: string
+  canonicalTranscriptHash?: string
+  canonicalTranscriptVersion?: string
+  analysisInputMode?: string
+  lastAnalyzedAt?: string
+  retryAfterSeconds?: number
   summary: string
   meetingSummary?: string
   keywords: string[]
@@ -273,6 +284,48 @@ const normalizeConfidence = (value: unknown): number | undefined => {
   return undefined
 }
 
+const firstString = (...values: unknown[]): string | undefined => {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim()
+    }
+  }
+  return undefined
+}
+
+const firstBoolean = (...values: unknown[]): boolean | undefined => {
+  for (const value of values) {
+    if (typeof value === 'boolean') {
+      return value
+    }
+    if (typeof value === 'string') {
+      const normalized = value.trim().toLowerCase()
+      if (normalized === 'true') {
+        return true
+      }
+      if (normalized === 'false') {
+        return false
+      }
+    }
+  }
+  return undefined
+}
+
+const firstNumber = (...values: unknown[]): number | undefined => {
+  for (const value of values) {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value
+    }
+    if (typeof value === 'string') {
+      const parsed = Number(value.trim())
+      if (Number.isFinite(parsed)) {
+        return parsed
+      }
+    }
+  }
+  return undefined
+}
+
 export const normalizeAnalysisResponse = (value: unknown): AiAnalysis => {
   const payload = value && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -294,11 +347,7 @@ export const normalizeAnalysisResponse = (value: unknown): AiAnalysis => {
           ? nested.meeting_id
           : undefined
 
-  const resolvedStatus = typeof nested.status === 'string'
-    ? nested.status
-    : typeof payload.status === 'string'
-      ? payload.status
-      : undefined
+  const resolvedStatus = firstString(nested.status, payload.status)
 
   const technicalTerms = normalizeTechnicalTerms(
     nested.technicalTerms ?? nested.technical_terms ?? nested.terms,
@@ -338,6 +387,27 @@ export const normalizeAnalysisResponse = (value: unknown): AiAnalysis => {
     meetingId: resolvedMeetingId,
     meeting_id: resolvedMeetingId,
     status: resolvedStatus,
+    analysisStatus: firstString(nested.analysisStatus, payload.analysisStatus),
+    cacheHit: firstBoolean(nested.cacheHit, payload.cacheHit),
+    stale: firstBoolean(nested.stale, payload.stale),
+    staleReason: firstString(nested.staleReason, payload.staleReason),
+    provider: firstString(nested.provider, payload.provider),
+    model: firstString(nested.model, payload.model),
+    canonicalTranscriptHash: firstString(
+      nested.canonicalTranscriptHash,
+      nested.canonical_transcript_hash,
+      payload.canonicalTranscriptHash,
+      payload.canonical_transcript_hash,
+    ),
+    canonicalTranscriptVersion: firstString(
+      nested.canonicalTranscriptVersion,
+      nested.canonical_transcript_version,
+      payload.canonicalTranscriptVersion,
+      payload.canonical_transcript_version,
+    ),
+    analysisInputMode: firstString(nested.analysisInputMode, nested.analysis_input_mode, payload.analysisInputMode, payload.analysis_input_mode),
+    lastAnalyzedAt: firstString(nested.lastAnalyzedAt, nested.last_analyzed_at, payload.lastAnalyzedAt, payload.last_analyzed_at),
+    retryAfterSeconds: firstNumber(nested.retryAfterSeconds, nested.retry_after_seconds, payload.retryAfterSeconds, payload.retry_after_seconds),
     summary,
     meetingSummary,
     keywords,
@@ -356,9 +426,9 @@ export const normalizeAnalysisResponse = (value: unknown): AiAnalysis => {
     customerImpact: String(nested.customerImpact ?? '').trim() || undefined,
     technicalImpact: String(nested.technicalImpact ?? '').trim() || undefined,
     confidence: normalizeConfidence(nested.confidence),
-    promptVersion: String(nested.promptVersion ?? nested.prompt_version ?? '').trim() || undefined,
-    schemaVersion: String(nested.schemaVersion ?? nested.schema_version ?? '').trim() || undefined,
-    transcriptHash: String(nested.transcriptHash ?? nested.transcript_hash ?? '').trim() || undefined,
+    promptVersion: firstString(nested.promptVersion, nested.prompt_version, payload.promptVersion, payload.prompt_version),
+    schemaVersion: firstString(nested.schemaVersion, nested.schema_version, payload.schemaVersion, payload.schema_version),
+    transcriptHash: firstString(nested.transcriptHash, nested.transcript_hash, payload.transcriptHash, payload.transcript_hash),
     domainMode: normalizeDomainMode(nested.domainMode ?? nested.domain_mode),
     createdAt: typeof nested.createdAt === 'string' ? nested.createdAt : typeof nested.created_at === 'string' ? nested.created_at : undefined,
     technical_terms: Array.isArray(nested.technical_terms) ? (nested.technical_terms as Array<string | AnalysisTechnicalTerm>) : undefined,

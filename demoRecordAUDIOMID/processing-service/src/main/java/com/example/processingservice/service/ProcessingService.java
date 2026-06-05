@@ -398,6 +398,51 @@ public class ProcessingService {
         return getAnalysisInternal(meetingId, traceId, authorization, false);
     }
 
+    public Map<String, Object> reanalyzeMeetingAnalysis(
+            Long meetingId,
+            String mode,
+            String reason,
+            String traceId,
+            String authorization) {
+        assertMeetingAccess(meetingId, traceId, authorization);
+        TranscriptPayload transcriptPayload = loadSavedTranscriptPayloadForRerun(meetingId, traceId, authorization);
+        String transcriptText = buildTranscriptText(transcriptPayload.readableRows());
+        if (transcriptText.isBlank()) {
+            throw new ResponseStatusException(
+                    HttpStatus.NOT_FOUND,
+                    "Cannot re-analyze because saved transcript was not found."
+            );
+        }
+
+        String transcriptHash = resolveReportTranscriptHash(transcriptPayload, transcriptText);
+        String promptVersion = resolvePromptVersion(null);
+        String schemaVersion = resolveSchemaVersion(null);
+        try {
+            return aiServiceClient.rerunAnalysis(
+                    meetingId,
+                    mode,
+                    reason,
+                    transcriptText,
+                    transcriptHash,
+                    promptVersion,
+                    schemaVersion,
+                    transcriptPayload.canonicalTranscriptHash(),
+                    transcriptPayload.canonicalTranscriptVersion(),
+                    traceId,
+                    authorization
+            );
+        } catch (HttpStatusCodeException ex) {
+            if (ex.getStatusCode().value() == HttpStatus.NOT_FOUND.value()) {
+                throw new ResponseStatusException(
+                        HttpStatus.NOT_FOUND,
+                        "Cannot re-analyze because saved transcript was not found.",
+                        ex
+                );
+            }
+            throw ex;
+        }
+    }
+
     public byte[] generateMeetingReportDocx(Long meetingId, String traceId, String authorization) {
         Map<String, Object> meeting = fetchAccessibleMeeting(meetingId, traceId, authorization);
         TranscriptPayload transcriptPayload = loadSavedTranscriptPayloadForExport(
@@ -2299,6 +2344,24 @@ public class ProcessingService {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Transcript is not ready yet.");
         }
         return TranscriptPayload.empty();
+    }
+
+    private TranscriptPayload loadSavedTranscriptPayloadForRerun(
+            Long meetingId,
+            String traceId,
+            String authorization
+    ) {
+        Map<String, Object> state = jobStateStore.getJobState(meetingId).orElse(null);
+        TranscriptPayload statePayload = buildStateTranscriptPayload(state);
+        TranscriptPayload persistedPayload = fetchPersistedTranscriptPayloadForExport(meetingId, traceId);
+        TranscriptSourceDecision decision = selectReadableTranscriptSource(statePayload, persistedPayload);
+        log.info(
+                "ANALYSIS_RERUN_TRANSCRIPT_SOURCE meetingId={} source={} rows={}",
+                meetingId,
+                decision.source(),
+                decision.payload().readableRows().size()
+        );
+        return decision.payload();
     }
 
     private TranscriptSourceDecision selectReadableTranscriptSource(

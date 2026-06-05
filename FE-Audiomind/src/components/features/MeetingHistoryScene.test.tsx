@@ -53,7 +53,9 @@ describe('MeetingHistoryScene', () => {
     vi.spyOn(api, 'listMeetingsWithParams').mockResolvedValue([baseMeeting])
     vi.spyOn(api, 'getMeetingDetail').mockResolvedValue(baseMeeting as any)
     vi.spyOn(api, 'getTranscript').mockResolvedValue({ meeting_id: 7, transcripts: [] } as any)
+    vi.spyOn(api, 'getAnalysis').mockResolvedValue(baseAnalysis as any)
     vi.spyOn(api, 'getSavedAnalysis').mockResolvedValue(baseAnalysis as any)
+    vi.spyOn(api, 'reanalyzeMeetingAnalysis').mockResolvedValue({ ...baseAnalysis, status: 'ANALYZING', analysisStatus: 'ANALYZING' } as any)
     vi.spyOn(api, 'downloadMeetingReport').mockResolvedValue({
       blob: new Blob(['fake-docx'], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' }),
       filename: 'meeting-7-report.docx',
@@ -82,6 +84,7 @@ describe('MeetingHistoryScene', () => {
     })
     container.remove()
     vi.restoreAllMocks()
+    vi.useRealTimers()
   })
 
   it('applies search/filter/sort params when querying meetings', async () => {
@@ -197,6 +200,175 @@ describe('MeetingHistoryScene', () => {
     })
     await flush()
     expect(container.textContent).toContain('Không thể tải lịch sử')
+  })
+
+  it('loads meeting detail without calling provider-triggering getAnalysis', async () => {
+    await act(async () => {
+      root.render(<MeetingHistoryScene />)
+    })
+    await flush()
+
+    expect(api.getSavedAnalysis).toHaveBeenCalledWith(7)
+    expect(api.getAnalysis).not.toHaveBeenCalled()
+  })
+
+  it('keeps previous completed analysis visible and stops polling when re-analyze request fails', async () => {
+    vi.useFakeTimers()
+    const completedAnalysis = {
+      ...baseAnalysis,
+      status: 'COMPLETED',
+      analysisStatus: 'COMPLETED',
+      summary: 'Previous completed content',
+      meetingSummary: 'Previous completed content',
+    }
+    ;(api.getSavedAnalysis as any).mockResolvedValueOnce(completedAnalysis)
+    ;(api.reanalyzeMeetingAnalysis as any).mockRejectedValueOnce(
+      new api.ApiError('Resource not found', 404),
+    )
+
+    await act(async () => {
+      root.render(<MeetingHistoryScene />)
+    })
+    await flush()
+
+    const initialSavedAnalysisCalls = (api.getSavedAnalysis as any).mock.calls.length
+    const button = container.querySelector('[data-testid="analysis-reanalyze-button"]') as HTMLButtonElement
+    await act(async () => {
+      button.click()
+    })
+    await flush()
+
+    expect(api.reanalyzeMeetingAnalysis).toHaveBeenCalledWith(7, { mode: 'force', reason: 'manual_reanalyze' })
+    expect(container.querySelector('[data-testid="analysis-status-badge"]')?.textContent).toBe('COMPLETED')
+    expect(container.textContent).toContain('Previous completed content')
+    expect(container.textContent).toContain('Cannot re-analyze because saved transcript was not found.')
+    expect(container.querySelector('[data-testid="analysis-status-badge"]')?.textContent).not.toBe('NO_ANALYSIS')
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000)
+    })
+    await flush()
+
+    expect((api.getSavedAnalysis as any).mock.calls.length).toBe(initialSavedAnalysisCalls)
+  })
+
+  it.each(['COMPLETED', 'FAILED', 'RATE_LIMITED'])('polling stops on %s after re-analyze', async (terminalStatus) => {
+    vi.useFakeTimers()
+    const completedAnalysis = {
+      ...baseAnalysis,
+      status: 'COMPLETED',
+      analysisStatus: 'COMPLETED',
+      summary: 'Previous completed content',
+      meetingSummary: 'Previous completed content',
+    }
+    ;(api.getSavedAnalysis as any)
+      .mockResolvedValueOnce(completedAnalysis)
+      .mockResolvedValueOnce({
+        ...baseAnalysis,
+        status: terminalStatus,
+        analysisStatus: terminalStatus,
+        retryAfterSeconds: terminalStatus === 'RATE_LIMITED' ? 30 : undefined,
+      })
+    ;(api.reanalyzeMeetingAnalysis as any).mockResolvedValueOnce({
+      ...baseAnalysis,
+      status: 'ANALYZING',
+      analysisStatus: 'ANALYZING',
+    })
+
+    await act(async () => {
+      root.render(<MeetingHistoryScene />)
+    })
+    await flush()
+
+    const button = container.querySelector('[data-testid="analysis-reanalyze-button"]') as HTMLButtonElement
+    await act(async () => {
+      button.click()
+    })
+    await flush()
+
+    expect(api.reanalyzeMeetingAnalysis).toHaveBeenCalledWith(7, { mode: 'force', reason: 'manual_reanalyze' })
+    expect(container.textContent).toContain('Previous completed content')
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1500)
+    })
+    await flush()
+
+    expect(container.querySelector('[data-testid="analysis-status-badge"]')?.textContent).toBe(terminalStatus)
+    const callCountAtTerminal = (api.getSavedAnalysis as any).mock.calls.length
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000)
+    })
+    await flush()
+
+    expect((api.getSavedAnalysis as any).mock.calls.length).toBe(callCountAtTerminal)
+  })
+
+  it('does not apply stale re-analyze polling updates after switching meetings', async () => {
+    vi.useFakeTimers()
+    const firstMeeting = { ...baseMeeting, id: 7, title: 'First meeting' }
+    const secondMeeting = { ...baseMeeting, id: 8, title: 'Second meeting' }
+    ;(api.listMeetingsWithParams as any).mockResolvedValue([firstMeeting, secondMeeting])
+    ;(api.getMeetingDetail as any).mockImplementation(async (meetingId: number) => (
+      meetingId === 8 ? secondMeeting : firstMeeting
+    ))
+    ;(api.getTranscript as any).mockResolvedValue({ meeting_id: 7, transcripts: [] })
+    ;(api.getSavedAnalysis as any)
+      .mockResolvedValueOnce({
+        ...baseAnalysis,
+        status: 'COMPLETED',
+        analysisStatus: 'COMPLETED',
+        summary: 'First saved content',
+        meetingSummary: 'First saved content',
+      })
+      .mockResolvedValueOnce({
+        ...baseAnalysis,
+        meetingId: 8,
+        meeting_id: 8,
+        status: 'NOT_FOUND',
+        analysisStatus: 'NO_ANALYSIS',
+      })
+      .mockResolvedValueOnce({
+        ...baseAnalysis,
+        meetingId: 7,
+        meeting_id: 7,
+        status: 'COMPLETED',
+        analysisStatus: 'COMPLETED',
+        summary: 'Stale first update',
+        meetingSummary: 'Stale first update',
+      })
+    ;(api.reanalyzeMeetingAnalysis as any).mockResolvedValueOnce({
+      ...baseAnalysis,
+      status: 'ANALYZING',
+      analysisStatus: 'ANALYZING',
+    })
+
+    await act(async () => {
+      root.render(<MeetingHistoryScene />)
+    })
+    await flush()
+
+    const button = container.querySelector('[data-testid="analysis-reanalyze-button"]') as HTMLButtonElement
+    await act(async () => {
+      button.click()
+    })
+    await flush()
+
+    const secondMeetingButton = Array.from(container.querySelectorAll('[data-testid="meeting-list"] button'))
+      .find((item) => item.textContent?.includes('Second meeting')) as HTMLButtonElement
+    await act(async () => {
+      secondMeetingButton.click()
+    })
+    await flush()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1500)
+    })
+    await flush()
+
+    expect(container.textContent).toContain('Second meeting')
+    expect(container.textContent).not.toContain('Stale first update')
   })
 
   it('shows only completed meetings when completed filter is selected', async () => {

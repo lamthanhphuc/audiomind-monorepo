@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
+    ApiError,
     deleteMeeting,
     downloadMeetingReport,
     downloadMeetingTranscript,
@@ -7,11 +8,13 @@ import {
     getSavedAnalysis,
     getTranscript,
     listMeetingsWithParams,
+    reanalyzeMeetingAnalysis,
     renameMeeting,
 } from '../../services/api'
 import type { AiAnalysis, Meeting } from '../../types'
 import { mergeTranscriptSegments, normalizePersistedTranscriptSegments, sortTranscriptSegmentsByTimeline } from '../../utils/transcript'
 import { AnalysisPanel } from '../analysis/AnalysisPanel'
+import { AnalysisStatusPanel, normalizeAnalysisMetadata } from '../analysis/AnalysisStatusPanel'
 import { TranscriptDisplay } from '../transcript/TranscriptDisplay'
 import { EmptyState } from '../ui/EmptyState'
 import { ErrorState } from '../ui/ErrorState'
@@ -21,6 +24,8 @@ type DetailAnalysisState = 'idle' | 'processing' | 'completed' | 'failed' | 'mis
 type ListState = 'idle' | 'loading' | 'ready' | 'empty' | 'error'
 type TranscriptExportFormat = 'txt' | 'csv'
 type TranscriptExportMode = 'readable' | 'raw'
+
+const SAVED_TRANSCRIPT_MISSING_REANALYZE_MESSAGE = 'Cannot re-analyze because saved transcript was not found.'
 type TranscriptExportRequest = {
   mode: TranscriptExportMode
   format: TranscriptExportFormat
@@ -32,6 +37,7 @@ type SelectedMeetingDetail = {
   transcriptState: 'loading' | 'ready' | 'empty' | 'error'
   transcriptError: string | null
   analysis: AiAnalysis | null
+  analysisMetadata: AiAnalysis | null
   analysisState: DetailAnalysisState
   analysisError: string | null
 }
@@ -42,6 +48,7 @@ const emptyDetailState: SelectedMeetingDetail = {
   transcriptState: 'loading',
   transcriptError: null,
   analysis: null,
+  analysisMetadata: null,
   analysisState: 'idle',
   analysisError: null,
 }
@@ -67,11 +74,11 @@ const getAnalysisStateFromResponse = (analysis: AiAnalysis | null): { state: Det
     return { state: 'missing', analysis: null, error: null }
   }
 
-  const status = String(analysis.status ?? '').trim().toUpperCase()
+  const status = String(analysis.analysisStatus ?? analysis.status ?? '').trim().toUpperCase()
   if (status === 'FAILED') {
     return { state: 'failed', analysis: null, error: 'Không thể tải phân tích đã lưu' }
   }
-  if (status === 'RUNNING' || status === 'QUEUED' || status === 'PENDING') {
+  if (status === 'ANALYZING' || status === 'RUNNING' || status === 'QUEUED' || status === 'PENDING') {
     return { state: 'processing', analysis: null, error: null }
   }
 
@@ -94,6 +101,37 @@ const getAnalysisStateFromResponse = (analysis: AiAnalysis | null): { state: Det
   return { state: 'completed', analysis, error: null }
 }
 
+const baseAnalysisMetadata = (meetingId: number): AiAnalysis => ({
+  meetingId,
+  meeting_id: meetingId,
+  status: 'NO_ANALYSIS',
+  analysisStatus: 'NO_ANALYSIS',
+  summary: '',
+  keywords: [],
+  technicalTerms: [],
+  painPoints: [],
+  actionItems: [],
+  domainMode: 'it',
+})
+
+const isTerminalAnalysisStatus = (analysis: AiAnalysis | null): boolean => {
+  const status = normalizeAnalysisMetadata(analysis).status
+  return status === 'COMPLETED'
+    || status === 'FAILED'
+    || status === 'RATE_LIMITED'
+    || status === 'QUOTA_BLOCKED'
+}
+
+const getReanalyzeErrorMessage = (error: unknown): string => {
+  if (error instanceof ApiError && error.status === 404) {
+    return SAVED_TRANSCRIPT_MISSING_REANALYZE_MESSAGE
+  }
+  if (error instanceof Error) {
+    return error.message
+  }
+  return 'Không thể re-analyze meeting'
+}
+
 export default function MeetingHistoryScene() {
   const [listState, setListState] = useState<ListState>('loading')
   const [listError, setListError] = useState<string | null>(null)
@@ -112,7 +150,10 @@ export default function MeetingHistoryScene() {
   const [transcriptExportBusy, setTranscriptExportBusy] = useState<TranscriptExportRequest | null>(null)
   const [transcriptExportError, setTranscriptExportError] = useState<string | null>(null)
   const [transcriptExportMenuOpen, setTranscriptExportMenuOpen] = useState(false)
+  const [reanalyzeBusy, setReanalyzeBusy] = useState(false)
+  const [reanalyzeError, setReanalyzeError] = useState<string | null>(null)
   const [reloadTick, setReloadTick] = useState(0)
+  const rerunPollRef = useRef<{ meetingId: number; cancelled: boolean; timeoutId: number | null } | null>(null)
 
   const selectedMeetingSummary = useMemo(() => {
     return meetings.find((meeting) => meeting.id === selectedMeetingId) ?? null
@@ -121,6 +162,26 @@ export default function MeetingHistoryScene() {
   useEffect(() => {
     setRenameValue(selectedMeetingSummary?.title ?? '')
   }, [selectedMeetingSummary?.id, selectedMeetingSummary?.title])
+
+  useEffect(() => {
+    if (rerunPollRef.current) {
+      rerunPollRef.current.cancelled = true
+      if (rerunPollRef.current.timeoutId !== null) {
+        window.clearTimeout(rerunPollRef.current.timeoutId)
+      }
+    }
+    setReanalyzeBusy(false)
+    setReanalyzeError(null)
+
+    return () => {
+      if (rerunPollRef.current) {
+        rerunPollRef.current.cancelled = true
+        if (rerunPollRef.current.timeoutId !== null) {
+          window.clearTimeout(rerunPollRef.current.timeoutId)
+        }
+      }
+    }
+  }, [selectedMeetingId])
 
   useEffect(() => {
     let cancelled = false
@@ -181,6 +242,7 @@ export default function MeetingHistoryScene() {
         transcriptState: 'loading',
         transcriptError: null,
         analysis: null,
+        analysisMetadata: null,
         analysisState: 'idle',
         analysisError: null,
       })
@@ -210,6 +272,7 @@ export default function MeetingHistoryScene() {
           transcriptState,
           transcriptError: null,
           analysis: analysisState.analysis,
+          analysisMetadata: analysisResponse,
           analysisState: analysisState.state,
           analysisError: analysisState.error,
         })
@@ -224,6 +287,7 @@ export default function MeetingHistoryScene() {
           transcriptState: 'error',
           transcriptError: error instanceof Error ? error.message : 'Không thể tải chi tiết meeting',
           analysis: null,
+          analysisMetadata: null,
           analysisState: 'failed',
           analysisError: null,
         })
@@ -334,6 +398,131 @@ export default function MeetingHistoryScene() {
       setTranscriptExportError(error instanceof Error ? error.message : 'Không thể xuất transcript')
     } finally {
       setTranscriptExportBusy(null)
+    }
+  }
+
+  const applyAnalysisResponse = (meetingId: number, analysisResponse: AiAnalysis | null, terminal = false) => {
+    const nextState = getAnalysisStateFromResponse(analysisResponse)
+    setDetail((current) => {
+      if (current.meeting?.id !== meetingId) {
+        return current
+      }
+      const shouldKeepCompletedContent = Boolean(current.analysis && nextState.state !== 'completed')
+      return {
+        ...current,
+        analysis: shouldKeepCompletedContent ? current.analysis : nextState.analysis,
+        analysisMetadata: analysisResponse ?? current.analysisMetadata,
+        analysisState: shouldKeepCompletedContent ? 'completed' : nextState.state,
+        analysisError: terminal && nextState.state === 'failed' ? nextState.error : null,
+      }
+    })
+  }
+
+  const pollSavedAnalysis = async (
+    meetingId: number,
+    pollState: { meetingId: number; cancelled: boolean; timeoutId: number | null },
+  ) => {
+    while (!pollState.cancelled) {
+      await new Promise<void>((resolve) => {
+        pollState.timeoutId = window.setTimeout(resolve, 1500)
+      })
+      pollState.timeoutId = null
+      if (pollState.cancelled) {
+        return
+      }
+
+      try {
+        const savedAnalysis = await getSavedAnalysis(meetingId)
+        if (pollState.cancelled || selectedMeetingId !== meetingId) {
+          return
+        }
+        applyAnalysisResponse(meetingId, savedAnalysis, isTerminalAnalysisStatus(savedAnalysis))
+        if (isTerminalAnalysisStatus(savedAnalysis)) {
+          setReanalyzeBusy(false)
+          return
+        }
+      } catch (error) {
+        if (pollState.cancelled) {
+          return
+        }
+        setReanalyzeError(error instanceof Error ? error.message : 'Không thể cập nhật trạng thái analysis')
+        setReanalyzeBusy(false)
+        return
+      }
+    }
+  }
+
+  const handleReanalyze = async () => {
+    if (!selectedMeetingSummary) {
+      return
+    }
+
+    const meetingId = selectedMeetingSummary.id
+    const previousAnalysis = detail.meeting?.id === meetingId ? detail.analysis : null
+    const previousAnalysisMetadata = detail.meeting?.id === meetingId ? detail.analysisMetadata : null
+    const previousAnalysisState = detail.meeting?.id === meetingId ? detail.analysisState : 'missing'
+    const previousAnalysisError = detail.meeting?.id === meetingId ? detail.analysisError : null
+    if (rerunPollRef.current) {
+      rerunPollRef.current.cancelled = true
+      if (rerunPollRef.current.timeoutId !== null) {
+        window.clearTimeout(rerunPollRef.current.timeoutId)
+      }
+    }
+
+    const pollState = { meetingId, cancelled: false, timeoutId: null as number | null }
+    rerunPollRef.current = pollState
+    setReanalyzeBusy(true)
+    setReanalyzeError(null)
+    setDetail((current) => {
+      if (current.meeting?.id !== meetingId) {
+        return current
+      }
+      return {
+        ...current,
+        analysisMetadata: {
+          ...(current.analysisMetadata ?? current.analysis ?? baseAnalysisMetadata(meetingId)),
+          status: 'ANALYZING',
+          analysisStatus: 'ANALYZING',
+        },
+        analysisState: current.analysis ? 'completed' : 'processing',
+        analysisError: null,
+      }
+    })
+
+    try {
+      const response = await reanalyzeMeetingAnalysis(meetingId, { mode: 'force', reason: 'manual_reanalyze' })
+      if (pollState.cancelled || selectedMeetingId !== meetingId) {
+        return
+      }
+      applyAnalysisResponse(meetingId, response, isTerminalAnalysisStatus(response))
+      if (isTerminalAnalysisStatus(response)) {
+        setReanalyzeBusy(false)
+        return
+      }
+      void pollSavedAnalysis(meetingId, pollState)
+    } catch (error) {
+      if (pollState.cancelled) {
+        return
+      }
+      pollState.cancelled = true
+      if (pollState.timeoutId !== null) {
+        window.clearTimeout(pollState.timeoutId)
+        pollState.timeoutId = null
+      }
+      setDetail((current) => {
+        if (current.meeting?.id !== meetingId) {
+          return current
+        }
+        return {
+          ...current,
+          analysis: previousAnalysis ?? current.analysis,
+          analysisMetadata: previousAnalysisMetadata ?? previousAnalysis ?? current.analysisMetadata,
+          analysisState: previousAnalysis ? 'completed' : previousAnalysisState,
+          analysisError: previousAnalysisError,
+        }
+      })
+      setReanalyzeError(getReanalyzeErrorMessage(error))
+      setReanalyzeBusy(false)
     }
   }
 
@@ -551,6 +740,12 @@ export default function MeetingHistoryScene() {
                     <h3 style={{ margin: 0, fontSize: '16px', color: '#0f172a' }}>Analysis</h3>
                     <span className="meta-pill">{detail.analysisState}</span>
                   </div>
+                  <AnalysisStatusPanel
+                    metadata={detail.analysisMetadata ?? detail.analysis}
+                    busy={reanalyzeBusy}
+                    error={reanalyzeError}
+                    onReanalyze={() => void handleReanalyze()}
+                  />
                   {detail.analysisState === 'processing' && <LoadingState message="Analysis đã lưu đang xử lý..." />}
                   {detail.analysisState === 'failed' && <ErrorState title="Phân tích không sẵn sàng" message={detail.analysisError || 'Không thể tải phân tích đã lưu'} />}
                   {detail.analysisState === 'missing' && <EmptyState message="Meeting này chưa có analysis đã lưu" />}

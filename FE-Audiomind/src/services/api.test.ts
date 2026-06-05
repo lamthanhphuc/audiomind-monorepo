@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { deleteMeeting, downloadMeetingReport, downloadMeetingTranscript, getMeetingDetail, getSavedAnalysis, listMeetings, listMeetingsWithParams, renameMeeting, startProcessingByPath, uploadToMeetingApi } from './api'
+import { deleteMeeting, downloadMeetingReport, downloadMeetingTranscript, getMeetingDetail, getSavedAnalysis, listMeetings, listMeetingsWithParams, reanalyzeMeetingAnalysis, renameMeeting, startProcessingByPath, uploadToMeetingApi } from './api'
 
 describe('upload language request wiring', () => {
   const fetchMock = vi.fn()
@@ -112,6 +112,83 @@ describe('upload language request wiring', () => {
     const urls = fetchMock.mock.calls.map((call) => call[0] as string)
     expect(urls.some((url) => url.includes('/meetings/7'))).toBe(true)
     expect(urls.some((url) => url.includes('/processing/7/analysis/saved'))).toBe(true)
+  })
+
+  it('preserves saved analysis metadata from the read-only endpoint', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        meetingId: 7,
+        data: {
+          status: 'COMPLETED',
+          analysisStatus: 'COMPLETED',
+          summary: 'Done',
+          keywords: ['cache'],
+          technicalTerms: [],
+          painPoints: [],
+          actionItems: [],
+          domainMode: 'it',
+          cacheHit: true,
+          stale: false,
+          staleReason: 'canonical_hash_changed',
+          provider: 'gemini',
+          model: 'gemini-2.5-flash',
+          promptVersion: 'prompt-v7',
+          schemaVersion: 'schema-v7',
+          canonicalTranscriptHash: 'canonical-hash',
+          canonicalTranscriptVersion: 'canonical-transcript-v1',
+          analysisInputMode: 'canonical',
+          lastAnalyzedAt: '2026-06-01T00:00:00Z',
+          retryAfterSeconds: 12,
+        },
+      }),
+      headers: new Headers(),
+    })
+
+    const analysis = await getSavedAnalysis(7)
+
+    expect(analysis.analysisStatus).toBe('COMPLETED')
+    expect(analysis.cacheHit).toBe(true)
+    expect(analysis.stale).toBe(false)
+    expect(analysis.staleReason).toBe('canonical_hash_changed')
+    expect(analysis.provider).toBe('gemini')
+    expect(analysis.model).toBe('gemini-2.5-flash')
+    expect(analysis.promptVersion).toBe('prompt-v7')
+    expect(analysis.schemaVersion).toBe('schema-v7')
+    expect(analysis.canonicalTranscriptHash).toBe('canonical-hash')
+    expect(analysis.canonicalTranscriptVersion).toBe('canonical-transcript-v1')
+    expect(analysis.analysisInputMode).toBe('canonical')
+    expect(analysis.lastAnalyzedAt).toBe('2026-06-01T00:00:00Z')
+    expect(analysis.retryAfterSeconds).toBe(12)
+  })
+
+  it('reanalyzes meeting analysis through the processing rerun endpoint', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        meetingId: 7,
+        data: {
+          status: 'ANALYZING',
+          analysisStatus: 'ANALYZING',
+          summary: '',
+          keywords: [],
+          technicalTerms: [],
+          painPoints: [],
+          actionItems: [],
+          domainMode: 'it',
+        },
+      }),
+      headers: new Headers(),
+    })
+
+    const analysis = await reanalyzeMeetingAnalysis(7, { mode: 'force', reason: 'manual_reanalyze' })
+
+    expect(analysis.analysisStatus).toBe('ANALYZING')
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(url).toContain('/processing/7/analysis/rerun')
+    expect(url).not.toContain('/api/meeting/7/analysis/rerun')
+    expect(init.method).toBe('POST')
+    expect(JSON.parse(String(init.body))).toEqual({ mode: 'force', reason: 'manual_reanalyze' })
   })
 
   it('downloads meeting report as blob and reads filename from content-disposition', async () => {

@@ -13,6 +13,11 @@ type GetMeetingResponse =
 type CreateJobRequest =
   ProcessingPaths['/api/v1/jobs']['post']['requestBody']['content']['application/json']
 
+export type AnalysisRerunRequest = {
+  mode: 'force' | string
+  reason: 'manual_reanalyze' | string
+}
+
 export class ApiError extends Error {
   status: number
 
@@ -181,6 +186,22 @@ export const getSavedAnalysis = async (meetingId: number): Promise<AiAnalysis> =
     ;(normalized as AiAnalysis & { status?: string }).status = statusValue
   }
   return normalized
+}
+
+export const reanalyzeMeetingAnalysis = async (
+  meetingId: number,
+  request: AnalysisRerunRequest = { mode: 'force', reason: 'manual_reanalyze' },
+): Promise<AiAnalysis> => {
+  const response = await fetchJson<AiAnalysis | { data?: AiAnalysis }>(
+    `${API_BASE}/processing/${meetingId}/analysis/rerun`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    },
+  )
+
+  return normalizeAnalysisResponse(response)
 }
 
 export const downloadMeetingReport = async (

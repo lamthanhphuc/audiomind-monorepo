@@ -43,6 +43,12 @@ async def _noop_cleanup():
 def test_health_returns_standardized_payload(monkeypatch):
     monkeypatch.setattr(main_module, "_cleanup_stale_stt_actors", _noop_cleanup)
     monkeypatch.setattr(main_module, "_stt_registry_summary", lambda: {"total": 0})
+    monkeypatch.setattr(main_module, "get_runtime_device", lambda: "cpu")
+    monkeypatch.setattr(main_module.settings, "stt_provider", "deepgram")
+    monkeypatch.setattr(main_module.settings, "analysis_provider", "gemini")
+    monkeypatch.setattr(main_module.settings, "allow_legacy_local_stt", False)
+    monkeypatch.setattr(main_module.settings, "local_whisper_enabled", False)
+    monkeypatch.setattr(main_module.settings, "whisper_model", "base")
 
     payload = asyncio.run(main_module.health_check())
 
@@ -51,6 +57,44 @@ def test_health_returns_standardized_payload(monkeypatch):
     assert payload["legacyStatus"] == "healthy"
     assert payload["dependencies"] == {}
     assert payload["timestamp"].endswith("Z")
+    assert payload["stt_provider"] == "deepgram"
+    assert payload["analysis_provider"] == "gemini"
+    assert payload["sttProvider"] == "deepgram"
+    assert payload["analysisProvider"] == "gemini"
+    assert payload["local_stt_enabled"] is False
+    assert payload["offline_stt_enabled"] is False
+    assert "whisper_model" not in payload
+    assert "device" not in payload
+    assert payload["legacy_offline_stt"] == {
+        "enabled": False,
+        "whisper_model": "base",
+        "device": "cpu",
+    }
+
+
+def test_health_marks_legacy_offline_stt_when_explicitly_enabled(monkeypatch):
+    monkeypatch.setattr(main_module, "_cleanup_stale_stt_actors", _noop_cleanup)
+    monkeypatch.setattr(main_module, "_stt_registry_summary", lambda: {"total": 0})
+    monkeypatch.setattr(main_module, "get_runtime_device", lambda: "cuda")
+    monkeypatch.setattr(main_module.settings, "stt_provider", "local_whisper")
+    monkeypatch.setattr(main_module.settings, "analysis_provider", "gemini")
+    monkeypatch.setattr(main_module.settings, "allow_legacy_local_stt", True)
+    monkeypatch.setattr(main_module.settings, "local_whisper_enabled", True)
+    monkeypatch.setattr(main_module.settings, "whisper_model", "small")
+
+    payload = asyncio.run(main_module.health_check())
+
+    assert payload["stt_provider"] == "local_whisper"
+    assert payload["analysis_provider"] == "gemini"
+    assert payload["local_stt_enabled"] is True
+    assert payload["offline_stt_enabled"] is True
+    assert "whisper_model" not in payload
+    assert "device" not in payload
+    assert payload["legacy_offline_stt"] == {
+        "enabled": True,
+        "whisper_model": "small",
+        "device": "cuda",
+    }
 
 
 def test_startup_log_treats_legacy_local_stt_as_disabled_without_opt_in(monkeypatch):
