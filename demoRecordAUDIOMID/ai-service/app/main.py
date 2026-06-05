@@ -2616,10 +2616,9 @@ async def rerun_analysis(
         )
 
     mode = normalize_analysis_mode(request.mode or ANALYSIS_MODE_FORCE)
-    transcript_hash = (
-        (request.canonical_transcript_hash or "").strip()
-        or (request.transcript_hash or "").strip()
-    )
+    transcript_hash = (request.canonical_transcript_hash or "").strip() or (
+        request.transcript_hash or ""
+    ).strip()
     realtime_response = await analyze_realtime_transcript(
         RealtimeTranscriptAnalysisRequest(
             meeting_id=meeting_id,
