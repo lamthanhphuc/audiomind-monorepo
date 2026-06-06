@@ -23,6 +23,7 @@ required_files=(
 
 required_env_keys=(
   APP_ENV
+  DOMAIN_ROOT
   CORS_ALLOWED_ORIGINS
   POSTGRES_DB
   POSTGRES_USER
@@ -52,6 +53,15 @@ allow_empty_env_keys=(
   VITE_AI_SERVICE_URL
 )
 
+literal_public_url_keys=(
+  CORS_ALLOWED_ORIGINS
+  VITE_MEETING_API_BASE_URL
+  VITE_PROCESSING_API_BASE_URL
+  VITE_USER_API_BASE_URL
+  VITE_API_BASE
+  VITE_REALTIME_WS_BASE_URL
+)
+
 fail() {
   printf 'ERROR: %s\n' "$*" >&2
   exit 1
@@ -68,6 +78,37 @@ allows_empty_value() {
   return 1
 }
 
+requires_literal_public_url() {
+  local key="$1"
+  local required
+
+  for required in "${literal_public_url_keys[@]}"; do
+    [[ "$key" == "$required" ]] && return 0
+  done
+
+  return 1
+}
+
+env_value() {
+  local key="$1"
+  local line
+
+  line="$(grep -E "^[[:space:]]*${key}=" "$ENV_FILE" | tail -n 1 || true)"
+  printf '%s\n' "${line#*=}"
+}
+
+is_placeholder_value() {
+  local value="$1"
+  local lowered
+
+  lowered="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')"
+  [[ "$lowered" == replace-with-* ]] && return 0
+  [[ "$lowered" == *example.com* ]] && return 0
+  [[ "$lowered" == *"<"* || "$lowered" == *">"* ]] && return 0
+  [[ "$lowered" == *changeme* || "$lowered" == *change-me* ]] && return 0
+  return 1
+}
+
 for path in "${required_files[@]}"; do
   [[ -f "$path" ]] || fail "missing required file: $path"
 done
@@ -77,19 +118,30 @@ for key in "${required_env_keys[@]}"; do
   [[ -n "$line" ]] || fail "missing required env key: $key"
   value="${line#*=}"
   [[ -n "$value" ]] || allows_empty_value "$key" || fail "empty required env key: $key"
-  if [[ "$value" == replace-with-* || "$value" == *example.com* ]]; then
+  if is_placeholder_value "$value"; then
     fail "placeholder value remains for required env key: $key"
+  fi
+  if requires_literal_public_url "$key" && [[ "$value" == *'$'* || "$value" == *'${'* || "$value" == *'}'* ]]; then
+    fail "public URL env key must be literal, not nested env reference: $key"
   fi
 done
 
-[[ "$(grep -E '^[[:space:]]*APP_ENV=' "$ENV_FILE" | tail -n 1 | cut -d= -f2-)" == "production" ]] ||
+[[ "$(env_value APP_ENV)" == "production" ]] ||
   fail "APP_ENV must be production"
-[[ "$(grep -E '^[[:space:]]*STT_PROVIDER=' "$ENV_FILE" | tail -n 1 | cut -d= -f2-)" == "deepgram" ]] ||
+[[ "$(env_value STT_PROVIDER)" == "deepgram" ]] ||
   fail "STT_PROVIDER must be deepgram"
-[[ "$(grep -E '^[[:space:]]*ANALYSIS_PROVIDER=' "$ENV_FILE" | tail -n 1 | cut -d= -f2-)" == "gemini" ]] ||
+[[ "$(env_value ANALYSIS_PROVIDER)" == "gemini" ]] ||
   fail "ANALYSIS_PROVIDER must be gemini"
-[[ "$(grep -E '^[[:space:]]*AI_PROVIDER=' "$ENV_FILE" | tail -n 1 | cut -d= -f2-)" == "gemini" ]] ||
+[[ "$(env_value AI_PROVIDER)" == "gemini" ]] ||
   fail "AI_PROVIDER must be gemini"
+[[ "$(env_value LOCAL_WHISPER_ENABLED)" == "false" ]] ||
+  fail "LOCAL_WHISPER_ENABLED must be false"
+[[ "$(env_value ALLOW_LEGACY_LOCAL_STT)" == "false" ]] ||
+  fail "ALLOW_LEGACY_LOCAL_STT must be false"
+[[ "$(env_value OLLAMA_ENABLED)" == "false" ]] ||
+  fail "OLLAMA_ENABLED must be false"
+[[ "$(env_value ALLOW_LEGACY_LOCAL_AI)" == "false" ]] ||
+  fail "ALLOW_LEGACY_LOCAL_AI must be false"
 
 "${COMPOSE[@]}" config --quiet
 
