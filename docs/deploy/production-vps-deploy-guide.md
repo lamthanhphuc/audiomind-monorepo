@@ -90,6 +90,7 @@ Example commands:
 
 ```bash
 sudo cp infra/Caddyfile.example /etc/caddy/Caddyfile
+sudo nano /etc/caddy/Caddyfile
 sudo caddy validate --config /etc/caddy/Caddyfile
 sudo systemctl reload caddy
 ```

@@ -17,6 +17,30 @@ if [[ ! -f "$ENV_FILE" ]]; then
   exit 1
 fi
 
+env_value() {
+  local key="$1"
+  local line
+  local value
+
+  line="$(grep -E "^[[:space:]]*${key}=" "$ENV_FILE" | tail -n 1 || true)"
+  value="${line#*=}"
+  value="${value%$'\r'}"
+  value="${value%\"}"
+  value="${value#\"}"
+  value="${value%\'}"
+  value="${value#\'}"
+  printf '%s\n' "$value"
+}
+
+DOMAIN_ROOT_VALUE="$(env_value DOMAIN_ROOT)"
+
+expand_domain_root() {
+  local value="$1"
+  value="${value//\$\{DOMAIN_ROOT\}/$DOMAIN_ROOT_VALUE}"
+  value="${value//\$DOMAIN_ROOT/$DOMAIN_ROOT_VALUE}"
+  printf '%s\n' "$value"
+}
+
 domain_for() {
   local explicit="$1"
   local prefix="$2"
@@ -26,8 +50,8 @@ domain_for() {
     return 0
   fi
 
-  if [[ -n "${DOMAIN_ROOT:-}" ]]; then
-    printf '%s.%s\n' "$prefix" "$DOMAIN_ROOT"
+  if [[ -n "$DOMAIN_ROOT_VALUE" ]]; then
+    printf '%s.%s\n' "$prefix" "$DOMAIN_ROOT_VALUE"
     return 0
   fi
 
@@ -35,10 +59,10 @@ domain_for() {
   return 1
 }
 
-APP_HOST="$(domain_for "${APP_DOMAIN:-}" app)"
-MEETING_HOST="$(domain_for "${MEETING_DOMAIN:-}" meeting)"
-PROCESSING_HOST="$(domain_for "${PROCESSING_DOMAIN:-}" processing)"
-USER_HOST="$(domain_for "${USER_DOMAIN:-}" user)"
+APP_HOST="$(domain_for "$(expand_domain_root "$(env_value APP_DOMAIN)")" app)"
+MEETING_HOST="$(domain_for "$(expand_domain_root "$(env_value MEETING_DOMAIN)")" meeting)"
+PROCESSING_HOST="$(domain_for "$(expand_domain_root "$(env_value PROCESSING_DOMAIN)")" processing)"
+USER_HOST="$(domain_for "$(expand_domain_root "$(env_value USER_DOMAIN)")" user)"
 
 check_url() {
   local url="$1"
