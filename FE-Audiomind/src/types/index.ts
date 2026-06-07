@@ -47,6 +47,8 @@ export type AiAnalysis = {
   analysisInputMode?: string
   lastAnalyzedAt?: string
   retryAfterSeconds?: number
+  errorCode?: string
+  errorMessage?: string
   summary: string
   meetingSummary?: string
   keywords: string[]
@@ -408,6 +410,8 @@ export const normalizeAnalysisResponse = (value: unknown): AiAnalysis => {
     analysisInputMode: firstString(nested.analysisInputMode, nested.analysis_input_mode, payload.analysisInputMode, payload.analysis_input_mode),
     lastAnalyzedAt: firstString(nested.lastAnalyzedAt, nested.last_analyzed_at, payload.lastAnalyzedAt, payload.last_analyzed_at),
     retryAfterSeconds: firstNumber(nested.retryAfterSeconds, nested.retry_after_seconds, payload.retryAfterSeconds, payload.retry_after_seconds),
+    errorCode: firstString(nested.errorCode, nested.error_code, payload.errorCode, payload.error_code),
+    errorMessage: firstString(nested.errorMessage, nested.error_message, payload.errorMessage, payload.error_message),
     summary,
     meetingSummary,
     keywords,

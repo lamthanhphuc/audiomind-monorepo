@@ -27,7 +27,7 @@ import {
     useVoiceActivityDetection,
     type VoiceActivityState,
 } from '../hooks/useVoiceActivityDetection'
-import { ApiError, getAnalysis, getProcessingStatus, getTranscript, startProcessingByPath, uploadToMeetingApi } from '../services/api'
+import { ApiError, getAnalysis, getProcessingStatus, getTranscript, reanalyzeMeetingAnalysis, startProcessingByPath, uploadToMeetingApi } from '../services/api'
 import { clearAccessToken, getAccessToken, getCurrentUserId, login, register, setAccessToken } from '../services/auth'
 import { REALTIME_WS_ENABLED } from '../services/config'
 import type { AiAnalysis } from '../types'
@@ -345,12 +345,97 @@ const pollUntilCompleted = async (
 const REALTIME_ANALYSIS_POLL_INTERVAL_MS = 2000
 const REALTIME_ANALYSIS_POLL_MAX_ATTEMPTS = 25
 
+type LiveAnalysisStatus = 'idle' | 'polling' | 'completed' | 'pending' | 'failed'
+
+type RealtimeAnalysisPollResult = {
+  status: 'completed' | 'pending' | 'failed'
+  analysis: AiAnalysis | null
+  metadata: AiAnalysis | null
+  reason?: string
+}
+
+const buildLiveAnalysisMetadata = (
+  meetingId: number,
+  status: string,
+  overrides: Partial<AiAnalysis> = {},
+): AiAnalysis => ({
+  meetingId,
+  meeting_id: meetingId,
+  status,
+  analysisStatus: status,
+  summary: '',
+  keywords: [],
+  technicalTerms: [],
+  painPoints: [],
+  actionItems: [],
+  domainMode: 'it',
+  ...overrides,
+})
+
+const hasStructuredAnalysisData = (analysis: AiAnalysis | null): boolean => {
+  if (!analysis) {
+    return false
+  }
+  return Boolean(
+    analysis.summary?.trim()
+    || analysis.meetingSummary?.trim()
+    || (analysis.keywords?.length ?? 0) > 0
+    || (analysis.technicalTerms?.length ?? 0) > 0
+    || (analysis.painPoints?.length ?? 0) > 0
+    || (analysis.actionItems?.length ?? 0) > 0
+    || (analysis.businessActionItems?.length ?? 0) > 0
+  )
+}
+
+const getAnalysisStatusValue = (analysis: AiAnalysis | null): string => {
+  return String(analysis?.analysisStatus ?? analysis?.status ?? '').trim().toUpperCase()
+}
+
+const isFailedAnalysisStatus = (status: string): boolean => {
+  return status === 'FAILED' || status === 'RATE_LIMITED' || status === 'QUOTA_BLOCKED'
+}
+
+const isPendingAnalysisStatus = (status: string): boolean => {
+  return status === 'ANALYZING'
+    || status === 'RUNNING'
+    || status === 'QUEUED'
+    || status === 'PENDING'
+    || status === 'SKIPPED'
+}
+
+const getRealtimeAnalysisFailureMessage = (metadata: AiAnalysis | null, fallback?: string): string => {
+  const retryAfter = metadata?.retryAfterSeconds
+  const errorCode = metadata?.errorCode
+  const errorMessage = metadata?.errorMessage
+  const details = [errorCode, errorMessage].filter(Boolean).join(': ')
+  const retrySuffix = retryAfter && retryAfter > 0 ? ` Retry after ${retryAfter}s.` : ''
+  return `${fallback || 'Analysis failed temporarily. Retry available.'}${details ? ` ${details}.` : ''}${retrySuffix}`
+}
+
+const metadataFromAnalysisError = (meetingId: number, error: ApiError): AiAnalysis => {
+  const errorCode = error.errorCode
+    ?? (error.status === 429
+      ? 'GEMINI_RATE_LIMITED'
+      : error.status >= 500
+        ? 'GEMINI_UNAVAILABLE'
+        : undefined)
+  const status = error.status === 429 ? 'RATE_LIMITED' : 'FAILED'
+  return buildLiveAnalysisMetadata(meetingId, status, {
+    errorCode,
+    errorMessage: error.message,
+    retryAfterSeconds: error.retryAfterSeconds,
+  })
+}
+
 export const pollRealtimeAnalysisAfterStop = async (
   meetingId: number,
   signal: AbortSignal,
   fetchAnalysis: typeof getAnalysis = getAnalysis,
   maxAttempts = REALTIME_ANALYSIS_POLL_MAX_ATTEMPTS,
-): Promise<{ status: 'completed' | 'pending' | 'failed'; analysis: AiAnalysis | null; reason?: string }> => {
+): Promise<RealtimeAnalysisPollResult> => {
+  let latestMetadata: AiAnalysis | null = null
+  let latestRetryableError: ApiError | null = null
+
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     if (signal.aborted) {
       throw new DOMException('Polling aborted', 'AbortError')
@@ -358,35 +443,42 @@ export const pollRealtimeAnalysisAfterStop = async (
 
     try {
       const analysis = await fetchAnalysis(meetingId)
-      const analysisStatus = String((analysis as AiAnalysis & { status?: string }).status ?? '').toUpperCase()
-      if (analysisStatus === 'FAILED') {
+      latestMetadata = analysis
+      const analysisStatus = getAnalysisStatusValue(analysis)
+
+      if (isFailedAnalysisStatus(analysisStatus)) {
         return {
           status: 'failed',
           analysis: null,
-          reason: 'analysis_failed',
+          metadata: analysis,
+          reason: getRealtimeAnalysisFailureMessage(analysis),
         }
       }
-      const hasStructuredData = Boolean(
-        analysis.summary?.trim()
-        || (analysis.keywords?.length ?? 0) > 0
-        || (analysis.technicalTerms?.length ?? 0) > 0
-        || (analysis.painPoints?.length ?? 0) > 0
-        || (analysis.actionItems?.length ?? 0) > 0,
-      )
 
-      if (hasStructuredData) {
-        return { status: 'completed', analysis }
+      if (hasStructuredAnalysisData(analysis)) {
+        return { status: 'completed', analysis, metadata: analysis }
+      }
+
+      if (analysisStatus === 'NO_ANALYSIS' || analysisStatus === 'NOT_FOUND' || isPendingAnalysisStatus(analysisStatus)) {
+        latestMetadata = analysis
       }
     } catch (error: any) {
       if (error instanceof ApiError && error.status === 404) {
-        // Analysis not ready yet.
+        latestMetadata = buildLiveAnalysisMetadata(meetingId, 'NO_ANALYSIS')
       } else if (error instanceof ApiError && error.status >= 500) {
-        // transient backend error: keep polling
+        latestRetryableError = error
+        latestMetadata = metadataFromAnalysisError(meetingId, error)
       } else {
+        const metadata = error instanceof ApiError
+          ? metadataFromAnalysisError(meetingId, error)
+          : buildLiveAnalysisMetadata(meetingId, 'FAILED', {
+            errorMessage: error instanceof Error ? error.message : 'Unable to load realtime analysis',
+          })
         return {
           status: 'failed',
           analysis: null,
-          reason: error instanceof Error ? error.message : 'Không thể tải phân tích realtime',
+          metadata,
+          reason: getRealtimeAnalysisFailureMessage(metadata, error instanceof Error ? error.message : undefined),
         }
       }
     }
@@ -396,7 +488,22 @@ export const pollRealtimeAnalysisAfterStop = async (
     }
   }
 
-  return { status: 'pending', analysis: null, reason: 'analysis_timeout' }
+  if (latestRetryableError) {
+    const metadata = latestMetadata ?? metadataFromAnalysisError(meetingId, latestRetryableError)
+    return {
+      status: 'failed',
+      analysis: null,
+      metadata,
+      reason: getRealtimeAnalysisFailureMessage(metadata),
+    }
+  }
+
+  return {
+    status: 'pending',
+    analysis: null,
+    metadata: latestMetadata ?? buildLiveAnalysisMetadata(meetingId, 'NO_ANALYSIS'),
+    reason: 'analysis_timeout',
+  }
 }
 
 export const hydrateLiveTranscriptSegments = async (
@@ -647,7 +754,8 @@ export default function App() {
   const [livePartialWarning, setLivePartialWarning] = useState<string | null>(null)
   const [liveStatusMessage, setLiveStatusMessage] = useState<string | null>(null)
   const [liveAnalysis, setLiveAnalysis] = useState<AiAnalysis | null>(null)
-  const [liveAnalysisStatus, setLiveAnalysisStatus] = useState<'idle' | 'polling' | 'completed' | 'pending' | 'failed'>('idle')
+  const [liveAnalysisMetadata, setLiveAnalysisMetadata] = useState<AiAnalysis | null>(null)
+  const [liveAnalysisStatus, setLiveAnalysisStatus] = useState<LiveAnalysisStatus>('idle')
   const [liveAnalysisError, setLiveAnalysisError] = useState<string | null>(null)
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
@@ -1006,6 +1114,7 @@ export default function App() {
     setLivePartialWarning(null)
     setLiveStatusMessage(null)
     setLiveAnalysis(null)
+    setLiveAnalysisMetadata(null)
     setLiveAnalysisStatus('idle')
     setLiveAnalysisError(null)
     setLiveLifecycleState('idle')
@@ -1050,6 +1159,7 @@ export default function App() {
       liveAnalysisAbortControllerRef.current?.abort()
       liveAnalysisAbortControllerRef.current = null
       setLiveAnalysis(null)
+      setLiveAnalysisMetadata(null)
       setLiveAnalysisStatus('idle')
       setLiveAnalysisError(null)
     }
@@ -1178,6 +1288,7 @@ export default function App() {
     liveAnalysisAbortControllerRef.current?.abort()
     liveAnalysisAbortControllerRef.current = null
     setLiveAnalysis(null)
+    setLiveAnalysisMetadata(null)
     setLiveAnalysisStatus('idle')
     setLiveAnalysisError(null)
     setHydratedLiveTranscriptSegments(null)
@@ -1245,9 +1356,11 @@ export default function App() {
           currentUserId={currentUserId}
           connectionViewForAside={connectionView}
           liveAnalysis={liveAnalysis}
+          liveAnalysisMetadata={liveAnalysisMetadata}
           liveAnalysisStatus={liveAnalysisStatus}
           liveAnalysisError={liveAnalysisError}
           showLiveAnalysis={liveLifecycleState === 'stopped' || liveAnalysisStatus !== 'idle'}
+          onLiveAnalysisRetry={() => void handleLiveAnalysisRetry()}
         />
       )
     }
@@ -1291,6 +1404,7 @@ export default function App() {
     liveAnalysisAbortControllerRef.current?.abort()
     liveAnalysisAbortControllerRef.current = null
     setLiveAnalysis(null)
+    setLiveAnalysisMetadata(null)
     setLiveAnalysisStatus('idle')
     setLiveAnalysisError(null)
     setLiveStatusMessage('Đang tạo meeting mới...')
@@ -1437,6 +1551,7 @@ export default function App() {
     const controller = new AbortController()
     liveAnalysisAbortControllerRef.current = controller
     setLiveAnalysis(null)
+    setLiveAnalysisMetadata(buildLiveAnalysisMetadata(meetingId, 'ANALYZING'))
     setLiveAnalysisStatus('polling')
     setLiveAnalysisError(null)
 
@@ -1452,19 +1567,24 @@ export default function App() {
 
         if (pollResult.status === 'completed' && pollResult.analysis) {
           setLiveAnalysis(pollResult.analysis)
+          setLiveAnalysisMetadata(pollResult.metadata ?? pollResult.analysis)
           setLiveAnalysisStatus('completed')
           setLiveAnalysisError(null)
           return
         }
 
         if (pollResult.status === 'failed') {
+          setLiveAnalysis(null)
+          setLiveAnalysisMetadata(pollResult.metadata ?? buildLiveAnalysisMetadata(meetingId, 'FAILED'))
           setLiveAnalysisStatus('failed')
-          setLiveAnalysisError(pollResult.reason || 'Không thể tải phân tích realtime')
+          setLiveAnalysisError(pollResult.reason || 'Analysis failed temporarily. Retry available.')
           return
         }
 
+        setLiveAnalysis(null)
+        setLiveAnalysisMetadata(pollResult.metadata ?? buildLiveAnalysisMetadata(meetingId, 'NO_ANALYSIS'))
         setLiveAnalysisStatus('pending')
-        setLiveAnalysisError('Phân tích realtime đang xử lý, vui lòng thử lại sau')
+        setLiveAnalysisError(null)
       } catch (error) {
         if (error instanceof DOMException && error.name === 'AbortError') {
           return
@@ -1475,10 +1595,71 @@ export default function App() {
         ) {
           return
         }
+        const metadata = error instanceof ApiError
+          ? metadataFromAnalysisError(meetingId, error)
+          : buildLiveAnalysisMetadata(meetingId, 'FAILED', {
+            errorMessage: error instanceof Error ? error.message : 'Unable to load realtime analysis',
+          })
+        setLiveAnalysis(null)
+        setLiveAnalysisMetadata(metadata)
         setLiveAnalysisStatus('failed')
-        setLiveAnalysisError(error instanceof Error ? error.message : 'Không thể tải phân tích realtime')
+        setLiveAnalysisError(getRealtimeAnalysisFailureMessage(metadata, error instanceof Error ? error.message : undefined))
       }
     })()
+  }
+
+  const handleLiveAnalysisRetry = async () => {
+    const meetingId = liveMeetingIdRef.current
+    if (meetingId === null) {
+      return
+    }
+
+    const retryAfterSeconds = liveAnalysisMetadata?.retryAfterSeconds ?? 0
+    if (retryAfterSeconds > 0) {
+      setLiveAnalysisError(`Retry available after ${retryAfterSeconds}s.`)
+      return
+    }
+
+    liveAnalysisAbortControllerRef.current?.abort()
+    liveAnalysisAbortControllerRef.current = null
+    setLiveAnalysis(null)
+    setLiveAnalysisMetadata(buildLiveAnalysisMetadata(meetingId, 'ANALYZING'))
+    setLiveAnalysisStatus('polling')
+    setLiveAnalysisError(null)
+
+    try {
+      const response = await reanalyzeMeetingAnalysis(meetingId, { mode: 'force', reason: 'manual_reanalyze' })
+      const responseStatus = getAnalysisStatusValue(response)
+      setLiveAnalysisMetadata(response)
+
+      if (hasStructuredAnalysisData(response)) {
+        setLiveAnalysis(response)
+        setLiveAnalysisStatus('completed')
+        setLiveAnalysisError(null)
+        return
+      }
+
+      if (isFailedAnalysisStatus(responseStatus)) {
+        setLiveAnalysis(null)
+        setLiveAnalysisStatus('failed')
+        setLiveAnalysisError(getRealtimeAnalysisFailureMessage(response))
+        return
+      }
+
+      setLiveAnalysis(null)
+      setLiveAnalysisStatus('pending')
+      setLiveAnalysisError(null)
+    } catch (error) {
+      const metadata = error instanceof ApiError
+        ? metadataFromAnalysisError(meetingId, error)
+        : buildLiveAnalysisMetadata(meetingId, 'FAILED', {
+          errorMessage: error instanceof Error ? error.message : 'Unable to retry realtime analysis',
+        })
+      setLiveAnalysis(null)
+      setLiveAnalysisMetadata(metadata)
+      setLiveAnalysisStatus('failed')
+      setLiveAnalysisError(getRealtimeAnalysisFailureMessage(metadata, error instanceof Error ? error.message : undefined))
+    }
   }
 
   const handleLiveRecordingComplete = async (fullAudio: Blob, sessionId: number) => {

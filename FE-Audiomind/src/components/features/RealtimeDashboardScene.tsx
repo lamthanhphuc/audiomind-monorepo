@@ -1,4 +1,5 @@
 import { AnalysisPanel } from '../analysis/AnalysisPanel'
+import { AnalysisStatusPanel } from '../analysis/AnalysisStatusPanel'
 import { AudioRecorderButton } from '../realtime/AudioRecorderButton'
 import { RealtimeTranscript } from '../transcript/RealtimeTranscript'
 import { ErrorState } from '../ui/ErrorState'
@@ -61,9 +62,11 @@ type RealtimeDashboardSceneProps = {
   currentUserId: string | null
   connectionViewForAside: RealtimeConnectionView
   liveAnalysis: AiAnalysis | null
+  liveAnalysisMetadata: AiAnalysis | null
   liveAnalysisStatus: 'idle' | 'polling' | 'completed' | 'pending' | 'failed'
   liveAnalysisError: string | null
   showLiveAnalysis: boolean
+  onLiveAnalysisRetry: () => void
 }
 
 const resolveRealtimeLifecycleBadge = (
@@ -127,15 +130,27 @@ export default function RealtimeDashboardScene({
   currentUserId,
   connectionViewForAside,
   liveAnalysis,
+  liveAnalysisMetadata,
   liveAnalysisStatus,
   liveAnalysisError,
   showLiveAnalysis,
+  onLiveAnalysisRetry,
 }: RealtimeDashboardSceneProps) {
   const lifecycleBadge = resolveRealtimeLifecycleBadge(liveLifecycleState, liveAnalysisStatus)
   const recorderLifecycleState =
     liveLifecycleState === 'silent_paused' || liveLifecycleState === 'listening_resumed'
       ? 'recording'
       : liveLifecycleState
+  const liveAnalysisPanelStatus = liveAnalysisStatus === 'polling'
+    ? 'loading'
+    : liveAnalysis
+      ? 'ready'
+      : 'empty'
+  const liveAnalysisEmptyMessage = liveAnalysisStatus === 'pending'
+    ? 'Analysis is not ready yet. Use Re-analyze when the transcript is complete.'
+    : liveAnalysisStatus === 'failed'
+      ? 'Analysis failed temporarily. Retry available.'
+      : 'No realtime analysis yet.'
 
   return (
     <div className="dashboard-page bg-gray-light">
@@ -256,19 +271,19 @@ export default function RealtimeDashboardScene({
 
         {showLiveAnalysis && (
           <div className="realtime-analysis-section">
+            <AnalysisStatusPanel
+              metadata={liveAnalysisMetadata ?? liveAnalysis}
+              busy={liveAnalysisStatus === 'polling'}
+              error={liveAnalysisError}
+              onReanalyze={onLiveAnalysisRetry}
+            />
             <AnalysisPanel
               title="Phân tích realtime"
               analysis={liveAnalysis}
-              status={
-                liveAnalysisStatus === 'polling'
-                  ? 'loading'
-                  : liveAnalysis
-                    ? 'ready'
-                    : 'empty'
-              }
-              loadingMessage="Đang phân tích transcript sau khi dừng ghi âm..."
-              errorMessage={liveAnalysisError}
-              emptyMessage="Chưa có kết quả phân tích realtime"
+              status={liveAnalysisPanelStatus}
+              loadingMessage="Analysis is being generated..."
+              errorMessage={liveAnalysisStatus === 'failed' ? liveAnalysisError : null}
+              emptyMessage={liveAnalysisEmptyMessage}
               summaryFallback="(đang chờ phân tích)"
               testId="e2e-live-analysis"
             />

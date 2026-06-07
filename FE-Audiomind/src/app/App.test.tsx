@@ -487,6 +487,7 @@ describe('pollRealtimeAnalysisAfterStop', () => {
     expect(fetchAnalysis).toHaveBeenCalledTimes(3)
     expect(result.status).toBe('completed')
     expect(result.analysis?.summary).toBe('Realtime summary')
+    expect(result.metadata?.summary).toBe('Realtime summary')
   })
 
   it('returns failed for non-retryable analysis errors', async () => {
@@ -501,11 +502,37 @@ describe('pollRealtimeAnalysisAfterStop', () => {
 
     expect(result.status).toBe('failed')
     expect(result.analysis).toBeNull()
+    expect(result.metadata?.analysisStatus).toBe('FAILED')
+    expect(result.metadata?.errorMessage).toBe('Unauthorized')
+  })
+
+  it('returns pending metadata when analysis 404 remains not ready', async () => {
+    vi.useFakeTimers()
+
+    const fetchAnalysis = vi.fn().mockRejectedValue(new ApiError('Analysis not found', 404))
+
+    const resultPromise = pollRealtimeAnalysisAfterStop(
+      80,
+      new AbortController().signal,
+      fetchAnalysis as any,
+      2,
+    )
+
+    await vi.advanceTimersByTimeAsync(2000)
+    const result = await resultPromise
+
+    expect(fetchAnalysis).toHaveBeenCalledTimes(2)
+    expect(result.status).toBe('pending')
+    expect(result.analysis).toBeNull()
+    expect(result.metadata?.analysisStatus).toBe('NO_ANALYSIS')
   })
 
   it('stops polling when backend marks analysis as failed', async () => {
     const fetchAnalysis = vi.fn().mockResolvedValue({
       status: 'FAILED',
+      analysisStatus: 'FAILED',
+      errorCode: 'GEMINI_UNAVAILABLE',
+      retryAfterSeconds: 30,
       summary: '',
       keywords: [],
       technicalTerms: [],
@@ -523,7 +550,9 @@ describe('pollRealtimeAnalysisAfterStop', () => {
 
     expect(fetchAnalysis).toHaveBeenCalledTimes(1)
     expect(result.status).toBe('failed')
-    expect(result.reason).toBe('analysis_failed')
+    expect(result.metadata?.errorCode).toBe('GEMINI_UNAVAILABLE')
+    expect(result.metadata?.retryAfterSeconds).toBe(30)
+    expect(result.reason).toContain('Analysis failed temporarily')
   })
 })
 

@@ -75,8 +75,12 @@ const getAnalysisStateFromResponse = (analysis: AiAnalysis | null): { state: Det
   }
 
   const status = String(analysis.analysisStatus ?? analysis.status ?? '').trim().toUpperCase()
-  if (status === 'FAILED') {
-    return { state: 'failed', analysis: null, error: 'Không thể tải phân tích đã lưu' }
+  if (status === 'FAILED' || status === 'RATE_LIMITED' || status === 'QUOTA_BLOCKED') {
+    const retryAfter = analysis.retryAfterSeconds && analysis.retryAfterSeconds > 0
+      ? ` Retry after ${analysis.retryAfterSeconds}s.`
+      : ''
+    const detail = analysis.errorCode ? ` ${analysis.errorCode}.` : ''
+    return { state: 'failed', analysis: null, error: `Analysis failed temporarily. Retry available.${detail}${retryAfter}` }
   }
   if (status === 'ANALYZING' || status === 'RUNNING' || status === 'QUEUED' || status === 'PENDING') {
     return { state: 'processing', analysis: null, error: null }
