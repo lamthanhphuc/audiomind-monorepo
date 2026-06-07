@@ -118,8 +118,9 @@ df -Pk /opt/audiomind/backups
 Check SHA-256 files:
 
 ```bash
-sha256sum -c /opt/audiomind/backups/<postgres-backup>.dump.sha256
-sha256sum -c /opt/audiomind/backups/<uploads-backup>.tar.gz.sha256
+cd /opt/audiomind/backups
+sha256sum -c <postgres-backup>.dump.sha256
+sha256sum -c <uploads-backup>.tar.gz.sha256
 ```
 
 List the uploads archive:
