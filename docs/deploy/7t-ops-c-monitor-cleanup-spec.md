@@ -107,12 +107,28 @@ are exceeded. Suggested MVP thresholds for implementation:
 
 - fail when root filesystem usage is at or above 90%
 - warn when root filesystem usage is at or above 80%
+- warn when available RAM is below 700 MB on the 4 GB VPS
+- fail or warn clearly when available RAM is below 300 MB
+- warn when swap used is greater than 512 MB
 - warn when `/opt/audiomind/backups` is unexpectedly large
 - fail when `health-prod.sh` fails
+- warn when any container restart count is greater than 0
 - fail or warn clearly when any core service is restarting or exited
 
 The monitor output should avoid printing secrets and should not dump
 `infra/.env`.
+
+Monitor report retention:
+
+- Store monitor reports under `/opt/audiomind/ops-logs`.
+- Create the directory if it is missing.
+- Apply `chmod 750` to the directory.
+- Do not write secrets, env values, tokens, provider keys, JWTs, or database
+  passwords into reports.
+- Keep old monitor reports for a bounded period, with 14 days as the MVP
+  default.
+- Cleanup may delete only files matching script-owned report patterns, such as
+  `monitor-prod-*.log`, inside `/opt/audiomind/ops-logs`.
 
 ## 4. Cleanup Goals
 
@@ -216,7 +232,13 @@ Recommended MVP policy:
    user on the VPS.
 4. Mention that daemon defaults may apply to newly created containers, so a
    controlled Compose recreate may be needed after manual validation.
-5. Do not change Docker volumes or Compose data mounts.
+5. Warn that editing `/etc/docker/daemon.json` and restarting Docker can cause a
+   brief container interruption.
+6. Recommend applying Docker daemon changes during a low-traffic window.
+7. After Docker restart, run production Compose status and `health-prod.sh`.
+8. If `daemon.json` is invalid or Docker fails to restart cleanly, restore the
+   previous daemon config and restart Docker again.
+9. Do not change Docker volumes or Compose data mounts.
 
 Example daemon config for the runbook:
 
@@ -249,17 +271,23 @@ Recommendation for 7T-Ops-C1:
 - use the same `ROOT_DIR`, `ENV_FILE`, `COMPOSE_FILES`, and `COMPOSE` pattern as
   existing deploy scripts
 - fail early if `infra/.env` is missing
-- create a timestamped report under a host directory such as
-  `/opt/audiomind/ops-logs`
+- create `/opt/audiomind/ops-logs` if missing and apply `chmod 750`
+- create a timestamped report under `/opt/audiomind/ops-logs`, such as
+  `monitor-prod-YYYYMMDDTHHMMSSZ.log`
 - print all checks to stdout and tee them into the report
 - avoid printing env values or secrets
 - run `health-prod.sh` and preserve its exit code
 - include `collect-prod-logs-redacted.sh` guidance when health fails
+- keep monitor reports for a bounded retention window, with 14 days as the MVP
+  default
+- delete only script-owned report patterns such as `monitor-prod-*.log` when
+  applying report retention
 
 Suggested report sections:
 
 - timestamp, hostname, git branch/revision if available
 - memory: `free -h`
+- RAM/swap threshold summary for the 4 GB VPS
 - disk: `df -h`
 - Docker disk: `docker system df`
 - Compose status: production `docker compose ps`
@@ -268,6 +296,13 @@ Suggested report sections:
 - backup size:
   `du -sh /opt/audiomind/backups 2>/dev/null || true`
 - health: `bash scripts/deploy/health-prod.sh`
+
+Suggested MVP RAM/swap thresholds:
+
+- warn when available RAM is below 700 MB
+- fail or warn clearly when available RAM is below 300 MB
+- warn when swap used is greater than 512 MB
+- warn when any container restart count is greater than 0
 
 Suggested restart-count approach:
 
@@ -299,10 +334,13 @@ interface:
 ```bash
 bash scripts/deploy/cleanup-prod-safe.sh
 bash scripts/deploy/cleanup-prod-safe.sh --apply
+bash scripts/deploy/cleanup-prod-safe.sh --apply --yes
 ```
 
 Default dry-run should print what would run and current disk usage. `--apply`
-should execute only the safe, targeted cleanup steps.
+alone should still refuse deletion and print a clear warning unless paired with
+an explicit confirmation flag such as `--yes`. Actual deletion should require
+`--apply --yes`, so an accidental `--apply` does not remove anything.
 
 Safe command candidates for implementation:
 
@@ -316,6 +354,11 @@ journalctl --disk-usage
 
 With `--apply`, old redacted log bundle cleanup can add `-delete` only for the
 owned log filename pattern and directory.
+
+With `--apply --yes`, old monitor report cleanup can delete only
+`/opt/audiomind/ops-logs/monitor-prod-*.log` files older than the configured
+retention window. It must not delete arbitrary files in `/opt/audiomind` or
+`/opt/audiomind/backups`.
 
 Journal cleanup should be conservative:
 
@@ -339,6 +382,14 @@ ls -lh /opt/audiomind/backups 2>/dev/null || true
 
 The script should warn the user to confirm recent backup health before applying
 aggressive image/build-cache cleanup. It must not delete volumes.
+
+Recommended cleanup flow:
+
+1. Run dry-run mode.
+2. Confirm the most recent backup files and manifest still exist.
+3. Run `--apply --yes` only if the planned cleanup is acceptable.
+4. Run `df -h` and `docker system df`.
+5. Run `bash scripts/deploy/health-prod.sh`.
 
 ## 10. Optional Systemd Timer Design
 
@@ -383,20 +434,29 @@ Recommendation for 7T-Ops-C5:
 2. Reuse the production Compose stack from existing deploy scripts.
 3. Include memory, disk, Docker disk, Compose status, Docker stats, restart
    counts, backup directory size, and `health-prod.sh`.
-4. Write a timestamped report and return non-zero on failed health.
-5. Add docs showing how to collect redacted logs after a failure.
+4. Write a timestamped report under `/opt/audiomind/ops-logs` and return
+   non-zero on failed health.
+5. Add RAM/swap thresholds for the 4 GB VPS: warn below 700 MB available RAM,
+   fail or warn clearly below 300 MB available RAM, and warn when swap used is
+   greater than 512 MB.
+6. Add report retention for `monitor-prod-*.log`, keeping 14 days by default.
+7. Add docs showing how to collect redacted logs after a failure.
 
 ### 7T-Ops-C3: Safe cleanup script
 
 1. Add `scripts/deploy/cleanup-prod-safe.sh`.
 2. Make dry-run the default.
-3. Add `--apply` for targeted cleanup only.
+3. Require `--apply --yes` for actual deletion; `--apply` without `--yes`
+   should print a warning and do nothing destructive.
 4. Use specific prune commands for builder cache, stopped containers, and
    dangling images.
-5. Add old redacted log bundle cleanup for owned filename patterns only.
+5. Add old redacted log bundle and monitor report cleanup for owned filename
+   patterns only.
 6. Show backup disk usage and warn to confirm recent backups before stronger
    cleanup.
-7. Explicitly block or avoid volume deletion commands.
+7. Document post-cleanup validation with `df -h`, `docker system df`, and
+   `health-prod.sh`.
+8. Explicitly block or avoid volume deletion commands.
 
 ### 7T-Ops-C4: Monitor/cleanup runbook docs
 
@@ -427,14 +487,27 @@ Recommendation for 7T-Ops-C5:
 - There is a plan to limit Docker logs so logs do not grow without bound.
 - There is a monitor script/checklist covering RAM, disk, `docker ps`,
   `docker stats`, and `health-prod.sh`.
+- `monitor-prod.sh` creates a report file in `/opt/audiomind/ops-logs`.
+- `monitor-prod.sh` creates `/opt/audiomind/ops-logs` if missing and applies
+  `chmod 750`.
+- `monitor-prod.sh` keeps report retention bounded, with 14 days as the MVP
+  default.
+- `monitor-prod.sh` exits non-zero if `health-prod.sh` fails.
+- `monitor-prod.sh` reports RAM/swap thresholds for the 4 GB VPS.
 - The monitor plan reports `/opt/audiomind/backups` disk usage.
 - The monitor plan includes container restart counts where Docker exposes them.
+- The monitor plan warns when any container restart count is greater than 0.
 - There is a safe cleanup script design that does not delete volumes.
+- `cleanup-prod-safe.sh` is dry-run by default.
+- `cleanup-prod-safe.sh` requires `--apply --yes` before it deletes anything.
 - Cleanup does not use `docker volume prune`.
 - Cleanup does not use `docker system prune --volumes`.
 - Cleanup does not use `docker compose down -v`.
 - Cleanup only targets safe cache/image/container/temp-log cleanup.
+- `cleanup-prod-safe.sh` does not delete `/opt/audiomind/backups` outside
+  retention owned by the backup scripts.
 - Cleanup warns the operator to check recent backups before stronger cleanup.
+- There is post-cleanup guidance to run `health-prod.sh`.
 - There is guidance to inspect `/opt/audiomind/backups` disk usage.
 - There is guidance to collect redacted logs when monitor detects a failure.
 - Postgres, Redis, `ai-api`, and `celery-worker` remain private.
@@ -475,6 +548,7 @@ Monitor script validation after implementation:
 bash scripts/deploy/monitor-prod.sh
 echo $?
 ls -lh /opt/audiomind/ops-logs 2>/dev/null || true
+stat -c '%a %n' /opt/audiomind/ops-logs 2>/dev/null || true
 ```
 
 Restart-count inspection:
@@ -504,14 +578,18 @@ Safe cleanup validation:
 
 ```bash
 bash scripts/deploy/cleanup-prod-safe.sh
+bash scripts/deploy/cleanup-prod-safe.sh --apply
 ```
 
 Do not run cleanup destructive validation first. If implementation adds
-`--apply`, run dry-run mode first, inspect the planned deletions, confirm recent
-backup health, and only then run:
+`--apply --yes`, run dry-run mode first, inspect the planned deletions, confirm
+recent backup health, and only then run:
 
 ```bash
-bash scripts/deploy/cleanup-prod-safe.sh --apply
+bash scripts/deploy/cleanup-prod-safe.sh --apply --yes
+df -h
+docker system df
+bash scripts/deploy/health-prod.sh
 ```
 
 Backup checks before stronger cleanup:
@@ -557,6 +635,9 @@ Docker log rotation rollback:
 - Keep a copy of the previous `/etc/docker/daemon.json` before host changes.
 - If Docker fails to reload after daemon config edits, restore the previous
   daemon config and restart Docker.
+- Because Docker daemon restart can briefly interrupt containers, make the
+  change during a low-traffic window and validate afterwards with
+  `docker compose ps` and `health-prod.sh`.
 - Do not delete `/var/lib/docker/volumes`.
 
 Backup safety:
