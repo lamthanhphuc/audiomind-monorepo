@@ -45,6 +45,19 @@ while (($#)); do
   shift
 done
 
+validate_retention_days() {
+  local name="$1"
+  local value="$2"
+
+  if ! [[ "$value" =~ ^[0-9]+$ ]] || (( value < 1 )); then
+    printf 'ERROR: %s must be an integer greater than or equal to 1.\n' "$name" >&2
+    exit 1
+  fi
+}
+
+validate_retention_days LOG_RETENTION_DAYS "$LOG_RETENTION_DAYS"
+validate_retention_days MONITOR_RETENTION_DAYS "$MONITOR_RETENTION_DAYS"
+
 section() {
   printf '\n== %s ==\n' "$*"
 }
