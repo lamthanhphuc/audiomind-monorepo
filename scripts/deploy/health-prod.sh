@@ -76,22 +76,38 @@ check_url() {
 }
 
 check_celery_worker_state() {
+  local container_id
+  local inspect_output
   local ps_output
+  local state_exit_code
+  local state_restarting
+  local state_status
 
   printf 'Checking celery-worker state through Compose\n'
   ps_output="$("${COMPOSE[@]}" ps -a celery-worker)"
   printf '%s\n' "$ps_output"
 
-  if ! printf '%s\n' "$ps_output" | grep -Eiq 'celery-worker'; then
-    fail "celery-worker is missing from Compose ps output"
+  container_id="$("${COMPOSE[@]}" ps -q celery-worker)"
+  if [[ -z "$container_id" ]]; then
+    fail "celery-worker container id was not found through Compose"
   fi
 
-  if printf '%s\n' "$ps_output" | grep -Eiq '\b(Restarting|Exited|Dead|Created|Paused|Removing)\b'; then
-    fail "celery-worker is not running cleanly; Compose ps shows Restarting/Exited/non-running state"
+  inspect_output="$(docker inspect --format '{{.State.Status}} {{.State.Restarting}} {{.State.ExitCode}}' "$container_id")" ||
+    fail "could not inspect celery-worker container state: $container_id"
+  read -r state_status state_restarting state_exit_code <<< "$inspect_output"
+
+  printf 'celery-worker inspect state: status=%s restarting=%s exit=%s\n' \
+    "$state_status" "$state_restarting" "$state_exit_code"
+
+  if [[ "$state_restarting" == "true" ]]; then
+    fail "celery-worker is restarting"
   fi
 
-  if ! printf '%s\n' "$ps_output" | grep -Eiq '\b(Up|running)\b'; then
-    fail "celery-worker state is not clearly running in Compose ps output"
+  if [[ "$state_status" != "running" ]]; then
+    if [[ "$state_exit_code" != "0" ]]; then
+      fail "celery-worker is not running cleanly: status=$state_status exit=$state_exit_code"
+    fi
+    fail "celery-worker status is $state_status, expected running"
   fi
 }
 
