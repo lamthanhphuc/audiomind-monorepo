@@ -17,6 +17,11 @@ if [[ ! -f "$ENV_FILE" ]]; then
   exit 1
 fi
 
+fail() {
+  printf 'ERROR: %s\n' "$*" >&2
+  exit 1
+}
+
 env_value() {
   local key="$1"
   local line
@@ -70,6 +75,26 @@ check_url() {
   curl -fsS "$url" > /dev/null
 }
 
+check_celery_worker_state() {
+  local ps_output
+
+  printf 'Checking celery-worker state through Compose\n'
+  ps_output="$("${COMPOSE[@]}" ps -a celery-worker)"
+  printf '%s\n' "$ps_output"
+
+  if ! printf '%s\n' "$ps_output" | grep -Eiq 'celery-worker'; then
+    fail "celery-worker is missing from Compose ps output"
+  fi
+
+  if printf '%s\n' "$ps_output" | grep -Eiq '\b(Restarting|Exited|Dead|Created|Paused|Removing)\b'; then
+    fail "celery-worker is not running cleanly; Compose ps shows Restarting/Exited/non-running state"
+  fi
+
+  if ! printf '%s\n' "$ps_output" | grep -Eiq '\b(Up|running)\b'; then
+    fail "celery-worker state is not clearly running in Compose ps output"
+  fi
+}
+
 check_url "https://${APP_HOST}/"
 check_url "https://${MEETING_HOST}/health"
 check_url "https://${MEETING_HOST}/ready"
@@ -80,5 +105,7 @@ check_url "https://${USER_HOST}/ready"
 
 printf 'Checking private ai-api /ready through Compose\n'
 "${COMPOSE[@]}" exec -T ai-api python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=4).read()"
+
+check_celery_worker_state
 
 printf 'Production health checks passed.\n'

@@ -77,6 +77,8 @@ Verify in the rendered config:
   `127.0.0.1` host bindings.
 - `db`, `redis`, `ai-api`, and `celery-worker` have no public host port.
 - `ai-api` and `celery-worker` do not use `demoRecordAUDIOMID/ai-service/.env`.
+- `celery-worker.environment.CORS_ALLOWED_ORIGINS` is present and comes from
+  `infra/.env`.
 - Frontend build args use `https://app.<domain>`,
   `https://meeting.<domain>`, `https://processing.<domain>`, and
   `https://user.<domain>`, not localhost.
@@ -97,6 +99,8 @@ sudo systemctl reload caddy
 
 Confirm Caddy listens publicly on ports 80 and 443, while Compose services stay
 on loopback ports `8080`, `8081`, `8082`, and `8083`.
+When the web container publishes host port `8080`, the app site must proxy to
+`127.0.0.1:8080`.
 
 ## Start Or Update
 
@@ -111,6 +115,17 @@ Start services:
 ```bash
 docker compose --env-file infra/.env -f infra/docker-compose.dev.yml -f infra/docker-compose.mvp.yml -f infra/docker-compose.prod.yml up -d
 ```
+
+Do not include `infra/docker-compose.prod.celery-hotfix.yml` in the production
+Compose command. After this official fix is deployed, remove the old temporary
+override from the VPS if it exists:
+
+```bash
+rm -f infra/docker-compose.prod.celery-hotfix.yml
+```
+
+`celery-worker` must receive `CORS_ALLOWED_ORIGINS` through the official
+Compose stack.
 
 Inspect status:
 
