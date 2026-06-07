@@ -145,6 +145,18 @@ bash scripts/deploy/start-prod.sh
 bash scripts/deploy/health-prod.sh
 ```
 
+After deploying the official production drift fix, remove the old temporary
+Celery CORS override from the VPS if it exists:
+
+```bash
+rm -f infra/docker-compose.prod.celery-hotfix.yml
+```
+
+`start-prod.sh` uses only the official production Compose files. Do not include
+the old hotfix override when restarting; `celery-worker` must receive
+`CORS_ALLOWED_ORIGINS` from `infra/.env` through
+`infra/docker-compose.mvp.yml`.
+
 ## Smoke Test
 
 After health checks pass:
@@ -171,12 +183,17 @@ Common issues:
 - DNS: A records still point somewhere else. Recheck `dig +short`.
 - HTTPS: ports `80` or `443` are blocked, or Caddyfile domains still use
   `example.com`.
+- Caddy: when the web container publishes host port `8080`, the app route must
+  proxy to `127.0.0.1:8080`.
 - Docker: the deploy user is not in the Docker group, or Docker Compose v2 is
   missing.
 - Env: `infra/.env` still contains placeholders, localhost production URLs, or
   missing Deepgram/Gemini keys.
 - CORS: `CORS_ALLOWED_ORIGINS` does not resolve to
   `https://app.audiomind.pro.vn`.
+- Celery: `docker compose ps` must not show `celery-worker` as `Restarting` or
+  `Exited`; rendered Compose must include
+  `celery-worker.environment.CORS_ALLOWED_ORIGINS`.
 - RAM: on VPS CHEAP 3, watch `docker compose ps`, container restarts, and memory
   usage during upload/transcript/analysis tests. Upgrade to 8 GB RAM if memory
   pressure causes restarts.

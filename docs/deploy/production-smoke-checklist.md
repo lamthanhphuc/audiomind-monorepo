@@ -31,6 +31,12 @@ docker compose --env-file infra/.env -f infra/docker-compose.dev.yml -f infra/do
 ## Private Exposure
 
 - `docker compose ps` shows healthy core services.
+- `docker compose ps` does not show `celery-worker` as `Restarting` or
+  `Exited`.
+- The rendered Compose config includes
+  `celery-worker.environment.CORS_ALLOWED_ORIGINS`.
+- `docker inspect celery-worker` shows `CORS_ALLOWED_ORIGINS` in the worker
+  environment.
 - `db` is not reachable from the internet.
 - `redis` is not reachable from the internet.
 - `ai-api` is not reachable from the internet.

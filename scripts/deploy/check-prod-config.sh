@@ -67,6 +67,43 @@ fail() {
   exit 1
 }
 
+rendered_has_celery_worker_cors() {
+  awk '
+    /^services:/ {
+      in_services = 1
+      next
+    }
+
+    in_services && /^  celery-worker:/ {
+      in_worker = 1
+      in_environment = 0
+      next
+    }
+
+    in_worker && /^  [A-Za-z0-9_.-]+:/ {
+      in_worker = 0
+      in_environment = 0
+    }
+
+    in_worker && /^    environment:/ {
+      in_environment = 1
+      next
+    }
+
+    in_environment && /^    [A-Za-z0-9_.-]+:/ {
+      in_environment = 0
+    }
+
+    in_environment && (/^      CORS_ALLOWED_ORIGINS:/ || /^      - CORS_ALLOWED_ORIGINS=/) {
+      found = 1
+    }
+
+    END {
+      exit found ? 0 : 1
+    }
+  '
+}
+
 allows_empty_value() {
   local key="$1"
   local allowed
@@ -144,5 +181,10 @@ done
   fail "ALLOW_LEGACY_LOCAL_AI must be false"
 
 "${COMPOSE[@]}" config --quiet
+
+rendered_config="$("${COMPOSE[@]}" config)"
+if ! printf '%s\n' "$rendered_config" | rendered_has_celery_worker_cors; then
+  fail "celery-worker is missing CORS_ALLOWED_ORIGINS in rendered production compose config"
+fi
 
 printf 'Production Compose configuration rendered successfully.\n'
