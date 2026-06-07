@@ -147,10 +147,26 @@ Current gaps:
 Target behavior:
 
 - Default `BACKUP_DIR=/opt/audiomind/backups`.
+- Create `BACKUP_DIR` if it does not exist.
+- Keep `BACKUP_DIR` on the VPS host filesystem, not inside a Docker volume.
+- Prefer owner `deploy:deploy`.
+- Apply safe permissions, preferably `chmod 700` or `chmod 750`.
+- Run a disk preflight before writing backups. Use `df -Pk "$BACKUP_DIR"` for
+  script-friendly checks and optionally print `df -h "$BACKUP_DIR"` for human
+  diagnostics.
+- Fail before backup if available disk under `BACKUP_DIR` is below 2 GB.
+- Warn clearly if available disk under `BACKUP_DIR` is below 5 GB.
 - Create timestamped files such as:
   `audiomind-postgres-YYYYMMDDTHHMMSSZ.dump`.
+- Write the dump to a `.tmp` file first.
 - Write a `sha256` checksum for every dump.
-- Fail if the dump file is missing or size is zero.
+- Move `.tmp` to the final filename only after `pg_dump` succeeds, the file is
+  greater than zero bytes, and checksum creation succeeds.
+- Fail if the final dump file is missing or size is zero.
+- Use a lock file or `flock` to prevent concurrent runs. Suggested lock path:
+  `/tmp/audiomind-backup.lock`.
+- If another backup is running, fail with a clear message instead of running in
+  parallel.
 - Keep `pg_dump --format=custom --no-owner --no-privileges`.
 - Run only through the private Compose `db` service.
 
@@ -165,10 +181,15 @@ Target behavior:
 - Mount the source volume read-only.
 - Write a timestamped archive such as:
   `audiomind-uploads-YYYYMMDDTHHMMSSZ.tar.gz`.
+- Write the archive to a `.tmp` file first.
 - Write a checksum.
-- Fail if the archive is missing or size is zero.
+- Move `.tmp` to the final filename only after `tar` succeeds, the file is
+  greater than zero bytes, and checksum creation succeeds.
+- Fail if the final archive is missing or size is zero.
 - Validate the archive can be listed with `tar -tzf`.
 - Do not mount or archive `infra/.env`.
+- Reuse the same backup lock as the Postgres backup, or have the combined
+  wrapper own the lock for both backup types.
 
 Safety checks before archiving:
 
@@ -197,6 +218,9 @@ Rationale:
 Cleanup rules:
 
 - Delete only files matching owned backup patterns inside `BACKUP_DIR`.
+- Do not delete `.tmp` files that may belong to the currently running backup.
+  If stale `.tmp` cleanup is implemented, it must only remove files older than
+  a conservative threshold and only when the backup lock is not held.
 - Never delete directories recursively.
 - Never delete Docker volumes.
 - Never run `docker volume prune`.
@@ -212,6 +236,9 @@ Preferred safe restore checks:
 
 - Postgres dry-run level 1: `pg_restore --list <dump>` to verify the custom
   dump is readable.
+- If `pg_restore` is not installed on the VPS host, run validation through a
+  Postgres helper container using the same major version as production
+  (`postgres:15.7`), with the backup directory mounted read-only.
 - Postgres dry-run level 2: restore into a temporary test database/container,
   never the production database.
 - Upload dry-run: `tar -tzf <uploads-backup>.tar.gz | head`.
@@ -289,6 +316,16 @@ Postgres restore design:
 
 - Use custom-format dumps so `pg_restore --list` and selective restore checks
   are possible.
+- Do not require `pg_restore` to be installed on the host. Document a helper
+  container fallback:
+
+```bash
+docker run --rm \
+  -v /opt/audiomind/backups:/backups:ro \
+  postgres:15.7 \
+  pg_restore --list /backups/<postgres-backup>.dump | head
+```
+
 - For dry-run, restore into an isolated test database or temporary container.
 - For production restore, require explicit confirmation and a fresh pre-restore
   backup.
@@ -325,6 +362,15 @@ Backup directory:
 /opt/audiomind/backups
 ```
 
+Directory requirements:
+
+- Create the directory if missing.
+- Prefer owner `deploy:deploy`.
+- Use `chmod 700` or `chmod 750`.
+- Do not place it inside a Docker volume.
+- Run disk preflight against this path before any backup write. This matters on
+  the current 40 GB SSD VPS.
+
 Owned file patterns:
 
 - `audiomind-postgres-*.dump`
@@ -335,7 +381,39 @@ Owned file patterns:
 
 Implementation must never delete files outside `BACKUP_DIR`.
 
-## 8. Proposed Scripts / Files To Add Or Modify
+## 8. Manifest Schema
+
+The implementation should create a JSON manifest for every combined backup run.
+The manifest must not include environment variables, credentials, API keys, JWT
+secrets, database passwords, or full command output.
+
+Example:
+
+```json
+{
+  "backup_id": "YYYYMMDDTHHMMSSZ",
+  "created_at": "2026-06-07T03:15:00Z",
+  "compose_project": "audiomind-prod",
+  "backup_dir": "/opt/audiomind/backups",
+  "retention_days": 14,
+  "files": [
+    {
+      "type": "postgres",
+      "path": "audiomind-postgres-YYYYMMDDTHHMMSSZ.dump",
+      "sha256": "...",
+      "size_bytes": 123
+    },
+    {
+      "type": "uploads",
+      "path": "audiomind-uploads-YYYYMMDDTHHMMSSZ.tar.gz",
+      "sha256": "...",
+      "size_bytes": 456
+    }
+  ]
+}
+```
+
+## 9. Proposed Scripts / Files To Add Or Modify
 
 Add:
 
@@ -375,55 +453,77 @@ Do not modify:
 - provider defaults that keep Deepgram/Gemini active
 - Compose exposure that keeps DB/Redis/AI private
 
-## 9. Step-By-Step Implementation Plan
+## 10. Step-By-Step Implementation Plan
 
 1. Add a shared production Compose command helper inside backup scripts.
    Use the same stack as `start-prod.sh`, `health-prod.sh`, and
    `check-prod-config.sh`.
 
-2. Harden `backup-postgres.sh`.
+2. Add backup directory preflight.
+   Create `/opt/audiomind/backups` if missing, verify ownership/permissions,
+   confirm it is not a Docker volume, and run `df -Pk` disk checks before any
+   backup writes.
+
+3. Add concurrency protection.
+   Use `flock` or an equivalent lock file at `/tmp/audiomind-backup.lock`.
+   Fail clearly if another backup is running.
+
+4. Harden `backup-postgres.sh`.
    Set `BACKUP_DIR=/opt/audiomind/backups` by default, create timestamped custom
-   dumps, validate file size, write checksums, and avoid printing secrets.
+   dumps, write to `.tmp`, validate file size, write checksums, atomically
+   rename to the final filename, and avoid printing secrets.
 
-3. Add uploads backup.
+5. Add uploads backup.
    Archive `audiomind-prod_uploads` read-only through a disposable helper
-   container. Validate volume name before use.
+   container. Validate volume name before use and use the same `.tmp` to final
+   rename pattern.
 
-4. Add retention cleanup.
+6. Add retention cleanup.
    Delete only owned backup file patterns older than `RETENTION_DAYS` inside
-   `BACKUP_DIR`.
+   `BACKUP_DIR`. Do not delete `.tmp` files for an active run.
 
-5. Add backup manifest.
+7. Add backup manifest.
    Record timestamp, host, Compose project, service names, volume names, output
-   file names, byte sizes, checksums, and retention setting.
+   file names, byte sizes, checksums, and retention setting. Keep secrets out
+   of the manifest.
 
-6. Add restore dry-run guidance.
-   Document `pg_restore --list`, optional isolated restore, and uploads archive
-   listing. Make production overwrite warnings loud.
+8. Add restore dry-run guidance.
+   Document `pg_restore --list`, the `postgres:15.7` helper container fallback,
+   optional isolated restore, and uploads archive listing. Make production
+   overwrite warnings loud.
 
-7. Update `docs/deploy/backup-restore.md`.
+9. Update `docs/deploy/backup-restore.md`.
    Replace generic volume examples with production-safe names and include local
    download commands.
 
-8. Optionally add systemd timer assets.
+10. Optionally add systemd timer assets.
    Keep them disabled until explicitly installed on the VPS by the user.
 
-9. Validate only at script/doc level in the implementation PR.
+11. Validate only at script/doc level in the implementation PR.
    Do not run Docker build/up, deploy, SSH, or browser smoke from the coding
    agent unless explicitly requested.
 
-## 10. Acceptance Criteria
+## 11. Acceptance Criteria
 
 - A Postgres production backup creates a timestamped file.
 - An uploads volume or upload data path backup creates a timestamped archive.
+- Backup scripts check disk availability before running.
+- Backup scripts fail when available disk is below 2 GB and warn below 5 GB.
+- Backup scripts use atomic `.tmp` writes followed by final rename.
+- Backup scripts use a lock or `flock` to prevent concurrent runs.
+- Backup directory exists with safe ownership and permissions.
 - Backup outputs do not include `.env`, API keys, `JWT_SECRET`, or provider
   secrets.
 - Backups are stored in a clear VPS directory, defaulting to
   `/opt/audiomind/backups`.
 - Retention automatically removes owned backup files older than 7 to 14 days,
   with 14 days as the default recommendation.
+- Retention does not delete `.tmp` files from a currently running backup.
+- Manifest JSON is created and does not contain secrets.
 - There is guidance to download backups to local with `scp`.
 - There is a restore guide or dry-run path that does not overwrite production.
+- `pg_restore` validation has a `postgres:15.7` container fallback if the VPS
+  host does not have `pg_restore`.
 - The guide warns not to use `docker compose down -v`,
   `docker volume prune`, or `docker system prune --volumes`.
 - Validation commands check that backup files exist and have size greater than
@@ -434,7 +534,7 @@ Do not modify:
 - No Docker build/up, deploy, SSH, browser smoke, or real `.env` edits are part
   of this spec phase.
 
-## 11. Validation Plan
+## 12. Validation Plan
 
 These commands are for the user to run on the VPS after implementation. Do not
 run them during this spec phase.
@@ -444,6 +544,9 @@ Postgres backup:
 ```bash
 bash scripts/deploy/backup-postgres.sh
 
+df -h /opt/audiomind/backups
+df -Pk /opt/audiomind/backups
+
 ls -lh /opt/audiomind/backups
 
 test -s /opt/audiomind/backups/<postgres-backup>.dump
@@ -451,6 +554,15 @@ test -s /opt/audiomind/backups/<postgres-backup>.dump
 sha256sum -c /opt/audiomind/backups/<postgres-backup>.dump.sha256
 
 pg_restore --list /opt/audiomind/backups/<postgres-backup>.dump | head
+```
+
+If `pg_restore` is not installed on the host:
+
+```bash
+docker run --rm \
+  -v /opt/audiomind/backups:/backups:ro \
+  postgres:15.7 \
+  pg_restore --list /backups/<postgres-backup>.dump | head
 ```
 
 Uploads backup:
@@ -485,6 +597,8 @@ scp deploy@14.225.204.225:/opt/audiomind/backups/<backup-file>.sha256 "$env:USER
 Production safety checks:
 
 ```bash
+stat -c '%U %G %a %n' /opt/audiomind/backups
+
 docker compose --env-file infra/.env \
   -f infra/docker-compose.dev.yml \
   -f infra/docker-compose.mvp.yml \
@@ -509,11 +623,15 @@ docker compose --env-file infra/.env \
 Confirm from rendered config that `db`, `redis`, `ai-api`, and
 `celery-worker` do not publish public ports.
 
-## 12. Rollback / Safety Plan
+## 13. Rollback / Safety Plan
 
 Backup safety:
 
 - Use logical Postgres dumps instead of copying live database files.
+- Check disk capacity before starting backup work.
+- Use a lock to avoid concurrent backup runs.
+- Write every backup artifact to `.tmp` first, then atomically rename after
+  validation and checksum creation.
 - Mount uploads read-only during backup.
 - Validate every backup file exists and has size greater than zero.
 - Write checksums.
@@ -545,7 +663,7 @@ If a backup implementation fails:
 4. If disk pressure occurs, manually inspect `/opt/audiomind/backups` and delete
    only clearly identified old backup files.
 
-## 13. Out Of Scope
+## 14. Out Of Scope
 
 - Implementing backup/restore code in this spec phase.
 - Running Docker build/up.
@@ -560,7 +678,7 @@ If a backup implementation fails:
 - Making private services public.
 - Designing cross-region or object-storage backups.
 
-## 14. Risks / Notes
+## 15. Risks / Notes
 
 - The existing `scripts/deploy/backup-postgres.sh` is a useful start, but it is
   only a Postgres dump script. It does not cover uploads, retention, checksum,
