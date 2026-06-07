@@ -129,7 +129,7 @@ fi
 checksum="$(sha256sum "$tmp_file" | awk '{ print $1 }')"
 [[ -n "$checksum" ]] || fail "could not compute sha256 for $tmp_file"
 
-printf '%s  %s\n' "$checksum" "$BACKUP_FILE" > "$sha_tmp"
+printf '%s  %s\n' "$checksum" "$(basename "$BACKUP_FILE")" > "$sha_tmp"
 mv "$tmp_file" "$BACKUP_FILE"
 mv "$sha_tmp" "$sha_file"
 

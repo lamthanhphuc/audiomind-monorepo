@@ -171,6 +171,32 @@ scp deploy@14.225.204.225:/opt/audiomind/backups/<manifest>.json ~/Downloads/
 Download both Postgres and uploads backups when preparing for disaster
 recovery.
 
+After downloading a backup and its `.sha256` file, verify from the local
+download directory.
+
+Unix shell:
+
+```bash
+cd ~/Downloads
+sha256sum -c <backup-file>.sha256
+```
+
+Windows PowerShell with Git Bash, WSL, or another environment that provides
+`sha256sum`:
+
+```powershell
+cd $env:USERPROFILE\Downloads
+sha256sum -c .\<backup-file>.sha256
+```
+
+If `sha256sum` is not available on Windows, use WSL/Git Bash or compare the
+hash manually with PowerShell:
+
+```powershell
+Get-FileHash .\<backup-file> -Algorithm SHA256
+Get-Content .\<backup-file>.sha256
+```
+
 ## Restore Dry-Run
 
 Do not restore over production until:
