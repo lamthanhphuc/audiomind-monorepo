@@ -145,6 +145,10 @@ bash scripts/deploy/start-prod.sh
 bash scripts/deploy/health-prod.sh
 ```
 
+After the stack is healthy, use
+[monitor-cleanup.md](monitor-cleanup.md) for daily resource checks, Docker log
+rotation guidance, and safe dry-run-first cleanup.
+
 After deploying the official production drift fix, remove the old temporary
 Celery CORS override from the VPS if it exists:
 
@@ -177,6 +181,16 @@ Collect redacted logs:
 ```bash
 bash scripts/deploy/collect-prod-logs-redacted.sh
 ```
+
+Run the production monitor for disk, RAM, Docker usage, container restarts, and
+health status:
+
+```bash
+bash scripts/deploy/monitor-prod.sh
+```
+
+Use [monitor-cleanup.md](monitor-cleanup.md) before applying cleanup. Do not run
+cleanup if dry-run output is surprising.
 
 Common issues:
 

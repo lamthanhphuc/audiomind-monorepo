@@ -272,6 +272,8 @@ Suggested MVP minimum:
 - Run `backup-prod.sh` before each deploy.
 - Run `backup-prod.sh` daily for active demos.
 - Review `/opt/audiomind/backups` disk usage weekly.
+- Use [monitor-cleanup.md](monitor-cleanup.md) to include backup directory size
+  in daily monitor output and to run safe cleanup without deleting backups.
 
 Systemd timer installation is intentionally out of scope for 7T-Ops-B1/B2/B3.
 

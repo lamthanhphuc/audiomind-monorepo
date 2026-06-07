@@ -156,6 +156,25 @@ docker compose --env-file infra/.env -f infra/docker-compose.dev.yml -f infra/do
 
 Then run [production-smoke-checklist.md](production-smoke-checklist.md).
 
+## Monitor And Cleanup
+
+After readiness passes, use [monitor-cleanup.md](monitor-cleanup.md) for the
+daily production monitor, `/opt/audiomind/ops-logs` reports, safe cleanup
+dry-runs, and Docker log rotation guidance.
+
+Start with:
+
+```bash
+bash scripts/deploy/monitor-prod.sh
+bash scripts/deploy/cleanup-prod-safe.sh
+```
+
+Only run real cleanup after reviewing dry-run output and recent backups:
+
+```bash
+bash scripts/deploy/cleanup-prod-safe.sh --apply --yes
+```
+
 ## Rollback Notes
 
 Before changing a running VPS:
