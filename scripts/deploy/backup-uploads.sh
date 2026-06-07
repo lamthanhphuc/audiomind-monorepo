@@ -4,26 +4,20 @@ set -Eeuo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT_DIR"
 
-ENV_FILE="infra/.env"
-COMPOSE_FILES=(
-  -f infra/docker-compose.dev.yml
-  -f infra/docker-compose.mvp.yml
-  -f infra/docker-compose.prod.yml
-)
-COMPOSE=(docker compose --env-file "$ENV_FILE" "${COMPOSE_FILES[@]}")
-
 BACKUP_DIR="${BACKUP_DIR:-/opt/audiomind/backups}"
 BACKUP_ID="${BACKUP_ID:-$(date -u +%Y%m%dT%H%M%SZ)}"
-BACKUP_FILE="${BACKUP_FILE:-$BACKUP_DIR/audiomind-postgres-${BACKUP_ID}.dump}"
+UPLOADS_VOLUME="${AUDIOMIND_UPLOADS_VOLUME:-audiomind-prod_uploads}"
+BACKUP_FILE="${BACKUP_FILE:-$BACKUP_DIR/audiomind-uploads-${BACKUP_ID}.tar.gz}"
 RETENTION_DAYS="${RETENTION_DAYS:-14}"
 LOCK_FILE="${AUDIOMIND_BACKUP_LOCK_FILE:-/tmp/audiomind-backup.lock}"
 MIN_AVAILABLE_KB="${AUDIOMIND_BACKUP_MIN_AVAILABLE_KB:-2097152}"
 WARN_AVAILABLE_KB="${AUDIOMIND_BACKUP_WARN_AVAILABLE_KB:-5242880}"
 
-tmp_file="${BACKUP_FILE}.tmp.$$"
+backup_name="$(basename "$BACKUP_FILE")"
+tmp_name="${backup_name}.tmp.$$"
+tmp_file="$BACKUP_DIR/$tmp_name"
 sha_file="${BACKUP_FILE}.sha256"
 sha_tmp="${sha_file}.tmp.$$"
-lock_acquired=0
 
 fail() {
   printf 'ERROR: %s\n' "$*" >&2
@@ -34,12 +28,6 @@ cleanup() {
   rm -f "$tmp_file" "$sha_tmp"
 }
 trap cleanup EXIT
-
-require_env_file() {
-  if [[ ! -f "$ENV_FILE" ]]; then
-    fail "$ENV_FILE is missing. Create it from infra/.env.production.example on the server."
-  fi
-}
 
 validate_retention_days() {
   if ! [[ "$RETENTION_DAYS" =~ ^[0-9]+$ ]]; then
@@ -80,7 +68,13 @@ acquire_lock() {
   if ! flock -n 9; then
     fail "another Audiomind backup is already running; lock=$LOCK_FILE"
   fi
-  lock_acquired=1
+}
+
+validate_uploads_volume() {
+  if [[ "$UPLOADS_VOLUME" != "audiomind-prod_uploads" ]]; then
+    fail "refusing to back up non-production uploads volume: $UPLOADS_VOLUME"
+  fi
+  docker volume inspect "$UPLOADS_VOLUME" >/dev/null
 }
 
 cleanup_retention() {
@@ -105,7 +99,7 @@ write_result_file() {
   fi
 
   cat > "$AUDIOMIND_BACKUP_RESULT_FILE" <<EOF
-type=postgres
+type=uploads
 path=$(basename "$BACKUP_FILE")
 sha256=$checksum
 size_bytes=$size_bytes
@@ -114,17 +108,23 @@ sha_file=$sha_file
 EOF
 }
 
-require_env_file
 validate_retention_days
 prepare_backup_dir
 disk_preflight
 acquire_lock
+validate_uploads_volume
 
-"${COMPOSE[@]}" exec -T db sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" --format=custom --no-owner --no-privileges' > "$tmp_file"
+docker run --rm \
+  -v "${UPLOADS_VOLUME}:/data:ro" \
+  -v "${BACKUP_DIR}:/backup" \
+  alpine:3.20 \
+  sh -c "cd /data && tar czf /backup/${tmp_name} -C /data ."
 
 if [[ ! -s "$tmp_file" ]]; then
-  fail "Postgres backup temp file is missing or empty: $tmp_file"
+  fail "uploads backup temp file is missing or empty: $tmp_file"
 fi
+
+tar -tzf "$tmp_file" >/dev/null
 
 checksum="$(sha256sum "$tmp_file" | awk '{ print $1 }')"
 [[ -n "$checksum" ]] || fail "could not compute sha256 for $tmp_file"
@@ -135,11 +135,11 @@ mv "$sha_tmp" "$sha_file"
 
 size_bytes="$(stat -c '%s' "$BACKUP_FILE")"
 if [[ -z "$size_bytes" || "$size_bytes" == "0" ]]; then
-  fail "Postgres backup file is missing or empty: $BACKUP_FILE"
+  fail "uploads backup file is missing or empty: $BACKUP_FILE"
 fi
 
 write_result_file "$checksum" "$size_bytes"
 cleanup_retention
 
-printf 'Wrote Postgres backup to %s\n' "$BACKUP_FILE"
-printf 'Wrote Postgres backup checksum to %s\n' "$sha_file"
+printf 'Wrote uploads backup to %s\n' "$BACKUP_FILE"
+printf 'Wrote uploads backup checksum to %s\n' "$sha_file"
