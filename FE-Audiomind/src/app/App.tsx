@@ -343,7 +343,7 @@ const pollUntilCompleted = async (
 }
 
 const REALTIME_ANALYSIS_POLL_INTERVAL_MS = 2000
-const REALTIME_ANALYSIS_POLL_MAX_ATTEMPTS = 25
+const REALTIME_ANALYSIS_POLL_MAX_ATTEMPTS = 45
 
 type LiveAnalysisStatus = 'idle' | 'polling' | 'completed' | 'pending' | 'failed'
 

@@ -490,6 +490,50 @@ describe('pollRealtimeAnalysisAfterStop', () => {
     expect(result.metadata?.summary).toBe('Realtime summary')
   })
 
+  it('returns completed after earlier pending metadata', async () => {
+    vi.useFakeTimers()
+
+    const fetchAnalysis = vi
+      .fn()
+      .mockRejectedValueOnce(new ApiError('Analysis not found', 404))
+      .mockResolvedValueOnce({
+        status: 'ANALYZING',
+        analysisStatus: 'ANALYZING',
+        summary: '',
+        keywords: [],
+        technicalTerms: [],
+        painPoints: [],
+        actionItems: [],
+        domainMode: 'it',
+      })
+      .mockResolvedValueOnce({
+        status: 'COMPLETED',
+        analysisStatus: 'COMPLETED',
+        summary: 'Saved realtime analysis',
+        keywords: ['Gemini'],
+        technicalTerms: [],
+        painPoints: [],
+        actionItems: ['Review summary'],
+        domainMode: 'it',
+      })
+
+    const resultPromise = pollRealtimeAnalysisAfterStop(
+      81,
+      new AbortController().signal,
+      fetchAnalysis as any,
+      5,
+    )
+
+    await vi.advanceTimersByTimeAsync(2000)
+    await vi.advanceTimersByTimeAsync(2000)
+    const result = await resultPromise
+
+    expect(fetchAnalysis).toHaveBeenCalledTimes(3)
+    expect(result.status).toBe('completed')
+    expect(result.analysis?.analysisStatus).toBe('COMPLETED')
+    expect(result.analysis?.summary).toBe('Saved realtime analysis')
+  })
+
   it('returns failed for non-retryable analysis errors', async () => {
     const fetchAnalysis = vi.fn().mockRejectedValue(new ApiError('Unauthorized', 401))
 

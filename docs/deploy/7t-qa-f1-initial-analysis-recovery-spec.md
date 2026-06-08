@@ -344,7 +344,14 @@ Production manual after deployment:
 8. Confirm manual Re-analyze still works.
 9. Confirm regular upload file flow still passes.
 10. Confirm DOCX export still passes.
-11. If failure remains, run `collect-prod-logs-redacted.sh`.
+11. If production failure remains, run `collect-prod-logs-redacted.sh`.
+
+Local Docker log collection after local dev/MVP testing:
+
+- Use `scripts/deploy/collect-local-docker-logs.ps1`.
+- The local collector uses `infra/docker-compose.dev.yml` and `infra/docker-compose.mvp.yml`.
+- Do not use prod container names such as `audiomind-prod-web-1` for local log capture.
+- The script writes a redacted zip to Downloads by default and includes Compose ps/logs, Docker disk usage, Docker ps, env key presence with values redacted, and port checks.
 
 F1-A validation:
 

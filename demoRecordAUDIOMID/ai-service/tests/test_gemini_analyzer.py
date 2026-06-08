@@ -592,6 +592,77 @@ def test_gemini_analyzer_passes_schema_and_output_budget(monkeypatch):
     assert generation_config["responseSchema"]["type"] == "OBJECT"
 
 
+def test_gemini_realtime_prompt_uses_compact_output_limits(monkeypatch):
+    fake_client = _FakeClient([_success_response(summary="Realtime compact")])
+    monkeypatch.setattr(AI_MODULE.httpx, "Client", lambda timeout: fake_client)
+
+    analyzer = GeminiAnalyzer(api_key="test-gemini-key")
+    result = analyzer._analyze_with_gemini(
+        "Speaker 1: Can you summarize the deployment blockers?",
+        metadata={"source": "realtime", "meetingId": 42},
+    )
+
+    assert result["summary"] == "Realtime compact"
+    payload = fake_client.calls[0][1]["json"]
+    prompt = payload["contents"][0]["parts"][0]["text"]
+    assert "REALTIME_MODE" in prompt
+    assert "keywords and technicalTerms max 5 each" in prompt
+    assert "painPoints and actionItems max 3 each" in prompt
+
+
+def test_gemini_realtime_result_is_compacted(monkeypatch):
+    long_text = "x" * 240
+    response = _FakeResponse(
+        200,
+        {
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [
+                            {
+                                "text": json.dumps(
+                                    {
+                                        "summary": long_text,
+                                        "keywords": [
+                                            "one",
+                                            "two",
+                                            "three",
+                                            "four",
+                                            "five",
+                                            "six",
+                                        ],
+                                        "technicalTerms": [],
+                                        "painPoints": [],
+                                        "actionItems": [
+                                            {"task": long_text, "evidence": long_text},
+                                            {"task": "two"},
+                                            {"task": "three"},
+                                            {"task": "four"},
+                                        ],
+                                        "domainMode": "it",
+                                    }
+                                )
+                            }
+                        ]
+                    }
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(AI_MODULE.httpx, "Client", lambda timeout: _FakeClient(response))
+
+    analyzer = GeminiAnalyzer(api_key="test-gemini-key")
+    result = analyzer._analyze_with_gemini(
+        "Speaker 1: deployment notes",
+        metadata={"source": "realtime"},
+    )
+
+    assert result["keywords"] == ["one", "two", "three", "four", "five"]
+    assert len(result["businessActionItems"]) == 3
+    assert len(result["businessActionItems"][0]["task"]) <= 120
+    assert len(result["businessActionItems"][0]["evidence"]) <= 100
+
+
 def test_gemini_analyzer_schema_400_retries_once_without_schema(monkeypatch):
     fake_client = _FakeClient(
         [
