@@ -28,6 +28,7 @@ import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
 import org.springframework.util.StringUtils;
 import org.springframework.web.client.HttpClientErrorException;
+import org.springframework.web.client.HttpStatusCodeException;
 import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.multipart.MultipartFile;
@@ -680,6 +681,21 @@ public class AIServiceClient {
             );
             return response;
         } catch (RestClientException ex) {
+            if (isExpectedAnalysisNotReady(operation, ex)) {
+                HttpStatusCodeException statusException = (HttpStatusCodeException) ex;
+                log.info(
+                        "event=ANALYSIS_GET_NOT_READY traceId={} requestId={} meetingId={} path={} operation={} httpStatus={} errorCode={} durationMs={}",
+                        traceId,
+                        requestId,
+                        meetingId,
+                        url,
+                        operation,
+                        statusException.getStatusCode().value(),
+                        ex.getClass().getSimpleName(),
+                        System.currentTimeMillis() - startedAt
+                );
+                throw ex;
+            }
             log.warn(
                     "event=AI_SERVICE_CALL_FAILED traceId={} requestId={} meetingId={} path={} operation={} errorCode={} durationMs={}",
                     traceId,
@@ -692,6 +708,12 @@ public class AIServiceClient {
             );
             throw ex;
         }
+    }
+
+    private boolean isExpectedAnalysisNotReady(String operation, RestClientException ex) {
+        return "getAnalysis".equals(operation)
+                && ex instanceof HttpStatusCodeException statusException
+                && HttpStatus.NOT_FOUND.equals(statusException.getStatusCode());
     }
 
     private Map<String, Object> requireBody(ResponseEntity<Map<String, Object>> response, String operation, Long meetingId) {

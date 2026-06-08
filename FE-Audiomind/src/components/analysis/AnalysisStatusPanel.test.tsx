@@ -72,6 +72,23 @@ describe('AnalysisStatusPanel', () => {
     expect(container.textContent).toContain('retryAfterSeconds: 30')
   })
 
+  it('disables re-analyze during failed cooldown and shows error metadata', () => {
+    renderPanel({
+      metadata: {
+        analysisStatus: 'FAILED',
+        retryAfterSeconds: 45,
+        errorCode: 'GEMINI_UNAVAILABLE',
+        errorMessage: 'Gemini service unavailable',
+      },
+      onReanalyze: vi.fn(),
+    })
+
+    const button = container.querySelector('[data-testid="analysis-reanalyze-button"]') as HTMLButtonElement
+    expect(button.disabled).toBe(true)
+    expect(container.querySelector('[data-testid="analysis-error-metadata"]')?.textContent).toContain('GEMINI_UNAVAILABLE')
+    expect(container.textContent).toContain('retryAfterSeconds: 45')
+  })
+
   it('clicking re-analyze calls handler', () => {
     const onReanalyze = vi.fn()
     renderPanel({

@@ -644,7 +644,18 @@ class AIAnalyzer:
         transcript: str,
         metadata_text: str,
         it_guidance: str,
+        is_realtime: bool = False,
     ) -> str:
+        realtime_guidance = ""
+        if is_realtime:
+            realtime_guidance = (
+                "- REALTIME_MODE: prefer concise output for fast UI display.\n"
+                "- For realtime only: summary and meetingSummary max 2 short sentences each.\n"
+                "- For realtime only: keywords and technicalTerms max 5 each.\n"
+                "- For realtime only: painPoints and actionItems max 3 each.\n"
+                "- For realtime only: keyDecisions, risks, blockers, questions, deadlines, owners, nextSteps max 3 each.\n"
+                "- For realtime only: evidence and list items max 120 characters; impacts max 1 short sentence each.\n"
+            )
         return f"""
 Hãy phân tích transcript sau và trả về đúng MỘT object JSON hợp lệ.
 
@@ -670,6 +681,8 @@ YÊU CẦU:
 - domainMode phải là một trong: general, it, business, education.
 - promptVersion phải là "{self.PROMPT_VERSION}".
 - schemaVersion phải là "{self.SCHEMA_VERSION}".
+
+{realtime_guidance}
 
 {metadata_text}
 
@@ -909,6 +922,98 @@ TEXT:
                 or [item["term"] for item in technical_terms]
             ),
         }
+
+    def _compact_realtime_structured_analysis(
+        self, data: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        compacted = dict(data)
+
+        def trim_text(value: Any, limit: int) -> str:
+            text = re.sub(r"\s+", " ", str(value or "")).strip()
+            if len(text) <= limit:
+                return text
+            return text[: limit - 3].rstrip() + "..."
+
+        def trim_list(key: str, limit: int, text_limit: int = 120) -> None:
+            values = compacted.get(key)
+            if not isinstance(values, list):
+                compacted[key] = []
+                return
+            compacted[key] = [trim_text(item, text_limit) for item in values[:limit]]
+
+        compacted["summary"] = trim_text(compacted.get("summary"), 360)
+        compacted["meetingSummary"] = trim_text(
+            compacted.get("meetingSummary") or compacted.get("summary"), 360
+        )
+        trim_list("keywords", 5, 80)
+        trim_list("key_points", 5, 80)
+        trim_list("topics", 5, 80)
+        for key in (
+            "keyDecisions",
+            "decisions",
+            "risks",
+            "blockers",
+            "questions",
+            "deadlines",
+            "owners",
+            "nextSteps",
+            "risks_blockers",
+        ):
+            trim_list(key, 3, 120)
+
+        technical_terms = compacted.get("technicalTerms")
+        if isinstance(technical_terms, list):
+            compacted["technicalTerms"] = [
+                {
+                    **item,
+                    "term": trim_text(item.get("term"), 80),
+                    "meaning": trim_text(item.get("meaning"), 80),
+                    "category": trim_text(item.get("category"), 40),
+                }
+                for item in technical_terms[:5]
+                if isinstance(item, dict)
+            ]
+            compacted["technical_terms"] = [
+                item["term"] for item in compacted["technicalTerms"] if item.get("term")
+            ]
+
+        pain_points = compacted.get("painPoints")
+        if isinstance(pain_points, list):
+            compacted["painPoints"] = [
+                {
+                    **item,
+                    "title": trim_text(item.get("title"), 120),
+                    "evidence": trim_text(item.get("evidence"), 100),
+                }
+                for item in pain_points[:3]
+                if isinstance(item, dict)
+            ]
+            compacted["pain_points"] = compacted["painPoints"]
+
+        business_action_items = compacted.get("businessActionItems")
+        if isinstance(business_action_items, list):
+            compacted["businessActionItems"] = [
+                {
+                    **item,
+                    "task": trim_text(item.get("task"), 120),
+                    "evidence": trim_text(item.get("evidence"), 100),
+                }
+                for item in business_action_items[:3]
+                if isinstance(item, dict)
+            ]
+            compacted["action_items"] = compacted["businessActionItems"]
+            compacted["actionItems"] = [
+                item["task"]
+                for item in compacted["businessActionItems"]
+                if item.get("task")
+            ]
+        else:
+            trim_list("actionItems", 3, 120)
+
+        compacted["businessImpact"] = trim_text(compacted.get("businessImpact"), 160)
+        compacted["customerImpact"] = trim_text(compacted.get("customerImpact"), 160)
+        compacted["technicalImpact"] = trim_text(compacted.get("technicalImpact"), 160)
+        return compacted
 
     def _resolve_gemini_thinking_budget(self, model: str, response_json: bool) -> int:
         configured_budget = self.analysis_thinking_budget
@@ -1585,6 +1690,8 @@ NỘI DUNG:
         self, prompt: str, metadata: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         domain_mode = self.analysis_domain_mode
+        metadata_source = str((metadata or {}).get("source") or "").strip().lower()
+        is_realtime = metadata_source == "realtime"
         system_prompt = (
             "Bạn là trợ lý phân tích biên bản họp. Hãy trả về đúng một object JSON hợp lệ và không thêm gì khác. "
             "Tất cả nội dung trong các value phải bằng tiếng Việt, trừ tên riêng và thuật ngữ kỹ thuật cần giữ nguyên. "
@@ -1601,6 +1708,7 @@ NỘI DUNG:
             transcript=prompt,
             metadata_text=metadata_text,
             it_guidance=it_guidance,
+            is_realtime=is_realtime,
         )
 
         content = self._call_gemini_text(
@@ -1622,6 +1730,8 @@ NỘI DUNG:
             )
             raise
         structured = self._normalize_gemini_structured_analysis(prompt, parsed)
+        if is_realtime:
+            structured = self._compact_realtime_structured_analysis(structured)
         structured["promptVersion"] = (
             str(structured.get("promptVersion") or "").strip() or self.PROMPT_VERSION
         )

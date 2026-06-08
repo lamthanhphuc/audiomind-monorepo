@@ -23,12 +23,53 @@ export class ApiError extends Error {
 
   traceId?: string
 
-  constructor(message: string, status: number, traceId?: string) {
+  errorCode?: string
+
+  retryAfterSeconds?: number
+
+  constructor(message: string, status: number, traceId?: string, errorCode?: string, retryAfterSeconds?: number) {
     super(message)
     this.name = 'ApiError'
     this.status = status
     this.traceId = traceId
+    this.errorCode = errorCode
+    this.retryAfterSeconds = retryAfterSeconds
   }
+}
+
+const firstString = (...values: unknown[]): string | undefined => {
+  for (const value of values) {
+    const normalized = String(value ?? '').trim()
+    if (normalized) {
+      return normalized
+    }
+  }
+  return undefined
+}
+
+const firstNumber = (...values: unknown[]): number | undefined => {
+  for (const value of values) {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value
+    }
+    const normalized = String(value ?? '').trim()
+    if (!normalized) {
+      continue
+    }
+    const parsed = Number(normalized)
+    if (Number.isFinite(parsed)) {
+      return parsed
+    }
+  }
+  return undefined
+}
+
+const parseRetryAfterFromText = (value: string): number | undefined => {
+  const match = value.match(/retryAfterSeconds=(\d+)/i)
+  if (!match?.[1]) {
+    return undefined
+  }
+  return firstNumber(match[1])
 }
 
 const createTraceId = (): string => {
@@ -64,13 +105,32 @@ const fetchJson = async <T>(input: RequestInfo | URL, init?: RequestInit): Promi
     const text = await response.text()
     const traceId = response.headers.get('x-trace-id') ?? response.headers.get('x-request-id') ?? undefined
     let message = text || response.statusText
+    let errorCode: string | undefined
+    let retryAfterSeconds: number | undefined
 
     try {
-      const parsed = JSON.parse(text) as { detail?: string; message?: string }
-      message = parsed.detail || parsed.message || message
+      const parsed = JSON.parse(text) as Record<string, unknown>
+      const detail = parsed.detail && typeof parsed.detail === 'object' && !Array.isArray(parsed.detail)
+        ? (parsed.detail as Record<string, unknown>)
+        : null
+      message = firstString(
+        typeof parsed.detail === 'string' ? parsed.detail : undefined,
+        detail?.message,
+        detail?.detail,
+        parsed.message,
+        message,
+      ) ?? message
+      errorCode = firstString(parsed.errorCode, parsed.error_code, detail?.errorCode, detail?.error_code)
+      retryAfterSeconds = firstNumber(
+        parsed.retryAfterSeconds,
+        parsed.retry_after_seconds,
+        detail?.retryAfterSeconds,
+        detail?.retry_after_seconds,
+      )
     } catch {
       // Use raw text when response is not JSON.
     }
+    retryAfterSeconds = retryAfterSeconds ?? parseRetryAfterFromText(message)
 
     console.error('API request failed', {
       url: String(input),
@@ -79,7 +139,7 @@ const fetchJson = async <T>(input: RequestInfo | URL, init?: RequestInit): Promi
       responseBody: text,
       traceId,
     })
-    throw new ApiError(message, response.status, traceId)
+    throw new ApiError(message, response.status, traceId, errorCode, retryAfterSeconds)
   }
   return response.json() as Promise<T>
 }

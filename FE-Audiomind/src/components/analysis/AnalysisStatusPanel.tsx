@@ -25,6 +25,8 @@ export type AnalysisMetadata = Pick<
   | 'analysisInputMode'
   | 'lastAnalyzedAt'
   | 'retryAfterSeconds'
+  | 'errorCode'
+  | 'errorMessage'
 > | null
 
 type NormalizedAnalysisMetadata = {
@@ -41,6 +43,8 @@ type NormalizedAnalysisMetadata = {
   analysisInputMode?: string
   lastAnalyzedAt?: string
   retryAfterSeconds?: number
+  errorCode?: string
+  errorMessage?: string
 }
 
 type AnalysisStatusPanelProps = {
@@ -106,6 +110,8 @@ export const normalizeAnalysisMetadata = (metadata: AnalysisMetadata): Normalize
     analysisInputMode: metadata?.analysisInputMode,
     lastAnalyzedAt: metadata?.lastAnalyzedAt,
     retryAfterSeconds: metadata?.retryAfterSeconds,
+    errorCode: metadata?.errorCode,
+    errorMessage: metadata?.errorMessage,
   }
 }
 
@@ -137,7 +143,7 @@ export const AnalysisStatusPanel = ({
   const retryAfterSeconds = normalized.retryAfterSeconds ?? 0
   const reanalyzeDisabled = busy
     || normalized.status === 'ANALYZING'
-    || (normalized.status === 'RATE_LIMITED' && retryAfterSeconds > 0)
+    || retryAfterSeconds > 0
 
   const rows = [
     ['Provider', normalized.provider ?? 'unknown'],
@@ -193,6 +199,11 @@ export const AnalysisStatusPanel = ({
       {retryAfterSeconds > 0 && (
         <p style={{ margin: 0, color: '#64748b', fontSize: '13px' }} data-testid="analysis-retry-after">
           retryAfterSeconds: {retryAfterSeconds}
+        </p>
+      )}
+      {(normalized.errorCode || normalized.errorMessage) && (
+        <p style={{ margin: 0, color: '#b91c1c', fontSize: '13px' }} data-testid="analysis-error-metadata">
+          {[normalized.errorCode, normalized.errorMessage].filter(Boolean).join(': ')}
         </p>
       )}
       {technicalRows.length > 0 && (
