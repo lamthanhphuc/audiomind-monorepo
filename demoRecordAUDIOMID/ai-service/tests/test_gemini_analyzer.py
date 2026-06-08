@@ -649,7 +649,9 @@ def test_gemini_realtime_result_is_compacted(monkeypatch):
             ]
         },
     )
-    monkeypatch.setattr(AI_MODULE.httpx, "Client", lambda timeout: _FakeClient(response))
+    monkeypatch.setattr(
+        AI_MODULE.httpx, "Client", lambda timeout: _FakeClient(response)
+    )
 
     analyzer = GeminiAnalyzer(api_key="test-gemini-key")
     result = analyzer._analyze_with_gemini(
