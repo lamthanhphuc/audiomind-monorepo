@@ -3,6 +3,16 @@
 Run this after DNS, Caddy, Compose config rendering, build, startup, and
 container health checks succeed.
 
+## Audit-Only Security Baseline
+
+- Run `bash scripts/deploy/security-check-prod.sh`.
+- Confirm the script reports no `FAIL` items.
+- Review any `WARN` items before moving to later security hardening slices.
+- Treat the script as audit-only: it must not change firewall, Caddy, SSH,
+  Compose, Docker containers, or `infra/.env`.
+- Do not share full rendered Docker Compose config in smoke notes because it may
+  contain secrets.
+
 ## Public Readiness
 
 - `https://app.<domain>/` serves the frontend over HTTPS.
