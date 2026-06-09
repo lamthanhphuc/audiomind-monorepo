@@ -141,9 +141,15 @@ Run the production checks and startup scripts:
 
 ```bash
 bash scripts/deploy/check-prod-config.sh
+bash scripts/deploy/security-check-prod.sh
 bash scripts/deploy/start-prod.sh
 bash scripts/deploy/health-prod.sh
 ```
+
+`security-check-prod.sh` is audit-only. It reports baseline security findings
+without changing UFW, Caddy, SSH, Compose, Docker containers, or `infra/.env`,
+and it avoids printing the full rendered Compose config because that can contain
+secrets.
 
 After the stack is healthy, use
 [monitor-cleanup.md](monitor-cleanup.md) for daily resource checks, Docker log
@@ -186,6 +192,7 @@ Run the production monitor for disk, RAM, Docker usage, container restarts, and
 health status:
 
 ```bash
+bash scripts/deploy/security-check-prod.sh
 bash scripts/deploy/monitor-prod.sh
 ```
 

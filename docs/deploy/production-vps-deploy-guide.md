@@ -83,6 +83,16 @@ Verify in the rendered config:
   `https://meeting.<domain>`, `https://processing.<domain>`, and
   `https://user.<domain>`, not localhost.
 
+Run the audit-only production security baseline check:
+
+```bash
+bash scripts/deploy/security-check-prod.sh
+```
+
+This script reports `PASS`/`WARN`/`FAIL` findings only. It does not change the
+firewall, Caddy, SSH, Compose, Docker containers, or `infra/.env`, and it does
+not print the full rendered Compose config.
+
 ## Caddy
 
 Copy [infra/Caddyfile.example](../../infra/Caddyfile.example) to the host Caddy
@@ -165,6 +175,7 @@ dry-runs, and Docker log rotation guidance.
 Start with:
 
 ```bash
+bash scripts/deploy/security-check-prod.sh
 bash scripts/deploy/monitor-prod.sh
 bash scripts/deploy/cleanup-prod-safe.sh
 ```
