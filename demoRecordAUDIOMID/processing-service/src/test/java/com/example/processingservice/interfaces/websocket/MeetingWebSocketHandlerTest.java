@@ -40,6 +40,7 @@ import org.springframework.web.socket.WebSocketSession;
 
 import com.example.processingservice.client.AIServiceClient;
 import com.example.processingservice.client.AudioStreamResetRequiredException;
+import com.example.processingservice.client.MeetingServiceClient;
 import com.example.processingservice.security.JwtUtil;
 import com.example.processingservice.security.MeetingChannelAuthorizer;
 import com.example.processingservice.service.JobStateStore;
@@ -64,6 +65,9 @@ class MeetingWebSocketHandlerTest {
     private AIServiceClient aiServiceClient;
 
     @Mock
+    private MeetingServiceClient meetingServiceClient;
+
+    @Mock
     private JobStateStore jobStateStore;
 
     @Mock
@@ -84,6 +88,7 @@ class MeetingWebSocketHandlerTest {
                 meetingChannelAuthorizer,
                 realtimeEventSubscriber,
                 aiServiceClient,
+                meetingServiceClient,
                 jobStateStore,
                 objectMapper,
                 jwtUtil);
@@ -473,6 +478,30 @@ class MeetingWebSocketHandlerTest {
 
         verifyNoInteractions(aiServiceClient);
         verifyNoInteractions(realtimeEventSubscriber);
+    }
+
+    @Test
+    void handleBinaryMessage_shouldRejectTerminalMeetingBeforeCallingAiService() throws Exception {
+        attributes.put("meetingId", 346L);
+        attributes.put("authenticated", true);
+        attributes.put("language", "vi");
+        attributes.put("authorization", "Bearer test-token");
+        attributes.put("lastAudioSeq", 15L);
+
+        when(meetingServiceClient.getMeetingById(346L, null, "Bearer test-token"))
+                .thenReturn(Map.of("id", 346L, "status", "completed"));
+
+        handler.handleBinaryMessage(session, new BinaryMessage(ByteBuffer.wrap(new byte[] {1, 2, 3, 4})));
+
+        verify(meetingServiceClient).getMeetingById(346L, null, "Bearer test-token");
+        verifyNoInteractions(aiServiceClient);
+        ArgumentCaptor<Map<String, Object>> eventCaptor = ArgumentCaptor.forClass(Map.class);
+        verify(realtimeEventSubscriber).broadcastToMeeting(eq(346L), eventCaptor.capture());
+        Map<String, Object> event = eventCaptor.getValue();
+        assertEquals("stream.error", event.get("type"));
+        assertEquals(346L, event.get("meetingId"));
+        assertEquals(Boolean.FALSE, event.get("recoverable"));
+        assertEquals(Boolean.TRUE, event.get("resetRequired"));
     }
 
     @Test

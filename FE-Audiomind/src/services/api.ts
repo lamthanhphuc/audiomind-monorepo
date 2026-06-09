@@ -360,6 +360,36 @@ export const createMeeting = async (): Promise<CreateMeetingResponse> => {
   })
 }
 
+export const createRealtimeMeeting = async (
+  title = 'Live recording session',
+  language?: string,
+): Promise<{
+  id: number
+  audioPath: string
+  title: string
+  duplicate?: boolean
+  reused?: boolean
+  existingMeetingId?: number | null
+  status?: string
+  createdAt?: string
+  originalFileName?: string | null
+  ownerUserId?: number | null
+  language?: string | null
+  fileSize?: number | null
+  source?: string
+}> => {
+  const body: Record<string, string> = { title }
+  if (language?.trim()) {
+    body.language = language.trim()
+  }
+
+  return fetchJson(`${MEETING_API_BASE}/meetings/realtime`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
 export const processMeeting = async (meetingId: string) => {
   const body: CreateJobRequest = { meeting_id: meetingId }
   return fetchJson(`${PROCESSING_API_BASE}/api/v1/jobs`, {
