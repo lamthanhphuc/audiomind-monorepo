@@ -27,7 +27,7 @@ import {
     useVoiceActivityDetection,
     type VoiceActivityState,
 } from '../hooks/useVoiceActivityDetection'
-import { ApiError, getAnalysis, getProcessingStatus, getTranscript, reanalyzeMeetingAnalysis, startProcessingByPath, uploadToMeetingApi } from '../services/api'
+import { ApiError, createRealtimeMeeting, getAnalysis, getProcessingStatus, getTranscript, reanalyzeMeetingAnalysis, startProcessingByPath, uploadToMeetingApi } from '../services/api'
 import { clearAccessToken, getAccessToken, getCurrentUserId, login, register, setAccessToken } from '../services/auth'
 import { REALTIME_WS_ENABLED } from '../services/config'
 import type { AiAnalysis } from '../types'
@@ -741,6 +741,17 @@ export const mergeHydratedTranscriptWithLive = (
   return sortTranscriptSegmentsByTimeline(filteredHydration)
 }
 
+export const resolveFreshRealtimeMeetingId = (meeting: { id?: unknown; existingMeetingId?: unknown; duplicate?: unknown }): number => {
+  const normalizedMeetingId = Number(meeting.id)
+  if (!Number.isFinite(normalizedMeetingId) || normalizedMeetingId <= 0) {
+    throw new Error('Meeting ID returned from realtime create is invalid')
+  }
+  if (meeting.duplicate || meeting.existingMeetingId != null) {
+    throw new Error('Realtime meeting creation returned a reused meeting')
+  }
+  return normalizedMeetingId
+}
+
 export default function App() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [selectedUploadLanguage, setSelectedUploadLanguage] = useState<'vi' | 'en' | 'multi'>('vi')
@@ -1413,6 +1424,8 @@ export default function App() {
     realtimeStream.clearQueuedAudio?.()
     realtimeStream.disconnect(activeRealtimeSessionTokenRef.current)
     audioRecorder.abortRecording()
+    realtimeStream.clearTranscripts?.()
+    realtimeStream.clearKeywords?.()
     setLiveMeetingId(null)
     liveMeetingIdRef.current = null
     const sessionId = audioRecorder.recordingSessionId + 1
@@ -1422,9 +1435,8 @@ export default function App() {
     let sessionToken: RealtimeSessionToken | null = null
 
     try {
-      const bootstrapFile = createLiveMeetingBootstrapFile()
-      const meeting = await uploadToMeetingApi('Live recording session', bootstrapFile)
-      const normalizedMeetingId = Number(meeting.id)
+      const meeting = await createRealtimeMeeting('Live recording session', selectedRealtimeLanguage)
+      const normalizedMeetingId = resolveFreshRealtimeMeetingId(meeting)
       if (!Number.isFinite(normalizedMeetingId)) {
         throw new Error('Meeting ID trả về không hợp lệ')
       }
@@ -1771,13 +1783,6 @@ export default function App() {
       setHydratedLiveTranscriptSegments([])
       setLiveLifecycleState('error')
     }
-  }
-
-  const createLiveMeetingBootstrapFile = () => {
-    const bootstrapBytes = new Uint8Array([0])
-    return new File([bootstrapBytes], `live-recording-${Date.now()}.webm`, {
-      type: 'audio/webm; codecs=opus',
-    })
   }
 
   if (!isAuthenticated) {

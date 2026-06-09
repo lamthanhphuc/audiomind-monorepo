@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { deleteMeeting, downloadMeetingReport, downloadMeetingTranscript, getMeetingDetail, getSavedAnalysis, listMeetings, listMeetingsWithParams, reanalyzeMeetingAnalysis, renameMeeting, startProcessingByPath, uploadToMeetingApi } from './api'
+import { createRealtimeMeeting, deleteMeeting, downloadMeetingReport, downloadMeetingTranscript, getMeetingDetail, getSavedAnalysis, listMeetings, listMeetingsWithParams, reanalyzeMeetingAnalysis, renameMeeting, startProcessingByPath, uploadToMeetingApi } from './api'
 
 describe('upload language request wiring', () => {
   const fetchMock = vi.fn()
@@ -31,6 +31,20 @@ describe('upload language request wiring', () => {
     await startProcessingByPath(42, 'multi')
     const [url] = fetchMock.mock.calls[0] as [string]
     expect(url).toContain('/processing/start/42?language=multi')
+  })
+
+  it('creates realtime meetings through the non-upload endpoint', async () => {
+    await createRealtimeMeeting('Live recording session', 'en')
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(url).toContain('/meetings/realtime')
+    expect(url).not.toContain('/meetings/upload')
+    expect(init.method).toBe('POST')
+    expect(new Headers(init.headers).get('Content-Type')).toBe('application/json')
+    expect(JSON.parse(String(init.body))).toEqual({
+      title: 'Live recording session',
+      language: 'en',
+    })
   })
 
   it('loads meeting history from the runtime meeting endpoint', async () => {

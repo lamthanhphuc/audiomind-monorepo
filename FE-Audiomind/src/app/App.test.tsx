@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { DEFAULT_REALTIME_LANGUAGE, REALTIME_LANGUAGE_OPTIONS, getRealtimeConnectionView, getStatusBadgeClass, hydrateLiveTranscriptSegments, isCurrentLiveRecordingSession, isRealtimeLanguageSelectorDisabled, mergeHydratedTranscriptWithLive, pollRealtimeAnalysisAfterStop, resolveVoiceActivityLifecycleUpdate } from './App'
+import { DEFAULT_REALTIME_LANGUAGE, REALTIME_LANGUAGE_OPTIONS, getRealtimeConnectionView, getStatusBadgeClass, hydrateLiveTranscriptSegments, isCurrentLiveRecordingSession, isRealtimeLanguageSelectorDisabled, mergeHydratedTranscriptWithLive, pollRealtimeAnalysisAfterStop, resolveFreshRealtimeMeetingId, resolveVoiceActivityLifecycleUpdate } from './App'
 import { ApiError } from '../services/api'
 import { mergeTranscriptSegmentsForDisplay, normalizePersistedTranscriptSegments, upsertTranscriptSegment } from '../utils/transcript'
 
@@ -209,6 +209,17 @@ describe('hydrateLiveTranscriptSegments', () => {
 
     expect(fetchTranscript).toHaveBeenCalledTimes(4)
     expect(hydratedSegments).toHaveLength(2)
+  })
+})
+
+describe('resolveFreshRealtimeMeetingId', () => {
+  it('accepts a fresh realtime meeting id', () => {
+    expect(resolveFreshRealtimeMeetingId({ id: 25, duplicate: false, existingMeetingId: null })).toBe(25)
+  })
+
+  it('rejects reused duplicate meeting ids for new realtime recording', () => {
+    expect(() => resolveFreshRealtimeMeetingId({ id: 9, duplicate: true, existingMeetingId: 5 }))
+      .toThrow('Realtime meeting creation returned a reused meeting')
   })
 })
 

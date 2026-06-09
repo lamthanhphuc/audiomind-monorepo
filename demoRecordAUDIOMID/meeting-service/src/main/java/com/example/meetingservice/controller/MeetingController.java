@@ -158,6 +158,39 @@ public class MeetingController {
         return buildUploadResponse(saved, false, false, null, saved.getStatus());
     }
 
+    @PostMapping("/realtime")
+    public Map<String, Object> createRealtimeMeeting(
+            @RequestBody(required = false) CreateRealtimeMeetingRequest request,
+            Authentication authentication) {
+        UserPrincipal principal = requirePrincipal(authentication);
+        String title = request == null || request.title() == null || request.title().isBlank()
+                ? "Live recording session"
+                : request.title().trim();
+        String effectiveLanguage = normalizeUploadLanguage(request == null ? null : request.language());
+
+        Meeting saved = meetingService.saveMeeting(
+                title,
+                "",
+                principal.userId(),
+                "realtime",
+                effectiveLanguage,
+                null,
+                0L,
+                MeetingService.MEETING_STATUS_PROCESSING
+        );
+        log.info(
+                "event=REALTIME_MEETING_CREATED traceId={} requestId={} ownerUserId={} meetingId={} source=realtime",
+                MDC.get("traceId"),
+                resolveRequestId(),
+                principal.userId(),
+                saved.getId()
+        );
+
+        Map<String, Object> response = buildUploadResponse(saved, false, false, null, saved.getStatus());
+        response.put("source", "realtime");
+        return response;
+    }
+
     @GetMapping("/{id}")
     public Meeting getById(@PathVariable Long id, Authentication authentication) {
         UserPrincipal principal = requirePrincipal(authentication);
@@ -278,5 +311,8 @@ public class MeetingController {
     }
 
     private record UpdateMeetingStatusRequest(String status) {
+    }
+
+    public record CreateRealtimeMeetingRequest(String title, String language) {
     }
 }

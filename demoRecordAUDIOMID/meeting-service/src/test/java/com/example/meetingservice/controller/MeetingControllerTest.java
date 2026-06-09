@@ -97,4 +97,53 @@ class MeetingControllerTest {
         assertTrue(result.containsKey("id"));
         verify(meetingService, never()).saveMeeting(anyString(), anyString(), anyLong(), anyString(), anyString(), anyString(), anyLong(), anyString());
     }
+
+    @Test
+    void createRealtimeMeeting_shouldAlwaysCreateFreshMeetingWithoutDuplicateLookup() {
+        MeetingService meetingService = mock(MeetingService.class);
+        MeetingController controller = new MeetingController(meetingService);
+        Authentication authentication = mock(Authentication.class);
+        when(authentication.getPrincipal()).thenReturn(new UserPrincipal(9L, "user"));
+        when(meetingService.normalizeMeetingStatus(anyString())).thenAnswer((invocation) -> invocation.getArgument(0));
+
+        Meeting meeting = new Meeting();
+        meeting.setId(88L);
+        meeting.setTitle("Live recording session");
+        meeting.setAudioPath("");
+        meeting.setOriginalFileName("realtime");
+        meeting.setLanguage("en");
+        meeting.setStatus(MeetingService.MEETING_STATUS_PROCESSING);
+
+        when(meetingService.saveMeeting(
+                eq("Live recording session"),
+                eq(""),
+                eq(9L),
+                eq("realtime"),
+                eq("en"),
+                eq((String) null),
+                eq(0L),
+                eq(MeetingService.MEETING_STATUS_PROCESSING)
+        )).thenReturn(meeting);
+
+        Map<String, Object> result = controller.createRealtimeMeeting(
+                new MeetingController.CreateRealtimeMeetingRequest("Live recording session", "en"),
+                authentication
+        );
+
+        assertEquals(88L, result.get("id"));
+        assertEquals(false, result.get("duplicate"));
+        assertEquals(false, result.get("reused"));
+        assertEquals("realtime", result.get("source"));
+        verify(meetingService, never()).findActiveDuplicateForOwner(anyLong(), anyString());
+        verify(meetingService).saveMeeting(
+                eq("Live recording session"),
+                eq(""),
+                eq(9L),
+                eq("realtime"),
+                eq("en"),
+                eq((String) null),
+                eq(0L),
+                eq(MeetingService.MEETING_STATUS_PROCESSING)
+        );
+    }
 }

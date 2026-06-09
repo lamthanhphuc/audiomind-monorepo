@@ -19,6 +19,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.BinaryMessage;
 import org.springframework.web.socket.CloseStatus;
@@ -28,6 +29,7 @@ import org.springframework.web.socket.handler.AbstractWebSocketHandler;
 
 import com.example.processingservice.client.AIServiceClient;
 import com.example.processingservice.client.AudioStreamResetRequiredException;
+import com.example.processingservice.client.MeetingServiceClient;
 import com.example.processingservice.security.JwtUtil;
 import com.example.processingservice.security.MeetingChannelAuthorizer;
 import com.example.processingservice.service.JobStateStore;
@@ -59,6 +61,8 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
     private static final String LAST_LOGGED_SPEAKER_MODE_ATTR = "lastLoggedSpeakerMode";
     private static final String LAST_ACTIVITY_ATTR = "lastActivity";
     private static final String FINALIZED_ATTR = "FINALIZED_ATTR";
+    private static final String MEETING_STATUS_CHECKED_ATTR = "MEETING_STATUS_CHECKED_ATTR";
+    private static final String TERMINAL_MEETING_STATUS_ATTR = "TERMINAL_MEETING_STATUS_ATTR";
     private static final long IDLE_SESSION_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
     static final int MAX_FINALIZED_TRANSCRIPT_CACHE_SIZE = 100;
     private static final long FINALIZED_TRANSCRIPT_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -71,6 +75,7 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
     private final MeetingChannelAuthorizer meetingChannelAuthorizer;
     private final RealtimeEventSubscriber realtimeEventSubscriber;
     private final AIServiceClient aiServiceClient;
+    private final MeetingServiceClient meetingServiceClient;
     private final JobStateStore jobStateStore;
     private final ObjectMapper objectMapper;
     private final JwtUtil jwtUtil;
@@ -78,16 +83,19 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
     @Value("${deepgram.language:vi}")
     private String deepgramLanguage;
 
+    @Autowired
     public MeetingWebSocketHandler(
             MeetingChannelAuthorizer meetingChannelAuthorizer,
             RealtimeEventSubscriber realtimeEventSubscriber,
             AIServiceClient aiServiceClient,
+            MeetingServiceClient meetingServiceClient,
             JobStateStore jobStateStore,
             ObjectMapper objectMapper,
             JwtUtil jwtUtil) {
         this.meetingChannelAuthorizer = meetingChannelAuthorizer;
         this.realtimeEventSubscriber = realtimeEventSubscriber;
         this.aiServiceClient = aiServiceClient;
+        this.meetingServiceClient = meetingServiceClient;
         this.jobStateStore = jobStateStore;
         this.objectMapper = objectMapper;
         this.jwtUtil = jwtUtil;
@@ -281,6 +289,10 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
             return;
         }
         Long lastSeq = getLongAttribute(session, LAST_AUDIO_SEQ_ATTR);
+        String authorization = getStringAttribute(session, "authorization");
+        if (shouldRejectTerminalMeeting(session, meetingId, lastSeq, authorization)) {
+            return;
+        }
         if (Boolean.TRUE.equals(session.getAttributes().get(RESET_REQUIRED_ATTR))) {
             log.info(
                     "PROCESSING_DROP_CHUNK_AFTER_RESET_REQUIRED meetingId={} seq={}",
@@ -302,7 +314,6 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
         Long declaredSize = getLongAttribute(session, LAST_AUDIO_DECLARED_SIZE_ATTR);
         String language = getStringAttribute(session, LANGUAGE_ATTR);
         String speakerMode = getStringAttribute(session, SPEAKER_MODE_ATTR);
-        String authorization = getStringAttribute(session, "authorization");
         Boolean isFinal = getBooleanAttribute(session, LAST_AUDIO_IS_FINAL_ATTR);
         String effectiveSpeakerMode = normalizeRealtimeSpeakerMode(speakerMode);
         log.info(
@@ -509,6 +520,87 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                 // best-effort logging
             }
         }
+    }
+
+    private boolean shouldRejectTerminalMeeting(
+            WebSocketSession session,
+            Long meetingId,
+            Long seq,
+            String authorization) {
+        Object cachedTerminalStatus = session.getAttributes().get(TERMINAL_MEETING_STATUS_ATTR);
+        if (cachedTerminalStatus != null) {
+            rejectTerminalMeeting(session, meetingId, seq, String.valueOf(cachedTerminalStatus));
+            return true;
+        }
+
+        if (Boolean.TRUE.equals(session.getAttributes().get(MEETING_STATUS_CHECKED_ATTR))) {
+            return false;
+        }
+
+        try {
+            Map<String, Object> meeting = meetingServiceClient.getMeetingById(meetingId, null, authorization);
+            String status = normalizeMeetingStatus(getStringValue(meeting.get("status")));
+            if (isTerminalMeetingStatus(status)) {
+                session.getAttributes().put(TERMINAL_MEETING_STATUS_ATTR, status);
+                rejectTerminalMeeting(session, meetingId, seq, status);
+                return true;
+            }
+            session.getAttributes().put(MEETING_STATUS_CHECKED_ATTR, Boolean.TRUE);
+        } catch (Exception ex) {
+            log.warn(
+                    "event=REALTIME_MEETING_STATUS_CHECK_FAILED meetingId={} seq={} errorCode={}",
+                    meetingId,
+                    seq,
+                    safeErrorCode(ex)
+            );
+        }
+
+        return false;
+    }
+
+    private void rejectTerminalMeeting(WebSocketSession session, Long meetingId, Long seq, String status) {
+        log.warn(
+                "event=REALTIME_STREAM_REJECTED_STALE_MEETING meetingId={} seq={} meetingStatus={}",
+                meetingId,
+                seq,
+                status
+        );
+        Map<String, Object> errorEvent = Map.of(
+                "type", "stream.error",
+                "meetingId", meetingId,
+                "message", "Meeting is already finalized; start a new realtime recording.",
+                "recoverable", false,
+                "resetRequired", true
+        );
+        try {
+            realtimeEventSubscriber.broadcastToMeeting(meetingId, errorEvent);
+        } catch (Exception e) {
+            log.warn(
+                    "event=REALTIME_ANALYSIS_FAILED meetingId={} source=stale_meeting_reject errorCode={}",
+                    meetingId,
+                    safeErrorCode(e)
+            );
+        }
+        try {
+            session.close(CloseStatus.POLICY_VIOLATION.withReason("Meeting already finalized"));
+        } catch (Exception e) {
+            log.debug("Unable to close stale realtime session meetingId={} errorCode={}", meetingId, safeErrorCode(e));
+        }
+    }
+
+    private boolean isTerminalMeetingStatus(String status) {
+        return "completed".equals(status)
+                || "failed".equals(status)
+                || "finalized".equals(status)
+                || "success".equals(status)
+                || "succeeded".equals(status);
+    }
+
+    private String normalizeMeetingStatus(String status) {
+        if (status == null) {
+            return "";
+        }
+        return status.trim().toLowerCase(Locale.ROOT);
     }
 
     private String first16Hex(byte[] audioBytes) {
