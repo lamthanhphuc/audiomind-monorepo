@@ -121,7 +121,9 @@ def _analysis_schema_version(analyzer: Any, payload: dict[str, Any]) -> str:
 
 def _analysis_feature_set(payload: dict[str, Any]) -> str | None:
     return (
-        _clean_text(payload.get("analysisFeatureSet") or payload.get("analysis_feature_set"))
+        _clean_text(
+            payload.get("analysisFeatureSet") or payload.get("analysis_feature_set")
+        )
         or DEFAULT_ANALYSIS_FEATURE_SET
     )
 
@@ -322,7 +324,11 @@ def find_completed_analysis_run_for_identity(
         .all()
     )
     return next(
-        (run for run in candidates if _run_analysis_feature_set(run) == identity.analysis_feature_set),
+        (
+            run
+            for run in candidates
+            if _run_analysis_feature_set(run) == identity.analysis_feature_set
+        ),
         None,
     )
 
@@ -369,7 +375,11 @@ def find_latest_analysis_run_for_identity(
         .all()
     )
     return next(
-        (run for run in candidates if _run_analysis_feature_set(run) == identity.analysis_feature_set),
+        (
+            run
+            for run in candidates
+            if _run_analysis_feature_set(run) == identity.analysis_feature_set
+        ),
         None,
     )
 
@@ -389,7 +399,11 @@ def find_in_progress_analysis_run_for_identity(
         .all()
     )
     return next(
-        (run for run in candidates if _run_analysis_feature_set(run) == identity.analysis_feature_set),
+        (
+            run
+            for run in candidates
+            if _run_analysis_feature_set(run) == identity.analysis_feature_set
+        ),
         None,
     )
 
@@ -668,11 +682,20 @@ def analysis_run_response_metadata(
 def _run_analysis_feature_set(run: MeetingAnalysisRun | None) -> str | None:
     if run is None:
         return None
-    payload = run.analysis_payload_json if isinstance(run.analysis_payload_json, dict) else {}
-    return _clean_text(payload.get("analysisFeatureSet") or payload.get("analysis_feature_set")) or None
+    payload = (
+        run.analysis_payload_json if isinstance(run.analysis_payload_json, dict) else {}
+    )
+    return (
+        _clean_text(
+            payload.get("analysisFeatureSet") or payload.get("analysis_feature_set")
+        )
+        or None
+    )
 
 
-def _analysis_feature_set_payload(identity: AnalysisCacheIdentity) -> dict[str, Any] | None:
+def _analysis_feature_set_payload(
+    identity: AnalysisCacheIdentity,
+) -> dict[str, Any] | None:
     feature_set = _clean_text(identity.analysis_feature_set)
     if not feature_set:
         return None

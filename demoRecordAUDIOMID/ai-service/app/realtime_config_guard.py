@@ -57,7 +57,9 @@ class GuardReport:
         return self.status == "error"
 
     def add(self, check: str, severity: GuardSeverity, message: str) -> None:
-        self.findings.append(GuardFinding(check=check, severity=severity, message=message))
+        self.findings.append(
+            GuardFinding(check=check, severity=severity, message=message)
+        )
 
 
 def _env_truthy(name: str, default: str = "") -> bool:
@@ -141,7 +143,9 @@ def evaluate_realtime_config(settings: Any) -> GuardReport:
             )
 
     if not report.findings:
-        report.add("realtime_config", GuardSeverity.OK, "all realtime smoke checks passed")
+        report.add(
+            "realtime_config", GuardSeverity.OK, "all realtime smoke checks passed"
+        )
 
     return report
 

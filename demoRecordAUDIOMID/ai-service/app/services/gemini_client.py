@@ -138,7 +138,9 @@ class GeminiClient:
                     "Content-Type": "application/json",
                     "x-goog-api-key": entry.secret,
                 }
-                logger.info("GEMINI_KEY_SELECTED alias={} attempt={}", entry.alias, attempt)
+                logger.info(
+                    "GEMINI_KEY_SELECTED alias={} attempt={}", entry.alias, attempt
+                )
                 try:
                     response = client.post(
                         url,

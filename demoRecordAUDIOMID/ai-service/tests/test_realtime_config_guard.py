@@ -24,7 +24,9 @@ def _settings(**overrides: object) -> SimpleNamespace:
     return SimpleNamespace(**defaults)
 
 
-def test_guard_ok_for_default_realtime_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_guard_ok_for_default_realtime_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("STT_FINAL_RECV_DRAIN_TIMEOUT_SECONDS", "2.0")
     monkeypatch.setenv("REALTIME_ASYNC_AUDIO_QUEUE_ENABLED", "true")
 
@@ -72,7 +74,9 @@ def test_guard_warns_when_async_queue_disabled(monkeypatch: pytest.MonkeyPatch) 
     report = evaluate_realtime_config(_settings())
 
     assert report.status == "warn"
-    assert any(item.check == "realtime_async_audio_queue_enabled" for item in report.findings)
+    assert any(
+        item.check == "realtime_async_audio_queue_enabled" for item in report.findings
+    )
 
 
 def test_guard_warns_on_forced_webm_param_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -83,7 +87,9 @@ def test_guard_warns_on_forced_webm_param_env(monkeypatch: pytest.MonkeyPatch) -
     assert any(item.check == "deepgram_forced_webm_params" for item in report.findings)
 
 
-def test_guard_warns_on_misnamed_final_drain_env(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_guard_warns_on_misnamed_final_drain_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.delenv("STT_FINAL_RECV_DRAIN_TIMEOUT_SECONDS", raising=False)
     monkeypatch.setenv("STT_FINAL_DRAIN_TIMEOUT_SECONDS", "2.0")
 
@@ -117,4 +123,6 @@ def test_log_realtime_config_guard_does_not_print_secrets(
 
     assert any("REALTIME_CONFIG_GUARD status=error" in line for line in logged)
     assert all("dg-test" not in line for line in logged)
-    assert all("api_key" not in line.lower() or "api_key_exists" in line for line in logged)
+    assert all(
+        "api_key" not in line.lower() or "api_key_exists" in line for line in logged
+    )

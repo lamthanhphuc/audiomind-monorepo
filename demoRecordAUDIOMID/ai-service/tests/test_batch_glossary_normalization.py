@@ -14,7 +14,9 @@ def _load_processing_pipeline(monkeypatch):
 
     audio_processor_module = types.ModuleType("app.services.audio_processor")
     audio_processor_module.AudioProcessor = object
-    monkeypatch.setitem(sys.modules, "app.services.audio_processor", audio_processor_module)
+    monkeypatch.setitem(
+        sys.modules, "app.services.audio_processor", audio_processor_module
+    )
 
     pipeline_module = importlib.import_module("app.pipeline")
     return pipeline_module.ProcessingPipeline, pipeline_module

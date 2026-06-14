@@ -5,7 +5,10 @@ from pathlib import Path
 
 import pytest
 
-from app.services.analysis_errors import AnalysisRateLimitError, AnalysisUnavailableError
+from app.services.analysis_errors import (
+    AnalysisRateLimitError,
+    AnalysisUnavailableError,
+)
 
 MODULE_PATH = (
     Path(__file__).resolve().parents[1] / "app" / "services" / "gemini_analyzer.py"
@@ -66,6 +69,7 @@ class _FakeClient:
             return response
         return self.responses[-1]
 
+
 def test_gemini_prepare_storage_does_not_fabricate_action_items_when_missing():
     analyzer = GeminiAnalyzer(api_key="test-gemini-key")
 
@@ -87,6 +91,7 @@ def test_gemini_prepare_storage_does_not_fabricate_action_items_when_missing():
     assert prepared["action_items"] == []
     assert prepared["businessActionItems"] == []
     assert prepared["actionItems"] == []
+
 
 def _success_response(summary: str = "Safe") -> _FakeResponse:
     return _FakeResponse(
@@ -783,9 +788,7 @@ def test_gemini_analyzer_does_not_log_action_item_payload_values(monkeypatch):
                                                 "status": "open",
                                                 "evidence": "EVIDENCE SECRET",
                                                 "evidenceQuote": "QUOTE SECRET",
-                                                "evidenceKeywords": [
-                                                    "KEYWORD SECRET"
-                                                ],
+                                                "evidenceKeywords": ["KEYWORD SECRET"],
                                             }
                                         ],
                                         "domainMode": "business",
@@ -1342,9 +1345,7 @@ def test_gemini_analyzer_logs_safe_http_error_preview(monkeypatch):
     analyzer.analyze_meeting(transcript)
 
     http_error_logs = [
-        message
-        for message in captured_messages
-        if "GEMINI_CALL_FAILED" in message
+        message for message in captured_messages if "GEMINI_CALL_FAILED" in message
     ]
     assert http_error_logs
     assert "super-secret-key" not in "".join(captured_messages)

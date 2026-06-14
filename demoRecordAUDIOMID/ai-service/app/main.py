@@ -24,7 +24,10 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 from app.config import get_runtime_device, get_settings
-from app.realtime_config_guard import evaluate_realtime_config, log_realtime_config_guard
+from app.realtime_config_guard import (
+    evaluate_realtime_config,
+    log_realtime_config_guard,
+)
 from app.database import (
     Base,
     engine,
@@ -2885,7 +2888,10 @@ async def analyze_realtime_transcript(
         schema_version = _normalize_analysis_version(
             request.schema_version, AIAnalyzer.SCHEMA_VERSION
         )
-        if prompt_version == "gemini-business-v1" or schema_version == "gemini-business-v1":
+        if (
+            prompt_version == "gemini-business-v1"
+            or schema_version == "gemini-business-v1"
+        ):
             logger.info(
                 "event=ANALYSIS_VERSION_DOWNGRADE_BLOCKED meetingId={} source={} requestedPromptVersion={} requestedSchemaVersion={} selectedPromptVersion={} selectedSchemaVersion={}",
                 meeting_id,
@@ -2905,9 +2911,11 @@ async def analyze_realtime_transcript(
             requested_schema_version,
             prompt_version,
             schema_version,
-            "canonical_default"
-            if not requested_prompt_version and not requested_schema_version
-            else "request_allowed",
+            (
+                "canonical_default"
+                if not requested_prompt_version and not requested_schema_version
+                else "request_allowed"
+            ),
         )
         analysis_feature_set = _normalize_analysis_feature_set(
             request.analysis_feature_set
@@ -3001,7 +3009,10 @@ async def analyze_realtime_transcript(
                     progress=100,
                 )
                 analysis_cache_key = _analysis_cache_key(
-                    transcript_hash, prompt_version, schema_version, analysis_feature_set
+                    transcript_hash,
+                    prompt_version,
+                    schema_version,
+                    analysis_feature_set,
                 )
                 with _realtime_analysis_guard_lock:
                     _realtime_analysis_completed_hash[meeting_id] = (
@@ -3317,9 +3328,14 @@ async def analyze_realtime_transcript(
                 getattr(analysis_error, "retry_after_seconds", None)
                 or _REALTIME_ANALYSIS_FAILURE_COOLDOWN_SECONDS
             )
-            error_code = str(
-                getattr(analysis_error, "error_code", None) or "GEMINI_RATE_LIMITED"
-            ).strip().upper() or "GEMINI_RATE_LIMITED"
+            error_code = (
+                str(
+                    getattr(analysis_error, "error_code", None) or "GEMINI_RATE_LIMITED"
+                )
+                .strip()
+                .upper()
+                or "GEMINI_RATE_LIMITED"
+            )
             mark_analysis_run_failed(
                 run=active_analysis_run,
                 status=ANALYSIS_STATUS_RATE_LIMITED,

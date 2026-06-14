@@ -6,7 +6,6 @@ from dataclasses import dataclass, field
 from math import ceil
 from typing import Callable
 
-
 ALIAS_PATTERN = re.compile(r"^[a-z0-9_-]+$")
 
 
@@ -196,4 +195,3 @@ class GeminiKeyManager:
             state.last_error_code = str(reason or "unknown")
             state.last_retry_after_seconds = int(ceil(cooldown_seconds))
             state.consecutive_failures += 1
-

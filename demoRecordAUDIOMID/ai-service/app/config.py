@@ -221,9 +221,7 @@ class Settings(BaseSettings):
         self.gemini_backoff_base_ms = max(
             0.0, float(self.gemini_backoff_base_ms or 0.0)
         )
-        self.gemini_backoff_max_ms = max(
-            0.0, float(self.gemini_backoff_max_ms or 0.0)
-        )
+        self.gemini_backoff_max_ms = max(0.0, float(self.gemini_backoff_max_ms or 0.0))
         self.gemini_fail_fast_seconds = max(
             0.0, float(self.gemini_fail_fast_seconds or 0.0)
         )

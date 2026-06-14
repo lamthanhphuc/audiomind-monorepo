@@ -154,6 +154,8 @@ def test_selection_is_thread_safe():
     )
 
     with ThreadPoolExecutor(max_workers=8) as executor:
-        aliases = list(executor.map(lambda _: manager.select_key().entry.alias, range(60)))
+        aliases = list(
+            executor.map(lambda _: manager.select_key().entry.alias, range(60))
+        )
 
     assert set(aliases) == {"primary", "backup1", "backup2"}
