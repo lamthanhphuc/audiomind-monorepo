@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+from app.services.analysis_errors import AnalysisRateLimitError, AnalysisUnavailableError
+
 MODULE_PATH = (
     Path(__file__).resolve().parents[1] / "app" / "services" / "gemini_analyzer.py"
 )
@@ -13,6 +15,8 @@ MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
 GeminiAnalyzer = MODULE.GeminiAnalyzer
 AI_MODULE = importlib.import_module("app.services.ai_analyzer")
+GEMINI_CLIENT_MODULE = importlib.import_module("app.services.gemini_client")
+KEY_MANAGER_MODULE = importlib.import_module("app.services.gemini_key_manager")
 
 
 class _FakeResponse:
@@ -62,6 +66,27 @@ class _FakeClient:
             return response
         return self.responses[-1]
 
+def test_gemini_prepare_storage_does_not_fabricate_action_items_when_missing():
+    analyzer = GeminiAnalyzer(api_key="test-gemini-key")
+
+    prepared = analyzer.prepare_analysis_for_storage(
+        transcript="Speaker 1: cần cập nhật API gateway trong tuần này",
+        data={
+            "summary": "Summary only",
+            "keywords": ["API"],
+            "technicalTerms": [],
+            "painPoints": [],
+            "action_items": [],
+            "businessActionItems": [],
+            "actionItems": [],
+            "promptVersion": "gemini-business-v2",
+            "schemaVersion": "gemini-business-v2",
+        },
+    )
+
+    assert prepared["action_items"] == []
+    assert prepared["businessActionItems"] == []
+    assert prepared["actionItems"] == []
 
 def _success_response(summary: str = "Safe") -> _FakeResponse:
     return _FakeResponse(
@@ -103,6 +128,221 @@ def _success_response(summary: str = "Safe") -> _FakeResponse:
     )
 
 
+def _analyzer_with_multi_key(**overrides):
+    defaults = {
+        "api_key": "key-a",
+        "gemini_api_keys": "primary:key-a,backup1:key-b,backup2:key-c",
+        "gemini_multi_key_enabled": True,
+        "gemini_max_attempts": 3,
+        "gemini_key_cooldown_seconds": 30,
+        "gemini_key_hard_cooldown_seconds": 300,
+        "gemini_backoff_base_ms": 0,
+        "gemini_backoff_max_ms": 0,
+        "gemini_backoff_jitter": False,
+        "gemini_fail_fast_seconds": 30,
+    }
+    defaults.update(overrides)
+    return GeminiAnalyzer(**defaults)
+
+
+def _request_keys(fake_client: _FakeClient) -> list[str]:
+    return [kwargs["headers"]["x-goog-api-key"] for _, kwargs in fake_client.calls]
+
+
+class _CaptureLogger:
+    def __init__(self):
+        self.messages = []
+
+    def info(self, message, *args, **kwargs):
+        self._capture(message, *args)
+
+    def warning(self, message, *args, **kwargs):
+        self._capture(message, *args)
+
+    def error(self, message, *args, **kwargs):
+        self._capture(message, *args)
+
+    def _capture(self, message, *args):
+        rendered = str(message)
+        if args:
+            try:
+                rendered = rendered.format(*args)
+            except Exception:
+                rendered = f"{rendered} {' '.join(str(arg) for arg in args)}"
+        self.messages.append(rendered)
+
+
+def test_gemini_multi_key_rotates_after_429_and_succeeds(monkeypatch):
+    fake_client = _FakeClient(
+        [
+            _FakeResponse(
+                429,
+                text='{"error":{"status":"RESOURCE_EXHAUSTED","message":"quota"}}',
+                headers={"Retry-After": "7"},
+            ),
+            _success_response("Recovered"),
+        ]
+    )
+    monkeypatch.setattr(AI_MODULE.httpx, "Client", lambda timeout: fake_client)
+
+    analyzer = _analyzer_with_multi_key()
+    result = analyzer._analyze_with_gemini("Speaker 1: safe transcript")
+
+    assert result["summary"] == "Recovered"
+    assert _request_keys(fake_client) == ["key-a", "key-b"]
+
+
+def test_gemini_multi_key_all_429_raises_rate_limit_with_retry_after(monkeypatch):
+    fake_client = _FakeClient(
+        [
+            _FakeResponse(
+                429,
+                text='{"error":{"status":"RESOURCE_EXHAUSTED","message":"quota"}}',
+                headers={"Retry-After": "9"},
+            ),
+            _FakeResponse(
+                429,
+                text='{"error":{"status":"RESOURCE_EXHAUSTED","message":"quota"}}',
+                headers={"Retry-After": "5"},
+            ),
+        ]
+    )
+    monkeypatch.setattr(AI_MODULE.httpx, "Client", lambda timeout: fake_client)
+
+    analyzer = _analyzer_with_multi_key(
+        gemini_api_keys="primary:key-a,backup1:key-b",
+        gemini_max_attempts=4,
+    )
+
+    with pytest.raises(AnalysisRateLimitError) as exc_info:
+        analyzer._analyze_with_gemini("Speaker 1: safe transcript")
+
+    assert exc_info.value.error_code == "GEMINI_RATE_LIMITED"
+    assert exc_info.value.retry_after_seconds == 5
+    assert _request_keys(fake_client) == ["key-a", "key-b"]
+
+
+def test_gemini_multi_key_invalid_key_then_valid_key_succeeds(monkeypatch):
+    fake_client = _FakeClient(
+        [
+            _FakeResponse(401, text='{"error":{"status":"UNAUTHENTICATED"}}'),
+            _success_response("Backup"),
+        ]
+    )
+    monkeypatch.setattr(AI_MODULE.httpx, "Client", lambda timeout: fake_client)
+
+    analyzer = _analyzer_with_multi_key()
+    result = analyzer._analyze_with_gemini("Speaker 1: safe transcript")
+
+    assert result["summary"] == "Backup"
+    assert _request_keys(fake_client) == ["key-a", "key-b"]
+
+
+def test_gemini_multi_key_total_attempt_budget_is_not_per_key(monkeypatch):
+    fake_client = _FakeClient(
+        [
+            _FakeResponse(503, text='{"error":{"status":"UNAVAILABLE"}}'),
+            _FakeResponse(503, text='{"error":{"status":"UNAVAILABLE"}}'),
+            _success_response("Should not be reached"),
+        ]
+    )
+    monkeypatch.setattr(AI_MODULE.httpx, "Client", lambda timeout: fake_client)
+
+    analyzer = _analyzer_with_multi_key(gemini_max_attempts=2)
+
+    with pytest.raises(AnalysisUnavailableError):
+        analyzer._analyze_with_gemini("Speaker 1: safe transcript")
+
+    assert len(fake_client.calls) == 2
+    assert _request_keys(fake_client) == ["key-a", "key-b"]
+
+
+def test_gemini_client_caps_http_timeout_to_fail_fast_remaining_budget():
+    fake_client = _FakeClient([_success_response("Deadline capped")])
+    key_manager = KEY_MANAGER_MODULE.GeminiKeyManager.from_config(
+        gemini_api_key="",
+        gemini_api_keys="primary:key-a",
+        multi_key_enabled=True,
+        clock=lambda: 100.0,
+    )
+    client = GEMINI_CLIENT_MODULE.GeminiClient(
+        key_manager,
+        max_attempts=2,
+        backoff_base_ms=0,
+        fail_fast_seconds=7,
+        http_client_factory=lambda timeout: fake_client,
+        clock=lambda: 100.0,
+        sleep=lambda seconds: None,
+        random_float=lambda low, high: high,
+    )
+
+    response = client.post_json(
+        url="https://example.test/gemini",
+        payload={"contents": []},
+        timeout_seconds=300,
+    )
+
+    assert response.status_code == 200
+    assert fake_client.calls[0][1]["timeout"] == pytest.approx(7.0)
+
+
+def test_gemini_client_stops_before_next_attempt_when_fail_fast_deadline_reached():
+    fake_client = _FakeClient(
+        [
+            _FakeResponse(503, text='{"error":{"status":"UNAVAILABLE"}}'),
+            _success_response("Should not be reached"),
+        ]
+    )
+    now = {"value": 0.0}
+    key_manager = KEY_MANAGER_MODULE.GeminiKeyManager.from_config(
+        gemini_api_key="",
+        gemini_api_keys="primary:key-a,backup:key-b",
+        multi_key_enabled=True,
+        clock=lambda: now["value"],
+    )
+    client = GEMINI_CLIENT_MODULE.GeminiClient(
+        key_manager,
+        max_attempts=4,
+        backoff_base_ms=2000,
+        backoff_max_ms=2000,
+        backoff_jitter=False,
+        fail_fast_seconds=1,
+        http_client_factory=lambda timeout: fake_client,
+        clock=lambda: now["value"],
+        sleep=lambda seconds: now.__setitem__("value", now["value"] + seconds),
+        random_float=lambda low, high: high,
+    )
+
+    with pytest.raises(AnalysisUnavailableError) as exc_info:
+        client.post_json(
+            url="https://example.test/gemini",
+            payload={"contents": []},
+            timeout_seconds=300,
+        )
+
+    assert exc_info.value.error_code == "GEMINI_UNAVAILABLE"
+    assert len(fake_client.calls) == 1
+    assert _request_keys(fake_client) == ["key-a"]
+
+
+def test_gemini_multi_key_timeout_then_success(monkeypatch):
+    class _TimeoutThenSuccessClient(_FakeClient):
+        def post(self, *args, **kwargs):
+            self.calls.append((args, kwargs))
+            if len(self.calls) == 1:
+                raise AI_MODULE.httpx.TimeoutException("timed out")
+            return _success_response("After timeout")
+
+    fake_client = _TimeoutThenSuccessClient([])
+    monkeypatch.setattr(AI_MODULE.httpx, "Client", lambda timeout: fake_client)
+
+    analyzer = _analyzer_with_multi_key()
+    result = analyzer._analyze_with_gemini("Speaker 1: safe transcript")
+
+    assert result["summary"] == "After timeout"
+    assert _request_keys(fake_client) == ["key-a", "key-b"]
+
+
 def test_gemini_analyzer_parses_valid_json(monkeypatch):
     response = _FakeResponse(
         200,
@@ -130,7 +370,19 @@ def test_gemini_analyzer_parses_valid_json(monkeypatch):
                                                 "severity": "high",
                                             }
                                         ],
-                                        "actionItems": ["Cap nhat env"],
+                                        "action_items": [
+                                            {
+                                                "task": "Cap nhat env",
+                                                "owner": "Team DevOps",
+                                                "deadline": "2026-06-20",
+                                                "priority": "high",
+                                                "status": "in_progress",
+                                                "evidenceKeywords": [
+                                                    "Gemini",
+                                                    "API key",
+                                                ],
+                                            }
+                                        ],
                                         "domainMode": "it",
                                     }
                                 )
@@ -144,7 +396,12 @@ def test_gemini_analyzer_parses_valid_json(monkeypatch):
     fake_client = _FakeClient([response])
     monkeypatch.setattr(MODULE.httpx, "Client", lambda timeout: fake_client)
 
-    analyzer = GeminiAnalyzer(api_key="test-gemini-key")
+    analyzer = GeminiAnalyzer(
+        api_key="test-gemini-key",
+        gemini_backoff_base_ms=2000,
+        gemini_backoff_max_ms=4000,
+        gemini_backoff_jitter=False,
+    )
     result = analyzer.analyze_meeting("hello world")
 
     assert result["summary"] == "Tong hop cuoc hop"
@@ -152,18 +409,37 @@ def test_gemini_analyzer_parses_valid_json(monkeypatch):
     assert result["technicalTerms"][0]["term"] == "API"
     assert result["painPoints"][0]["severity"] == "high"
     assert result["actionItems"] == ["Cap nhat env"]
+    assert result["action_items"] == result["businessActionItems"]
+    assert result["businessActionItems"][0] == {
+        "task": "Cap nhat env",
+        "owner": "Team DevOps",
+        "dueDate": "2026-06-20",
+        "deadline": "2026-06-20",
+        "priority": "high",
+        "status": "in_progress",
+        "evidence": None,
+        "evidenceQuote": None,
+        "evidenceKeywords": ["Gemini", "API key"],
+    }
     assert result["domainMode"] == "it"
     assert result["key_points"] == ["deployment"]
     assert result["risks_blockers"] == ["Thieu API key"]
     assert result["promptVersion"] == AI_MODULE.AIAnalyzer.PROMPT_VERSION
     assert result["schemaVersion"] == AI_MODULE.AIAnalyzer.SCHEMA_VERSION
+    assert result["promptVersion"] == "gemini-business-v2"
+    assert result["schemaVersion"] == "gemini-business-v2"
 
 
 def test_gemini_analyzer_uses_api_key_header(monkeypatch):
     fake_client = _FakeClient([_success_response()])
     monkeypatch.setattr(AI_MODULE.httpx, "Client", lambda timeout: fake_client)
 
-    analyzer = GeminiAnalyzer(api_key="test-gemini-key")
+    analyzer = GeminiAnalyzer(
+        api_key="test-gemini-key",
+        gemini_backoff_base_ms=2000,
+        gemini_backoff_max_ms=4000,
+        gemini_backoff_jitter=False,
+    )
     analyzer.analyze_meeting("hello world")
 
     assert len(fake_client.calls) == 1
@@ -188,7 +464,12 @@ def test_gemini_analyzer_retries_503_then_succeeds(monkeypatch):
         AI_MODULE.time, "sleep", lambda seconds: sleep_calls.append(seconds)
     )
 
-    analyzer = GeminiAnalyzer(api_key="test-gemini-key")
+    analyzer = GeminiAnalyzer(
+        api_key="test-gemini-key",
+        gemini_backoff_base_ms=2000,
+        gemini_backoff_max_ms=4000,
+        gemini_backoff_jitter=False,
+    )
     result = analyzer.analyze_meeting("hello world")
 
     assert result["summary"] == "Recovered after retry"
@@ -211,7 +492,12 @@ def test_gemini_analyzer_retries_503_three_times_then_fails(monkeypatch):
         AI_MODULE.time, "sleep", lambda seconds: sleep_calls.append(seconds)
     )
 
-    analyzer = GeminiAnalyzer(api_key="test-gemini-key")
+    analyzer = GeminiAnalyzer(
+        api_key="test-gemini-key",
+        gemini_backoff_base_ms=2000,
+        gemini_backoff_max_ms=4000,
+        gemini_backoff_jitter=False,
+    )
 
     result = analyzer.analyze_meeting("hello world")
 
@@ -242,12 +528,19 @@ def test_gemini_analyzer_retries_429_with_retry_after_then_succeeds(monkeypatch)
         AI_MODULE.time, "sleep", lambda seconds: sleep_calls.append(seconds)
     )
 
-    analyzer = GeminiAnalyzer(api_key="test-gemini-key")
+    analyzer = GeminiAnalyzer(
+        api_key="key-a",
+        gemini_api_keys="primary:key-a,backup1:key-b",
+        gemini_multi_key_enabled=True,
+        gemini_backoff_base_ms=0,
+        gemini_backoff_jitter=False,
+    )
     result = analyzer.analyze_meeting("hello world")
 
     assert result["summary"] == "Recovered from rate limit"
     assert len(fake_client.calls) == 2
-    assert sleep_calls == [30]
+    assert sleep_calls == []
+    assert _request_keys(fake_client) == ["key-a", "key-b"]
 
 
 def test_gemini_analyzer_retries_429_without_retry_after_then_succeeds(monkeypatch):
@@ -266,12 +559,20 @@ def test_gemini_analyzer_retries_429_without_retry_after_then_succeeds(monkeypat
         AI_MODULE.time, "sleep", lambda seconds: sleep_calls.append(seconds)
     )
 
-    analyzer = GeminiAnalyzer(api_key="test-gemini-key", analysis_retry_max_attempts=4)
+    analyzer = GeminiAnalyzer(
+        api_key="key-a",
+        gemini_api_keys="primary:key-a,backup1:key-b,backup2:key-c,backup3:key-d",
+        gemini_multi_key_enabled=True,
+        gemini_max_attempts=4,
+        gemini_backoff_base_ms=0,
+        gemini_backoff_jitter=False,
+    )
     result = analyzer.analyze_meeting("hello world")
 
     assert result["summary"] == "Recovered after longer backoff"
     assert len(fake_client.calls) == 4
-    assert sleep_calls == [30, 60, 90]
+    assert sleep_calls == []
+    assert _request_keys(fake_client) == ["key-a", "key-b", "key-c", "key-d"]
 
 
 def test_gemini_analyzer_quota_429_fails_fast_by_default(monkeypatch):
@@ -291,7 +592,11 @@ def test_gemini_analyzer_quota_429_fails_fast_by_default(monkeypatch):
         AI_MODULE.time, "sleep", lambda seconds: sleep_calls.append(seconds)
     )
 
-    analyzer = GeminiAnalyzer(api_key="test-gemini-key")
+    analyzer = GeminiAnalyzer(
+        api_key="test-gemini-key",
+        gemini_backoff_base_ms=0,
+        gemini_backoff_jitter=False,
+    )
     result = analyzer.analyze_meeting("hello world")
 
     assert len(fake_client.calls) == 1
@@ -337,6 +642,205 @@ def test_gemini_analyzer_fills_missing_fields(monkeypatch):
     assert result["domainMode"] == "it"
     assert result["promptVersion"] == AI_MODULE.AIAnalyzer.PROMPT_VERSION
     assert result["schemaVersion"] == AI_MODULE.AIAnalyzer.SCHEMA_VERSION
+
+
+def test_gemini_analyzer_normalizes_legacy_action_item_strings(monkeypatch):
+    response = _FakeResponse(
+        200,
+        {
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [
+                            {
+                                "text": json.dumps(
+                                    {
+                                        "summary": "Legacy action item shape",
+                                        "keywords": [],
+                                        "technicalTerms": [],
+                                        "painPoints": [],
+                                        "actionItems": ["Cap nhat backlog"],
+                                        "domainMode": "business",
+                                    }
+                                )
+                            }
+                        ]
+                    }
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        AI_MODULE.httpx, "Client", lambda timeout: _FakeClient(response)
+    )
+
+    analyzer = GeminiAnalyzer(api_key="test-gemini-key")
+    result = analyzer.analyze_meeting("Speaker 1: cap nhat backlog")
+
+    assert result["actionItems"] == ["Cap nhat backlog"]
+    assert result["action_items"] == result["businessActionItems"]
+    assert result["action_items"][0] == {
+        "task": "Cap nhat backlog",
+        "owner": None,
+        "dueDate": None,
+        "deadline": None,
+        "priority": None,
+        "status": "open",
+        "evidence": None,
+        "evidenceQuote": None,
+        "evidenceKeywords": [],
+    }
+
+
+def test_gemini_analyzer_normalizes_action_item_status_priority_and_legacy_evidence(
+    monkeypatch,
+):
+    response = _FakeResponse(
+        200,
+        {
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [
+                            {
+                                "text": json.dumps(
+                                    {
+                                        "summary": "Status mapping",
+                                        "keywords": [],
+                                        "technicalTerms": [],
+                                        "painPoints": [],
+                                        "action_items": [
+                                            {
+                                                "task": "Pending task",
+                                                "status": "pending",
+                                            },
+                                            {
+                                                "task": "Completed task",
+                                                "status": "completed",
+                                                "priority": "urgent",
+                                            },
+                                            {
+                                                "task": "Cancelled task",
+                                                "status": "cancelled",
+                                                "evidenceQuote": "legacy quote",
+                                                "evidence": "legacy note",
+                                            },
+                                            {
+                                                "task": "Unknown task",
+                                                "status": "mystery",
+                                            },
+                                        ],
+                                        "domainMode": "business",
+                                    }
+                                )
+                            }
+                        ]
+                    }
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        AI_MODULE.httpx, "Client", lambda timeout: _FakeClient(response)
+    )
+
+    analyzer = GeminiAnalyzer(api_key="test-gemini-key")
+    result = analyzer.analyze_meeting("Speaker 1: status mapping")
+
+    assert [item["status"] for item in result["action_items"]] == [
+        "open",
+        "done",
+        "blocked",
+        "open",
+    ]
+    assert result["action_items"][1]["priority"] is None
+    assert result["action_items"][2]["evidenceQuote"] == "legacy quote"
+    assert result["action_items"][2]["evidence"] == "legacy note"
+
+
+def test_gemini_analyzer_does_not_log_action_item_payload_values(monkeypatch):
+    response = _FakeResponse(
+        200,
+        {
+            "candidates": [
+                {
+                    "finishReason": "STOP",
+                    "content": {
+                        "parts": [
+                            {
+                                "text": json.dumps(
+                                    {
+                                        "summary": "Safe summary",
+                                        "keywords": [],
+                                        "technicalTerms": [],
+                                        "painPoints": [],
+                                        "action_items": [
+                                            {
+                                                "task": "FULL TASK TEXT SECRET",
+                                                "owner": "OWNER SECRET",
+                                                "deadline": "DEADLINE SECRET",
+                                                "priority": "high",
+                                                "status": "open",
+                                                "evidence": "EVIDENCE SECRET",
+                                                "evidenceQuote": "QUOTE SECRET",
+                                                "evidenceKeywords": [
+                                                    "KEYWORD SECRET"
+                                                ],
+                                            }
+                                        ],
+                                        "domainMode": "business",
+                                    }
+                                )
+                            }
+                        ]
+                    },
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        AI_MODULE.httpx, "Client", lambda timeout: _FakeClient(response)
+    )
+    capture_logger = _CaptureLogger()
+    monkeypatch.setattr(AI_MODULE, "logger", capture_logger)
+
+    analyzer = GeminiAnalyzer(api_key="test-gemini-key")
+    result = analyzer.analyze_meeting("Speaker 1: sanitized logging")
+
+    assert result["actionItems"] == ["FULL TASK TEXT SECRET"]
+    joined_logs = "\n".join(capture_logger.messages)
+    assert "action_items_count=1" in joined_logs
+    for unsafe_value in [
+        "FULL TASK TEXT SECRET",
+        "OWNER SECRET",
+        "DEADLINE SECRET",
+        "EVIDENCE SECRET",
+        "QUOTE SECRET",
+        "KEYWORD SECRET",
+    ]:
+        assert unsafe_value not in joined_logs
+
+
+def test_gemini_analyzer_invalid_json_does_not_log_raw_response(monkeypatch):
+    raw_response = '{"summary": "RAW RESPONSE SECRET", bad}'
+    response = _FakeResponse(
+        200,
+        {"candidates": [{"content": {"parts": [{"text": raw_response}]}}]},
+    )
+    monkeypatch.setattr(
+        AI_MODULE.httpx, "Client", lambda timeout: _FakeClient(response)
+    )
+    capture_logger = _CaptureLogger()
+    monkeypatch.setattr(AI_MODULE, "logger", capture_logger)
+
+    analyzer = GeminiAnalyzer(api_key="test-gemini-key")
+    result = analyzer.analyze_meeting("hello world")
+
+    assert result["summary"] != ""
+    joined_logs = "\n".join(capture_logger.messages)
+    assert "GEMINI_ANALYSIS_PARSE_FAILED" in joined_logs
+    assert "RAW RESPONSE SECRET" not in joined_logs
+    assert raw_response not in joined_logs
 
 
 def test_gemini_analyzer_does_not_invent_owner_or_due_date(monkeypatch):
@@ -583,6 +1087,11 @@ def test_gemini_analyzer_passes_schema_and_output_budget(monkeypatch):
     assert generation_config["thinkingConfig"]["thinkingBudget"] == 0
     assert "responseSchema" in generation_config
     schema_json = json.dumps(generation_config["responseSchema"])
+    assert '"action_items"' in schema_json
+    assert '"evidenceKeywords"' in schema_json
+    assert '"evidenceQuote"' not in schema_json
+    assert '"pending"' not in schema_json
+    assert '"cancelled"' not in schema_json
     assert '"oneOf"' not in schema_json
     assert '"anyOf"' not in schema_json
     assert '"nullable"' not in schema_json
@@ -607,7 +1116,10 @@ def test_gemini_realtime_prompt_uses_compact_output_limits(monkeypatch):
     prompt = payload["contents"][0]["parts"][0]["text"]
     assert "REALTIME_MODE" in prompt
     assert "keywords and technicalTerms max 5 each" in prompt
-    assert "painPoints and actionItems max 3 each" in prompt
+    assert "painPoints and action_items max 3 each" in prompt
+    assert "evidenceKeywords" in prompt
+    assert "evidenceQuote" in prompt
+    assert "không tạo evidenceQuote" in prompt
 
 
 def test_gemini_realtime_result_is_compacted(monkeypatch):
@@ -822,7 +1334,9 @@ def test_gemini_analyzer_logs_safe_http_error_preview(monkeypatch):
                     rendered = f"{rendered} {' '.join(str(arg) for arg in args)}"
             captured_messages.append(rendered)
 
-    monkeypatch.setattr(AI_MODULE, "logger", _CaptureLogger())
+    capture_logger = _CaptureLogger()
+    monkeypatch.setattr(AI_MODULE, "logger", capture_logger)
+    monkeypatch.setattr(GEMINI_CLIENT_MODULE, "logger", capture_logger)
 
     analyzer = GeminiAnalyzer(api_key="super-secret-key")
     analyzer.analyze_meeting(transcript)
@@ -830,7 +1344,7 @@ def test_gemini_analyzer_logs_safe_http_error_preview(monkeypatch):
     http_error_logs = [
         message
         for message in captured_messages
-        if "GEMINI_ANALYSIS_HTTP_ERROR" in message
+        if "GEMINI_CALL_FAILED" in message
     ]
     assert http_error_logs
     assert "super-secret-key" not in "".join(captured_messages)

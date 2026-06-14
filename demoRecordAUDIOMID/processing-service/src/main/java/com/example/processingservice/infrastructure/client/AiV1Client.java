@@ -33,10 +33,10 @@ public class AiV1Client {
             }
         );
 
-        Map<String, Object> responseBody = response.getBody();
-        if (responseBody == null) {
+        Map<String, Object> responseMap = response.getBody();
+        if (responseMap == null) {
             throw new IllegalStateException("AI v1 service returned empty body for meetingId=" + meetingId);
         }
-        return responseBody;
+        return responseMap;
     }
 }

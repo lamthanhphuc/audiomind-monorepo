@@ -31,6 +31,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.server.ResponseStatusException;
@@ -1931,8 +1932,8 @@ class ProcessingServiceTest {
         cacheOnlyResponse.put("cacheHit", true);
         cacheOnlyResponse.put("provider", "gemini");
         cacheOnlyResponse.put("model", "gemini-2.5-flash");
-        cacheOnlyResponse.put("promptVersion", "gemini-business-v1");
-        cacheOnlyResponse.put("schemaVersion", "analysis-schema-v1");
+        cacheOnlyResponse.put("promptVersion", "gemini-business-v2");
+        cacheOnlyResponse.put("schemaVersion", "gemini-business-v2");
         cacheOnlyResponse.put("canonicalTranscriptHash", "canonical-hash-930");
         cacheOnlyResponse.put("canonicalTranscriptVersion", "canonical-transcript-v1");
         cacheOnlyResponse.put("analysisInputMode", "canonical");
@@ -1951,8 +1952,8 @@ class ProcessingServiceTest {
                 eq(930L),
                 anyString(),
                 anyString(),
-                eq("gemini-business-v1"),
-                eq("gemini-business-v1"),
+                eq("gemini-business-v2"),
+                eq("gemini-business-v2"),
                 eq("trace-930"),
                 eq(AUTH_HEADER)
         )).thenReturn(cacheOnlyResponse);
@@ -1974,8 +1975,8 @@ class ProcessingServiceTest {
                 eq(930L),
                 anyString(),
                 anyString(),
-                eq("gemini-business-v1"),
-                eq("gemini-business-v1"),
+                eq("gemini-business-v2"),
+                eq("gemini-business-v2"),
                 eq("trace-930"),
                 eq(AUTH_HEADER)
         );
@@ -2309,6 +2310,126 @@ class ProcessingServiceTest {
     }
 
     @Test
+    void getAnalysis_shouldReturnNoAnalysisWithoutLazyEnqueueWhenFinalizedTranscriptIsEmpty() {
+        when(jobStateStore.getJobState(609L)).thenReturn(Optional.of(Map.of(
+                "status", "NO_TRANSCRIPT_AFTER_FINALIZE"
+        )));
+        when(aiServiceClient.getAnalysis(609L, "trace-609"))
+                .thenThrow(new HttpClientErrorException(HttpStatus.NOT_FOUND));
+
+        Map<String, Object> response = processingService.getAnalysis(609L, "trace-609", AUTH_HEADER);
+
+        assertEquals("NO_TRANSCRIPT_AFTER_FINALIZE", response.get("status"));
+        assertEquals("NO_ANALYSIS", response.get("analysisStatus"));
+        assertEquals("NO_TRANSCRIPT_AFTER_FINALIZE", response.get("errorCode"));
+        assertEquals(0, response.get("transcriptRows"));
+        verify(aiServiceClient, never()).getTranscript(609L, "trace-609");
+        verify(aiServiceClient, never()).analyzeRealtimeTranscript(
+                anyLong(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString()
+        );
+    }
+
+    @Test
+    void getAnalysis_lazyPath_shouldPersistGeminiRateLimitFromAiService429() {
+        when(jobStateStore.getJobState(615L)).thenReturn(Optional.empty());
+        when(aiServiceClient.getAnalysis(615L, "trace-615"))
+                .thenThrow(new HttpClientErrorException(HttpStatus.NOT_FOUND));
+        when(aiServiceClient.getTranscript(615L, "trace-615")).thenReturn(Map.of(
+                "meeting_id", 615L,
+                "transcripts", List.of(
+                        Map.of("speaker", "SPEAKER_1", "text", "rate limited transcript row")
+                )
+        ));
+        when(aiServiceClient.analyzeRealtimeTranscript(
+                eq(615L),
+                anyString(),
+                eq("it"),
+                eq("realtime"),
+                anyString(),
+                anyString(),
+                anyString(),
+                eq("trace-615"),
+                eq(AUTH_HEADER)
+        )).thenThrow(HttpClientErrorException.create(
+                HttpStatus.TOO_MANY_REQUESTS,
+                "Too Many Requests",
+                new HttpHeaders(),
+                """
+                {
+                  "error": "GEMINI_RATE_LIMITED",
+                  "status": 429,
+                  "details": {
+                    "provider": "gemini",
+                    "retryable": true,
+                    "retryAfterSeconds": 7,
+                    "errorCode": "GEMINI_RATE_LIMITED"
+                  }
+                }
+                """.getBytes(StandardCharsets.UTF_8),
+                StandardCharsets.UTF_8
+        ));
+
+        Map<String, Object> response = processingService.getAnalysis(615L, "trace-615", AUTH_HEADER);
+
+        assertEquals("NOT_FOUND", response.get("status"));
+        verify(jobStateStore, timeout(1000)).markAnalysisFailed(
+                eq(615L),
+                anyString(),
+                eq("get_analysis_lazy"),
+                eq("processing_service_lazy_poll"),
+                eq("lock-token"),
+                eq("GEMINI_RATE_LIMITED"),
+                anyString(),
+                eq(7)
+        );
+    }
+
+    @Test
+    void getAnalysis_shouldSurfacePersistedGeminiRateLimitRetryAfter() {
+        when(jobStateStore.getJobState(619L)).thenReturn(Optional.empty());
+        when(aiServiceClient.getAnalysis(619L, "trace-619"))
+                .thenThrow(new HttpClientErrorException(HttpStatus.NOT_FOUND));
+        when(jobStateStore.getAnalysisState(619L)).thenReturn(Optional.of(
+                new JobStateStore.AnalysisStateSnapshot(
+                        AnalysisFailureMapping.ANALYSIS_STATUS_FAILED_RETRYABLE,
+                        "hash-619",
+                        "get_analysis_lazy",
+                        "GEMINI_RATE_LIMITED",
+                        "Gemini rate limit reached",
+                        System.currentTimeMillis() + 7000L,
+                        7
+                )
+        ));
+
+        Map<String, Object> response = processingService.getAnalysis(619L, "trace-619", AUTH_HEADER);
+
+        assertEquals(AnalysisFailureMapping.ANALYSIS_STATUS_FAILED_RETRYABLE, response.get("analysisStatus"));
+        assertEquals("GEMINI_RATE_LIMITED", response.get("errorCode"));
+        assertEquals(7, response.get("retryAfterSeconds"));
+        assertEquals(true, response.get("retryable"));
+        assertEquals(true, response.get("transcriptSaved"));
+        verify(aiServiceClient, never()).analyzeRealtimeTranscript(
+                eq(619L),
+                anyString(),
+                eq("it"),
+                eq("realtime"),
+                anyString(),
+                anyString(),
+                anyString(),
+                eq("trace-619"),
+                eq(AUTH_HEADER)
+        );
+    }
+
+    @Test
     void getAnalysis_lazyPath_shouldUseCanonicalTranscriptWhenAvailable() {
         when(jobStateStore.getJobState(614L)).thenReturn(Optional.empty());
         when(aiServiceClient.getAnalysis(614L, "trace-614"))
@@ -2500,27 +2621,24 @@ class ProcessingServiceTest {
         when(jobStateStore.getJobState(611L)).thenReturn(Optional.empty());
         when(aiServiceClient.getAnalysis(611L, "trace-611"))
                 .thenThrow(new HttpClientErrorException(HttpStatus.NOT_FOUND));
-        when(aiServiceClient.getTranscript(611L, "trace-611")).thenReturn(Map.of(
-                "meeting_id", 611L,
-                "transcripts", List.of(
-                        Map.of("speaker", "SPEAKER_1", "text", "failed transcript row")
+        when(jobStateStore.getAnalysisState(611L)).thenReturn(Optional.of(
+                new JobStateStore.AnalysisStateSnapshot(
+                        AnalysisFailureMapping.ANALYSIS_STATUS_FAILED_RETRYABLE,
+                        "hash-611",
+                        "get_analysis_lazy",
+                        "GEMINI_UNAVAILABLE",
+                        "Gemini unavailable",
+                        System.currentTimeMillis() + 45000L,
+                        45
                 )
         ));
-        when(jobStateStore.tryStartAnalysis(eq(611L), anyString(), anyString(), anyString()))
-                .thenReturn(new JobStateStore.AnalysisTriggerDecision(
-                        false,
-                        "FAILED",
-                        "cooldown_active",
-                        null,
-                        45,
-                        "GEMINI_UNAVAILABLE"
-                ));
 
-        ResponseStatusException ex = assertThrows(
-                ResponseStatusException.class,
-                () -> processingService.getAnalysis(611L, "trace-611", AUTH_HEADER)
-        );
-        assertEquals(HttpStatus.SERVICE_UNAVAILABLE, ex.getStatusCode());
+        Map<String, Object> response = processingService.getAnalysis(611L, "trace-611", AUTH_HEADER);
+
+        assertEquals(AnalysisFailureMapping.ANALYSIS_STATUS_FAILED_RETRYABLE, response.get("analysisStatus"));
+        assertEquals("GEMINI_UNAVAILABLE", response.get("errorCode"));
+        assertEquals(45, response.get("retryAfterSeconds"));
+        assertEquals(true, response.get("retryable"));
         verify(aiServiceClient, never()).analyzeRealtimeTranscript(
                 eq(611L),
                 anyString(),
@@ -2532,6 +2650,7 @@ class ProcessingServiceTest {
                 eq("trace-611"),
                 eq(AUTH_HEADER)
         );
+        verify(aiServiceClient, never()).getTranscript(eq(611L), eq("trace-611"));
     }
 
     @Test
@@ -2676,8 +2795,9 @@ class ProcessingServiceTest {
                 "manual_reanalyze",
                 "SPEAKER_1: Saved transcript",
                 "37575315f5e3c1689f1ccc05fc23cf21f24a317834899b0c1b0aaffb48a7f555",
-                "gemini-business-v1",
-                "gemini-business-v1",
+                "gemini-business-v2",
+                "gemini-business-v2",
+                "grouped-action-plan-v1",
                 null,
                 null,
                 "trace-616",
@@ -2705,8 +2825,9 @@ class ProcessingServiceTest {
                 "manual_reanalyze",
                 "SPEAKER_1: Saved transcript",
                 "37575315f5e3c1689f1ccc05fc23cf21f24a317834899b0c1b0aaffb48a7f555",
-                "gemini-business-v1",
-                "gemini-business-v1",
+                "gemini-business-v2",
+                "gemini-business-v2",
+                "grouped-action-plan-v1",
                 null,
                 null,
                 "trace-616",
@@ -2714,6 +2835,7 @@ class ProcessingServiceTest {
         );
         verify(aiServiceClient, never()).analyzeRealtimeTranscript(
                 anyLong(),
+                anyString(),
                 anyString(),
                 anyString(),
                 anyString(),
@@ -2757,6 +2879,7 @@ class ProcessingServiceTest {
                 anyString(),
                 anyString(),
                 anyString(),
+                anyString(),
                 anyString()
         );
     }
@@ -2780,8 +2903,9 @@ class ProcessingServiceTest {
                 eq("manual_reanalyze"),
                 anyString(),
                 anyString(),
-                eq("gemini-business-v1"),
-                eq("gemini-business-v1"),
+                eq("gemini-business-v2"),
+                eq("gemini-business-v2"),
+                eq("grouped-action-plan-v1"),
                 isNull(),
                 isNull(),
                 eq("trace-618"),

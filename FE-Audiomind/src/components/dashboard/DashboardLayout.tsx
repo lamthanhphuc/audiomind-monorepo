@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import { StudioAmbientBackground } from '../ui/StudioAmbientBackground'
 
 export type DashboardScene = 'upload' | 'realtime' | 'analysis' | 'files' | 'subjects'
 
@@ -39,13 +40,17 @@ export default function DashboardLayout({
               <span className="dashboard-user__email">{user.email || 'audiomind@local'}</span>
             </div>
           </div>
+          <div className="studio-engine-badge">
+            <span className="studio-engine-badge__dot" />
+            Neural pipeline · online
+          </div>
           <button type="button" className="dashboard-btn-new" onClick={() => onNavigate('upload')}>
             <span className="icon">＋</span> Tải file mới
           </button>
         </div>
 
         <div className="dashboard-sidebar__section">
-          <div className="dashboard-sidebar__title">LIBRARY</div>
+          <div className="dashboard-sidebar__title">STUDIO</div>
           <ul className="dashboard-nav-list">
             <li className={activeMenu === 'upload' ? 'active' : ''} onClick={() => onNavigate('upload')}>
               <span className="icon">⬆</span> Tải & phân tích
@@ -84,7 +89,7 @@ export default function DashboardLayout({
 
         <div className="dashboard-sidebar__footer">
           <ul className="dashboard-nav-list">
-            <li onClick={onLogout} style={{ cursor: 'pointer', color: '#ef4444' }}>
+            <li className="dashboard-logout" onClick={onLogout}>
               <span className="icon">🚪</span> Đăng xuất
             </li>
           </ul>
@@ -92,7 +97,10 @@ export default function DashboardLayout({
       </aside>
 
       <main className="dashboard-main">
-        {children}
+        <StudioAmbientBackground variant="dashboard" />
+        <div className="dashboard-main__content studio-reveal">
+          {children}
+        </div>
       </main>
     </div>
   )

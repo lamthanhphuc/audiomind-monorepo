@@ -24,6 +24,7 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 from app.config import get_runtime_device, get_settings
+from app.realtime_config_guard import evaluate_realtime_config, log_realtime_config_guard
 from app.database import (
     Base,
     engine,
@@ -193,6 +194,12 @@ async def lifespan(_: FastAPI):
         _normalize_stt_language(None),
         settings.deepgram_base_url,
     )
+    guard_report = evaluate_realtime_config(settings)
+    log_realtime_config_guard(guard_report)
+    if guard_report.has_errors() and is_production:
+        raise RuntimeError(
+            "Realtime config guard failed with ERROR findings; see REALTIME_CONFIG_GUARD logs"
+        )
     logger.info("=" * 50)
 
     grpc_server = None
@@ -976,6 +983,8 @@ def _default_error_message(error: str) -> str:
         "SERVICE_UNAVAILABLE": "Service is unavailable",
         "DEEPGRAM_UNAVAILABLE": "Deepgram service is unavailable",
         "GEMINI_UNAVAILABLE": "Gemini service is unavailable",
+        "GEMINI_RATE_LIMITED": "Gemini rate limit reached",
+        "GEMINI_QUOTA_EXHAUSTED": "Gemini quota exhausted",
         "GEMINI_ANALYSIS_FAILED": "Gemini analysis failed",
         "INVALID_LANGUAGE": "Invalid language",
         "EMPTY_TRANSCRIPT": "Transcript is empty",
@@ -1181,6 +1190,45 @@ def _map_http_exception(
             details,
         )
 
+    if status_code == 429:
+        structured_error = ""
+        structured_details: dict[str, object] | None = None
+        if isinstance(exc.detail, dict):
+            structured_error = str(
+                exc.detail.get("error") or exc.detail.get("errorCode") or ""
+            ).strip()
+            nested_details = exc.detail.get("details")
+            if isinstance(nested_details, dict):
+                structured_details = _sanitize_details(nested_details)
+                if not structured_error:
+                    structured_error = str(
+                        nested_details.get("errorCode")
+                        or nested_details.get("error")
+                        or ""
+                    ).strip()
+
+        normalized_error = structured_error.strip().upper()
+        if normalized_error in {"GEMINI_RATE_LIMITED", "GEMINI_QUOTA_EXHAUSTED"}:
+            return (
+                normalized_error,
+                _default_error_message(normalized_error),
+                structured_details or details,
+            )
+
+        normalized_details = _normalize_error_text(details or {})
+        if "gemini" in normalized_detail or "gemini" in normalized_details:
+            return (
+                "GEMINI_RATE_LIMITED",
+                _default_error_message("GEMINI_RATE_LIMITED"),
+                structured_details or details,
+            )
+
+        return (
+            "SERVICE_UNAVAILABLE",
+            _default_error_message("SERVICE_UNAVAILABLE"),
+            details,
+        )
+
     if status_code == 503:
         if "deepgram" in normalized_detail:
             return (
@@ -1340,6 +1388,13 @@ def _coerce_action_items(values: Any) -> list[dict[str, Any]]:
     if not isinstance(values, list):
         return []
     normalized: list[dict[str, Any]] = []
+    status_map = {
+        "pending": "open",
+        "completed": "done",
+        "cancelled": "blocked",
+    }
+    valid_statuses = {"open", "in_progress", "blocked", "done"}
+    valid_priorities = {"low", "medium", "high"}
     for item in values:
         if isinstance(item, dict):
             task = str(item.get("task") or item.get("text") or "").strip()
@@ -1355,9 +1410,24 @@ def _coerce_action_items(values: Any) -> list[dict[str, Any]]:
                 ).strip()
                 or None
             )
-            priority = str(item.get("priority") or "").strip() or None
-            status = str(item.get("status") or "").strip() or None
+            priority_raw = str(item.get("priority") or "").strip().lower()
+            priority = priority_raw if priority_raw in valid_priorities else None
+            status_raw = str(item.get("status") or "").strip().lower()
+            status = (
+                status_raw
+                if status_raw in valid_statuses
+                else status_map.get(status_raw, "open")
+            )
             evidence = str(item.get("evidence") or "").strip() or None
+            evidence_quote = (
+                str(
+                    item.get("evidenceQuote") or item.get("evidence_quote") or ""
+                ).strip()
+                or None
+            )
+            evidence_keywords = _coerce_string_list(
+                item.get("evidenceKeywords") or item.get("evidence_keywords") or []
+            )[:5]
             normalized.append(
                 {
                     "task": task,
@@ -1367,6 +1437,8 @@ def _coerce_action_items(values: Any) -> list[dict[str, Any]]:
                     "priority": priority,
                     "status": status,
                     "evidence": evidence,
+                    "evidenceQuote": evidence_quote,
+                    "evidenceKeywords": evidence_keywords,
                 }
             )
             continue
@@ -1379,8 +1451,10 @@ def _coerce_action_items(values: Any) -> list[dict[str, Any]]:
                     "dueDate": None,
                     "deadline": None,
                     "priority": None,
-                    "status": None,
+                    "status": "open",
                     "evidence": None,
+                    "evidenceQuote": None,
+                    "evidenceKeywords": [],
                 }
             )
     return normalized
@@ -1503,6 +1577,19 @@ def _normalize_analysis_payload(raw_analysis: dict[str, Any]) -> dict[str, Any]:
         ).strip()
         or AIAnalyzer.SCHEMA_VERSION
     )
+    analysis_feature_set = (
+        str(
+            raw_analysis.get("analysisFeatureSet")
+            or raw_analysis.get("analysis_feature_set")
+            or ""
+        ).strip()
+        or AIAnalyzer.ANALYSIS_FEATURE_SET
+    )
+    grouped_action_plan = raw_analysis.get("groupedActionPlan")
+    if grouped_action_plan is None:
+        grouped_action_plan = raw_analysis.get("grouped_action_plan")
+    if not isinstance(grouped_action_plan, dict):
+        grouped_action_plan = None
     risks_blockers = _coerce_string_list(risks + blockers)
     return {
         "summary": summary,
@@ -1531,6 +1618,8 @@ def _normalize_analysis_payload(raw_analysis: dict[str, Any]) -> dict[str, Any]:
         "confidence": confidence,
         "promptVersion": prompt_version,
         "schemaVersion": schema_version,
+        "analysisFeatureSet": analysis_feature_set,
+        "groupedActionPlan": grouped_action_plan,
         "transcript_hash": transcript_hash,
         "transcriptHash": transcript_hash,
         "source": source,
@@ -1563,13 +1652,22 @@ def _normalize_analysis_version(value: Any, default: str) -> str:
     return normalized
 
 
+def _normalize_analysis_feature_set(value: Any) -> str:
+    normalized = str(value or "").strip()
+    return normalized or AIAnalyzer.ANALYSIS_FEATURE_SET
+
+
 def _analysis_cache_key(
-    transcript_hash: str, prompt_version: str, schema_version: str
+    transcript_hash: str,
+    prompt_version: str,
+    schema_version: str,
+    analysis_feature_set: str | None = None,
 ) -> str:
     return (
         f"{str(transcript_hash or '').strip().lower()}|"
         f"{str(prompt_version or '').strip().lower()}|"
-        f"{str(schema_version or '').strip().lower()}"
+        f"{str(schema_version or '').strip().lower()}|"
+        f"{_normalize_analysis_feature_set(analysis_feature_set).lower()}"
     )
 
 
@@ -2012,6 +2110,7 @@ def _analyze_and_persist_realtime_transcript(
     transcript_hash: str,
     prompt_version: str,
     schema_version: str,
+    analysis_feature_set: str,
     source: str,
     domain_mode: str | None,
     db: Session,
@@ -2035,6 +2134,7 @@ def _analyze_and_persist_realtime_transcript(
         "domainMode": requested_domain_mode,
         "promptVersion": prompt_version,
         "schemaVersion": schema_version,
+        "analysisFeatureSet": analysis_feature_set,
     }
 
     if getattr(analyzer, "provider", "") == "gemini":
@@ -2060,6 +2160,17 @@ def _analyze_and_persist_realtime_transcript(
         technical_terms=clean_terms,
         keywords=clean_keywords,
     )
+    prepared_feature_set = (
+        prepared.get("analysisFeatureSet")
+        or normalized.get("analysisFeatureSet")
+        or analysis_feature_set
+    )
+    action_items_payload = prepared.get("action_items", [])
+    grouped_action_plan = (
+        prepared.get("groupedActionPlan")
+        or normalized.get("groupedActionPlan")
+        or _fallback_grouped_action_plan(action_items_payload)
+    )
 
     technical_terms_payload = {
         "technical_terms": clean_terms,
@@ -2081,10 +2192,10 @@ def _analyze_and_persist_realtime_transcript(
         "transcript_hash": transcript_hash,
         "promptVersion": prompt_version,
         "schemaVersion": schema_version,
+        "analysisFeatureSet": prepared_feature_set,
+        "groupedActionPlan": grouped_action_plan,
         "source": source,
     }
-    action_items_payload = prepared.get("action_items", [])
-
     analysis_row = db.query(Analysis).filter(Analysis.meeting_id == meeting_id).first()
     if analysis_row is None:
         analysis_row = Analysis(meeting_id=meeting_id)
@@ -2101,6 +2212,8 @@ def _analyze_and_persist_realtime_transcript(
     analysis_for_job_state["transcript_hash"] = transcript_hash
     analysis_for_job_state["promptVersion"] = prompt_version
     analysis_for_job_state["schemaVersion"] = schema_version
+    analysis_for_job_state["analysisFeatureSet"] = prepared_feature_set
+    analysis_for_job_state["groupedActionPlan"] = grouped_action_plan
     analysis_for_job_state["source"] = source
     analysis_run = persist_completed_analysis_run(
         db=db,
@@ -2139,6 +2252,8 @@ def _analyze_and_persist_realtime_transcript(
         source=source,
         promptVersion=prompt_version,
         schemaVersion=schema_version,
+        analysisFeatureSet=run_metadata.get("analysisFeatureSet")
+        or analysis_feature_set,
         analysisStatus=run_metadata.get("analysisStatus"),
         cacheHit=run_metadata.get("cacheHit"),
         provider=run_metadata.get("provider"),
@@ -2150,6 +2265,72 @@ def _analyze_and_persist_realtime_transcript(
         stale=run_metadata.get("stale"),
         staleReason=run_metadata.get("staleReason"),
     )
+
+
+def _fallback_grouped_action_plan(action_items: list[Any]) -> dict[str, Any]:
+    normalized_items = []
+    for index, item in enumerate((action_items or [])[:8], start=1):
+        task = ""
+        if isinstance(item, dict):
+            task = str(
+                item.get("task")
+                or item.get("description")
+                or item.get("text")
+                or item.get("title")
+                or ""
+            ).strip()
+            evidence_keywords = _coerce_string_list(item.get("evidenceKeywords") or [])
+            owner = item.get("owner")
+            deadline = item.get("deadline") or item.get("dueDate")
+            priority = item.get("priority")
+            status = item.get("status") or "open"
+        else:
+            task = str(item or "").strip()
+            evidence_keywords = []
+            owner = None
+            deadline = None
+            priority = None
+            status = "open"
+        if not task:
+            continue
+        normalized_items.append(
+            {
+                "id": f"fallback-item-{index}",
+                "title": task[:120],
+                "description": None,
+                "subtasks": [],
+                "owner": owner,
+                "deadline": deadline,
+                "priority": priority,
+                "status": status,
+                "confidence": "SUPPORTED",
+                "evidenceKeywords": evidence_keywords[:8],
+                "sourceActionItemIds": [f"action-{index}"],
+            }
+        )
+    if not normalized_items:
+        return {
+            "version": AIAnalyzer.ANALYSIS_FEATURE_SET,
+            "language": "vi",
+            "intro": "Chưa có công việc đủ rõ để phân nhóm.",
+            "sections": [],
+            "notes": [],
+        }
+    return {
+        "version": AIAnalyzer.ANALYSIS_FEATURE_SET,
+        "language": "vi",
+        "intro": "Dựa trên nội dung cuộc thảo luận trong file audio, dưới đây là danh sách các công việc cần thực hiện, được phân chia theo các nhóm chức năng chính:",
+        "sections": [
+            {
+                "id": "fallback-section-1",
+                "order": 1,
+                "title": "Công việc chung",
+                "summary": None,
+                "items": normalized_items,
+            }
+        ],
+        "notes": [],
+    }
 
 
 @app.get("/api/meeting/{meeting_id}/transcript", response_model=TranscriptResponse)
@@ -2435,6 +2616,9 @@ async def get_analysis(meeting_id: int, db: Session = Depends(get_db)):
                 or normalized["promptVersion"],
                 schemaVersion=run_metadata.get("schemaVersion")
                 or normalized["schemaVersion"],
+                analysisFeatureSet=run_metadata.get("analysisFeatureSet")
+                or normalized["analysisFeatureSet"],
+                groupedActionPlan=normalized.get("groupedActionPlan"),
                 created_at=datetime.now(timezone.utc),
                 technicalTerms=technical_terms,
                 painPoints=pain_points,
@@ -2519,6 +2703,9 @@ async def get_analysis(meeting_id: int, db: Session = Depends(get_db)):
             or normalized["promptVersion"],
             schemaVersion=run_metadata.get("schemaVersion")
             or normalized["schemaVersion"],
+            analysisFeatureSet=run_metadata.get("analysisFeatureSet")
+            or normalized["analysisFeatureSet"],
+            groupedActionPlan=normalized.get("groupedActionPlan"),
             created_at=analysis.created_at or datetime.now(timezone.utc),
             technicalTerms=technical_terms,
             painPoints=pain_points,
@@ -2627,6 +2814,7 @@ async def rerun_analysis(
             transcript_hash=_compute_transcript_hash(transcript_text, transcript_hash),
             prompt_version=request.prompt_version,
             schema_version=request.schema_version,
+            analysis_feature_set=request.analysis_feature_set,
             mode=mode,
             reason=request.reason,
         ),
@@ -2648,6 +2836,7 @@ async def rerun_analysis(
         transcript_hash=realtime_response.transcript_hash,
         promptVersion=realtime_response.promptVersion,
         schemaVersion=realtime_response.schemaVersion,
+        analysisFeatureSet=realtime_response.analysisFeatureSet,
         analysisStatus=realtime_response.analysisStatus,
         cacheHit=realtime_response.cacheHit,
         provider=realtime_response.provider,
@@ -2688,15 +2877,44 @@ async def analyze_realtime_transcript(
         transcript_hash = _compute_transcript_hash(
             transcript_text, request.transcript_hash
         )
+        requested_prompt_version = str(request.prompt_version or "").strip()
+        requested_schema_version = str(request.schema_version or "").strip()
         prompt_version = _normalize_analysis_version(
             request.prompt_version, AIAnalyzer.PROMPT_VERSION
         )
         schema_version = _normalize_analysis_version(
             request.schema_version, AIAnalyzer.SCHEMA_VERSION
         )
+        if prompt_version == "gemini-business-v1" or schema_version == "gemini-business-v1":
+            logger.info(
+                "event=ANALYSIS_VERSION_DOWNGRADE_BLOCKED meetingId={} source={} requestedPromptVersion={} requestedSchemaVersion={} selectedPromptVersion={} selectedSchemaVersion={}",
+                meeting_id,
+                source,
+                requested_prompt_version,
+                requested_schema_version,
+                AIAnalyzer.PROMPT_VERSION,
+                AIAnalyzer.SCHEMA_VERSION,
+            )
+            prompt_version = AIAnalyzer.PROMPT_VERSION
+            schema_version = AIAnalyzer.SCHEMA_VERSION
+        logger.info(
+            "event=ANALYSIS_VERSION_SELECTED meetingId={} source={} requestedPromptVersion={} requestedSchemaVersion={} selectedPromptVersion={} selectedSchemaVersion={} reason={}",
+            meeting_id,
+            source,
+            requested_prompt_version,
+            requested_schema_version,
+            prompt_version,
+            schema_version,
+            "canonical_default"
+            if not requested_prompt_version and not requested_schema_version
+            else "request_allowed",
+        )
+        analysis_feature_set = _normalize_analysis_feature_set(
+            request.analysis_feature_set
+        )
         mode = normalize_analysis_mode(request.mode)
         analysis_cache_key = _analysis_cache_key(
-            transcript_hash, prompt_version, schema_version
+            transcript_hash, prompt_version, schema_version, analysis_feature_set
         )
         analyzer = (
             _analysis_cache_metadata_analyzer()
@@ -2713,6 +2931,7 @@ async def analyze_realtime_transcript(
                 source=source,
                 promptVersion=prompt_version,
                 schemaVersion=schema_version,
+                analysisFeatureSet=analysis_feature_set,
                 analysisStatus="NO_ANALYSIS",
                 cacheHit=False,
                 stale=False,
@@ -2728,6 +2947,7 @@ async def analyze_realtime_transcript(
                 analysis_payload={
                     "promptVersion": prompt_version,
                     "schemaVersion": schema_version,
+                    "analysisFeatureSet": analysis_feature_set,
                 },
             )
             analysis_cache_key = build_analysis_run_idempotency_key_for_identity(
@@ -2765,6 +2985,9 @@ async def analyze_realtime_transcript(
                 cached_analysis["schemaVersion"] = (
                     cached_analysis.get("schemaVersion") or schema_version
                 )
+                cached_analysis["analysisFeatureSet"] = (
+                    cached_analysis.get("analysisFeatureSet") or analysis_feature_set
+                )
                 cached_analysis["source"] = cached_analysis.get("source") or source
                 job_state_analysis = dict(cached_analysis)
                 last_analyzed_at = job_state_analysis.get("lastAnalyzedAt")
@@ -2778,7 +3001,7 @@ async def analyze_realtime_transcript(
                     progress=100,
                 )
                 analysis_cache_key = _analysis_cache_key(
-                    transcript_hash, prompt_version, schema_version
+                    transcript_hash, prompt_version, schema_version, analysis_feature_set
                 )
                 with _realtime_analysis_guard_lock:
                     _realtime_analysis_completed_hash[meeting_id] = (
@@ -2793,6 +3016,7 @@ async def analyze_realtime_transcript(
                     source=source,
                     promptVersion=cached_analysis.get("promptVersion"),
                     schemaVersion=cached_analysis.get("schemaVersion"),
+                    analysisFeatureSet=cached_analysis.get("analysisFeatureSet"),
                     analysisStatus=cached_analysis.get("analysisStatus"),
                     cacheHit=True,
                     provider=cached_analysis.get("provider"),
@@ -2824,6 +3048,7 @@ async def analyze_realtime_transcript(
                     source=source,
                     promptVersion=prompt_version,
                     schemaVersion=schema_version,
+                    analysisFeatureSet=analysis_feature_set,
                     retryAfterSeconds=1,
                     analysisStatus=run_metadata.get("analysisStatus"),
                     cacheHit=False,
@@ -2850,6 +3075,7 @@ async def analyze_realtime_transcript(
                     source=source,
                     promptVersion=prompt_version,
                     schemaVersion=schema_version,
+                    analysisFeatureSet=analysis_feature_set,
                     analysisStatus=miss_metadata.get("analysisStatus"),
                     cacheHit=False,
                     provider=miss_metadata.get("provider"),
@@ -2882,6 +3108,7 @@ async def analyze_realtime_transcript(
                         source=source,
                         promptVersion=prompt_version,
                         schemaVersion=schema_version,
+                        analysisFeatureSet=analysis_feature_set,
                         analysisStatus=miss_metadata.get("analysisStatus"),
                         cacheHit=False,
                         provider=miss_metadata.get("provider"),
@@ -2957,6 +3184,10 @@ async def analyze_realtime_transcript(
                         schemaVersion=(
                             cached_analysis.get("schemaVersion") or schema_version
                         ),
+                        analysisFeatureSet=(
+                            cached_analysis.get("analysisFeatureSet")
+                            or analysis_feature_set
+                        ),
                         analysisStatus=cached_analysis.get("analysisStatus"),
                         cacheHit=True,
                         provider=cached_analysis.get("provider"),
@@ -2987,6 +3218,7 @@ async def analyze_realtime_transcript(
                     source=source,
                     promptVersion=prompt_version,
                     schemaVersion=schema_version,
+                    analysisFeatureSet=analysis_feature_set,
                     retryAfterSeconds=retry_after_seconds,
                     errorCode=skip_error_code or "GEMINI_ANALYSIS_FAILED",
                 )
@@ -2998,6 +3230,7 @@ async def analyze_realtime_transcript(
                 source=source,
                 promptVersion=prompt_version,
                 schemaVersion=schema_version,
+                analysisFeatureSet=analysis_feature_set,
                 retryAfterSeconds=retry_after_seconds or None,
                 errorCode=skip_error_code,
                 analysisStatus=(
@@ -3043,6 +3276,7 @@ async def analyze_realtime_transcript(
                     source=source,
                     promptVersion=prompt_version,
                     schemaVersion=schema_version,
+                    analysisFeatureSet=analysis_feature_set,
                     retryAfterSeconds=1,
                     analysisStatus=run_metadata.get("analysisStatus"),
                     cacheHit=False,
@@ -3068,6 +3302,7 @@ async def analyze_realtime_transcript(
                 transcript_hash=transcript_hash,
                 prompt_version=prompt_version,
                 schema_version=schema_version,
+                analysis_feature_set=analysis_feature_set,
                 source=source,
                 domain_mode=request.domain_mode,
                 db=db,
@@ -3078,27 +3313,43 @@ async def analyze_realtime_transcript(
             return response
         except AnalysisRateLimitError as analysis_error:
             db.rollback()
+            retry_after_seconds = int(
+                getattr(analysis_error, "retry_after_seconds", None)
+                or _REALTIME_ANALYSIS_FAILURE_COOLDOWN_SECONDS
+            )
+            error_code = str(
+                getattr(analysis_error, "error_code", None) or "GEMINI_RATE_LIMITED"
+            ).strip().upper() or "GEMINI_RATE_LIMITED"
             mark_analysis_run_failed(
                 run=active_analysis_run,
                 status=ANALYSIS_STATUS_RATE_LIMITED,
-                error_code="GEMINI_RATE_LIMITED",
+                error_code=error_code,
                 error_message=safe_error_message(analysis_error),
             )
             db.commit()
             logger.warning(
-                "event=REALTIME_ANALYSIS_FAILED meetingId={} source={} errorCode=GEMINI_RATE_LIMITED error={}",
+                "event=REALTIME_ANALYSIS_FAILED meetingId={} source={} errorCode={} retryAfterSeconds={} error={}",
                 meeting_id,
                 source,
+                error_code,
+                retry_after_seconds,
                 safe_error_message(analysis_error),
             )
-            finish_error_code = "GEMINI_RATE_LIMITED"
+            finish_error_code = error_code
             finish_error_reason = safe_error_message(analysis_error)
-            finish_retry_after_seconds = int(
-                _REALTIME_ANALYSIS_FAILURE_COOLDOWN_SECONDS
-            )
+            finish_retry_after_seconds = retry_after_seconds
             raise HTTPException(
                 status_code=429,
-                detail="Gemini rate limit reached",
+                detail={
+                    "error": error_code,
+                    "message": _default_error_message(error_code),
+                    "details": {
+                        "provider": "gemini",
+                        "retryable": True,
+                        "retryAfterSeconds": retry_after_seconds,
+                        "errorCode": error_code,
+                    },
+                },
             ) from analysis_error
         except AnalysisParseError as analysis_error:
             db.rollback()
@@ -3376,7 +3627,10 @@ async def analysis_provider_exception_handler(
     request: Request, exc: AnalysisProviderError
 ):
     provider = _normalize_error_text(getattr(exc, "provider", ""))
-    if isinstance(exc, AnalysisParseError) and provider == "gemini":
+    if isinstance(exc, AnalysisRateLimitError) and provider == "gemini":
+        error = getattr(exc, "error_code", None) or "GEMINI_RATE_LIMITED"
+        status_code = 429
+    elif isinstance(exc, AnalysisParseError) and provider == "gemini":
         error = "GEMINI_ANALYSIS_FAILED"
         status_code = 502
     elif provider == "deepgram":
@@ -3398,12 +3652,21 @@ async def analysis_provider_exception_handler(
         error = "SERVICE_UNAVAILABLE"
         status_code = 503
 
+    details = {"provider": provider} if provider else {}
+    retry_after_seconds = getattr(exc, "retry_after_seconds", None)
+    error_code = getattr(exc, "error_code", None)
+    if retry_after_seconds is not None:
+        details["retryAfterSeconds"] = retry_after_seconds
+    if error_code:
+        details["errorCode"] = error_code
+    details["retryable"] = bool(getattr(exc, "retryable", False))
+
     return build_error_response(
         error=error,
         message=_default_error_message(error),
         status=status_code,
         request=request,
-        details={"provider": provider} if provider else None,
+        details=details or None,
     )
 
 
@@ -3606,7 +3869,8 @@ async def stream_stt_chunk(
     )
     paragraphs_enabled = False
     detect_language_enabled = False
-    sample_rate = 16000
+    sample_rate_included = False
+    sample_rate = "omitted"
     encoding = "webm"
     channels = "unknown"
     logger.info(
@@ -3620,7 +3884,7 @@ async def stream_stt_chunk(
         realtime_model,
     )
     logger.info(
-        "event=REALTIME_STT_DIAGNOSTIC_CONFIG traceId={} requestId={} meetingId={} source=realtime provider=deepgram requestedLanguage={} effectiveLanguage={} deepgramLanguage={} recognitionMode={} model={} endpointing={} interimResults={} smartFormat={} utterances={} paragraphs={} diarize={} detectLanguage={} encoding={} sampleRate={} channels={}",
+        "event=REALTIME_STT_DIAGNOSTIC_CONFIG traceId={} requestId={} meetingId={} source=realtime provider=deepgram requestedLanguage={} effectiveLanguage={} deepgramLanguage={} recognitionMode={} model={} endpointing={} interimResults={} smartFormat={} utterances={} paragraphs={} diarize={} detectLanguage={} encoding={} sampleRateIncluded={} sampleRate={} channels={}",
         trace_id,
         request_id,
         meeting_id,
@@ -3637,6 +3901,7 @@ async def stream_stt_chunk(
         effective_diarize,
         detect_language_enabled,
         encoding,
+        sample_rate_included,
         sample_rate,
         channels,
     )
@@ -3665,12 +3930,6 @@ async def stream_stt_chunk(
         meeting_id,
         seq,
         len(chunk_bytes),
-    )
-    logger.info(
-        "WEBM_HEADER_CHECK seq={} first4hex={} matches_ebml={}",
-        seq,
-        chunk_bytes[:4].hex(),
-        bool(chunk_bytes[:4] == bytes.fromhex("1a45dfa3")),
     )
     logger.info(
         "STT_STREAM_EFFECTIVE_CONFIG meeting_id={} seq={} language={} speaker_mode={} diarize={} model={} endpointing={} endpointing_source={} endpointing_env={}",

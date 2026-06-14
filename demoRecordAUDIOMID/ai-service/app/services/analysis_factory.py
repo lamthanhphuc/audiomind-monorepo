@@ -32,7 +32,13 @@ def build_analysis_analyzer(settings):
         )
 
     if provider == "gemini":
-        if not (settings.gemini_api_key or "").strip():
+        gemini_multi_key_enabled = bool(
+            getattr(settings, "gemini_multi_key_enabled", False)
+        )
+        gemini_api_keys = getattr(settings, "gemini_api_keys", "")
+        if not (settings.gemini_api_key or "").strip() and not (
+            gemini_multi_key_enabled and (gemini_api_keys or "").strip()
+        ):
             logger.error(
                 "Selected analysis provider=gemini blocked reason=missing_api_key"
             )
@@ -66,6 +72,19 @@ def build_analysis_analyzer(settings):
         gemini_max_tokens_retry_enabled = getattr(
             settings, "gemini_max_tokens_retry_enabled", True
         )
+        gemini_max_attempts = getattr(
+            settings, "gemini_max_attempts", analysis_retry_max_attempts
+        )
+        gemini_key_cooldown_seconds = getattr(
+            settings, "gemini_key_cooldown_seconds", 90.0
+        )
+        gemini_key_hard_cooldown_seconds = getattr(
+            settings, "gemini_key_hard_cooldown_seconds", 900.0
+        )
+        gemini_backoff_base_ms = getattr(settings, "gemini_backoff_base_ms", 500.0)
+        gemini_backoff_max_ms = getattr(settings, "gemini_backoff_max_ms", 10000.0)
+        gemini_backoff_jitter = getattr(settings, "gemini_backoff_jitter", True)
+        gemini_fail_fast_seconds = getattr(settings, "gemini_fail_fast_seconds", 30.0)
         logger.info(
             "Selected analysis provider=gemini analysis_model={} summary_model={} timeout_seconds={} retry_max_attempts={}",
             settings.gemini_analysis_model,
@@ -88,6 +107,15 @@ def build_analysis_analyzer(settings):
             gemini_max_tokens_retry_enabled=gemini_max_tokens_retry_enabled,
             gemini_max_single_request_chars=settings.gemini_max_single_request_chars,
             gemini_request_delay_seconds=settings.gemini_request_delay_seconds,
+            gemini_api_keys=gemini_api_keys,
+            gemini_multi_key_enabled=gemini_multi_key_enabled,
+            gemini_max_attempts=gemini_max_attempts,
+            gemini_key_cooldown_seconds=gemini_key_cooldown_seconds,
+            gemini_key_hard_cooldown_seconds=gemini_key_hard_cooldown_seconds,
+            gemini_backoff_base_ms=gemini_backoff_base_ms,
+            gemini_backoff_max_ms=gemini_backoff_max_ms,
+            gemini_backoff_jitter=gemini_backoff_jitter,
+            gemini_fail_fast_seconds=gemini_fail_fast_seconds,
             timeout_seconds=gemini_timeout_seconds,
         )
 

@@ -420,6 +420,9 @@ def test_deepgram_realtime_websocket_url_uses_configured_model_and_language():
 
     assert query["model"] == ["nova-3"]
     assert query["language"] == ["vi"]
+    assert "sample_rate" not in query
+    assert "encoding" not in query
+    assert query["container"] == ["webm"]
 
 
 def test_deepgram_realtime_websocket_url_supports_multilingual_mode():
@@ -584,6 +587,86 @@ def test_deepgram_raw_message_preview_is_debug_gated(monkeypatch):
 
     assert logged
     assert logged[0][0] == "DG RAW MESSAGE session_id={} len={} preview={}"
+
+
+def test_deepgram_parsed_transcript_log_uses_text_length(monkeypatch):
+    from app.services import stt_adapter as stt_module
+
+    logged: list[str] = []
+    monkeypatch.setattr(
+        stt_module,
+        "logger",
+        SimpleNamespace(
+            info=lambda message, *args: logged.append(
+                message.format(*args) if args else str(message)
+            ),
+            warning=lambda *args, **kwargs: None,
+            exception=lambda *args, **kwargs: None,
+        ),
+    )
+
+    adapter = DeepgramSTTAdapter(api_key="dg-test-key")
+    event = adapter._parse_transcript_message(
+        {
+            "type": "Results",
+            "channel": {
+                "alternatives": [
+                    {"transcript": "secret meeting transcript", "confidence": 0.9}
+                ]
+            },
+            "is_final": False,
+        },
+        ts_ms=10,
+    )
+
+    assert event is not None
+    assert any("text_len=" in message for message in logged)
+    assert all("secret meeting transcript" not in message for message in logged)
+
+
+def test_deepgram_connect_log_omits_full_url_and_query_values(monkeypatch):
+    from app.services import stt_adapter as stt_module
+
+    logged: list[str] = []
+    monkeypatch.setattr(
+        stt_module,
+        "logger",
+        SimpleNamespace(
+            info=lambda message, *args: logged.append(
+                message.format(*args) if args else str(message)
+            ),
+            warning=lambda *args, **kwargs: None,
+            exception=lambda *args, **kwargs: None,
+        ),
+    )
+
+    async def _fake_connect(url, **kwargs):
+        assert "dg-test-key-should-not-appear" not in url
+        assert "Token dg-test-key-should-not-appear" in kwargs["extra_headers"][0][1]
+        return _FakeWebSocket([])
+
+    monkeypatch.setattr(stt_module.websockets, "connect", _fake_connect)
+
+    adapter = DeepgramSTTAdapter(
+        api_key="dg-test-key-should-not-appear",
+        model="nova-3",
+        base_url="https://api.deepgram.com/v1/listen",
+    )
+    session = stt_module._SessionBuffer(
+        session_id="s1",
+        meeting_id=42,
+        language="vi",
+    )
+
+    asyncio.run(adapter._connect_session(session, "s1"))
+
+    connect_logs = [message for message in logged if "DG CONNECT" in message]
+    assert connect_logs
+    connect_log = connect_logs[0]
+    assert "url=" not in connect_log
+    assert "dg-test-key-should-not-appear" not in connect_log
+    assert "host=api.deepgram.com" in connect_log.replace(" ", "")
+    assert "https://api.deepgram.com/v1/listen?" not in connect_log
 
 
 def test_deepgram_batch_failure_logs_timeout_and_audio_diagnostics(monkeypatch):

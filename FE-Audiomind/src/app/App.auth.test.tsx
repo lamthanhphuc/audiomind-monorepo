@@ -4,10 +4,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const audioRecorderMock = {
   state: 'idle' as const,
+  errorMessage: null,
+  audioChunks: [],
+  recordingSessionId: 0,
   stopRecording: vi.fn(),
   abortRecording: vi.fn(),
-  startRecording: vi.fn(),
+  startRecording: vi.fn().mockResolvedValue(1),
+  pauseRecording: vi.fn(),
+  resumeRecording: vi.fn(),
+  duration: 0,
   getCurrentRms: vi.fn(),
+  getRollingChunks: vi.fn(() => []),
 }
 
 const realtimeStreamMock = {
@@ -36,6 +43,7 @@ vi.mock('../hooks/useVoiceActivityDetection', () => ({
   DEFAULT_VAD_SILENCE_DURATION_MS: 1200,
   DEFAULT_VAD_SILENCE_THRESHOLD: 0.15,
   DEFAULT_VAD_SPEECH_THRESHOLD: 0.3,
+  normalizeMicSensitivityMode: (value?: string | null) => value === 'low' || value === 'high' ? value : 'normal',
   useVoiceActivityDetection: () => ({ state: 'idle' }),
 }))
 
@@ -124,7 +132,7 @@ describe('App auth entry', () => {
     })
     await flush()
 
-    expect(container.textContent).toContain('Tạo tài khoản để bắt đầu sử dụng AudioMind.')
+    expect(container.textContent).toContain('Tạo tài khoản để upload audio, ghi âm realtime và nhận phân tích AI.')
     expect(container.querySelector('[data-testid="e2e-register-submit"]')).toBeTruthy()
   })
 
@@ -194,7 +202,7 @@ describe('App auth entry', () => {
       password: 'secret-pass',
     })
     expect(window.location.pathname).toBe('/')
-    expect(container.textContent).toContain('Đăng nhập để upload audio, ghi âm realtime và nhận phân tích AI.')
+    expect(container.textContent).toContain('Đăng nhập studio và tiếp tục từ nơi giọng nói của bạn dừng lại.')
     expect(container.textContent).toContain('Đăng ký thành công. Vui lòng đăng nhập.')
   })
 
@@ -236,9 +244,7 @@ describe('App auth entry', () => {
     })
     await flush()
 
-    const registerLink = Array.from(container.querySelectorAll('button')).find((button) =>
-      button.textContent?.includes('Đăng ký'),
-    ) as HTMLButtonElement | undefined
+    const registerLink = container.querySelector('[data-testid="e2e-auth-switch-register"]') as HTMLButtonElement | null
     expect(registerLink).toBeTruthy()
 
     await act(async () => {
@@ -249,9 +255,7 @@ describe('App auth entry', () => {
     expect(window.location.pathname).toBe('/register')
     expect(container.querySelector('[data-testid="e2e-register-submit"]')).toBeTruthy()
 
-    const loginLink = Array.from(container.querySelectorAll('button')).find((button) =>
-      button.textContent?.includes('Đăng nhập'),
-    ) as HTMLButtonElement | undefined
+    const loginLink = container.querySelector('[data-testid="e2e-auth-switch-login"]') as HTMLButtonElement | null
     expect(loginLink).toBeTruthy()
 
     await act(async () => {

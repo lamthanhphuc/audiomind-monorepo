@@ -137,7 +137,7 @@ Approximate token cost for this generated context: 2811 tokens
 
 When running shell commands, **always prefix with `rtk`**. This reduces context
 usage by 60-90% with zero behavior change. If rtk has no filter for a command,
-it passes through unchanged — so it is always safe to use.
+it passes through unchanged ï¿½ so it is always safe to use.
 
 ## Key Commands
 ```bash
@@ -148,10 +148,10 @@ rtk git status          rtk git diff            rtk git log
 rtk ls <path>           rtk read <file>         rtk grep <pattern>
 rtk find <pattern>      rtk diff <file>
 
-# Test (90-99% savings) — shows failures only
+# Test (90-99% savings) ï¿½ shows failures only
 rtk pytest tests/       rtk cargo test          rtk test <cmd>
 
-# Build & Lint (80-90% savings) — shows errors only
+# Build & Lint (80-90% savings) ï¿½ shows errors only
 rtk tsc                 rtk lint                rtk cargo build
 rtk prettier --check    rtk mypy                rtk ruff check
 
@@ -174,3 +174,21 @@ rtk pip list            rtk pnpm install        rtk npm run <script>
 - For debugging, use raw command without rtk prefix
 - `rtk proxy <cmd>` runs command without filtering but tracks usage
 <!-- /headroom:rtk-instructions -->
+
+## Skills available
+
+### Impeccable (UI/UX design skill)
+When I ask you to improve, audit, or redesign any user interface, you must follow the guidelines in `~/.codex/skills/impeccable/SKILL.md`. That file contains expert rules for typography, spacing, color, layout, motion, accessibility, and micro-interactions.
+
+**How to invoke**: Just say "Use impeccable to polish the login form" or "Audit this dashboard with impeccable". You will read the skill file and apply its principles.
+
+### Matt Pocock skills (grill-me, tdd, diagnose)
+- If I say "Grill me on this feature", ask clarifying questions before coding.
+- If I say "Use TDD for this task", follow red-green-refactor cycle.
+- If I say "Diagnose this error", perform systematic root cause analysis.
+
+### RTK (Rust Token Killer)
+When I ask you to run shell commands, always prefix them with `rtk` to save tokens (e.g., `rtk git status`, `rtk npm run build`). If `rtk` is not available, use the normal command and note the savings.
+
+### CodeGraph
+You have CodeGraph MCP connected. For questions about code structure, use CodeGraph tools (query_codebase, get_function, get_callers, etc.) instead of reading raw files.

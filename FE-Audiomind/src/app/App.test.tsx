@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { DEFAULT_REALTIME_LANGUAGE, REALTIME_LANGUAGE_OPTIONS, getRealtimeConnectionView, getStatusBadgeClass, hydrateLiveTranscriptSegments, isCurrentLiveRecordingSession, isRealtimeLanguageSelectorDisabled, mergeHydratedTranscriptWithLive, pollRealtimeAnalysisAfterStop, resolveFreshRealtimeMeetingId, resolveVoiceActivityLifecycleUpdate } from './App'
+import { DEFAULT_REALTIME_LANGUAGE, REALTIME_LANGUAGE_OPTIONS, buildTranscriptEquivalenceSignature, getRealtimeConnectionView, getStatusBadgeClass, hydrateLiveTranscriptSegments, isCurrentLiveRecordingSession, isRealtimeLanguageSelectorDisabled, mergeHydratedTranscriptWithLive, pollRealtimeAnalysisAfterStop, resolveFreshRealtimeMeetingId, resolveTranscriptPartialState, resolveVoiceActivityLifecycleUpdate } from './App'
 import { ApiError } from '../services/api'
-import { mergeTranscriptSegmentsForDisplay, normalizePersistedTranscriptSegments, upsertTranscriptSegment } from '../utils/transcript'
+import { mergeTranscriptSegmentsForDisplay, normalizePersistedTranscriptForView, normalizePersistedTranscriptSegments, upsertTranscriptSegment } from '../utils/transcript'
 
 describe('hydrateLiveTranscriptSegments', () => {
   afterEach(() => {
@@ -77,6 +77,38 @@ describe('hydrateLiveTranscriptSegments', () => {
     })
   })
 
+  it('waits for transcript content and timing to stabilize when fragment count is unchanged', async () => {
+    vi.useFakeTimers()
+
+    const rowAt = (endTime: number, text: string) => ({
+      speaker: 'Speaker 1',
+      start_time: 0,
+      end_time: endTime,
+      text,
+    })
+    const fetchTranscript = vi
+      .fn()
+      .mockResolvedValueOnce({ meeting_id: 88, transcripts: [rowAt(3, 'short')] })
+      .mockResolvedValueOnce({ meeting_id: 88, transcripts: [rowAt(6, 'abc def')] })
+      .mockResolvedValueOnce({ meeting_id: 88, transcripts: [rowAt(6, 'xyz uvw')] })
+      .mockResolvedValueOnce({ meeting_id: 88, transcripts: [rowAt(12, 'short middle complete')] })
+      .mockResolvedValueOnce({ meeting_id: 88, transcripts: [rowAt(12, 'short middle complete')] })
+      .mockResolvedValue({ meeting_id: 88, transcripts: [rowAt(12, 'short middle complete')] })
+
+    const hydrationPromise = hydrateLiveTranscriptSegments(88, fetchTranscript)
+
+    await vi.advanceTimersByTimeAsync(1500)
+    await vi.advanceTimersByTimeAsync(800 * 5)
+    const hydratedSegments = await hydrationPromise
+
+    expect(fetchTranscript).toHaveBeenCalledTimes(6)
+    expect(hydratedSegments).toHaveLength(1)
+    expect(hydratedSegments[0]).toMatchObject({
+      text: 'short middle complete',
+      end: 12,
+    })
+  })
+
   it('returns an empty list only after exhausting retries', async () => {
     vi.useFakeTimers()
 
@@ -139,6 +171,34 @@ describe('hydrateLiveTranscriptSegments', () => {
     expect(hydratedSegments).toEqual([])
   })
 
+  it('does not fetch an old meeting transcript after hydration ownership changes', async () => {
+    vi.useFakeTimers()
+
+    let activeHydrationRunId = 7
+    const fetchTranscript = vi.fn().mockResolvedValue({
+      meeting_id: 7,
+      transcripts: [{ speaker: 'Speaker 1', text: 'old meeting row' }],
+    })
+
+    const hydrationPromise = hydrateLiveTranscriptSegments(
+      7,
+      fetchTranscript,
+      null,
+      null,
+      {
+        hydrationRunId: 7,
+        isHydrationRunActive: (hydrationRunId) => hydrationRunId === activeHydrationRunId,
+      },
+    )
+
+    activeHydrationRunId = 8
+    await vi.advanceTimersByTimeAsync(1500)
+    const hydratedSegments = await hydrationPromise
+
+    expect(fetchTranscript).not.toHaveBeenCalled()
+    expect(hydratedSegments).toEqual([])
+  })
+
   it('ignores stale hydration errors after a newer meeting becomes active', async () => {
     vi.useFakeTimers()
 
@@ -183,6 +243,45 @@ describe('hydrateLiveTranscriptSegments', () => {
     const hydratedSegments = await hydrationPromise
 
     expect(fetchTranscript).toHaveBeenCalledTimes(10)
+    expect(hydratedSegments).toEqual([])
+  })
+
+  it('does not retry old meeting transcript after 404 wait when hydration ownership changes', async () => {
+    vi.useFakeTimers()
+
+    let activeHydrationRunId = 7
+
+    const fetchTranscript = vi
+      .fn()
+      .mockRejectedValue(new ApiError('No transcript found', 404))
+
+    const hydrationPromise = hydrateLiveTranscriptSegments(
+      7,
+      fetchTranscript,
+      null,
+      null,
+      {
+        hydrationRunId: 7,
+        isHydrationRunActive: (hydrationRunId) => hydrationRunId === activeHydrationRunId,
+      },
+    )
+
+    // Initial hydration delay -> first fetch /processing/transcript/7
+    await vi.advanceTimersByTimeAsync(1500)
+    await vi.runAllTicks()
+
+    expect(fetchTranscript).toHaveBeenCalledTimes(1)
+
+    // New realtime meeting #8 becomes active while old meeting #7 is waiting before retry.
+    activeHydrationRunId = 8
+
+    // Retry delay finishes, but hydration must detect stale ownership and exit.
+    await vi.advanceTimersByTimeAsync(800)
+    await vi.runAllTicks()
+
+    const hydratedSegments = await hydrationPromise
+
+    expect(fetchTranscript).toHaveBeenCalledTimes(1)
     expect(hydratedSegments).toEqual([])
   })
 
@@ -310,6 +409,60 @@ describe('mergeHydratedTranscriptWithLive', () => {
       isFinal: true,
       end: 22.47,
     })
+  })
+
+  it('matches history equivalence signature for shared persisted fixture', () => {
+    const persistedRows = [
+      { speaker: 'SPEAKER_1', start_time: 1, end_time: 2, text: 'one' },
+      { speaker: 'SPEAKER_1', start_time: 3, end_time: 4, text: 'two' },
+    ]
+    const live = [
+      { id: 'meeting-1-start-1.000-speaker_1', mergeKey: 'segment:meeting-1-start-1.000-speaker_1', speaker: 'SPEAKER_1', text: 'one', start: 1, end: 2, isFinal: true, source: 'live' as const },
+      { id: 'meeting-1-start-3.000-speaker_1', mergeKey: 'segment:meeting-1-start-3.000-speaker_1', speaker: 'SPEAKER_1', text: 'two partial', start: 3, end: 4, isFinal: false, source: 'live' as const },
+    ]
+
+    const historySignature = buildTranscriptEquivalenceSignature(
+      normalizePersistedTranscriptForView(persistedRows),
+    )
+    const liveSignature = buildTranscriptEquivalenceSignature(
+      mergeHydratedTranscriptWithLive(live, normalizePersistedTranscriptForView(persistedRows)),
+    )
+
+    expect(liveSignature).toBe(historySignature)
+  })
+})
+
+describe('resolveTranscriptPartialState', () => {
+  it('returns true when stop is incomplete', () => {
+    expect(resolveTranscriptPartialState({
+      stopIncomplete: true,
+      resetRequired: false,
+      statusMessage: null,
+    })).toBe(true)
+  })
+
+  it('returns true when backend reset is required', () => {
+    expect(resolveTranscriptPartialState({
+      stopIncomplete: false,
+      resetRequired: true,
+      statusMessage: null,
+    })).toBe(true)
+  })
+
+  it('returns true when backend status message indicates partial transcript', () => {
+    expect(resolveTranscriptPartialState({
+      stopIncomplete: false,
+      resetRequired: false,
+      statusMessage: 'Transcript có thể chưa đầy đủ',
+    })).toBe(true)
+  })
+
+  it('returns false for complete stop with stable backend status', () => {
+    expect(resolveTranscriptPartialState({
+      stopIncomplete: false,
+      resetRequired: false,
+      statusMessage: 'connected',
+    })).toBe(false)
   })
 })
 
@@ -461,6 +614,57 @@ describe('pollRealtimeAnalysisAfterStop', () => {
     vi.useRealTimers()
   })
 
+  it('does not fetch analysis for a stale realtime session token', async () => {
+    const fetchAnalysis = vi.fn()
+    const staleToken = { meetingId: 80, recordingSessionId: 1, attemptId: 1, connectionSeq: 1 }
+
+    const result = await pollRealtimeAnalysisAfterStop(
+      80,
+      new AbortController().signal,
+      fetchAnalysis as any,
+      3,
+      {
+        sessionToken: staleToken,
+        isSessionActive: () => false,
+        analysisPollRunId: 2,
+      },
+    )
+
+    expect(fetchAnalysis).not.toHaveBeenCalled()
+    expect(result.status).toBe('pending')
+    expect(result.reason).toBe('stale_session')
+    expect(result.metadata?.analysisStatus).toBe('NO_ANALYSIS')
+  })
+
+  it('returns no-analysis metadata when backend reports no transcript after finalize', async () => {
+    const fetchAnalysis = vi.fn().mockResolvedValue({
+      status: 'NO_TRANSCRIPT_AFTER_FINALIZE',
+      analysisStatus: 'NO_ANALYSIS',
+      errorCode: 'NO_TRANSCRIPT_AFTER_FINALIZE',
+      transcriptRows: 0,
+      summary: '',
+      keywords: [],
+      technicalTerms: [],
+      painPoints: [],
+      actionItems: [],
+      domainMode: 'it',
+    })
+
+    const result = await pollRealtimeAnalysisAfterStop(
+      81,
+      new AbortController().signal,
+      fetchAnalysis as any,
+      3,
+    )
+
+    expect(fetchAnalysis).toHaveBeenCalledTimes(1)
+    expect(result.status).toBe('pending')
+    expect(result.reason).toBe('no_transcript_after_finalize')
+    expect(result.metadata?.analysisStatus).toBe('NO_ANALYSIS')
+    expect(result.metadata?.errorCode).toBe('NO_TRANSCRIPT_AFTER_FINALIZE')
+    expect(result.metadata?.transcriptRows).toBe(0)
+  })
+
   it('returns completed when structured analysis becomes available', async () => {
     vi.useFakeTimers()
 
@@ -584,9 +788,11 @@ describe('pollRealtimeAnalysisAfterStop', () => {
 
   it('stops polling when backend marks analysis as failed', async () => {
     const fetchAnalysis = vi.fn().mockResolvedValue({
-      status: 'FAILED',
-      analysisStatus: 'FAILED',
+      status: 'ANALYSIS_FAILED_RETRYABLE',
+      analysisStatus: 'ANALYSIS_FAILED_RETRYABLE',
       errorCode: 'GEMINI_UNAVAILABLE',
+      retryable: true,
+      transcriptSaved: true,
       retryAfterSeconds: 30,
       summary: '',
       keywords: [],
@@ -607,7 +813,37 @@ describe('pollRealtimeAnalysisAfterStop', () => {
     expect(result.status).toBe('failed')
     expect(result.metadata?.errorCode).toBe('GEMINI_UNAVAILABLE')
     expect(result.metadata?.retryAfterSeconds).toBe(30)
-    expect(result.reason).toContain('Analysis failed temporarily')
+    expect(result.reason).toContain('Phân tích AI tạm thời chưa sẵn sàng')
+  })
+
+  it('stops polling when backend marks analysis as retryable circuit open', async () => {
+    const fetchAnalysis = vi.fn().mockResolvedValue({
+      status: 'ANALYSIS_FAILED_RETRYABLE',
+      analysisStatus: 'ANALYSIS_FAILED_RETRYABLE',
+      errorCode: 'CIRCUIT_OPEN',
+      retryable: true,
+      transcriptSaved: true,
+      retryAfterSeconds: 10,
+      summary: '',
+      keywords: [],
+      technicalTerms: [],
+      painPoints: [],
+      actionItems: [],
+      domainMode: 'it',
+    })
+
+    const result = await pollRealtimeAnalysisAfterStop(
+      91,
+      new AbortController().signal,
+      fetchAnalysis as any,
+      3,
+    )
+
+    expect(fetchAnalysis).toHaveBeenCalledTimes(1)
+    expect(result.status).toBe('failed')
+    expect(result.metadata?.errorCode).toBe('CIRCUIT_OPEN')
+    expect(result.reason).toContain('Transcript đã lưu')
+    expect(result.reason).toContain('CIRCUIT_OPEN')
   })
 })
 
@@ -695,6 +931,21 @@ describe('getRealtimeConnectionView', () => {
 
     expect(view.title).toBe('Resumed')
     expect(view.detail).toContain('lắng nghe trở lại')
+  })
+
+  it('shows terminal no-transcript state without a close error', () => {
+    const view = getRealtimeConnectionView(
+      'stopped_no_analysis',
+      'NO_TRANSCRIPT_AFTER_FINALIZE',
+      undefined,
+      false,
+      'Stream stopped by client',
+    )
+
+    expect(view.title).toBe('Chưa có transcript')
+    expect(view.detail).toBe('Không có nội dung để phân tích')
+    expect(view.closeReason).toBeNull()
+    expect(view.closeReasonIsError).toBe(false)
   })
 })
 
@@ -812,3 +1063,4 @@ describe('getStatusBadgeClass', () => {
     expect(getStatusBadgeClass('idle')).toContain('idle')
   })
 })
+

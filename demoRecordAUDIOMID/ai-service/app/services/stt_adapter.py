@@ -7,7 +7,7 @@ import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Callable, Protocol, runtime_checkable
-from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+from urllib.parse import parse_qs, parse_qsl, urlencode, urlparse, urlunparse
 from uuid import uuid4
 
 from loguru import logger
@@ -671,11 +671,10 @@ class DeepgramSTTAdapter:
             session.last_activity_at = time.time()
 
             logger.info(
-                "DG SEND session_id={} seq={} bytes={} first16hex={}",
+                "DG_SEND_AUDIO_CHUNK session_id={} seq={} bytes={}",
                 session_id,
                 -1 if seq is None else int(seq),
                 len(chunk_bytes),
-                chunk_bytes[:16].hex(),
             )
 
             websocket = session.websocket
@@ -694,25 +693,30 @@ class DeepgramSTTAdapter:
                 return []
 
             idle_seconds = time.time() - float(session.last_activity_at or 0.0)
-            if idle_seconds >= self.KEEPALIVE_AFTER_IDLE_SECONDS:
-                ping = getattr(session.websocket, "ping", None)
-                if callable(ping):
-                    try:
-                        waiter = ping()
-                        if hasattr(waiter, "__await__"):
-                            await waiter
-                        logger.info(
-                            "DG_KEEPALIVE_SENT session_id={} meeting_id={}",
-                            session.session_id,
-                            session.meeting_id,
-                        )
-                    except Exception:
-                        logger.warning(
-                            "DG_KEEPALIVE_FAILED session_id={} meeting_id={}",
-                            session.session_id,
-                            session.meeting_id,
-                        )
-                session.last_activity_at = time.time()
+        if idle_seconds >= self.KEEPALIVE_AFTER_IDLE_SECONDS:
+            websocket = session.websocket
+            if websocket is None or session.closed:
+                logger.info(
+                    "STT_KEEPALIVE_SKIPPED_SOCKET_CLOSED session_id={} meeting_id={}",
+                    session.session_id,
+                    session.meeting_id,
+                )
+            else:
+                try:
+                    await websocket.send(json.dumps({"type": "KeepAlive"}))
+                    logger.info(
+                        "STT_KEEPALIVE_SENT session_id={} meeting_id={}",
+                        session.session_id,
+                        session.meeting_id,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "STT_KEEPALIVE_FAILED session_id={} meeting_id={} error={}",
+                        session.session_id,
+                        session.meeting_id,
+                        safe_error_message(exc),
+                    )
+            session.last_activity_at = time.time()
 
         async with session.recv_lock:
             events = await self._drain_transcript_events(
@@ -736,13 +740,19 @@ class DeepgramSTTAdapter:
             close_ts_ms = session.timestamps_ms[-1] if session.timestamps_ms else 0
 
         final_events: list[dict[str, Any]] = []
-        if websocket is not None:
+        if websocket is None:
+            logger.info(
+                "STT_FINALIZE_SKIPPED_SOCKET_CLOSED session_id={} meeting_id={}",
+                session.session_id,
+                session.meeting_id,
+            )
+        else:
             if not session.finalize_sent:
                 await self._send_control_message(
                     websocket=websocket,
                     session=session,
                     payload={"type": "Finalize"},
-                    log_key="DG_FINALIZE_SEND",
+                    log_key="STT_FINALIZE_SENT",
                 )
                 session.finalize_sent = True
                 finalize_events, finalize_acked = await self._wait_for_finalize_ack(
@@ -754,13 +764,13 @@ class DeepgramSTTAdapter:
                 session.finalize_acked = bool(finalize_acked)
                 if finalize_acked:
                     logger.info(
-                        "DG_FINALIZE_ACK session_id={} meeting_id={} from_finalize=true",
+                        "STT_FINALIZE_COMPLETED session_id={} meeting_id={} from_finalize=true",
                         session.session_id,
                         session.meeting_id,
                     )
                 else:
                     logger.warning(
-                        "DG_FINALIZE_TIMEOUT session_id={} meeting_id={} timeout_seconds={}",
+                        "STT_FINALIZE_TIMEOUT session_id={} meeting_id={} timeout_seconds={}",
                         session.session_id,
                         session.meeting_id,
                         self.timeout_seconds,
@@ -774,6 +784,7 @@ class DeepgramSTTAdapter:
                     log_key="DG_CLOSE_STREAM_SEND",
                 )
                 session.close_stream_sent = True
+
             async with session.recv_lock:
                 final_events.extend(
                     await self._drain_transcript_events(
@@ -868,7 +879,7 @@ class DeepgramSTTAdapter:
 
         connection_url = self._build_websocket_url(session.language, session.diarize)
         headers = [("Authorization", f"Token {self.api_key}")]
-        safe_url = connection_url
+        connect_target = self._describe_connection_target(connection_url)
         if session.diarize:
             logger.info("DIARIZATION_ENABLED provider=deepgram mode=realtime")
         else:
@@ -883,12 +894,25 @@ class DeepgramSTTAdapter:
             bool((not self.simplify_streaming_url) and self.utterances),
             False,
         )
+        query_params = parse_qs(urlparse(connection_url).query)
         logger.info(
-            "DG CONNECT session_id={} meeting_id={} language={} url={}",
+            "DG_REQUEST_PARAMS meeting_id={} encoding={} sampleRateIncluded={} sampleRate={} channels={} language={} model={}",
+            session.meeting_id,
+            (query_params.get("encoding") or ["omitted"])[0],
+            "sample_rate" in query_params,
+            (query_params.get("sample_rate") or ["omitted"])[0],
+            (query_params.get("channels") or ["omitted"])[0],
+            (query_params.get("language") or [session.language])[0],
+            (query_params.get("model") or [self.model])[0],
+        )
+        logger.info(
+            "DG CONNECT session_id={} meeting_id={} language={} host={} path={} queryKeys={}",
             session_id,
             session.meeting_id,
             session.language,
-            safe_url,
+            connect_target["host"],
+            connect_target["path"],
+            connect_target["query_keys"],
         )
 
         last_error: Exception | None = None
@@ -993,6 +1017,16 @@ class DeepgramSTTAdapter:
 
         return events
 
+    @staticmethod
+    def _describe_connection_target(connection_url: str) -> dict[str, Any]:
+        parsed = urlparse(connection_url)
+        query_keys = sorted(parse_qs(parsed.query).keys())
+        return {
+            "host": parsed.hostname or "unknown",
+            "path": parsed.path or "/",
+            "query_keys": query_keys,
+        }
+
     def _build_websocket_url(self, language: str, diarize: bool | None = None) -> str:
         normalized = self.base_url
         if normalized.startswith("https://"):
@@ -1036,11 +1070,10 @@ class DeepgramSTTAdapter:
         log_key: str,
     ) -> None:
         logger.info(
-            "{} session_id={} meeting_id={} payload={}",
+            "{} session_id={} meeting_id={}",
             log_key,
             session.session_id,
             session.meeting_id,
-            payload,
         )
         await asyncio.wait_for(
             websocket.send(json.dumps(payload)),
@@ -1254,14 +1287,14 @@ class DeepgramSTTAdapter:
             is_final=is_final,
         )
 
-        # Emit a concise parsed transcript log (truncated) for debugging
+        # Emit only transcript metadata here; raw transcript text can contain user content.
         try:
             logger.info(
-                "Parsed Deepgram transcript ts_ms={} is_final={} confidence={} text={}",
+                "Parsed Deepgram transcript ts_ms={} is_final={} confidence={} text_len={}",
                 ts_ms,
                 is_final,
                 repr(confidence),
-                transcript[:400],
+                len(transcript),
             )
         except Exception:
             pass

@@ -1,9 +1,7 @@
 package com.example.processingservice.client;
 
 import java.io.IOException;
-import java.util.Arrays;
 import java.util.HashMap;
-import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -44,6 +42,7 @@ public class AIServiceClient {
     private static final Set<String> VALID_REALTIME_LANGUAGES = Set.of("vi", "en", "multi");
     private static final String TRACE_HEADER = "x-trace-id";
     private static final String REQUEST_HEADER = "x-request-id";
+    private static final String DEFAULT_ANALYSIS_FEATURE_SET = "grouped-action-plan-v1";
 
     private static final Logger log = LoggerFactory.getLogger(AIServiceClient.class);
 
@@ -196,6 +195,35 @@ public class AIServiceClient {
             String canonicalTranscriptVersion,
             String traceId,
             String authorization) {
+        return rerunAnalysis(
+                meetingId,
+                mode,
+                reason,
+                transcript,
+                transcriptHash,
+                promptVersion,
+                schemaVersion,
+                DEFAULT_ANALYSIS_FEATURE_SET,
+                canonicalTranscriptHash,
+                canonicalTranscriptVersion,
+                traceId,
+                authorization
+        );
+    }
+
+    public Map<String, Object> rerunAnalysis(
+            Long meetingId,
+            String mode,
+            String reason,
+            String transcript,
+            String transcriptHash,
+            String promptVersion,
+            String schemaVersion,
+            String analysisFeatureSet,
+            String canonicalTranscriptHash,
+            String canonicalTranscriptVersion,
+            String traceId,
+            String authorization) {
         HttpHeaders headers = new HttpHeaders();
         String resolvedTraceId = resolveTraceId(traceId);
         String resolvedRequestId = resolveRequestId(resolvedTraceId);
@@ -220,6 +248,9 @@ public class AIServiceClient {
         }
         if (StringUtils.hasText(schemaVersion)) {
             request.put("schema_version", schemaVersion);
+        }
+        if (StringUtils.hasText(analysisFeatureSet)) {
+            request.put("analysis_feature_set", analysisFeatureSet);
         }
         if (StringUtils.hasText(canonicalTranscriptHash)) {
             request.put("canonical_transcript_hash", canonicalTranscriptHash);
@@ -249,6 +280,28 @@ public class AIServiceClient {
             String traceId,
             String authorization
     ) {
+        return getSavedAnalysisCacheOnly(
+                meetingId,
+                transcript,
+                transcriptHash,
+                promptVersion,
+                schemaVersion,
+                DEFAULT_ANALYSIS_FEATURE_SET,
+                traceId,
+                authorization
+        );
+    }
+
+    public Map<String, Object> getSavedAnalysisCacheOnly(
+            Long meetingId,
+            String transcript,
+            String transcriptHash,
+            String promptVersion,
+            String schemaVersion,
+            String analysisFeatureSet,
+            String traceId,
+            String authorization
+    ) {
         HttpHeaders headers = new HttpHeaders();
         String resolvedTraceId = resolveTraceId(traceId);
         String resolvedRequestId = resolveRequestId(resolvedTraceId);
@@ -273,6 +326,9 @@ public class AIServiceClient {
         }
         if (StringUtils.hasText(schemaVersion)) {
             request.put("schema_version", schemaVersion);
+        }
+        if (StringUtils.hasText(analysisFeatureSet)) {
+            request.put("analysis_feature_set", analysisFeatureSet);
         }
 
         ResponseEntity<Map<String, Object>> response = executeAiServiceCall(
@@ -326,6 +382,7 @@ public class AIServiceClient {
                 transcriptHash,
                 promptVersion,
                 schemaVersion,
+                DEFAULT_ANALYSIS_FEATURE_SET,
                 traceId,
                 null
         );
@@ -333,11 +390,6 @@ public class AIServiceClient {
 
     @Retry(name = "ai-service")
     @CircuitBreaker(name = "ai-service")
-    @Retryable(
-        retryFor = { RestClientException.class, IllegalStateException.class },
-        maxAttempts = 3,
-        backoff = @Backoff(delay = 1000, multiplier = 2.0)
-    )
     public Map<String, Object> analyzeRealtimeTranscript(
             Long meetingId,
             String transcript,
@@ -355,6 +407,7 @@ public class AIServiceClient {
                 transcriptHash,
                 null,
                 null,
+                DEFAULT_ANALYSIS_FEATURE_SET,
                 traceId,
                 authorization
         );
@@ -362,11 +415,6 @@ public class AIServiceClient {
 
     @Retry(name = "ai-service")
     @CircuitBreaker(name = "ai-service")
-    @Retryable(
-        retryFor = { RestClientException.class, IllegalStateException.class },
-        maxAttempts = 3,
-        backoff = @Backoff(delay = 1000, multiplier = 2.0)
-    )
     public Map<String, Object> analyzeRealtimeTranscript(
             Long meetingId,
             String transcript,
@@ -375,6 +423,34 @@ public class AIServiceClient {
             String transcriptHash,
             String promptVersion,
             String schemaVersion,
+            String traceId,
+            String authorization
+    ) {
+        return analyzeRealtimeTranscript(
+                meetingId,
+                transcript,
+                domainMode,
+                source,
+                transcriptHash,
+                promptVersion,
+                schemaVersion,
+                DEFAULT_ANALYSIS_FEATURE_SET,
+                traceId,
+                authorization
+        );
+    }
+
+    @Retry(name = "ai-service")
+    @CircuitBreaker(name = "ai-service")
+    public Map<String, Object> analyzeRealtimeTranscript(
+            Long meetingId,
+            String transcript,
+            String domainMode,
+            String source,
+            String transcriptHash,
+            String promptVersion,
+            String schemaVersion,
+            String analysisFeatureSet,
             String traceId,
             String authorization
     ) {
@@ -405,6 +481,9 @@ public class AIServiceClient {
         }
         if (StringUtils.hasText(schemaVersion)) {
             request.put("schema_version", schemaVersion);
+        }
+        if (StringUtils.hasText(analysisFeatureSet)) {
+            request.put("analysis_feature_set", analysisFeatureSet);
         }
 
         ResponseEntity<Map<String, Object>> response = executeAiServiceCall(
@@ -523,11 +602,10 @@ public class AIServiceClient {
                 "nova-2"
         );
         log.info(
-                "AUDIO HASH PROCESSING_OUT meetingId={} seq={} size={} first16hex={}",
+                "AUDIO_CHUNK_PROCESSING_OUT meetingId={} seq={} byteLength={}",
                 meetingId,
                 seq,
-                audioChunk == null ? 0 : audioChunk.length,
-                first16Hex(audioChunk)
+                audioChunk == null ? 0 : audioChunk.length
         );
 
         try {
@@ -729,8 +807,8 @@ public class AIServiceClient {
             return false;
         }
 
-        String responseBody = exception.getResponseBodyAsString();
-        return responseBody.contains("cached_final_response") || responseBody.contains("Meeting already finalized");
+        String conflictDetail = exception.getResponseBodyAsString();
+        return conflictDetail.contains("cached_final_response") || conflictDetail.contains("Meeting already finalized");
     }
 
     private boolean isResetRequiredConflict(HttpClientErrorException exception) {
@@ -738,8 +816,8 @@ public class AIServiceClient {
             return false;
         }
 
-        String responseBody = exception.getResponseBodyAsString();
-        return responseBody.contains("reset_required") || responseBody.contains("webm_continuation_after_reconnect_blocked");
+        String conflictDetail = exception.getResponseBodyAsString();
+        return conflictDetail.contains("reset_required") || conflictDetail.contains("webm_continuation_after_reconnect_blocked");
     }
 
     private ByteArrayResource toNamedResource(MultipartFile file) {
@@ -777,8 +855,4 @@ public class AIServiceClient {
         };
     }
 
-    private String first16Hex(byte[] audioBytes) {
-        byte[] payload = audioBytes == null ? new byte[0] : audioBytes;
-        return HexFormat.of().formatHex(Arrays.copyOfRange(payload, 0, Math.min(16, payload.length)));
-    }
 }

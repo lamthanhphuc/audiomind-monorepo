@@ -575,6 +575,29 @@
   line-height: 1.45;
 }
 
+.realtime-toggle {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.realtime-toggle__control {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--color-ink);
+  font-weight: 700;
+}
+
+.realtime-toggle__control input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--color-brand-600);
+}
+
+.realtime-toggle__control input:disabled {
+  cursor: not-allowed;
+}
+
 .realtime-panel__meeting-badge {
   padding: 8px 14px;
   border-radius: var(--radius-full);

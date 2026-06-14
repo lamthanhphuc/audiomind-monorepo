@@ -28,6 +28,15 @@ class Settings(BaseSettings):
 
     # Gemini
     gemini_api_key: str = ""
+    gemini_api_keys: str = ""
+    gemini_multi_key_enabled: bool = False
+    gemini_max_attempts: int = 3
+    gemini_key_cooldown_seconds: float = 90.0
+    gemini_key_hard_cooldown_seconds: float = 900.0
+    gemini_backoff_base_ms: float = 500.0
+    gemini_backoff_max_ms: float = 10000.0
+    gemini_backoff_jitter: bool = True
+    gemini_fail_fast_seconds: float = 30.0
     gemini_analysis_model: str = "gemini-2.5-flash"
     gemini_summary_model: str = "gemini-2.5-flash"
     gemini_analysis_domain_mode: str = "it"
@@ -120,7 +129,8 @@ class Settings(BaseSettings):
     stt_persist_queue_max_bytes: int = 16 * 1024 * 1024
     stt_enqueue_timeout_seconds: float = 2.0
     stt_gap_timeout_seconds: float = 1.0
-    stt_recv_drain_timeout_seconds: float = 1.0
+    stt_recv_drain_timeout_seconds: float = 0.1
+    stt_final_recv_drain_timeout_seconds: float = 2.0
     stt_transient_retry_base_seconds: float = 0.25
     stt_transient_retry_cap_seconds: float = 2.0
     stt_reconnect_budget: int = 2
@@ -199,6 +209,24 @@ class Settings(BaseSettings):
         self.gemini_analysis_retry_max_attempts = max(
             1, int(self.gemini_analysis_retry_max_attempts or 3)
         )
+        self.gemini_max_attempts = max(
+            1, int(self.gemini_max_attempts or self.gemini_analysis_retry_max_attempts)
+        )
+        self.gemini_key_cooldown_seconds = max(
+            0.0, float(self.gemini_key_cooldown_seconds or 0.0)
+        )
+        self.gemini_key_hard_cooldown_seconds = max(
+            0.0, float(self.gemini_key_hard_cooldown_seconds or 0.0)
+        )
+        self.gemini_backoff_base_ms = max(
+            0.0, float(self.gemini_backoff_base_ms or 0.0)
+        )
+        self.gemini_backoff_max_ms = max(
+            0.0, float(self.gemini_backoff_max_ms or 0.0)
+        )
+        self.gemini_fail_fast_seconds = max(
+            0.0, float(self.gemini_fail_fast_seconds or 0.0)
+        )
         self.gemini_timeout_seconds = max(1, int(self.gemini_timeout_seconds or 300))
         self.gemini_rate_limit_retry_base_seconds = max(
             0.0, float(self.gemini_rate_limit_retry_base_seconds or 0.0)
@@ -260,6 +288,10 @@ class Settings(BaseSettings):
         if (
             self.analysis_provider == "gemini"
             and not (self.gemini_api_key or "").strip()
+            and not (
+                bool(self.gemini_multi_key_enabled)
+                and (self.gemini_api_keys or "").strip()
+            )
         ):
             raise ValueError(
                 "Invalid production gemini_api_key: empty secret is not allowed when analysis_provider=gemini"

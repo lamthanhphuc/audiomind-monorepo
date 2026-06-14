@@ -1,4 +1,5 @@
 import asyncio
+import json
 import time
 
 import pytest
@@ -39,10 +40,33 @@ class FakeRealtimeAnalyzer:
                 {"title": "Delay", "evidence": "queue lag", "severity": "high"}
             ],
             "actionItems": ["Scale workers"],
+            "businessActionItems": [
+                {
+                    "task": "Scale workers",
+                    "owner": None,
+                    "deadline": None,
+                    "dueDate": None,
+                    "priority": "high",
+                    "status": "open",
+                    "evidence": None,
+                    "evidenceQuote": None,
+                    "evidenceKeywords": ["workers", "scale"],
+                }
+            ],
             "domainMode": "it",
             "technical_terms": ["API"],
             "action_items": [
-                {"task": "Scale workers", "owner": None, "deadline": None}
+                {
+                    "task": "Scale workers",
+                    "owner": None,
+                    "deadline": None,
+                    "dueDate": None,
+                    "priority": "high",
+                    "status": "open",
+                    "evidence": None,
+                    "evidenceQuote": None,
+                    "evidenceKeywords": ["workers", "scale"],
+                }
             ],
         }
 
@@ -52,6 +76,8 @@ class FakeRealtimeAnalyzer:
             "keywords": list(data.get("keywords") or []),
             "technical_terms": list(data.get("technical_terms") or []),
             "action_items": list(data.get("action_items") or []),
+            "businessActionItems": list(data.get("businessActionItems") or []),
+            "actionItems": list(data.get("actionItems") or []),
         }
 
     def sanitize_technical_terms(self, transcript, technical_terms, keywords):
@@ -68,6 +94,16 @@ class FakeParseFailAnalyzer(FakeRealtimeAnalyzer):
         raise main_module.AnalysisParseError(
             "Invalid structured response",
             provider="gemini",
+        )
+
+
+class FakeRateLimitAnalyzer(FakeRealtimeAnalyzer):
+    def _analyze_with_gemini(self, transcript, metadata=None):
+        raise main_module.AnalysisRateLimitError(
+            "Gemini rate limit reached",
+            provider="gemini",
+            error_code="GEMINI_RATE_LIMITED",
+            retry_after_seconds=7,
         )
 
 
@@ -267,6 +303,19 @@ def test_realtime_analysis_persists_and_is_idempotent_for_same_hash(db_session):
         saved.technical_terms.get("schemaVersion")
         == main_module.AIAnalyzer.SCHEMA_VERSION
     )
+    assert saved.action_items == [
+        {
+            "task": "Scale workers",
+            "owner": None,
+            "deadline": None,
+            "dueDate": None,
+            "priority": "high",
+            "status": "open",
+            "evidence": None,
+            "evidenceQuote": None,
+            "evidenceKeywords": ["workers", "scale"],
+        }
+    ]
     assert len(main_module._realtime_analysis_analyzer.calls) == 1
 
     run = (
@@ -283,6 +332,9 @@ def test_realtime_analysis_persists_and_is_idempotent_for_same_hash(db_session):
     assert run.canonical_transcript_version is None
     assert run.analysis_input_mode == "readable_fallback"
     assert run.analysis_payload_json["summary"] == "Realtime summary"
+    assert run.analysis_payload_json["action_items"] == saved.action_items
+    assert run.analysis_payload_json["businessActionItems"] == saved.action_items
+    assert run.analysis_payload_json["actionItems"] == ["Scale workers"]
 
 
 def test_realtime_analysis_returns_503_when_analyzer_unavailable(
@@ -321,6 +373,70 @@ def test_realtime_analysis_returns_502_when_parse_fails(db_session, monkeypatch)
     assert exc_info.value.status_code == 502
     assert exc_info.value.detail == "Gemini analysis failed"
     assert db_session.query(Analysis).filter(Analysis.meeting_id == 904).first() is None
+
+
+def test_realtime_analysis_rate_limit_preserves_metadata_and_cooldown(
+    db_session, monkeypatch
+):
+    client = FakeRedisClient()
+    monkeypatch.setattr(main_module, "_get_client", lambda: client)
+    monkeypatch.setattr(
+        main_module, "_realtime_analysis_analyzer", FakeRateLimitAnalyzer()
+    )
+    request = RealtimeTranscriptAnalysisRequest(
+        meeting_id=914,
+        transcript="Speaker 1: rate limited path",
+        source="realtime",
+    )
+
+    with pytest.raises(main_module.HTTPException) as exc_info:
+        asyncio.run(main_module.analyze_realtime_transcript(request, db_session))
+
+    assert exc_info.value.status_code == 429
+    assert exc_info.value.detail["error"] == "GEMINI_RATE_LIMITED"
+    assert exc_info.value.detail["details"]["provider"] == "gemini"
+    assert exc_info.value.detail["details"]["retryable"] is True
+    assert exc_info.value.detail["details"]["retryAfterSeconds"] == 7
+    state = client.hashes[main_module._analysis_state_key(914)]
+    assert state["status"] == "FAILED"
+    assert state["error_code"] == "GEMINI_RATE_LIMITED"
+    assert state["retry_after_seconds"] == "7"
+
+
+def test_http_exception_handler_maps_structured_gemini_429_to_canonical_body():
+    request = main_module.Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/api/internal/realtime-analysis",
+            "headers": [],
+            "query_string": b"",
+        }
+    )
+    exc = main_module.HTTPException(
+        status_code=429,
+        detail={
+            "error": "GEMINI_RATE_LIMITED",
+            "message": "Gemini rate limit reached",
+            "details": {
+                "provider": "gemini",
+                "retryable": True,
+                "retryAfterSeconds": 7,
+                "errorCode": "GEMINI_RATE_LIMITED",
+            },
+        },
+    )
+
+    response = asyncio.run(main_module.http_exception_handler(request, exc))
+    body = json.loads(response.body.decode("utf-8"))
+
+    assert response.status_code == 429
+    assert body["error"] == "GEMINI_RATE_LIMITED"
+    assert body["status"] == 429
+    assert body["details"]["provider"] == "gemini"
+    assert body["details"]["retryable"] is True
+    assert body["details"]["retryAfterSeconds"] == 7
+    assert body["details"]["errorCode"] == "GEMINI_RATE_LIMITED"
 
 
 def test_realtime_analysis_cooldown_active_returns_failed_without_new_call(

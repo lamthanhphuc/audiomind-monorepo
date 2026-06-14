@@ -31,11 +31,16 @@ export interface KeywordHit {
 }
 
 export interface RealtimeStatusEvent {
-  state: 'connected' | 'disconnected' | 'reconnecting' | 'error' | 'stopped' | 'completed'
+  state: 'connected' | 'disconnected' | 'reconnecting' | 'error' | 'stopped' | 'completed' | 'NO_TRANSCRIPT_AFTER_FINALIZE'
   activeConnections?: number
   lagMs?: number
   message?: string
   resetRequired?: boolean
+  status?: string
+  errorCode?: string
+  analysisStatus?: string
+  transcriptRows?: number
+  finalized?: boolean
 }
 
 export type RealtimeLanguage = 'vi' | 'en' | 'multi'
@@ -82,6 +87,7 @@ type PendingAudioChunk = {
   type: 'audio.chunk'
   metadata: Record<string, unknown>
   binary: ArrayBuffer
+  sessionToken: RealtimeSessionToken
 }
 
 type PendingQueueItem =
@@ -107,6 +113,8 @@ type SessionReadyWaiter = {
 
 const DEFAULT_WS_URL = REALTIME_WS_BASE_URL
 const AUDIO_SAMPLE_RATE = 48_000
+const STOP_DRAIN_TIMEOUT_MS = 1500
+const STOP_DRAIN_POLL_MS = 25
 
 const toNumber = (...values: unknown[]): number => {
   for (const value of values) {
@@ -195,6 +203,7 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
   const effectRunCountRef = useRef(0)
   const connectRef = useRef<() => void>(() => {})
   const userStopRequestedRef = useRef(false)
+  const streamStopSentRef = useRef(false)
   const selectedLanguageRef = useRef<RealtimeLanguage>(DEFAULT_REALTIME_LANGUAGE)
   const selectedSpeakerModeRef = useRef<RealtimeSpeakerMode>(DEFAULT_REALTIME_SPEAKER_MODE)
 
@@ -264,9 +273,12 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
 
   const flushPendingMessages = useCallback((allowAudio: boolean) => {
     const websocket = wsRef.current
+    const stats = { queuedAudioChunks: 0, flushedAudioChunks: 0, flushedBytes: 0, droppedStaleAudioChunks: 0 }
     if (!websocket || websocket.readyState !== WebSocket.OPEN) {
-      return
+      return stats
     }
+
+    stats.queuedAudioChunks = pendingQueueRef.current.filter((item) => item.kind === 'audio').length
 
     // Drain the unified pending queue in FIFO order. Each item is either a raw
     // serialized string or a paired audio package. This preserves enqueue
@@ -293,6 +305,18 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
         break
       }
 
+      if (!isActiveSessionToken(item.payload.sessionToken)) {
+        stats.droppedStaleAudioChunks += 1
+        console.warn('[Realtime] REALTIME_DROP_AUDIO_CHUNK', {
+          meetingId: item.payload.sessionToken.meetingId,
+          recordingSessionId: item.payload.sessionToken.recordingSessionId,
+          attemptId: item.payload.sessionToken.attemptId,
+          connectionSeq: connectionSequenceRef.current,
+          reason: 'stale_session_token_flush',
+        })
+        continue
+      }
+
       // audio item
       try {
         websocket.send(JSON.stringify(item.payload.metadata))
@@ -304,17 +328,52 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
 
       try {
         websocket.send(item.payload.binary)
+        stats.flushedAudioChunks += 1
+        stats.flushedBytes += item.payload.binary.byteLength
+        console.info('[Realtime] AUDIO_CHUNK_SEND_FLUSHED', {
+          meetingId: item.payload.sessionToken.meetingId,
+          recordingSessionId: item.payload.sessionToken.recordingSessionId,
+          attemptId: item.payload.sessionToken.attemptId,
+          seq: item.payload.metadata.seq,
+          queueDepth: pendingQueueRef.current.filter((queued) => queued.kind === 'audio').length,
+          bufferedAmount: websocket.bufferedAmount,
+          tsMs: item.payload.metadata.ts_ms,
+        })
       } catch (err) {
         console.error('[Realtime] Failed to send queued audio binary:', err)
         pendingQueueRef.current.unshift(item)
         break
       }
     }
-  }, [])
+    return stats
+  }, [isActiveSessionToken])
 
-  const clearPendingQueue = useCallback(() => {
+  const clearPendingQueue = useCallback((reason = 'manual') => {
+    const lastSeq = audioSequenceRef.current
+    const queueDepth = pendingQueueRef.current.length
     pendingQueueRef.current = []
     audioSequenceRef.current = 0
+    console.info('[Realtime] REALTIME_QUEUE_CLEARED', {
+      meetingId,
+      lastSeq,
+      queueDepth,
+      reason,
+    })
+  }, [meetingId])
+
+  const waitForBufferedAmountToDrain = useCallback(async (timeoutMs = STOP_DRAIN_TIMEOUT_MS) => {
+    const startedAt = Date.now()
+
+    while (Date.now() - startedAt < timeoutMs) {
+      const websocket = wsRef.current
+      if (!websocket || websocket.readyState !== WebSocket.OPEN || websocket.bufferedAmount <= 0) {
+        return true
+      }
+
+      await new Promise((resolve) => window.setTimeout(resolve, STOP_DRAIN_POLL_MS))
+    }
+
+    return (wsRef.current?.bufferedAmount ?? 0) <= 0
   }, [])
 
   const clearSessionReadyState = useCallback(() => {
@@ -391,7 +450,7 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
       connectionSeq: connectionSequenceRef.current,
     })
 
-    clearPendingQueue()
+    clearPendingQueue('disconnect')
     rejectSessionReadyWaiters(
       'Realtime session disconnected before it became ready',
       meetingId,
@@ -484,12 +543,32 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
               })
               // mark authenticated when backend indicates it
               const authenticated = Boolean(data.authenticated || data.auth || false)
+              const readyMeetingId = toNumber(data.meetingId, data.meeting_id, meetingId)
+              if (authenticated && readyMeetingId !== meetingId) {
+                console.warn('[Realtime] REALTIME_DROP_STALE_READY', {
+                  readyMeetingId,
+                  currentMeetingId: meetingId,
+                  connectionSeq,
+                })
+                break
+              }
               if (authenticated) {
                 readyConnectionSeqRef.current = connectionSeq
                 readyMeetingIdRef.current = meetingId
                 setIsAuthenticated(true)
                 // flush queued messages and binary now that session is ready
-                flushPendingMessages(true)
+                const flushStats = flushPendingMessages(true)
+                console.info('[Realtime] RECORDING_WS_READY', {
+                  meetingId,
+                  recordingSessionId: sessionToken?.recordingSessionId ?? null,
+                  attemptId: sessionToken?.attemptId ?? null,
+                  connectionSeq,
+                  queuedAudioChunks: flushStats.queuedAudioChunks,
+                  flushedChunks: flushStats.flushedAudioChunks,
+                  flushedBytes: flushStats.flushedBytes,
+                  droppedStaleAudioChunks: flushStats.droppedStaleAudioChunks,
+                  flushStartPreroll: flushStats.flushedAudioChunks > 0,
+                })
                 resolveSessionReadyWaiters(
                   meetingId,
                   connectionSeq,
@@ -533,6 +612,8 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
               const nextState =
                 incomingState === 'reconnecting'
                   ? 'reconnecting'
+                  : incomingState === 'NO_TRANSCRIPT_AFTER_FINALIZE'
+                    ? 'NO_TRANSCRIPT_AFTER_FINALIZE'
                   : incomingState === 'partial'
                     ? 'completed'
                   : incomingState === 'completed_with_no_speech_detected'
@@ -546,6 +627,11 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
                 lagMs: toNumber(data.lagMs),
                 message: toStringValue(data.message) || undefined,
                 resetRequired: Boolean(data.resetRequired || data.reset_required),
+                status: toStringValue(data.status) || undefined,
+                errorCode: toStringValue(data.errorCode, data.error_code) || undefined,
+                analysisStatus: toStringValue(data.analysisStatus, data.analysis_status) || undefined,
+                transcriptRows: toNumber(data.transcriptRows, data.transcript_rows),
+                finalized: Boolean(data.finalized),
               })
               break
             }
@@ -597,7 +683,7 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
         wsRef.current = null
         setCloseReason('')
         userStopRequestedRef.current = false
-        clearPendingQueue()
+        clearPendingQueue('ws_close')
         clearSessionReadyState()
 
         if (isAuthFailure) {
@@ -756,12 +842,33 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
       throw new Error('Invalid meeting ID for audio chunk')
     }
 
+    if (userStopRequestedRef.current || streamStopSentRef.current) {
+      console.warn('[Realtime] REALTIME_DROP_AUDIO_CHUNK', {
+        meetingId: normalizedMeetingId,
+        connectionSeq: connectionSequenceRef.current,
+        reason: 'stream_stopped',
+      })
+      return
+    }
+
     if (meetingId !== null && normalizedMeetingId !== meetingId) {
       console.warn('[Realtime] REALTIME_DROP_AUDIO_CHUNK', {
         chunkMeetingId: normalizedMeetingId,
         currentMeetingId: meetingId,
         connectionSeq: connectionSequenceRef.current,
         reason: 'stale_meeting',
+      })
+      return
+    }
+
+    const tokenAtSendStart = activeSessionTokenRef.current
+    if (!isActiveSessionToken(tokenAtSendStart) || tokenAtSendStart?.meetingId !== normalizedMeetingId) {
+      console.warn('[Realtime] REALTIME_DROP_AUDIO_CHUNK', {
+        meetingId: normalizedMeetingId,
+        recordingSessionId: tokenAtSendStart?.recordingSessionId ?? null,
+        attemptId: tokenAtSendStart?.attemptId ?? null,
+        connectionSeq: connectionSequenceRef.current,
+        reason: 'missing_or_stale_session_token',
       })
       return
     }
@@ -783,6 +890,8 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
       encoding: 'webm-opus',
       size: audioChunk.size,
       mime_type: audioChunk.type || 'audio/webm; codecs=opus',
+      recording_session_id: tokenAtSendStart.recordingSessionId,
+      attempt_id: tokenAtSendStart.attemptId,
     }
 
     // Convert audio Blob to ArrayBuffer now so we can queue/send atomically
@@ -794,18 +903,45 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
       return
     }
 
+    if (!isActiveSessionToken(tokenAtSendStart)) {
+      console.warn('[Realtime] REALTIME_DROP_AUDIO_CHUNK', {
+        meetingId: normalizedMeetingId,
+        recordingSessionId: tokenAtSendStart.recordingSessionId,
+        attemptId: tokenAtSendStart.attemptId,
+        connectionSeq: connectionSequenceRef.current,
+        seq,
+        reason: 'stale_session_token_after_blob_read',
+      })
+      return
+    }
+
     const queuedItem: PendingAudioChunk = {
       type: 'audio.chunk',
       metadata: metadata as Record<string, unknown>,
       binary: buffer,
+      sessionToken: tokenAtSendStart,
     }
 
     const websocket = wsRef.current
     const isSocketReady = websocket?.readyState === WebSocket.OPEN
+    const willQueue = !isSocketReady || !isAuthenticated
+
+    console.info('[Realtime] AUDIO_CHUNK_SEND_ENQUEUED', {
+      meetingId: normalizedMeetingId,
+      recordingSessionId: tokenAtSendStart.recordingSessionId,
+      attemptId: tokenAtSendStart.attemptId,
+      connectionSeq: connectionSequenceRef.current,
+      seq,
+      byteLength: audioChunk.size,
+      queueDepth: pendingQueueRef.current.filter((item) => item.kind === 'audio').length + (willQueue ? 1 : 0),
+      tsMs,
+      queued: willQueue,
+      authenticated: isAuthenticated,
+    })
 
     // Queue only while the session is still bootstrapping; do not replay the
     // same WebM buffer across reconnects or after a closed socket.
-    if (!isSocketReady || !isAuthenticated) {
+    if (willQueue) {
       if (!websocket || websocket.readyState === WebSocket.CLOSED) {
         console.warn('[Realtime] REALTIME_DROP_AUDIO_CHUNK', {
           meetingId: normalizedMeetingId,
@@ -840,18 +976,16 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
 
     // Send audio as binary for efficiency (no base64 overhead)
     try {
-      if (seq === 1) {
-        try {
-          const first16 = Array.from(new Uint8Array(queuedItem.binary.slice(0, 16)))
-            .map((b) => b.toString(16).padStart(2, '0'))
-            .join('')
-          // eslint-disable-next-line no-console
-          console.log(`AUDIO HASH FRONTEND seq=${seq} size=${queuedItem.binary.byteLength} first16hex=${first16}`)
-        } catch {
-          // ignore logging errors
-        }
-      }
       websocket.send(queuedItem.binary)
+      console.info('[Realtime] AUDIO_CHUNK_SEND_FLUSHED', {
+        meetingId: normalizedMeetingId,
+        recordingSessionId: tokenAtSendStart.recordingSessionId,
+        attemptId: tokenAtSendStart.attemptId,
+        seq,
+        queueDepth: pendingQueueRef.current.filter((item) => item.kind === 'audio').length,
+        bufferedAmount: websocket.bufferedAmount,
+        tsMs,
+      })
     } catch (error) {
       console.error('[Realtime] REALTIME_DROP_AUDIO_CHUNK', {
         meetingId: normalizedMeetingId,
@@ -861,21 +995,96 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
         error,
       })
     }
-  }, [autoReconnect, canConnect, isAuthenticated, meetingId, updateStatus])
+  }, [autoReconnect, canConnect, isActiveSessionToken, isAuthenticated, meetingId, updateStatus])
 
   const pause = useCallback(() => {
     sendRaw({ type: 'stream.pause' })
   }, [sendRaw])
 
-  const stopStream = useCallback(() => {
+  const stopStream = useCallback(async () => {
+    const tokenAtStop = activeSessionTokenRef.current
+    if (!tokenAtStop || !isActiveSessionToken(tokenAtStop)) {
+      clearPendingQueue('stale_stop')
+      return false
+    }
+
     userStopRequestedRef.current = true
-    sendRaw({
-      type: 'stream.stop',
-      meetingId: meetingId,
-      timestamp: Date.now(),
+
+    if (streamStopSentRef.current) {
+      console.info('[Realtime] STREAM_STOP_DUPLICATE_IGNORED', {
+        meetingId,
+        lastSeq: audioSequenceRef.current,
+        queueDepth: pendingQueueRef.current.length,
+      })
+      clearPendingQueue('duplicate_stop')
+      return true
+    }
+
+    const flushStats = flushPendingMessages(true)
+    const drained = await waitForBufferedAmountToDrain()
+    const websocket = wsRef.current
+    const bufferedAmount = websocket?.bufferedAmount ?? 0
+
+    if (!drained && bufferedAmount > 0) {
+      console.warn('[Realtime] STREAM_STOP_BUFFER_DRAIN_TIMEOUT', {
+        meetingId: tokenAtStop.meetingId,
+        recordingSessionId: tokenAtStop.recordingSessionId,
+        attemptId: tokenAtStop.attemptId,
+        lastSeq: audioSequenceRef.current,
+        bufferedAmount,
+        drainTimeoutMs: STOP_DRAIN_TIMEOUT_MS,
+      })
+    }
+
+    if (!websocket || websocket.readyState !== WebSocket.OPEN) {
+      console.warn('[Realtime] STREAM_STOP_FAILED', {
+        meetingId: tokenAtStop.meetingId,
+        recordingSessionId: tokenAtStop.recordingSessionId,
+        attemptId: tokenAtStop.attemptId,
+        lastSeq: audioSequenceRef.current,
+        queueDepth: pendingQueueRef.current.length,
+        reason: 'socket_not_open',
+      })
+      clearPendingQueue('stop_socket_not_open')
+      return false
+    }
+
+    try {
+      websocket.send(JSON.stringify({
+        type: 'stream.stop',
+        meetingId: tokenAtStop.meetingId,
+        timestamp: Date.now(),
+        recording_session_id: tokenAtStop.recordingSessionId,
+        attempt_id: tokenAtStop.attemptId,
+      }))
+    } catch (error) {
+      console.warn('[Realtime] STREAM_STOP_FAILED', {
+        meetingId: tokenAtStop.meetingId,
+        recordingSessionId: tokenAtStop.recordingSessionId,
+        attemptId: tokenAtStop.attemptId,
+        lastSeq: audioSequenceRef.current,
+        queueDepth: pendingQueueRef.current.length,
+        reason: 'send_failed',
+      })
+      clearPendingQueue('stop_send_failed')
+      return false
+    }
+
+    streamStopSentRef.current = true
+
+    console.info('[Realtime] STREAM_STOP_AFTER_FLUSH', {
+      meetingId: tokenAtStop.meetingId,
+      recordingSessionId: tokenAtStop.recordingSessionId,
+      attemptId: tokenAtStop.attemptId,
+      lastSeq: audioSequenceRef.current,
+      queuedAudioChunks: flushStats.queuedAudioChunks,
+      flushedChunks: flushStats.flushedAudioChunks,
+      queueDepth: pendingQueueRef.current.length,
+      bufferedAmount: websocket.bufferedAmount,
     })
+    clearPendingQueue('stream_stop_sent')
     return true
-  }, [meetingId, sendRaw])
+  }, [clearPendingQueue, flushPendingMessages, isActiveSessionToken, meetingId, waitForBufferedAmountToDrain])
 
   const resume = useCallback(() => {
     sendRaw({ type: 'stream.resume' })
@@ -932,6 +1141,8 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
 
     setTranscripts([])
     setKeywords([])
+    streamStopSentRef.current = false
+    userStopRequestedRef.current = false
     pendingQueueRef.current = []
     audioSequenceRef.current = 0
     firstChunkSentAtRef.current = 0

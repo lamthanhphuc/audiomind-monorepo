@@ -5,6 +5,7 @@ import { RealtimeTranscript } from '../transcript/RealtimeTranscript'
 import { ErrorState } from '../ui/ErrorState'
 import type { useAudioRecorder } from '../../hooks/useAudioRecorder'
 import type { RealtimeLanguage, RealtimeSpeakerMode, TranscriptSegment } from '../../hooks/useRealtimeMeetingStream'
+import type { MicSensitivityMode } from '../../hooks/useVoiceActivityDetection'
 import type { AiAnalysis } from '../../types'
 
 const REALTIME_LANGUAGE_OPTIONS: Array<{ value: RealtimeLanguage; label: string }> = [
@@ -18,6 +19,12 @@ const REALTIME_SPEAKER_MODE_OPTIONS: Array<{ value: RealtimeSpeakerMode; label: 
   { value: 'multiple', label: 'Multiple speakers' },
 ]
 
+const REALTIME_MIC_SENSITIVITY_OPTIONS: Array<{ value: MicSensitivityMode; label: string }> = [
+  { value: 'low', label: 'Low' },
+  { value: 'normal', label: 'Normal' },
+  { value: 'high', label: 'High' },
+]
+
 type LiveLifecycleState =
   | 'idle'
   | 'connecting'
@@ -25,6 +32,14 @@ type LiveLifecycleState =
   | 'silent_paused'
   | 'listening_resumed'
   | 'stopping'
+  | 'finalizing_transcript'
+  | 'transcript_ready'
+  | 'analysis_pending'
+  | 'analyzing'
+  | 'analysis_completed'
+  | 'analysis_failed'
+  | 'no_transcript_after_finalize'
+  | 'stopped_no_analysis'
   | 'stopped'
   | 'error'
 
@@ -40,14 +55,20 @@ type RealtimeDashboardSceneProps = {
   connectionView: RealtimeConnectionView
   selectedRealtimeLanguage: RealtimeLanguage
   selectedRealtimeSpeakerMode: RealtimeSpeakerMode
+  selectedMicSensitivity: MicSensitivityMode
+  noiseSuppressionEnabled: boolean
+  noiseSuppressionToggleEnabled: boolean
+  noiseSuppressionSupported: boolean
   liveLifecycleState: LiveLifecycleState
   onRealtimeLanguageChange: (value: string) => void
   onRealtimeSpeakerModeChange: (value: string) => void
+  onMicSensitivityChange: (value: string) => void
+  onNoiseSuppressionChange: (enabled: boolean) => void
   isRealtimeLanguageSelectorDisabled: boolean
   isRealtimeSpeakerModeSelectorDisabled: boolean
   liveMeetingId: number | null
   audioRecorder: ReturnType<typeof useAudioRecorder>
-  onBeforeStartRecording: () => Promise<void>
+  onBeforeStartRecording: (recordingSessionId: number) => Promise<void>
   onChunkReady: (chunk: Blob, sessionId: number) => void | Promise<void>
   onRecordingComplete?: (fullAudio: Blob, sessionId: number) => void
   liveError: string | null
@@ -96,6 +117,10 @@ const resolveRealtimeLifecycleBadge = (
     return { label: 'Stopped', tone: 'stopped' }
   }
 
+  if (liveLifecycleState === 'no_transcript_after_finalize' || liveLifecycleState === 'stopped_no_analysis') {
+    return { label: 'No transcript', tone: 'stopped' }
+  }
+
   if (liveLifecycleState === 'stopping') {
     return { label: 'Stopped', tone: 'stopped' }
   }
@@ -108,9 +133,15 @@ export default function RealtimeDashboardScene({
   connectionView,
   selectedRealtimeLanguage,
   selectedRealtimeSpeakerMode,
+  selectedMicSensitivity,
+  noiseSuppressionEnabled,
+  noiseSuppressionToggleEnabled,
+  noiseSuppressionSupported,
   liveLifecycleState,
   onRealtimeLanguageChange,
   onRealtimeSpeakerModeChange,
+  onMicSensitivityChange,
+  onNoiseSuppressionChange,
   isRealtimeLanguageSelectorDisabled,
   isRealtimeSpeakerModeSelectorDisabled,
   liveMeetingId,
@@ -137,20 +168,48 @@ export default function RealtimeDashboardScene({
   onLiveAnalysisRetry,
 }: RealtimeDashboardSceneProps) {
   const lifecycleBadge = resolveRealtimeLifecycleBadge(liveLifecycleState, liveAnalysisStatus)
+  const isNoTranscriptFinalized =
+    liveLifecycleState === 'no_transcript_after_finalize'
+    || liveLifecycleState === 'stopped_no_analysis'
   const recorderLifecycleState =
     liveLifecycleState === 'silent_paused' || liveLifecycleState === 'listening_resumed'
       ? 'recording'
+      : isNoTranscriptFinalized
+        ? liveLifecycleState
+        : liveLifecycleState === 'finalizing_transcript'
+        || liveLifecycleState === 'transcript_ready'
+        || liveLifecycleState === 'analysis_pending'
+        || liveLifecycleState === 'analyzing'
+        || liveLifecycleState === 'analysis_completed'
+        || liveLifecycleState === 'analysis_failed'
+        ? 'stopped'
       : liveLifecycleState
-  const liveAnalysisPanelStatus = liveAnalysisStatus === 'polling'
+  const liveAnalysisPanelStatus = liveAnalysisStatus === 'polling' && !isNoTranscriptFinalized
     ? 'loading'
     : liveAnalysis
       ? 'ready'
       : 'empty'
-  const liveAnalysisEmptyMessage = liveAnalysisStatus === 'pending'
+  const liveAnalysisEmptyMessage = isNoTranscriptFinalized
+    ? 'Không có nội dung để phân tích'
+    : liveAnalysisStatus === 'pending'
     ? 'Analysis is not ready yet. Use Re-analyze when the transcript is complete.'
     : liveAnalysisStatus === 'failed'
-      ? 'Analysis failed temporarily. Retry available.'
+      ? (liveAnalysisMetadata?.transcriptSaved || liveAnalysisMetadata?.retryable
+        ? 'Transcript đã lưu. Phân tích AI tạm thời chưa sẵn sàng.'
+        : 'Analysis failed temporarily. Retry available.')
       : 'No realtime analysis yet.'
+  const isRecordingActive =
+    liveLifecycleState === 'connecting'
+    || liveLifecycleState === 'recording'
+    || liveLifecycleState === 'silent_paused'
+    || liveLifecycleState === 'listening_resumed'
+    || liveLifecycleState === 'stopping'
+  const noiseSuppressionDisabled = isRecordingActive || !noiseSuppressionSupported
+  const noiseSuppressionHelper = !noiseSuppressionSupported
+    ? 'Trình duyệt không hỗ trợ tùy chọn này, ghi âm vẫn hoạt động.'
+    : isRecordingActive
+      ? 'Áp dụng ở lần ghi tiếp theo.'
+      : 'Bật để giảm tiếng quạt, bàn phím, tạp âm nền. Tắt nếu giọng bị méo hoặc mất âm.'
 
   return (
     <div className="dashboard-page bg-gray-light">
@@ -208,6 +267,36 @@ export default function RealtimeDashboardScene({
                     ))}
                   </select>
                 </label>
+                <label className="upload-panel__label">
+                  <span className="upload-panel__label-text">Độ nhạy mic</span>
+                  <select
+                    className="upload-panel__select"
+                    value={selectedMicSensitivity}
+                    onChange={(event) => onMicSensitivityChange(event.target.value)}
+                    disabled={liveLifecycleState === 'stopping'}
+                  >
+                    {REALTIME_MIC_SENSITIVITY_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {noiseSuppressionToggleEnabled && (
+                  <label className="realtime-toggle">
+                    <span className="upload-panel__label-text">Khử nhiễu microphone</span>
+                    <span className="realtime-toggle__control">
+                      <input
+                        type="checkbox"
+                        checked={noiseSuppressionEnabled}
+                        onChange={(event) => onNoiseSuppressionChange(event.target.checked)}
+                        disabled={noiseSuppressionDisabled}
+                      />
+                      <span>{noiseSuppressionEnabled ? 'On' : 'Off'}</span>
+                    </span>
+                    <span className="realtime-panel__hint">{noiseSuppressionHelper}</span>
+                  </label>
+                )}
               </div>
             </div>
             {liveMeetingId && (
@@ -249,6 +338,7 @@ export default function RealtimeDashboardScene({
             segments={liveTranscriptSegments}
             isPaused={liveLifecycleState === 'silent_paused'}
             highlightKeywords={liveTranscriptKeywords}
+            emptyMessage={isNoTranscriptFinalized ? 'Chưa có transcript' : undefined}
             maxHeight="620px"
           />
 

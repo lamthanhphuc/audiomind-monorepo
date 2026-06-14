@@ -31,9 +31,11 @@ import com.example.processingservice.controller.dto.AnalysisRerunRequest;
 import com.example.processingservice.controller.dto.ProcessStartRequest;
 import com.example.processingservice.controller.dto.ProcessStartResponse;
 import com.example.processingservice.controller.dto.ProcessingStatusResponse;
+import com.example.processingservice.controller.dto.TranscriptSearchResponse;
 import com.example.processingservice.controller.dto.TranscriptResponse;
 import com.example.processingservice.security.UserPrincipal;
 import com.example.processingservice.service.ProcessingService;
+import com.example.processingservice.service.report.MeetingActionPlanData;
 
 import lombok.RequiredArgsConstructor;
 
@@ -123,6 +125,25 @@ public class ProcessingController {
         return new TranscriptResponse(meetingId, processingService.getTranscript(meetingId, ensureTraceId(traceId), authorization));
     }
 
+    @GetMapping("/{meetingId}/transcript/search")
+    public TranscriptSearchResponse searchTranscript(
+            @PathVariable Long meetingId,
+            @RequestParam(name = "q", required = false) String query,
+            @RequestParam(name = "limit", required = false) String limit,
+            @RequestParam(name = "context", required = false) String context,
+            @RequestHeader(value = "x-trace-id", required = false) String traceId,
+            @RequestHeader(HttpHeaders.AUTHORIZATION) String authorization) {
+        requirePrincipal();
+        return processingService.searchTranscriptEvidenceForMeeting(
+                meetingId,
+                query,
+                parseSearchLimit(limit),
+                parseSearchContext(context),
+                ensureTraceId(traceId),
+                authorization
+        );
+    }
+
     @GetMapping("/{meetingId}/transcript/export")
     public ResponseEntity<Resource> exportTranscript(
             @PathVariable Long meetingId,
@@ -177,6 +198,15 @@ public class ProcessingController {
         return new AnalysisResponse(meetingId, processingService.getAnalysisReadOnly(meetingId, ensureTraceId(traceId), authorization));
     }
 
+    @GetMapping("/{meetingId}/action-plan")
+    public MeetingActionPlanData actionPlan(
+            @PathVariable Long meetingId,
+            @RequestHeader(value = "x-trace-id", required = false) String traceId,
+            @RequestHeader(HttpHeaders.AUTHORIZATION) String authorization) {
+        requirePrincipal();
+        return processingService.getMeetingActionPlan(meetingId, ensureTraceId(traceId), authorization);
+    }
+
     @PostMapping("/{meetingId}/analysis/rerun")
     public AnalysisResponse rerunAnalysis(
             @PathVariable Long meetingId,
@@ -186,9 +216,19 @@ public class ProcessingController {
         requirePrincipal();
         String mode = request == null ? null : request.mode();
         String reason = request == null ? null : request.reason();
+        String promptVersion = request == null ? null : request.prompt_version();
+        String schemaVersion = request == null ? null : request.schema_version();
         return new AnalysisResponse(
                 meetingId,
-                processingService.reanalyzeMeetingAnalysis(meetingId, mode, reason, ensureTraceId(traceId), authorization)
+                processingService.reanalyzeMeetingAnalysis(
+                        meetingId,
+                        mode,
+                        reason,
+                        promptVersion,
+                        schemaVersion,
+                        ensureTraceId(traceId),
+                        authorization
+                )
         );
     }
 
@@ -210,6 +250,26 @@ public class ProcessingController {
                 .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + filename + "\"")
                 .contentLength(reportBytes.length)
                 .body(new ByteArrayResource(reportBytes));
+    }
+
+    @GetMapping("/{meetingId}/action-plan/export")
+    public ResponseEntity<Resource> exportActionPlan(
+            @PathVariable Long meetingId,
+            @RequestParam(defaultValue = "docx") String format,
+            @RequestHeader(value = "x-trace-id", required = false) String traceId,
+            @RequestHeader(HttpHeaders.AUTHORIZATION) String authorization) {
+        requirePrincipal();
+        if (!"docx".equalsIgnoreCase(format)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Only docx format is supported");
+        }
+
+        byte[] exportBytes = processingService.generateMeetingActionPlanDocx(meetingId, ensureTraceId(traceId), authorization);
+        String filename = "meeting-" + meetingId + "-action-plan.docx";
+        return ResponseEntity.ok()
+                .contentType(MediaType.parseMediaType("application/vnd.openxmlformats-officedocument.wordprocessingml.document"))
+                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + filename + "\"")
+                .contentLength(exportBytes.length)
+                .body(new ByteArrayResource(exportBytes));
     }
 
     private UserPrincipal requirePrincipal() {
@@ -239,6 +299,36 @@ public class ProcessingController {
                     HttpStatus.BAD_REQUEST,
                     "meetingId must be a positive integer"
             );
+        }
+    }
+
+    private int parseSearchLimit(String limit) {
+        if (limit == null || limit.isBlank()) {
+            return 20;
+        }
+        try {
+            int parsed = Integer.parseInt(limit.trim());
+            if (parsed <= 0) {
+                throw new NumberFormatException("limit must be positive");
+            }
+            return Math.min(parsed, 50);
+        } catch (NumberFormatException ex) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "INVALID_SEARCH_LIMIT");
+        }
+    }
+
+    private int parseSearchContext(String context) {
+        if (context == null || context.isBlank()) {
+            return 1;
+        }
+        try {
+            int parsed = Integer.parseInt(context.trim());
+            if (parsed < 0) {
+                throw new NumberFormatException("context must be non-negative");
+            }
+            return Math.min(parsed, 3);
+        } catch (NumberFormatException ex) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "INVALID_SEARCH_CONTEXT");
         }
     }
 

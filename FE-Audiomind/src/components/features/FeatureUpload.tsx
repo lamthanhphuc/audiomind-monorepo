@@ -76,7 +76,7 @@ export default function FeatureUpload({
       </header>
 
       <div className="upload-container">
-        <div className="upload-content">
+        <div className="upload-content studio-reveal studio-reveal--delay-1">
           <h1 className="upload-welcome">Chào mừng trở lại, {userName}!</h1>
           <h2 className="upload-title">Tải lên file âm thanh của bạn</h2>
 

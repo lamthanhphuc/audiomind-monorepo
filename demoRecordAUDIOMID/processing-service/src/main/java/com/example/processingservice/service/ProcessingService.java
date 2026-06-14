@@ -19,10 +19,13 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -32,8 +35,13 @@ import org.springframework.web.server.ResponseStatusException;
 
 import com.example.processingservice.client.AIServiceClient;
 import com.example.processingservice.client.MeetingServiceClient;
+import com.example.processingservice.controller.dto.TranscriptEvidenceMatch;
+import com.example.processingservice.controller.dto.TranscriptSearchResponse;
 import com.example.processingservice.controller.dto.ProcessStartResponse;
 import com.example.processingservice.controller.dto.ProcessingStatusResponse;
+import com.example.processingservice.service.report.MeetingActionPlanBuilder;
+import com.example.processingservice.service.report.MeetingActionPlanData;
+import com.example.processingservice.service.report.MeetingActionPlanDocxGenerator;
 import com.example.processingservice.service.report.MeetingReportData;
 import com.example.processingservice.service.report.MeetingReportDocxGenerator;
 
@@ -41,12 +49,12 @@ import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import jakarta.annotation.PostConstruct;
-import lombok.RequiredArgsConstructor;
 
 @Service
-@RequiredArgsConstructor
 public class ProcessingService {
     private static final Set<String> ALLOWED_UPLOAD_LANGUAGES = Set.of("vi", "en", "multi");
+    private static final String CANONICAL_ANALYSIS_VERSION = "gemini-business-v2";
+    private static final String GROUPED_ACTION_PLAN_FEATURE_SET = "grouped-action-plan-v1";
     private static final String REALTIME_ANALYSIS_SOURCE_GET_ANALYSIS_LAZY = "get_analysis_lazy";
     private static final String MEETING_STATUS_PROCESSING = "processing";
     private static final String MEETING_STATUS_COMPLETED = "completed";
@@ -67,9 +75,13 @@ public class ProcessingService {
     private static final String TRANSCRIPT_MODE_CANONICAL = "canonical";
     private static final String ANALYSIS_STATUS_NO_ANALYSIS = "NO_ANALYSIS";
     private static final String ANALYSIS_STATUS_STALE = "STALE";
+    private static final String NO_TRANSCRIPT_AFTER_FINALIZE = "NO_TRANSCRIPT_AFTER_FINALIZE";
+    private static final String COMPLETED_WITH_NO_SPEECH_DETECTED = "COMPLETED_WITH_NO_SPEECH_DETECTED";
     private static final String READABLE_TRANSCRIPT_EXPORT_NOTE =
             "Readable transcript export is generated from saved STT output and canonical transcript data when available.";
     private static final String DEFAULT_SPEAKER_STABILIZATION_VERSION = "speaker-stabilization-v1";
+    private static final Pattern RETRY_AFTER_SECONDS_PATTERN =
+            Pattern.compile("\"retryAfterSeconds\"\\s*:\\s*\"?(\\d+)\"?");
 
     private static final Logger log = LoggerFactory.getLogger(ProcessingService.class);
 
@@ -78,9 +90,12 @@ public class ProcessingService {
     private final JobStateStore jobStateStore;
     private final MeterRegistry meterRegistry;
     private final MeetingReportDocxGenerator meetingReportDocxGenerator;
-    @Value("${processing.analysis.prompt-version:gemini-business-v1}")
+    private final TranscriptEvidenceSearchService transcriptEvidenceSearchService;
+    private final MeetingActionPlanBuilder meetingActionPlanBuilder;
+    private final MeetingActionPlanDocxGenerator meetingActionPlanDocxGenerator;
+    @Value("${processing.analysis.prompt-version:gemini-business-v2}")
     private String analysisPromptVersion;
-    @Value("${processing.analysis.schema-version:gemini-business-v1}")
+    @Value("${processing.analysis.schema-version:gemini-business-v2}")
     private String analysisSchemaVersion;
     @Value("${speaker.stabilization.enabled:true}")
     private boolean speakerStabilizationEnabled = true;
@@ -103,6 +118,46 @@ public class ProcessingService {
 
     private final AtomicInteger runningGauge = new AtomicInteger(0);
     private final Set<Long> activeJobs = Collections.newSetFromMap(new ConcurrentHashMap<>());
+
+    ProcessingService(
+            AIServiceClient aiServiceClient,
+            MeetingServiceClient meetingServiceClient,
+            JobStateStore jobStateStore,
+            MeterRegistry meterRegistry,
+            MeetingReportDocxGenerator meetingReportDocxGenerator
+    ) {
+        this(
+                aiServiceClient,
+                meetingServiceClient,
+                jobStateStore,
+                meterRegistry,
+                meetingReportDocxGenerator,
+                new TranscriptEvidenceSearchService(),
+                new MeetingActionPlanBuilder(),
+                new MeetingActionPlanDocxGenerator()
+        );
+    }
+
+    @Autowired
+    public ProcessingService(
+            AIServiceClient aiServiceClient,
+            MeetingServiceClient meetingServiceClient,
+            JobStateStore jobStateStore,
+            MeterRegistry meterRegistry,
+            MeetingReportDocxGenerator meetingReportDocxGenerator,
+            TranscriptEvidenceSearchService transcriptEvidenceSearchService,
+            MeetingActionPlanBuilder meetingActionPlanBuilder,
+            MeetingActionPlanDocxGenerator meetingActionPlanDocxGenerator
+    ) {
+        this.aiServiceClient = aiServiceClient;
+        this.meetingServiceClient = meetingServiceClient;
+        this.jobStateStore = jobStateStore;
+        this.meterRegistry = meterRegistry;
+        this.meetingReportDocxGenerator = meetingReportDocxGenerator;
+        this.transcriptEvidenceSearchService = transcriptEvidenceSearchService;
+        this.meetingActionPlanBuilder = meetingActionPlanBuilder;
+        this.meetingActionPlanDocxGenerator = meetingActionPlanDocxGenerator;
+    }
 
     @PostConstruct
     void initMetrics() {
@@ -379,11 +434,67 @@ public class ProcessingService {
                 currentRequestId(traceId),
                 meetingId
         );
-        return buildTranscriptResponse(
+        Map<String, Object> response = buildTranscriptResponse(
                 meetingId,
                 stateStatus,
                 TranscriptPayload.empty()
         );
+        annotateNoTranscriptAfterFinalize(response, stateStatus);
+        return response;
+    }
+
+    public TranscriptSearchResponse searchTranscriptEvidenceForMeeting(
+            Long meetingId,
+            String query,
+            int limit,
+            int context,
+            String traceId,
+            String authorization
+    ) {
+        String trimmedQuery = query == null ? "" : query.trim();
+        String normalizedQuery = transcriptEvidenceSearchService.normalizeSearchText(trimmedQuery);
+        if (normalizedQuery.length() < 2) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "QUERY_TOO_SHORT");
+        }
+        int effectiveLimit = transcriptEvidenceSearchService.normalizeLimit(limit);
+        int effectiveContext = transcriptEvidenceSearchService.normalizeContext(context);
+
+        long startedAtNanos = System.nanoTime();
+        assertMeetingAccess(meetingId, traceId, authorization);
+        TranscriptSourceDecision transcriptDecision = loadReadableTranscriptSourceForSearch(meetingId, traceId);
+        TranscriptPayload payload = transcriptDecision.payload();
+        if (payload.readableRows().isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Transcript is not ready yet.");
+        }
+
+        List<Map<String, Object>> stabilizedRows = stabilizeReadableTranscriptRows(payload.readableRows()).rows();
+        TranscriptSearchResponse response = transcriptEvidenceSearchService.searchTranscriptEvidence(
+                meetingId,
+                stabilizedRows,
+                trimmedQuery,
+                payload.transcriptMode(),
+                payload.canonicalTranscriptHash(),
+                payload.canonicalTranscriptVersion(),
+                effectiveLimit,
+                effectiveContext
+        );
+        long durationMs = Duration.ofNanos(System.nanoTime() - startedAtNanos).toMillis();
+        log.info(
+                "event=TRANSCRIPT_SEARCH_REQUEST traceId={} requestId={} meetingId={} queryLength={} queryTokenCount={} queryHashPrefix={} limit={} context={} transcriptMode={} transcriptRows={} resultCount={} durationMs={}",
+                traceId,
+                currentRequestId(traceId),
+                meetingId,
+                trimmedQuery.length(),
+                transcriptEvidenceSearchService.queryTokenCount(trimmedQuery),
+                transcriptEvidenceSearchService.queryHashPrefix(trimmedQuery),
+                effectiveLimit,
+                effectiveContext,
+                response.transcriptMode(),
+                stabilizedRows.size(),
+                response.matches().size(),
+                durationMs
+        );
+        return response;
     }
 
     public Map<String, Object> getAnalysis(Long meetingId, String traceId) {
@@ -404,6 +515,25 @@ public class ProcessingService {
             String reason,
             String traceId,
             String authorization) {
+        return reanalyzeMeetingAnalysis(
+                meetingId,
+                mode,
+                reason,
+                null,
+                null,
+                traceId,
+                authorization
+        );
+    }
+
+    public Map<String, Object> reanalyzeMeetingAnalysis(
+            Long meetingId,
+            String mode,
+            String reason,
+            String requestedPromptVersion,
+            String requestedSchemaVersion,
+            String traceId,
+            String authorization) {
         assertMeetingAccess(meetingId, traceId, authorization);
         TranscriptPayload transcriptPayload = loadSavedTranscriptPayloadForRerun(meetingId, traceId, authorization);
         String transcriptText = buildTranscriptText(transcriptPayload.readableRows());
@@ -415,8 +545,16 @@ public class ProcessingService {
         }
 
         String transcriptHash = resolveReportTranscriptHash(transcriptPayload, transcriptText);
-        String promptVersion = resolvePromptVersion(null);
-        String schemaVersion = resolveSchemaVersion(null);
+        Map<String, Object> state = jobStateStore.getJobState(meetingId).orElse(null);
+        Map<String, Object> existingAnalysis = extractAnalysisFromState(state);
+        AnalysisVersionSelection versionSelection = selectAnalysisVersionForWrite(
+                meetingId,
+                "rerun",
+                requestedPromptVersion,
+                requestedSchemaVersion,
+                existingAnalysis,
+                traceId
+        );
         try {
             return aiServiceClient.rerunAnalysis(
                     meetingId,
@@ -424,8 +562,9 @@ public class ProcessingService {
                     reason,
                     transcriptText,
                     transcriptHash,
-                    promptVersion,
-                    schemaVersion,
+                    versionSelection.promptVersion(),
+                    versionSelection.schemaVersion(),
+                    GROUPED_ACTION_PLAN_FEATURE_SET,
                     transcriptPayload.canonicalTranscriptHash(),
                     transcriptPayload.canonicalTranscriptVersion(),
                     traceId,
@@ -491,6 +630,29 @@ public class ProcessingService {
                 analysisAvailable
         );
         return meetingReportDocxGenerator.generate(reportData);
+    }
+
+    public MeetingActionPlanData getMeetingActionPlan(Long meetingId, String traceId, String authorization) {
+        return buildMeetingActionPlan(meetingId, traceId, authorization);
+    }
+
+    public byte[] generateMeetingActionPlanDocx(Long meetingId, String traceId, String authorization) {
+        long startedAtNanos = System.nanoTime();
+        MeetingActionPlanData actionPlan = buildMeetingActionPlan(meetingId, traceId, authorization);
+        byte[] docxBytes = meetingActionPlanDocxGenerator.generate(actionPlan);
+        long durationMs = Duration.ofNanos(System.nanoTime() - startedAtNanos).toMillis();
+        log.info(
+                "event=ACTION_PLAN_EXPORT_REQUEST traceId={} requestId={} meetingId={} format=docx actionItemCount={} evidenceCount={} analysisSource={} docxFileSize={} durationMs={}",
+                traceId,
+                currentRequestId(traceId),
+                meetingId,
+                actionPlan.actionItems().size(),
+                countVerifiedEvidence(actionPlan),
+                actionPlan.analysisMetadata().analysisSource(),
+                docxBytes.length,
+                durationMs
+        );
+        return docxBytes;
     }
 
     public byte[] generateMeetingTranscriptTxt(Long meetingId, String traceId, String authorization) {
@@ -657,6 +819,94 @@ public class ProcessingService {
                 analysisMetadata,
                 analysisAvailable
         );
+    }
+
+    private MeetingActionPlanData buildMeetingActionPlan(Long meetingId, String traceId, String authorization) {
+        Map<String, Object> meeting = fetchAccessibleMeeting(meetingId, traceId, authorization);
+        TranscriptPayload transcriptPayload = loadSavedTranscriptPayloadForExport(
+                meetingId,
+                traceId,
+                authorization,
+                false,
+                TranscriptExportMode.READABLE
+        );
+        List<Map<String, Object>> transcriptRows = transcriptPayload.readableRows().isEmpty()
+                ? List.of()
+                : stabilizeReadableTranscriptRows(transcriptPayload.readableRows()).rows();
+        Map<String, Object> state = jobStateStore.getJobState(meetingId).orElse(null);
+        Map<String, Object> analysisPayload = extractAnalysisFromState(state);
+        if (!hasStructuredAnalysis(analysisPayload) && !transcriptRows.isEmpty()) {
+            analysisPayload = fetchSavedAnalysisCacheOnlyForReport(
+                    meetingId,
+                    traceId,
+                    authorization,
+                    transcriptPayload,
+                    transcriptRows
+            );
+        }
+        if (!hasStructuredAnalysis(analysisPayload)) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "EXPORT_ANALYSIS_REQUIRED");
+        }
+
+        MeetingActionPlanData actionPlan = meetingActionPlanBuilder.build(
+                meetingId,
+                meeting,
+                analysisPayload,
+                query -> resolveActionPlanEvidence(
+                        meetingId,
+                        transcriptRows,
+                        transcriptPayload,
+                        query
+                ),
+                transcriptPayload.canonicalTranscriptHash(),
+                transcriptPayload.canonicalTranscriptVersion(),
+                Instant.now()
+        );
+        log.info(
+                "event=ACTION_PLAN_PREVIEW_REQUEST traceId={} requestId={} meetingId={} actionItemCount={} evidenceCount={} analysisSource={}",
+                traceId,
+                currentRequestId(traceId),
+                meetingId,
+                actionPlan.actionItems().size(),
+                countVerifiedEvidence(actionPlan),
+                actionPlan.analysisMetadata().analysisSource()
+        );
+        return actionPlan;
+    }
+
+    private TranscriptEvidenceMatch resolveActionPlanEvidence(
+            Long meetingId,
+            List<Map<String, Object>> transcriptRows,
+            TranscriptPayload transcriptPayload,
+            String query
+    ) {
+        if (transcriptRows == null || transcriptRows.isEmpty() || query == null || query.isBlank()) {
+            return null;
+        }
+        try {
+            TranscriptSearchResponse response = transcriptEvidenceSearchService.searchTranscriptEvidence(
+                    meetingId,
+                    transcriptRows,
+                    query,
+                    transcriptPayload.transcriptMode(),
+                    transcriptPayload.canonicalTranscriptHash(),
+                    transcriptPayload.canonicalTranscriptVersion(),
+                    1,
+                    1
+            );
+            return response.matches().isEmpty() ? null : response.matches().get(0);
+        } catch (ResponseStatusException ex) {
+            if (ex.getStatusCode().is4xxClientError()) {
+                return null;
+            }
+            throw ex;
+        }
+    }
+
+    private long countVerifiedEvidence(MeetingActionPlanData actionPlan) {
+        return actionPlan.actionItems().stream()
+                .filter(item -> item.evidence() != null)
+                .count();
     }
 
     private RawTranscriptPreview buildReadableTranscriptPreviewRows(List<Map<String, Object>> transcriptRows) {
@@ -2004,23 +2254,31 @@ public class ProcessingService {
             Map<String, Object> response = new HashMap<>();
             response.put("meeting_id", meetingId);
             response.put("status", stateStatus);
-            if (analysisState != null) {
-                if (analysisState.retryAfterSeconds() > 0) {
-                    response.put("retryAfterSeconds", analysisState.retryAfterSeconds());
-                }
-                if (analysisState.errorCode() != null && !analysisState.errorCode().isBlank()) {
-                    response.put("errorCode", analysisState.errorCode());
-                }
-            }
+            mergeAnalysisFailureMetadata(response, analysisState);
             return response;
         }
 
-        if (analysisState != null && analysisState.isFailed() && analysisState.retryAfterSeconds() > 0) {
-            throw toAnalysisFailureException(analysisState.errorCode(), analysisState.retryAfterSeconds());
+        if (analysisState != null && analysisState.isFailed()) {
+            if (analysisState.retryAfterSeconds() > 0 || AnalysisFailureMapping.isRetryableErrorCode(analysisState.errorCode())) {
+                return buildAnalysisFailureResponse(meetingId, stateStatus, analysisState);
+            }
+        }
+
+        if (isNoTranscriptAfterFinalizeStatus(stateStatus)) {
+            log.info(
+                    "event=ANALYSIS_TRIGGER_SKIPPED meetingId={} source={} reason=no_transcript_after_finalize transcriptRows=0",
+                    meetingId,
+                    REALTIME_ANALYSIS_SOURCE_GET_ANALYSIS_LAZY
+            );
+            return buildNoTranscriptAfterFinalizeAnalysisResponse(meetingId);
         }
 
         AnalysisTriggerResult triggerResult = maybeTriggerRealtimeAnalysisLazy(meetingId, traceId, authorization, state);
         if ("FAILED".equals(triggerResult.status()) && triggerResult.errorCode() != null && !triggerResult.errorCode().isBlank()) {
+            if (AnalysisFailureMapping.isRetryableErrorCode(triggerResult.errorCode())) {
+                JobStateStore.AnalysisStateSnapshot retryableState = jobStateStore.getAnalysisState(meetingId).orElse(analysisState);
+                return buildAnalysisFailureResponse(meetingId, stateStatus, retryableState);
+            }
             throw toAnalysisFailureException(triggerResult.errorCode(), triggerResult.retryAfterSeconds());
         }
 
@@ -2034,15 +2292,51 @@ public class ProcessingService {
         Map<String, Object> response = new HashMap<>();
         response.put("meeting_id", meetingId);
         response.put("status", stateStatus);
-        if (analysisState != null && analysisState.retryAfterSeconds() > 0) {
-            response.put("retryAfterSeconds", analysisState.retryAfterSeconds());
-            if (analysisState.errorCode() != null && !analysisState.errorCode().isBlank()) {
-                response.put("errorCode", analysisState.errorCode());
-            }
-        } else if (triggerResult.retryAfterSeconds() > 0) {
+        mergeAnalysisFailureMetadata(response, analysisState);
+        if (analysisState == null && triggerResult.retryAfterSeconds() > 0) {
             response.put("retryAfterSeconds", triggerResult.retryAfterSeconds());
         }
         return response;
+    }
+
+    private Map<String, Object> buildAnalysisFailureResponse(
+            Long meetingId,
+            String stateStatus,
+            JobStateStore.AnalysisStateSnapshot analysisState
+    ) {
+        Map<String, Object> response = new HashMap<>();
+        response.put("meeting_id", meetingId);
+        String analysisStatus = analysisState != null && AnalysisFailureMapping.ANALYSIS_STATUS_FAILED_RETRYABLE.equals(analysisState.status())
+                ? AnalysisFailureMapping.ANALYSIS_STATUS_FAILED_RETRYABLE
+                : "FAILED";
+        response.put("status", analysisStatus);
+        response.put("analysisStatus", analysisStatus);
+        mergeAnalysisFailureMetadata(response, analysisState);
+        response.put("transcriptSaved", true);
+        return response;
+    }
+
+    private void mergeAnalysisFailureMetadata(
+            Map<String, Object> response,
+            JobStateStore.AnalysisStateSnapshot analysisState
+    ) {
+        if (analysisState == null) {
+            return;
+        }
+        if (AnalysisFailureMapping.ANALYSIS_STATUS_FAILED_RETRYABLE.equals(analysisState.status())) {
+            response.put("status", AnalysisFailureMapping.ANALYSIS_STATUS_FAILED_RETRYABLE);
+            response.put("analysisStatus", AnalysisFailureMapping.ANALYSIS_STATUS_FAILED_RETRYABLE);
+        }
+        if (analysisState.retryAfterSeconds() > 0) {
+            response.put("retryAfterSeconds", analysisState.retryAfterSeconds());
+        }
+        if (analysisState.errorCode() != null && !analysisState.errorCode().isBlank()) {
+            response.put("errorCode", analysisState.errorCode());
+            response.put("retryable", AnalysisFailureMapping.isRetryableErrorCode(analysisState.errorCode()));
+        }
+        if (analysisState.errorMessage() != null && !analysisState.errorMessage().isBlank()) {
+            response.put("errorMessage", analysisState.errorMessage());
+        }
     }
 
     private String normalizeStatus(Object value) {
@@ -2054,6 +2348,33 @@ public class ProcessingService {
             return "QUEUED";
         }
         return normalized;
+    }
+
+    private boolean isNoTranscriptAfterFinalizeStatus(String status) {
+        return NO_TRANSCRIPT_AFTER_FINALIZE.equals(status) || COMPLETED_WITH_NO_SPEECH_DETECTED.equals(status);
+    }
+
+    private void annotateNoTranscriptAfterFinalize(Map<String, Object> response, String status) {
+        if (!isNoTranscriptAfterFinalizeStatus(status)) {
+            return;
+        }
+
+        response.put("status", NO_TRANSCRIPT_AFTER_FINALIZE);
+        response.put("errorCode", NO_TRANSCRIPT_AFTER_FINALIZE);
+        response.put("analysisStatus", ANALYSIS_STATUS_NO_ANALYSIS);
+        response.put("transcriptRows", 0);
+        response.put("finalized", true);
+    }
+
+    private Map<String, Object> buildNoTranscriptAfterFinalizeAnalysisResponse(Long meetingId) {
+        Map<String, Object> response = new HashMap<>();
+        response.put("meeting_id", meetingId);
+        response.put("status", NO_TRANSCRIPT_AFTER_FINALIZE);
+        response.put("analysisStatus", ANALYSIS_STATUS_NO_ANALYSIS);
+        response.put("errorCode", NO_TRANSCRIPT_AFTER_FINALIZE);
+        response.put("transcriptRows", 0);
+        response.put("finalized", true);
+        return response;
     }
 
     private Integer normalizeProgress(Object value) {
@@ -2308,6 +2629,13 @@ public class ProcessingService {
         }
 
         return response;
+    }
+
+    private TranscriptSourceDecision loadReadableTranscriptSourceForSearch(Long meetingId, String traceId) {
+        Map<String, Object> state = jobStateStore.getJobState(meetingId).orElse(null);
+        TranscriptPayload stateTranscriptPayload = buildStateTranscriptPayload(state);
+        TranscriptPayload aiTranscriptPayload = fetchTranscriptPayloadFromAiService(meetingId, traceId);
+        return selectReadableTranscriptSource(stateTranscriptPayload, aiTranscriptPayload);
     }
 
     private TranscriptPayload loadSavedTranscriptPayloadForExport(
@@ -2846,6 +3174,16 @@ public class ProcessingService {
                 currentRequestId(traceId)
         );
 
+        String stateStatus = state == null ? "NOT_FOUND" : normalizeStatus(state.get("status"));
+        if (isNoTranscriptAfterFinalizeStatus(stateStatus)) {
+            log.info(
+                    "event=ANALYSIS_TRIGGER_SKIPPED meetingId={} source={} reason=no_transcript_after_finalize transcriptRows=0",
+                    meetingId,
+                    source
+            );
+            return new AnalysisTriggerResult(ANALYSIS_STATUS_NO_ANALYSIS, NO_TRANSCRIPT_AFTER_FINALIZE, 0);
+        }
+
         TranscriptPayload statePayload = buildStateTranscriptPayload(state);
         TranscriptPayload persistedPayload = fetchTranscriptPayloadFromAiService(meetingId, traceId);
         TranscriptSourceDecision transcriptDecision = selectReadableTranscriptSource(statePayload, persistedPayload);
@@ -2864,7 +3202,12 @@ public class ProcessingService {
         String transcriptHash = computeTranscriptHash(transcriptText);
         String promptVersion = resolvePromptVersion(null);
         String schemaVersion = resolveSchemaVersion(null);
-        String analysisCacheKey = buildAnalysisCacheKey(transcriptHash, promptVersion, schemaVersion);
+        String analysisCacheKey = buildAnalysisCacheKey(
+                transcriptHash,
+                promptVersion,
+                schemaVersion,
+                GROUPED_ACTION_PLAN_FEATURE_SET
+        );
         JobStateStore.AnalysisTriggerDecision decision = jobStateStore.tryStartAnalysis(
                 meetingId,
                 analysisCacheKey,
@@ -2951,13 +3294,15 @@ public class ProcessingService {
             String responseCacheKey = buildAnalysisCacheKey(
                     transcriptHash,
                     responsePromptVersion,
-                    responseSchemaVersion
+                    responseSchemaVersion,
+                    GROUPED_ACTION_PLAN_FEATURE_SET
             );
             String status = normalizeStatus(response == null ? null : response.get("status"));
             String reason = normalizeRealtimeSkipReason(response);
             int retryAfter = parseRetryAfter(response);
             if ("FAILED".equals(status)) {
                 String errorCode = mapRealtimeFailureCode(response);
+                int retryAfterForFailure = AnalysisFailureMapping.resolveRetryAfterSeconds(errorCode, retryAfter);
                 jobStateStore.markAnalysisFailed(
                         meetingId,
                         responseCacheKey,
@@ -2965,14 +3310,16 @@ public class ProcessingService {
                         "processing_service_lazy_poll",
                         lockToken,
                         errorCode,
-                        safeErrorText(response.get("reason"))
+                        safeErrorText(response.get("reason")),
+                        retryAfterForFailure
                 );
                 log.warn(
-                        "event=REALTIME_ANALYSIS_FAILED meetingId={} source={} errorCode={} retryAfterSeconds={}",
+                        "event=REALTIME_ANALYSIS_FAILED_RETRYABLE meetingId={} source={} errorCode={} retryAfterSeconds={} retryable={}",
                         meetingId,
                         source,
                         errorCode,
-                        retryAfter
+                        retryAfterForFailure,
+                        AnalysisFailureMapping.isRetryableErrorCode(errorCode)
                 );
                 return;
             }
@@ -3043,6 +3390,7 @@ public class ProcessingService {
             );
         } catch (HttpStatusCodeException ex) {
             String errorCode = mapAnalysisFailureCode(ex);
+            int retryAfter = AnalysisFailureMapping.resolveRetryAfterSeconds(errorCode, parseRetryAfter(ex));
             jobStateStore.markAnalysisFailed(
                     meetingId,
                     analysisCacheKey,
@@ -3050,17 +3398,21 @@ public class ProcessingService {
                     "processing_service_lazy_poll",
                     lockToken,
                     errorCode,
-                    safeErrorText(ex.getStatusText())
+                    safeErrorText(ex.getStatusText()),
+                    retryAfter
             );
             log.warn(
-                    "event=REALTIME_ANALYSIS_FAILED meetingId={} source={} errorCode={} httpStatus={}",
+                    "event=REALTIME_ANALYSIS_FAILED_RETRYABLE meetingId={} source={} errorCode={} httpStatus={} retryAfterSeconds={} retryable={}",
                     meetingId,
                     source,
                     errorCode,
-                    ex.getStatusCode().value()
+                    ex.getStatusCode().value(),
+                    retryAfter,
+                    AnalysisFailureMapping.isRetryableErrorCode(errorCode)
             );
         } catch (Exception ex) {
             String errorCode = mapAnalysisFailureCode(ex);
+            int retryAfter = AnalysisFailureMapping.resolveRetryAfterSeconds(errorCode, 0);
             jobStateStore.markAnalysisFailed(
                     meetingId,
                     analysisCacheKey,
@@ -3068,13 +3420,16 @@ public class ProcessingService {
                     "processing_service_lazy_poll",
                     lockToken,
                     errorCode,
-                    ex.getClass().getSimpleName()
+                    ex.getClass().getSimpleName(),
+                    retryAfter
             );
             log.warn(
-                    "event=REALTIME_ANALYSIS_FAILED meetingId={} source={} errorCode={}",
+                    "event=REALTIME_ANALYSIS_FAILED_RETRYABLE meetingId={} source={} errorCode={} retryAfterSeconds={} retryable={}",
                     meetingId,
                     source,
-                    errorCode
+                    errorCode,
+                    retryAfter,
+                    AnalysisFailureMapping.isRetryableErrorCode(errorCode)
             );
         }
     }
@@ -3120,7 +3475,7 @@ public class ProcessingService {
             }
         }
         String fallback = analysisPromptVersion == null ? "" : analysisPromptVersion.trim();
-        return fallback.isBlank() ? "gemini-business-v1" : fallback;
+        return fallback.isBlank() ? CANONICAL_ANALYSIS_VERSION : fallback;
     }
 
     private String resolveSchemaVersion(Map<String, Object> response) {
@@ -3135,14 +3490,95 @@ public class ProcessingService {
             }
         }
         String fallback = analysisSchemaVersion == null ? "" : analysisSchemaVersion.trim();
-        return fallback.isBlank() ? "gemini-business-v1" : fallback;
+        return fallback.isBlank() ? CANONICAL_ANALYSIS_VERSION : fallback;
     }
 
     private String buildAnalysisCacheKey(String transcriptHash, String promptVersion, String schemaVersion) {
+        return buildAnalysisCacheKey(transcriptHash, promptVersion, schemaVersion, GROUPED_ACTION_PLAN_FEATURE_SET);
+    }
+
+    private String buildAnalysisCacheKey(
+            String transcriptHash,
+            String promptVersion,
+            String schemaVersion,
+            String analysisFeatureSet
+    ) {
         String normalizedHash = transcriptHash == null ? "" : transcriptHash.trim().toLowerCase(Locale.ROOT);
         String normalizedPromptVersion = promptVersion == null ? "" : promptVersion.trim().toLowerCase(Locale.ROOT);
         String normalizedSchemaVersion = schemaVersion == null ? "" : schemaVersion.trim().toLowerCase(Locale.ROOT);
-        return normalizedHash + "|" + normalizedPromptVersion + "|" + normalizedSchemaVersion;
+        String normalizedFeatureSet = analysisFeatureSet == null ? "" : analysisFeatureSet.trim().toLowerCase(Locale.ROOT);
+        return normalizedHash + "|" + normalizedPromptVersion + "|" + normalizedSchemaVersion + "|" + normalizedFeatureSet;
+    }
+
+    private AnalysisVersionSelection selectAnalysisVersionForWrite(
+            Long meetingId,
+            String source,
+            String requestedPromptVersion,
+            String requestedSchemaVersion,
+            Map<String, Object> existingAnalysis,
+            String traceId
+    ) {
+        String existingPromptVersion = firstNonBlank(
+                existingAnalysis == null ? null : existingAnalysis.get("promptVersion"),
+                existingAnalysis == null ? null : existingAnalysis.get("prompt_version")
+        );
+        String existingSchemaVersion = firstNonBlank(
+                existingAnalysis == null ? null : existingAnalysis.get("schemaVersion"),
+                existingAnalysis == null ? null : existingAnalysis.get("schema_version")
+        );
+        String requestedPrompt = firstNonBlank(requestedPromptVersion);
+        String requestedSchema = firstNonBlank(requestedSchemaVersion);
+        boolean requestedDowngrade = isV1Version(requestedPrompt) || isV1Version(requestedSchema);
+        boolean existingV2 = isCanonicalV2(existingPromptVersion) || isCanonicalV2(existingSchemaVersion);
+        String reason = "canonical_default";
+
+        if (requestedDowngrade) {
+            log.info(
+                    "event=ANALYSIS_VERSION_DOWNGRADE_BLOCKED traceId={} requestId={} meetingId={} source={} requestedPromptVersion={} requestedSchemaVersion={} selectedPromptVersion={} selectedSchemaVersion={}",
+                    traceId,
+                    currentRequestId(traceId),
+                    meetingId,
+                    source,
+                    requestedPrompt,
+                    requestedSchema,
+                    CANONICAL_ANALYSIS_VERSION,
+                    CANONICAL_ANALYSIS_VERSION
+            );
+            reason = "downgrade_blocked";
+        } else if (existingV2) {
+            reason = "existing_v2_preserved";
+            log.info(
+                    "event=RERUN_ANALYSIS_VERSION_PRESERVED traceId={} requestId={} meetingId={} source={} selectedPromptVersion={} selectedSchemaVersion={}",
+                    traceId,
+                    currentRequestId(traceId),
+                    meetingId,
+                    source,
+                    CANONICAL_ANALYSIS_VERSION,
+                    CANONICAL_ANALYSIS_VERSION
+            );
+        }
+
+        log.info(
+                "event=ANALYSIS_VERSION_SELECTED traceId={} requestId={} meetingId={} source={} requestedPromptVersion={} requestedSchemaVersion={} selectedPromptVersion={} selectedSchemaVersion={} reason={}",
+                traceId,
+                currentRequestId(traceId),
+                meetingId,
+                source,
+                requestedPrompt,
+                requestedSchema,
+                CANONICAL_ANALYSIS_VERSION,
+                CANONICAL_ANALYSIS_VERSION,
+                reason
+        );
+        return new AnalysisVersionSelection(CANONICAL_ANALYSIS_VERSION, CANONICAL_ANALYSIS_VERSION);
+    }
+
+    private boolean isV1Version(String value) {
+        return "gemini-business-v1".equalsIgnoreCase(value == null ? "" : value.trim());
+    }
+
+    private boolean isCanonicalV2(String value) {
+        return CANONICAL_ANALYSIS_VERSION.equalsIgnoreCase(value == null ? "" : value.trim());
     }
 
     private void logRealtimeAnalysisSkipThrottled(Long meetingId, String source, String reason) {
@@ -3159,17 +3595,24 @@ public class ProcessingService {
 
     private String mapRealtimeFailureCode(Map<String, Object> response) {
         if (response == null) {
-            return "GEMINI_ANALYSIS_FAILED";
+            return AnalysisFailureMapping.ERROR_CODE_GEMINI_ANALYSIS_FAILED;
+        }
+        Object explicitErrorCode = response.get("errorCode");
+        if (explicitErrorCode != null && !String.valueOf(explicitErrorCode).isBlank()) {
+            return String.valueOf(explicitErrorCode).trim().toUpperCase(Locale.ROOT);
         }
         Object reason = response.get("reason");
-        String normalized = reason == null ? "" : String.valueOf(reason).trim().toLowerCase();
+        String normalized = reason == null ? "" : String.valueOf(reason).trim().toLowerCase(Locale.ROOT);
         if (normalized.contains("empty_transcript")) {
-            return "EMPTY_TRANSCRIPT";
+            return AnalysisFailureMapping.ERROR_CODE_EMPTY_TRANSCRIPT;
+        }
+        if (normalized.contains("circuit_open") || normalized.contains("callnotpermitted")) {
+            return AnalysisFailureMapping.ERROR_CODE_CIRCUIT_OPEN;
         }
         if (normalized.contains("unavailable")) {
-            return "GEMINI_UNAVAILABLE";
+            return AnalysisFailureMapping.ERROR_CODE_GEMINI_UNAVAILABLE;
         }
-        return "GEMINI_ANALYSIS_FAILED";
+        return AnalysisFailureMapping.ERROR_CODE_GEMINI_ANALYSIS_FAILED;
     }
 
     private String normalizeRealtimeSkipReason(Map<String, Object> response) {
@@ -3241,45 +3684,68 @@ public class ProcessingService {
         if (response == null) {
             return 0;
         }
-        Object value = response.get("retryAfterSeconds");
+        int topLevelRetryAfter = parseRetryAfterValue(response.get("retryAfterSeconds"));
+        if (topLevelRetryAfter > 0) {
+            return topLevelRetryAfter;
+        }
+        Object details = response.get("details");
+        if (details instanceof Map<?, ?> detailMap) {
+            return parseRetryAfterValue(detailMap.get("retryAfterSeconds"));
+        }
+        return 0;
+    }
+
+    private int parseRetryAfter(HttpStatusCodeException ex) {
+        int bodyRetryAfter = parseRetryAfterFromText(ex.getResponseBodyAsString());
+        if (bodyRetryAfter > 0) {
+            return bodyRetryAfter;
+        }
+        String retryAfterHeader = ex.getResponseHeaders() == null
+                ? ""
+                : ex.getResponseHeaders().getFirst("Retry-After");
+        return parseRetryAfterValue(retryAfterHeader);
+    }
+
+    private int parseRetryAfterFromText(String text) {
+        if (text == null || text.isBlank()) {
+            return 0;
+        }
+        Matcher matcher = RETRY_AFTER_SECONDS_PATTERN.matcher(text);
+        if (!matcher.find()) {
+            return 0;
+        }
+        return parseRetryAfterValue(matcher.group(1));
+    }
+
+    private int parseRetryAfterValue(Object value) {
         if (value == null) {
             return 0;
         }
         try {
-            return Math.max(0, Integer.parseInt(String.valueOf(value)));
+            return Math.max(0, Integer.parseInt(String.valueOf(value).trim()));
         } catch (NumberFormatException ex) {
             return 0;
         }
     }
 
     private String mapAnalysisFailureCode(Exception ex) {
-        if (ex instanceof HttpStatusCodeException httpError) {
-            int status = httpError.getStatusCode().value();
-            String body = safeErrorText(httpError.getResponseBodyAsString()).toLowerCase();
-            String message = safeErrorText(httpError.getStatusText()).toLowerCase();
-            if (status == 422 || body.contains("empty_transcript") || message.contains("empty transcript")) {
-                return "EMPTY_TRANSCRIPT";
-            }
-            if (status == 503 || body.contains("gemini_unavailable") || message.contains("gemini")) {
-                return "GEMINI_UNAVAILABLE";
-            }
-            if (status == 502) {
-                return "GEMINI_ANALYSIS_FAILED";
-            }
-            return "AI_SERVICE_UNAVAILABLE";
-        }
-        return "GEMINI_ANALYSIS_FAILED";
+        return AnalysisFailureMapping.mapFailureCode(ex);
     }
 
     private ResponseStatusException toAnalysisFailureException(String errorCode, int retryAfterSeconds) {
         String suffix = retryAfterSeconds > 0 ? " retryAfterSeconds=" + retryAfterSeconds : "";
-        if ("EMPTY_TRANSCRIPT".equals(errorCode)) {
+        if (AnalysisFailureMapping.ERROR_CODE_EMPTY_TRANSCRIPT.equals(errorCode)) {
             return new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY, "Empty transcript" + suffix);
         }
-        if ("GEMINI_UNAVAILABLE".equals(errorCode)) {
+        if (AnalysisFailureMapping.ERROR_CODE_GEMINI_UNAVAILABLE.equals(errorCode)
+                || AnalysisFailureMapping.ERROR_CODE_CIRCUIT_OPEN.equals(errorCode)) {
             return new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Gemini service unavailable" + suffix);
         }
-        if ("AI_SERVICE_UNAVAILABLE".equals(errorCode)) {
+        if (AnalysisFailureMapping.ERROR_CODE_GEMINI_RATE_LIMITED.equals(errorCode)
+                || AnalysisFailureMapping.ERROR_CODE_GEMINI_QUOTA_EXHAUSTED.equals(errorCode)) {
+            return new ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS, "Gemini rate limit reached" + suffix);
+        }
+        if (AnalysisFailureMapping.ERROR_CODE_AI_SERVICE_UNAVAILABLE.equals(errorCode)) {
             return new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "AI service unavailable" + suffix);
         }
         return new ResponseStatusException(HttpStatus.BAD_GATEWAY, "Gemini analysis failed" + suffix);
@@ -3324,6 +3790,9 @@ public class ProcessingService {
     }
 
     private record AnalysisTriggerResult(String status, String errorCode, int retryAfterSeconds) {
+    }
+
+    private record AnalysisVersionSelection(String promptVersion, String schemaVersion) {
     }
 
     private enum TranscriptExportMode {

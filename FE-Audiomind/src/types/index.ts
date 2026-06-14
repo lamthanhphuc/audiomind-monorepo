@@ -32,6 +32,50 @@ export type AnalysisActionItem = {
   evidence?: string
 }
 
+export type GroupedActionPlanConfidence = 'SUPPORTED' | 'INFERRED' | 'NEEDS_REVIEW'
+
+export type GroupedActionPlanSubtask = {
+  text: string
+  confidence?: GroupedActionPlanConfidence
+  evidenceKeywords?: string[]
+}
+
+export type GroupedActionPlanItem = {
+  id: string
+  title: string
+  description?: string | null
+  subtasks: GroupedActionPlanSubtask[]
+  owner?: string | null
+  deadline?: string | null
+  priority?: 'low' | 'medium' | 'high' | string | null
+  status?: 'open' | 'in_progress' | 'blocked' | 'done' | string | null
+  confidence?: GroupedActionPlanConfidence
+  evidenceKeywords?: string[]
+  sourceActionItemIds?: string[]
+}
+
+export type GroupedActionPlanSection = {
+  id: string
+  order: number
+  title: string
+  summary?: string | null
+  items: GroupedActionPlanItem[]
+}
+
+export type GroupedActionPlanNote = {
+  text: string
+  confidence?: GroupedActionPlanConfidence
+  evidenceKeywords?: string[]
+}
+
+export type GroupedActionPlan = {
+  version: string
+  language: 'vi' | 'en' | 'mixed'
+  intro: string
+  sections: GroupedActionPlanSection[]
+  notes: GroupedActionPlanNote[]
+}
+
 export type AiAnalysis = {
   meetingId?: number
   meeting_id?: number
@@ -49,6 +93,11 @@ export type AiAnalysis = {
   retryAfterSeconds?: number
   errorCode?: string
   errorMessage?: string
+  retryable?: boolean
+  attemptCount?: number
+  transcriptSaved?: boolean
+  transcriptRows?: number
+  finalized?: boolean
   summary: string
   meetingSummary?: string
   keywords: string[]
@@ -69,6 +118,8 @@ export type AiAnalysis = {
   confidence?: number
   promptVersion?: string
   schemaVersion?: string
+  analysisFeatureSet?: string
+  groupedActionPlan?: GroupedActionPlan
   transcriptHash?: string
   domainMode: 'general' | 'it' | 'business' | 'education'
   createdAt?: string
@@ -328,6 +379,263 @@ const firstNumber = (...values: unknown[]): number | undefined => {
   return undefined
 }
 
+const normalizeStringList = (value: unknown, limit = 8): string[] => {
+  const items = Array.isArray(value) ? value : []
+  const seen = new Set<string>()
+  const normalized: string[] = []
+
+  items.forEach((item) => {
+    const text = String(item ?? '').trim()
+    if (!text) {
+      return
+    }
+    const key = text.toLowerCase()
+    if (seen.has(key)) {
+      return
+    }
+    seen.add(key)
+    normalized.push(text)
+  })
+
+  return normalized.slice(0, limit)
+}
+
+const normalizeGroupedConfidence = (
+  value: unknown,
+  fallback: GroupedActionPlanConfidence = 'NEEDS_REVIEW',
+): GroupedActionPlanConfidence => {
+  const normalized = String(value ?? '').trim().toUpperCase()
+  if (normalized === 'SUPPORTED' || normalized === 'INFERRED' || normalized === 'NEEDS_REVIEW') {
+    return normalized
+  }
+  return fallback
+}
+
+const normalizeGroupedLanguage = (value: unknown): GroupedActionPlan['language'] => {
+  const normalized = String(value ?? '').trim().toLowerCase()
+  if (normalized === 'en' || normalized === 'mixed') {
+    return normalized
+  }
+  return 'vi'
+}
+
+const trimText = (value: unknown, maxLength: number): string => {
+  const text = String(value ?? '').trim()
+  return text.length > maxLength ? text.slice(0, maxLength).trim() : text
+}
+
+const normalizeGroupedSubtasks = (value: unknown): GroupedActionPlanSubtask[] => {
+  const items = Array.isArray(value) ? value : []
+  return items.slice(0, 8).map((item): GroupedActionPlanSubtask => {
+    if (typeof item === 'string') {
+      return {
+        text: trimText(item, 240),
+        confidence: 'NEEDS_REVIEW',
+        evidenceKeywords: [],
+      }
+    }
+    const record = item && typeof item === 'object'
+      ? (item as Record<string, unknown>)
+      : {}
+    return {
+      text: trimText(record.text ?? record.title ?? record.task, 240),
+      confidence: normalizeGroupedConfidence(record.confidence),
+      evidenceKeywords: normalizeStringList(record.evidenceKeywords ?? record.evidence_keywords, 8),
+    }
+  }).filter((item) => item.text)
+}
+
+const normalizeGroupedItems = (value: unknown, sectionIndex: number): GroupedActionPlanItem[] => {
+  const items = Array.isArray(value) ? value : []
+  return items.slice(0, 8).map((item, itemIndex) => {
+    const record = item && typeof item === 'object'
+      ? (item as Record<string, unknown>)
+      : {}
+    const title = trimText(record.title ?? record.task ?? record.description ?? item, 120)
+    const id = trimText(record.id, 80) || `section-${sectionIndex + 1}-item-${itemIndex + 1}`
+    return {
+      id,
+      title,
+      description: trimText(record.description, 500) || null,
+      subtasks: normalizeGroupedSubtasks(record.subtasks),
+      owner: trimText(record.owner, 120) || null,
+      deadline: trimText(record.deadline ?? record.dueDate ?? record.due_date, 120) || null,
+      priority: normalizeGroupedPriority(record.priority),
+      status: normalizeGroupedStatus(record.status),
+      confidence: normalizeGroupedConfidence(record.confidence),
+      evidenceKeywords: normalizeStringList(record.evidenceKeywords ?? record.evidence_keywords, 8),
+      sourceActionItemIds: normalizeStringList(record.sourceActionItemIds ?? record.source_action_item_ids, 8),
+    }
+  }).filter((item) => item.title)
+}
+
+const normalizeGroupedPriority = (value: unknown): 'low' | 'medium' | 'high' | null => {
+  const normalized = String(value ?? '').trim().toLowerCase()
+  if (normalized === 'low' || normalized === 'medium' || normalized === 'high') {
+    return normalized
+  }
+  return null
+}
+
+const normalizeGroupedStatus = (value: unknown): 'open' | 'in_progress' | 'blocked' | 'done' => {
+  const normalized = String(value ?? '').trim().toLowerCase()
+  if (
+    normalized === 'open'
+    || normalized === 'in_progress'
+    || normalized === 'blocked'
+    || normalized === 'done'
+  ) {
+    return normalized
+  }
+  return 'open'
+}
+
+const normalizeGroupedNotes = (value: unknown): GroupedActionPlanNote[] => {
+  const items = Array.isArray(value) ? value : []
+  return items.slice(0, 8).map((item): GroupedActionPlanNote => {
+    if (typeof item === 'string') {
+      return { text: trimText(item, 240), confidence: 'NEEDS_REVIEW', evidenceKeywords: [] }
+    }
+    const record = item && typeof item === 'object'
+      ? (item as Record<string, unknown>)
+      : {}
+    return {
+      text: trimText(record.text ?? record.note ?? record.title, 240),
+      confidence: normalizeGroupedConfidence(record.confidence),
+      evidenceKeywords: normalizeStringList(record.evidenceKeywords ?? record.evidence_keywords, 8),
+    }
+  }).filter((item) => item.text)
+}
+
+const flatActionItemsToFallback = (value: unknown): GroupedActionPlan | undefined => {
+  const items = normalizeBusinessActionItems(value)
+  const normalizedItems = items.slice(0, 8).map((item, index): GroupedActionPlanItem => {
+    const sourceRecord = item as AnalysisActionItem & Record<string, unknown>
+    const evidenceKeywords = normalizeStringList(
+      sourceRecord.evidenceKeywords ?? sourceRecord.evidence_keywords,
+      8,
+    )
+    const fallbackEvidenceKeywords = item.evidence ? [item.evidence] : []
+    const resolvedEvidenceKeywords = evidenceKeywords.length > 0 ? evidenceKeywords : fallbackEvidenceKeywords
+
+    return {
+      id: `fallback-item-${index + 1}`,
+      title: item.task,
+      description: null,
+      subtasks: [],
+      owner: item.owner ?? null,
+      deadline: item.deadline ?? item.dueDate ?? null,
+      priority: normalizeGroupedPriority(item.priority),
+      status: normalizeGroupedStatus(item.status),
+      confidence: resolvedEvidenceKeywords.length > 0 ? 'SUPPORTED' : 'NEEDS_REVIEW',
+      evidenceKeywords: resolvedEvidenceKeywords,
+      sourceActionItemIds: [`action-${index + 1}`],
+    }
+  })
+
+  if (normalizedItems.length === 0) {
+    return undefined
+  }
+
+  return {
+    version: 'grouped-action-plan-v1',
+    language: 'vi',
+    intro: 'Dựa trên nội dung cuộc thảo luận trong file audio, dưới đây là danh sách các công việc cần thực hiện, được phân chia theo các nhóm chức năng chính:',
+    sections: [
+      {
+        id: 'fallback-section-1',
+        order: 1,
+        title: 'Công việc chung',
+        summary: null,
+        items: normalizedItems,
+      },
+    ],
+    notes: [],
+  }
+}
+
+export const normalizeGroupedActionPlan = (
+  value: unknown,
+  fallbackActionItems?: unknown,
+): GroupedActionPlan | undefined => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return flatActionItemsToFallback(fallbackActionItems)
+  }
+
+  const payload = value as Record<string, unknown>
+  const sections = (Array.isArray(payload.sections) ? payload.sections : [])
+    .slice(0, 8)
+    .map((section, sectionIndex): GroupedActionPlanSection | null => {
+      const record = section && typeof section === 'object'
+        ? (section as Record<string, unknown>)
+        : {}
+      const items = normalizeGroupedItems(record.items, sectionIndex)
+      const title = trimText(record.title, 80)
+      if (!title || items.length === 0) {
+        return null
+      }
+      return {
+        id: trimText(record.id, 80) || `section-${sectionIndex + 1}`,
+        order: firstNumber(record.order) ?? sectionIndex + 1,
+        title,
+        summary: trimText(record.summary, 240) || null,
+        items,
+      }
+    })
+    .filter((section): section is GroupedActionPlanSection => section !== null)
+    .sort((left, right) => left.order - right.order)
+
+  if (sections.length === 0) {
+    return flatActionItemsToFallback(fallbackActionItems)
+  }
+
+  return {
+    version: trimText(payload.version, 80) || 'grouped-action-plan-v1',
+    language: normalizeGroupedLanguage(payload.language),
+    intro: trimText(payload.intro, 360) || 'Dựa trên nội dung cuộc thảo luận trong file audio, dưới đây là danh sách các công việc cần thực hiện, được phân chia theo các nhóm chức năng chính:',
+    sections,
+    notes: normalizeGroupedNotes(payload.notes),
+  }
+}
+
+const confidenceLabel = (confidence?: GroupedActionPlanConfidence): string => {
+  if (confidence === 'INFERRED') {
+    return 'Suy luận'
+  }
+  if (confidence === 'NEEDS_REVIEW') {
+    return 'Cần xác minh'
+  }
+  return ''
+}
+
+export const formatGroupedActionPlanForCopy = (
+  groupedActionPlan: GroupedActionPlan | undefined,
+  fallbackActionItems?: unknown,
+): string => {
+  const plan = groupedActionPlan ?? normalizeGroupedActionPlan(undefined, fallbackActionItems)
+  if (!plan || plan.sections.length === 0) {
+    return 'Chưa có công việc đủ rõ để phân nhóm.'
+  }
+
+  const lines: string[] = [plan.intro, '']
+  plan.sections.forEach((section, sectionIndex) => {
+    lines.push(`### ${sectionIndex + 1}. ${section.title}`)
+    section.items.forEach((item) => {
+      const label = confidenceLabel(item.confidence)
+      const suffix = label ? ` (${label})` : ''
+      const description = item.description ? ` ${item.description}` : ''
+      lines.push(`* **${item.title}:**${description}${suffix}`.trim())
+      item.subtasks.forEach((subtask) => {
+        const subtaskLabel = confidenceLabel(subtask.confidence)
+        lines.push(`  * ${subtask.text}${subtaskLabel ? ` (${subtaskLabel})` : ''}`)
+      })
+    })
+    lines.push('')
+  })
+
+  return lines.join('\n').trim()
+}
+
 export const normalizeAnalysisResponse = (value: unknown): AiAnalysis => {
   const payload = value && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -361,6 +669,10 @@ export const normalizeAnalysisResponse = (value: unknown): AiAnalysis => {
   )
   const actionItems = normalizeActionItems(nested.actionItems ?? nested.action_items)
   const businessActionItems = normalizeBusinessActionItems(
+    nested.businessActionItems ?? nested.action_items ?? nested.actionItems,
+  )
+  const groupedActionPlan = normalizeGroupedActionPlan(
+    nested.groupedActionPlan ?? nested.grouped_action_plan,
     nested.businessActionItems ?? nested.action_items ?? nested.actionItems,
   )
   const keyDecisions = Array.isArray(nested.keyDecisions)
@@ -412,6 +724,11 @@ export const normalizeAnalysisResponse = (value: unknown): AiAnalysis => {
     retryAfterSeconds: firstNumber(nested.retryAfterSeconds, nested.retry_after_seconds, payload.retryAfterSeconds, payload.retry_after_seconds),
     errorCode: firstString(nested.errorCode, nested.error_code, payload.errorCode, payload.error_code),
     errorMessage: firstString(nested.errorMessage, nested.error_message, payload.errorMessage, payload.error_message),
+    retryable: firstBoolean(nested.retryable, payload.retryable),
+    attemptCount: firstNumber(nested.attemptCount, nested.attempt_count, payload.attemptCount, payload.attempt_count),
+    transcriptSaved: firstBoolean(nested.transcriptSaved, nested.transcript_saved, payload.transcriptSaved, payload.transcript_saved),
+    transcriptRows: firstNumber(nested.transcriptRows, nested.transcript_rows, payload.transcriptRows, payload.transcript_rows),
+    finalized: firstBoolean(nested.finalized, payload.finalized),
     summary,
     meetingSummary,
     keywords,
@@ -432,6 +749,8 @@ export const normalizeAnalysisResponse = (value: unknown): AiAnalysis => {
     confidence: normalizeConfidence(nested.confidence),
     promptVersion: firstString(nested.promptVersion, nested.prompt_version, payload.promptVersion, payload.prompt_version),
     schemaVersion: firstString(nested.schemaVersion, nested.schema_version, payload.schemaVersion, payload.schema_version),
+    analysisFeatureSet: firstString(nested.analysisFeatureSet, nested.analysis_feature_set, payload.analysisFeatureSet, payload.analysis_feature_set),
+    groupedActionPlan,
     transcriptHash: firstString(nested.transcriptHash, nested.transcript_hash, payload.transcriptHash, payload.transcript_hash),
     domainMode: normalizeDomainMode(nested.domainMode ?? nested.domain_mode),
     createdAt: typeof nested.createdAt === 'string' ? nested.createdAt : typeof nested.created_at === 'string' ? nested.created_at : undefined,
@@ -451,6 +770,32 @@ export const normalizeAnalysisResponse = (value: unknown): AiAnalysis => {
   }
 }
 
+export type AnalysisDisplayState = 'pending' | 'running' | 'completed' | 'failed' | 'failed_retryable'
+
+export const isRetryableAnalysisFailure = (value: AiAnalysis | null | undefined): boolean => {
+  const status = String(value?.analysisStatus ?? value?.status ?? '').trim().toUpperCase()
+  return status === 'ANALYSIS_FAILED_RETRYABLE' || value?.retryable === true
+}
+
+export const normalizeAnalysisDisplayStatus = (
+  value: AiAnalysis | null | undefined,
+): AnalysisDisplayState => {
+  const status = String(value?.analysisStatus ?? value?.status ?? '').trim().toUpperCase()
+  if (status === 'COMPLETED') {
+    return 'completed'
+  }
+  if (status === 'ANALYSIS_FAILED_RETRYABLE' || isRetryableAnalysisFailure(value)) {
+    return 'failed_retryable'
+  }
+  if (status === 'FAILED' || status === 'RATE_LIMITED' || status === 'QUOTA_BLOCKED') {
+    return 'failed'
+  }
+  if (status === 'ANALYZING' || status === 'RUNNING' || status === 'QUEUED' || status === 'PENDING' || status === 'ANALYSIS_RUNNING') {
+    return 'running'
+  }
+  return 'pending'
+}
+
 export type TranscriptSegment = {
   speaker: string
   start_time: number
@@ -462,3 +807,4 @@ export type TranscriptResponse = {
   meeting_id: number
   transcripts: TranscriptSegment[]
 }
+

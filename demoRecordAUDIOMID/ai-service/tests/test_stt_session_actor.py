@@ -286,6 +286,12 @@ def test_actor_final_signal_drains_and_closes_without_watchdog(monkeypatch):
     assert actor.state == MeetingSessionState.CLOSED
     assert adapter.close_calls == 1
     assert fragment_texts == ["one"]
+    assert repo.checkpoints[-1]["last_ack_seq"] == 1
+    assert repo.checkpoints[-1]["last_persisted_seq"] == 1
+    assert repo.checkpoints[-1]["last_finalized_seq"] == 1
+    assert adapter.recv_calls[0][2] == actor.RECV_DRAIN_TIMEOUT_SECONDS
+    assert adapter.recv_calls[-1][2] == actor.FINAL_RECV_DRAIN_TIMEOUT_SECONDS
+    assert actor.FINAL_RECV_DRAIN_TIMEOUT_SECONDS > actor.RECV_DRAIN_TIMEOUT_SECONDS
 
 
 def test_actor_persists_parsed_transcript_fragment(monkeypatch):

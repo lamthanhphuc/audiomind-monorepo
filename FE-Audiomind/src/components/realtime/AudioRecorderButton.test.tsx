@@ -23,7 +23,7 @@ class MockMediaRecorder {
     MockMediaRecorder.instances.push(this)
   }
 
-  start = vi.fn(() => {
+  start = vi.fn((_timeslice?: number) => {
     this.state = 'recording'
   })
 
@@ -70,8 +70,10 @@ describe('useAudioRecorder', () => {
     Object.defineProperty(navigator, 'mediaDevices', {
       value: {
         getUserMedia: vi.fn().mockResolvedValue({
+          getAudioTracks: () => [],
           getTracks: () => [{ stop: vi.fn() }],
         }),
+        getSupportedConstraints: vi.fn(() => ({ noiseSuppression: true })),
       },
       configurable: true,
     })
@@ -110,6 +112,16 @@ describe('useAudioRecorder', () => {
 
     expect(latestRecorder?.state).toBe('recording')
     expect(MockMediaRecorder.instances).toHaveLength(1)
+    expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledWith({
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+        channelCount: 1,
+        sampleRate: { ideal: 48_000 },
+      },
+    })
+    expect(MockMediaRecorder.instances[0].start).toHaveBeenCalledWith(200)
 
     const recorder = MockMediaRecorder.instances[0]
     const chunk = new Blob(['chunk-one'], { type: 'audio/webm; codecs=opus' })
@@ -202,6 +214,7 @@ describe('useAudioRecorder', () => {
     Object.defineProperty(navigator, 'mediaDevices', {
       value: {
         getUserMedia: vi.fn().mockRejectedValue(Object.assign(new Error('denied'), { name: 'NotAllowedError' })),
+        getSupportedConstraints: vi.fn(() => ({ noiseSuppression: true })),
       },
       configurable: true,
     })
@@ -223,6 +236,84 @@ describe('useAudioRecorder', () => {
     expect(latestRecorder?.state).toBe('error')
     expect(latestRecorder?.errorMessage).toContain('session mismatch')
   })
+
+  it('passes noiseSuppression false when configured off', async () => {
+    function Harness() {
+      latestRecorder = useAudioRecorder(null, { noiseSuppressionEnabled: false })
+      return null
+    }
+
+    act(() => {
+      root.render(<Harness />)
+    })
+
+    await act(async () => {
+      await latestRecorder!.startRecording()
+    })
+
+    expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledWith(expect.objectContaining({
+      audio: expect.objectContaining({
+        noiseSuppression: false,
+      }),
+    }))
+  })
+
+  it('omits unsupported noiseSuppression without blocking recording', async () => {
+    Object.defineProperty(navigator, 'mediaDevices', {
+      value: {
+        getUserMedia: vi.fn().mockResolvedValue({
+          getAudioTracks: () => [],
+          getTracks: () => [{ stop: vi.fn() }],
+        }),
+        getSupportedConstraints: vi.fn(() => ({ noiseSuppression: false })),
+      },
+      configurable: true,
+    })
+
+    await act(async () => {
+      await latestRecorder!.startRecording()
+    })
+
+    expect(latestRecorder?.state).toBe('recording')
+    expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledWith({
+      audio: expect.not.objectContaining({
+        noiseSuppression: expect.any(Boolean),
+      }),
+    })
+  })
+
+  it('logs safe mic settings without exposing device ids', async () => {
+    const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => {})
+    Object.defineProperty(navigator, 'mediaDevices', {
+      value: {
+        getUserMedia: vi.fn().mockResolvedValue({
+          getAudioTracks: () => [{
+            getSettings: () => ({
+              noiseSuppression: true,
+              echoCancellation: true,
+              autoGainControl: true,
+              sampleRate: 48000,
+              channelCount: 1,
+              deviceId: 'secret-device-id',
+            }),
+          }],
+          getTracks: () => [{ stop: vi.fn() }],
+        }),
+        getSupportedConstraints: vi.fn(() => ({ noiseSuppression: true })),
+      },
+      configurable: true,
+    })
+
+    await act(async () => {
+      await latestRecorder!.startRecording()
+    })
+
+    expect(infoSpy).toHaveBeenCalledWith('[Realtime] MIC_SETTINGS', expect.objectContaining({
+      noiseSuppression: true,
+      deviceIdPresent: true,
+    }))
+    expect(JSON.stringify(infoSpy.mock.calls)).not.toContain('secret-device-id')
+  })
 })
 
 
@@ -240,7 +331,7 @@ describe('AudioRecorderButton', () => {
     container = document.createElement('div')
     document.body.appendChild(container)
     root = createRoot(container)
-    startSpy = vi.fn().mockResolvedValue(undefined)
+    startSpy = vi.fn().mockResolvedValue(1)
     stopSpy = vi.fn()
     beforeStartSpy = vi.fn().mockResolvedValue(undefined)
     chunkSpy = vi.fn()
@@ -258,6 +349,7 @@ describe('AudioRecorderButton', () => {
       resumeRecording: vi.fn(),
       duration: 0,
       getCurrentRms: vi.fn(() => 0.03),
+      getRollingChunks: vi.fn(() => []),
     }
 
     act(() => {
@@ -290,7 +382,7 @@ describe('AudioRecorderButton', () => {
     expect(startSpy).toHaveBeenCalledOnce()
   })
 
-  it('waits for preflight to resolve before starting the recorder', async () => {
+  it('starts the recorder before preflight resolves and delays queued chunks', async () => {
     let resolvePreflight!: () => void
     beforeStartSpy = vi.fn(() => new Promise<void>((resolve) => {
       resolvePreflight = resolve
@@ -313,12 +405,33 @@ describe('AudioRecorderButton', () => {
     })
 
     expect(beforeStartSpy).toHaveBeenCalledOnce()
-    expect(startSpy).not.toHaveBeenCalled()
+    expect(beforeStartSpy).toHaveBeenCalledWith(1)
+    expect(startSpy).toHaveBeenCalledOnce()
+
+    recorder = {
+      ...recorder!,
+      state: 'recording',
+      audioChunks: [new Blob(['early-chunk'])],
+      recordingSessionId: 1,
+    }
+    act(() => {
+      root.render(
+        <AudioRecorderButton
+          recorder={recorder!}
+          onBeforeStartRecording={beforeStartSpy}
+          onChunkReady={chunkSpy}
+          onRecordingComplete={completeSpy}
+        />,
+      )
+    })
+
+    await flush()
+    expect(chunkSpy).not.toHaveBeenCalled()
 
     resolvePreflight()
     await flush()
 
-    expect(startSpy).toHaveBeenCalledOnce()
+    expect(chunkSpy).toHaveBeenCalledOnce()
   })
 
   it('does not start recorder when preflight fails (stale prepare)', async () => {
@@ -341,11 +454,17 @@ describe('AudioRecorderButton', () => {
     })
 
     expect(beforeStartSpy).toHaveBeenCalledOnce()
-    expect(startSpy).not.toHaveBeenCalled()
+    expect(beforeStartSpy).toHaveBeenCalledWith(1)
+    expect(startSpy).toHaveBeenCalledOnce()
+    expect(recorder?.abortRecording).toHaveBeenCalledOnce()
   })
 
-  it('passes expected session id from preflight to recorder start', async () => {
-    beforeStartSpy = vi.fn().mockResolvedValue({ expectedSessionId: 7 })
+  it('does not create realtime session when microphone startup fails', async () => {
+    startSpy = vi.fn().mockResolvedValue(null)
+    recorder = {
+      ...recorder!,
+      startRecording: startSpy,
+    }
 
     act(() => {
       root.render(
@@ -363,7 +482,8 @@ describe('AudioRecorderButton', () => {
       await flush()
     })
 
-    expect(startSpy).toHaveBeenCalledWith(7)
+    expect(startSpy).toHaveBeenCalledOnce()
+    expect(beforeStartSpy).not.toHaveBeenCalled()
   })
 
   it('shows connecting state while startup is pending', () => {

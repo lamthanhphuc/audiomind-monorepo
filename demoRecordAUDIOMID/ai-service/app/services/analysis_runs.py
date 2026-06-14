@@ -13,6 +13,7 @@ from app.services.ai_analyzer import AIAnalyzer
 ANALYSIS_STATUS_ANALYZING = "ANALYZING"
 ANALYSIS_STATUS_COMPLETED = "COMPLETED"
 ANALYSIS_STATUS_FAILED = "FAILED"
+ANALYSIS_STATUS_FAILED_RETRYABLE = "ANALYSIS_FAILED_RETRYABLE"
 ANALYSIS_STATUS_QUOTA_BLOCKED = "QUOTA_BLOCKED"
 ANALYSIS_STATUS_RATE_LIMITED = "RATE_LIMITED"
 ANALYSIS_STATUS_NO_ANALYSIS = "NO_ANALYSIS"
@@ -27,6 +28,7 @@ ANALYSIS_MODE_FAILED_RETRY = "failed_retry"
 ANALYSIS_IN_PROGRESS_STATUSES = {ANALYSIS_STATUS_ANALYZING}
 ANALYSIS_RETRYABLE_FAILURE_STATUSES = {
     ANALYSIS_STATUS_FAILED,
+    ANALYSIS_STATUS_FAILED_RETRYABLE,
     ANALYSIS_STATUS_QUOTA_BLOCKED,
     ANALYSIS_STATUS_RATE_LIMITED,
 }
@@ -40,6 +42,7 @@ ANALYSIS_STALE_REASON_FIELDS = (
     ("analysis_input_mode", "input_mode_changed"),
     ("speaker_stabilization_version", "speaker_stabilization_version_changed"),
 )
+DEFAULT_ANALYSIS_FEATURE_SET = "grouped-action-plan-v1"
 
 
 @dataclass(frozen=True)
@@ -56,6 +59,7 @@ class AnalysisCacheIdentity:
     recognition_mode: str | None
     speaker_stabilization_version: str | None
     analysis_input_mode: str
+    analysis_feature_set: str | None
 
 
 def _clean_text(value: Any) -> str:
@@ -115,6 +119,13 @@ def _analysis_schema_version(analyzer: Any, payload: dict[str, Any]) -> str:
     )
 
 
+def _analysis_feature_set(payload: dict[str, Any]) -> str | None:
+    return (
+        _clean_text(payload.get("analysisFeatureSet") or payload.get("analysis_feature_set"))
+        or DEFAULT_ANALYSIS_FEATURE_SET
+    )
+
+
 def _latest_canonical_transcript(db: Session, meeting_id: int) -> Transcript | None:
     return (
         db.query(Transcript)
@@ -170,6 +181,7 @@ def build_analysis_run_idempotency_key(
     speaker_stabilization_version: str | None = None,
     recognition_mode: str | None = None,
     transcript_language: str | None = None,
+    analysis_feature_set: str | None = None,
 ) -> str:
     parts = [
         str(meeting_id),
@@ -184,6 +196,7 @@ def build_analysis_run_idempotency_key(
         _clean_text(speaker_stabilization_version).lower(),
         _clean_text(recognition_mode).lower(),
         _clean_text(transcript_language).lower(),
+        _clean_text(analysis_feature_set).lower(),
     ]
     return "analysis-run:" + hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
 
@@ -204,6 +217,7 @@ def build_analysis_run_idempotency_key_for_identity(
         speaker_stabilization_version=identity.speaker_stabilization_version,
         recognition_mode=identity.recognition_mode,
         transcript_language=identity.transcript_language,
+        analysis_feature_set=identity.analysis_feature_set,
     )
 
 
@@ -257,6 +271,7 @@ def build_analysis_cache_identity(
         speaker_stabilization_version=_clean_text(speaker_stabilization_version)
         or None,
         analysis_input_mode=input_mode,
+        analysis_feature_set=_analysis_feature_set(payload),
     )
 
 
@@ -269,7 +284,7 @@ def _nullable_match(column: Any, value: str | None) -> Any:
 def find_completed_analysis_run_for_identity(
     db: Session, identity: AnalysisCacheIdentity
 ) -> MeetingAnalysisRun | None:
-    return (
+    candidates = (
         db.query(MeetingAnalysisRun)
         .filter(
             and_(
@@ -304,7 +319,11 @@ def find_completed_analysis_run_for_identity(
             )
         )
         .order_by(MeetingAnalysisRun.completed_at.desc(), MeetingAnalysisRun.id.desc())
-        .first()
+        .all()
+    )
+    return next(
+        (run for run in candidates if _run_analysis_feature_set(run) == identity.analysis_feature_set),
+        None,
     )
 
 
@@ -343,18 +362,22 @@ def _identity_filters(identity: AnalysisCacheIdentity) -> list[Any]:
 def find_latest_analysis_run_for_identity(
     db: Session, identity: AnalysisCacheIdentity
 ) -> MeetingAnalysisRun | None:
-    return (
+    candidates = (
         db.query(MeetingAnalysisRun)
         .filter(and_(*_identity_filters(identity)))
         .order_by(MeetingAnalysisRun.updated_at.desc(), MeetingAnalysisRun.id.desc())
-        .first()
+        .all()
+    )
+    return next(
+        (run for run in candidates if _run_analysis_feature_set(run) == identity.analysis_feature_set),
+        None,
     )
 
 
 def find_in_progress_analysis_run_for_identity(
     db: Session, identity: AnalysisCacheIdentity
 ) -> MeetingAnalysisRun | None:
-    return (
+    candidates = (
         db.query(MeetingAnalysisRun)
         .filter(
             and_(
@@ -363,7 +386,11 @@ def find_in_progress_analysis_run_for_identity(
             )
         )
         .order_by(MeetingAnalysisRun.updated_at.desc(), MeetingAnalysisRun.id.desc())
-        .first()
+        .all()
+    )
+    return next(
+        (run for run in candidates if _run_analysis_feature_set(run) == identity.analysis_feature_set),
+        None,
     )
 
 
@@ -396,6 +423,8 @@ def stale_reason_for_identity(
         or run.transcript_language != identity.transcript_language
     ):
         return "identity_mismatch"
+    if _run_analysis_feature_set(run) != identity.analysis_feature_set:
+        return "analysis_feature_set_changed"
     return None
 
 
@@ -414,6 +443,7 @@ def analysis_miss_response_metadata(
         "model": identity.model,
         "promptVersion": identity.prompt_version,
         "schemaVersion": identity.schema_version,
+        "analysisFeatureSet": identity.analysis_feature_set,
         "canonicalTranscriptHash": identity.canonical_transcript_hash,
         "canonicalTranscriptVersion": identity.canonical_transcript_version,
         "analysisInputMode": identity.analysis_input_mode,
@@ -479,7 +509,7 @@ def begin_analysis_run(
 
     _apply_identity_to_run(run, identity)
     run.status = ANALYSIS_STATUS_ANALYZING
-    run.analysis_payload_json = None
+    run.analysis_payload_json = _analysis_feature_set_payload(identity)
     run.summary = None
     run.error_code = None
     run.error_message = None
@@ -523,6 +553,10 @@ def persist_completed_analysis_run(
         recognition_mode=recognition_mode,
         transcript_language=transcript_language,
     )
+    if identity.analysis_feature_set and not (
+        payload.get("analysisFeatureSet") or payload.get("analysis_feature_set")
+    ):
+        payload["analysisFeatureSet"] = identity.analysis_feature_set
     idempotency_key = build_analysis_run_idempotency_key_for_identity(identity)
     now = datetime.utcnow()
     if run is None:
@@ -614,6 +648,7 @@ def analysis_run_response_metadata(
         "model": run.model,
         "promptVersion": run.prompt_version,
         "schemaVersion": run.schema_version,
+        "analysisFeatureSet": _run_analysis_feature_set(run),
         "canonicalTranscriptHash": run.canonical_transcript_hash,
         "canonicalTranscriptVersion": run.canonical_transcript_version,
         "analysisInputMode": run.analysis_input_mode,
@@ -621,4 +656,24 @@ def analysis_run_response_metadata(
     }
     if cache_hit is not None:
         metadata["cacheHit"] = cache_hit
+    if run.error_code:
+        metadata["errorCode"] = run.error_code
+    if run.error_message:
+        metadata["errorMessage"] = run.error_message
+    if run.status in ANALYSIS_RETRYABLE_FAILURE_STATUSES:
+        metadata["retryable"] = True
     return metadata
+
+
+def _run_analysis_feature_set(run: MeetingAnalysisRun | None) -> str | None:
+    if run is None:
+        return None
+    payload = run.analysis_payload_json if isinstance(run.analysis_payload_json, dict) else {}
+    return _clean_text(payload.get("analysisFeatureSet") or payload.get("analysis_feature_set")) or None
+
+
+def _analysis_feature_set_payload(identity: AnalysisCacheIdentity) -> dict[str, Any] | None:
+    feature_set = _clean_text(identity.analysis_feature_set)
+    if not feature_set:
+        return None
+    return {"analysisFeatureSet": feature_set}
