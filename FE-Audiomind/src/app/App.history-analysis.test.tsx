@@ -1,0 +1,106 @@
+import { createRoot } from 'react-dom/client'
+import { act } from 'react-dom/test-utils'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import * as api from '../services/api'
+import App from './App'
+
+const baseMeeting = {
+  id: 7,
+  title: 'History item',
+  audioPath: '/tmp/a.wav',
+  createdAt: '2026-05-28T00:00:00Z',
+  language: 'vi',
+  status: 'completed',
+}
+
+const flush = async () => {
+  await act(async () => {
+    await Promise.resolve()
+    await Promise.resolve()
+  })
+}
+
+describe('App history analysis navigation', () => {
+  let container: HTMLDivElement
+  let root: ReturnType<typeof createRoot>
+
+  beforeEach(() => {
+    container = document.createElement('div')
+    document.body.appendChild(container)
+    root = createRoot(container)
+    localStorage.setItem('audiomind.access_token', 'dummy-token')
+
+    vi.spyOn(api, 'listMeetingsWithParams').mockResolvedValue([baseMeeting])
+    vi.spyOn(api, 'getTranscript').mockResolvedValue({
+      meeting_id: 7,
+      transcripts: [{ speaker: 'Speaker 1', start_time: 0, end_time: 1, text: 'History transcript line' }],
+    } as any)
+    vi.spyOn(api, 'getSavedAnalysis').mockResolvedValue({
+      summary: 'History analysis summary',
+      keywords: [],
+      technicalTerms: [],
+      painPoints: [],
+      actionItems: [],
+      domainMode: 'it',
+      status: 'COMPLETED',
+      analysisStatus: 'COMPLETED',
+    } as any)
+  })
+
+  afterEach(() => {
+    act(() => {
+      root.unmount()
+    })
+    container.remove()
+    localStorage.clear()
+    vi.restoreAllMocks()
+  })
+
+  it('returns to History after opening analysis from History and clicking back', async () => {
+    await act(async () => {
+      root.render(<App />)
+    })
+    await flush()
+
+    const historyMenu = Array.from(container.querySelectorAll('li')).find((item) => item.textContent?.includes('Lịch sử meeting'))
+    expect(historyMenu).toBeTruthy()
+
+    await act(async () => {
+      historyMenu?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    await flush()
+
+    expect(container.textContent).toContain('Meeting history')
+
+    const meetingButton = Array.from(container.querySelectorAll('[data-testid="meeting-list"] button'))
+      .find((item) => item.textContent?.includes('#7')) as HTMLButtonElement | undefined
+    expect(meetingButton).toBeTruthy()
+
+    await act(async () => {
+      meetingButton?.click()
+    })
+    await flush()
+
+    const openAnalysisButton = container.querySelector('[data-testid="meeting-open-analysis"]') as HTMLButtonElement
+    expect(openAnalysisButton).toBeTruthy()
+
+    await act(async () => {
+      openAnalysisButton.click()
+    })
+    await flush()
+
+    expect(container.textContent).toContain('History analysis summary')
+    expect(container.textContent).toContain('History transcript line')
+    expect(container.querySelector('[data-testid="feature-analysis-back"]')).toBeTruthy()
+
+    const backButton = container.querySelector('[data-testid="feature-analysis-back"]') as HTMLButtonElement
+    await act(async () => {
+      backButton.click()
+    })
+    await flush()
+
+    expect(container.textContent).toContain('Meeting history')
+    expect(container.querySelector('[data-testid="feature-analysis-back"]')).toBeNull()
+    expect(container.querySelector('[data-testid="meeting-list"]')).toBeTruthy()
+  })
+})

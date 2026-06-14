@@ -20,6 +20,7 @@ class MockWebSocket {
   onmessage: ((event: { data: string }) => void) | null = null
   onerror: ((event: unknown) => void) | null = null
   onclose: ((event: { code?: number; reason?: string }) => void) | null = null
+  bufferedAmount = 0
   readonly sent: (string | ArrayBuffer)[] = []
 
   readonly url: string
@@ -124,6 +125,7 @@ describe('useRealtimeMeetingStream', () => {
   })
 
   it('connects, sends audio chunks and parses transcript events', async () => {
+    const infoSpy = vi.spyOn(console, 'info')
     expect(MockWebSocket.instances).toHaveLength(1)
     const socket = MockWebSocket.instances[0]
 
@@ -202,8 +204,27 @@ describe('useRealtimeMeetingStream', () => {
       meeting_id: 88,
       sample_rate: 48_000,
       size: 3, // "abc" is 3 bytes
+      recording_session_id: 1,
+      attempt_id: 1,
     })
     expect(audioMessage).not.toHaveProperty('pcm_chunk')
+    expect(infoSpy).toHaveBeenCalledWith('[Realtime] RECORDING_WS_READY', expect.objectContaining({
+      meetingId: 88,
+      recordingSessionId: 1,
+      attemptId: 1,
+      queuedAudioChunks: 1,
+      flushedChunks: 1,
+      flushedBytes: 3,
+    }))
+    expect(infoSpy).toHaveBeenCalledWith('[Realtime] AUDIO_CHUNK_SEND_ENQUEUED', expect.objectContaining({
+      meetingId: 88,
+      recordingSessionId: 1,
+      attemptId: 1,
+      seq: 1,
+      byteLength: 3,
+      queued: true,
+      authenticated: false,
+    }))
 
     // Verify binary audio was sent
     expect(binaryMessages).toHaveLength(1)
@@ -426,6 +447,49 @@ describe('useRealtimeMeetingStream', () => {
       end: 3.1,
       language: 'vi',
       isFinal: true,
+    })
+  })
+
+  it('accepts snake_case transcript frames from the backend', async () => {
+    const socket = MockWebSocket.instances[0]
+
+    act(() => {
+      socket.open()
+      socket.receive({
+        type: 'session.ready',
+        meeting_id: 88,
+        authenticated: true,
+        activeConnections: 1,
+      })
+    })
+
+    await flush()
+
+    act(() => {
+      socket.receive({
+        type: 'transcript.final',
+        meeting_id: 88,
+        seq: 12,
+        segment_id: 'meeting-88-start-4.000-speaker_1-1',
+        speaker: 'SPEAKER_1',
+        start_time: 4,
+        end_time: 5.5,
+        transcript: 'Xin chào từ backend',
+        language: 'vi',
+        is_final: true,
+      })
+    })
+
+    await flush()
+
+    expect(latest?.transcripts).toHaveLength(1)
+    expect(latest?.transcripts[0]).toMatchObject({
+      id: 'meeting-88-start-4.000-speaker_1-1',
+      text: 'Xin chào từ backend',
+      start: 4,
+      end: 5.5,
+      isFinal: true,
+      language: 'vi',
     })
   })
 
@@ -902,6 +966,190 @@ describe('useRealtimeMeetingStream', () => {
     expect(latest?.closeReason).toBe('')
   })
 
+  it('sends stream.stop once after flushed audio and drops later chunks for the same session', async () => {
+    const socket = MockWebSocket.instances[0]
+
+    act(() => {
+      socket.open()
+      socket.receive({
+        type: 'session.ready',
+        meetingId: 88,
+        authenticated: true,
+        activeConnections: 1,
+      })
+    })
+
+    await flush()
+
+    await act(async () => {
+      await latest!.sendAudioChunk(new Blob(['abc'], { type: 'audio/webm; codecs=opus' }), '88')
+      await latest!.stopStream()
+      await latest!.stopStream()
+      await latest!.sendAudioChunk(new Blob(['late'], { type: 'audio/webm; codecs=opus' }), '88')
+    })
+
+    const sentMessages = socket.send.mock.calls
+      .map(([payload]) => {
+        if (typeof payload !== 'string') return null
+        try {
+          return JSON.parse(payload) as Record<string, unknown>
+        } catch {
+          return null
+        }
+      })
+      .filter((message): message is Record<string, unknown> => message !== null)
+
+    const audioMessages = sentMessages.filter((message) => message.type === 'audio.chunk')
+    const stopMessages = sentMessages.filter((message) => message.type === 'stream.stop')
+    const audioIndex = sentMessages.findIndex((message) => message.type === 'audio.chunk')
+    const stopIndex = sentMessages.findIndex((message) => message.type === 'stream.stop')
+
+    expect(audioMessages).toHaveLength(1)
+    expect(stopMessages).toHaveLength(1)
+    expect(audioIndex).toBeGreaterThan(-1)
+    expect(stopIndex).toBeGreaterThan(audioIndex)
+    expect(stopMessages[0]).toMatchObject({
+      meetingId: 88,
+      recording_session_id: 1,
+      attempt_id: 1,
+    })
+  })
+
+  it('does not mark stop as sent when socket closes before stream.stop can be sent', async () => {
+    const socket = MockWebSocket.instances[0]
+
+    act(() => {
+      socket.open()
+      socket.receive({
+        type: 'session.ready',
+        meetingId: 88,
+        authenticated: true,
+        activeConnections: 1,
+      })
+    })
+
+    await flush()
+
+    act(() => {
+      socket.readyState = MockWebSocket.CLOSED
+    })
+
+    let firstStopResult = true
+    let secondStopResult = true
+    await act(async () => {
+      firstStopResult = await latest!.stopStream()
+      secondStopResult = await latest!.stopStream()
+    })
+
+    const stopMessages = socket.send.mock.calls
+      .map(([payload]) => {
+        if (typeof payload !== 'string') return null
+        try {
+          return JSON.parse(payload) as Record<string, unknown>
+        } catch {
+          return null
+        }
+      })
+      .filter((message): message is Record<string, unknown> => message?.type === 'stream.stop')
+
+    expect(firstStopResult).toBe(false)
+    expect(secondStopResult).toBe(false)
+    expect(stopMessages).toHaveLength(0)
+  })
+
+  it('still sends stream.stop when bufferedAmount drain times out', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    try {
+      const socket = MockWebSocket.instances[0]
+
+      act(() => {
+        socket.open()
+        socket.receive({
+          type: 'session.ready',
+          meetingId: 88,
+          authenticated: true,
+          activeConnections: 1,
+        })
+      })
+
+      await flush()
+
+      socket.bufferedAmount = 8192
+
+      const stopPromise = latest!.stopStream()
+      await vi.advanceTimersByTimeAsync(2000)
+      const stopResult = await stopPromise
+
+      const stopMessages = socket.send.mock.calls
+        .map(([payload]) => {
+          if (typeof payload !== 'string') return null
+          try {
+            return JSON.parse(payload) as Record<string, unknown>
+          } catch {
+            return null
+          }
+        })
+        .filter((message): message is Record<string, unknown> => message?.type === 'stream.stop')
+
+      expect(stopResult).toBe(true)
+      expect(stopMessages).toHaveLength(1)
+      expect(warnSpy).toHaveBeenCalledWith(
+        '[Realtime] STREAM_STOP_BUFFER_DRAIN_TIMEOUT',
+        expect.objectContaining({
+          meetingId: 88,
+          bufferedAmount: 8192,
+          drainTimeoutMs: 1500,
+        }),
+      )
+    } finally {
+      warnSpy.mockRestore()
+      vi.useRealTimers()
+    }
+  })
+
+  it('assigns a fresh ts_ms value for each audio chunk', async () => {
+    let now = 1_000
+    vi.spyOn(Date, 'now').mockImplementation(() => {
+      now += 25
+      return now
+    })
+    const socket = MockWebSocket.instances[0]
+
+    act(() => {
+      socket.open()
+      socket.receive({
+        type: 'session.ready',
+        meetingId: 88,
+        authenticated: true,
+        activeConnections: 1,
+      })
+    })
+
+    await flush()
+
+    await act(async () => {
+      await latest!.sendAudioChunk(new Blob(['one'], { type: 'audio/webm; codecs=opus' }), '88')
+      await latest!.sendAudioChunk(new Blob(['two'], { type: 'audio/webm; codecs=opus' }), '88')
+    })
+
+    const audioMessages = socket.send.mock.calls
+      .map(([payload]) => {
+        if (typeof payload !== 'string') return null
+        try {
+          return JSON.parse(payload) as Record<string, unknown>
+        } catch {
+          return null
+        }
+      })
+      .filter((message): message is Record<string, unknown> => message?.type === 'audio.chunk')
+
+    expect(audioMessages).toHaveLength(2)
+    expect(audioMessages[0].ts_ms).not.toBe(audioMessages[1].ts_ms)
+    expect(Number(audioMessages[1].ts_ms)).toBeGreaterThan(Number(audioMessages[0].ts_ms))
+  })
+
   it('marks server stop reason as stopped instead of error', async () => {
     const socket = MockWebSocket.instances[0]
 
@@ -1188,6 +1436,7 @@ describe('useRealtimeMeetingStream', () => {
     await flush()
 
     currentMeetingId = 22
+    currentSessionToken = createSessionToken(22, 2, 2)
     act(() => {
       root.render(<HarnessWithMeetingSwitch />)
     })
@@ -1222,7 +1471,60 @@ describe('useRealtimeMeetingStream', () => {
       })
       .filter((msg): msg is Record<string, unknown> => msg !== null)
 
-    expect(postReadyMessages.some((message) => message.type === 'audio.chunk' && message.meeting_id === 22)).toBe(true)
+    const audioMessage = postReadyMessages.find((message) => message.type === 'audio.chunk' && message.meeting_id === 22)
+    expect(audioMessage).toMatchObject({
+      recording_session_id: 2,
+      attempt_id: 2,
+    })
+  })
+
+  it('drops chunks when the active token meeting id does not match the chunk meeting id', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    let currentMeetingId = 22
+    currentSessionToken = createSessionToken(21, 1, 1)
+
+    function HarnessWithMismatchedToken() {
+      latest = useRealtimeMeetingStream({
+        meetingId: currentMeetingId,
+        userId: 12,
+        token: 'jwt-token',
+        sessionToken: currentSessionToken,
+        enabled: true,
+        autoReconnect: false,
+      })
+      return null
+    }
+
+    act(() => {
+      root.render(<HarnessWithMismatchedToken />)
+    })
+    await flush()
+
+    const socket = MockWebSocket.instances.at(-1)!
+    act(() => {
+      socket.open()
+    })
+    await flush()
+
+    await act(async () => {
+      await latest!.sendAudioChunk(new Blob(['stale'], { type: 'audio/webm; codecs=opus' }), '22')
+    })
+
+    act(() => {
+      socket.receive({ type: 'session.ready', meetingId: 22, authenticated: true, activeConnections: 1 })
+    })
+    await flush()
+
+    const sentAudioMetadata = socket.send.mock.calls
+      .map(([payload]) => (typeof payload === 'string' ? payload : null))
+      .filter((payload): payload is string => payload !== null)
+      .some((payload) => payload.includes('"type":"audio.chunk"'))
+
+    expect(sentAudioMetadata).toBe(false)
+    expect(warnSpy).toHaveBeenCalledWith('[Realtime] REALTIME_DROP_AUDIO_CHUNK', expect.objectContaining({
+      meetingId: 22,
+      reason: 'missing_or_stale_session_token',
+    }))
   })
 
   it('keeps the active websocket alive when stale cleanup runs twice', async () => {

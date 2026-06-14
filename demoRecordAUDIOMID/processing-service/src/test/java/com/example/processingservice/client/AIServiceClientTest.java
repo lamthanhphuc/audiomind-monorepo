@@ -32,7 +32,7 @@ import ch.qos.logback.core.read.ListAppender;
 class AIServiceClientTest {
 
     @Test
-    void streamAudioChunk_shouldLogProcessingOutWithMeetingIdAndSeq() {
+    void streamAudioChunk_shouldLogProcessingOutWithSafeMetadataOnly() {
         RestTemplate restTemplate = mock(RestTemplate.class);
         AIServiceClient client = new AIServiceClient(restTemplate);
         org.springframework.test.util.ReflectionTestUtils.setField(client, "aiUrl", "http://ai-service");
@@ -65,9 +65,14 @@ class AIServiceClientTest {
         );
 
         boolean sawLog = appender.list.stream().anyMatch(event ->
-                event.getFormattedMessage().contains("AUDIO HASH PROCESSING_OUT meetingId=9 seq=4 size=3 first16hex=010203")
+                event.getFormattedMessage().contains("AUDIO_CHUNK_PROCESSING_OUT meetingId=9 seq=4 byteLength=3")
         );
         assertTrue(sawLog);
+        boolean sawRawPreview = appender.list.stream().anyMatch(event ->
+                event.getFormattedMessage().contains("first16" + "hex")
+                        || event.getFormattedMessage().contains("010" + "203")
+        );
+        assertTrue(!sawRawPreview);
 
         @SuppressWarnings("unchecked")
         ArgumentCaptor<HttpEntity<MultiValueMap<String, Object>>> captor = ArgumentCaptor.forClass(HttpEntity.class);

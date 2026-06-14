@@ -5,7 +5,6 @@ import java.nio.ByteBuffer;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HexFormat;
@@ -30,8 +29,14 @@ import org.springframework.web.socket.handler.AbstractWebSocketHandler;
 import com.example.processingservice.client.AIServiceClient;
 import com.example.processingservice.client.AudioStreamResetRequiredException;
 import com.example.processingservice.client.MeetingServiceClient;
+import com.example.processingservice.interfaces.websocket.realtime.RealtimeAudioEnqueueResult;
+import com.example.processingservice.interfaces.websocket.realtime.RealtimeAudioSessionWorker;
+import com.example.processingservice.interfaces.websocket.realtime.RealtimeAudioWorkItem;
+import com.example.processingservice.interfaces.websocket.realtime.RealtimeAudioWorkerRegistry;
+import com.example.processingservice.interfaces.websocket.realtime.RealtimeSessionLifecycleState;
 import com.example.processingservice.security.JwtUtil;
 import com.example.processingservice.security.MeetingChannelAuthorizer;
+import com.example.processingservice.service.AnalysisFailureMapping;
 import com.example.processingservice.service.JobStateStore;
 import com.example.processingservice.services.RealtimeEventSubscriber;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -49,6 +54,8 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
     private static final String LAST_AUDIO_SEQ_ATTR = "lastAudioSeq";
     private static final String LAST_AUDIO_DECLARED_SIZE_ATTR = "lastAudioDeclaredSize";
     private static final String LAST_AUDIO_IS_FINAL_ATTR = "lastAudioIsFinal";
+    private static final String RECORDING_SESSION_ID_ATTR = "recordingSessionId";
+    private static final String ATTEMPT_ID_ATTR = "attemptId";
     private static final String LAST_SEGMENT_AT_ATTR = "lastSegmentAt";
     private static final String EMPTY_TRANSCRIPT_STREAK_ATTR = "emptyTranscriptStreak";
     private static final String FIRST_CHUNK_AT_ATTR = "firstChunkAt";
@@ -62,12 +69,16 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
     private static final String LAST_ACTIVITY_ATTR = "lastActivity";
     private static final String FINALIZED_ATTR = "FINALIZED_ATTR";
     private static final String MEETING_STATUS_CHECKED_ATTR = "MEETING_STATUS_CHECKED_ATTR";
+    private static final String LAST_MEETING_STATUS_CHECK_AT_ATTR = "lastMeetingStatusCheckAt";
     private static final String TERMINAL_MEETING_STATUS_ATTR = "TERMINAL_MEETING_STATUS_ATTR";
+    private static final String BACKPRESSURE_REJECTED_ATTR = "BACKPRESSURE_REJECTED_ATTR";
+    private static final long MEETING_STATUS_RECHECK_INTERVAL_MS = 30_000L;
     private static final long IDLE_SESSION_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
     static final int MAX_FINALIZED_TRANSCRIPT_CACHE_SIZE = 100;
     private static final long FINALIZED_TRANSCRIPT_CACHE_TTL_MS = 5 * 60 * 1000;
     private static final String REALTIME_ANALYSIS_SOURCE_STREAM_STOP = "stream_stop";
     private static final String REALTIME_ANALYSIS_SOURCE_AFTER_CLOSE = "after_close";
+    private static final String NO_TRANSCRIPT_AFTER_FINALIZE = "NO_TRANSCRIPT_AFTER_FINALIZE";
 
     // Cache for finalized transcripts (key: meetingId, value: final transcript event)
     private final ConcurrentHashMap<Long, CachedTranscript> finalizedTranscriptCache = new ConcurrentHashMap<>();
@@ -79,9 +90,19 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
     private final JobStateStore jobStateStore;
     private final ObjectMapper objectMapper;
     private final JwtUtil jwtUtil;
+    private final RealtimeAudioWorkerRegistry realtimeAudioWorkerRegistry;
 
     @Value("${deepgram.language:vi}")
     private String deepgramLanguage;
+
+    @Value("${realtime.async-audio-queue.enabled:true}")
+    private boolean realtimeAsyncAudioQueueEnabled;
+
+    @Value("${realtime.async-audio-queue.max-size:64}")
+    private int realtimeAsyncQueueMaxSize;
+
+    @Value("${realtime.async-audio-queue.stop-drain-timeout-ms:5000}")
+    private long realtimeStopDrainTimeoutMs;
 
     @Autowired
     public MeetingWebSocketHandler(
@@ -91,7 +112,8 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
             MeetingServiceClient meetingServiceClient,
             JobStateStore jobStateStore,
             ObjectMapper objectMapper,
-            JwtUtil jwtUtil) {
+            JwtUtil jwtUtil,
+            RealtimeAudioWorkerRegistry realtimeAudioWorkerRegistry) {
         this.meetingChannelAuthorizer = meetingChannelAuthorizer;
         this.realtimeEventSubscriber = realtimeEventSubscriber;
         this.aiServiceClient = aiServiceClient;
@@ -99,6 +121,7 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
         this.jobStateStore = jobStateStore;
         this.objectMapper = objectMapper;
         this.jwtUtil = jwtUtil;
+        this.realtimeAudioWorkerRegistry = realtimeAudioWorkerRegistry;
     }
 
     @Override
@@ -177,6 +200,8 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
             Long tsMs = getLongAttribute(data, "ts_ms");
             Long sampleRate = getLongAttribute(data, "sample_rate");
             Long channels = getLongAttribute(data, "channels");
+            Long recordingSessionId = getLongAttribute(data, "recording_session_id");
+            Long attemptId = getLongAttribute(data, "attempt_id");
             String mimeType = getStringValue(data.get("mime_type"));
             String encoding = getStringValue(data.get("encoding"));
             String language = getStringValue(data.get("language"));
@@ -188,10 +213,55 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
             String effectiveSpeakerMode = speakerMode.isBlank()
                     ? normalizeRealtimeSpeakerMode(getStringAttribute(session, SPEAKER_MODE_ATTR))
                     : normalizeRealtimeSpeakerMode(speakerMode);
+            String authorization = getStringAttribute(session, "authorization");
+
+            if (Boolean.TRUE.equals(session.getAttributes().get(FINALIZED_ATTR))) {
+                session.getAttributes().remove(LAST_AUDIO_SEQ_ATTR);
+                log.info(
+                        "event=REALTIME_CHUNK_DROPPED_TERMINAL meetingId={} seq={} reason=session_finalized",
+                        meetingId,
+                        seq
+                );
+                return;
+            }
+            if (shouldRejectTerminalMeeting(session, meetingId, seq, authorization)) {
+                session.getAttributes().remove(LAST_AUDIO_SEQ_ATTR);
+                return;
+            }
+            Long activeRecordingSessionId = getLongAttribute(session, RECORDING_SESSION_ID_ATTR);
+            Long activeAttemptId = getLongAttribute(session, ATTEMPT_ID_ATTR);
+            boolean staleRecordingSession =
+                    activeRecordingSessionId != null
+                    && (recordingSessionId == null || !activeRecordingSessionId.equals(recordingSessionId));
+            boolean staleAttempt =
+                    activeAttemptId != null
+                    && (attemptId == null || !activeAttemptId.equals(attemptId));
+            if (staleRecordingSession || staleAttempt) {
+                session.getAttributes().remove(LAST_AUDIO_SEQ_ATTR);
+                log.warn(
+                        "event=REALTIME_CHUNK_DROPPED_STALE_SESSION meetingId={} seq={} recordingSessionId={} attemptId={} activeRecordingSessionId={} activeAttemptId={}",
+                        meetingId,
+                        seq,
+                        recordingSessionId,
+                        attemptId,
+                        activeRecordingSessionId,
+                        activeAttemptId
+                );
+                return;
+            }
+            if (realtimeAsyncAudioQueueEnabled && !canAcceptAsyncAudioChunk(session, meetingId, seq)) {
+                return;
+            }
 
             // Store seq so we can correlate with binary message
             session.getAttributes().put(LAST_AUDIO_SEQ_ATTR, seq);
             session.getAttributes().put(LAST_AUDIO_DECLARED_SIZE_ATTR, size);
+            if (recordingSessionId != null) {
+                session.getAttributes().put(RECORDING_SESSION_ID_ATTR, recordingSessionId);
+            }
+            if (attemptId != null) {
+                session.getAttributes().put(ATTEMPT_ID_ATTR, attemptId);
+            }
             if (!language.isBlank()) {
                 session.getAttributes().put(LANGUAGE_ATTR, language);
             }
@@ -227,7 +297,11 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
         // Handle stream stop request - finalize STT BEFORE closing session
         if ("stream.stop".equals(type)) {
             if (Boolean.TRUE.equals(session.getAttributes().get(FINALIZED_ATTR))) {
-                log.info("event=REALTIME_STOP_RECEIVED meetingId={} source=stream_stop status=duplicate_ignored", meetingId);
+                log.info(
+                        "event=REALTIME_STOP_DUPLICATE_IGNORED meetingId={} finalizedSeq={}",
+                        meetingId,
+                        getLongAttribute(session, LAST_AUDIO_SEQ_ATTR)
+                );
                 try {
                     session.close(CloseStatus.NORMAL.withReason("Stream stopped by client"));
                 } catch (Exception e) {
@@ -240,8 +314,27 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                 return;
             }
 
-            log.info("event=REALTIME_STOP_RECEIVED meetingId={} source=stream_stop status=accepted", meetingId);
-            finalizeSttSession(session, meetingId, true);
+            String authorization = getStringAttribute(session, "authorization");
+            session.getAttributes().remove(MEETING_STATUS_CHECKED_ATTR);
+            session.getAttributes().remove(LAST_MEETING_STATUS_CHECK_AT_ATTR);
+            if (shouldRejectTerminalMeeting(
+                    session,
+                    meetingId,
+                    getLongAttribute(session, LAST_AUDIO_SEQ_ATTR),
+                    authorization)) {
+                return;
+            }
+
+            log.info(
+                    "event=REALTIME_STOP_FINALIZE_AFTER_DRAIN meetingId={} drainedSeq={}",
+                    meetingId,
+                    getLongAttribute(session, LAST_AUDIO_SEQ_ATTR)
+            );
+            if (realtimeAsyncAudioQueueEnabled) {
+                shutdownRealtimeWorkerForStop(session, meetingId);
+            } else {
+                finalizeSttSession(session, meetingId, true);
+            }
             try {
                 session.close(CloseStatus.NORMAL.withReason("Stream stopped by client"));
             } catch (Exception e) {
@@ -283,12 +376,21 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
 
         if (Boolean.TRUE.equals(session.getAttributes().get(FINALIZED_ATTR))) {
             log.info(
-                    "Skipping audio chunk for meetingId={} because STT finalization already started or completed",
-                    meetingId
+                    "event=REALTIME_CHUNK_DROPPED_TERMINAL meetingId={} seq={} reason=session_finalized",
+                    meetingId,
+                    getLongAttribute(session, LAST_AUDIO_SEQ_ATTR)
             );
             return;
         }
         Long lastSeq = getLongAttribute(session, LAST_AUDIO_SEQ_ATTR);
+        if (lastSeq == null) {
+            log.info(
+                    "event=REALTIME_CHUNK_DROPPED_STALE_SESSION meetingId={} seq={} reason=missing_or_rejected_metadata",
+                    meetingId,
+                    null
+            );
+            return;
+        }
         String authorization = getStringAttribute(session, "authorization");
         if (shouldRejectTerminalMeeting(session, meetingId, lastSeq, authorization)) {
             return;
@@ -316,13 +418,147 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
         String speakerMode = getStringAttribute(session, SPEAKER_MODE_ATTR);
         Boolean isFinal = getBooleanAttribute(session, LAST_AUDIO_IS_FINAL_ATTR);
         String effectiveSpeakerMode = normalizeRealtimeSpeakerMode(speakerMode);
+        if (payloadSize > 0) {
+            try {
+                session.getAttributes().put(AUDIO_RECEIVED_ATTR, Boolean.TRUE);
+            } catch (Exception ignore) {
+                log.debug("Unable to set AUDIO_RECEIVED_ATTR for sessionId={}", session.getId());
+            }
+        }
         log.info(
-                "AUDIO HASH PROCESSING_IN seq={} size={} first16hex={}",
+                "REALTIME_AUDIO_CHUNK_RECEIVED meetingId={} seq={} byteLength={} declaredSize={} isFinal={}",
+                meetingId,
                 lastSeq,
                 payloadSize,
-                first16Hex(audioBytes)
+                declaredSize,
+                isFinal
+        );
+        log.info(
+                "event=REALTIME_CHUNK_FORWARD_TO_AI meetingId={} seq={} byteLength={}",
+                meetingId,
+                lastSeq,
+                payloadSize
         );
 
+        if (realtimeAsyncAudioQueueEnabled) {
+            enqueueAsyncAudioChunk(
+                    session,
+                    meetingId,
+                    audioBytes,
+                    lastSeq,
+                    language,
+                    effectiveSpeakerMode,
+                    isFinal != null && isFinal,
+                    authorization
+            );
+            return;
+        }
+
+        forwardAudioChunkToAiAndBroadcast(
+                session,
+                meetingId,
+                audioBytes,
+                lastSeq,
+                language,
+                effectiveSpeakerMode,
+                isFinal != null && isFinal,
+                authorization
+        );
+    }
+
+    private void enqueueAsyncAudioChunk(
+            WebSocketSession session,
+            Long meetingId,
+            byte[] audioBytes,
+            Long lastSeq,
+            String language,
+            String effectiveSpeakerMode,
+            boolean isFinal,
+            String authorization) throws Exception {
+        if (!canAcceptAsyncAudioChunk(session, meetingId, lastSeq)) {
+            return;
+        }
+
+        RealtimeAudioSessionWorker worker = resolveRealtimeWorker(session, meetingId);
+        RealtimeAudioWorkItem workItem = new RealtimeAudioWorkItem(
+                meetingId,
+                lastSeq != null ? lastSeq : 0L,
+                audioBytes,
+                language,
+                effectiveSpeakerMode,
+                isFinal,
+                authorization
+        );
+        RealtimeAudioEnqueueResult enqueueResult = worker.enqueue(workItem);
+        if (enqueueResult == RealtimeAudioEnqueueResult.ACCEPTED) {
+            return;
+        }
+        if (enqueueResult == RealtimeAudioEnqueueResult.QUEUE_FULL) {
+            handleQueueFullBackpressure(session, meetingId, lastSeq, worker);
+            return;
+        }
+        log.info(
+                "event=REALTIME_CHUNK_DROPPED_TERMINAL meetingId={} seq={} reason=worker_state_{}",
+                meetingId,
+                lastSeq,
+                worker.state()
+        );
+    }
+
+    private boolean canAcceptAsyncAudioChunk(WebSocketSession session, Long meetingId, Long seq) {
+        RealtimeAudioSessionWorker worker = realtimeAudioWorkerRegistry.get(session.getId());
+        if (worker == null) {
+            return true;
+        }
+        if (worker.state() == RealtimeSessionLifecycleState.ACTIVE) {
+            return true;
+        }
+        session.getAttributes().remove(LAST_AUDIO_SEQ_ATTR);
+        log.info(
+                "event=REALTIME_CHUNK_DROPPED_TERMINAL meetingId={} seq={} reason=worker_state_{}",
+                meetingId,
+                seq,
+                worker.state()
+        );
+        return false;
+    }
+
+    private RealtimeAudioSessionWorker resolveRealtimeWorker(WebSocketSession session, Long meetingId) {
+        return realtimeAudioWorkerRegistry.getOrCreate(
+                session.getId(),
+                sessionId -> new RealtimeAudioSessionWorker(
+                        sessionId,
+                        meetingId,
+                        session,
+                        this::processEnqueuedAudioChunk,
+                        realtimeAsyncQueueMaxSize,
+                        realtimeStopDrainTimeoutMs
+                )
+        );
+    }
+
+    private void processEnqueuedAudioChunk(WebSocketSession session, RealtimeAudioWorkItem item) throws Exception {
+        forwardAudioChunkToAiAndBroadcast(
+                session,
+                item.meetingId(),
+                item.audioBytes(),
+                item.seq(),
+                item.language(),
+                item.speakerMode(),
+                item.isFinal(),
+                item.authorization()
+        );
+    }
+
+    private void forwardAudioChunkToAiAndBroadcast(
+            WebSocketSession session,
+            Long meetingId,
+            byte[] audioBytes,
+            Long lastSeq,
+            String language,
+            String effectiveSpeakerMode,
+            boolean isFinal,
+            String authorization) throws Exception {
         try {
                 Map<String, Object> transcript = "multiple".equals(effectiveSpeakerMode)
                     ? aiServiceClient.streamAudioChunk(
@@ -331,7 +567,7 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                         lastSeq != null ? lastSeq : 0L,
                         language,
                         effectiveSpeakerMode,
-                        isFinal != null && isFinal,
+                        isFinal,
                         null,
                         authorization
                     )
@@ -340,7 +576,7 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                         audioBytes,
                         lastSeq != null ? lastSeq : 0L,
                         language,
-                        isFinal != null && isFinal,
+                        isFinal,
                         null,
                         authorization
                     );
@@ -353,14 +589,6 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                 );
                 return;
             }
-
-            // Mark that we've successfully sent audio to the AI service for this session
-            try {
-                session.getAttributes().put(AUDIO_RECEIVED_ATTR, Boolean.TRUE);
-            } catch (Exception ignore) {
-                log.debug("Unable to set AUDIO_RECEIVED_ATTR for sessionId={}", session.getId());
-            }
-
             Map<String, Object> transcriptEvent = buildTranscriptEvent(
                     meetingId,
                     transcript,
@@ -417,55 +645,169 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                 );
             }
         } catch (Exception ex) {
+            handleAudioChunkForwardFailure(session, meetingId, lastSeq, ex);
+        }
+    }
+
+    private void handleAudioChunkForwardFailure(WebSocketSession session, Long meetingId, Long lastSeq, Exception ex) {
+        if (Boolean.TRUE.equals(session.getAttributes().get(BACKPRESSURE_REJECTED_ATTR))) {
+            log.info(
+                    "event=REALTIME_CHUNK_FORWARD_SUPPRESSED meetingId={} seq={} reason=backpressure",
+                    meetingId,
+                    lastSeq
+            );
+            return;
+        }
+        if (realtimeAsyncAudioQueueEnabled) {
+            RealtimeAudioSessionWorker worker = realtimeAudioWorkerRegistry.get(session.getId());
+            if (worker != null && worker.state() == RealtimeSessionLifecycleState.REJECTED) {
+                log.info(
+                        "event=REALTIME_CHUNK_FORWARD_SUPPRESSED meetingId={} seq={} reason=session_rejected",
+                        meetingId,
+                        lastSeq
+                );
+                return;
+            }
+        }
+
+        log.warn(
+                "event=DEEPGRAM_STT_FAILED meetingId={} source=realtime seq={} errorCode={}",
+                meetingId,
+                lastSeq,
+                safeErrorCode(ex)
+        );
+
+        if (ex instanceof AudioStreamResetRequiredException) {
+            session.getAttributes().put(RESET_REQUIRED_ATTR, Boolean.TRUE);
             log.warn(
-                    "event=DEEPGRAM_STT_FAILED meetingId={} source=realtime seq={} errorCode={}",
+                    "RESET_REQUIRED_FROM_AI meetingId={} seq={} errorCode={}",
                     meetingId,
                     lastSeq,
                     safeErrorCode(ex)
             );
-
-            if (ex instanceof AudioStreamResetRequiredException) {
-                session.getAttributes().put(RESET_REQUIRED_ATTR, Boolean.TRUE);
-                log.warn(
-                        "RESET_REQUIRED_FROM_AI meetingId={} seq={} errorCode={}",
-                        meetingId,
-                        lastSeq,
-                        safeErrorCode(ex)
-                );
-                Map<String, Object> errorEvent = Map.of(
-                        "type", "stream.error",
-                        "meetingId", meetingId,
-                        "message", "Nghiên cứu lại luồng ghi âm: cần khởi động lại recorder WebM",
-                        "recoverable", false,
-                        "resetRequired", true
-                );
-                try {
-                    realtimeEventSubscriber.broadcastToMeeting(meetingId, errorEvent);
-                } catch (Exception e) {
-                    log.warn(
-                            "event=REALTIME_ANALYSIS_FAILED meetingId={} source=reset_required errorCode={}",
-                            meetingId,
-                            safeErrorCode(e)
-                    );
-                }
-                return;
-            }
-
             Map<String, Object> errorEvent = Map.of(
                     "type", "stream.error",
                     "meetingId", meetingId,
-                    "message", "Failed to transcribe audio chunk",
-                    "recoverable", true
+                    "message", "Nghiên cứu lại luồng ghi âm: cần khởi động lại recorder WebM",
+                    "recoverable", false,
+                    "resetRequired", true
             );
             try {
                 realtimeEventSubscriber.broadcastToMeeting(meetingId, errorEvent);
             } catch (Exception e) {
                 log.warn(
-                        "event=REALTIME_ANALYSIS_FAILED meetingId={} source=stream_error errorCode={}",
+                        "event=REALTIME_ANALYSIS_FAILED meetingId={} source=reset_required errorCode={}",
                         meetingId,
                         safeErrorCode(e)
                 );
             }
+            return;
+        }
+
+        Map<String, Object> errorEvent = Map.of(
+                "type", "stream.error",
+                "meetingId", meetingId,
+                "message", "Failed to transcribe audio chunk",
+                "recoverable", true
+        );
+        try {
+            realtimeEventSubscriber.broadcastToMeeting(meetingId, errorEvent);
+        } catch (Exception e) {
+            log.warn(
+                    "event=REALTIME_ANALYSIS_FAILED meetingId={} source=stream_error errorCode={}",
+                    meetingId,
+                    safeErrorCode(e)
+            );
+        }
+    }
+
+    private void handleQueueFullBackpressure(
+            WebSocketSession session,
+            Long meetingId,
+            Long seq,
+            RealtimeAudioSessionWorker worker) {
+        log.warn(
+                "event=REALTIME_CHUNK_DROPPED_QUEUE_FULL meetingId={} seq={} queueDepth={} maxQueueDepth={} reason=queue_full",
+                meetingId,
+                seq,
+                worker.queueDepth(),
+                realtimeAsyncQueueMaxSize
+        );
+        session.getAttributes().put(BACKPRESSURE_REJECTED_ATTR, Boolean.TRUE);
+        Map<String, Object> errorEvent = Map.of(
+                "type", "stream.error",
+                "meetingId", meetingId,
+                "message", "Realtime audio queue full; restart recording.",
+                "recoverable", false,
+                "resetRequired", true
+        );
+        try {
+            realtimeEventSubscriber.broadcastToMeeting(meetingId, errorEvent);
+        } catch (Exception e) {
+            log.warn(
+                    "event=REALTIME_ANALYSIS_FAILED meetingId={} source=queue_full errorCode={}",
+                    meetingId,
+                    safeErrorCode(e)
+            );
+        }
+        worker.rejectQueueFull();
+        realtimeAudioWorkerRegistry.remove(session.getId(), worker);
+        try {
+            session.close(new CloseStatus(1013, "backpressure"));
+        } catch (Exception e) {
+            log.debug(
+                    "Unable to close backpressure session meetingId={} errorCode={}",
+                    meetingId,
+                    safeErrorCode(e)
+            );
+        }
+    }
+
+    private void shutdownRealtimeWorkerForStop(WebSocketSession session, Long meetingId) {
+        RealtimeAudioSessionWorker worker = realtimeAudioWorkerRegistry.get(session.getId());
+        if (worker != null) {
+            try {
+                worker.shutdownAndFinalize(() -> {
+                    finalizeSttSession(session, meetingId, true);
+                    return true;
+                });
+            } finally {
+                realtimeAudioWorkerRegistry.remove(session.getId(), worker);
+            }
+            return;
+        }
+        if (!Boolean.TRUE.equals(session.getAttributes().get(FINALIZED_ATTR))) {
+            finalizeSttSession(session, meetingId, true);
+        }
+    }
+
+    private void shutdownRealtimeWorkerForClose(WebSocketSession session, Long meetingId) {
+        RealtimeAudioSessionWorker worker = realtimeAudioWorkerRegistry.get(session.getId());
+        if (worker != null) {
+            try {
+                worker.shutdownAndFinalize(() -> {
+                    finalizeSttSession(session, meetingId, false);
+                    return true;
+                });
+            } finally {
+                realtimeAudioWorkerRegistry.remove(session.getId(), worker);
+            }
+            return;
+        }
+        if (!Boolean.TRUE.equals(session.getAttributes().get(FINALIZED_ATTR))) {
+            finalizeSttSession(session, meetingId, false);
+        }
+    }
+
+    private void cleanupRealtimeWorker(WebSocketSession session, String reason) {
+        RealtimeAudioSessionWorker worker = realtimeAudioWorkerRegistry.get(session.getId());
+        if (worker == null) {
+            return;
+        }
+        try {
+            worker.cleanupOnly(reason);
+        } finally {
+            realtimeAudioWorkerRegistry.remove(session.getId(), worker);
         }
     }
 
@@ -478,14 +820,20 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
             Boolean audioReceived = (Boolean) session.getAttributes().get(AUDIO_RECEIVED_ATTR);
             if (!Boolean.TRUE.equals(alreadyFinalized) && isAuthenticated(session)) {
                 if (Boolean.TRUE.equals(audioReceived)) {
-                    // finalizeSttSession() cannot broadcast here (session is closed),
-                    // but we still try to finalize and cache the transcript for fallback
-                    finalizeSttSession(session, meetingId, false);
+                    if (realtimeAsyncAudioQueueEnabled) {
+                        shutdownRealtimeWorkerForClose(session, meetingId);
+                    } else {
+                        finalizeSttSession(session, meetingId, false);
+                    }
                 } else {
                     log.info("Skipping STT finalization for meetingId={} because no audio was received", meetingId);
+                    cleanupRealtimeWorker(session, "no_audio");
                 }
             } else if (!isAuthenticated(session)) {
                 log.info("Skipping STT finalization for unauthenticated session meetingId={}", meetingId);
+                cleanupRealtimeWorker(session, "unauthenticated");
+            } else {
+                cleanupRealtimeWorker(session, "already_finalized");
             }
 
             realtimeEventSubscriber.unregisterSession(meetingId, session);
@@ -497,6 +845,7 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
     public void handleTransportError(WebSocketSession session, Throwable exception) throws Exception {
         Long meetingId = getLongAttribute(session, "meetingId");
         if (meetingId != null) {
+            cleanupRealtimeWorker(session, "transport_error");
             realtimeEventSubscriber.unregisterSession(meetingId, session);
             log.warn("WebSocket transport error for meetingId={}", meetingId, exception);
         }
@@ -534,7 +883,12 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
         }
 
         if (Boolean.TRUE.equals(session.getAttributes().get(MEETING_STATUS_CHECKED_ATTR))) {
-            return false;
+            Long lastCheckAt = getLongAttribute(session, LAST_MEETING_STATUS_CHECK_AT_ATTR);
+            if (lastCheckAt != null
+                    && (System.currentTimeMillis() - lastCheckAt) < MEETING_STATUS_RECHECK_INTERVAL_MS) {
+                return false;
+            }
+            session.getAttributes().remove(MEETING_STATUS_CHECKED_ATTR);
         }
 
         try {
@@ -546,6 +900,7 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                 return true;
             }
             session.getAttributes().put(MEETING_STATUS_CHECKED_ATTR, Boolean.TRUE);
+            session.getAttributes().put(LAST_MEETING_STATUS_CHECK_AT_ATTR, System.currentTimeMillis());
         } catch (Exception ex) {
             log.warn(
                     "event=REALTIME_MEETING_STATUS_CHECK_FAILED meetingId={} seq={} errorCode={}",
@@ -561,6 +916,12 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
     private void rejectTerminalMeeting(WebSocketSession session, Long meetingId, Long seq, String status) {
         log.warn(
                 "event=REALTIME_STREAM_REJECTED_STALE_MEETING meetingId={} seq={} meetingStatus={}",
+                meetingId,
+                seq,
+                status
+        );
+        log.warn(
+                "event=REALTIME_CHUNK_DROPPED_TERMINAL meetingId={} seq={} reason=meeting_status_{}",
                 meetingId,
                 seq,
                 status
@@ -601,11 +962,6 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
             return "";
         }
         return status.trim().toLowerCase(Locale.ROOT);
-    }
-
-    private String first16Hex(byte[] audioBytes) {
-        byte[] payload = audioBytes == null ? new byte[0] : audioBytes;
-        return HexFormat.of().formatHex(Arrays.copyOfRange(payload, 0, Math.min(16, payload.length)));
     }
 
     private Long getLongAttribute(WebSocketSession session, String key) {
@@ -651,21 +1007,26 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
         Boolean audioReceived = (Boolean) session.getAttributes().get(AUDIO_RECEIVED_ATTR);
         if (!Boolean.TRUE.equals(audioReceived)) {
             log.info("No audio received for meetingId={}, skipping finalize", meetingId);
-            Map<String, Object> statusEvent = Map.of(
-                    "type", "stream.status",
-                    "status", "completed_no_audio",
-                    "meetingId", meetingId,
-                    "activeConnections", realtimeEventSubscriber.getActiveConnectionCount(meetingId)
-            );
+            persistNoTranscriptAfterFinalize(meetingId, analysisSource);
+            Map<String, Object> statusEvent = buildNoTranscriptAfterFinalizeStatusEvent(meetingId);
             if (sessionStillOpen) {
                 try {
                     realtimeEventSubscriber.broadcastToMeeting(meetingId, statusEvent);
                 } catch (Exception e) {
-                    log.error("Failed to broadcast completed_no_audio for meetingId={}: {}", meetingId, e.getMessage(), e);
+                    log.warn(
+                            "event=REALTIME_ANALYSIS_FAILED meetingId={} source=status_broadcast errorCode={}",
+                            meetingId,
+                            safeErrorCode(e)
+                    );
                 }
             } else {
-                log.debug("Session already closed for meetingId={}, cannot broadcast completed_no_audio event", meetingId);
+                log.debug("Session already closed for meetingId={}, cannot broadcast no-transcript event", meetingId);
             }
+            log.info(
+                    "REALTIME_ANALYSIS_SKIPPED reason=no_transcript source={} meetingId={} transcriptRows=0 transcriptLength=0 finalized=true",
+                    analysisSource,
+                    meetingId
+            );
             return;
         }
 
@@ -797,14 +1158,8 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                 return;
             }
 
-            Map<String, Object> statusEvent = Map.of(
-                    "type", "stream.status",
-                    "state", "completed_with_no_speech_detected",
-                    "status", "completed_with_no_speech_detected",
-                    "meetingId", meetingId,
-                    "message", "STT session closed with no recognized speech",
-                    "activeConnections", realtimeEventSubscriber.getActiveConnectionCount(meetingId)
-            );
+            persistNoTranscriptAfterFinalize(meetingId, analysisSource);
+            Map<String, Object> statusEvent = buildNoTranscriptAfterFinalizeStatusEvent(meetingId);
             if (sessionStillOpen) {
                 try {
                     realtimeEventSubscriber.broadcastToMeeting(meetingId, statusEvent);
@@ -816,15 +1171,11 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                     );
                 }
             }
-            if (partial) {
-                log.info(
-                        "REALTIME_ANALYSIS_SKIPPED reason=not_final source={} meetingId={}",
-                        analysisSource,
-                        meetingId
-                );
-            } else {
-                triggerRealtimeAnalysisAsync(meetingId, authorization, language, analysisSource);
-            }
+            log.info(
+                    "REALTIME_ANALYSIS_SKIPPED reason=no_transcript source={} meetingId={} transcriptRows=0 transcriptLength=0 finalized=true",
+                    analysisSource,
+                    meetingId
+            );
             log.info("No final transcript returned for meetingId={}", meetingId);
         } catch (Exception ex) {
             log.warn(
@@ -958,6 +1309,10 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
             int retryAfterSeconds = parseRetryAfter(analysisResponse);
             if ("FAILED".equals(analysisStatus)) {
                 String errorCode = mapRealtimeFailureCode(analysisResponse);
+                int retryAfterSecondsForFailure = AnalysisFailureMapping.resolveRetryAfterSeconds(
+                        errorCode,
+                        retryAfterSeconds
+                );
                 jobStateStore.markAnalysisFailed(
                         meetingId,
                         transcriptHash,
@@ -965,14 +1320,10 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                         "processing_ws_realtime_stop",
                         decision.lockToken(),
                         errorCode,
-                        safeText(analysisResponse.get("reason"))
+                        safeText(analysisResponse.get("reason")),
+                        retryAfterSecondsForFailure
                 );
-                log.warn(
-                        "event=REALTIME_ANALYSIS_FAILED meetingId={} source={} errorCode={}",
-                        meetingId,
-                        source,
-                        errorCode
-                );
+                logRealtimeAnalysisFailure(meetingId, source, errorCode, retryAfterSecondsForFailure, 1);
                 return;
             }
 
@@ -1041,7 +1392,8 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                     retryAfterSeconds
             );
         } catch (org.springframework.web.client.HttpStatusCodeException ex) {
-            String errorCode = mapFailureCode(ex);
+            String errorCode = AnalysisFailureMapping.mapFailureCode(ex);
+            int retryAfterSeconds = AnalysisFailureMapping.resolveRetryAfterSeconds(errorCode, 0);
             jobStateStore.markAnalysisFailed(
                     meetingId,
                     transcriptHash,
@@ -1049,17 +1401,13 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                     "processing_ws_realtime_stop",
                     decision.lockToken(),
                     errorCode,
-                    safeText(ex.getStatusText())
+                    safeText(ex.getStatusText()),
+                    retryAfterSeconds
             );
-            log.warn(
-                    "event=REALTIME_ANALYSIS_FAILED meetingId={} source={} errorCode={} httpStatus={}",
-                    meetingId,
-                    source,
-                    errorCode,
-                    ex.getStatusCode().value()
-            );
+            logRealtimeAnalysisFailure(meetingId, source, errorCode, retryAfterSeconds, 1);
         } catch (Exception ex) {
-            String errorCode = mapFailureCode(ex);
+            String errorCode = AnalysisFailureMapping.mapFailureCode(ex);
+            int retryAfterSeconds = AnalysisFailureMapping.resolveRetryAfterSeconds(errorCode, 0);
             jobStateStore.markAnalysisFailed(
                     meetingId,
                     transcriptHash,
@@ -1067,15 +1415,46 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                     "processing_ws_realtime_stop",
                     decision.lockToken(),
                     errorCode,
-                    ex.getClass().getSimpleName()
+                    ex.getClass().getSimpleName(),
+                    retryAfterSeconds
             );
+            logRealtimeAnalysisFailure(meetingId, source, errorCode, retryAfterSeconds, 1);
+        }
+    }
+
+    private void logRealtimeAnalysisFailure(
+            Long meetingId,
+            String source,
+            String errorCode,
+            int retryAfterSeconds,
+            int attempt
+    ) {
+        if (AnalysisFailureMapping.ERROR_CODE_CIRCUIT_OPEN.equals(errorCode)) {
             log.warn(
-                    "event=REALTIME_ANALYSIS_FAILED meetingId={} source={} errorCode={}",
+                    "event=ANALYSIS_CIRCUIT_OPEN meetingId={} circuitName=ai-service retryAfterSeconds={} attempt={}",
                     meetingId,
-                    source,
-                    errorCode
+                    retryAfterSeconds,
+                    attempt
             );
         }
+        if (AnalysisFailureMapping.isRetryableErrorCode(errorCode)) {
+            log.warn(
+                    "event=REALTIME_ANALYSIS_FAILED_RETRYABLE meetingId={} source={} errorCode={} retryAfterSeconds={} retryable=true attempt={}",
+                    meetingId,
+                    source,
+                    errorCode,
+                    retryAfterSeconds,
+                    attempt
+            );
+            return;
+        }
+        log.warn(
+                "event=REALTIME_ANALYSIS_FAILED meetingId={} source={} errorCode={} retryable=false attempt={}",
+                meetingId,
+                source,
+                errorCode,
+                attempt
+        );
     }
 
     private boolean isPartialTranscript(Map<String, Object> transcript) {
@@ -1196,35 +1575,63 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
 
     private String mapRealtimeFailureCode(Map<String, Object> response) {
         if (response == null) {
-            return "GEMINI_ANALYSIS_FAILED";
+            return AnalysisFailureMapping.ERROR_CODE_GEMINI_ANALYSIS_FAILED;
+        }
+        String explicitErrorCode = safeText(response.get("errorCode"));
+        if (!explicitErrorCode.isBlank()) {
+            return explicitErrorCode.toUpperCase(Locale.ROOT);
         }
         String reason = safeText(response.get("reason")).toLowerCase(Locale.ROOT);
         if (reason.contains("empty_transcript")) {
-            return "EMPTY_TRANSCRIPT";
+            return AnalysisFailureMapping.ERROR_CODE_EMPTY_TRANSCRIPT;
+        }
+        if (reason.contains("circuit_open") || reason.contains("callnotpermitted")) {
+            return AnalysisFailureMapping.ERROR_CODE_CIRCUIT_OPEN;
         }
         if (reason.contains("unavailable")) {
-            return "GEMINI_UNAVAILABLE";
+            return AnalysisFailureMapping.ERROR_CODE_GEMINI_UNAVAILABLE;
         }
-        return "GEMINI_ANALYSIS_FAILED";
+        return AnalysisFailureMapping.ERROR_CODE_GEMINI_ANALYSIS_FAILED;
     }
 
-    private String mapFailureCode(Exception ex) {
-        if (ex instanceof org.springframework.web.client.HttpStatusCodeException httpEx) {
-            int status = httpEx.getStatusCode().value();
-            String statusText = safeText(httpEx.getStatusText()).toLowerCase(Locale.ROOT);
-            String body = safeText(httpEx.getResponseBodyAsString()).toLowerCase(Locale.ROOT);
-            if (status == 422 || statusText.contains("empty transcript") || body.contains("empty_transcript")) {
-                return "EMPTY_TRANSCRIPT";
-            }
-            if (status == 503 || statusText.contains("gemini") || body.contains("gemini_unavailable")) {
-                return "GEMINI_UNAVAILABLE";
-            }
-            if (status == 502) {
-                return "GEMINI_ANALYSIS_FAILED";
-            }
-            return "AI_SERVICE_UNAVAILABLE";
+    private Map<String, Object> buildNoTranscriptAfterFinalizeStatusEvent(Long meetingId) {
+        Map<String, Object> statusEvent = new HashMap<>();
+        statusEvent.put("type", "stream.status");
+        statusEvent.put("state", NO_TRANSCRIPT_AFTER_FINALIZE);
+        statusEvent.put("status", NO_TRANSCRIPT_AFTER_FINALIZE);
+        statusEvent.put("errorCode", NO_TRANSCRIPT_AFTER_FINALIZE);
+        statusEvent.put("analysisStatus", "NO_ANALYSIS");
+        statusEvent.put("transcriptRows", 0);
+        statusEvent.put("finalized", true);
+        statusEvent.put("meetingId", meetingId);
+        statusEvent.put("message", "STT session closed with no recognized speech");
+        statusEvent.put("activeConnections", realtimeEventSubscriber.getActiveConnectionCount(meetingId));
+        return statusEvent;
+    }
+
+    private void persistNoTranscriptAfterFinalize(Long meetingId, String source) {
+        Map<String, Object> result = new HashMap<>();
+        result.put("transcripts", List.of());
+        result.put("analysisStatus", "NO_ANALYSIS");
+        result.put("transcriptRows", 0);
+        result.put("finalized", true);
+        try {
+            jobStateStore.upsertJobState(
+                    meetingId,
+                    NO_TRANSCRIPT_AFTER_FINALIZE,
+                    "realtime-meeting:" + meetingId,
+                    result,
+                    null,
+                    "realtime-no-transcript-" + meetingId
+            );
+        } catch (Exception ex) {
+            log.warn(
+                    "event=REALTIME_ANALYSIS_FAILED meetingId={} source={} errorCode={}",
+                    meetingId,
+                    source,
+                    safeErrorCode(ex)
+            );
         }
-        return "GEMINI_ANALYSIS_FAILED";
     }
 
     private String safeText(Object value) {
@@ -1569,6 +1976,10 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
 
         if (!meetingChannelAuthorizer.canJoin(userId, expectedMeetingId, authorization)) {
             session.close(CloseStatus.POLICY_VIOLATION.withReason("Forbidden"));
+            return;
+        }
+
+        if (shouldRejectTerminalMeeting(session, expectedMeetingId, null, authorization)) {
             return;
         }
 

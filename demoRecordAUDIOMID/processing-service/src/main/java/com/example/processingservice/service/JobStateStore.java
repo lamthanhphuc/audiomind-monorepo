@@ -128,7 +128,8 @@ public class JobStateStore {
         }
 
         boolean isFailed() {
-            return "FAILED".equals(status);
+            return "FAILED".equals(status)
+                    || AnalysisFailureMapping.ANALYSIS_STATUS_FAILED_RETRYABLE.equals(status);
         }
 
         boolean isSkipped() {
@@ -292,7 +293,9 @@ public class JobStateStore {
             if (snapshot.isFailed() && snapshot.retryAfterSeconds() > 0) {
                 return new AnalysisTriggerDecision(
                         false,
-                        "FAILED",
+                        AnalysisFailureMapping.isRetryableErrorCode(snapshot.errorCode())
+                                ? AnalysisFailureMapping.ANALYSIS_STATUS_FAILED_RETRYABLE
+                                : "FAILED",
                         "cooldown_active",
                         null,
                         snapshot.retryAfterSeconds(),
@@ -361,13 +364,41 @@ public class JobStateStore {
             String errorCode,
             String errorMessage
     ) {
+        markAnalysisFailed(
+                meetingId,
+                transcriptHash,
+                source,
+                triggeredBy,
+                lockToken,
+                errorCode,
+                errorMessage,
+                0
+        );
+    }
+
+    public void markAnalysisFailed(
+            Long meetingId,
+            String transcriptHash,
+            String source,
+            String triggeredBy,
+            String lockToken,
+            String errorCode,
+            String errorMessage,
+            int retryAfterSecondsOverride
+    ) {
         long nowMs = System.currentTimeMillis();
-        long cooldownUntilMs = nowMs + Math.max(1, analysisFailureCooldownSeconds) * 1000L;
+        int normalizedRetryAfterSeconds = retryAfterSecondsOverride > 0
+                ? retryAfterSecondsOverride
+                : AnalysisFailureMapping.resolveRetryAfterSeconds(errorCode, 0) > 0
+                    ? AnalysisFailureMapping.resolveRetryAfterSeconds(errorCode, 0)
+                    : (int) Math.max(1, analysisFailureCooldownSeconds);
+        long cooldownUntilMs = nowMs + normalizedRetryAfterSeconds * 1000L;
         int retryAfterSeconds = Math.max(1, (int) Math.ceil((cooldownUntilMs - nowMs) / 1000.0));
+        String failedStatus = AnalysisFailureMapping.resolveFailedAnalysisStatus(errorCode);
 
         Map<String, String> state = new HashMap<>();
         state.put("meetingId", String.valueOf(meetingId));
-        state.put("status", "FAILED");
+        state.put("status", failedStatus);
         state.put("source", safeText(source));
         state.put("transcriptHash", normalizeTranscriptHash(transcriptHash));
         state.put("updatedAtMs", String.valueOf(nowMs));
@@ -377,12 +408,14 @@ public class JobStateStore {
         state.put("lastTriggeredBy", safeText(triggeredBy));
         state.put("errorCode", safeText(errorCode));
         state.put("errorMessage", safeText(errorMessage));
+        state.put("retryable", String.valueOf(AnalysisFailureMapping.isRetryableErrorCode(errorCode)));
+        state.put("attemptCount", String.valueOf(incrementAttemptCount(meetingId)));
         redisTemplate.opsForHash().putAll(analysisStateKey(meetingId), state);
         redisTemplate.expire(analysisStateKey(meetingId), jobStateTtl());
         redisTemplate.opsForValue().set(
                 analysisCooldownKey(meetingId),
                 String.valueOf(cooldownUntilMs),
-                Duration.ofSeconds(Math.max(1, analysisFailureCooldownSeconds))
+                Duration.ofSeconds(retryAfterSeconds)
         );
         releaseAnalysisLock(meetingId, lockToken);
     }
@@ -570,6 +603,19 @@ public class JobStateStore {
             return trimmed;
         }
         return trimmed.substring(0, 180);
+    }
+
+    private int incrementAttemptCount(Long meetingId) {
+        Map<Object, Object> raw = redisTemplate.opsForHash().entries(analysisStateKey(meetingId));
+        int current = 0;
+        if (raw != null && raw.get("attemptCount") != null) {
+            try {
+                current = Integer.parseInt(String.valueOf(raw.get("attemptCount")));
+            } catch (NumberFormatException ignored) {
+                current = 0;
+            }
+        }
+        return current + 1;
     }
 
     private void releaseAnalysisLock(Long meetingId, String lockToken) {

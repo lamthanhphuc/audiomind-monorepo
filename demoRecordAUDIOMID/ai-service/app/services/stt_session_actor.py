@@ -286,6 +286,10 @@ class MeetingSessionActor:
         self.ENQUEUE_TIMEOUT_SECONDS = float(settings.stt_enqueue_timeout_seconds)
         self.GAP_TIMEOUT_SECONDS = float(settings.stt_gap_timeout_seconds)
         self.RECV_DRAIN_TIMEOUT_SECONDS = float(settings.stt_recv_drain_timeout_seconds)
+        self.FINAL_RECV_DRAIN_TIMEOUT_SECONDS = max(
+            self.RECV_DRAIN_TIMEOUT_SECONDS,
+            float(settings.stt_final_recv_drain_timeout_seconds),
+        )
         self.TRANSIENT_RETRY_BASE_SECONDS = float(
             settings.stt_transient_retry_base_seconds
         )
@@ -690,7 +694,7 @@ class MeetingSessionActor:
                         transcript_events = await self.adapter.recv_transcript_events(
                             self.session_id,
                             int(ts_ms),
-                            drain_timeout=self.RECV_DRAIN_TIMEOUT_SECONDS,
+                            drain_timeout=self.FINAL_RECV_DRAIN_TIMEOUT_SECONDS,
                         )
                     else:
                         transcript_events = self.adapter.drain_partial_events(
@@ -948,11 +952,11 @@ class MeetingSessionActor:
                 send_attempt += 1
                 try:
                     logger.info(
-                        "STT_SEND_TO_ADAPTER meeting_id={} seq={} size={} first16hex={}",
+                        "STT_SEND_TO_ADAPTER meeting_id={} seq={} size={} attempt={}",
                         self.meeting_key,
                         audio.seq,
                         len(audio.pcm_chunk),
-                        bytes(audio.pcm_chunk or b"")[:16].hex(),
+                        send_attempt,
                     )
                     send_started = time.perf_counter()
                     await self.adapter.push_audio_chunk(
@@ -1313,8 +1317,22 @@ class MeetingSessionActor:
                 await self._drain_ready_audio()
                 if persist.is_final:
                     self._last_finalized_seq = max(
-                        self._last_finalized_seq, persist.seq
+                        self._last_finalized_seq,
+                        self._last_ack_seq,
+                        self._last_persisted_seq,
+                        persist.seq,
                     )
+                    repository.upsert_checkpoint(
+                        (
+                            int(self.meeting_key)
+                            if str(self.meeting_key).isdigit()
+                            else 0
+                        ),
+                        last_ack_seq=self._last_ack_seq,
+                        last_persisted_seq=self._last_persisted_seq,
+                        last_finalized_seq=self._last_finalized_seq,
+                    )
+                    db.commit()
                     logger.info(
                         "STT_FINALIZATION_FLUSH_BARRIER meeting_id={} seq={}",
                         self.meeting_key,

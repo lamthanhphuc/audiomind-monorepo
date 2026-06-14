@@ -73,3 +73,4 @@ stress-invalid.txt
 CODEBASE_REVIEW.md
 storage/job-status.json
 *.last-run.json
+contextcaddy-config.json

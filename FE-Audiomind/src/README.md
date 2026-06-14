@@ -18,7 +18,10 @@ src/
     tokens.css      Design tokens (colors, spacing, typography)
     base.css        Global reset & page background
     app.css         Shared utilities (status badges, realtime)
-    dashboard.css   Figma dashboard shell (sidebar, upload, analysis)
+    dashboard.css   Dashboard layout (sidebar, upload, analysis)
+    studio-theme.css  VoxAI dark studio overrides (.app--studio)
+    studio-fx.css     Ambient background, waveforms, motion
+    studio-auth.css   Split-screen login
   types/            Shared TypeScript types
   utils/            Pure helpers (transcript, highlight)
   main.tsx          Entry point

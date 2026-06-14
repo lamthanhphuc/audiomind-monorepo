@@ -72,7 +72,7 @@ const normalizeRawStatus = (value: unknown): AnalysisDisplayStatus | null => {
   if (normalized === 'COMPLETED' || normalized === 'COMPLETE' || normalized === 'DONE') {
     return 'COMPLETED'
   }
-  if (normalized === 'FAILED' || normalized === 'ERROR') {
+  if (normalized === 'FAILED' || normalized === 'ERROR' || normalized === 'ANALYSIS_FAILED_RETRYABLE') {
     return 'FAILED'
   }
   if (normalized === 'STALE') {
@@ -141,8 +141,10 @@ export const AnalysisStatusPanel = ({
 }: AnalysisStatusPanelProps) => {
   const normalized = normalizeAnalysisMetadata(metadata)
   const retryAfterSeconds = normalized.retryAfterSeconds ?? 0
+  const noTranscriptAfterFinalize = normalized.errorCode === 'NO_TRANSCRIPT_AFTER_FINALIZE'
   const reanalyzeDisabled = busy
     || normalized.status === 'ANALYZING'
+    || noTranscriptAfterFinalize
     || retryAfterSeconds > 0
 
   const rows = [

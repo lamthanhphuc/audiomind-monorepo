@@ -1,5 +1,22 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { createRealtimeMeeting, deleteMeeting, downloadMeetingReport, downloadMeetingTranscript, getMeetingDetail, getSavedAnalysis, listMeetings, listMeetingsWithParams, reanalyzeMeetingAnalysis, renameMeeting, startProcessingByPath, uploadToMeetingApi } from './api'
+import {
+  createRealtimeMeeting,
+  deleteMeeting,
+  downloadMeetingActionPlanDocx,
+  downloadMeetingReport,
+  downloadMeetingTranscript,
+  getMeetingActionPlan,
+  getMeetingDetail,
+  getSavedAnalysis,
+  getTranscript,
+  listMeetings,
+  listMeetingsWithParams,
+  reanalyzeMeetingAnalysis,
+  renameMeeting,
+  searchMeetingTranscriptEvidence,
+  startProcessingByPath,
+  uploadToMeetingApi,
+} from './api'
 
 describe('upload language request wiring', () => {
   const fetchMock = vi.fn()
@@ -103,6 +120,28 @@ describe('upload language request wiring', () => {
 
     const urls = fetchMock.mock.calls.map((call) => call[0] as string)
     expect(urls.some((url) => url.endsWith('/meetings/9'))).toBe(true)
+  })
+
+  it('forwards abort signal to saved analysis and transcript read endpoints', async () => {
+    const controller = new AbortController()
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ meeting_id: 7, transcripts: [] }),
+        headers: new Headers(),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ meetingId: 7, data: { status: 'NOT_FOUND' } }),
+        headers: new Headers(),
+      })
+
+    await getTranscript(7, { signal: controller.signal })
+    await getSavedAnalysis(7, { signal: controller.signal })
+
+    const inits = fetchMock.mock.calls.map((call) => call[1] as RequestInit)
+    expect(inits[0]?.signal).toBe(controller.signal)
+    expect(inits[1]?.signal).toBe(controller.signal)
   })
 
   it('loads meeting detail and saved analysis from read-only endpoints', async () => {
@@ -223,6 +262,115 @@ describe('upload language request wiring', () => {
 
     const [url] = fetchMock.mock.calls[0] as [string]
     expect(url).toContain('/processing/7/report?format=docx')
+  })
+
+  it('searches transcript evidence with encoded query and default context options', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        meetingId: 7,
+        query: 'api deadline',
+        normalizedQuery: 'api deadline',
+        transcriptMode: 'canonical',
+        matches: [],
+      }),
+      headers: new Headers(),
+    })
+
+    const result = await searchMeetingTranscriptEvidence(7, 'api deadline')
+
+    expect(result.meetingId).toBe(7)
+    const [url] = fetchMock.mock.calls[0] as [string]
+    expect(url).toContain('/processing/7/transcript/search?')
+    expect(url).toContain('q=api+deadline')
+    expect(url).toContain('limit=20')
+    expect(url).toContain('context=1')
+  })
+
+  it('searches transcript evidence with caller-provided limit/context and URL encoding', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        meetingId: 7,
+        query: 'kế hoạch & api',
+        normalizedQuery: 'ke hoach api',
+        transcriptMode: 'raw',
+        matches: [],
+      }),
+      headers: new Headers(),
+    })
+
+    await searchMeetingTranscriptEvidence(7, 'kế hoạch & api', { limit: 5, context: 0 })
+
+    const [url] = fetchMock.mock.calls[0] as [string]
+    expect(url).toContain('q=k%E1%BA%BF+ho%E1%BA%A1ch+%26+api')
+    expect(url).toContain('limit=5')
+    expect(url).toContain('context=0')
+  })
+
+  it('loads meeting action plan preview', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        meeting: { meetingId: 7, title: 'History item' },
+        summary: 'Summary',
+        domainMode: 'it',
+        actionItems: [],
+        painPoints: [],
+        risks: [],
+        blockers: [],
+        grouped_action_plan: {
+          version: 'grouped-action-plan-v1',
+          language: 'vi',
+          intro: 'Intro',
+          sections: [
+            {
+              id: 'section-1',
+              order: 1,
+              title: 'Thanh toán',
+              items: [{ id: 'item-1', title: 'Đối soát MoMo', subtasks: ['Gửi log cho FPT'] }],
+            },
+          ],
+        },
+        generatedAt: '2026-06-11T00:00:00Z',
+        note: 'No action items available in saved analysis',
+        analysisMetadata: {
+          analysisSource: 'saved',
+          cacheOnly: false,
+          stale: false,
+          analysis_feature_set: 'grouped-action-plan-v1',
+        },
+      }),
+      headers: new Headers(),
+    })
+
+    const plan = await getMeetingActionPlan(7)
+
+    expect(plan.meeting.meetingId).toBe(7)
+    expect(plan.note).toBe('No action items available in saved analysis')
+    expect(plan.groupedActionPlan?.sections[0]?.title).toBe('Thanh toán')
+    expect(plan.groupedActionPlan?.sections[0]?.items[0]?.subtasks[0]?.text).toBe('Gửi log cho FPT')
+    expect(plan.analysisMetadata.analysisFeatureSet).toBe('grouped-action-plan-v1')
+    const [url] = fetchMock.mock.calls[0] as [string]
+    expect(url).toContain('/processing/7/action-plan')
+  })
+
+  it('downloads action plan DOCX and uses fallback filename without content-disposition', async () => {
+    const blob = new Blob(['fake-action-plan'], {
+      type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    })
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      blob: async () => blob,
+      headers: new Headers(),
+    })
+
+    const result = await downloadMeetingActionPlanDocx(7)
+
+    expect(result.blob).toBe(blob)
+    expect(result.filename).toBe('meeting-7-action-plan.docx')
+    const [url] = fetchMock.mock.calls[0] as [string]
+    expect(url).toContain('/processing/7/action-plan/export?format=docx')
   })
 
   it('downloads transcript as readable and raw txt/csv blobs', async () => {

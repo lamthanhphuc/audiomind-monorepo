@@ -666,6 +666,138 @@ export const mergeTranscriptSegments = (segments: TranscriptSegment[]): Transcri
   }, [])
 }
 
+const hasComparableTextOverlap = (left: string, right: string): boolean => {
+  const normalizedLeft = normalizeText(left)
+  const normalizedRight = normalizeText(right)
+  if (!normalizedLeft || !normalizedRight) {
+    return false
+  }
+  return normalizedLeft.includes(normalizedRight) || normalizedRight.includes(normalizedLeft)
+}
+
+const segmentsShareConsistencyIdentity = (left: TranscriptSegment, right: TranscriptSegment): boolean => {
+  if (left.mergeKey && right.mergeKey && left.mergeKey === right.mergeKey) {
+    return true
+  }
+
+  if (left.id && right.id && left.id === right.id) {
+    return true
+  }
+
+  return getSemanticKey(left) === getSemanticKey(right)
+}
+
+const sameStartSpeakerForConsistency = (left: TranscriptSegment, right: TranscriptSegment): boolean => (
+  canonicalSpeakerKey(left.speaker) === canonicalSpeakerKey(right.speaker)
+  && Math.abs((left.start ?? 0) - (right.start ?? 0)) <= HYDRATION_START_TIME_TOLERANCE_SECONDS
+)
+
+const hasHeavyTimingOverlap = (left: TranscriptSegment, right: TranscriptSegment): boolean => {
+  const overlap = Math.min(left.end ?? left.start ?? 0, right.end ?? right.start ?? 0)
+    - Math.max(left.start ?? 0, right.start ?? 0)
+  return overlap > 1.0
+}
+
+const resolveSignatureIdentity = (segment: TranscriptSegment): string => {
+  const mergeKey = segment.mergeKey ?? ''
+  if (mergeKey.startsWith('segment:')) {
+    const segmentPart = mergeKey.slice('segment:'.length)
+    const canonicalMatch = segmentPart.match(/^meeting-\d+-start-(\d+(?:\.\d+)?)-([a-z0-9_]+)$/i)
+    if (canonicalMatch) {
+      return `semantic:${Number(canonicalMatch[1]).toFixed(3)}|${canonicalMatch[2].toLowerCase()}`
+    }
+    return segmentPart
+  }
+
+  if (mergeKey.startsWith('semantic:')) {
+    return mergeKey
+  }
+
+  if (mergeKey.startsWith('dedupe:')) {
+    return mergeKey
+  }
+
+  return getSemanticKey(segment)
+}
+
+export const buildTranscriptEquivalenceSignature = (segments: TranscriptSegment[]): string => {
+  return sortTranscriptSegmentsByTimeline(segments)
+    .map((segment) => [
+      resolveSignatureIdentity(segment),
+      Number(segment.start ?? 0).toFixed(3),
+      Number(segment.end ?? segment.start ?? 0).toFixed(3),
+      normalizeText(segment.text),
+      segment.isFinal ? '1' : '0',
+      canonicalSpeakerKey(segment.speaker),
+    ].join(':'))
+    .join('|')
+}
+
+export const dedupePartialFinalTranscriptSegments = (segments: TranscriptSegment[]): TranscriptSegment[] => {
+  return segments.filter((segment) => {
+    if (segment.isFinal) {
+      return true
+    }
+
+    const cleanerFinal = segments.find((candidate) => {
+      if (!candidate.isFinal) {
+        return false
+      }
+
+      if (segmentsShareConsistencyIdentity(segment, candidate)) {
+        return true
+      }
+
+      if (canonicalSpeakerKey(candidate.speaker) !== canonicalSpeakerKey(segment.speaker)) {
+        return false
+      }
+
+      if (sameStartSpeakerForConsistency(segment, candidate)) {
+        return true
+      }
+
+      return hasHeavyTimingOverlap(segment, candidate)
+        && hasComparableTextOverlap(segment.text, candidate.text)
+    })
+
+    return !cleanerFinal
+  })
+}
+
+export const normalizeTranscriptSegmentsForConsistency = (segments: TranscriptSegment[]): TranscriptSegment[] => {
+  const merged = mergeTranscriptSegments(segments)
+  const deduped = dedupePartialFinalTranscriptSegments(merged)
+  return sortTranscriptSegmentsByTimeline(deduped)
+}
+
+export const normalizePersistedTranscriptForView = (
+  segments: TranscriptSource[],
+  options?: { fallbackSpeaker?: string },
+): TranscriptSegment[] => {
+  return normalizeTranscriptSegmentsForConsistency(
+    normalizePersistedTranscriptSegments(segments, options),
+  )
+}
+
+export const mergeHydratedTranscriptWithLive = (
+  liveSegments: TranscriptSegment[],
+  hydratedSegments: TranscriptSegment[],
+): TranscriptSegment[] => {
+  const merged = mergeTranscriptSegments([
+    ...liveSegments,
+    ...hydratedSegments,
+  ])
+  const deduped = dedupePartialFinalTranscriptSegments(merged)
+  if (hydratedSegments.length < liveSegments.length) {
+    console.info('[Realtime] HYDRATION_MERGE_KEEP_LIVE_SEGMENT', {
+      persistedFragments: hydratedSegments.length,
+      liveFragments: liveSegments.length,
+      mergedFragments: deduped.length,
+    })
+  }
+  return sortTranscriptSegmentsByTimeline(deduped)
+}
+
 type UploadTranscriptDisplayGroupingOptions = {
   shortSegmentMaxWords?: number
   shortSegmentMaxChars?: number

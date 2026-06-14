@@ -20,6 +20,8 @@ class ActionItem(BaseModel):
     priority: Optional[str] = None
     status: Optional[str] = None
     evidence: Optional[str] = None
+    evidenceQuote: Optional[str] = None
+    evidenceKeywords: List[str] = []
 
 
 class AnalysisTechnicalTerm(BaseModel):
@@ -130,6 +132,8 @@ class AnalysisResponse(BaseModel):
     confidence: Optional[float] = None
     promptVersion: Optional[str] = None
     schemaVersion: Optional[str] = None
+    analysisFeatureSet: Optional[str] = None
+    groupedActionPlan: Optional[Dict[str, Any]] = None
     created_at: datetime
     technicalTerms: List[AnalysisTechnicalTerm] = []
     painPoints: List[AnalysisPainPoint] = []
@@ -162,6 +166,7 @@ class RealtimeTranscriptAnalysisRequest(BaseModel):
     transcript_hash: Optional[str] = None
     prompt_version: Optional[str] = None
     schema_version: Optional[str] = None
+    analysis_feature_set: Optional[str] = None
     mode: Optional[str] = "auto"
     reason: Optional[str] = None
 
@@ -173,6 +178,7 @@ class AnalysisRerunRequest(BaseModel):
     transcript_hash: Optional[str] = None
     prompt_version: Optional[str] = None
     schema_version: Optional[str] = None
+    analysis_feature_set: Optional[str] = None
     canonical_transcript_hash: Optional[str] = None
     canonical_transcript_version: Optional[str] = None
 
@@ -186,6 +192,7 @@ class RealtimeTranscriptAnalysisResponse(BaseModel):
     source: Optional[str] = None
     promptVersion: Optional[str] = None
     schemaVersion: Optional[str] = None
+    analysisFeatureSet: Optional[str] = None
     retryAfterSeconds: Optional[int] = None
     errorCode: Optional[str] = None
     analysisStatus: Optional[str] = None

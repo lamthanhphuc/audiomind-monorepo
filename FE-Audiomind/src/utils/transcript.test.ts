@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import type { TranscriptSegment } from '../hooks/useRealtimeMeetingStream'
 import {
+  buildTranscriptEquivalenceSignature,
+  dedupePartialFinalTranscriptSegments,
   groupUploadTranscriptSegmentsForDisplay,
+  mergeHydratedTranscriptWithLive,
   mergeTranscriptSegmentsForDisplay,
+  normalizePersistedTranscriptForView,
   normalizeSpeakerBadge,
   parsePlainTranscriptText,
   sortTranscriptSegmentsByTimeline,
@@ -93,6 +97,152 @@ const makeSegment = (
   language: overrides.language,
   isFinal: overrides.isFinal ?? true,
   source: overrides.source ?? 'hydration',
+})
+
+describe('buildTranscriptEquivalenceSignature', () => {
+  it('builds comparable signatures from stable metadata only', () => {
+    const signature = buildTranscriptEquivalenceSignature([
+      makeSegment({
+        id: 'meeting-1-start-1.000-speaker_1',
+        mergeKey: 'segment:meeting-1-start-1.000-speaker_1',
+        speaker: 'SPEAKER_1',
+        text: 'Hello world',
+        start: 1,
+        end: 2,
+        isFinal: true,
+      }),
+    ])
+
+    expect(signature).toContain('semantic:1.000|speaker_1')
+    expect(signature).toContain('hello world')
+    expect(signature).toContain('1.000')
+    expect(signature).toContain('speaker_1')
+    expect(signature).not.toContain('Hello world')
+  })
+})
+
+describe('dedupePartialFinalTranscriptSegments', () => {
+  it('keeps only final when partial and final share mergeKey', () => {
+    const deduped = dedupePartialFinalTranscriptSegments([
+      makeSegment({
+        id: 'seg-partial',
+        mergeKey: 'segment:meeting-1-start-19.450-speaker_1',
+        speaker: 'SPEAKER_1',
+        text: 'partial text',
+        start: 19.45,
+        end: 24.42,
+        isFinal: false,
+        source: 'live',
+      }),
+      makeSegment({
+        id: 'seg-final',
+        mergeKey: 'segment:meeting-1-start-19.450-speaker_1',
+        speaker: 'SPEAKER_1',
+        text: 'final text',
+        start: 19.45,
+        end: 22.47,
+        isFinal: true,
+        source: 'hydration',
+      }),
+    ])
+
+    expect(deduped).toHaveLength(1)
+    expect(deduped[0].isFinal).toBe(true)
+    expect(deduped[0].text).toBe('final text')
+  })
+})
+
+describe('mergeHydratedTranscriptWithLive', () => {
+  it('matches history signature for partial/final/persisted fixture', () => {
+    const persistedRows = [
+      { speaker: 'SPEAKER_1', start_time: 19.45, end_time: 22.47, text: 'liệu có thể vào thời điểm hai', is_final: true },
+      { speaker: 'SPEAKER_1', start_time: 22.47, end_time: 26.69, text: 'hai chúng ta thảo luận tiếp', is_final: true },
+    ]
+    const live = [
+      makeSegment({
+        id: 'meeting-14-start-19.450-speaker_1',
+        mergeKey: 'segment:meeting-14-start-19.450-speaker_1',
+        speaker: 'SPEAKER_1',
+        text: 'liệu có thể vào thời điểm hai chúng ta',
+        start: 19.45,
+        end: 24.42,
+        isFinal: false,
+        source: 'live',
+      }),
+      makeSegment({
+        id: 'meeting-14-start-22.470-speaker_1',
+        mergeKey: 'segment:meeting-14-start-22.470-speaker_1',
+        speaker: 'SPEAKER_1',
+        text: 'hai chúng ta thảo luận tiếp',
+        start: 22.47,
+        end: 26.69,
+        isFinal: true,
+        source: 'live',
+      }),
+    ]
+
+    const historySignature = buildTranscriptEquivalenceSignature(
+      normalizePersistedTranscriptForView(persistedRows),
+    )
+    const liveSignature = buildTranscriptEquivalenceSignature(
+      mergeHydratedTranscriptWithLive(live, normalizePersistedTranscriptForView(persistedRows)),
+    )
+
+    expect(liveSignature).toBe(historySignature)
+  })
+
+  it('keeps newer live text when persisted hydration is behind', () => {
+    const live = [
+      makeSegment({
+        id: 'meeting-1-start-9.000-speaker_1',
+        mergeKey: 'segment:meeting-1-start-9.000-speaker_1',
+        speaker: 'SPEAKER_1',
+        text: 'five',
+        start: 9,
+        end: 10,
+        isFinal: true,
+        source: 'live',
+      }),
+    ]
+    const persisted = normalizePersistedTranscriptForView([
+      { speaker: 'SPEAKER_1', start_time: 1, end_time: 2, text: 'one' },
+      { speaker: 'SPEAKER_1', start_time: 3, end_time: 4, text: 'two' },
+      { speaker: 'SPEAKER_1', start_time: 5, end_time: 6, text: 'three' },
+      { speaker: 'SPEAKER_1', start_time: 7, end_time: 8, text: 'four' },
+    ])
+
+    const merged = mergeHydratedTranscriptWithLive(live, persisted)
+
+    expect(merged).toHaveLength(5)
+    expect(merged.map((segment) => segment.text)).toEqual(['one', 'two', 'three', 'four', 'five'])
+  })
+
+  it('replaces live partial with persisted final for same mergeKey', () => {
+    const live = [
+      makeSegment({
+        id: 'time-19.450-speaker_1',
+        mergeKey: 'semantic:19.450|speaker_1',
+        speaker: 'SPEAKER_1',
+        text: 'liệu có thể vào thời điểm hai chúng ta',
+        start: 19.45,
+        end: 24.42,
+        isFinal: false,
+        source: 'live',
+      }),
+    ]
+    const persisted = normalizePersistedTranscriptForView([
+      { speaker: 'SPEAKER_1', start_time: 19.45, end_time: 22.47, text: 'liệu có thể vào thời điểm hai', is_final: true },
+    ])
+
+    const merged = mergeHydratedTranscriptWithLive(live, persisted)
+
+    expect(merged).toHaveLength(1)
+    expect(merged[0]).toMatchObject({
+      isFinal: true,
+      end: 22.47,
+      text: 'liệu có thể vào thời điểm hai',
+    })
+  })
 })
 
 describe('mergeTranscriptSegmentsForDisplay', () => {

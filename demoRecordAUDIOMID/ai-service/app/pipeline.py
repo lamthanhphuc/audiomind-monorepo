@@ -374,6 +374,29 @@ class ProcessingPipeline:
             f"Audio file not found for input path '{audio_path}'. Checked: {checked}"
         )
 
+    @staticmethod
+    def _normalize_glossary_terms(*candidates: object) -> List[str]:
+        """Normalize glossary inputs to a safe list for len()/iteration/STT pass-through."""
+        for candidate in candidates:
+            if candidate is None:
+                continue
+            if isinstance(candidate, (list, tuple)):
+                normalized: List[str] = []
+                for term in candidate:
+                    clean = str(term).strip()
+                    if clean:
+                        normalized.append(clean)
+                return normalized
+            if isinstance(candidate, str):
+                clean = candidate.strip()
+                return [clean] if clean else []
+            logger.warning(
+                "event=BATCH_PIPELINE_GLOSSARY_IGNORED glossaryType={}",
+                type(candidate).__name__,
+            )
+            return []
+        return []
+
     def _build_initial_prompt(
         self,
         topic: Optional[str] = None,
@@ -838,7 +861,10 @@ class ProcessingPipeline:
             self._ensure_models_loaded()
             resolved_audio_path = self._resolve_audio_path(audio_path)
             glossary_context = glossary_context or {}
-            effective_glossary_terms = glossary_context.get("terms") or glossary_terms
+            effective_glossary_terms = self._normalize_glossary_terms(
+                glossary_context.get("terms"),
+                glossary_terms,
+            )
 
             self._record_baseline_snapshot(meeting_id, runtime_device)
 
@@ -864,7 +890,11 @@ class ProcessingPipeline:
                     glossary_terms=effective_glossary_terms,
                     topic_defaults=glossary_context.get("topic_defaults"),
                 )
-                logger.info(f"Initial prompt for STT: {initial_prompt}")
+                logger.info(
+                    "Initial STT prompt prepared length={} glossary_term_count={}",
+                    len(initial_prompt),
+                    len(effective_glossary_terms),
+                )
 
                 transcript_segments = self._transcribe_with_provider_selection(
                     audio_path=resolved_audio_path,

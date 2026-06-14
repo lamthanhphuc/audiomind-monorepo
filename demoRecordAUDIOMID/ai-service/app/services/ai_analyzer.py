@@ -14,19 +14,23 @@ from tenacity import (
     wait_exponential,
 )
 
+from app.logging_utils import safe_error_message, transcript_hash_prefix
 from app.services.analysis_errors import (
     AnalysisConfigError,
     AnalysisNotImplementedError,
     AnalysisParseError,
     AnalysisProviderError,
+    AnalysisRateLimitError,
     AnalysisUnavailableError,
 )
-from app.logging_utils import safe_error_message, transcript_hash_prefix
+from app.services.gemini_client import GeminiClient
+from app.services.gemini_key_manager import GeminiKeyConfigError, GeminiKeyManager
 
 
 class AIAnalyzer:
-    PROMPT_VERSION = "gemini-business-v1"
-    SCHEMA_VERSION = "gemini-business-v1"
+    PROMPT_VERSION = "gemini-business-v2"
+    SCHEMA_VERSION = "gemini-business-v2"
+    ANALYSIS_FEATURE_SET = "grouped-action-plan-v1"
 
     STOPWORDS = {
         "trong",
@@ -70,8 +74,11 @@ class AIAnalyzer:
         "in_progress",
         "blocked",
         "done",
-        "pending",
-        "cancelled",
+    }
+    LEGACY_ACTION_ITEM_STATUS_MAP = {
+        "pending": "open",
+        "completed": "done",
+        "cancelled": "blocked",
     }
 
     def __init__(
@@ -91,6 +98,15 @@ class AIAnalyzer:
         gemini_max_tokens_retry_enabled: bool = True,
         gemini_max_single_request_chars: int = 50000,
         gemini_request_delay_seconds: float = 15.0,
+        gemini_api_keys: str = "",
+        gemini_multi_key_enabled: bool = False,
+        gemini_max_attempts: int = 3,
+        gemini_key_cooldown_seconds: float = 90.0,
+        gemini_key_hard_cooldown_seconds: float = 900.0,
+        gemini_backoff_base_ms: float = 500.0,
+        gemini_backoff_max_ms: float = 10000.0,
+        gemini_backoff_jitter: bool = True,
+        gemini_fail_fast_seconds: float = 30.0,
         ollama_base_url: str = "http://127.0.0.1:11434",
         timeout_seconds: int = 300,
     ):
@@ -132,8 +148,45 @@ class AIAnalyzer:
         self.gemini_request_delay_seconds = max(
             0.0, float(gemini_request_delay_seconds or 0.0)
         )
+        self.gemini_multi_key_enabled = bool(gemini_multi_key_enabled)
+        self.gemini_max_attempts = max(1, int(gemini_max_attempts or 1))
+        self.gemini_key_cooldown_seconds = max(
+            0.0, float(gemini_key_cooldown_seconds or 0.0)
+        )
+        self.gemini_key_hard_cooldown_seconds = max(
+            0.0, float(gemini_key_hard_cooldown_seconds or 0.0)
+        )
+        self.gemini_backoff_base_ms = max(0.0, float(gemini_backoff_base_ms or 0.0))
+        self.gemini_backoff_max_ms = max(0.0, float(gemini_backoff_max_ms or 0.0))
+        self.gemini_backoff_jitter = bool(gemini_backoff_jitter)
+        self.gemini_fail_fast_seconds = max(0.0, float(gemini_fail_fast_seconds or 0.0))
         self.ollama_base_url = (ollama_base_url or "http://127.0.0.1:11434").rstrip("/")
         self.timeout_seconds = timeout_seconds
+        self.gemini_key_manager = None
+        self.gemini_client = None
+        if self.provider == "gemini" and (
+            self.api_key or (gemini_api_keys or "").strip()
+        ):
+            try:
+                self.gemini_key_manager = GeminiKeyManager.from_config(
+                    gemini_api_key=self.api_key,
+                    gemini_api_keys=gemini_api_keys,
+                    multi_key_enabled=self.gemini_multi_key_enabled,
+                )
+            except GeminiKeyConfigError as exc:
+                raise AnalysisConfigError(str(exc), provider="gemini") from exc
+            self.gemini_client = GeminiClient(
+                self.gemini_key_manager,
+                max_attempts=self.gemini_max_attempts,
+                key_cooldown_seconds=self.gemini_key_cooldown_seconds,
+                key_hard_cooldown_seconds=self.gemini_key_hard_cooldown_seconds,
+                backoff_base_ms=self.gemini_backoff_base_ms,
+                backoff_max_ms=self.gemini_backoff_max_ms,
+                backoff_jitter=self.gemini_backoff_jitter,
+                fail_fast_seconds=self.gemini_fail_fast_seconds,
+                http_client_factory=httpx.Client,
+                sleep=time.sleep,
+            )
         if self.provider == "gemini":
             logger.info(
                 f"Initialized AI Analyzer provider=gemini, analysis_model={self.model}, summary_model={self.summary_model}, domain_mode={self.analysis_domain_mode}, max_input_tokens={self.analysis_max_input_tokens}, max_output_tokens={self.analysis_max_output_tokens}, retry_max_attempts={self.analysis_retry_max_attempts}, timeout_seconds={self.timeout_seconds}, rate_limit_retry_base_seconds={self.gemini_rate_limit_retry_base_seconds}, rate_limit_retry_max_seconds={self.gemini_rate_limit_retry_max_seconds}, retry_quota_exceeded={self.gemini_retry_quota_exceeded}, max_tokens_retry_enabled={self.gemini_max_tokens_retry_enabled}"
@@ -303,12 +356,88 @@ class AIAnalyzer:
             },
         }
 
+    def _grouped_subtask_schema(self) -> Dict[str, Any]:
+        return {
+            "type": "OBJECT",
+            "properties": {
+                "id": {"type": "STRING"},
+                "text": {"type": "STRING"},
+                "confidence": {
+                    "type": "STRING",
+                    "enum": ["SUPPORTED", "INFERRED", "NEEDS_REVIEW"],
+                },
+                "evidenceKeywords": {"type": "ARRAY", "items": {"type": "STRING"}},
+            },
+        }
+
+    def _grouped_item_schema(self) -> Dict[str, Any]:
+        return {
+            "type": "OBJECT",
+            "properties": {
+                "id": {"type": "STRING"},
+                "title": {"type": "STRING"},
+                "description": {"type": "STRING"},
+                "subtasks": {"type": "ARRAY", "items": self._grouped_subtask_schema()},
+                "owner": {"type": "STRING"},
+                "deadline": {"type": "STRING"},
+                "priority": {"type": "STRING", "enum": ["low", "medium", "high"]},
+                "status": {
+                    "type": "STRING",
+                    "enum": ["open", "in_progress", "blocked", "done"],
+                },
+                "confidence": {
+                    "type": "STRING",
+                    "enum": ["SUPPORTED", "INFERRED", "NEEDS_REVIEW"],
+                },
+                "evidenceKeywords": {"type": "ARRAY", "items": {"type": "STRING"}},
+                "sourceActionItemIds": {"type": "ARRAY", "items": {"type": "STRING"}},
+            },
+        }
+
+    def _grouped_section_schema(self) -> Dict[str, Any]:
+        return {
+            "type": "OBJECT",
+            "properties": {
+                "id": {"type": "STRING"},
+                "order": {"type": "NUMBER"},
+                "title": {"type": "STRING"},
+                "summary": {"type": "STRING"},
+                "items": {"type": "ARRAY", "items": self._grouped_item_schema()},
+            },
+        }
+
+    def _grouped_note_schema(self) -> Dict[str, Any]:
+        return {
+            "type": "OBJECT",
+            "properties": {
+                "text": {"type": "STRING"},
+                "confidence": {
+                    "type": "STRING",
+                    "enum": ["SUPPORTED", "INFERRED", "NEEDS_REVIEW"],
+                },
+                "evidenceKeywords": {"type": "ARRAY", "items": {"type": "STRING"}},
+            },
+        }
+
+    def _grouped_action_plan_schema(self) -> Dict[str, Any]:
+        return {
+            "type": "OBJECT",
+            "properties": {
+                "version": {"type": "STRING"},
+                "language": {"type": "STRING", "enum": ["vi", "en", "mixed"]},
+                "intro": {"type": "STRING"},
+                "sections": {"type": "ARRAY", "items": self._grouped_section_schema()},
+                "notes": {"type": "ARRAY", "items": self._grouped_note_schema()},
+            },
+        }
+
     def _action_item_schema(self) -> Dict[str, Any]:
         return {
             "type": "OBJECT",
             "properties": {
                 "task": {"type": "STRING"},
                 "owner": {"type": "STRING"},
+                "deadline": {"type": "STRING"},
                 "dueDate": {"type": "STRING"},
                 "priority": {"type": "STRING", "enum": ["low", "medium", "high"]},
                 "status": {
@@ -318,10 +447,9 @@ class AIAnalyzer:
                         "in_progress",
                         "blocked",
                         "done",
-                        "pending",
-                        "cancelled",
                     ],
                 },
+                "evidenceKeywords": {"type": "ARRAY", "items": {"type": "STRING"}},
                 "evidence": {"type": "STRING"},
             },
         }
@@ -341,7 +469,7 @@ class AIAnalyzer:
                     "type": "ARRAY",
                     "items": self._pain_point_schema(),
                 },
-                "actionItems": {"type": "ARRAY", "items": self._action_item_schema()},
+                "action_items": {"type": "ARRAY", "items": self._action_item_schema()},
                 "keyDecisions": {"type": "ARRAY", "items": {"type": "STRING"}},
                 "risks": {"type": "ARRAY", "items": {"type": "STRING"}},
                 "blockers": {"type": "ARRAY", "items": {"type": "STRING"}},
@@ -359,6 +487,8 @@ class AIAnalyzer:
                     "type": "STRING",
                     "enum": ["general", "it", "business", "education"],
                 },
+                "groupedActionPlan": self._grouped_action_plan_schema(),
+                "analysisFeatureSet": {"type": "STRING"},
             },
         }
 
@@ -499,7 +629,9 @@ class AIAnalyzer:
         normalized = str(value or "").strip().lower()
         if normalized in self.ACTION_ITEM_STATUSES:
             return normalized
-        return None
+        if normalized in self.LEGACY_ACTION_ITEM_STATUS_MAP:
+            return self.LEGACY_ACTION_ITEM_STATUS_MAP[normalized]
+        return "open"
 
     def _normalize_business_action_items(self, values: Any) -> List[Dict[str, Any]]:
         normalized: List[Dict[str, Any]] = []
@@ -525,6 +657,12 @@ class AIAnalyzer:
                     item.get("dueDate") or item.get("due_date") or item.get("deadline")
                 )
                 evidence = self._normalize_optional_text(item.get("evidence"))
+                evidence_quote = self._normalize_optional_text(
+                    item.get("evidenceQuote") or item.get("evidence_quote")
+                )
+                evidence_keywords = self._coerce_string_list(
+                    item.get("evidenceKeywords") or item.get("evidence_keywords") or []
+                )[:5]
                 priority = self._normalize_action_item_priority(item.get("priority"))
                 status = self._normalize_action_item_status(item.get("status"))
 
@@ -537,6 +675,8 @@ class AIAnalyzer:
                         "priority": priority,
                         "status": status,
                         "evidence": evidence,
+                        "evidenceQuote": evidence_quote,
+                        "evidenceKeywords": evidence_keywords,
                     }
                 )
                 continue
@@ -555,11 +695,224 @@ class AIAnalyzer:
                     "dueDate": None,
                     "deadline": None,
                     "priority": None,
-                    "status": None,
+                    "status": "open",
                     "evidence": None,
+                    "evidenceQuote": None,
+                    "evidenceKeywords": [],
                 }
             )
         return normalized
+
+    def _empty_grouped_action_plan(self) -> Dict[str, Any]:
+        return {
+            "version": self.ANALYSIS_FEATURE_SET,
+            "language": "vi",
+            "intro": "Chưa có công việc đủ rõ để phân nhóm.",
+            "sections": [],
+            "notes": [],
+        }
+
+    def _normalize_grouped_action_plan(
+        self,
+        value: Any,
+        action_items: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        if not isinstance(value, dict):
+            return self._fallback_grouped_action_plan(action_items)
+
+        sections = []
+        seen_tasks: Set[str] = set()
+        for raw_section in (value.get("sections") or [])[:8]:
+            if not isinstance(raw_section, dict):
+                continue
+            items = []
+            for raw_item in (raw_section.get("items") or [])[:8]:
+                if not isinstance(raw_item, dict):
+                    continue
+                title = self._trim_text(
+                    raw_item.get("title") or raw_item.get("task"), 120
+                )
+                if not title:
+                    continue
+                key = title.lower()
+                if key in seen_tasks:
+                    continue
+                seen_tasks.add(key)
+                source_ids = self._coerce_string_list(
+                    raw_item.get("sourceActionItemIds")
+                    or raw_item.get("source_action_item_ids")
+                    or []
+                )[:8]
+                confidence = self._normalize_grouped_confidence(
+                    raw_item.get("confidence"), bool(source_ids)
+                )
+                items.append(
+                    {
+                        "id": self._trim_text(raw_item.get("id"), 80)
+                        or f"item-{len(items) + 1}",
+                        "title": title,
+                        "description": self._trim_text(raw_item.get("description"), 500)
+                        or None,
+                        "subtasks": self._normalize_grouped_subtasks(
+                            raw_item.get("subtasks")
+                        ),
+                        "owner": self._normalize_optional_text(raw_item.get("owner")),
+                        "deadline": self._normalize_optional_text(
+                            raw_item.get("deadline")
+                            or raw_item.get("dueDate")
+                            or raw_item.get("due_date")
+                        ),
+                        "priority": self._normalize_action_item_priority(
+                            raw_item.get("priority")
+                        ),
+                        "status": self._normalize_action_item_status(
+                            raw_item.get("status")
+                        ),
+                        "confidence": confidence,
+                        "evidenceKeywords": self._coerce_string_list(
+                            raw_item.get("evidenceKeywords")
+                            or raw_item.get("evidence_keywords")
+                            or []
+                        )[:8],
+                        "sourceActionItemIds": source_ids,
+                    }
+                )
+            if not items:
+                continue
+            sections.append(
+                {
+                    "id": self._trim_text(raw_section.get("id"), 80)
+                    or f"section-{len(sections) + 1}",
+                    "order": len(sections) + 1,
+                    "title": self._trim_text(raw_section.get("title"), 80)
+                    or "Công việc chung",
+                    "summary": self._trim_text(raw_section.get("summary"), 240) or None,
+                    "items": items,
+                }
+            )
+
+        notes = []
+        for raw_note in (value.get("notes") or [])[:8]:
+            note = raw_note if isinstance(raw_note, dict) else {"text": raw_note}
+            text = self._trim_text(note.get("text") or note.get("note"), 240)
+            if not text:
+                continue
+            notes.append(
+                {
+                    "text": text,
+                    "confidence": self._normalize_grouped_confidence(
+                        note.get("confidence"), False
+                    ),
+                    "evidenceKeywords": self._coerce_string_list(
+                        note.get("evidenceKeywords")
+                        or note.get("evidence_keywords")
+                        or []
+                    )[:8],
+                }
+            )
+
+        if not sections and not notes:
+            return self._fallback_grouped_action_plan(action_items)
+        return {
+            "version": self.ANALYSIS_FEATURE_SET,
+            "language": self._normalize_grouped_language(value.get("language")),
+            "intro": self._trim_text(value.get("intro"), 360)
+            or "Dựa trên nội dung cuộc thảo luận trong file audio, dưới đây là danh sách các công việc cần thực hiện, được phân chia theo các nhóm chức năng chính:",
+            "sections": sections,
+            "notes": notes,
+        }
+
+    def _normalize_grouped_subtasks(self, value: Any) -> List[Dict[str, Any]]:
+        subtasks = []
+        for raw_subtask in (value or [])[:8]:
+            subtask = (
+                raw_subtask if isinstance(raw_subtask, dict) else {"text": raw_subtask}
+            )
+            text = self._trim_text(
+                subtask.get("text") or subtask.get("title") or subtask.get("task"),
+                180,
+            )
+            if not text:
+                continue
+            subtasks.append(
+                {
+                    "id": self._trim_text(subtask.get("id"), 80)
+                    or f"subtask-{len(subtasks) + 1}",
+                    "text": text,
+                    "confidence": self._normalize_grouped_confidence(
+                        subtask.get("confidence"), False
+                    ),
+                    "evidenceKeywords": self._coerce_string_list(
+                        subtask.get("evidenceKeywords")
+                        or subtask.get("evidence_keywords")
+                        or []
+                    )[:8],
+                }
+            )
+        return subtasks
+
+    def _fallback_grouped_action_plan(
+        self, action_items: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        items = []
+        for index, item in enumerate((action_items or [])[:8], start=1):
+            task = self._trim_text(item.get("task"), 120)
+            if not task:
+                continue
+            items.append(
+                {
+                    "id": f"fallback-item-{index}",
+                    "title": task,
+                    "description": None,
+                    "subtasks": [],
+                    "owner": item.get("owner"),
+                    "deadline": item.get("deadline") or item.get("dueDate"),
+                    "priority": item.get("priority"),
+                    "status": item.get("status") or "open",
+                    "confidence": "SUPPORTED",
+                    "evidenceKeywords": self._coerce_string_list(
+                        item.get("evidenceKeywords") or []
+                    )[:8],
+                    "sourceActionItemIds": [str(item.get("id") or f"action-{index}")],
+                }
+            )
+        if not items:
+            return self._empty_grouped_action_plan()
+        return {
+            "version": self.ANALYSIS_FEATURE_SET,
+            "language": "vi",
+            "intro": "Dựa trên nội dung cuộc thảo luận trong file audio, dưới đây là danh sách các công việc cần thực hiện, được phân chia theo các nhóm chức năng chính:",
+            "sections": [
+                {
+                    "id": "fallback-section-1",
+                    "order": 1,
+                    "title": "Công việc chung",
+                    "summary": None,
+                    "items": items,
+                }
+            ],
+            "notes": [],
+        }
+
+    def _normalize_grouped_language(self, value: Any) -> str:
+        normalized = str(value or "").strip().lower()
+        if normalized in {"vi", "en", "mixed"}:
+            return normalized
+        return "mixed"
+
+    def _normalize_grouped_confidence(self, value: Any, has_source: bool) -> str:
+        normalized = str(value or "").strip().upper()
+        if normalized not in {"SUPPORTED", "INFERRED", "NEEDS_REVIEW"}:
+            return "NEEDS_REVIEW"
+        if normalized == "SUPPORTED" and not has_source:
+            return "NEEDS_REVIEW"
+        return normalized
+
+    def _trim_text(self, value: Any, limit: int) -> str:
+        text = re.sub(r"\s+", " ", str(value or "")).strip()
+        if len(text) <= limit:
+            return text
+        return text[: max(0, limit - 3)].rstrip() + "..."
 
     def _default_structured_analysis(
         self, transcript: str, reason: str
@@ -589,6 +942,8 @@ class AIAnalyzer:
             "confidence": confidence,
             "promptVersion": self.PROMPT_VERSION,
             "schemaVersion": self.SCHEMA_VERSION,
+            "analysisFeatureSet": self.ANALYSIS_FEATURE_SET,
+            "groupedActionPlan": self._empty_grouped_action_plan(),
             "domainMode": self.analysis_domain_mode,
             "technical_terms": [],
             "pain_points": [],
@@ -646,15 +1001,55 @@ class AIAnalyzer:
         it_guidance: str,
         is_realtime: bool = False,
     ) -> str:
+        grouped_action_plan_example = json.dumps(
+            {
+                "version": self.ANALYSIS_FEATURE_SET,
+                "language": "vi|en|mixed",
+                "intro": "Dựa trên nội dung cuộc thảo luận trong file audio, dưới đây là danh sách các công việc cần thực hiện, được phân chia theo các nhóm chức năng chính:",
+                "sections": [
+                    {
+                        "id": "section-1",
+                        "order": 1,
+                        "title": "Tên nhóm chức năng tự nhiên theo nội dung cuộc họp",
+                        "summary": "Mô tả ngắn nhóm việc",
+                        "items": [
+                            {
+                                "id": "item-1",
+                                "title": "Tên công việc",
+                                "description": "Mô tả ngắn việc cần làm",
+                                "subtasks": [
+                                    {
+                                        "id": "subtask-1",
+                                        "text": "Việc con cụ thể",
+                                        "confidence": "SUPPORTED|INFERRED|NEEDS_REVIEW",
+                                        "evidenceKeywords": ["từ khóa ngắn"],
+                                    }
+                                ],
+                                "owner": None,
+                                "deadline": None,
+                                "priority": "low|medium|high|null",
+                                "status": "open|in_progress|blocked|done",
+                                "confidence": "SUPPORTED|INFERRED|NEEDS_REVIEW",
+                                "evidenceKeywords": ["từ khóa ngắn"],
+                                "sourceActionItemIds": ["action-1"],
+                            }
+                        ],
+                    }
+                ],
+                "notes": [],
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
         realtime_guidance = ""
         if is_realtime:
             realtime_guidance = (
                 "- REALTIME_MODE: prefer concise output for fast UI display.\n"
                 "- For realtime only: summary and meetingSummary max 2 short sentences each.\n"
                 "- For realtime only: keywords and technicalTerms max 5 each.\n"
-                "- For realtime only: painPoints and actionItems max 3 each.\n"
+                "- For realtime only: painPoints and action_items max 3 each.\n"
                 "- For realtime only: keyDecisions, risks, blockers, questions, deadlines, owners, nextSteps max 3 each.\n"
-                "- For realtime only: evidence and list items max 120 characters; impacts max 1 short sentence each.\n"
+                "- For realtime only: evidenceKeywords and list items max 120 characters; impacts max 1 short sentence each.\n"
             )
         return f"""
 Hãy phân tích transcript sau và trả về đúng MỘT object JSON hợp lệ.
@@ -669,16 +1064,23 @@ YÊU CẦU:
 - keywords tối đa 8.
 - technicalTerms tối đa 8.
 - painPoints tối đa 5.
-- actionItems tối đa 5.
+- action_items tối đa 5.
 - keyDecisions, risks, blockers, questions, deadlines, owners, nextSteps: mỗi mục tối đa 5.
 - Nếu không đủ bằng chứng, dùng mảng rỗng.
 - severity chỉ dùng: low, medium, high.
 - owner chỉ điền khi transcript/speaker nêu rõ người chịu trách nhiệm.
 - dueDate chỉ điền khi transcript có ngày hoặc deadline rõ ràng.
 - Không suy đoán owner/dueDate khi thiếu bằng chứng.
-- evidence nên là trích dẫn ngắn hoặc mô tả rất ngắn từ transcript.
+- evidenceKeywords là các từ khóa/cụm từ ngắn để tìm lại bằng chứng ở bước Search-A; không tạo evidenceQuote.
+- evidence chỉ là ghi chú tương thích ngắn khi thật sự cần, không phải bằng chứng đã xác minh.
 - confidence phải phản ánh độ chắc chắn của transcript, không mặc định luôn cao.
 - domainMode phải là một trong: general, it, business, education.
+- groupedActionPlan phải chia theo nhóm chức năng tự nhiên của cuộc họp.
+- Không hard-code Hackathon headings.
+- Không bịa owner/deadline/done/blocked.
+- status=open là trạng thái hiển thị mặc định cho task có thể làm.
+- Mỗi grouped item nên map về action_items qua sourceActionItemIds nếu có.
+- Nếu không đủ dữ liệu để phân nhóm, dùng sections=[] hoặc một section Công việc chung, không bịa task.
 - promptVersion phải là "{self.PROMPT_VERSION}".
 - schemaVersion phải là "{self.SCHEMA_VERSION}".
 
@@ -707,13 +1109,15 @@ Schema:
             "severity": "low|medium|high"
         }}
     ],
-    "actionItems": [
+    "action_items": [
         {{
             "task": "string",
             "owner": "string|null",
+            "deadline": "string|null",
             "dueDate": "string|null",
             "priority": "low|medium|high|null",
-            "status": "open|in_progress|blocked|done|pending|cancelled|null",
+            "status": "open|in_progress|blocked|done",
+            "evidenceKeywords": ["string"],
             "evidence": "string|null"
         }}
     ],
@@ -730,6 +1134,8 @@ Schema:
     "confidence": 0.0,
     "promptVersion": "{self.PROMPT_VERSION}",
     "schemaVersion": "{self.SCHEMA_VERSION}",
+    "analysisFeatureSet": "{self.ANALYSIS_FEATURE_SET}",
+    "groupedActionPlan": {grouped_action_plan_example},
     "domainMode": "general|it|business|education"
 }}
 
@@ -800,8 +1206,9 @@ TEXT:
             payload.get("painPoints") or payload.get("pain_points") or []
         )
         business_action_items = self._normalize_business_action_items(
-            payload.get("actionItems")
-            or payload.get("action_items")
+            payload.get("action_items")
+            or payload.get("businessActionItems")
+            or payload.get("actionItems")
             or payload.get("nextSteps")
             or []
         )
@@ -879,6 +1286,18 @@ TEXT:
             ).strip()
             or None
         )
+        grouped_action_plan = self._normalize_grouped_action_plan(
+            payload.get("groupedActionPlan") or payload.get("grouped_action_plan"),
+            business_action_items,
+        )
+        analysis_feature_set = (
+            str(
+                payload.get("analysisFeatureSet")
+                or payload.get("analysis_feature_set")
+                or ""
+            ).strip()
+            or self.ANALYSIS_FEATURE_SET
+        )
 
         term_keys = {item["term"].lower() for item in technical_terms}
         keywords = [item for item in keywords if item.lower() not in term_keys]
@@ -915,6 +1334,8 @@ TEXT:
             "confidence": confidence,
             "promptVersion": prompt_version,
             "schemaVersion": schema_version,
+            "analysisFeatureSet": analysis_feature_set,
+            "groupedActionPlan": grouped_action_plan,
             "transcriptHash": transcript_hash,
             "topics": self._coerce_string_list(
                 payload.get("topics")
@@ -997,6 +1418,15 @@ TEXT:
                     **item,
                     "task": trim_text(item.get("task"), 120),
                     "evidence": trim_text(item.get("evidence"), 100),
+                    "evidenceQuote": trim_text(item.get("evidenceQuote"), 100),
+                    "evidenceKeywords": [
+                        trim_text(keyword, 80)
+                        for keyword in (
+                            item.get("evidenceKeywords")
+                            if isinstance(item.get("evidenceKeywords"), list)
+                            else []
+                        )[:5]
+                    ],
                 }
                 for item in business_action_items[:3]
                 if isinstance(item, dict)
@@ -1046,6 +1476,12 @@ TEXT:
                 priority = self._normalize_action_item_priority(item.get("priority"))
                 status = self._normalize_action_item_status(item.get("status"))
                 evidence = self._normalize_optional_text(item.get("evidence"))
+                evidence_quote = self._normalize_optional_text(
+                    item.get("evidenceQuote") or item.get("evidence_quote")
+                )
+                evidence_keywords = self._coerce_string_list(
+                    item.get("evidenceKeywords") or item.get("evidence_keywords") or []
+                )[:5]
                 normalized.append(
                     {
                         "task": task,
@@ -1055,6 +1491,8 @@ TEXT:
                         "priority": priority,
                         "status": status,
                         "evidence": evidence,
+                        "evidenceQuote": evidence_quote,
+                        "evidenceKeywords": evidence_keywords,
                     }
                 )
                 continue
@@ -1068,8 +1506,10 @@ TEXT:
                         "dueDate": None,
                         "deadline": None,
                         "priority": None,
-                        "status": None,
+                        "status": "open",
                         "evidence": None,
+                        "evidenceQuote": None,
+                        "evidenceKeywords": [],
                     }
                 )
         return normalized
@@ -1285,7 +1725,9 @@ NỘI DUNG:
         )
 
     def _require_gemini_api_key(self) -> None:
-        if not self.api_key:
+        if not self.api_key and not (
+            self.gemini_key_manager is not None and self.gemini_key_manager.has_keys()
+        ):
             raise AnalysisConfigError(
                 "GEMINI_API_KEY is required when analysis_provider=gemini",
                 provider=self.provider,
@@ -1303,7 +1745,6 @@ NỘI DUNG:
         max_output_tokens: Optional[int] = None,
     ) -> str:
         self._require_gemini_api_key()
-        retryable_statuses = {429, 500, 502, 503, 504}
         thinking_budget = self._resolve_gemini_thinking_budget(
             model=model,
             response_json=response_json,
@@ -1343,10 +1784,6 @@ NỘI DUNG:
                 super().__init__("Gemini response incomplete: finish_reason=MAX_TOKENS")
 
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-        headers = {
-            "Content-Type": "application/json",
-            "x-goog-api-key": self.api_key,
-        }
 
         def _retry_after_seconds(
             response: httpx.Response | None, attempt: int
@@ -1444,157 +1881,75 @@ NỘI DUNG:
                 thinking_budget,
             )
 
-            try:
-                with httpx.Client(timeout=self.timeout_seconds) as client:
-                    response = None
-                    max_attempts = max(1, self.analysis_retry_max_attempts)
-                    for attempt in range(1, max_attempts + 1):
-                        response = client.post(
-                            url, headers=headers, json=request_payload
-                        )
-
-                        if response.status_code < 400:
-                            body = response.json()
-                            text, candidates, body_dict = _extract_response_text(body)
-
-                            input_tokens = None
-                            output_tokens = None
-                            total_tokens = None
-                            usage_metadata = body_dict.get(
-                                "usageMetadata"
-                            ) or body_dict.get("usage_metadata")
-                            if isinstance(usage_metadata, dict):
-                                input_tokens = usage_metadata.get(
-                                    "promptTokenCount"
-                                ) or usage_metadata.get("input_tokens")
-                                output_tokens = usage_metadata.get(
-                                    "candidatesTokenCount"
-                                ) or usage_metadata.get("output_tokens")
-                                total_tokens = usage_metadata.get(
-                                    "totalTokenCount"
-                                ) or usage_metadata.get("total_tokens")
-                                logger.info(
-                                    "GEMINI_ANALYSIS_TOKEN_USAGE input_tokens={} output_tokens={} total_tokens={}",
-                                    input_tokens,
-                                    output_tokens,
-                                    total_tokens,
-                                )
-
-                            finish_reason = None
-                            if candidates and isinstance(candidates[0], dict):
-                                finish_reason = candidates[0].get(
-                                    "finishReason"
-                                ) or candidates[0].get("finish_reason")
-
-                            logger.info(
-                                "GEMINI_ANALYSIS_RESPONSE_META finish_reason={} response_chars={} schema_mode={} max_output_tokens={} thinking_budget={}",
-                                finish_reason,
-                                len(text),
-                                schema_mode,
-                                request_max_output_tokens,
-                                thinking_budget,
-                            )
-                            if str(finish_reason or "").strip().upper() == "MAX_TOKENS":
-                                logger.warning(
-                                    "GEMINI_ANALYSIS_INCOMPLETE reason=max_tokens attempt={} output_tokens={} max_output_tokens={} response_chars={} schema_mode={}",
-                                    attempt,
-                                    output_tokens,
-                                    request_max_output_tokens,
-                                    len(text),
-                                    schema_mode,
-                                )
-                                raise _GeminiMaxTokensError(
-                                    response_chars=len(text),
-                                    schema_mode=schema_mode,
-                                    output_tokens=output_tokens,
-                                    max_output_tokens=request_max_output_tokens,
-                                )
-                            logger.info(
-                                f"Gemini response parse success model={model} response_chars={len(text)}"
-                            )
-                            return text
-
-                        response_preview = self._response_error_preview(response)
-                        logger.warning(
-                            "GEMINI_ANALYSIS_HTTP_ERROR status={} response_preview={}",
-                            response.status_code,
-                            response_preview,
-                        )
-                        quota_exceeded = response.status_code == 429 and (
-                            _is_quota_exceeded_response(response_preview)
-                        )
-                        if quota_exceeded:
-                            logger.warning(
-                                "GEMINI_QUOTA_EXCEEDED status=429 attempt={} max_attempts={} retry_quota_exceeded={} response_preview={}",
-                                attempt,
-                                max_attempts,
-                                self.gemini_retry_quota_exceeded,
-                                response_preview,
-                            )
-                            if not self.gemini_retry_quota_exceeded:
-                                raise AnalysisUnavailableError(
-                                    "Gemini quota exceeded (HTTP 429)",
-                                    provider=self.provider,
-                                )
-
-                        if response.status_code == 400:
-                            raise AnalysisUnavailableError(
-                                "Gemini request failed with HTTP 400",
-                                provider=self.provider,
-                            )
-
-                        if response.status_code in retryable_statuses and (
-                            (response.status_code == 429 and attempt < max_attempts)
-                            or (response.status_code != 429 and attempt < max_attempts)
-                        ):
-                            wait_seconds = _retry_after_seconds(response, attempt)
-                            if response.status_code == 429:
-                                logger.warning(
-                                    "GEMINI_ANALYSIS_RATE_LIMIT_RETRY attempt={} reason=status_429 quota_exceeded={} wait_seconds={}",
-                                    attempt,
-                                    quota_exceeded,
-                                    wait_seconds,
-                                )
-                            else:
-                                logger.warning(
-                                    "Gemini transient error status={} attempt={}/{}; retrying in {}s",
-                                    response.status_code,
-                                    attempt,
-                                    max_attempts,
-                                    wait_seconds,
-                                )
-                            time.sleep(wait_seconds)
-                            continue
-
-                        if response.status_code in {401, 403}:
-                            raise AnalysisConfigError(
-                                "Gemini API key was rejected or is missing",
-                                provider=self.provider,
-                            )
-
-                        raise AnalysisUnavailableError(
-                            f"Gemini request failed with HTTP {response.status_code}",
-                            provider=self.provider,
-                        )
-            except httpx.TimeoutException as exc:
-                logger.warning(
-                    "GEMINI_ANALYSIS_TIMEOUT timeout_seconds={}",
-                    self.timeout_seconds,
+            if self.gemini_client is None:
+                raise AnalysisConfigError(
+                    "Gemini client is not configured",
+                    provider=self.provider,
                 )
-                raise AnalysisUnavailableError(
-                    "Gemini request timed out",
-                    provider=self.provider,
-                ) from exc
-            except httpx.HTTPError as exc:
-                raise AnalysisUnavailableError(
-                    f"Gemini request failed: {exc}",
-                    provider=self.provider,
-                ) from exc
 
-            raise AnalysisUnavailableError(
-                "Gemini request failed without a response",
-                provider=self.provider,
+            response = self.gemini_client.post_json(
+                url=url,
+                payload=request_payload,
+                timeout_seconds=self.timeout_seconds,
             )
+            body = response.json()
+            text, candidates, body_dict = _extract_response_text(body)
+
+            input_tokens = None
+            output_tokens = None
+            total_tokens = None
+            usage_metadata = body_dict.get("usageMetadata") or body_dict.get(
+                "usage_metadata"
+            )
+            if isinstance(usage_metadata, dict):
+                input_tokens = usage_metadata.get(
+                    "promptTokenCount"
+                ) or usage_metadata.get("input_tokens")
+                output_tokens = usage_metadata.get(
+                    "candidatesTokenCount"
+                ) or usage_metadata.get("output_tokens")
+                total_tokens = usage_metadata.get(
+                    "totalTokenCount"
+                ) or usage_metadata.get("total_tokens")
+                logger.info(
+                    "GEMINI_ANALYSIS_TOKEN_USAGE input_tokens={} output_tokens={} total_tokens={}",
+                    input_tokens,
+                    output_tokens,
+                    total_tokens,
+                )
+
+            finish_reason = None
+            if candidates and isinstance(candidates[0], dict):
+                finish_reason = candidates[0].get("finishReason") or candidates[0].get(
+                    "finish_reason"
+                )
+
+            logger.info(
+                "GEMINI_ANALYSIS_RESPONSE_META finish_reason={} response_chars={} schema_mode={} max_output_tokens={} thinking_budget={}",
+                finish_reason,
+                len(text),
+                schema_mode,
+                request_max_output_tokens,
+                thinking_budget,
+            )
+            if str(finish_reason or "").strip().upper() == "MAX_TOKENS":
+                logger.warning(
+                    "GEMINI_ANALYSIS_INCOMPLETE reason=max_tokens output_tokens={} max_output_tokens={} response_chars={} schema_mode={}",
+                    output_tokens,
+                    request_max_output_tokens,
+                    len(text),
+                    schema_mode,
+                )
+                raise _GeminiMaxTokensError(
+                    response_chars=len(text),
+                    schema_mode=schema_mode,
+                    output_tokens=output_tokens,
+                    max_output_tokens=request_max_output_tokens,
+                )
+            logger.info(
+                f"Gemini response parse success model={model} response_chars={len(text)}"
+            )
+            return text
 
         base_max_output_tokens = max_output_tokens
         if base_max_output_tokens is None:
@@ -1724,9 +2079,9 @@ NỘI DUNG:
             parsed = self._loads_json_strict(content)
         except AnalysisParseError as exc:
             logger.warning(
-                "GEMINI_ANALYSIS_PARSE_FAILED reason={} response_preview={}",
+                "GEMINI_ANALYSIS_PARSE_FAILED reason={} response_chars={}",
                 exc,
-                self._response_preview(content),
+                len(content),
             )
             raise
         structured = self._normalize_gemini_structured_analysis(prompt, parsed)
@@ -1978,8 +2333,8 @@ NỘI DUNG:
             if not isinstance(data, dict):
                 data = {}
             business_action_items = self._normalize_business_action_items(
-                data.get("businessActionItems")
-                or data.get("action_items")
+                data.get("action_items")
+                or data.get("businessActionItems")
                 or data.get("actionItems")
                 or []
             )
@@ -2039,11 +2394,32 @@ NỘI DUNG:
                 "schemaVersion": (
                     str(data.get("schemaVersion") or "").strip() or self.SCHEMA_VERSION
                 ),
+                "analysisFeatureSet": (
+                    str(
+                        data.get("analysisFeatureSet")
+                        or data.get("analysis_feature_set")
+                        or ""
+                    ).strip()
+                    or self.ANALYSIS_FEATURE_SET
+                ),
+                "groupedActionPlan": self._normalize_grouped_action_plan(
+                    data.get("groupedActionPlan") or data.get("grouped_action_plan"),
+                    business_action_items,
+                ),
                 "transcriptHash": (
                     str(data.get("transcriptHash") or "").strip() or None
                 ),
             }
-            return self._ensure_analysis_completeness(transcript, legacy_payload)
+            prepared = self._ensure_analysis_completeness(transcript, legacy_payload)
+
+            # F8 rule: Gemini missing action items must remain empty.
+            # Do not fabricate action items from transcript/summary for Gemini structured output.
+            if not business_action_items:
+                prepared["action_items"] = []
+                prepared["businessActionItems"] = []
+                prepared["actionItems"] = []
+
+            return prepared
 
         if self.provider in {"ollama", "local"}:
             prepared = self._ensure_analysis_completeness(transcript, data)
@@ -2128,6 +2504,17 @@ NỘI DUNG:
             except AnalysisUnavailableError as exc:
                 logger.warning(
                     "GEMINI_ANALYSIS_FAILED provider=gemini model={} source={} errorCode=ANALYSIS_UNAVAILABLE error={}",
+                    self.model,
+                    source,
+                    safe_error_message(exc),
+                )
+                logger.warning(
+                    "GEMINI_ANALYSIS_FALLBACK reason={}", safe_error_message(exc)
+                )
+                return self._default_structured_analysis(truncated_transcript, str(exc))
+            except AnalysisRateLimitError as exc:
+                logger.warning(
+                    "GEMINI_ANALYSIS_FAILED provider=gemini model={} source={} errorCode=GEMINI_RATE_LIMITED error={}",
                     self.model,
                     source,
                     safe_error_message(exc),

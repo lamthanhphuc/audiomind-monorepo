@@ -1,24 +1,43 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { AUDIO_DEBUG_ENABLED } from '../services/config'
+import {
+  AUDIO_DEBUG_ENABLED,
+  REALTIME_RECORDER_TIMESLICE_MS,
+  REALTIME_RESUME_PREROLL_MS,
+  REALTIME_START_PREROLL_MS,
+} from '../services/config'
 
 export type AudioRecorderState = 'idle' | 'connecting' | 'recording' | 'paused' | 'stopped' | 'error'
+
+type RollingAudioChunk = {
+  blob: Blob
+  capturedAtMs: number
+}
+
+export interface UseAudioRecorderOptions {
+  noiseSuppressionEnabled?: boolean
+  timesliceMs?: number
+  preRollWindowMs?: number
+}
 
 export interface UseAudioRecorderReturn {
   state: AudioRecorderState
   errorMessage: string | null
   audioChunks: Blob[]
   recordingSessionId: number
-  startRecording: (expectedSessionId?: number) => Promise<void>
+  startRecording: (expectedSessionId?: number) => Promise<number | null>
   stopRecording: () => void
   abortRecording: () => void
   pauseRecording: () => void
   resumeRecording: () => void
   duration: number
   getCurrentRms: () => number | null
+  getRollingChunks: () => Blob[]
 }
 
 const RECORDER_MIME_TYPE = 'audio/webm; codecs=opus'
 const DURATION_TICK_MS = 250
+const FALLBACK_RECORDER_TIMESLICE_MS = 250
+const PREFERRED_SAMPLE_RATE = 48_000
 
 const mapRecorderError = (error: unknown): string => {
   const errorName = error instanceof Error ? error.name : undefined
@@ -43,7 +62,50 @@ const mapRecorderError = (error: unknown): string => {
   return 'Không thể khởi tạo ghi âm. Vui lòng thử lại.'
 }
 
-export const useAudioRecorder = (diagnosticMeetingId: number | null = null): UseAudioRecorderReturn => {
+const isNoiseSuppressionConstraintSupported = (): boolean => {
+  return Boolean(navigator.mediaDevices?.getSupportedConstraints?.().noiseSuppression)
+}
+
+const buildAudioConstraints = (noiseSuppressionEnabled: boolean): MediaStreamConstraints => {
+  const audio: MediaTrackConstraints = {
+    echoCancellation: true,
+    autoGainControl: true,
+    channelCount: 1,
+    sampleRate: { ideal: PREFERRED_SAMPLE_RATE },
+  }
+
+  if (isNoiseSuppressionConstraintSupported()) {
+    audio.noiseSuppression = noiseSuppressionEnabled
+  } else {
+    console.info('[Realtime] MIC_CONSTRAINT_UNSUPPORTED', {
+      constraint: 'noiseSuppression',
+    })
+  }
+
+  return { audio }
+}
+
+const logSafeMicSettings = (stream: MediaStream) => {
+  const track = stream.getAudioTracks?.()[0] ?? stream.getTracks()[0]
+  const settings = track?.getSettings?.()
+  if (!settings) {
+    return
+  }
+
+  console.info('[Realtime] MIC_SETTINGS', {
+    noiseSuppression: settings.noiseSuppression,
+    echoCancellation: settings.echoCancellation,
+    autoGainControl: settings.autoGainControl,
+    sampleRate: settings.sampleRate,
+    channelCount: settings.channelCount,
+    deviceIdPresent: typeof settings.deviceId === 'string' && settings.deviceId.length > 0,
+  })
+}
+
+export const useAudioRecorder = (
+  diagnosticMeetingId: number | null = null,
+  options: UseAudioRecorderOptions = {},
+): UseAudioRecorderReturn => {
   const [state, setState] = useState<AudioRecorderState>('idle')
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [audioChunks, setAudioChunks] = useState<Blob[]>([])
@@ -63,6 +125,14 @@ export const useAudioRecorder = (diagnosticMeetingId: number | null = null): Use
   const audioAnalyserRef = useRef<AnalyserNode | null>(null)
   const audioAnalyserSamplesRef = useRef<Uint8Array<ArrayBuffer> | null>(null)
   const audioLevelTimerRef = useRef<number | null>(null)
+  const rollingChunksRef = useRef<RollingAudioChunk[]>([])
+
+  const recorderTimesliceMs = Math.max(100, Math.floor(options.timesliceMs ?? REALTIME_RECORDER_TIMESLICE_MS))
+  const preRollWindowMs = Math.max(
+    0,
+    Math.floor(options.preRollWindowMs ?? Math.max(REALTIME_START_PREROLL_MS, REALTIME_RESUME_PREROLL_MS)),
+  )
+  const noiseSuppressionEnabled = options.noiseSuppressionEnabled ?? true
 
   const stopDurationTimer = useCallback(() => {
     if (durationTimerRef.current !== null) {
@@ -97,6 +167,7 @@ export const useAudioRecorder = (diagnosticMeetingId: number | null = null): Use
     setErrorMessage(null)
     setAudioChunks([])
     setDuration(0)
+    rollingChunksRef.current = []
     accumulatedMsRef.current = 0
     startedAtRef.current = null
   }, [])
@@ -278,23 +349,27 @@ export const useAudioRecorder = (diagnosticMeetingId: number | null = null): Use
     }
   }, [clearRecorderHandlers, cleanupStream, pauseDurationTimer, stopAudioLevelDiagnostics])
 
-  const startRecording = useCallback(async (expectedSessionId?: number) => {
+  const getRollingChunks = useCallback(() => {
+    return rollingChunksRef.current.map((chunk) => chunk.blob)
+  }, [])
+
+  const startRecording = useCallback(async (expectedSessionId?: number): Promise<number | null> => {
     const activeRecorder = mediaRecorderRef.current
     if (state === 'connecting' || activeRecorder?.state === 'recording' || activeRecorder?.state === 'paused') {
-      return
+      return recordingSessionIdRef.current
     }
 
     if (!navigator.mediaDevices?.getUserMedia) {
       setState('error')
       setErrorMessage('Trình duyệt không hỗ trợ getUserMedia cho microphone.')
-      return
+      return null
     }
 
     const nextSessionId = recordingSessionIdRef.current + 1
     if (typeof expectedSessionId === 'number' && expectedSessionId !== nextSessionId) {
       setState('error')
       setErrorMessage('Recording session mismatch. Vui lòng thử lại.')
-      return
+      return null
     }
 
     const sessionId = nextSessionId
@@ -305,15 +380,16 @@ export const useAudioRecorder = (diagnosticMeetingId: number | null = null): Use
     audioChunkCountRef.current = 0
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const stream = await navigator.mediaDevices.getUserMedia(buildAudioConstraints(noiseSuppressionEnabled))
       if (!mountedRef.current || recordingSessionIdRef.current !== sessionId) {
         stream.getTracks().forEach((track) => track.stop())
-        return
+        return null
       }
 
       const recorder = new MediaRecorder(stream, { mimeType: RECORDER_MIME_TYPE })
       mediaRecorderRef.current = recorder
       streamRef.current = stream
+      logSafeMicSettings(stream)
       startAudioLevelDiagnostics(stream, sessionId, diagnosticMeetingId)
 
       recorder.ondataavailable = (event) => {
@@ -340,6 +416,11 @@ export const useAudioRecorder = (diagnosticMeetingId: number | null = null): Use
         }
 
         if (event.data.size > 0 && mountedRef.current) {
+          const capturedAtMs = Date.now()
+          rollingChunksRef.current = [
+            ...rollingChunksRef.current,
+            { blob: event.data, capturedAtMs },
+          ].filter((chunk) => capturedAtMs - chunk.capturedAtMs <= preRollWindowMs)
           setAudioChunks((currentChunks) => [...currentChunks, event.data])
         }
       }
@@ -383,12 +464,26 @@ export const useAudioRecorder = (diagnosticMeetingId: number | null = null): Use
         finishRecording(sessionId)
       }
 
-      recorder.start(1000)
-      // Minimal required log: recorder mimeType
+      let actualTimesliceMs = recorderTimesliceMs
+      try {
+        recorder.start(recorderTimesliceMs)
+      } catch (error) {
+        if (recorderTimesliceMs === FALLBACK_RECORDER_TIMESLICE_MS) {
+          throw error
+        }
+        actualTimesliceMs = FALLBACK_RECORDER_TIMESLICE_MS
+        recorder.start(FALLBACK_RECORDER_TIMESLICE_MS)
+      }
+
       try {
         if (!recorderMimeLoggedRef.current) {
-          // eslint-disable-next-line no-console
-          console.log(`AUDIO HASH FRONTEND mimeType=${recorder.mimeType}`)
+          console.info('[Realtime] RECORDING_START_ARMED', {
+            meetingId: diagnosticMeetingId,
+            sessionId,
+            timesliceMs: actualTimesliceMs,
+            startPreRollMs: REALTIME_START_PREROLL_MS,
+            resumePreRollMs: REALTIME_RESUME_PREROLL_MS,
+          })
           recorderMimeLoggedRef.current = true
         }
       } catch {
@@ -397,6 +492,7 @@ export const useAudioRecorder = (diagnosticMeetingId: number | null = null): Use
       startedAtRef.current = Date.now()
       startDurationTimer()
       setState('recording')
+      return sessionId
     } catch (error) {
       if (recordingSessionIdRef.current === sessionId) {
         cleanupStream()
@@ -408,8 +504,9 @@ export const useAudioRecorder = (diagnosticMeetingId: number | null = null): Use
           setErrorMessage(mapRecorderError(error))
         }
       }
+      return null
     }
-  }, [clearRecorderHandlers, cleanupStream, diagnosticMeetingId, finishRecording, pauseDurationTimer, resetSessionState, startAudioLevelDiagnostics, startDurationTimer, state, stopAudioLevelDiagnostics])
+  }, [clearRecorderHandlers, cleanupStream, diagnosticMeetingId, finishRecording, noiseSuppressionEnabled, pauseDurationTimer, preRollWindowMs, recorderTimesliceMs, resetSessionState, startAudioLevelDiagnostics, startDurationTimer, state, stopAudioLevelDiagnostics])
 
   const stopRecording = useCallback(() => {
     const recorder = mediaRecorderRef.current
@@ -500,5 +597,6 @@ export const useAudioRecorder = (diagnosticMeetingId: number | null = null): Use
     resumeRecording,
     duration,
     getCurrentRms,
+    getRollingChunks,
   }
 }

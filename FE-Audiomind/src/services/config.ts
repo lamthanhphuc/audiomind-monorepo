@@ -34,6 +34,17 @@ const resolveBooleanEnv = (keys: string[], fallback: boolean): boolean => {
 	return fallback
 }
 
+const resolveNumberEnv = (keys: string[], fallback: number, options: { min?: number; max?: number } = {}): number => {
+	const value = keys
+		.map((key) => (import.meta.env as Record<string, string | undefined>)[key])
+		.find((candidate) => typeof candidate === 'string' && candidate.trim().length > 0)
+
+	const parsed = value ? Number(value) : fallback
+	const finiteValue = Number.isFinite(parsed) ? parsed : fallback
+	const minValue = typeof options.min === 'number' ? Math.max(options.min, finiteValue) : finiteValue
+	return typeof options.max === 'number' ? Math.min(options.max, minValue) : minValue
+}
+
 export const PROCESSING_API_BASE = resolveEnv(['VITE_PROCESSING_API_BASE_URL', 'VITE_PROCESSING_SERVICE_URL'], 'http://localhost:8082')
 export const MEETING_API_BASE = resolveEnv(['VITE_MEETING_API_BASE_URL', 'VITE_MEETING_SERVICE_URL'], 'http://localhost:8081')
 export const AI_INTERNAL_BASE = resolveEnv(['VITE_API_CPU_BASE', 'VITE_AI_SERVICE_URL'], 'http://localhost:8000')
@@ -51,3 +62,13 @@ export const AUDIO_DEBUG_ENABLED = resolveBooleanEnv(
 	['VITE_AUDIO_DEBUG', 'REACT_APP_AUDIO_DEBUG'],
 	false,
 )
+
+export const REALTIME_PREROLL_ENABLED = resolveBooleanEnv(['VITE_REALTIME_PREROLL_ENABLED'], true)
+export const REALTIME_START_PREROLL_MS = resolveNumberEnv(['VITE_REALTIME_START_PREROLL_MS'], 1200, { min: 0, max: 10_000 })
+export const REALTIME_RESUME_PREROLL_MS = resolveNumberEnv(['VITE_REALTIME_RESUME_PREROLL_MS'], 1200, { min: 0, max: 10_000 })
+export const REALTIME_RECORDER_TIMESLICE_MS = resolveNumberEnv(['VITE_REALTIME_RECORDER_TIMESLICE_MS'], 200, { min: 100, max: 1000 })
+export const REALTIME_VAD_DYNAMIC_ENABLED = resolveBooleanEnv(['VITE_REALTIME_VAD_DYNAMIC_ENABLED'], true)
+export const REALTIME_MIC_SENSITIVITY = resolveOptionalEnv(['VITE_REALTIME_MIC_SENSITIVITY'], 'normal')
+export const REALTIME_NOISE_SUPPRESSION_DEFAULT = resolveBooleanEnv(['VITE_REALTIME_NOISE_SUPPRESSION_DEFAULT'], true)
+export const REALTIME_NOISE_SUPPRESSION_TOGGLE_ENABLED = resolveBooleanEnv(['VITE_REALTIME_NOISE_SUPPRESSION_TOGGLE_ENABLED'], true)
+export const REALTIME_KEEPALIVE_ENABLED = resolveBooleanEnv(['VITE_REALTIME_KEEPALIVE_ENABLED'], false)

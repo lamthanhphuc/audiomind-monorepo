@@ -1,6 +1,13 @@
 import type { paths as MeetingPaths } from '../../../packages/api-clients/meeting'
 import type { paths as ProcessingPaths } from '../../../packages/api-clients/processing'
-import { normalizeAnalysisResponse, type AiAnalysis, type Meeting, type TranscriptResponse } from '../types'
+import {
+  normalizeAnalysisResponse,
+  normalizeGroupedActionPlan,
+  type AiAnalysis,
+  type GroupedActionPlan,
+  type Meeting,
+  type TranscriptResponse,
+} from '../types'
 import { getAccessToken } from './auth'
 import { API_BASE, MEETING_API_BASE, PROCESSING_API_BASE } from './config'
 
@@ -16,6 +23,151 @@ type CreateJobRequest =
 export type AnalysisRerunRequest = {
   mode: 'force' | string
   reason: 'manual_reanalyze' | string
+}
+
+export type TranscriptEvidenceContext = {
+  segmentId: string
+  index: number
+  speaker: string
+  startTime: number
+  endTime: number
+  text: string
+  textTruncated: boolean
+}
+
+export type TranscriptEvidenceMatch = TranscriptEvidenceContext & {
+  evidenceId: string
+  contextBefore: TranscriptEvidenceContext[]
+  contextAfter: TranscriptEvidenceContext[]
+  score: number
+  rank: number
+  matchType: 'phrase' | 'token' | string
+}
+
+export type TranscriptSearchResponse = {
+  meetingId: number
+  query: string
+  normalizedQuery: string
+  transcriptMode: 'canonical' | 'raw' | string
+  canonicalTranscriptHash?: string | null
+  canonicalTranscriptVersion?: string | null
+  matches: TranscriptEvidenceMatch[]
+}
+
+export type SearchTranscriptEvidenceOptions = {
+  limit?: number
+  context?: number
+}
+
+export type MeetingActionPlanData = {
+  meeting: {
+    meetingId: number
+    title?: string | null
+    createdAt?: string | null
+    language?: string | null
+    status?: string | null
+    originalFileName?: string | null
+    ownerUserId?: string | number | null
+  }
+  summary?: string | null
+  domainMode?: string | null
+  actionItems: ActionPlanItem[]
+  painPoints: Array<{
+    title: string
+    severity?: string | null
+    evidence?: string | null
+  }>
+  risks: string[]
+  blockers: string[]
+  groupedActionPlan?: GroupedActionPlan | null
+  generatedAt?: string | null
+  note?: string | null
+  analysisMetadata: {
+    provider?: string | null
+    model?: string | null
+    promptVersion?: string | null
+    schemaVersion?: string | null
+    analysisSource?: string | null
+    cacheOnly?: boolean | null
+    stale?: boolean | null
+    canonicalTranscriptHash?: string | null
+    canonicalTranscriptVersion?: string | null
+    analysisFeatureSet?: string | null
+  }
+}
+
+export type ActionPlanItem = {
+  task: string
+  owner?: string | null
+  deadline?: string | null
+  dueDate?: string | null
+  priority?: 'low' | 'medium' | 'high' | string | null
+  status?: 'open' | 'in_progress' | 'blocked' | 'done' | string | null
+  evidenceKeywords?: string[]
+  evidenceQuote?: string | null
+  evidence?: TranscriptEvidenceMatch | null
+  unverifiedEvidenceNote?: string | null
+}
+
+const normalizeActionPlanItems = (value: unknown): ActionPlanItem[] => {
+  return Array.isArray(value)
+    ? value.map((item) => {
+      if (typeof item === 'string') {
+        return { task: item.trim(), evidenceKeywords: [] }
+      }
+      const record = item && typeof item === 'object'
+        ? (item as Partial<ActionPlanItem> & Record<string, unknown>)
+        : {}
+      return {
+        ...record,
+        task: firstString(record.task, record.description, record.text, record.title) ?? '',
+        evidenceKeywords: Array.isArray(record.evidenceKeywords)
+          ? (record.evidenceKeywords as string[])
+          : Array.isArray(record.evidence_keywords)
+            ? (record.evidence_keywords as string[])
+            : [],
+      }
+    }).filter((item) => item.task)
+    : []
+}
+
+export const normalizeMeetingActionPlanData = (value: unknown): MeetingActionPlanData => {
+  const payload = value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {}
+  const meeting = payload.meeting && typeof payload.meeting === 'object' && !Array.isArray(payload.meeting)
+    ? (payload.meeting as MeetingActionPlanData['meeting'])
+    : { meetingId: firstNumber(payload.meetingId, payload.meeting_id) ?? 0 }
+  const actionItems = normalizeActionPlanItems(payload.actionItems ?? payload.action_items)
+  const groupedActionPlan = normalizeGroupedActionPlan(
+    payload.groupedActionPlan ?? payload.grouped_action_plan,
+    actionItems,
+  )
+  const metadata = payload.analysisMetadata && typeof payload.analysisMetadata === 'object' && !Array.isArray(payload.analysisMetadata)
+    ? (payload.analysisMetadata as MeetingActionPlanData['analysisMetadata'])
+    : {}
+
+  return {
+    meeting,
+    summary: firstString(payload.summary) ?? null,
+    domainMode: firstString(payload.domainMode, payload.domain_mode) ?? null,
+    actionItems,
+    painPoints: Array.isArray(payload.painPoints) ? (payload.painPoints as MeetingActionPlanData['painPoints']) : [],
+    risks: Array.isArray(payload.risks) ? (payload.risks as string[]) : [],
+    blockers: Array.isArray(payload.blockers) ? (payload.blockers as string[]) : [],
+    groupedActionPlan: groupedActionPlan ?? null,
+    generatedAt: firstString(payload.generatedAt, payload.generated_at) ?? null,
+    note: firstString(payload.note) ?? null,
+    analysisMetadata: {
+      ...metadata,
+      analysisFeatureSet: firstString(
+        metadata.analysisFeatureSet,
+        (metadata as Record<string, unknown>).analysis_feature_set,
+        payload.analysisFeatureSet,
+        payload.analysis_feature_set,
+      ) ?? metadata.analysisFeatureSet ?? null,
+    },
+  }
 }
 
 export class ApiError extends Error {
@@ -70,6 +222,51 @@ const parseRetryAfterFromText = (value: string): number | undefined => {
     return undefined
   }
   return firstNumber(match[1])
+}
+
+const parseApiErrorResponse = async (response: Response): Promise<ApiError> => {
+  const text = await response.text()
+  const traceId = response.headers.get('x-trace-id') ?? response.headers.get('x-request-id') ?? undefined
+  let message = text || response.statusText
+  let errorCode: string | undefined
+  let retryAfterSeconds: number | undefined
+
+  try {
+    const parsed = JSON.parse(text) as Record<string, unknown>
+    const detail = parsed.detail && typeof parsed.detail === 'object' && !Array.isArray(parsed.detail)
+      ? (parsed.detail as Record<string, unknown>)
+      : null
+    message = firstString(
+      typeof parsed.detail === 'string' ? parsed.detail : undefined,
+      detail?.message,
+      detail?.detail,
+      parsed.message,
+      message,
+    ) ?? message
+    errorCode = firstString(parsed.errorCode, parsed.error_code, detail?.errorCode, detail?.error_code)
+    retryAfterSeconds = firstNumber(
+      parsed.retryAfterSeconds,
+      parsed.retry_after_seconds,
+      detail?.retryAfterSeconds,
+      detail?.retry_after_seconds,
+    )
+  } catch {
+    // Use raw text when response is not JSON.
+  }
+
+  retryAfterSeconds = retryAfterSeconds ?? parseRetryAfterFromText(message)
+  return new ApiError(message, response.status, traceId, errorCode, retryAfterSeconds)
+}
+
+const fetchJsonNoConsole = async <T>(input: RequestInfo | URL, init?: RequestInit): Promise<T> => {
+  const response = await fetch(input, {
+    ...init,
+    headers: withTraceHeaders(init?.headers),
+  })
+  if (!response.ok) {
+    throw await parseApiErrorResponse(response)
+  }
+  return response.json() as Promise<T>
 }
 
 const createTraceId = (): string => {
@@ -132,12 +329,21 @@ const fetchJson = async <T>(input: RequestInfo | URL, init?: RequestInit): Promi
     }
     retryAfterSeconds = retryAfterSeconds ?? parseRetryAfterFromText(message)
 
+    const safePath = (() => {
+      try {
+        return new URL(String(input), window.location.origin).pathname
+      } catch {
+        return 'unknown'
+      }
+    })()
+
     console.error('API request failed', {
-      url: String(input),
+      path: safePath,
       status: response.status,
       statusText: response.statusText,
-      responseBody: text,
+      errorCode,
       traceId,
+      retryAfterSeconds,
     })
     throw new ApiError(message, response.status, traceId, errorCode, retryAfterSeconds)
   }
@@ -191,15 +397,37 @@ export const uploadAudio = async (file: File): Promise<{ audio_path: string; ori
   })
 }
 
-export const getTranscript = async (meetingId: number): Promise<TranscriptResponse> => {
+export type ApiRequestOptions = {
+  signal?: AbortSignal
+}
+
+export const getTranscript = async (
+  meetingId: number,
+  options: ApiRequestOptions = {},
+): Promise<TranscriptResponse> => {
   const response = await fetchJson<TranscriptResponse | { data?: TranscriptResponse }>(
-    `${API_BASE}/processing/transcript/${meetingId}`
+    `${API_BASE}/processing/transcript/${meetingId}`,
+    { signal: options.signal },
   )
 
   if ('data' in response && response.data) {
     return response.data
   }
   return response as TranscriptResponse
+}
+
+export const searchMeetingTranscriptEvidence = async (
+  meetingId: number,
+  query: string,
+  options: SearchTranscriptEvidenceOptions = {},
+): Promise<TranscriptSearchResponse> => {
+  const params = new URLSearchParams()
+  params.set('q', query)
+  params.set('limit', String(options.limit ?? 20))
+  params.set('context', String(options.context ?? 1))
+  return fetchJsonNoConsole<TranscriptSearchResponse>(
+    `${API_BASE}/processing/${meetingId}/transcript/search?${params.toString()}`,
+  )
 }
 
 export const getAnalysis = async (meetingId: number): Promise<AiAnalysis> => {
@@ -225,9 +453,13 @@ export const getAnalysis = async (meetingId: number): Promise<AiAnalysis> => {
   return normalized
 }
 
-export const getSavedAnalysis = async (meetingId: number): Promise<AiAnalysis> => {
+export const getSavedAnalysis = async (
+  meetingId: number,
+  options: ApiRequestOptions = {},
+): Promise<AiAnalysis> => {
   const response = await fetchJson<AiAnalysis | { data?: AiAnalysis } & { status?: string }>(
-    `${API_BASE}/processing/${meetingId}/analysis/saved`
+    `${API_BASE}/processing/${meetingId}/analysis/saved`,
+    { signal: options.signal },
   )
 
   const normalized = normalizeAnalysisResponse(response)
@@ -246,6 +478,11 @@ export const getSavedAnalysis = async (meetingId: number): Promise<AiAnalysis> =
     ;(normalized as AiAnalysis & { status?: string }).status = statusValue
   }
   return normalized
+}
+
+export const getMeetingActionPlan = async (meetingId: number): Promise<MeetingActionPlanData> => {
+  const response = await fetchJsonNoConsole<unknown>(`${API_BASE}/processing/${meetingId}/action-plan`)
+  return normalizeMeetingActionPlanData(response)
 }
 
 export const reanalyzeMeetingAnalysis = async (
@@ -294,6 +531,27 @@ export const downloadMeetingReport = async (
   const blob = await response.blob()
   const filename = parseFilenameFromContentDisposition(response.headers.get('content-disposition'))
     || `meeting-${meetingId}-report.${format}`
+  return { blob, filename }
+}
+
+export const downloadMeetingActionPlanDocx = async (
+  meetingId: number,
+): Promise<{ blob: Blob; filename: string }> => {
+  const response = await fetch(
+    `${API_BASE}/processing/${meetingId}/action-plan/export?format=docx`,
+    {
+      method: 'GET',
+      headers: withTraceHeaders(),
+    },
+  )
+
+  if (!response.ok) {
+    throw await parseApiErrorResponse(response)
+  }
+
+  const blob = await response.blob()
+  const filename = parseFilenameFromContentDisposition(response.headers.get('content-disposition'))
+    || `meeting-${meetingId}-action-plan.docx`
   return { blob, filename }
 }
 
@@ -407,8 +665,11 @@ export const listMeetings = async (): Promise<Meeting[]> => {
   return fetchJson<Meeting[]>(`${MEETING_API_BASE}/meetings`)
 }
 
-export const getMeetingDetail = async (meetingId: number): Promise<Meeting> => {
-  return fetchJson<Meeting>(`${MEETING_API_BASE}/meetings/${meetingId}`)
+export const getMeetingDetail = async (
+  meetingId: number,
+  options: ApiRequestOptions = {},
+): Promise<Meeting> => {
+  return fetchJson<Meeting>(`${MEETING_API_BASE}/meetings/${meetingId}`, { signal: options.signal })
 }
 
 export type ListMeetingsParams = {
@@ -418,7 +679,10 @@ export type ListMeetingsParams = {
   sort?: string
 }
 
-export const listMeetingsWithParams = async (params: ListMeetingsParams = {}): Promise<Meeting[]> => {
+export const listMeetingsWithParams = async (
+  params: ListMeetingsParams = {},
+  options: ApiRequestOptions = {},
+): Promise<Meeting[]> => {
   const query = new URLSearchParams()
   if (params.query?.trim()) {
     query.set('query', params.query.trim())
@@ -433,7 +697,7 @@ export const listMeetingsWithParams = async (params: ListMeetingsParams = {}): P
     query.set('sort', params.sort.trim())
   }
   const suffix = query.toString() ? `?${query.toString()}` : ''
-  return fetchJson<Meeting[]>(`${MEETING_API_BASE}/meetings${suffix}`)
+  return fetchJson<Meeting[]>(`${MEETING_API_BASE}/meetings${suffix}`, { signal: options.signal })
 }
 
 export const renameMeeting = async (meetingId: number, title: string): Promise<Meeting> => {

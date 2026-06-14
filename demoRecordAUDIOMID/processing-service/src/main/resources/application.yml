@@ -75,6 +75,12 @@ app:
 cors:
   allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:5173}
 
+realtime:
+  async-audio-queue:
+    enabled: ${REALTIME_ASYNC_AUDIO_QUEUE_ENABLED:true}
+    max-size: 64
+    stop-drain-timeout-ms: 5000
+
 resilience4j:
   retry:
     instances:

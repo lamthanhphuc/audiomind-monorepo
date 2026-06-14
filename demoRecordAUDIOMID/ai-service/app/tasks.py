@@ -4,6 +4,7 @@ from app.celery_app import celery_app
 from app.config import get_settings
 from app.database import SessionLocal
 from app.job_status_store import set_job_status
+from app.logging_utils import safe_error_message
 from app.services.glossary_repository import GlossaryRepository
 from app.services.glossary_service import GlossaryService
 
@@ -17,6 +18,29 @@ except Exception as pipeline_import_error:
 
 pipeline = ProcessingPipeline() if ProcessingPipeline is not None else None
 settings = get_settings()
+
+
+def _infer_batch_failure_stage(exc: Exception) -> str:
+    error_type = type(exc).__name__
+    message = f"{error_type}:{exc}".lower()
+    if error_type == "TypeError" and "len()" in message:
+        return "speech_recognition"
+    if any(
+        token in message
+        for token in ("glossary", "speech", "stt", "transcri", "whisper", "deepgram")
+    ):
+        return "speech_recognition"
+    if any(token in message for token in ("audio", "file not found", "load_audio")):
+        return "audio_load"
+    if any(token in message for token in ("analysis", "gemini")):
+        return "analysis"
+    return "pipeline"
+
+
+def _build_batch_failure_error(exc: Exception) -> str:
+    error_type = type(exc).__name__
+    stage = _infer_batch_failure_stage(exc)
+    return f"BATCH_PIPELINE_FAILED errorType={error_type} stage={stage}"
 
 
 def _resolve_glossary_context(payload: dict, db) -> dict | None:
@@ -158,15 +182,24 @@ def process_meeting(payload: dict) -> None:
         )
         logger.info(f"[traceId={trace_id}] [jobId={meeting_id}] update COMPLETED")
     except Exception as processing_error:
-        logger.exception(
-            f"[traceId={trace_id}] [jobId={meeting_id}] processing error: {repr(processing_error)}"
+        error_type = type(processing_error).__name__
+        stage = _infer_batch_failure_stage(processing_error)
+        logger.error(
+            "event=BATCH_PIPELINE_FAILED meetingId={} jobId={} errorType={} stage={} traceId={} error={}",
+            meeting_id,
+            meeting_id,
+            error_type,
+            stage,
+            trace_id,
+            safe_error_message(processing_error),
         )
         set_job_status(
             meeting_id,
             "FAILED",
-            error="Processing failed",
+            error=_build_batch_failure_error(processing_error),
             file_id=file_id,
             trace_id=trace_id,
+            stage="failed",
         )
         raise
     finally:

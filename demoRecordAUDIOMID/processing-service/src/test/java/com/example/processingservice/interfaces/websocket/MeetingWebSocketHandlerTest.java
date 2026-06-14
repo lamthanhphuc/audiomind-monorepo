@@ -1,6 +1,7 @@
 package com.example.processingservice.interfaces.websocket;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -22,8 +23,16 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.lenient;
 
 import java.nio.ByteBuffer;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -41,6 +50,9 @@ import org.springframework.web.socket.WebSocketSession;
 import com.example.processingservice.client.AIServiceClient;
 import com.example.processingservice.client.AudioStreamResetRequiredException;
 import com.example.processingservice.client.MeetingServiceClient;
+import com.example.processingservice.interfaces.websocket.realtime.RealtimeAudioEnqueueResult;
+import com.example.processingservice.interfaces.websocket.realtime.RealtimeAudioWorkerRegistry;
+import com.example.processingservice.interfaces.websocket.realtime.RealtimeSessionLifecycleState;
 import com.example.processingservice.security.JwtUtil;
 import com.example.processingservice.security.MeetingChannelAuthorizer;
 import com.example.processingservice.service.JobStateStore;
@@ -81,9 +93,11 @@ class MeetingWebSocketHandlerTest {
 
     private MeetingWebSocketHandler handler;
     private Map<String, Object> attributes;
+    private RealtimeAudioWorkerRegistry realtimeAudioWorkerRegistry;
 
     @BeforeEach
     void setUp() {
+        realtimeAudioWorkerRegistry = new RealtimeAudioWorkerRegistry();
         handler = new MeetingWebSocketHandler(
                 meetingChannelAuthorizer,
                 realtimeEventSubscriber,
@@ -91,10 +105,15 @@ class MeetingWebSocketHandlerTest {
                 meetingServiceClient,
                 jobStateStore,
                 objectMapper,
-                jwtUtil);
+                jwtUtil,
+                realtimeAudioWorkerRegistry);
 
         attributes = new HashMap<>();
         when(session.getAttributes()).thenReturn(attributes);
+        lenient().when(session.getId()).thenReturn("ws-session-1");
+        ReflectionTestUtils.setField(handler, "realtimeAsyncAudioQueueEnabled", false);
+        ReflectionTestUtils.setField(handler, "realtimeAsyncQueueMaxSize", 64);
+        ReflectionTestUtils.setField(handler, "realtimeStopDrainTimeoutMs", 5000L);
         lenient().when(jobStateStore.tryStartAnalysis(anyLong(), anyString(), anyString(), anyString()))
                 .thenReturn(new JobStateStore.AnalysisTriggerDecision(
                         true,
@@ -158,6 +177,33 @@ class MeetingWebSocketHandlerTest {
 
         assertEquals("single", attributes.get("speakerMode"));
         verify(realtimeEventSubscriber).getActiveConnectionCount(42L);
+    }
+
+    @Test
+    void handleTextMessage_authInitShouldRejectTerminalMeetingBeforeReady() throws Exception {
+        attributes.put("meetingId", 420L);
+        when(objectMapper.readValue(any(String.class), eq(Map.class))).thenReturn(Map.of(
+                "type", "auth.init",
+                "token", "Bearer raw-token",
+                "meetingId", 420L
+        ));
+
+        Claims claims = org.mockito.Mockito.mock(Claims.class);
+        when(claims.getSubject()).thenReturn("99");
+        when(claims.get("username", String.class)).thenReturn("alice");
+        when(jwtUtil.parseClaims("raw-token")).thenReturn(claims);
+        when(meetingChannelAuthorizer.canJoin(99L, 420L, "Bearer raw-token")).thenReturn(true);
+        when(meetingServiceClient.getMeetingById(420L, null, "Bearer raw-token"))
+                .thenReturn(Map.of("id", 420L, "status", "completed"));
+
+        handler.handleTextMessage(session, new TextMessage("{}"));
+
+        assertEquals("completed", attributes.get("TERMINAL_MEETING_STATUS_ATTR"));
+        verify(meetingServiceClient).getMeetingById(420L, null, "Bearer raw-token");
+        verify(realtimeEventSubscriber).broadcastToMeeting(eq(420L), any(Map.class));
+        verify(session).close(CloseStatus.POLICY_VIOLATION.withReason("Meeting already finalized"));
+        verify(session, never()).sendMessage(any(TextMessage.class));
+        verifyNoInteractions(aiServiceClient);
     }
 
     @Test
@@ -424,6 +470,50 @@ class MeetingWebSocketHandlerTest {
     }
 
     @Test
+    void handleBinaryMessage_shouldMarkAudioReceivedBeforeAiServiceReturns() throws Exception {
+        attributes.put("meetingId", 342L);
+        attributes.put("authenticated", true);
+        attributes.put("language", "vi");
+        attributes.put("authorization", "Bearer test-token");
+        attributes.put("lastAudioSeq", 12L);
+
+        when(aiServiceClient.streamAudioChunk(
+                eq(342L),
+                argThat(bytes -> bytes != null && bytes.length == 4),
+                eq(12L),
+                eq("vi"),
+                eq(false),
+                isNull(),
+                eq("Bearer test-token")
+        )).thenThrow(new RuntimeException("ai still processing"));
+
+        when(aiServiceClient.streamAudioChunk(
+                eq(342L),
+                argThat(bytes -> bytes != null && bytes.length == 0),
+                eq(-1L),
+                eq("vi"),
+                eq(true),
+                isNull(),
+                eq("Bearer test-token")
+        )).thenReturn(Map.of(
+                "transcript", "final transcript",
+                "is_final", true,
+                "language", "vi"
+        ));
+
+        handler.handleBinaryMessage(session, new BinaryMessage(ByteBuffer.wrap(new byte[] {1, 2, 3, 4})));
+        handler.afterConnectionClosed(session, CloseStatus.NORMAL);
+
+        assertEquals(Boolean.TRUE, attributes.get("AUDIO_RECEIVED_ATTR"));
+        Map<String, Object> cached = handler.getFinalizedTranscript(342L);
+        assertNotNull(cached);
+        assertEquals("transcript.final", cached.get("type"));
+        assertEquals("final transcript", cached.get("text"));
+        assertEquals(Boolean.TRUE, cached.get("isFinal"));
+        verify(realtimeEventSubscriber).unregisterSession(342L, session);
+    }
+
+    @Test
     void handleBinaryMessage_shouldPropagateStableSegmentIdentityAndTimingWhenAvailable() throws Exception {
         attributes.put("meetingId", 340L);
         attributes.put("authenticated", true);
@@ -502,6 +592,131 @@ class MeetingWebSocketHandlerTest {
         assertEquals(346L, event.get("meetingId"));
         assertEquals(Boolean.FALSE, event.get("recoverable"));
         assertEquals(Boolean.TRUE, event.get("resetRequired"));
+    }
+
+    @Test
+    void handleTextMessage_shouldDropStaleSessionMetadataAndNextBinaryBeforeAiService() throws Exception {
+        attributes.put("meetingId", 347L);
+        attributes.put("authenticated", true);
+        attributes.put("language", "vi");
+        attributes.put("authorization", "Bearer test-token");
+        attributes.put("recordingSessionId", 1L);
+        attributes.put("attemptId", 1L);
+        attributes.put("MEETING_STATUS_CHECKED_ATTR", Boolean.TRUE);
+        attributes.put("lastAudioSeq", 14L);
+
+        when(objectMapper.readValue(any(String.class), eq(Map.class))).thenReturn(Map.of(
+                "type", "audio.chunk",
+                "seq", 15L,
+                "size", 4L,
+                "recording_session_id", 2L,
+                "attempt_id", 1L
+        ));
+
+        handler.handleTextMessage(session, new TextMessage("{}"));
+        handler.handleBinaryMessage(session, new BinaryMessage(ByteBuffer.wrap(new byte[] {1, 2, 3, 4})));
+
+        assertNull(attributes.get("lastAudioSeq"));
+        verifyNoInteractions(aiServiceClient);
+        verifyNoInteractions(realtimeEventSubscriber);
+    }
+
+    @Test
+    void handleTextMessage_shouldDropMetadataMissingRecordingSessionIdAfterActiveSessionKnown() throws Exception {
+        attributes.put("meetingId", 348L);
+        attributes.put("authenticated", true);
+        attributes.put("language", "vi");
+        attributes.put("authorization", "Bearer test-token");
+        attributes.put("recordingSessionId", 1L);
+        attributes.put("attemptId", 1L);
+        attributes.put("MEETING_STATUS_CHECKED_ATTR", Boolean.TRUE);
+        attributes.put("lastAudioSeq", 14L);
+
+        when(objectMapper.readValue(any(String.class), eq(Map.class))).thenReturn(Map.of(
+                "type", "audio.chunk",
+                "seq", 15L,
+                "size", 4L,
+                "attempt_id", 1L
+        ));
+
+        handler.handleTextMessage(session, new TextMessage("{}"));
+        handler.handleBinaryMessage(session, new BinaryMessage(ByteBuffer.wrap(new byte[] {1, 2, 3, 4})));
+
+        assertNull(attributes.get("lastAudioSeq"));
+        verifyNoInteractions(aiServiceClient);
+        verifyNoInteractions(realtimeEventSubscriber);
+    }
+
+    @Test
+    void handleTextMessage_shouldDropMetadataMissingAttemptIdAfterActiveAttemptKnown() throws Exception {
+        attributes.put("meetingId", 349L);
+        attributes.put("authenticated", true);
+        attributes.put("language", "vi");
+        attributes.put("authorization", "Bearer test-token");
+        attributes.put("recordingSessionId", 1L);
+        attributes.put("attemptId", 1L);
+        attributes.put("MEETING_STATUS_CHECKED_ATTR", Boolean.TRUE);
+        attributes.put("lastAudioSeq", 14L);
+
+        when(objectMapper.readValue(any(String.class), eq(Map.class))).thenReturn(Map.of(
+                "type", "audio.chunk",
+                "seq", 16L,
+                "size", 4L,
+                "recording_session_id", 1L
+        ));
+
+        handler.handleTextMessage(session, new TextMessage("{}"));
+        handler.handleBinaryMessage(session, new BinaryMessage(ByteBuffer.wrap(new byte[] {1, 2, 3, 4})));
+
+        assertNull(attributes.get("lastAudioSeq"));
+        verifyNoInteractions(aiServiceClient);
+        verifyNoInteractions(realtimeEventSubscriber);
+    }
+
+    @Test
+    void handleTextMessage_shouldForwardBinaryWhenActiveSessionMetadataMatches() throws Exception {
+        attributes.put("meetingId", 350L);
+        attributes.put("authenticated", true);
+        attributes.put("language", "vi");
+        attributes.put("authorization", "Bearer test-token");
+        attributes.put("recordingSessionId", 1L);
+        attributes.put("attemptId", 1L);
+        attributes.put("MEETING_STATUS_CHECKED_ATTR", Boolean.TRUE);
+
+        when(objectMapper.readValue(any(String.class), eq(Map.class))).thenReturn(Map.of(
+                "type", "audio.chunk",
+                "seq", 17L,
+                "size", 4L,
+                "recording_session_id", 1L,
+                "attempt_id", 1L
+        ));
+        when(aiServiceClient.streamAudioChunk(
+                eq(350L),
+                argThat(bytes -> bytes != null && bytes.length == 4),
+                eq(17L),
+                eq("vi"),
+                eq(false),
+                isNull(),
+                eq("Bearer test-token")
+        )).thenReturn(Map.of(
+                "transcript", "valid session chunk",
+                "is_final", false,
+                "language", "vi"
+        ));
+
+        handler.handleTextMessage(session, new TextMessage("{}"));
+        handler.handleBinaryMessage(session, new BinaryMessage(ByteBuffer.wrap(new byte[] {1, 2, 3, 4})));
+
+        assertEquals(17L, attributes.get("lastAudioSeq"));
+        verify(aiServiceClient).streamAudioChunk(
+                eq(350L),
+                argThat(bytes -> bytes != null && bytes.length == 4),
+                eq(17L),
+                eq("vi"),
+                eq(false),
+                isNull(),
+                eq("Bearer test-token")
+        );
     }
 
     @Test
@@ -740,6 +955,32 @@ class MeetingWebSocketHandlerTest {
     }
 
     @Test
+    void handleTextMessage_streamStopShouldRejectTerminalMeetingAfterCachedNonTerminal() throws Exception {
+        attributes.put("meetingId", 421L);
+        attributes.put("authenticated", true);
+        attributes.put("language", "vi");
+        attributes.put("authorization", "Bearer test-token");
+        attributes.put("MEETING_STATUS_CHECKED_ATTR", Boolean.TRUE);
+        attributes.put("lastMeetingStatusCheckAt", System.currentTimeMillis());
+        attributes.put("lastAudioSeq", 9L);
+
+        when(objectMapper.readValue(any(String.class), eq(Map.class))).thenReturn(Map.of(
+                "type", "stream.stop",
+                "meetingId", 421L
+        ));
+        when(meetingServiceClient.getMeetingById(421L, null, "Bearer test-token"))
+                .thenReturn(Map.of("id", 421L, "status", "completed"));
+
+        handler.handleTextMessage(session, new TextMessage("{}"));
+
+        assertEquals("completed", attributes.get("TERMINAL_MEETING_STATUS_ATTR"));
+        verify(meetingServiceClient).getMeetingById(421L, null, "Bearer test-token");
+        verify(realtimeEventSubscriber).broadcastToMeeting(eq(421L), any(Map.class));
+        verify(session).close(CloseStatus.POLICY_VIOLATION.withReason("Meeting already finalized"));
+        verifyNoInteractions(aiServiceClient);
+    }
+
+    @Test
     void handleTextMessage_duplicateStreamStop_shouldNotTriggerRealtimeAnalysisTwice() throws Exception {
         attributes.put("meetingId", 352L);
         attributes.put("authenticated", true);
@@ -891,16 +1132,57 @@ class MeetingWebSocketHandlerTest {
             "language", "vi"
         ));
 
-        handler.handleTextMessage(session, new TextMessage("{\"type\":\"stream.stop\"}"));
+        Logger logger = (Logger) LoggerFactory.getLogger(MeetingWebSocketHandler.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+
+        try {
+            handler.handleTextMessage(session, new TextMessage("{\"type\":\"stream.stop\"}"));
+        } finally {
+            logger.detachAppender(appender);
+        }
 
         ArgumentCaptor<Map<String, Object>> eventCaptor = ArgumentCaptor.forClass(Map.class);
         verify(realtimeEventSubscriber).broadcastToMeeting(eq(36L), eventCaptor.capture());
 
         Map<String, Object> event = eventCaptor.getValue();
         assertEquals("stream.status", event.get("type"));
-        assertEquals("completed_with_no_speech_detected", event.get("state"));
-        assertEquals("completed_with_no_speech_detected", event.get("status"));
+        assertEquals("NO_TRANSCRIPT_AFTER_FINALIZE", event.get("state"));
+        assertEquals("NO_TRANSCRIPT_AFTER_FINALIZE", event.get("status"));
+        assertEquals("NO_TRANSCRIPT_AFTER_FINALIZE", event.get("errorCode"));
+        assertEquals("NO_ANALYSIS", event.get("analysisStatus"));
+        assertEquals(0, event.get("transcriptRows"));
+        assertEquals(Boolean.TRUE, event.get("finalized"));
         assertEquals(36L, event.get("meetingId"));
+        verify(jobStateStore).upsertJobState(
+                eq(36L),
+                eq("NO_TRANSCRIPT_AFTER_FINALIZE"),
+                eq("realtime-meeting:36"),
+                argThat(result ->
+                        result != null
+                                && result.get("transcripts") instanceof java.util.List<?> transcripts
+                                && transcripts.isEmpty()
+                                && Integer.valueOf(0).equals(result.get("transcriptRows"))
+                                && Boolean.TRUE.equals(result.get("finalized"))
+                                && "NO_ANALYSIS".equals(result.get("analysisStatus"))
+                ),
+                isNull(),
+                eq("realtime-no-transcript-36")
+        );
+        assertTrue(appender.list.stream().anyMatch(logEvent ->
+                logEvent.getFormattedMessage().contains("REALTIME_ANALYSIS_SKIPPED reason=no_transcript")
+        ));
+        verify(aiServiceClient, never()).getTranscript(eq(36L), anyString());
+        verify(aiServiceClient, never()).analyzeRealtimeTranscript(
+                anyLong(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString()
+        );
     }
 
     @Test
@@ -1068,5 +1350,562 @@ class MeetingWebSocketHandlerTest {
                 eq("Bearer test-token")
         );
         verify(realtimeEventSubscriber).unregisterSession(353L, session);
+    }
+
+    @Test
+    void handleBinaryMessage_asyncEnabled_returnsBeforeSlowAiCompletes() throws Exception {
+        ReflectionTestUtils.setField(handler, "realtimeAsyncAudioQueueEnabled", true);
+        attributes.put("meetingId", 901L);
+        attributes.put("authenticated", true);
+        attributes.put("language", "vi");
+        attributes.put("authorization", "Bearer test-token");
+        attributes.put("recordingSessionId", 1L);
+        attributes.put("attemptId", 1L);
+        attributes.put("MEETING_STATUS_CHECKED_ATTR", Boolean.TRUE);
+
+        CountDownLatch aiStarted = new CountDownLatch(1);
+        CountDownLatch allowAiComplete = new CountDownLatch(1);
+        when(aiServiceClient.streamAudioChunk(
+                eq(901L),
+                any(byte[].class),
+                eq(1L),
+                eq("vi"),
+                eq(false),
+                isNull(),
+                eq("Bearer test-token")
+        )).thenAnswer(invocation -> {
+            aiStarted.countDown();
+            allowAiComplete.await(5, TimeUnit.SECONDS);
+            return Map.of("transcript", "async chunk", "is_final", false, "language", "vi");
+        });
+        when(objectMapper.readValue(any(String.class), eq(Map.class))).thenReturn(Map.of(
+                "type", "audio.chunk",
+                "seq", 1L,
+                "size", 4L,
+                "recording_session_id", 1L,
+                "attempt_id", 1L
+        ));
+
+        long startedAt = System.currentTimeMillis();
+        handler.handleTextMessage(session, new TextMessage("{}"));
+        handler.handleBinaryMessage(session, new BinaryMessage(ByteBuffer.wrap(new byte[] {1, 2, 3, 4})));
+        long elapsedMs = System.currentTimeMillis() - startedAt;
+
+        assertTrue(elapsedMs < 750L, "WS thread should return before slow AI completes");
+        assertTrue(aiStarted.await(3, TimeUnit.SECONDS));
+        allowAiComplete.countDown();
+        verify(aiServiceClient, timeout(3000)).streamAudioChunk(
+                eq(901L),
+                any(byte[].class),
+                eq(1L),
+                eq("vi"),
+                eq(false),
+                isNull(),
+                eq("Bearer test-token")
+        );
+    }
+
+    @Test
+    void handleBinaryMessage_asyncEnabled_preservesSeqOrder() throws Exception {
+        ReflectionTestUtils.setField(handler, "realtimeAsyncAudioQueueEnabled", true);
+        attributes.put("meetingId", 902L);
+        attributes.put("authenticated", true);
+        attributes.put("language", "vi");
+        attributes.put("authorization", "Bearer test-token");
+        attributes.put("recordingSessionId", 1L);
+        attributes.put("attemptId", 1L);
+        attributes.put("MEETING_STATUS_CHECKED_ATTR", Boolean.TRUE);
+
+        List<Long> seqOrder = Collections.synchronizedList(new ArrayList<>());
+        when(aiServiceClient.streamAudioChunk(
+                eq(902L),
+                any(byte[].class),
+                anyLong(),
+                eq("vi"),
+                eq(false),
+                isNull(),
+                eq("Bearer test-token")
+        )).thenAnswer(invocation -> {
+            seqOrder.add(invocation.getArgument(2));
+            return Map.of(
+                    "transcript", "chunk-" + invocation.getArgument(2),
+                    "is_final", false,
+                    "language", "vi"
+            );
+        });
+
+        for (long seq = 1L; seq <= 3L; seq++) {
+            when(objectMapper.readValue(any(String.class), eq(Map.class))).thenReturn(Map.of(
+                    "type", "audio.chunk",
+                    "seq", seq,
+                    "size", 2L,
+                    "recording_session_id", 1L,
+                    "attempt_id", 1L
+            ));
+            handler.handleTextMessage(session, new TextMessage("{}"));
+            handler.handleBinaryMessage(session, new BinaryMessage(ByteBuffer.wrap(new byte[] {1, 2})));
+        }
+
+        verify(aiServiceClient, timeout(5000).times(3)).streamAudioChunk(
+                eq(902L),
+                any(byte[].class),
+                anyLong(),
+                eq("vi"),
+                eq(false),
+                isNull(),
+                eq("Bearer test-token")
+        );
+        assertEquals(List.of(1L, 2L, 3L), seqOrder);
+    }
+
+    @Test
+    void handleTextMessage_streamStop_asyncEnabled_drainsQueueBeforeFinalize() throws Exception {
+        ReflectionTestUtils.setField(handler, "realtimeAsyncAudioQueueEnabled", true);
+        attributes.put("meetingId", 903L);
+        attributes.put("authenticated", true);
+        attributes.put("language", "vi");
+        attributes.put("authorization", "Bearer test-token");
+        attributes.put("recordingSessionId", 1L);
+        attributes.put("attemptId", 1L);
+        attributes.put("MEETING_STATUS_CHECKED_ATTR", Boolean.TRUE);
+        attributes.put("AUDIO_RECEIVED_ATTR", Boolean.TRUE);
+        attributes.put("lastAudioSeq", 2L);
+
+        CountDownLatch firstChunkStarted = new CountDownLatch(1);
+        CountDownLatch allowFirstChunk = new CountDownLatch(1);
+        when(aiServiceClient.streamAudioChunk(
+                eq(903L),
+                argThat(bytes -> bytes != null && bytes.length == 2),
+                anyLong(),
+                eq("vi"),
+                eq(false),
+                isNull(),
+                eq("Bearer test-token")
+        )).thenAnswer(invocation -> {
+            firstChunkStarted.countDown();
+            allowFirstChunk.await(5, TimeUnit.SECONDS);
+            return Map.of("transcript", "queued", "is_final", false, "language", "vi");
+        });
+        when(aiServiceClient.streamAudioChunk(
+                eq(903L),
+                argThat(bytes -> bytes != null && bytes.length == 0),
+                eq(-1L),
+                eq("vi"),
+                eq(true),
+                isNull(),
+                eq("Bearer test-token")
+        )).thenReturn(Map.of("transcript", "done", "is_final", true, "language", "vi"));
+        when(objectMapper.readValue(any(String.class), eq(Map.class)))
+                .thenReturn(Map.of(
+                        "type", "audio.chunk",
+                        "seq", 1L,
+                        "size", 2L,
+                        "recording_session_id", 1L,
+                        "attempt_id", 1L
+                ))
+                .thenReturn(Map.of(
+                        "type", "audio.chunk",
+                        "seq", 2L,
+                        "size", 2L,
+                        "recording_session_id", 1L,
+                        "attempt_id", 1L
+                ))
+                .thenReturn(Map.of("type", "stream.stop"));
+
+        handler.handleTextMessage(session, new TextMessage("{}"));
+        handler.handleBinaryMessage(session, new BinaryMessage(ByteBuffer.wrap(new byte[] {1, 2})));
+        handler.handleTextMessage(session, new TextMessage("{}"));
+        handler.handleBinaryMessage(session, new BinaryMessage(ByteBuffer.wrap(new byte[] {3, 4})));
+
+        CountDownLatch stopStarted = new CountDownLatch(1);
+        Thread stopThread = new Thread(() -> {
+            try {
+                stopStarted.countDown();
+                handler.handleTextMessage(session, new TextMessage("{\"type\":\"stream.stop\"}"));
+            } catch (Exception ex) {
+                throw new RuntimeException(ex);
+            }
+        });
+        stopThread.start();
+        assertTrue(stopStarted.await(3, TimeUnit.SECONDS));
+        allowFirstChunk.countDown();
+
+        verify(aiServiceClient, timeout(5000).times(2)).streamAudioChunk(
+                eq(903L),
+                argThat(bytes -> bytes != null && bytes.length == 2),
+                anyLong(),
+                eq("vi"),
+                eq(false),
+                isNull(),
+                eq("Bearer test-token")
+        );
+        verify(aiServiceClient, timeout(5000)).streamAudioChunk(
+                eq(903L),
+                argThat(bytes -> bytes != null && bytes.length == 0),
+                eq(-1L),
+                eq("vi"),
+                eq(true),
+                isNull(),
+                eq("Bearer test-token")
+        );
+        stopThread.join(5000);
+        assertFalse(realtimeAudioWorkerRegistry.contains("ws-session-1"));
+    }
+
+    @Test
+    void streamStopAndAfterConnectionClosed_asyncEnabled_finalizeAtMostOnce() throws Exception {
+        ReflectionTestUtils.setField(handler, "realtimeAsyncAudioQueueEnabled", true);
+        attributes.put("meetingId", 904L);
+        attributes.put("authenticated", true);
+        attributes.put("language", "vi");
+        attributes.put("authorization", "Bearer test-token");
+        attributes.put("AUDIO_RECEIVED_ATTR", Boolean.TRUE);
+        attributes.put("lastAudioSeq", 5L);
+
+        AtomicInteger finalizeCalls = new AtomicInteger(0);
+        when(aiServiceClient.streamAudioChunk(
+                eq(904L),
+                argThat(bytes -> bytes != null && bytes.length == 0),
+                eq(-1L),
+                eq("vi"),
+                eq(true),
+                isNull(),
+                eq("Bearer test-token")
+        )).thenAnswer(invocation -> {
+            finalizeCalls.incrementAndGet();
+            return Map.of("transcript", "done", "is_final", true, "language", "vi");
+        });
+        doReturn(Map.of("type", "stream.stop")).when(objectMapper).readValue(anyString(), any(Class.class));
+
+        handler.handleTextMessage(session, new TextMessage("{\"type\":\"stream.stop\"}"));
+        handler.afterConnectionClosed(session, CloseStatus.NORMAL);
+
+        verify(aiServiceClient, timeout(3000).times(1)).streamAudioChunk(
+                eq(904L),
+                argThat(bytes -> bytes != null && bytes.length == 0),
+                eq(-1L),
+                eq("vi"),
+                eq(true),
+                isNull(),
+                eq("Bearer test-token")
+        );
+        assertEquals(1, finalizeCalls.get());
+        assertFalse(realtimeAudioWorkerRegistry.contains("ws-session-1"));
+    }
+
+    @Test
+    void streamStopAndAfterConnectionClosed_asyncEnabled_concurrentFinalizeAtMostOnce() throws Exception {
+        ReflectionTestUtils.setField(handler, "realtimeAsyncAudioQueueEnabled", true);
+        attributes.put("meetingId", 908L);
+        attributes.put("authenticated", true);
+        attributes.put("language", "vi");
+        attributes.put("authorization", "Bearer test-token");
+        attributes.put("recordingSessionId", 1L);
+        attributes.put("attemptId", 1L);
+        attributes.put("MEETING_STATUS_CHECKED_ATTR", Boolean.TRUE);
+        attributes.put("AUDIO_RECEIVED_ATTR", Boolean.TRUE);
+        attributes.put("lastAudioSeq", 1L);
+
+        when(aiServiceClient.streamAudioChunk(
+                eq(908L),
+                argThat(bytes -> bytes != null && bytes.length == 2),
+                eq(1L),
+                eq("vi"),
+                eq(false),
+                isNull(),
+                eq("Bearer test-token")
+        )).thenReturn(Map.of("transcript", "chunk", "is_final", false, "language", "vi"));
+
+        CountDownLatch finalizeStarted = new CountDownLatch(1);
+        CountDownLatch allowFinalizeComplete = new CountDownLatch(1);
+        AtomicInteger finalizeCalls = new AtomicInteger(0);
+        when(aiServiceClient.streamAudioChunk(
+                eq(908L),
+                argThat(bytes -> bytes != null && bytes.length == 0),
+                eq(-1L),
+                eq("vi"),
+                eq(true),
+                isNull(),
+                eq("Bearer test-token")
+        )).thenAnswer(invocation -> {
+            finalizeCalls.incrementAndGet();
+            finalizeStarted.countDown();
+            allowFinalizeComplete.await(5, TimeUnit.SECONDS);
+            return Map.of("transcript", "done", "is_final", true, "language", "vi");
+        });
+        when(objectMapper.readValue(any(String.class), eq(Map.class)))
+                .thenReturn(Map.of(
+                        "type", "audio.chunk",
+                        "seq", 1L,
+                        "size", 2L,
+                        "recording_session_id", 1L,
+                        "attempt_id", 1L
+                ))
+                .thenReturn(Map.of("type", "stream.stop"));
+
+        handler.handleTextMessage(session, new TextMessage("{}"));
+        handler.handleBinaryMessage(session, new BinaryMessage(ByteBuffer.wrap(new byte[] {1, 2})));
+        assertTrue(realtimeAudioWorkerRegistry.contains("ws-session-1"));
+
+        CountDownLatch bothReady = new CountDownLatch(2);
+        CountDownLatch releaseBoth = new CountDownLatch(1);
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        try {
+            executor.submit(() -> {
+                try {
+                    bothReady.countDown();
+                    releaseBoth.await(5, TimeUnit.SECONDS);
+                    handler.handleTextMessage(session, new TextMessage("{\"type\":\"stream.stop\"}"));
+                } catch (Exception ex) {
+                    throw new RuntimeException(ex);
+                }
+            });
+            executor.submit(() -> {
+                try {
+                    bothReady.countDown();
+                    releaseBoth.await(5, TimeUnit.SECONDS);
+                    handler.afterConnectionClosed(session, CloseStatus.NORMAL);
+                } catch (Exception ex) {
+                    throw new RuntimeException(ex);
+                }
+            });
+
+            assertTrue(bothReady.await(3, TimeUnit.SECONDS));
+            releaseBoth.countDown();
+            assertTrue(finalizeStarted.await(5, TimeUnit.SECONDS));
+            allowFinalizeComplete.countDown();
+            executor.shutdown();
+            assertTrue(executor.awaitTermination(10, TimeUnit.SECONDS));
+        } finally {
+            executor.shutdownNow();
+        }
+
+        verify(aiServiceClient, timeout(5000).times(1)).streamAudioChunk(
+                eq(908L),
+                argThat(bytes -> bytes != null && bytes.length == 0),
+                eq(-1L),
+                eq("vi"),
+                eq(true),
+                isNull(),
+                eq("Bearer test-token")
+        );
+        assertEquals(1, finalizeCalls.get());
+        assertFalse(realtimeAudioWorkerRegistry.contains("ws-session-1"));
+    }
+
+    @Test
+    void handleBinaryMessage_asyncEnabled_queueFull_emitsStreamErrorAndStopsAccepting() throws Exception {
+        ReflectionTestUtils.setField(handler, "realtimeAsyncAudioQueueEnabled", true);
+        ReflectionTestUtils.setField(handler, "realtimeAsyncQueueMaxSize", 1);
+        attributes.put("meetingId", 905L);
+        attributes.put("authenticated", true);
+        attributes.put("language", "vi");
+        attributes.put("authorization", "Bearer test-token");
+        attributes.put("recordingSessionId", 1L);
+        attributes.put("attemptId", 1L);
+        attributes.put("MEETING_STATUS_CHECKED_ATTR", Boolean.TRUE);
+
+        CountDownLatch firstChunkStarted = new CountDownLatch(1);
+        CountDownLatch allowFirstChunk = new CountDownLatch(1);
+        when(aiServiceClient.streamAudioChunk(
+                eq(905L),
+                any(byte[].class),
+                anyLong(),
+                eq("vi"),
+                eq(false),
+                isNull(),
+                eq("Bearer test-token")
+        )).thenAnswer(invocation -> {
+            firstChunkStarted.countDown();
+            allowFirstChunk.await(5, TimeUnit.SECONDS);
+            return Map.of("transcript", "queued", "is_final", false, "language", "vi");
+        });
+        when(objectMapper.readValue(any(String.class), eq(Map.class))).thenReturn(Map.of(
+                "type", "audio.chunk",
+                "seq", 1L,
+                "size", 2L,
+                "recording_session_id", 1L,
+                "attempt_id", 1L
+        ));
+
+        handler.handleTextMessage(session, new TextMessage("{}"));
+        handler.handleBinaryMessage(session, new BinaryMessage(ByteBuffer.wrap(new byte[] {1, 2})));
+        assertTrue(firstChunkStarted.await(3, TimeUnit.SECONDS));
+
+        when(objectMapper.readValue(any(String.class), eq(Map.class))).thenReturn(Map.of(
+                "type", "audio.chunk",
+                "seq", 2L,
+                "size", 2L,
+                "recording_session_id", 1L,
+                "attempt_id", 1L
+        ));
+        handler.handleTextMessage(session, new TextMessage("{}"));
+        handler.handleBinaryMessage(session, new BinaryMessage(ByteBuffer.wrap(new byte[] {3, 4})));
+
+        when(objectMapper.readValue(any(String.class), eq(Map.class))).thenReturn(Map.of(
+                "type", "audio.chunk",
+                "seq", 3L,
+                "size", 2L,
+                "recording_session_id", 1L,
+                "attempt_id", 1L
+        ));
+        handler.handleTextMessage(session, new TextMessage("{}"));
+        handler.handleBinaryMessage(session, new BinaryMessage(ByteBuffer.wrap(new byte[] {5, 6})));
+
+        ArgumentCaptor<Map<String, Object>> eventCaptor = ArgumentCaptor.forClass(Map.class);
+        verify(realtimeEventSubscriber, timeout(3000)).broadcastToMeeting(eq(905L), eventCaptor.capture());
+        Map<String, Object> errorEvent = eventCaptor.getValue();
+        assertEquals("stream.error", errorEvent.get("type"));
+        assertEquals(Boolean.FALSE, errorEvent.get("recoverable"));
+        assertEquals(Boolean.TRUE, errorEvent.get("resetRequired"));
+        verify(session, timeout(3000)).close(new CloseStatus(1013, "backpressure"));
+        assertFalse(realtimeAudioWorkerRegistry.contains("ws-session-1"));
+
+        allowFirstChunk.countDown();
+    }
+
+    @Test
+    void handleBinaryMessage_asyncEnabled_staleMetadataNeverEnqueued() throws Exception {
+        ReflectionTestUtils.setField(handler, "realtimeAsyncAudioQueueEnabled", true);
+        attributes.put("meetingId", 906L);
+        attributes.put("authenticated", true);
+        attributes.put("language", "vi");
+        attributes.put("authorization", "Bearer test-token");
+        attributes.put("recordingSessionId", 1L);
+        attributes.put("attemptId", 1L);
+        attributes.put("MEETING_STATUS_CHECKED_ATTR", Boolean.TRUE);
+        attributes.put("lastAudioSeq", 14L);
+
+        when(objectMapper.readValue(any(String.class), eq(Map.class))).thenReturn(Map.of(
+                "type", "audio.chunk",
+                "seq", 15L,
+                "size", 4L,
+                "attempt_id", 1L
+        ));
+
+        handler.handleTextMessage(session, new TextMessage("{}"));
+        handler.handleBinaryMessage(session, new BinaryMessage(ByteBuffer.wrap(new byte[] {1, 2, 3, 4})));
+
+        assertNull(attributes.get("lastAudioSeq"));
+        verifyNoInteractions(aiServiceClient);
+        assertFalse(realtimeAudioWorkerRegistry.contains("ws-session-1"));
+    }
+
+    @Test
+    void afterConnectionClosed_asyncEnabled_cleansWorkerRegistry() throws Exception {
+        ReflectionTestUtils.setField(handler, "realtimeAsyncAudioQueueEnabled", true);
+        attributes.put("meetingId", 907L);
+        attributes.put("authenticated", true);
+        attributes.put("language", "vi");
+        attributes.put("authorization", "Bearer test-token");
+        attributes.put("recordingSessionId", 1L);
+        attributes.put("attemptId", 1L);
+        attributes.put("MEETING_STATUS_CHECKED_ATTR", Boolean.TRUE);
+        attributes.put("AUDIO_RECEIVED_ATTR", Boolean.TRUE);
+        attributes.put("lastAudioSeq", 1L);
+
+        when(aiServiceClient.streamAudioChunk(
+                eq(907L),
+                any(byte[].class),
+                anyLong(),
+                eq("vi"),
+                any(Boolean.class),
+                isNull(),
+                eq("Bearer test-token")
+        )).thenReturn(Map.of("transcript", "chunk", "is_final", false, "language", "vi"));
+        when(objectMapper.readValue(any(String.class), eq(Map.class))).thenReturn(Map.of(
+                "type", "audio.chunk",
+                "seq", 1L,
+                "size", 2L,
+                "recording_session_id", 1L,
+                "attempt_id", 1L
+        ));
+
+        handler.handleTextMessage(session, new TextMessage("{}"));
+        handler.handleBinaryMessage(session, new BinaryMessage(ByteBuffer.wrap(new byte[] {1, 2})));
+        assertTrue(realtimeAudioWorkerRegistry.contains("ws-session-1"));
+
+        when(aiServiceClient.streamAudioChunk(
+                eq(907L),
+                argThat(bytes -> bytes != null && bytes.length == 0),
+                eq(-1L),
+                eq("vi"),
+                eq(true),
+                isNull(),
+                eq("Bearer test-token")
+        )).thenReturn(Map.of("transcript", "done", "is_final", true, "language", "vi"));
+
+        handler.afterConnectionClosed(session, CloseStatus.NORMAL);
+
+        verify(aiServiceClient, timeout(5000)).streamAudioChunk(
+                eq(907L),
+                argThat(bytes -> bytes != null && bytes.length == 0),
+                eq(-1L),
+                eq("vi"),
+                eq(true),
+                isNull(),
+                eq("Bearer test-token")
+        );
+        assertFalse(realtimeAudioWorkerRegistry.contains("ws-session-1"));
+    }
+
+    @Test
+    void handleTextMessage_streamStop_shouldKeepTranscriptSuccessWhenAnalysisCircuitOpen() throws Exception {
+        attributes.put("meetingId", 114L);
+        attributes.put("authenticated", true);
+        attributes.put("language", "vi");
+        attributes.put("authorization", "Bearer test-token");
+        attributes.put("lastAudioSeq", 35L);
+        attributes.put("AUDIO_RECEIVED_ATTR", Boolean.TRUE);
+
+        doReturn(Map.of("type", "stream.stop")).when(objectMapper).readValue(anyString(), any(Class.class));
+        when(aiServiceClient.streamAudioChunk(
+                eq(114L),
+                argThat(bytes -> bytes != null && bytes.length == 0),
+                eq(-1L),
+                eq("vi"),
+                eq(true),
+                isNull(),
+                eq("Bearer test-token")
+        )).thenReturn(Map.of(
+                "transcript", "transcript saved line",
+                "is_final", true,
+                "language", "vi"
+        ));
+        when(aiServiceClient.getTranscript(eq(114L), anyString())).thenReturn(Map.of(
+                "meeting_id", 114L,
+                "transcripts", List.of(
+                        Map.of("speaker", "SPEAKER_1", "text", "transcript saved line")
+                )
+        ));
+        when(aiServiceClient.analyzeRealtimeTranscript(
+                eq(114L),
+                anyString(),
+                eq("it"),
+                eq("realtime"),
+                anyString(),
+                anyString(),
+                eq("Bearer test-token")
+        )).thenThrow(io.github.resilience4j.circuitbreaker.CallNotPermittedException.createCallNotPermittedException(
+                io.github.resilience4j.circuitbreaker.CircuitBreaker.ofDefaults("ai-service")
+        ));
+
+        handler.handleTextMessage(session, new TextMessage("{\"type\":\"stream.stop\"}"));
+
+        ArgumentCaptor<Map<String, Object>> eventCaptor = ArgumentCaptor.forClass(Map.class);
+        verify(realtimeEventSubscriber).broadcastToMeeting(eq(114L), eventCaptor.capture());
+        assertEquals("transcript.final", eventCaptor.getValue().get("type"));
+
+        verify(jobStateStore, timeout(1000)).markAnalysisFailed(
+                eq(114L),
+                anyString(),
+                eq("stream_stop"),
+                eq("processing_ws_realtime_stop"),
+                anyString(),
+                eq(com.example.processingservice.service.AnalysisFailureMapping.ERROR_CODE_CIRCUIT_OPEN),
+                anyString(),
+                eq(com.example.processingservice.service.AnalysisFailureMapping.DEFAULT_CIRCUIT_OPEN_RETRY_AFTER_SECONDS)
+        );
+        verify(meetingServiceClient, never()).updateMeetingStatus(eq(114L), eq("failed"), anyString(), anyString());
     }
 }

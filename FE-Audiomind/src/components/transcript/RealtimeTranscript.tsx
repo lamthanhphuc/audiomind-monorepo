@@ -11,6 +11,7 @@ interface RealtimeTranscriptProps {
   onPauseToggle?: (paused: boolean) => void
   highlightKeywords?: string[]
   maxHeight?: string
+  emptyMessage?: string
 }
 
 export const RealtimeTranscript: React.FC<RealtimeTranscriptProps> = ({
@@ -19,6 +20,7 @@ export const RealtimeTranscript: React.FC<RealtimeTranscriptProps> = ({
   onPauseToggle,
   highlightKeywords = [],
   maxHeight = '400px',
+  emptyMessage = 'Waiting for transcript...',
 }) => {
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const animationFrameRef = useRef<number | null>(null)
@@ -66,7 +68,7 @@ export const RealtimeTranscript: React.FC<RealtimeTranscriptProps> = ({
   if (displaySegments.length === 0) {
     return (
       <div className="realtime-transcript-empty">
-        <p>Waiting for transcript...</p>
+        <p>{emptyMessage}</p>
       </div>
     )
   }

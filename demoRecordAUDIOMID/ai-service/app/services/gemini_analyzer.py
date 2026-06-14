@@ -22,6 +22,15 @@ class GeminiAnalyzer(AIAnalyzer):
         gemini_max_tokens_retry_enabled: bool = True,
         gemini_max_single_request_chars: int = 50000,
         gemini_request_delay_seconds: float = 15.0,
+        gemini_api_keys: str = "",
+        gemini_multi_key_enabled: bool = False,
+        gemini_max_attempts: int = 3,
+        gemini_key_cooldown_seconds: float = 90.0,
+        gemini_key_hard_cooldown_seconds: float = 900.0,
+        gemini_backoff_base_ms: float = 500.0,
+        gemini_backoff_max_ms: float = 10000.0,
+        gemini_backoff_jitter: bool = True,
+        gemini_fail_fast_seconds: float = 30.0,
         timeout_seconds: int = 300,
     ):
         super().__init__(
@@ -40,6 +49,15 @@ class GeminiAnalyzer(AIAnalyzer):
             gemini_max_tokens_retry_enabled=gemini_max_tokens_retry_enabled,
             gemini_max_single_request_chars=gemini_max_single_request_chars,
             gemini_request_delay_seconds=gemini_request_delay_seconds,
+            gemini_api_keys=gemini_api_keys,
+            gemini_multi_key_enabled=gemini_multi_key_enabled,
+            gemini_max_attempts=gemini_max_attempts,
+            gemini_key_cooldown_seconds=gemini_key_cooldown_seconds,
+            gemini_key_hard_cooldown_seconds=gemini_key_hard_cooldown_seconds,
+            gemini_backoff_base_ms=gemini_backoff_base_ms,
+            gemini_backoff_max_ms=gemini_backoff_max_ms,
+            gemini_backoff_jitter=gemini_backoff_jitter,
+            gemini_fail_fast_seconds=gemini_fail_fast_seconds,
             timeout_seconds=timeout_seconds,
         )
 
