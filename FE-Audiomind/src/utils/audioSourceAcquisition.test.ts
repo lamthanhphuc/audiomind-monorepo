@@ -1,0 +1,151 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import {
+  acquireAudioSource,
+  attachAudioTrackEndedHandler,
+  AudioSourceError,
+} from './audioSourceAcquisition'
+
+const createMockTrack = (overrides: Partial<MediaStreamTrack> = {}): MediaStreamTrack => ({
+  id: 'track-1',
+  kind: 'audio',
+  label: 'mock-audio',
+  enabled: true,
+  muted: false,
+  readyState: 'live',
+  stop: vi.fn(),
+  addEventListener: vi.fn(),
+  removeEventListener: vi.fn(),
+  ...overrides,
+} as MediaStreamTrack)
+
+const createMockStream = (audioTracks: MediaStreamTrack[], videoTracks: MediaStreamTrack[] = []): MediaStream => ({
+  getAudioTracks: () => audioTracks,
+  getVideoTracks: () => videoTracks,
+  getTracks: () => [...audioTracks, ...videoTracks],
+  removeTrack: vi.fn(),
+} as unknown as MediaStream)
+
+describe('acquireAudioSource', () => {
+  const originalMediaDevices = navigator.mediaDevices
+
+  beforeEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  afterEach(() => {
+    Object.defineProperty(navigator, 'mediaDevices', {
+      value: originalMediaDevices,
+      configurable: true,
+    })
+  })
+
+  it('acquires microphone stream with noise suppression constraints', async () => {
+    const audioTrack = createMockTrack()
+    const getUserMedia = vi.fn().mockResolvedValue(createMockStream([audioTrack]))
+    Object.defineProperty(navigator, 'mediaDevices', {
+      value: {
+        getUserMedia,
+        getSupportedConstraints: vi.fn(() => ({ noiseSuppression: true })),
+      },
+      configurable: true,
+    })
+
+    const acquired = await acquireAudioSource({ source: 'microphone', noiseSuppressionEnabled: true })
+
+    expect(getUserMedia).toHaveBeenCalledWith({
+      audio: expect.objectContaining({
+        noiseSuppression: true,
+        channelCount: 1,
+      }),
+    })
+    expect(acquired.stream).toBeDefined()
+    acquired.cleanup()
+    expect(audioTrack.stop).toHaveBeenCalled()
+  })
+
+  it('rejects browser tab stream without audio tracks', async () => {
+    const videoTrack = createMockTrack({ kind: 'video' })
+    const getDisplayMedia = vi.fn().mockResolvedValue(createMockStream([], [videoTrack]))
+    Object.defineProperty(navigator, 'mediaDevices', {
+      value: { getDisplayMedia },
+      configurable: true,
+    })
+
+    await expect(acquireAudioSource({ source: 'browser_tab' })).rejects.toMatchObject({
+      code: 'no_audio_track',
+      message: expect.stringContaining('không có âm thanh'),
+    })
+    expect(videoTrack.stop).toHaveBeenCalled()
+  })
+
+  it('acquires browser tab stream when audio track exists', async () => {
+    const audioTrack = createMockTrack()
+    const videoTrack = createMockTrack({ id: 'video-1', kind: 'video' })
+    const getDisplayMedia = vi.fn().mockResolvedValue(createMockStream([audioTrack], [videoTrack]))
+    Object.defineProperty(navigator, 'mediaDevices', {
+      value: { getDisplayMedia },
+      configurable: true,
+    })
+
+    const acquired = await acquireAudioSource({ source: 'browser_tab' })
+
+    expect(getDisplayMedia).toHaveBeenCalled()
+    expect(videoTrack.stop).toHaveBeenCalled()
+    expect(acquired.source).toBe('browser_tab')
+    acquired.cleanup()
+    expect(audioTrack.stop).toHaveBeenCalled()
+  })
+
+  it('maps permission denied for tab capture to Vietnamese guidance', async () => {
+    const getDisplayMedia = vi.fn().mockRejectedValue(Object.assign(new Error('denied'), { name: 'NotAllowedError' }))
+    Object.defineProperty(navigator, 'mediaDevices', {
+      value: { getDisplayMedia },
+      configurable: true,
+    })
+
+    await expect(acquireAudioSource({ source: 'browser_tab' })).rejects.toBeInstanceOf(AudioSourceError)
+    await expect(acquireAudioSource({ source: 'browser_tab' })).rejects.toMatchObject({
+      code: 'permission_denied',
+      message: expect.stringContaining('chia sẻ tab'),
+    })
+  })
+
+  it('maps picker cancel to cancelled error', async () => {
+    const getDisplayMedia = vi.fn().mockRejectedValue(Object.assign(new Error('aborted'), { name: 'AbortError' }))
+    Object.defineProperty(navigator, 'mediaDevices', {
+      value: { getDisplayMedia },
+      configurable: true,
+    })
+
+    await expect(acquireAudioSource({ source: 'browser_tab' })).rejects.toMatchObject({
+      code: 'cancelled',
+    })
+  })
+})
+
+describe('attachAudioTrackEndedHandler', () => {
+  it('invokes callback when audio track ends and detaches on cleanup', () => {
+    const listeners = new Map<string, () => void>()
+    const track = createMockTrack({
+      addEventListener: vi.fn((event: string, handler: () => void) => {
+        if (event === 'ended') {
+          listeners.set('ended', handler)
+        }
+      }),
+      removeEventListener: vi.fn((event: string, handler: () => void) => {
+        if (event === 'ended' && listeners.get('ended') === handler) {
+          listeners.delete('ended')
+        }
+      }),
+    })
+    const stream = createMockStream([track])
+    const onEnded = vi.fn()
+
+    const detach = attachAudioTrackEndedHandler(stream, onEnded)
+    listeners.get('ended')?.()
+    expect(onEnded).toHaveBeenCalledWith(track)
+
+    detach()
+    expect(track.removeEventListener).toHaveBeenCalledWith('ended', expect.any(Function))
+  })
+})

@@ -7,6 +7,12 @@ import type { useAudioRecorder } from '../../hooks/useAudioRecorder'
 import type { RealtimeLanguage, RealtimeSpeakerMode, TranscriptSegment } from '../../hooks/useRealtimeMeetingStream'
 import type { MicSensitivityMode } from '../../hooks/useVoiceActivityDetection'
 import type { AiAnalysis } from '../../types'
+import {
+  RECORDING_SOURCE_LABELS,
+  RECORDING_SOURCES,
+  type RecordingSource,
+  isBrowserTabRecordingSource,
+} from '../../constants/recordingSource'
 
 const REALTIME_LANGUAGE_OPTIONS: Array<{ value: RealtimeLanguage; label: string }> = [
   { value: 'vi', label: 'Tiếng Việt' },
@@ -57,6 +63,7 @@ type RealtimeDashboardSceneProps = {
   selectedRealtimeLanguage: RealtimeLanguage
   selectedRealtimeSpeakerMode: RealtimeSpeakerMode
   selectedMicSensitivity: MicSensitivityMode
+  selectedRecordingSource: RecordingSource
   noiseSuppressionEnabled: boolean
   noiseSuppressionToggleEnabled: boolean
   noiseSuppressionSupported: boolean
@@ -64,9 +71,11 @@ type RealtimeDashboardSceneProps = {
   onRealtimeLanguageChange: (value: string) => void
   onRealtimeSpeakerModeChange: (value: string) => void
   onMicSensitivityChange: (value: string) => void
+  onRecordingSourceChange: (value: string) => void
   onNoiseSuppressionChange: (enabled: boolean) => void
   isRealtimeLanguageSelectorDisabled: boolean
   isRealtimeSpeakerModeSelectorDisabled: boolean
+  isRecordingSourceSelectorDisabled: boolean
   liveMeetingId: number | null
   audioRecorder: ReturnType<typeof useAudioRecorder>
   onBeforeStartRecording: (recordingSessionId: number) => Promise<void>
@@ -139,6 +148,7 @@ export default function RealtimeDashboardScene({
   selectedRealtimeLanguage,
   selectedRealtimeSpeakerMode,
   selectedMicSensitivity,
+  selectedRecordingSource,
   noiseSuppressionEnabled,
   noiseSuppressionToggleEnabled,
   noiseSuppressionSupported,
@@ -146,9 +156,11 @@ export default function RealtimeDashboardScene({
   onRealtimeLanguageChange,
   onRealtimeSpeakerModeChange,
   onMicSensitivityChange,
+  onRecordingSourceChange,
   onNoiseSuppressionChange,
   isRealtimeLanguageSelectorDisabled,
   isRealtimeSpeakerModeSelectorDisabled,
+  isRecordingSourceSelectorDisabled,
   liveMeetingId,
   audioRecorder,
   onBeforeStartRecording,
@@ -209,8 +221,14 @@ export default function RealtimeDashboardScene({
     || liveLifecycleState === 'silent_paused'
     || liveLifecycleState === 'listening_resumed'
     || liveLifecycleState === 'stopping'
-  const noiseSuppressionDisabled = isRecordingActive || !noiseSuppressionSupported
-  const noiseSuppressionHelper = !noiseSuppressionSupported
+  const isTabAudioSource = isBrowserTabRecordingSource(selectedRecordingSource)
+  const isTabOnlySource = selectedRecordingSource === 'browser_tab'
+  const noiseSuppressionDisabled = isRecordingActive || !noiseSuppressionSupported || isTabOnlySource
+  const noiseSuppressionHelper = isTabOnlySource
+    ? 'Không áp dụng khi chỉ ghi âm thanh tab.'
+    : isTabAudioSource
+    ? 'Áp dụng cho microphone khi chọn Google Meet + Microphone.'
+    : !noiseSuppressionSupported
     ? 'Trình duyệt không hỗ trợ tùy chọn này, ghi âm vẫn hoạt động.'
     : isRecordingActive
       ? 'Áp dụng ở lần ghi tiếp theo.'
@@ -273,12 +291,33 @@ export default function RealtimeDashboardScene({
                   </select>
                 </label>
                 <label className="upload-panel__label">
+                  <span className="upload-panel__label-text">Nguồn ghi âm</span>
+                  <select
+                    className="upload-panel__select"
+                    value={selectedRecordingSource}
+                    onChange={(event) => onRecordingSourceChange(event.target.value)}
+                    disabled={isRecordingSourceSelectorDisabled}
+                  >
+                    {RECORDING_SOURCES.map((source) => (
+                      <option key={source} value={source}>
+                        {RECORDING_SOURCE_LABELS[source]}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {isTabAudioSource && (
+                  <div className="realtime-panel__hint realtime-panel__hint--capture" role="note">
+                    Mở Google Meet ở tab khác. Khi bấm ghi âm, chọn tab Meet trong hộp thoại trình duyệt
+                    và bật «Chia sẻ âm thanh của tab».
+                  </div>
+                )}
+                <label className="upload-panel__label">
                   <span className="upload-panel__label-text">Độ nhạy mic</span>
                   <select
                     className="upload-panel__select"
                     value={selectedMicSensitivity}
                     onChange={(event) => onMicSensitivityChange(event.target.value)}
-                    disabled={liveLifecycleState === 'stopping'}
+                    disabled={liveLifecycleState === 'stopping' || isTabOnlySource}
                   >
                     {REALTIME_MIC_SENSITIVITY_OPTIONS.map((option) => (
                       <option key={option.value} value={option.value}>
@@ -287,7 +326,7 @@ export default function RealtimeDashboardScene({
                     ))}
                   </select>
                 </label>
-                {noiseSuppressionToggleEnabled && (
+                {noiseSuppressionToggleEnabled && !isTabOnlySource && (
                   <label className="realtime-toggle">
                     <span className="upload-panel__label-text">Khử nhiễu microphone</span>
                     <span className="realtime-toggle__control">
@@ -313,6 +352,7 @@ export default function RealtimeDashboardScene({
             <AudioRecorderButton
               recorder={audioRecorder}
               lifecycleState={recorderLifecycleState}
+              recordingSource={selectedRecordingSource}
               onBeforeStartRecording={onBeforeStartRecording}
               onChunkReady={onChunkReady}
               onRecordingComplete={onRecordingComplete}
