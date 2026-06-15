@@ -15,6 +15,7 @@ public final class RealtimeStatusCodes {
     /** Backward-compatible alias retained for persisted job state and legacy clients. */
     public static final String NO_TRANSCRIPT_AFTER_FINALIZE = "NO_TRANSCRIPT_AFTER_FINALIZE";
     public static final String FAILED_AUDIO_CAPTURE = "FAILED_AUDIO_CAPTURE";
+    public static final String FINAL_AUDIO_FALLBACK_UNAVAILABLE = "FINAL_AUDIO_FALLBACK_UNAVAILABLE";
     public static final String COMPLETED_WITH_NO_SPEECH_DETECTED = "COMPLETED_WITH_NO_SPEECH_DETECTED";
 
     private static final Set<String> NO_TRANSCRIPT_TERMINAL = Set.of(
