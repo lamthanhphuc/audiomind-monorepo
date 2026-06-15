@@ -3822,6 +3822,30 @@ async def upload_audio(file: UploadFile = File(...)):
         )
 
 
+@app.post("/api/v1/stt/final-audio-fallback")
+async def final_audio_fallback(
+    http_request: Request,
+    meeting_id: int = Form(...),
+    audio_path: str = Form(...),
+    language: str = Form(default="vi"),
+):
+    from app.services.final_audio_fallback import run_final_audio_fallback
+
+    trace_id = getattr(http_request.state, "trace_id", None)
+    request_id = getattr(http_request.state, "request_id", None)
+    result = run_final_audio_fallback(
+        meeting_id=meeting_id,
+        audio_path=audio_path,
+        language=language,
+        trace_id=trace_id,
+        request_id=request_id,
+    )
+    return {
+        "meeting_id": meeting_id,
+        **result,
+    }
+
+
 @app.post("/api/stt/stream")
 async def open_stt_session(payload: dict = Body(default_factory=dict)):
     meeting_id = payload.get("meeting_id")

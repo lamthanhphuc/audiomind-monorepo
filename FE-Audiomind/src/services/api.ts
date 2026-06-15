@@ -397,6 +397,39 @@ export const uploadAudio = async (file: File): Promise<{ audio_path: string; ori
   })
 }
 
+export type RealtimeFinalAudioFallbackResponse = {
+  meeting_id: number
+  status: string
+  errorCode?: string
+  transcript_count?: number
+  transcriptRows?: number
+  idempotent_replay?: boolean
+  finalized?: boolean
+  legacyErrorCode?: string
+  analysisStatus?: string
+  analysis?: Record<string, unknown>
+}
+
+export const submitRealtimeFinalAudioFallback = async (
+  meetingId: number,
+  file: File,
+  language?: string,
+): Promise<RealtimeFinalAudioFallbackResponse> => {
+  const body = new FormData()
+  body.append('file', file)
+  const params = new URLSearchParams()
+  if (language && language.trim()) {
+    params.set('language', language.trim())
+  }
+  const query = params.toString()
+  const url = `${API_BASE}/processing/realtime/${meetingId}/final-audio-fallback${query ? `?${query}` : ''}`
+  return fetchJson<RealtimeFinalAudioFallbackResponse>(url, {
+    method: 'POST',
+    headers: withTraceHeaders(),
+    body,
+  })
+}
+
 export type ApiRequestOptions = {
   signal?: AbortSignal
 }

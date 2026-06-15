@@ -11,6 +11,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.never;
@@ -95,6 +96,21 @@ class MeetingWebSocketHandlerTest {
     private Map<String, Object> attributes;
     private RealtimeAudioWorkerRegistry realtimeAudioWorkerRegistry;
 
+    private Map<String, Object> lastCapturedBroadcast(ArgumentCaptor<Map<String, Object>> eventCaptor) {
+        List<Map<String, Object>> events = eventCaptor.getAllValues();
+        return events.isEmpty() ? null : events.get(events.size() - 1);
+    }
+
+    private Map<String, Object> findCapturedBroadcastByType(
+            ArgumentCaptor<Map<String, Object>> eventCaptor,
+            String type
+    ) {
+        return eventCaptor.getAllValues().stream()
+                .filter(event -> type.equals(event.get("type")))
+                .reduce((first, second) -> second)
+                .orElse(null);
+    }
+
     @BeforeEach
     void setUp() {
         realtimeAudioWorkerRegistry = new RealtimeAudioWorkerRegistry();
@@ -114,6 +130,9 @@ class MeetingWebSocketHandlerTest {
         ReflectionTestUtils.setField(handler, "realtimeAsyncAudioQueueEnabled", false);
         ReflectionTestUtils.setField(handler, "realtimeAsyncQueueMaxSize", 64);
         ReflectionTestUtils.setField(handler, "realtimeStopDrainTimeoutMs", 5000L);
+        ReflectionTestUtils.setField(handler, "realtimeMinAudioBytes", 128);
+        ReflectionTestUtils.setField(handler, "realtimeTinyChunkMaxBytes", 128);
+        ReflectionTestUtils.setField(handler, "realtimeTinyChunkStreakThreshold", 10);
         lenient().when(jobStateStore.tryStartAnalysis(anyLong(), anyString(), anyString(), anyString()))
                 .thenReturn(new JobStateStore.AnalysisTriggerDecision(
                         true,
@@ -878,9 +897,9 @@ class MeetingWebSocketHandlerTest {
             eq("Bearer test-token")
         );
             ArgumentCaptor<Map<String, Object>> eventCaptor = ArgumentCaptor.forClass(Map.class);
-            verify(realtimeEventSubscriber).broadcastToMeeting(eq(35L), eventCaptor.capture());
+            verify(realtimeEventSubscriber, atLeastOnce()).broadcastToMeeting(eq(35L), eventCaptor.capture());
 
-            Map<String, Object> event = eventCaptor.getValue();
+            Map<String, Object> event = lastCapturedBroadcast(eventCaptor);
             assertEquals("transcript.final", event.get("type"));
             // Phase 4 uses stable string segmentId; stop finalize without timing may use temporary fallback ID.
             assertEquals(35L, event.get("meetingId"));
@@ -1144,13 +1163,14 @@ class MeetingWebSocketHandlerTest {
         }
 
         ArgumentCaptor<Map<String, Object>> eventCaptor = ArgumentCaptor.forClass(Map.class);
-        verify(realtimeEventSubscriber).broadcastToMeeting(eq(36L), eventCaptor.capture());
+        verify(realtimeEventSubscriber, atLeastOnce()).broadcastToMeeting(eq(36L), eventCaptor.capture());
 
-        Map<String, Object> event = eventCaptor.getValue();
+        Map<String, Object> event = lastCapturedBroadcast(eventCaptor);
         assertEquals("stream.status", event.get("type"));
-        assertEquals("NO_TRANSCRIPT_AFTER_FINALIZE", event.get("state"));
-        assertEquals("NO_TRANSCRIPT_AFTER_FINALIZE", event.get("status"));
-        assertEquals("NO_TRANSCRIPT_AFTER_FINALIZE", event.get("errorCode"));
+        assertEquals("NO_TRANSCRIPT", event.get("state"));
+        assertEquals("NO_TRANSCRIPT", event.get("status"));
+        assertEquals("NO_TRANSCRIPT", event.get("errorCode"));
+        assertEquals("NO_TRANSCRIPT_AFTER_FINALIZE", event.get("legacyErrorCode"));
         assertEquals("NO_ANALYSIS", event.get("analysisStatus"));
         assertEquals(0, event.get("transcriptRows"));
         assertEquals(Boolean.TRUE, event.get("finalized"));
@@ -1168,7 +1188,7 @@ class MeetingWebSocketHandlerTest {
                                 && "NO_ANALYSIS".equals(result.get("analysisStatus"))
                 ),
                 isNull(),
-                eq("realtime-no-transcript-36")
+                anyString()
         );
         assertTrue(appender.list.stream().anyMatch(logEvent ->
                 logEvent.getFormattedMessage().contains("REALTIME_ANALYSIS_SKIPPED reason=no_transcript")
@@ -1245,9 +1265,9 @@ class MeetingWebSocketHandlerTest {
         handler.handleTextMessage(session, new TextMessage("{\"type\":\"stream.stop\"}"));
 
         ArgumentCaptor<Map<String, Object>> eventCaptor = ArgumentCaptor.forClass(Map.class);
-        verify(realtimeEventSubscriber).broadcastToMeeting(eq(112L), eventCaptor.capture());
-        Map<String, Object> event = eventCaptor.getValue();
-        assertEquals("transcript.final", event.get("type"));
+        verify(realtimeEventSubscriber, atLeastOnce()).broadcastToMeeting(eq(112L), eventCaptor.capture());
+        Map<String, Object> event = findCapturedBroadcastByType(eventCaptor, "transcript.final");
+        assertNotNull(event);
         assertEquals("meeting-112-start-30.950-unknown", event.get("segmentId"));
         assertEquals(35L, event.get("seq"));
         verify(aiServiceClient, timeout(1000)).analyzeRealtimeTranscript(
@@ -1291,8 +1311,8 @@ class MeetingWebSocketHandlerTest {
         handler.handleTextMessage(session, new TextMessage("{\"type\":\"stream.stop\"}"));
 
         ArgumentCaptor<Map<String, Object>> eventCaptor = ArgumentCaptor.forClass(Map.class);
-        verify(realtimeEventSubscriber).broadcastToMeeting(eq(113L), eventCaptor.capture());
-        Map<String, Object> event = eventCaptor.getValue();
+        verify(realtimeEventSubscriber, atLeastOnce()).broadcastToMeeting(eq(113L), eventCaptor.capture());
+        Map<String, Object> event = lastCapturedBroadcast(eventCaptor);
         assertEquals("transcript.final", event.get("type"));
         assertEquals(-1L, event.get("seq"));
         assertEquals("meeting-113-start-30.950-speaker_1", event.get("segmentId"));
@@ -1893,8 +1913,8 @@ class MeetingWebSocketHandlerTest {
         handler.handleTextMessage(session, new TextMessage("{\"type\":\"stream.stop\"}"));
 
         ArgumentCaptor<Map<String, Object>> eventCaptor = ArgumentCaptor.forClass(Map.class);
-        verify(realtimeEventSubscriber).broadcastToMeeting(eq(114L), eventCaptor.capture());
-        assertEquals("transcript.final", eventCaptor.getValue().get("type"));
+        verify(realtimeEventSubscriber, atLeastOnce()).broadcastToMeeting(eq(114L), eventCaptor.capture());
+        assertEquals("transcript.final", lastCapturedBroadcast(eventCaptor).get("type"));
 
         verify(jobStateStore, timeout(1000)).markAnalysisFailed(
                 eq(114L),
@@ -1907,5 +1927,109 @@ class MeetingWebSocketHandlerTest {
                 eq(com.example.processingservice.service.AnalysisFailureMapping.DEFAULT_CIRCUIT_OPEN_RETRY_AFTER_SECONDS)
         );
         verify(meetingServiceClient, never()).updateMeetingStatus(eq(114L), eq("failed"), anyString(), anyString());
+    }
+
+    @Test
+    void handleTextMessage_streamStop_withoutAudio_shouldMarkFailedAudioCapture() throws Exception {
+        attributes.put("meetingId", 401L);
+        attributes.put("authenticated", true);
+        attributes.put("language", "vi");
+        attributes.put("authorization", "Bearer test-token");
+
+        doReturn(Map.of("type", "stream.stop")).when(objectMapper).readValue(anyString(), any(Class.class));
+
+        handler.handleTextMessage(session, new TextMessage("{\"type\":\"stream.stop\"}"));
+
+        ArgumentCaptor<Map<String, Object>> eventCaptor = ArgumentCaptor.forClass(Map.class);
+        verify(realtimeEventSubscriber, times(2)).broadcastToMeeting(eq(401L), eventCaptor.capture());
+        Map<String, Object> terminalEvent = eventCaptor.getAllValues().get(1);
+        assertEquals("FAILED_AUDIO_CAPTURE", terminalEvent.get("status"));
+        verify(jobStateStore).upsertJobState(
+                eq(401L),
+                eq("FAILED_AUDIO_CAPTURE"),
+                eq("realtime-meeting:401"),
+                any(),
+                isNull(),
+                anyString()
+        );
+        verify(meetingServiceClient).updateMeetingStatus(eq(401L), eq("failed"), anyString(), eq("Bearer test-token"));
+        verify(aiServiceClient, never()).streamAudioChunk(anyLong(), any(), anyLong(), anyString(), eq(true), any(), anyString());
+    }
+
+    @Test
+    void handleTextMessage_streamStop_withTinyAudio_shouldMarkFailedAudioCapture() throws Exception {
+        attributes.put("meetingId", 402L);
+        attributes.put("authenticated", true);
+        attributes.put("language", "vi");
+        attributes.put("authorization", "Bearer test-token");
+        attributes.put("lastAudioSeq", 1L);
+        attributes.put("AUDIO_RECEIVED_ATTR", Boolean.TRUE);
+        attributes.put("totalAudioBytes", 720L);
+        attributes.put("tinyChunkStreak", 10L);
+
+        doReturn(Map.of("type", "stream.stop")).when(objectMapper).readValue(anyString(), any(Class.class));
+
+        handler.handleTextMessage(session, new TextMessage("{\"type\":\"stream.stop\"}"));
+
+        ArgumentCaptor<Map<String, Object>> eventCaptor = ArgumentCaptor.forClass(Map.class);
+        verify(realtimeEventSubscriber, times(2)).broadcastToMeeting(eq(402L), eventCaptor.capture());
+        assertEquals("FAILED_AUDIO_CAPTURE", eventCaptor.getAllValues().get(1).get("status"));
+        verify(aiServiceClient, never()).streamAudioChunk(anyLong(), any(), eq(-1L), anyString(), eq(true), any(), anyString());
+    }
+
+    @Test
+    void handleTextMessage_streamStop_finalizeConflict_shouldRecoverWithoutStreamError() throws Exception {
+        attributes.put("meetingId", 403L);
+        attributes.put("authenticated", true);
+        attributes.put("language", "vi");
+        attributes.put("authorization", "Bearer test-token");
+        attributes.put("lastAudioSeq", 12L);
+        attributes.put("AUDIO_RECEIVED_ATTR", Boolean.TRUE);
+        attributes.put("totalAudioBytes", 4096L);
+
+        doReturn(Map.of("type", "stream.stop")).when(objectMapper).readValue(anyString(), any(Class.class));
+        when(aiServiceClient.streamAudioChunk(
+                eq(403L),
+                any(byte[].class),
+                eq(-1L),
+                eq("vi"),
+                eq(true),
+                isNull(),
+                eq("Bearer test-token")
+        )).thenThrow(new org.springframework.web.client.HttpClientErrorException(
+                org.springframework.http.HttpStatus.CONFLICT,
+                "Conflict",
+                "{\"detail\":\"STT stream failed: actor closed\"}".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                java.nio.charset.StandardCharsets.UTF_8
+        ));
+        when(aiServiceClient.isTerminalStreamConflict(any())).thenReturn(true);
+        when(aiServiceClient.getTranscript(eq(403L), anyString())).thenReturn(Map.of(
+                "meeting_id", 403L,
+                "transcripts", List.of(Map.of("speaker", "SPEAKER_1", "text", "saved transcript"))
+        ));
+        when(jobStateStore.tryStartAnalysis(anyLong(), anyString(), anyString(), anyString()))
+                .thenReturn(new JobStateStore.AnalysisTriggerDecision(
+                        true,
+                        "RUNNING",
+                        "lock-token",
+                        "accepted",
+                        0,
+                        null
+                ));
+
+        handler.handleTextMessage(session, new TextMessage("{\"type\":\"stream.stop\"}"));
+
+        verify(realtimeEventSubscriber, never()).broadcastToMeeting(eq(403L), argThat(event ->
+                "stream.error".equals(event.get("type"))
+        ));
+        verify(aiServiceClient, timeout(1000)).analyzeRealtimeTranscript(
+                eq(403L),
+                anyString(),
+                eq("it"),
+                eq("realtime"),
+                anyString(),
+                anyString(),
+                eq("Bearer test-token")
+        );
     }
 }

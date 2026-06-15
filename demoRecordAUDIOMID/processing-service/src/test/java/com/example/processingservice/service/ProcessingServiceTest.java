@@ -33,6 +33,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -2319,9 +2320,10 @@ class ProcessingServiceTest {
 
         Map<String, Object> response = processingService.getAnalysis(609L, "trace-609", AUTH_HEADER);
 
-        assertEquals("NO_TRANSCRIPT_AFTER_FINALIZE", response.get("status"));
+        assertEquals(RealtimeStatusCodes.NO_TRANSCRIPT, response.get("status"));
         assertEquals("NO_ANALYSIS", response.get("analysisStatus"));
-        assertEquals("NO_TRANSCRIPT_AFTER_FINALIZE", response.get("errorCode"));
+        assertEquals(RealtimeStatusCodes.NO_TRANSCRIPT, response.get("errorCode"));
+        assertEquals(RealtimeStatusCodes.NO_TRANSCRIPT_AFTER_FINALIZE, response.get("legacyErrorCode"));
         assertEquals(0, response.get("transcriptRows"));
         verify(aiServiceClient, never()).getTranscript(609L, "trace-609");
         verify(aiServiceClient, never()).analyzeRealtimeTranscript(
@@ -3084,5 +3086,56 @@ class ProcessingServiceTest {
             }
         }
         return -1;
+    }
+
+    @Test
+    void runRealtimeFinalAudioFallback_returnsUnavailableForEmptyFile() {
+        MockMultipartFile file = new MockMultipartFile("file", "audio.webm", "audio/webm", new byte[0]);
+
+        Map<String, Object> result = processingService.runRealtimeFinalAudioFallback(
+                501L,
+                file,
+                "vi",
+                "trace-501",
+                AUTH_HEADER
+        );
+
+        assertEquals(RealtimeStatusCodes.FINAL_AUDIO_FALLBACK_UNAVAILABLE, result.get("status"));
+        verify(aiServiceClient, never()).runFinalAudioFallback(anyLong(), anyString(), anyString(), anyString(), anyString());
+    }
+
+    @Test
+    void runRealtimeFinalAudioFallback_skipsAnalysisWhenNoTranscriptRows() {
+        MockMultipartFile file = new MockMultipartFile("file", "audio.webm", "audio/webm", "abc".getBytes(StandardCharsets.UTF_8));
+        when(aiServiceClient.uploadAudio(any(), anyString(), eq(AUTH_HEADER)))
+                .thenReturn(Map.of("audio_path", "/tmp/audio.webm"));
+        when(aiServiceClient.runFinalAudioFallback(eq(502L), eq("/tmp/audio.webm"), eq("vi"), anyString(), eq(AUTH_HEADER)))
+                .thenReturn(Map.of(
+                        "status", "completed",
+                        "transcript_count", 0,
+                        "error_code", "NO_TRANSCRIPT"
+                ));
+
+        Map<String, Object> result = processingService.runRealtimeFinalAudioFallback(
+                502L,
+                file,
+                "vi",
+                "trace-502",
+                AUTH_HEADER
+        );
+
+        assertEquals(RealtimeStatusCodes.NO_TRANSCRIPT, result.get("status"));
+        verify(aiServiceClient, never()).analyzeRealtimeTranscript(
+                anyLong(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString()
+        );
+        verify(meetingServiceClient).updateMeetingStatus(eq(502L), eq("completed"), anyString(), eq(AUTH_HEADER));
     }
 }

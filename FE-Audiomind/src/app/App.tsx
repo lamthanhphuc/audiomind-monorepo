@@ -30,16 +30,21 @@ import {
     type MicSensitivityMode,
     type VoiceActivityState,
 } from '../hooks/useVoiceActivityDetection'
-import { ApiError, createRealtimeMeeting, getAnalysis, getProcessingStatus, getTranscript, reanalyzeMeetingAnalysis, startProcessingByPath, uploadToMeetingApi } from '../services/api'
+import { ApiError, createRealtimeMeeting, getAnalysis, getProcessingStatus, getTranscript, reanalyzeMeetingAnalysis, startProcessingByPath, submitRealtimeFinalAudioFallback, uploadToMeetingApi } from '../services/api'
 import { clearAccessToken, getAccessToken, getCurrentUserId, login, register, setAccessToken } from '../services/auth'
 import {
     REALTIME_MIC_SENSITIVITY,
+    REALTIME_MIN_FALLBACK_AUDIO_BYTES,
     REALTIME_NOISE_SUPPRESSION_DEFAULT,
     REALTIME_NOISE_SUPPRESSION_TOGGLE_ENABLED,
     REALTIME_PREROLL_ENABLED,
     REALTIME_RECORDER_TIMESLICE_MS,
     REALTIME_RESUME_PREROLL_MS,
     REALTIME_START_PREROLL_MS,
+    REALTIME_TINY_CHUNK_MAX_BYTES,
+    REALTIME_TINY_CHUNK_MAX_RMS,
+    REALTIME_TINY_CHUNK_MIN_RECORDING_SEC,
+    REALTIME_TINY_CHUNK_STREAK_THRESHOLD,
     REALTIME_VAD_DYNAMIC_ENABLED,
     REALTIME_WS_ENABLED,
 } from '../services/config'
@@ -82,12 +87,21 @@ export type LiveLifecycleState =
   | 'analysis_completed'
   | 'analysis_failed'
   | 'no_transcript_after_finalize'
+  | 'failed_audio_capture'
   | 'stopped_no_analysis'
   | 'stopped'
   | 'error'
 
 export const isNoTranscriptTerminalLifecycle = (state: LiveLifecycleState): boolean => {
   return state === 'no_transcript_after_finalize' || state === 'stopped_no_analysis'
+}
+
+export const isFailedAudioCaptureLifecycle = (state: LiveLifecycleState): boolean => {
+  return state === 'failed_audio_capture'
+}
+
+export const isRealtimeTerminalLifecycle = (state: LiveLifecycleState): boolean => {
+  return isNoTranscriptTerminalLifecycle(state) || isFailedAudioCaptureLifecycle(state) || state === 'error'
 }
 
 type RealtimeConnectionView = {
@@ -938,6 +952,7 @@ export default function App() {
   const analysisPollRunIdRef = useRef(0)
   const resetRecoveryInProgressRef = useRef(false)
   const restartAfterReconnectRef = useRef(false)
+  const liveTinyChunkStreakRef = useRef(0)
   const lastLoggedRealtimeLanguageRef = useRef<RealtimeLanguage | null>(null)
   const lastLoggedRealtimeSpeakerModeRef = useRef<RealtimeSpeakerMode | null>(null)
   const lastVoiceActivityStateRef = useRef<VoiceActivityState | null>(null)
@@ -1083,10 +1098,12 @@ export default function App() {
   }, [audioRecorder, realtimeStream, realtimeStream.status.resetRequired])
 
   useEffect(() => {
-    if (
-      realtimeStream.status.state !== 'NO_TRANSCRIPT_AFTER_FINALIZE'
-      && realtimeStream.status.errorCode !== 'NO_TRANSCRIPT_AFTER_FINALIZE'
-    ) {
+    const noTranscriptStatus =
+      realtimeStream.status.state === 'NO_TRANSCRIPT_AFTER_FINALIZE'
+      || realtimeStream.status.errorCode === 'NO_TRANSCRIPT_AFTER_FINALIZE'
+      || realtimeStream.status.errorCode === 'NO_TRANSCRIPT'
+      || realtimeStream.status.status === 'NO_TRANSCRIPT'
+    if (!noTranscriptStatus) {
       return
     }
 
@@ -1107,7 +1124,39 @@ export default function App() {
     }))
     setLiveAnalysisStatus('pending')
     setLiveAnalysisError(null)
-  }, [realtimeStream.status.errorCode, realtimeStream.status.state])
+    setLivePartialWarning('Chưa có transcript. Có thể do im lặng, mic tắt hoặc âm lượng quá thấp.')
+    setLiveStatusMessage('Đã dừng ghi âm (chưa có transcript)')
+  }, [realtimeStream.status.errorCode, realtimeStream.status.state, realtimeStream.status.status])
+
+  useEffect(() => {
+    const failedAudioCapture =
+      realtimeStream.status.state === 'FAILED_AUDIO_CAPTURE'
+      || realtimeStream.status.errorCode === 'FAILED_AUDIO_CAPTURE'
+      || realtimeStream.status.status === 'FAILED_AUDIO_CAPTURE'
+    if (!failedAudioCapture) {
+      return
+    }
+
+    const meetingId = liveMeetingIdRef.current
+    if (meetingId === null) {
+      return
+    }
+
+    liveAnalysisAbortControllerRef.current?.abort()
+    liveAnalysisAbortControllerRef.current = null
+    analysisPollRunIdRef.current += 1
+    setLiveLifecycleState('failed_audio_capture')
+    setLiveAnalysis(null)
+    setLiveAnalysisMetadata(buildLiveAnalysisMetadata(meetingId, 'NO_ANALYSIS', {
+      errorCode: 'FAILED_AUDIO_CAPTURE',
+      transcriptRows: 0,
+      finalized: true,
+    }))
+    setLiveAnalysisStatus('pending')
+    setLiveAnalysisError(null)
+    setLivePartialWarning('Không thu được audio hợp lệ. Kiểm tra quyền mic và thử ghi lại.')
+    setLiveStatusMessage('Lỗi thu âm')
+  }, [realtimeStream.status.errorCode, realtimeStream.status.state, realtimeStream.status.status])
 
   useEffect(() => {
     const isRealtimeRecordingActive = audioRecorder.state === 'recording' || audioRecorder.state === 'paused'
@@ -1690,6 +1739,7 @@ export default function App() {
     setLiveStatusMessage('Đang tạo meeting mới...')
     setHydratedLiveTranscriptSegments(null)
     setLiveLifecycleState('connecting')
+    liveTinyChunkStreakRef.current = 0
     realtimeStream.clearQueuedAudio?.()
     realtimeStream.disconnect(activeRealtimeSessionTokenRef.current)
     realtimeStream.clearTranscripts?.()
@@ -1805,6 +1855,40 @@ export default function App() {
         activeSessionId: liveRecordingSessionIdRef.current,
         reason: 'stale_session_token',
       })
+      return
+    }
+
+    const chunkBytes = chunk.size
+    const recordingDurationSec = audioRecorder.duration
+    const currentRms = audioRecorder.getCurrentRms()
+    const isTinyChunk = chunkBytes > 0 && chunkBytes < REALTIME_TINY_CHUNK_MAX_BYTES
+    const isSilentCapture = currentRms === null || currentRms <= REALTIME_TINY_CHUNK_MAX_RMS
+    if (isTinyChunk && isSilentCapture) {
+      liveTinyChunkStreakRef.current += 1
+    } else if (chunkBytes >= REALTIME_TINY_CHUNK_MAX_BYTES) {
+      liveTinyChunkStreakRef.current = 0
+    }
+
+    if (
+      recordingDurationSec >= REALTIME_TINY_CHUNK_MIN_RECORDING_SEC
+      && liveTinyChunkStreakRef.current >= REALTIME_TINY_CHUNK_STREAK_THRESHOLD
+    ) {
+      const captureError = 'Không nhận được âm thanh từ microphone. Hãy kiểm tra quyền mic, thiết bị đầu vào và thử ghi lại.'
+      console.warn('[Realtime] REALTIME_TINY_CHUNK_STREAK_CLIENT', {
+        meetingId: activeMeetingId,
+        sessionId,
+        streak: liveTinyChunkStreakRef.current,
+        chunkBytes,
+        rms: currentRms,
+        recordingDurationSec,
+      })
+      liveTinyChunkStreakRef.current = 0
+      setLiveError(captureError)
+      setLiveLifecycleState('failed_audio_capture')
+      setLiveStatusMessage('Không nhận được âm thanh hợp lệ')
+      audioRecorder.abortRecording()
+      realtimeStream.clearQueuedAudio?.()
+      realtimeStream.disconnect(activeToken)
       return
     }
 
@@ -2045,14 +2129,80 @@ export default function App() {
         setHydratedLiveTranscriptSegments(mergedHydration)
         if (mergedHydration.length === 0) {
           noTranscriptAfterFinalize = true
+        }
+        const shouldAttemptFinalAudioFallback = mergedHydration.length === 0
+          && fullAudio.size >= REALTIME_MIN_FALLBACK_AUDIO_BYTES
+          && (
+            stopIncomplete
+            || partialState
+            || realtimeStream.status.resetRequired
+            || realtimeStream.status.state === 'error'
+          )
+        if (shouldAttemptFinalAudioFallback) {
+          setLiveStatusMessage('Đang thử chuyển sang nhận dạng giọng nói dự phòng...')
+          console.info('[Realtime] REALTIME_FINAL_AUDIO_FALLBACK_REQUESTED', {
+            meetingId: activeMeetingId,
+            sessionId,
+            audioBytes: fullAudio.size,
+            stopIncomplete,
+            partialState,
+            resetRequired: realtimeStream.status.resetRequired,
+          })
+          try {
+            const fallbackFile = new File(
+              [fullAudio],
+              `realtime-fallback-${activeMeetingId}.webm`,
+              { type: fullAudio.type || 'audio/webm' },
+            )
+            const fallbackResponse = await submitRealtimeFinalAudioFallback(
+              activeMeetingId,
+              fallbackFile,
+              selectedRealtimeLanguage,
+            )
+            const fallbackRows = Number(
+              fallbackResponse.transcriptRows ?? fallbackResponse.transcript_count ?? 0,
+            )
+            if (fallbackRows > 0) {
+              noTranscriptAfterFinalize = false
+              const fallbackTranscript = await getTranscript(activeMeetingId)
+              const fallbackSegments = mergeTranscriptSegments(
+                normalizePersistedTranscriptSegments(fallbackTranscript.transcripts || []),
+              )
+              setHydratedLiveTranscriptSegments(fallbackSegments)
+              setLivePartialWarning(null)
+              setLiveStatusMessage('Đã nhận dạng transcript từ audio dự phòng')
+              console.info('[Realtime] REALTIME_FINAL_AUDIO_FALLBACK_SUCCEEDED', {
+                meetingId: activeMeetingId,
+                sessionId,
+                transcriptRows: fallbackRows,
+              })
+            } else {
+              const fallbackStatus = String(fallbackResponse.status ?? fallbackResponse.errorCode ?? 'NO_TRANSCRIPT')
+              if (fallbackStatus === 'FAILED_AUDIO_CAPTURE' || fallbackStatus === 'FINAL_AUDIO_FALLBACK_UNAVAILABLE') {
+                setLiveLifecycleState('failed_audio_capture')
+                setLiveError('Không nhận được âm thanh hợp lệ để nhận dạng.')
+              }
+              console.info('[Realtime] REALTIME_FINAL_AUDIO_FALLBACK_EMPTY', {
+                meetingId: activeMeetingId,
+                sessionId,
+                status: fallbackStatus,
+              })
+            }
+          } catch (fallbackError) {
+            console.warn('[Realtime] REALTIME_FINAL_AUDIO_FALLBACK_FAILED', {
+              meetingId: activeMeetingId,
+              sessionId,
+              error: fallbackError instanceof Error ? fallbackError.message : String(fallbackError),
+            })
+          }
+        }
+        if (noTranscriptAfterFinalize) {
           liveAnalysisAbortControllerRef.current?.abort()
           liveAnalysisAbortControllerRef.current = null
           analysisPollRunIdRef.current += 1
           setLiveLifecycleState('no_transcript_after_finalize')
           setLivePartialWarning('Chưa có transcript')
           setLiveStatusMessage('Đã dừng ghi âm (chưa có transcript)')
-        }
-        if (noTranscriptAfterFinalize) {
           setLiveAnalysis(null)
           setLiveAnalysisMetadata(buildLiveAnalysisMetadata(activeMeetingId, 'NO_ANALYSIS', {
             errorCode: 'NO_TRANSCRIPT_AFTER_FINALIZE',

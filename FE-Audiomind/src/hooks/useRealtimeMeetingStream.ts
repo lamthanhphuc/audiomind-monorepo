@@ -31,7 +31,7 @@ export interface KeywordHit {
 }
 
 export interface RealtimeStatusEvent {
-  state: 'connected' | 'disconnected' | 'reconnecting' | 'error' | 'stopped' | 'completed' | 'NO_TRANSCRIPT_AFTER_FINALIZE'
+  state: 'connected' | 'disconnected' | 'reconnecting' | 'error' | 'stopped' | 'completed' | 'NO_TRANSCRIPT_AFTER_FINALIZE' | 'FAILED_AUDIO_CAPTURE'
   activeConnections?: number
   lagMs?: number
   message?: string
@@ -612,8 +612,13 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
               const nextState =
                 incomingState === 'reconnecting'
                   ? 'reconnecting'
-                  : incomingState === 'NO_TRANSCRIPT_AFTER_FINALIZE'
+                  : incomingState === 'NO_TRANSCRIPT'
+                    || incomingState === 'NO_TRANSCRIPT_AFTER_FINALIZE'
                     ? 'NO_TRANSCRIPT_AFTER_FINALIZE'
+                  : incomingState === 'FAILED_AUDIO_CAPTURE'
+                    ? 'FAILED_AUDIO_CAPTURE'
+                  : incomingState === 'FINALIZING'
+                    ? 'connected'
                   : incomingState === 'partial'
                     ? 'completed'
                   : incomingState === 'completed_with_no_speech_detected'

@@ -364,6 +364,273 @@ public class ProcessingService {
         });
     }
 
+    private static final String REALTIME_FINAL_AUDIO_FALLBACK_SOURCE = "final_audio_fallback";
+
+    public Map<String, Object> runRealtimeFinalAudioFallback(
+            Long meetingId,
+            MultipartFile file,
+            String language,
+            String traceId,
+            String authorization) {
+        assertMeetingAccess(meetingId, traceId, authorization);
+        String resolvedTraceId = traceId == null || traceId.isBlank()
+                ? "realtime-final-audio-fallback-" + meetingId
+                : traceId;
+        log.info(
+                "event=REALTIME_FINAL_AUDIO_FALLBACK_REQUESTED traceId={} requestId={} meetingId={} source={}",
+                resolvedTraceId,
+                currentRequestId(resolvedTraceId),
+                meetingId,
+                REALTIME_FINAL_AUDIO_FALLBACK_SOURCE
+        );
+
+        if (file == null || file.isEmpty()) {
+            log.warn(
+                    "event=REALTIME_FINAL_AUDIO_FALLBACK_FAILED meetingId={} source={} errorCode={}",
+                    meetingId,
+                    REALTIME_FINAL_AUDIO_FALLBACK_SOURCE,
+                    RealtimeStatusCodes.FINAL_AUDIO_FALLBACK_UNAVAILABLE
+            );
+            return buildFinalAudioFallbackResponse(
+                    meetingId,
+                    RealtimeStatusCodes.FINAL_AUDIO_FALLBACK_UNAVAILABLE,
+                    0,
+                    false
+            );
+        }
+
+        Map<String, Object> uploadResult;
+        try {
+            uploadResult = uploadAudio(file, resolvedTraceId, authorization);
+        } catch (Exception ex) {
+            log.warn(
+                    "event=REALTIME_FINAL_AUDIO_FALLBACK_FAILED meetingId={} source={} errorCode=UPLOAD_FAILED error={}",
+                    meetingId,
+                    REALTIME_FINAL_AUDIO_FALLBACK_SOURCE,
+                    ex.getClass().getSimpleName()
+            );
+            return buildFinalAudioFallbackResponse(
+                    meetingId,
+                    "UPLOAD_FAILED",
+                    0,
+                    false
+            );
+        }
+
+        String audioPath = uploadResult.get("audio_path") == null
+                ? null
+                : String.valueOf(uploadResult.get("audio_path"));
+        if (audioPath == null || audioPath.isBlank()) {
+            return buildFinalAudioFallbackResponse(
+                    meetingId,
+                    RealtimeStatusCodes.FINAL_AUDIO_FALLBACK_UNAVAILABLE,
+                    0,
+                    false
+            );
+        }
+
+        Map<String, Object> fallbackResult;
+        try {
+            fallbackResult = aiServiceClient.runFinalAudioFallback(
+                    meetingId,
+                    audioPath,
+                    language,
+                    resolvedTraceId,
+                    authorization
+            );
+        } catch (Exception ex) {
+            log.warn(
+                    "event=REALTIME_FINAL_AUDIO_FALLBACK_FAILED meetingId={} source={} errorCode={}",
+                    meetingId,
+                    REALTIME_FINAL_AUDIO_FALLBACK_SOURCE,
+                    ex.getClass().getSimpleName()
+            );
+            return buildFinalAudioFallbackResponse(
+                    meetingId,
+                    "STT_FINAL_AUDIO_FALLBACK_FAILED",
+                    0,
+                    false
+            );
+        }
+
+        int transcriptCount = parseTranscriptCount(fallbackResult.get("transcript_count"));
+        boolean idempotentReplay = Boolean.TRUE.equals(fallbackResult.get("idempotent_replay"));
+        String errorCode = fallbackResult.get("error_code") == null
+                ? null
+                : String.valueOf(fallbackResult.get("error_code"));
+        String fallbackStatus = fallbackResult.get("status") == null
+                ? ""
+                : String.valueOf(fallbackResult.get("status"));
+
+        if (!"completed".equalsIgnoreCase(fallbackStatus)) {
+            String terminalCode = errorCode == null || errorCode.isBlank()
+                    ? "STT_FINAL_AUDIO_FALLBACK_FAILED"
+                    : errorCode;
+            persistRealtimeFinalAudioFallbackTerminal(meetingId, resolvedTraceId, terminalCode, transcriptCount);
+            syncRealtimeTerminalMeetingStatus(meetingId, resolvedTraceId, authorization, terminalCode);
+            return buildFinalAudioFallbackResponse(meetingId, terminalCode, transcriptCount, idempotentReplay);
+        }
+
+        if (transcriptCount <= 0) {
+            String terminalCode = errorCode == null || errorCode.isBlank()
+                    ? RealtimeStatusCodes.NO_TRANSCRIPT
+                    : errorCode;
+            persistRealtimeFinalAudioFallbackTerminal(meetingId, resolvedTraceId, terminalCode, 0);
+            syncRealtimeTerminalMeetingStatus(meetingId, resolvedTraceId, authorization, terminalCode);
+            log.info(
+                    "event=REALTIME_FINAL_AUDIO_FALLBACK_STATUS meetingId={} source={} status={} transcriptRows=0",
+                    meetingId,
+                    REALTIME_FINAL_AUDIO_FALLBACK_SOURCE,
+                    terminalCode
+            );
+            return buildFinalAudioFallbackResponse(meetingId, terminalCode, 0, idempotentReplay);
+        }
+
+        try {
+            jobStateStore.upsertJobState(
+                    meetingId,
+                    RealtimeStatusCodes.COMPLETED,
+                    "realtime-meeting:" + meetingId,
+                    Map.of(
+                            "transcriptRows", transcriptCount,
+                            "finalized", true,
+                            "fallbackSource", REALTIME_FINAL_AUDIO_FALLBACK_SOURCE
+                    ),
+                    null,
+                    resolvedTraceId
+            );
+        } catch (Exception ex) {
+            log.warn(
+                    "event=REALTIME_FINAL_AUDIO_FALLBACK_STATE_PERSIST_FAILED meetingId={} source={} errorCode={}",
+                    meetingId,
+                    REALTIME_FINAL_AUDIO_FALLBACK_SOURCE,
+                    ex.getClass().getSimpleName()
+            );
+        }
+
+        syncRealtimeTerminalMeetingStatus(
+                meetingId,
+                resolvedTraceId,
+                authorization,
+                RealtimeStatusCodes.COMPLETED
+        );
+        log.info(
+                "event=REALTIME_FINAL_AUDIO_FALLBACK_STATUS meetingId={} source={} status={} transcriptRows={} idempotentReplay={}",
+                meetingId,
+                REALTIME_FINAL_AUDIO_FALLBACK_SOURCE,
+                RealtimeStatusCodes.COMPLETED,
+                transcriptCount,
+                idempotentReplay
+        );
+
+        Map<String, Object> analysisKickoff = getAnalysis(meetingId, resolvedTraceId, authorization);
+        Map<String, Object> response = buildFinalAudioFallbackResponse(
+                meetingId,
+                RealtimeStatusCodes.COMPLETED,
+                transcriptCount,
+                idempotentReplay
+        );
+        response.put("analysis", analysisKickoff);
+        return response;
+    }
+
+    private Map<String, Object> buildFinalAudioFallbackResponse(
+            Long meetingId,
+            String statusCode,
+            int transcriptCount,
+            boolean idempotentReplay) {
+        Map<String, Object> response = new HashMap<>();
+        response.put("meeting_id", meetingId);
+        response.put("status", statusCode);
+        response.put("errorCode", statusCode);
+        response.put("transcript_count", transcriptCount);
+        response.put("transcriptRows", transcriptCount);
+        response.put("idempotent_replay", idempotentReplay);
+        response.put("finalized", true);
+        if (RealtimeStatusCodes.isNoTranscriptTerminal(statusCode)) {
+            response.put("legacyErrorCode", RealtimeStatusCodes.legacyNoTranscriptAlias());
+            response.put("analysisStatus", "NO_ANALYSIS");
+        }
+        return response;
+    }
+
+    private int parseTranscriptCount(Object value) {
+        if (value instanceof Number number) {
+            return number.intValue();
+        }
+        if (value == null) {
+            return 0;
+        }
+        try {
+            return Integer.parseInt(String.valueOf(value));
+        } catch (NumberFormatException ex) {
+            return 0;
+        }
+    }
+
+    private void persistRealtimeFinalAudioFallbackTerminal(
+            Long meetingId,
+            String traceId,
+            String statusCode,
+            int transcriptRows) {
+        Map<String, Object> result = new HashMap<>();
+        result.put("transcripts", List.of());
+        result.put("analysisStatus", "NO_ANALYSIS");
+        result.put("transcriptRows", transcriptRows);
+        result.put("finalized", true);
+        result.put("terminalStatus", statusCode);
+        String persistedStatus = RealtimeStatusCodes.isNoTranscriptTerminal(statusCode)
+                ? RealtimeStatusCodes.legacyNoTranscriptAlias()
+                : statusCode;
+        try {
+            jobStateStore.upsertJobState(
+                    meetingId,
+                    persistedStatus,
+                    "realtime-meeting:" + meetingId,
+                    result,
+                    null,
+                    traceId
+            );
+        } catch (Exception ex) {
+            log.warn(
+                    "event=REALTIME_FINAL_AUDIO_FALLBACK_STATE_PERSIST_FAILED meetingId={} status={} errorCode={}",
+                    meetingId,
+                    statusCode,
+                    ex.getClass().getSimpleName()
+            );
+        }
+    }
+
+    private void syncRealtimeTerminalMeetingStatus(
+            Long meetingId,
+            String traceId,
+            String authorization,
+            String terminalStatus) {
+        if (meetingId == null || authorization == null || authorization.isBlank()) {
+            return;
+        }
+        String meetingStatus = RealtimeStatusCodes.resolveMeetingStatusForTerminalOutcome(terminalStatus);
+        try {
+            meetingServiceClient.updateMeetingStatus(meetingId, meetingStatus, traceId, authorization);
+            log.info(
+                    "event=REALTIME_MEETING_STATUS_SYNCED meetingId={} meetingStatus={} terminalStatus={} source={}",
+                    meetingId,
+                    meetingStatus,
+                    terminalStatus,
+                    REALTIME_FINAL_AUDIO_FALLBACK_SOURCE
+            );
+        } catch (Exception ex) {
+            log.warn(
+                    "event=REALTIME_MEETING_STATUS_SYNC_FAILED meetingId={} meetingStatus={} terminalStatus={} source={} errorCode={}",
+                    meetingId,
+                    meetingStatus,
+                    terminalStatus,
+                    REALTIME_FINAL_AUDIO_FALLBACK_SOURCE,
+                    ex.getClass().getSimpleName()
+            );
+        }
+    }
+
     public ProcessingStatusResponse getProcessingStatus(Long meetingId, String traceId) {
         return getProcessingStatus(meetingId, traceId, null);
     }
@@ -2264,6 +2531,15 @@ public class ProcessingService {
             }
         }
 
+        if (isFailedAudioCaptureStatus(stateStatus)) {
+            log.info(
+                    "event=ANALYSIS_TRIGGER_SKIPPED meetingId={} source={} reason=failed_audio_capture transcriptRows=0",
+                    meetingId,
+                    REALTIME_ANALYSIS_SOURCE_GET_ANALYSIS_LAZY
+            );
+            return buildFailedAudioCaptureAnalysisResponse(meetingId);
+        }
+
         if (isNoTranscriptAfterFinalizeStatus(stateStatus)) {
             log.info(
                     "event=ANALYSIS_TRIGGER_SKIPPED meetingId={} source={} reason=no_transcript_after_finalize transcriptRows=0",
@@ -2351,16 +2627,29 @@ public class ProcessingService {
     }
 
     private boolean isNoTranscriptAfterFinalizeStatus(String status) {
-        return NO_TRANSCRIPT_AFTER_FINALIZE.equals(status) || COMPLETED_WITH_NO_SPEECH_DETECTED.equals(status);
+        return RealtimeStatusCodes.isNoTranscriptTerminal(status);
+    }
+
+    private boolean isFailedAudioCaptureStatus(String status) {
+        return RealtimeStatusCodes.FAILED_AUDIO_CAPTURE.equals(RealtimeStatusCodes.normalize(status));
     }
 
     private void annotateNoTranscriptAfterFinalize(Map<String, Object> response, String status) {
+        if (isFailedAudioCaptureStatus(status)) {
+            response.put("status", RealtimeStatusCodes.FAILED_AUDIO_CAPTURE);
+            response.put("errorCode", RealtimeStatusCodes.FAILED_AUDIO_CAPTURE);
+            response.put("analysisStatus", ANALYSIS_STATUS_NO_ANALYSIS);
+            response.put("transcriptRows", 0);
+            response.put("finalized", true);
+            return;
+        }
         if (!isNoTranscriptAfterFinalizeStatus(status)) {
             return;
         }
 
-        response.put("status", NO_TRANSCRIPT_AFTER_FINALIZE);
-        response.put("errorCode", NO_TRANSCRIPT_AFTER_FINALIZE);
+        response.put("status", RealtimeStatusCodes.NO_TRANSCRIPT);
+        response.put("errorCode", RealtimeStatusCodes.NO_TRANSCRIPT);
+        response.put("legacyErrorCode", RealtimeStatusCodes.legacyNoTranscriptAlias());
         response.put("analysisStatus", ANALYSIS_STATUS_NO_ANALYSIS);
         response.put("transcriptRows", 0);
         response.put("finalized", true);
@@ -2369,9 +2658,21 @@ public class ProcessingService {
     private Map<String, Object> buildNoTranscriptAfterFinalizeAnalysisResponse(Long meetingId) {
         Map<String, Object> response = new HashMap<>();
         response.put("meeting_id", meetingId);
-        response.put("status", NO_TRANSCRIPT_AFTER_FINALIZE);
+        response.put("status", RealtimeStatusCodes.NO_TRANSCRIPT);
         response.put("analysisStatus", ANALYSIS_STATUS_NO_ANALYSIS);
-        response.put("errorCode", NO_TRANSCRIPT_AFTER_FINALIZE);
+        response.put("errorCode", RealtimeStatusCodes.NO_TRANSCRIPT);
+        response.put("legacyErrorCode", RealtimeStatusCodes.legacyNoTranscriptAlias());
+        response.put("transcriptRows", 0);
+        response.put("finalized", true);
+        return response;
+    }
+
+    private Map<String, Object> buildFailedAudioCaptureAnalysisResponse(Long meetingId) {
+        Map<String, Object> response = new HashMap<>();
+        response.put("meeting_id", meetingId);
+        response.put("status", RealtimeStatusCodes.FAILED_AUDIO_CAPTURE);
+        response.put("analysisStatus", ANALYSIS_STATUS_NO_ANALYSIS);
+        response.put("errorCode", RealtimeStatusCodes.FAILED_AUDIO_CAPTURE);
         response.put("transcriptRows", 0);
         response.put("finalized", true);
         return response;
@@ -3175,13 +3476,21 @@ public class ProcessingService {
         );
 
         String stateStatus = state == null ? "NOT_FOUND" : normalizeStatus(state.get("status"));
+        if (isFailedAudioCaptureStatus(stateStatus)) {
+            log.info(
+                    "event=ANALYSIS_TRIGGER_SKIPPED meetingId={} source={} reason=failed_audio_capture transcriptRows=0",
+                    meetingId,
+                    source
+            );
+            return new AnalysisTriggerResult(ANALYSIS_STATUS_NO_ANALYSIS, RealtimeStatusCodes.FAILED_AUDIO_CAPTURE, 0);
+        }
         if (isNoTranscriptAfterFinalizeStatus(stateStatus)) {
             log.info(
                     "event=ANALYSIS_TRIGGER_SKIPPED meetingId={} source={} reason=no_transcript_after_finalize transcriptRows=0",
                     meetingId,
                     source
             );
-            return new AnalysisTriggerResult(ANALYSIS_STATUS_NO_ANALYSIS, NO_TRANSCRIPT_AFTER_FINALIZE, 0);
+            return new AnalysisTriggerResult(ANALYSIS_STATUS_NO_ANALYSIS, RealtimeStatusCodes.NO_TRANSCRIPT, 0);
         }
 
         TranscriptPayload statePayload = buildStateTranscriptPayload(state);

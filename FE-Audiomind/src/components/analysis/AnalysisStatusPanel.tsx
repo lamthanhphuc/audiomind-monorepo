@@ -142,9 +142,12 @@ export const AnalysisStatusPanel = ({
   const normalized = normalizeAnalysisMetadata(metadata)
   const retryAfterSeconds = normalized.retryAfterSeconds ?? 0
   const noTranscriptAfterFinalize = normalized.errorCode === 'NO_TRANSCRIPT_AFTER_FINALIZE'
+    || normalized.errorCode === 'NO_TRANSCRIPT'
+  const failedAudioCapture = normalized.errorCode === 'FAILED_AUDIO_CAPTURE'
   const reanalyzeDisabled = busy
     || normalized.status === 'ANALYZING'
     || noTranscriptAfterFinalize
+    || failedAudioCapture
     || retryAfterSeconds > 0
 
   const rows = [

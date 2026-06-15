@@ -3,6 +3,7 @@ package com.example.processingservice.client;
 import java.io.IOException;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -556,6 +557,46 @@ public class AIServiceClient {
         return requireBody(response, "uploadAudio", 0L);
     }
 
+    public Map<String, Object> runFinalAudioFallback(
+            Long meetingId,
+            String audioPath,
+            String language,
+            String traceId,
+            String authorization) {
+        HttpHeaders headers = new HttpHeaders();
+        String resolvedTraceId = resolveTraceId(traceId);
+        String resolvedRequestId = resolveRequestId(resolvedTraceId);
+        headers.add(TRACE_HEADER, resolvedTraceId);
+        headers.add(REQUEST_HEADER, resolvedRequestId);
+        if (StringUtils.hasText(authorization)) {
+            headers.add(HttpHeaders.AUTHORIZATION, authorization);
+        }
+        headers.setContentType(MediaType.MULTIPART_FORM_DATA);
+
+        MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
+        body.add("meeting_id", String.valueOf(meetingId));
+        body.add("audio_path", audioPath);
+        body.add("language", normalizeRealtimeLanguage(language));
+
+        log.info(
+                "event=REALTIME_FINAL_AUDIO_FALLBACK_REQUESTED traceId={} requestId={} meetingId={} source=final_audio_fallback",
+                resolvedTraceId,
+                resolvedRequestId,
+                meetingId
+        );
+
+        ResponseEntity<Map<String, Object>> response = executeAiServiceCall(
+                "runFinalAudioFallback",
+                aiUrl + "/api/v1/stt/final-audio-fallback",
+                HttpMethod.POST,
+                new HttpEntity<>(body, headers),
+                resolvedTraceId,
+                resolvedRequestId,
+                meetingId
+        );
+        return requireBody(response, "runFinalAudioFallback", meetingId);
+    }
+
     @Retry(name = "ai-service")
     @CircuitBreaker(name = "ai-service")
     @Retryable(
@@ -631,6 +672,15 @@ public class AIServiceClient {
 
             if (isResetRequiredConflict(ex)) {
                 throw new AudioStreamResetRequiredException(meetingId, seq, ex);
+            }
+
+            if (isTerminalStreamConflict(ex)) {
+                log.info(
+                        "AI service reported terminal stream conflict for meetingId={} seq={} as controlled no-op",
+                        meetingId,
+                        seq
+                );
+                return null;
             }
 
             throw ex;
@@ -800,6 +850,24 @@ public class AIServiceClient {
             throw new IllegalStateException("AI service returned empty body for " + operation + " (meetingId=" + meetingId + ")");
         }
         return body;
+    }
+
+    public boolean isTerminalStreamConflict(HttpClientErrorException exception) {
+        if (!HttpStatus.CONFLICT.equals(exception.getStatusCode())) {
+            return false;
+        }
+        if (isFinalizationReplayConflict(exception) || isResetRequiredConflict(exception)) {
+            return true;
+        }
+        String conflictDetail = exception.getResponseBodyAsString().toLowerCase(Locale.ROOT);
+        return conflictDetail.contains("stt stream failed")
+                || conflictDetail.contains("ownership lost")
+                || conflictDetail.contains("meeting stt ownership")
+                || conflictDetail.contains("already finalized")
+                || conflictDetail.contains("cached_final_response")
+                || conflictDetail.contains("stt_shutdown_close_expected")
+                || conflictDetail.contains("session is not connected")
+                || conflictDetail.contains("websocket closed");
     }
 
     private boolean isFinalizationReplayConflict(HttpClientErrorException exception) {

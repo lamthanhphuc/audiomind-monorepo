@@ -55,6 +55,23 @@ public class ProcessingController {
         return processingService.uploadAudio(file, ensureTraceId(traceId), authorization);
     }
 
+    @PostMapping("/realtime/{meetingId}/final-audio-fallback")
+    public Map<String, Object> realtimeFinalAudioFallback(
+            @PathVariable Long meetingId,
+            @RequestPart("file") MultipartFile file,
+            @RequestParam(required = false) String language,
+            @RequestHeader(value = "x-trace-id", required = false) String traceId,
+            @RequestHeader(HttpHeaders.AUTHORIZATION) String authorization) {
+        requirePrincipal();
+        return processingService.runRealtimeFinalAudioFallback(
+                meetingId,
+                file,
+                language,
+                ensureTraceId(traceId),
+                authorization
+        );
+    }
+
     @PostMapping("/start")
     public ProcessStartResponse process(
             @RequestBody(required = false) ProcessStartRequest request,
