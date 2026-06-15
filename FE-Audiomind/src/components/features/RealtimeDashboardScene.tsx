@@ -39,6 +39,7 @@ type LiveLifecycleState =
   | 'analysis_completed'
   | 'analysis_failed'
   | 'no_transcript_after_finalize'
+  | 'failed_audio_capture'
   | 'stopped_no_analysis'
   | 'stopped'
   | 'error'
@@ -119,6 +120,10 @@ const resolveRealtimeLifecycleBadge = (
 
   if (liveLifecycleState === 'no_transcript_after_finalize' || liveLifecycleState === 'stopped_no_analysis') {
     return { label: 'No transcript', tone: 'stopped' }
+  }
+
+  if (liveLifecycleState === 'failed_audio_capture') {
+    return { label: 'Audio capture failed', tone: 'error' }
   }
 
   if (liveLifecycleState === 'stopping') {

@@ -19,7 +19,9 @@ import java.util.regex.Pattern;
 
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
+import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.socket.BinaryMessage;
 import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.TextMessage;
@@ -38,6 +40,7 @@ import com.example.processingservice.security.JwtUtil;
 import com.example.processingservice.security.MeetingChannelAuthorizer;
 import com.example.processingservice.service.AnalysisFailureMapping;
 import com.example.processingservice.service.JobStateStore;
+import com.example.processingservice.service.RealtimeStatusCodes;
 import com.example.processingservice.services.RealtimeEventSubscriber;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -60,6 +63,8 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
     private static final String EMPTY_TRANSCRIPT_STREAK_ATTR = "emptyTranscriptStreak";
     private static final String FIRST_CHUNK_AT_ATTR = "firstChunkAt";
     private static final String AUDIO_RECEIVED_ATTR = "AUDIO_RECEIVED_ATTR";
+    private static final String TOTAL_AUDIO_BYTES_ATTR = "totalAudioBytes";
+    private static final String TINY_CHUNK_STREAK_ATTR = "tinyChunkStreak";
     private static final String RESET_REQUIRED_ATTR = "RESET_REQUIRED_ATTR";
     private static final String LAST_TRANSCRIPT_TEXT_ATTR = "lastTranscriptText";
     private static final String LAST_TIMED_TRANSCRIPT_ATTR = "lastTimedTranscript";
@@ -78,7 +83,6 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
     private static final long FINALIZED_TRANSCRIPT_CACHE_TTL_MS = 5 * 60 * 1000;
     private static final String REALTIME_ANALYSIS_SOURCE_STREAM_STOP = "stream_stop";
     private static final String REALTIME_ANALYSIS_SOURCE_AFTER_CLOSE = "after_close";
-    private static final String NO_TRANSCRIPT_AFTER_FINALIZE = "NO_TRANSCRIPT_AFTER_FINALIZE";
 
     // Cache for finalized transcripts (key: meetingId, value: final transcript event)
     private final ConcurrentHashMap<Long, CachedTranscript> finalizedTranscriptCache = new ConcurrentHashMap<>();
@@ -103,6 +107,15 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
 
     @Value("${realtime.async-audio-queue.stop-drain-timeout-ms:5000}")
     private long realtimeStopDrainTimeoutMs;
+
+    @Value("${realtime.min-audio-bytes:128}")
+    private int realtimeMinAudioBytes;
+
+    @Value("${realtime.tiny-chunk-max-bytes:128}")
+    private int realtimeTinyChunkMaxBytes;
+
+    @Value("${realtime.tiny-chunk-streak-threshold:10}")
+    private int realtimeTinyChunkStreakThreshold;
 
     @Autowired
     public MeetingWebSocketHandler(
@@ -421,6 +434,7 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
         if (payloadSize > 0) {
             try {
                 session.getAttributes().put(AUDIO_RECEIVED_ATTR, Boolean.TRUE);
+                recordAudioChunkMetrics(session, payloadSize);
             } catch (Exception ignore) {
                 log.debug("Unable to set AUDIO_RECEIVED_ATTR for sessionId={}", session.getId());
             }
@@ -996,36 +1010,45 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
             return;
         }
 
-        // Mark this session as finalized to avoid double-finalization
         try {
             session.getAttributes().put(FINALIZED_ATTR, Boolean.TRUE);
         } catch (Exception ignore) {
             log.debug("Unable to set FINALIZED_ATTR for sessionId={}", session.getId());
         }
 
-        // Only finalize when the session actually received audio payloads.
+        broadcastStreamStatus(
+                session,
+                meetingId,
+                RealtimeStatusCodes.FINALIZING,
+                sessionStillOpen,
+                "Finalizing realtime transcript",
+                false
+        );
+
         Boolean audioReceived = (Boolean) session.getAttributes().get(AUDIO_RECEIVED_ATTR);
         if (!Boolean.TRUE.equals(audioReceived)) {
-            log.info("No audio received for meetingId={}, skipping finalize", meetingId);
-            persistNoTranscriptAfterFinalize(meetingId, analysisSource);
-            Map<String, Object> statusEvent = buildNoTranscriptAfterFinalizeStatusEvent(meetingId);
-            if (sessionStillOpen) {
-                try {
-                    realtimeEventSubscriber.broadcastToMeeting(meetingId, statusEvent);
-                } catch (Exception e) {
-                    log.warn(
-                            "event=REALTIME_ANALYSIS_FAILED meetingId={} source=status_broadcast errorCode={}",
-                            meetingId,
-                            safeErrorCode(e)
-                    );
-                }
-            } else {
-                log.debug("Session already closed for meetingId={}, cannot broadcast no-transcript event", meetingId);
-            }
-            log.info(
-                    "REALTIME_ANALYSIS_SKIPPED reason=no_transcript source={} meetingId={} transcriptRows=0 transcriptLength=0 finalized=true",
+            log.info("No audio received for meetingId={}, marking failed audio capture", meetingId);
+            completeTerminalRealtimeOutcome(
+                    session,
+                    meetingId,
+                    sessionStillOpen,
                     analysisSource,
-                    meetingId
+                    authorization,
+                    RealtimeStatusCodes.FAILED_AUDIO_CAPTURE,
+                    "No audio chunks were received from the client."
+            );
+            return;
+        }
+
+        if (isInvalidAudioCapture(session, meetingId)) {
+            completeTerminalRealtimeOutcome(
+                    session,
+                    meetingId,
+                    sessionStillOpen,
+                    analysisSource,
+                    authorization,
+                    RealtimeStatusCodes.FAILED_AUDIO_CAPTURE,
+                    "Recorded audio was too short or invalid. Check microphone permissions and volume."
             );
             return;
         }
@@ -1058,7 +1081,17 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                     );
 
                     if (transcript == null) {
-                    log.info("Skipping duplicate finalization for meetingId={} because ai-service already finalized it", meetingId);
+                    log.info(
+                            "REALTIME_FINALIZE_SKIPPED_DUPLICATE meetingId={} reason=already_finalized",
+                            meetingId
+                    );
+                    recoverTranscriptAfterTerminalFinalize(
+                            session,
+                            meetingId,
+                            sessionStillOpen,
+                            analysisSource,
+                            authorization
+                    );
                     return;
                     }
 
@@ -1073,7 +1106,6 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
             );
 
             if (transcriptEvent != null) {
-                // Preserve the final payload type while keeping the segment id stable for FE merging.
                 transcriptEvent.put("seq", -1L);
                 transcriptEvent.put("isFinal", true);
                 if (shouldSkipLowValueFinalEvent(session, transcriptEvent)) {
@@ -1091,6 +1123,7 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                         );
                     } else {
                         triggerRealtimeAnalysisAsync(meetingId, authorization, language, analysisSource);
+                        syncRealtimeMeetingTerminalStatus(meetingId, authorization, RealtimeStatusCodes.COMPLETED);
                     }
                     return;
                 }
@@ -1154,53 +1187,23 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                     );
                 } else {
                     triggerRealtimeAnalysisAsync(meetingId, authorization, language, analysisSource);
+                    syncRealtimeMeetingTerminalStatus(meetingId, authorization, RealtimeStatusCodes.COMPLETED);
                 }
                 return;
             }
 
-            persistNoTranscriptAfterFinalize(meetingId, analysisSource);
-            Map<String, Object> statusEvent = buildNoTranscriptAfterFinalizeStatusEvent(meetingId);
-            if (sessionStillOpen) {
-                try {
-                    realtimeEventSubscriber.broadcastToMeeting(meetingId, statusEvent);
-                } catch (Exception e) {
-                    log.warn(
-                            "event=REALTIME_ANALYSIS_FAILED meetingId={} source=status_broadcast errorCode={}",
-                            meetingId,
-                            safeErrorCode(e)
-                    );
-                }
-            }
-            log.info(
-                    "REALTIME_ANALYSIS_SKIPPED reason=no_transcript source={} meetingId={} transcriptRows=0 transcriptLength=0 finalized=true",
+            completeTerminalRealtimeOutcome(
+                    session,
+                    meetingId,
+                    sessionStillOpen,
                     analysisSource,
-                    meetingId
+                    authorization,
+                    RealtimeStatusCodes.NO_TRANSCRIPT,
+                    "STT session closed with no recognized speech"
             );
             log.info("No final transcript returned for meetingId={}", meetingId);
         } catch (Exception ex) {
-            log.warn(
-                    "event=REALTIME_ANALYSIS_FAILED meetingId={} source=finalize errorCode={}",
-                    meetingId,
-                    safeErrorCode(ex)
-            );
-
-            Map<String, Object> errorEvent = Map.of(
-                    "type", "stream.error",
-                    "meetingId", meetingId,
-                    "message", "Failed to finalize STT session",
-                    "recoverable", false
-            );
-            if (sessionStillOpen) {
-                try {
-                    realtimeEventSubscriber.broadcastToMeeting(meetingId, errorEvent);
-                } catch (Exception e) {
-                    log.warn(
-                            "event=REALTIME_ANALYSIS_FAILED meetingId={} source=finalize_broadcast errorCode={}",
-                            meetingId,
-                            safeErrorCode(e)
-                    );
-                }
-            }
+            handleFinalizeException(session, meetingId, sessionStillOpen, analysisSource, authorization, ex);
         }
     }
 
@@ -1594,44 +1597,343 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
         return AnalysisFailureMapping.ERROR_CODE_GEMINI_ANALYSIS_FAILED;
     }
 
-    private Map<String, Object> buildNoTranscriptAfterFinalizeStatusEvent(Long meetingId) {
+    private Map<String, Object> buildTerminalRealtimeStatusEvent(
+            Long meetingId,
+            String statusCode,
+            String message
+    ) {
         Map<String, Object> statusEvent = new HashMap<>();
         statusEvent.put("type", "stream.status");
-        statusEvent.put("state", NO_TRANSCRIPT_AFTER_FINALIZE);
-        statusEvent.put("status", NO_TRANSCRIPT_AFTER_FINALIZE);
-        statusEvent.put("errorCode", NO_TRANSCRIPT_AFTER_FINALIZE);
-        statusEvent.put("analysisStatus", "NO_ANALYSIS");
-        statusEvent.put("transcriptRows", 0);
+        statusEvent.put("state", statusCode);
+        statusEvent.put("status", statusCode);
+        statusEvent.put("errorCode", statusCode);
+        if (RealtimeStatusCodes.isNoTranscriptTerminal(statusCode)) {
+            statusEvent.put("legacyErrorCode", RealtimeStatusCodes.legacyNoTranscriptAlias());
+            statusEvent.put("analysisStatus", "NO_ANALYSIS");
+            statusEvent.put("transcriptRows", 0);
+        }
         statusEvent.put("finalized", true);
         statusEvent.put("meetingId", meetingId);
-        statusEvent.put("message", "STT session closed with no recognized speech");
+        statusEvent.put("message", message);
         statusEvent.put("activeConnections", realtimeEventSubscriber.getActiveConnectionCount(meetingId));
         return statusEvent;
     }
 
-    private void persistNoTranscriptAfterFinalize(Long meetingId, String source) {
+    private void persistTerminalRealtimeOutcome(Long meetingId, String source, String statusCode) {
         Map<String, Object> result = new HashMap<>();
         result.put("transcripts", List.of());
         result.put("analysisStatus", "NO_ANALYSIS");
         result.put("transcriptRows", 0);
         result.put("finalized", true);
+        result.put("terminalStatus", statusCode);
+        String persistedStatus = RealtimeStatusCodes.isNoTranscriptTerminal(statusCode)
+                ? RealtimeStatusCodes.legacyNoTranscriptAlias()
+                : statusCode;
         try {
             jobStateStore.upsertJobState(
                     meetingId,
-                    NO_TRANSCRIPT_AFTER_FINALIZE,
+                    persistedStatus,
                     "realtime-meeting:" + meetingId,
                     result,
                     null,
-                    "realtime-no-transcript-" + meetingId
+                    "realtime-terminal-" + meetingId + "-" + statusCode.toLowerCase(Locale.ROOT)
             );
         } catch (Exception ex) {
             log.warn(
-                    "event=REALTIME_ANALYSIS_FAILED meetingId={} source={} errorCode={}",
+                    "event=REALTIME_TERMINAL_PERSIST_FAILED meetingId={} source={} status={} errorCode={}",
                     meetingId,
                     source,
+                    statusCode,
                     safeErrorCode(ex)
             );
         }
+    }
+
+    private void completeTerminalRealtimeOutcome(
+            WebSocketSession session,
+            Long meetingId,
+            boolean sessionStillOpen,
+            String analysisSource,
+            String authorization,
+            String statusCode,
+            String message
+    ) {
+        persistTerminalRealtimeOutcome(meetingId, analysisSource, statusCode);
+        Map<String, Object> statusEvent = buildTerminalRealtimeStatusEvent(meetingId, statusCode, message);
+        broadcastStreamStatusEvent(session, meetingId, sessionStillOpen, statusEvent);
+        syncRealtimeMeetingTerminalStatus(meetingId, authorization, statusCode);
+        if (RealtimeStatusCodes.isNoTranscriptTerminal(statusCode)) {
+            log.info(
+                    "REALTIME_ANALYSIS_SKIPPED reason=no_transcript source={} meetingId={} transcriptRows=0 transcriptLength=0 finalized=true",
+                    analysisSource,
+                    meetingId
+            );
+        } else if (RealtimeStatusCodes.FAILED_AUDIO_CAPTURE.equals(statusCode)) {
+            log.info(
+                    "REALTIME_ANALYSIS_SKIPPED reason=failed_audio_capture source={} meetingId={} transcriptRows=0 finalized=true",
+                    analysisSource,
+                    meetingId
+            );
+        }
+    }
+
+    private void broadcastStreamStatus(
+            WebSocketSession session,
+            Long meetingId,
+            String statusCode,
+            boolean sessionStillOpen,
+            String message,
+            boolean terminal
+    ) {
+        Map<String, Object> statusEvent = terminal
+                ? buildTerminalRealtimeStatusEvent(meetingId, statusCode, message)
+                : buildLifecycleStatusEvent(meetingId, statusCode, message);
+        broadcastStreamStatusEvent(session, meetingId, sessionStillOpen, statusEvent);
+    }
+
+    private Map<String, Object> buildLifecycleStatusEvent(
+            Long meetingId,
+            String statusCode,
+            String message
+    ) {
+        Map<String, Object> statusEvent = new HashMap<>();
+        statusEvent.put("type", "stream.status");
+        statusEvent.put("state", statusCode);
+        statusEvent.put("status", statusCode);
+        statusEvent.put("meetingId", meetingId);
+        statusEvent.put("message", message);
+        statusEvent.put("activeConnections", realtimeEventSubscriber.getActiveConnectionCount(meetingId));
+        return statusEvent;
+    }
+
+    private void broadcastStreamStatusEvent(
+            WebSocketSession session,
+            Long meetingId,
+            boolean sessionStillOpen,
+            Map<String, Object> statusEvent
+    ) {
+        if (!sessionStillOpen) {
+            log.debug("Session already closed for meetingId={}, cannot broadcast stream status", meetingId);
+            return;
+        }
+        try {
+            realtimeEventSubscriber.broadcastToMeeting(meetingId, statusEvent);
+        } catch (Exception e) {
+            log.warn(
+                    "event=REALTIME_STATUS_BROADCAST_FAILED meetingId={} status={} errorCode={}",
+                    meetingId,
+                    statusEvent.get("status"),
+                    safeErrorCode(e)
+            );
+        }
+    }
+
+    private void syncRealtimeMeetingTerminalStatus(Long meetingId, String authorization, String terminalStatus) {
+        if (meetingId == null || authorization == null || authorization.isBlank()) {
+            return;
+        }
+        String meetingStatus = RealtimeStatusCodes.resolveMeetingStatusForTerminalOutcome(terminalStatus);
+        try {
+            meetingServiceClient.updateMeetingStatus(
+                    meetingId,
+                    meetingStatus,
+                    "realtime-finalize-" + meetingId,
+                    authorization
+            );
+            log.info(
+                    "event=REALTIME_MEETING_STATUS_SYNCED meetingId={} meetingStatus={} terminalStatus={}",
+                    meetingId,
+                    meetingStatus,
+                    terminalStatus
+            );
+        } catch (Exception ex) {
+            log.warn(
+                    "event=REALTIME_MEETING_STATUS_SYNC_FAILED meetingId={} meetingStatus={} terminalStatus={} errorCode={}",
+                    meetingId,
+                    meetingStatus,
+                    terminalStatus,
+                    safeErrorCode(ex)
+            );
+        }
+    }
+
+    private void recordAudioChunkMetrics(WebSocketSession session, int payloadSize) {
+        long totalBytes = getTotalAudioBytes(session) + payloadSize;
+        session.getAttributes().put(TOTAL_AUDIO_BYTES_ATTR, totalBytes);
+        int tinyChunkStreak = payloadSize > 0 && payloadSize < realtimeTinyChunkMaxBytes
+                ? getTinyChunkStreak(session) + 1
+                : 0;
+        session.getAttributes().put(TINY_CHUNK_STREAK_ATTR, tinyChunkStreak);
+        if (tinyChunkStreak >= realtimeTinyChunkStreakThreshold) {
+            log.warn(
+                    "event=REALTIME_TINY_CHUNK_SUSPECTED meetingId={} streak={} threshold={} maxBytes={} totalAudioBytes={}",
+                    getLongAttribute(session, "meetingId"),
+                    tinyChunkStreak,
+                    realtimeTinyChunkStreakThreshold,
+                    realtimeTinyChunkMaxBytes,
+                    totalBytes
+            );
+        }
+    }
+
+    private long getTotalAudioBytes(WebSocketSession session) {
+        Long totalBytes = getLongAttribute(session, TOTAL_AUDIO_BYTES_ATTR);
+        return totalBytes == null ? 0L : totalBytes;
+    }
+
+    private int getTinyChunkStreak(WebSocketSession session) {
+        Long streak = getLongAttribute(session, TINY_CHUNK_STREAK_ATTR);
+        return streak == null ? 0 : Math.toIntExact(streak);
+    }
+
+    private boolean isInvalidAudioCapture(WebSocketSession session, Long meetingId) {
+        if (getTinyChunkStreak(session) >= realtimeTinyChunkStreakThreshold) {
+            log.warn(
+                    "event=REALTIME_AUDIO_TOO_SMALL meetingId={} tinyChunkStreak={} threshold={} maxBytes={} totalAudioBytes={}",
+                    meetingId,
+                    getTinyChunkStreak(session),
+                    realtimeTinyChunkStreakThreshold,
+                    realtimeTinyChunkMaxBytes,
+                    getTotalAudioBytes(session)
+            );
+            return true;
+        }
+        return false;
+    }
+
+    private void recoverTranscriptAfterTerminalFinalize(
+            WebSocketSession session,
+            Long meetingId,
+            boolean sessionStillOpen,
+            String analysisSource,
+            String authorization
+    ) {
+        String language = getStringAttribute(session, LANGUAGE_ATTR);
+        try {
+            Map<String, Object> transcriptResponse = aiServiceClient.getTranscript(
+                    meetingId,
+                    "realtime-finalize-recover-" + meetingId
+            );
+            List<Map<String, Object>> rows = normalizeTranscriptRows(
+                    transcriptResponse == null ? null : transcriptResponse.get("transcripts")
+            );
+            if (!buildTranscriptText(rows).isBlank()) {
+                triggerRealtimeAnalysisAsync(meetingId, authorization, language, analysisSource);
+                syncRealtimeMeetingTerminalStatus(meetingId, authorization, RealtimeStatusCodes.COMPLETED);
+                return;
+            }
+        } catch (Exception ex) {
+            log.warn(
+                    "event=REALTIME_FINALIZE_RECOVER_FAILED meetingId={} source={} errorCode={}",
+                    meetingId,
+                    analysisSource,
+                    safeErrorCode(ex)
+            );
+        }
+        completeTerminalRealtimeOutcome(
+                session,
+                meetingId,
+                sessionStillOpen,
+                analysisSource,
+                authorization,
+                RealtimeStatusCodes.NO_TRANSCRIPT,
+                "STT session already finalized with no persisted transcript"
+        );
+    }
+
+    private void handleFinalizeException(
+            WebSocketSession session,
+            Long meetingId,
+            boolean sessionStillOpen,
+            String analysisSource,
+            String authorization,
+            Exception ex
+    ) {
+        if (isIdempotentFinalizeConflict(ex)) {
+            log.info(
+                    "REALTIME_FINALIZE_SKIPPED_DUPLICATE meetingId={} reason=terminal_conflict errorCode={}",
+                    meetingId,
+                    safeErrorCode(ex)
+            );
+            recoverTranscriptAfterTerminalFinalize(
+                    session,
+                    meetingId,
+                    sessionStillOpen,
+                    analysisSource,
+                    authorization
+            );
+            return;
+        }
+
+        log.warn(
+                "event=REALTIME_FINALIZE_FAILED meetingId={} source={} errorCode={}",
+                meetingId,
+                analysisSource,
+                safeErrorCode(ex)
+        );
+
+        try {
+            Map<String, Object> transcriptResponse = aiServiceClient.getTranscript(
+                    meetingId,
+                    "realtime-finalize-fallback-" + meetingId
+            );
+            List<Map<String, Object>> rows = normalizeTranscriptRows(
+                    transcriptResponse == null ? null : transcriptResponse.get("transcripts")
+            );
+            String transcriptText = buildTranscriptText(rows);
+            if (!transcriptText.isBlank()) {
+                String language = getStringAttribute(session, LANGUAGE_ATTR);
+                triggerRealtimeAnalysisAsync(meetingId, authorization, language, analysisSource);
+                syncRealtimeMeetingTerminalStatus(meetingId, authorization, RealtimeStatusCodes.COMPLETED);
+                return;
+            }
+        } catch (Exception fallbackEx) {
+            log.warn(
+                    "event=REALTIME_FINALIZE_FALLBACK_FAILED meetingId={} source={} errorCode={}",
+                    meetingId,
+                    analysisSource,
+                    safeErrorCode(fallbackEx)
+            );
+        }
+
+        String terminalStatus = isInvalidAudioCapture(session, meetingId)
+                ? RealtimeStatusCodes.FAILED_AUDIO_CAPTURE
+                : RealtimeStatusCodes.NO_TRANSCRIPT;
+        completeTerminalRealtimeOutcome(
+                session,
+                meetingId,
+                sessionStillOpen,
+                analysisSource,
+                authorization,
+                terminalStatus,
+                "Finalize failed; using controlled terminal status instead of stream error"
+        );
+    }
+
+    private boolean isIdempotentFinalizeConflict(Exception ex) {
+        if (ex instanceof HttpClientErrorException httpEx) {
+            return aiServiceClient.isTerminalStreamConflict(httpEx);
+        }
+        Throwable current = ex;
+        while (current != null) {
+            if (current instanceof HttpClientErrorException httpEx) {
+                return aiServiceClient.isTerminalStreamConflict(httpEx);
+            }
+            current = current.getCause();
+        }
+        return false;
+    }
+
+    private Map<String, Object> buildNoTranscriptAfterFinalizeStatusEvent(Long meetingId) {
+        return buildTerminalRealtimeStatusEvent(
+                meetingId,
+                RealtimeStatusCodes.NO_TRANSCRIPT,
+                "STT session closed with no recognized speech"
+        );
+    }
+
+    private void persistNoTranscriptAfterFinalize(Long meetingId, String source) {
+        persistTerminalRealtimeOutcome(meetingId, source, RealtimeStatusCodes.NO_TRANSCRIPT);
     }
 
     private String safeText(Object value) {

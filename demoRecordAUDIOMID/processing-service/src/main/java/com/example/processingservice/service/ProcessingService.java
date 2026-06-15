@@ -2264,6 +2264,15 @@ public class ProcessingService {
             }
         }
 
+        if (isFailedAudioCaptureStatus(stateStatus)) {
+            log.info(
+                    "event=ANALYSIS_TRIGGER_SKIPPED meetingId={} source={} reason=failed_audio_capture transcriptRows=0",
+                    meetingId,
+                    REALTIME_ANALYSIS_SOURCE_GET_ANALYSIS_LAZY
+            );
+            return buildFailedAudioCaptureAnalysisResponse(meetingId);
+        }
+
         if (isNoTranscriptAfterFinalizeStatus(stateStatus)) {
             log.info(
                     "event=ANALYSIS_TRIGGER_SKIPPED meetingId={} source={} reason=no_transcript_after_finalize transcriptRows=0",
@@ -2351,16 +2360,29 @@ public class ProcessingService {
     }
 
     private boolean isNoTranscriptAfterFinalizeStatus(String status) {
-        return NO_TRANSCRIPT_AFTER_FINALIZE.equals(status) || COMPLETED_WITH_NO_SPEECH_DETECTED.equals(status);
+        return RealtimeStatusCodes.isNoTranscriptTerminal(status);
+    }
+
+    private boolean isFailedAudioCaptureStatus(String status) {
+        return RealtimeStatusCodes.FAILED_AUDIO_CAPTURE.equals(RealtimeStatusCodes.normalize(status));
     }
 
     private void annotateNoTranscriptAfterFinalize(Map<String, Object> response, String status) {
+        if (isFailedAudioCaptureStatus(status)) {
+            response.put("status", RealtimeStatusCodes.FAILED_AUDIO_CAPTURE);
+            response.put("errorCode", RealtimeStatusCodes.FAILED_AUDIO_CAPTURE);
+            response.put("analysisStatus", ANALYSIS_STATUS_NO_ANALYSIS);
+            response.put("transcriptRows", 0);
+            response.put("finalized", true);
+            return;
+        }
         if (!isNoTranscriptAfterFinalizeStatus(status)) {
             return;
         }
 
-        response.put("status", NO_TRANSCRIPT_AFTER_FINALIZE);
-        response.put("errorCode", NO_TRANSCRIPT_AFTER_FINALIZE);
+        response.put("status", RealtimeStatusCodes.NO_TRANSCRIPT);
+        response.put("errorCode", RealtimeStatusCodes.NO_TRANSCRIPT);
+        response.put("legacyErrorCode", RealtimeStatusCodes.legacyNoTranscriptAlias());
         response.put("analysisStatus", ANALYSIS_STATUS_NO_ANALYSIS);
         response.put("transcriptRows", 0);
         response.put("finalized", true);
@@ -2369,9 +2391,21 @@ public class ProcessingService {
     private Map<String, Object> buildNoTranscriptAfterFinalizeAnalysisResponse(Long meetingId) {
         Map<String, Object> response = new HashMap<>();
         response.put("meeting_id", meetingId);
-        response.put("status", NO_TRANSCRIPT_AFTER_FINALIZE);
+        response.put("status", RealtimeStatusCodes.NO_TRANSCRIPT);
         response.put("analysisStatus", ANALYSIS_STATUS_NO_ANALYSIS);
-        response.put("errorCode", NO_TRANSCRIPT_AFTER_FINALIZE);
+        response.put("errorCode", RealtimeStatusCodes.NO_TRANSCRIPT);
+        response.put("legacyErrorCode", RealtimeStatusCodes.legacyNoTranscriptAlias());
+        response.put("transcriptRows", 0);
+        response.put("finalized", true);
+        return response;
+    }
+
+    private Map<String, Object> buildFailedAudioCaptureAnalysisResponse(Long meetingId) {
+        Map<String, Object> response = new HashMap<>();
+        response.put("meeting_id", meetingId);
+        response.put("status", RealtimeStatusCodes.FAILED_AUDIO_CAPTURE);
+        response.put("analysisStatus", ANALYSIS_STATUS_NO_ANALYSIS);
+        response.put("errorCode", RealtimeStatusCodes.FAILED_AUDIO_CAPTURE);
         response.put("transcriptRows", 0);
         response.put("finalized", true);
         return response;
@@ -3175,13 +3209,21 @@ public class ProcessingService {
         );
 
         String stateStatus = state == null ? "NOT_FOUND" : normalizeStatus(state.get("status"));
+        if (isFailedAudioCaptureStatus(stateStatus)) {
+            log.info(
+                    "event=ANALYSIS_TRIGGER_SKIPPED meetingId={} source={} reason=failed_audio_capture transcriptRows=0",
+                    meetingId,
+                    source
+            );
+            return new AnalysisTriggerResult(ANALYSIS_STATUS_NO_ANALYSIS, RealtimeStatusCodes.FAILED_AUDIO_CAPTURE, 0);
+        }
         if (isNoTranscriptAfterFinalizeStatus(stateStatus)) {
             log.info(
                     "event=ANALYSIS_TRIGGER_SKIPPED meetingId={} source={} reason=no_transcript_after_finalize transcriptRows=0",
                     meetingId,
                     source
             );
-            return new AnalysisTriggerResult(ANALYSIS_STATUS_NO_ANALYSIS, NO_TRANSCRIPT_AFTER_FINALIZE, 0);
+            return new AnalysisTriggerResult(ANALYSIS_STATUS_NO_ANALYSIS, RealtimeStatusCodes.NO_TRANSCRIPT, 0);
         }
 
         TranscriptPayload statePayload = buildStateTranscriptPayload(state);

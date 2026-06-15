@@ -3,6 +3,7 @@ package com.example.processingservice.client;
 import java.io.IOException;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -633,6 +634,15 @@ public class AIServiceClient {
                 throw new AudioStreamResetRequiredException(meetingId, seq, ex);
             }
 
+            if (isTerminalStreamConflict(ex)) {
+                log.info(
+                        "AI service reported terminal stream conflict for meetingId={} seq={} as controlled no-op",
+                        meetingId,
+                        seq
+                );
+                return null;
+            }
+
             throw ex;
         }
     }
@@ -800,6 +810,21 @@ public class AIServiceClient {
             throw new IllegalStateException("AI service returned empty body for " + operation + " (meetingId=" + meetingId + ")");
         }
         return body;
+    }
+
+    public boolean isTerminalStreamConflict(HttpClientErrorException exception) {
+        if (!HttpStatus.CONFLICT.equals(exception.getStatusCode())) {
+            return false;
+        }
+        if (isFinalizationReplayConflict(exception) || isResetRequiredConflict(exception)) {
+            return true;
+        }
+        String conflictDetail = exception.getResponseBodyAsString().toLowerCase(Locale.ROOT);
+        return conflictDetail.contains("stt stream failed")
+                || conflictDetail.contains("ownership lost")
+                || conflictDetail.contains("meeting stt ownership")
+                || conflictDetail.contains("already finalized")
+                || conflictDetail.contains("cached_final_response");
     }
 
     private boolean isFinalizationReplayConflict(HttpClientErrorException exception) {

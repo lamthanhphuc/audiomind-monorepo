@@ -82,12 +82,21 @@ export type LiveLifecycleState =
   | 'analysis_completed'
   | 'analysis_failed'
   | 'no_transcript_after_finalize'
+  | 'failed_audio_capture'
   | 'stopped_no_analysis'
   | 'stopped'
   | 'error'
 
 export const isNoTranscriptTerminalLifecycle = (state: LiveLifecycleState): boolean => {
   return state === 'no_transcript_after_finalize' || state === 'stopped_no_analysis'
+}
+
+export const isFailedAudioCaptureLifecycle = (state: LiveLifecycleState): boolean => {
+  return state === 'failed_audio_capture'
+}
+
+export const isRealtimeTerminalLifecycle = (state: LiveLifecycleState): boolean => {
+  return isNoTranscriptTerminalLifecycle(state) || isFailedAudioCaptureLifecycle(state) || state === 'error'
 }
 
 type RealtimeConnectionView = {
@@ -1083,10 +1092,12 @@ export default function App() {
   }, [audioRecorder, realtimeStream, realtimeStream.status.resetRequired])
 
   useEffect(() => {
-    if (
-      realtimeStream.status.state !== 'NO_TRANSCRIPT_AFTER_FINALIZE'
-      && realtimeStream.status.errorCode !== 'NO_TRANSCRIPT_AFTER_FINALIZE'
-    ) {
+    const noTranscriptStatus =
+      realtimeStream.status.state === 'NO_TRANSCRIPT_AFTER_FINALIZE'
+      || realtimeStream.status.errorCode === 'NO_TRANSCRIPT_AFTER_FINALIZE'
+      || realtimeStream.status.errorCode === 'NO_TRANSCRIPT'
+      || realtimeStream.status.status === 'NO_TRANSCRIPT'
+    if (!noTranscriptStatus) {
       return
     }
 
@@ -1107,7 +1118,39 @@ export default function App() {
     }))
     setLiveAnalysisStatus('pending')
     setLiveAnalysisError(null)
-  }, [realtimeStream.status.errorCode, realtimeStream.status.state])
+    setLivePartialWarning('Chưa có transcript. Có thể do im lặng, mic tắt hoặc âm lượng quá thấp.')
+    setLiveStatusMessage('Đã dừng ghi âm (chưa có transcript)')
+  }, [realtimeStream.status.errorCode, realtimeStream.status.state, realtimeStream.status.status])
+
+  useEffect(() => {
+    const failedAudioCapture =
+      realtimeStream.status.state === 'FAILED_AUDIO_CAPTURE'
+      || realtimeStream.status.errorCode === 'FAILED_AUDIO_CAPTURE'
+      || realtimeStream.status.status === 'FAILED_AUDIO_CAPTURE'
+    if (!failedAudioCapture) {
+      return
+    }
+
+    const meetingId = liveMeetingIdRef.current
+    if (meetingId === null) {
+      return
+    }
+
+    liveAnalysisAbortControllerRef.current?.abort()
+    liveAnalysisAbortControllerRef.current = null
+    analysisPollRunIdRef.current += 1
+    setLiveLifecycleState('failed_audio_capture')
+    setLiveAnalysis(null)
+    setLiveAnalysisMetadata(buildLiveAnalysisMetadata(meetingId, 'NO_ANALYSIS', {
+      errorCode: 'FAILED_AUDIO_CAPTURE',
+      transcriptRows: 0,
+      finalized: true,
+    }))
+    setLiveAnalysisStatus('pending')
+    setLiveAnalysisError(null)
+    setLivePartialWarning('Không thu được audio hợp lệ. Kiểm tra quyền mic và thử ghi lại.')
+    setLiveStatusMessage('Lỗi thu âm')
+  }, [realtimeStream.status.errorCode, realtimeStream.status.state, realtimeStream.status.status])
 
   useEffect(() => {
     const isRealtimeRecordingActive = audioRecorder.state === 'recording' || audioRecorder.state === 'paused'
