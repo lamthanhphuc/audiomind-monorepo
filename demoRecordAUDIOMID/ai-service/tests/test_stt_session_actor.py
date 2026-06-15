@@ -1049,3 +1049,84 @@ def test_actor_reconnect_cooldown_is_enforced(monkeypatch):
 
     assert actor._cooldown_until >= 10.0
     assert close_calls_before_shutdown == 0
+
+
+class _InterimFinalBatchAdapter(_FakeAdapter):
+    async def send_audio_chunk(self, session_id, pcm_chunk):
+        self.send_calls.append((session_id, bytes(pcm_chunk)))
+        self.events_by_ts.setdefault(1, []).extend(
+            [
+                {
+                    "text": "AudioMine",
+                    "is_final": False,
+                    "confidence": 0.82,
+                    "ts_ms": 1,
+                    "start_time": 6.98,
+                    "end_time": 8.5,
+                    "segment_id": "meeting-9-start-6.980-speaker_1",
+                    "speaker": "speaker_1",
+                },
+                {
+                    "text": "AudioMine",
+                    "is_final": True,
+                    "confidence": 0.95,
+                    "ts_ms": 1,
+                    "start_time": 6.98,
+                    "end_time": 8.5,
+                    "segment_id": "meeting-9-start-6.980-speaker_1",
+                    "speaker": "speaker_1",
+                },
+            ]
+        )
+
+
+def test_actor_interim_and_final_same_recv_batch_do_not_fail_with_autoflush_disabled():
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    from app.models import Base
+
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    SessionLocal = sessionmaker(bind=engine, autoflush=False)
+
+    async def run_flow():
+        adapter = _InterimFinalBatchAdapter()
+        actor = await MeetingSessionActor.create(
+            meeting_key="9",
+            language="vi",
+            adapter=adapter,
+            db_session_factory=SessionLocal,
+        )
+        try:
+            response = await actor.submit_chunk(1, b"audiomine", 1, True)
+            db = SessionLocal()
+            try:
+                from app.services.stt_persistence import TranscriptPersistenceRepository
+
+                repo = TranscriptPersistenceRepository(db)
+                fragments = repo.list_fragments(9)
+                return actor, response, fragments, repo.assemble_transcript_text(9)
+            finally:
+                db.close()
+        finally:
+            await actor.shutdown()
+
+    actor, response, fragments, transcript_text = asyncio.run(run_flow())
+
+    assert response.transcript == "AudioMine"
+    assert response.is_final is True
+    assert len(fragments) == 1
+    assert fragments[0].is_final is True
+    assert transcript_text == "AudioMine"
+    assert actor.state == MeetingSessionState.CLOSED
+    assert not any(
+        state == MeetingSessionState.FAILED for _, state in actor._state_history
+    )
+    engine.dispose()
+
