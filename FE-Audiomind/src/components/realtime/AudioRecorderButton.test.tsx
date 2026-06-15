@@ -314,6 +314,124 @@ describe('useAudioRecorder', () => {
     }))
     expect(JSON.stringify(infoSpy.mock.calls)).not.toContain('secret-device-id')
   })
+
+  it('acquires browser tab audio via display media', async () => {
+    const audioTrack = {
+      getSettings: () => ({}),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      readyState: 'live',
+      stop: vi.fn(),
+    }
+    const videoTrack = { stop: vi.fn() }
+    const getDisplayMedia = vi.fn().mockResolvedValue({
+      getAudioTracks: () => [audioTrack],
+      getVideoTracks: () => [videoTrack],
+      getTracks: () => [audioTrack, videoTrack],
+      removeTrack: vi.fn(),
+    })
+
+    function Harness() {
+      latestRecorder = useAudioRecorder(null, { recordingSource: 'browser_tab' })
+      return null
+    }
+
+    act(() => {
+      root.render(<Harness />)
+    })
+
+    Object.defineProperty(navigator, 'mediaDevices', {
+      value: { getDisplayMedia },
+      configurable: true,
+    })
+
+    await act(async () => {
+      await latestRecorder!.startRecording()
+    })
+
+    expect(getDisplayMedia).toHaveBeenCalled()
+    expect(latestRecorder?.state).toBe('recording')
+    expect(videoTrack.stop).toHaveBeenCalled()
+  })
+
+  it('reports missing tab audio as Vietnamese error', async () => {
+    const getDisplayMedia = vi.fn().mockResolvedValue({
+      getAudioTracks: () => [],
+      getVideoTracks: () => [{ stop: vi.fn() }],
+      getTracks: () => [],
+      removeTrack: vi.fn(),
+    })
+
+    function Harness() {
+      latestRecorder = useAudioRecorder(null, { recordingSource: 'browser_tab' })
+      return null
+    }
+
+    act(() => {
+      root.render(<Harness />)
+    })
+
+    Object.defineProperty(navigator, 'mediaDevices', {
+      value: { getDisplayMedia },
+      configurable: true,
+    })
+
+    await act(async () => {
+      await latestRecorder!.startRecording()
+    })
+
+    expect(latestRecorder?.state).toBe('error')
+    expect(latestRecorder?.errorMessage).toContain('không có âm thanh')
+  })
+
+  it('invokes onTrackEnded when shared tab audio stops', async () => {
+    const listeners = new Map<string, () => void>()
+    const audioTrack = {
+      getSettings: () => ({}),
+      addEventListener: vi.fn((event: string, handler: () => void) => {
+        if (event === 'ended') {
+          listeners.set('ended', handler)
+        }
+      }),
+      removeEventListener: vi.fn(),
+      readyState: 'live',
+      stop: vi.fn(),
+    }
+    const getDisplayMedia = vi.fn().mockResolvedValue({
+      getAudioTracks: () => [audioTrack],
+      getVideoTracks: () => [{ stop: vi.fn() }],
+      getTracks: () => [audioTrack],
+      removeTrack: vi.fn(),
+    })
+    const onTrackEnded = vi.fn()
+
+    function Harness() {
+      latestRecorder = useAudioRecorder(null, {
+        recordingSource: 'browser_tab',
+        onTrackEnded,
+      })
+      return null
+    }
+
+    act(() => {
+      root.render(<Harness />)
+    })
+
+    Object.defineProperty(navigator, 'mediaDevices', {
+      value: { getDisplayMedia },
+      configurable: true,
+    })
+
+    await act(async () => {
+      await latestRecorder!.startRecording()
+    })
+
+    act(() => {
+      listeners.get('ended')?.()
+    })
+
+    expect(onTrackEnded).toHaveBeenCalledOnce()
+  })
 })
 
 
@@ -370,6 +488,23 @@ describe('AudioRecorderButton', () => {
     })
     container.remove()
     vi.restoreAllMocks()
+  })
+
+  it('shows Google Meet start label for browser tab source', () => {
+    act(() => {
+      root.render(
+        <AudioRecorderButton
+          recorder={recorder!}
+          recordingSource="browser_tab"
+          onBeforeStartRecording={beforeStartSpy}
+          onChunkReady={chunkSpy}
+          onRecordingComplete={completeSpy}
+        />,
+      )
+    })
+
+    expect(container.querySelector('button')?.getAttribute('aria-label')).toContain('Google Meet')
+    expect(container.textContent).toContain('Chọn tab Google Meet')
   })
 
   it('triggers start flow from idle state', async () => {

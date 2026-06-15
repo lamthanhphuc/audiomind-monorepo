@@ -51,10 +51,64 @@ describe('RealtimeDashboardScene', () => {
     domainMode: 'it',
   }
 
+  const baseProps = {
+    liveStatusMessage: 'Ready',
+    connectionView: {
+      title: 'Ready',
+      detail: 'Ready',
+      closeReason: null,
+      closeReasonIsError: false,
+    },
+    selectedRealtimeLanguage: 'vi' as const,
+    selectedRealtimeSpeakerMode: 'single' as const,
+    selectedMicSensitivity: 'normal' as const,
+    selectedRecordingSource: 'microphone' as const,
+    noiseSuppressionEnabled: true,
+    noiseSuppressionToggleEnabled: true,
+    noiseSuppressionSupported: true,
+    liveLifecycleState: 'stopped' as const,
+    onRealtimeLanguageChange: vi.fn(),
+    onRealtimeSpeakerModeChange: vi.fn(),
+    onMicSensitivityChange: vi.fn(),
+    onRecordingSourceChange: vi.fn(),
+    onNoiseSuppressionChange: vi.fn(),
+    isRealtimeLanguageSelectorDisabled: false,
+    isRealtimeSpeakerModeSelectorDisabled: false,
+    isRecordingSourceSelectorDisabled: false,
+    liveMeetingId: 42,
+    audioRecorder: recorder,
+    onBeforeStartRecording: vi.fn(),
+    onChunkReady: vi.fn(),
+    onRecordingComplete: vi.fn(),
+    liveError: null,
+    livePartialWarning: null,
+    showJoinOtherMeeting: false,
+    joinMeetingIdInput: '',
+    onJoinMeetingIdChange: vi.fn(),
+    onJoinMeeting: vi.fn(),
+    liveTranscriptSegments: [],
+    liveTranscriptKeywords: [],
+    realtimeKeywordCount: 0,
+    currentUserId: '7',
+    connectionViewForAside: {
+      title: 'Ready',
+      detail: 'Ready',
+      closeReason: null,
+      closeReasonIsError: false,
+    },
+    liveAnalysis: null,
+    liveAnalysisMetadata: null,
+    liveAnalysisStatus: 'idle' as const,
+    liveAnalysisError: null,
+    showLiveAnalysis: false,
+    onLiveAnalysisRetry: vi.fn(),
+  }
+
   it('renders ready analysis when liveAnalysis exists', () => {
     act(() => {
       root.render(
         <RealtimeDashboardScene
+          {...baseProps}
           liveStatusMessage="Saved"
           connectionView={{
             title: 'Complete',
@@ -62,34 +116,7 @@ describe('RealtimeDashboardScene', () => {
             closeReason: null,
             closeReasonIsError: false,
           }}
-          selectedRealtimeLanguage="vi"
-          selectedRealtimeSpeakerMode="single"
-          selectedMicSensitivity="normal"
-          noiseSuppressionEnabled
-          noiseSuppressionToggleEnabled
-          noiseSuppressionSupported
           liveLifecycleState="stopped"
-          onRealtimeLanguageChange={vi.fn()}
-          onRealtimeSpeakerModeChange={vi.fn()}
-          onMicSensitivityChange={vi.fn()}
-          onNoiseSuppressionChange={vi.fn()}
-          isRealtimeLanguageSelectorDisabled={false}
-          isRealtimeSpeakerModeSelectorDisabled={false}
-          liveMeetingId={42}
-          audioRecorder={recorder}
-          onBeforeStartRecording={vi.fn()}
-          onChunkReady={vi.fn()}
-          onRecordingComplete={vi.fn()}
-          liveError={null}
-          livePartialWarning={null}
-          showJoinOtherMeeting={false}
-          joinMeetingIdInput=""
-          onJoinMeetingIdChange={vi.fn()}
-          onJoinMeeting={vi.fn()}
-          liveTranscriptSegments={[]}
-          liveTranscriptKeywords={[]}
-          realtimeKeywordCount={0}
-          currentUserId="7"
           connectionViewForAside={{
             title: 'Complete',
             detail: 'Transcript saved',
@@ -99,9 +126,7 @@ describe('RealtimeDashboardScene', () => {
           liveAnalysis={analysis}
           liveAnalysisMetadata={analysis}
           liveAnalysisStatus="completed"
-          liveAnalysisError={null}
           showLiveAnalysis
-          onLiveAnalysisRetry={vi.fn()}
         />,
       )
     })
@@ -132,6 +157,7 @@ describe('RealtimeDashboardScene', () => {
     act(() => {
       root.render(
         <RealtimeDashboardScene
+          {...baseProps}
           liveStatusMessage="Chưa có transcript"
           connectionView={{
             title: 'Chưa có transcript',
@@ -139,46 +165,17 @@ describe('RealtimeDashboardScene', () => {
             closeReason: null,
             closeReasonIsError: false,
           }}
-          selectedRealtimeLanguage="vi"
-          selectedRealtimeSpeakerMode="single"
-          selectedMicSensitivity="normal"
-          noiseSuppressionEnabled
-          noiseSuppressionToggleEnabled
-          noiseSuppressionSupported
           liveLifecycleState="stopped_no_analysis"
-          onRealtimeLanguageChange={vi.fn()}
-          onRealtimeSpeakerModeChange={vi.fn()}
-          onMicSensitivityChange={vi.fn()}
-          onNoiseSuppressionChange={vi.fn()}
-          isRealtimeLanguageSelectorDisabled={false}
-          isRealtimeSpeakerModeSelectorDisabled={false}
-          liveMeetingId={42}
-          audioRecorder={recorder}
-          onBeforeStartRecording={vi.fn()}
-          onChunkReady={vi.fn()}
-          onRecordingComplete={vi.fn()}
-          liveError={null}
           livePartialWarning="Chưa có transcript"
-          showJoinOtherMeeting={false}
-          joinMeetingIdInput=""
-          onJoinMeetingIdChange={vi.fn()}
-          onJoinMeeting={vi.fn()}
-          liveTranscriptSegments={[]}
-          liveTranscriptKeywords={[]}
-          realtimeKeywordCount={0}
-          currentUserId="7"
           connectionViewForAside={{
             title: 'Chưa có transcript',
             detail: 'Không có nội dung để phân tích',
             closeReason: null,
             closeReasonIsError: false,
           }}
-          liveAnalysis={null}
           liveAnalysisMetadata={metadata}
           liveAnalysisStatus="pending"
-          liveAnalysisError={null}
           showLiveAnalysis
-          onLiveAnalysisRetry={vi.fn()}
         />,
       )
     })
@@ -200,53 +197,16 @@ describe('RealtimeDashboardScene', () => {
     act(() => {
       root.render(
         <RealtimeDashboardScene
-          liveStatusMessage="Ready"
-          connectionView={{
-            title: 'Ready',
-            detail: 'Ready',
-            closeReason: null,
-            closeReasonIsError: false,
-          }}
-          selectedRealtimeLanguage="vi"
-          selectedRealtimeSpeakerMode="single"
+          {...baseProps}
           selectedMicSensitivity="high"
           noiseSuppressionEnabled={false}
-          noiseSuppressionToggleEnabled
-          noiseSuppressionSupported
           liveLifecycleState="recording"
-          onRealtimeLanguageChange={vi.fn()}
-          onRealtimeSpeakerModeChange={vi.fn()}
-          onMicSensitivityChange={onSensitivityChange}
-          onNoiseSuppressionChange={onNoiseSuppressionChange}
           isRealtimeLanguageSelectorDisabled
           isRealtimeSpeakerModeSelectorDisabled
-          liveMeetingId={42}
+          isRecordingSourceSelectorDisabled
           audioRecorder={{ ...recorder, state: 'recording' }}
-          onBeforeStartRecording={vi.fn()}
-          onChunkReady={vi.fn()}
-          onRecordingComplete={vi.fn()}
-          liveError={null}
-          livePartialWarning={null}
-          showJoinOtherMeeting={false}
-          joinMeetingIdInput=""
-          onJoinMeetingIdChange={vi.fn()}
-          onJoinMeeting={vi.fn()}
-          liveTranscriptSegments={[]}
-          liveTranscriptKeywords={[]}
-          realtimeKeywordCount={0}
-          currentUserId="7"
-          connectionViewForAside={{
-            title: 'Ready',
-            detail: 'Ready',
-            closeReason: null,
-            closeReasonIsError: false,
-          }}
-          liveAnalysis={null}
-          liveAnalysisMetadata={null}
-          liveAnalysisStatus="idle"
-          liveAnalysisError={null}
-          showLiveAnalysis={false}
-          onLiveAnalysisRetry={vi.fn()}
+          onMicSensitivityChange={onSensitivityChange}
+          onNoiseSuppressionChange={onNoiseSuppressionChange}
         />,
       )
     })
@@ -265,5 +225,46 @@ describe('RealtimeDashboardScene', () => {
     })
 
     expect(onNoiseSuppressionChange).not.toHaveBeenCalled()
+  })
+
+  it('renders recording source selector and Google Meet guidance for tab audio', () => {
+    const onRecordingSourceChange = vi.fn()
+
+    act(() => {
+      root.render(
+        <RealtimeDashboardScene
+          {...baseProps}
+          selectedRecordingSource="browser_tab"
+          onRecordingSourceChange={onRecordingSourceChange}
+        />,
+      )
+    })
+
+    expect(container.textContent).toContain('Nguồn ghi âm')
+    expect(container.textContent).toContain('Ghi âm Google Meet')
+    expect(container.textContent).toContain('Chia sẻ âm thanh của tab')
+
+    const sourceSelect = Array.from(container.querySelectorAll('select'))
+      .find((select) => select.value === 'browser_tab')
+    expect(sourceSelect).toBeDefined()
+
+    act(() => {
+      sourceSelect?.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    expect(onRecordingSourceChange).toHaveBeenCalled()
+  })
+
+  it('hides noise suppression toggle for tab-only capture', () => {
+    act(() => {
+      root.render(
+        <RealtimeDashboardScene
+          {...baseProps}
+          selectedRecordingSource="browser_tab"
+          noiseSuppressionEnabled={false}
+        />,
+      )
+    })
+
+    expect(container.querySelector('input[type="checkbox"]')).toBeNull()
   })
 })

@@ -1,5 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
+  DEFAULT_RECORDING_SOURCE,
+  type RecordingSource,
+} from '../constants/recordingSource'
+import {
+  acquireAudioSource,
+  attachAudioTrackEndedHandler,
+  mapAudioSourceErrorMessage,
+} from '../utils/audioSourceAcquisition'
+import {
   AUDIO_DEBUG_ENABLED,
   REALTIME_RECORDER_TIMESLICE_MS,
   REALTIME_RESUME_PREROLL_MS,
@@ -17,6 +26,8 @@ export interface UseAudioRecorderOptions {
   noiseSuppressionEnabled?: boolean
   timesliceMs?: number
   preRollWindowMs?: number
+  recordingSource?: RecordingSource
+  onTrackEnded?: () => void
 }
 
 export interface UseAudioRecorderReturn {
@@ -37,53 +48,6 @@ export interface UseAudioRecorderReturn {
 const RECORDER_MIME_TYPE = 'audio/webm; codecs=opus'
 const DURATION_TICK_MS = 250
 const FALLBACK_RECORDER_TIMESLICE_MS = 250
-const PREFERRED_SAMPLE_RATE = 48_000
-
-const mapRecorderError = (error: unknown): string => {
-  const errorName = error instanceof Error ? error.name : undefined
-  const resolvedName = error instanceof DOMException ? error.name : errorName
-
-  if (resolvedName === 'NotAllowedError' || resolvedName === 'PermissionDeniedError') {
-    return 'Quyền microphone bị từ chối. Hãy cho phép truy cập microphone để ghi âm.'
-  }
-
-  if (resolvedName === 'NotFoundError') {
-    return 'Không tìm thấy thiết bị microphone khả dụng.'
-  }
-
-  if (resolvedName === 'NotSupportedError') {
-    return 'Trình duyệt không hỗ trợ ghi âm WebM/Opus.'
-  }
-
-  if (error instanceof Error && error.message.trim()) {
-    return error.message
-  }
-
-  return 'Không thể khởi tạo ghi âm. Vui lòng thử lại.'
-}
-
-const isNoiseSuppressionConstraintSupported = (): boolean => {
-  return Boolean(navigator.mediaDevices?.getSupportedConstraints?.().noiseSuppression)
-}
-
-const buildAudioConstraints = (noiseSuppressionEnabled: boolean): MediaStreamConstraints => {
-  const audio: MediaTrackConstraints = {
-    echoCancellation: true,
-    autoGainControl: true,
-    channelCount: 1,
-    sampleRate: { ideal: PREFERRED_SAMPLE_RATE },
-  }
-
-  if (isNoiseSuppressionConstraintSupported()) {
-    audio.noiseSuppression = noiseSuppressionEnabled
-  } else {
-    console.info('[Realtime] MIC_CONSTRAINT_UNSUPPORTED', {
-      constraint: 'noiseSuppression',
-    })
-  }
-
-  return { audio }
-}
 
 const logSafeMicSettings = (stream: MediaStream) => {
   const track = stream.getAudioTracks?.()[0] ?? stream.getTracks()[0]
@@ -126,6 +90,8 @@ export const useAudioRecorder = (
   const audioAnalyserSamplesRef = useRef<Uint8Array<ArrayBuffer> | null>(null)
   const audioLevelTimerRef = useRef<number | null>(null)
   const rollingChunksRef = useRef<RollingAudioChunk[]>([])
+  const sourceCleanupRef = useRef<(() => void) | null>(null)
+  const trackEndedDetachRef = useRef<(() => void) | null>(null)
 
   const recorderTimesliceMs = Math.max(100, Math.floor(options.timesliceMs ?? REALTIME_RECORDER_TIMESLICE_MS))
   const preRollWindowMs = Math.max(
@@ -133,6 +99,19 @@ export const useAudioRecorder = (
     Math.floor(options.preRollWindowMs ?? Math.max(REALTIME_START_PREROLL_MS, REALTIME_RESUME_PREROLL_MS)),
   )
   const noiseSuppressionEnabled = options.noiseSuppressionEnabled ?? true
+  const recordingSource = options.recordingSource ?? DEFAULT_RECORDING_SOURCE
+  const onTrackEnded = options.onTrackEnded
+
+  const detachTrackEndedHandler = useCallback(() => {
+    trackEndedDetachRef.current?.()
+    trackEndedDetachRef.current = null
+  }, [])
+
+  const releaseAcquiredSource = useCallback(() => {
+    detachTrackEndedHandler()
+    sourceCleanupRef.current?.()
+    sourceCleanupRef.current = null
+  }, [detachTrackEndedHandler])
 
   const stopDurationTimer = useCallback(() => {
     if (durationTimerRef.current !== null) {
@@ -173,11 +152,12 @@ export const useAudioRecorder = (
   }, [])
 
   const cleanupStream = useCallback(() => {
+    releaseAcquiredSource()
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((track) => track.stop())
       streamRef.current = null
     }
-  }, [])
+  }, [releaseAcquiredSource])
 
   const stopAudioLevelDiagnostics = useCallback(() => {
     if (audioLevelTimerRef.current !== null) {
@@ -359,12 +339,6 @@ export const useAudioRecorder = (
       return recordingSessionIdRef.current
     }
 
-    if (!navigator.mediaDevices?.getUserMedia) {
-      setState('error')
-      setErrorMessage('Trình duyệt không hỗ trợ getUserMedia cho microphone.')
-      return null
-    }
-
     const nextSessionId = recordingSessionIdRef.current + 1
     if (typeof expectedSessionId === 'number' && expectedSessionId !== nextSessionId) {
       setState('error')
@@ -380,16 +354,33 @@ export const useAudioRecorder = (
     audioChunkCountRef.current = 0
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia(buildAudioConstraints(noiseSuppressionEnabled))
+      const acquired = await acquireAudioSource({
+        source: recordingSource,
+        noiseSuppressionEnabled,
+        meetingId: diagnosticMeetingId,
+      })
+      const stream = acquired.stream
       if (!mountedRef.current || recordingSessionIdRef.current !== sessionId) {
-        stream.getTracks().forEach((track) => track.stop())
+        acquired.cleanup()
         return null
+      }
+
+      sourceCleanupRef.current = acquired.cleanup
+      if (onTrackEnded) {
+        trackEndedDetachRef.current = attachAudioTrackEndedHandler(stream, () => {
+          if (recordingSessionIdRef.current !== sessionId) {
+            return
+          }
+          onTrackEnded()
+        })
       }
 
       const recorder = new MediaRecorder(stream, { mimeType: RECORDER_MIME_TYPE })
       mediaRecorderRef.current = recorder
       streamRef.current = stream
-      logSafeMicSettings(stream)
+      if (recordingSource === 'microphone') {
+        logSafeMicSettings(stream)
+      }
       startAudioLevelDiagnostics(stream, sessionId, diagnosticMeetingId)
 
       recorder.ondataavailable = (event) => {
@@ -480,6 +471,7 @@ export const useAudioRecorder = (
           console.info('[Realtime] RECORDING_START_ARMED', {
             meetingId: diagnosticMeetingId,
             sessionId,
+            source: recordingSource,
             timesliceMs: actualTimesliceMs,
             startPreRollMs: REALTIME_START_PREROLL_MS,
             resumePreRollMs: REALTIME_RESUME_PREROLL_MS,
@@ -501,12 +493,12 @@ export const useAudioRecorder = (
         mediaRecorderRef.current = null
         if (mountedRef.current) {
           setState('error')
-          setErrorMessage(mapRecorderError(error))
+          setErrorMessage(mapAudioSourceErrorMessage(error))
         }
       }
       return null
     }
-  }, [clearRecorderHandlers, cleanupStream, diagnosticMeetingId, finishRecording, noiseSuppressionEnabled, pauseDurationTimer, preRollWindowMs, recorderTimesliceMs, resetSessionState, startAudioLevelDiagnostics, startDurationTimer, state, stopAudioLevelDiagnostics])
+  }, [clearRecorderHandlers, cleanupStream, diagnosticMeetingId, finishRecording, noiseSuppressionEnabled, onTrackEnded, pauseDurationTimer, preRollWindowMs, recorderTimesliceMs, recordingSource, resetSessionState, startAudioLevelDiagnostics, startDurationTimer, state, stopAudioLevelDiagnostics])
 
   const stopRecording = useCallback(() => {
     const recorder = mediaRecorderRef.current

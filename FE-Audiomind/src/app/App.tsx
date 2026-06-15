@@ -30,6 +30,13 @@ import {
     type MicSensitivityMode,
     type VoiceActivityState,
 } from '../hooks/useVoiceActivityDetection'
+import {
+    BROWSER_TAB_CAPTURE_TELEMETRY,
+    DEFAULT_RECORDING_SOURCE,
+    isBrowserTabRecordingSource,
+    normalizeRecordingSource,
+    type RecordingSource,
+} from '../constants/recordingSource'
 import { ApiError, createRealtimeMeeting, getAnalysis, getProcessingStatus, getTranscript, reanalyzeMeetingAnalysis, startProcessingByPath, submitRealtimeFinalAudioFallback, uploadToMeetingApi } from '../services/api'
 import { clearAccessToken, getAccessToken, getCurrentUserId, login, register, setAccessToken } from '../services/auth'
 import {
@@ -151,6 +158,10 @@ export const isRealtimeLanguageSelectorDisabled = (lifecycleState: LiveLifecycle
 }
 
 export const isRealtimeSpeakerModeSelectorDisabled = (lifecycleState: LiveLifecycleState): boolean => {
+  return isRealtimeLanguageSelectorDisabled(lifecycleState)
+}
+
+export const isRecordingSourceSelectorDisabled = (lifecycleState: LiveLifecycleState): boolean => {
   return isRealtimeLanguageSelectorDisabled(lifecycleState)
 }
 
@@ -938,6 +949,7 @@ export default function App() {
   const [selectedMicSensitivity, setSelectedMicSensitivity] = useState<MicSensitivityMode>(
     normalizeMicSensitivityMode(REALTIME_MIC_SENSITIVITY),
   )
+  const [selectedRecordingSource, setSelectedRecordingSource] = useState<RecordingSource>(DEFAULT_RECORDING_SOURCE)
   const [noiseSuppressionEnabled, setNoiseSuppressionEnabled] = useState(REALTIME_NOISE_SUPPRESSION_DEFAULT)
   const [noiseSuppressionSupported] = useState(() => {
     return Boolean(navigator.mediaDevices?.getSupportedConstraints?.().noiseSuppression)
@@ -953,6 +965,8 @@ export default function App() {
   const resetRecoveryInProgressRef = useRef(false)
   const restartAfterReconnectRef = useRef(false)
   const liveTinyChunkStreakRef = useRef(0)
+  const selectedRecordingSourceRef = useRef<RecordingSource>(DEFAULT_RECORDING_SOURCE)
+  const tabTrackEndedFinalizeRef = useRef(false)
   const lastLoggedRealtimeLanguageRef = useRef<RealtimeLanguage | null>(null)
   const lastLoggedRealtimeSpeakerModeRef = useRef<RealtimeSpeakerMode | null>(null)
   const lastVoiceActivityStateRef = useRef<VoiceActivityState | null>(null)
@@ -964,15 +978,18 @@ export default function App() {
     ? parsedRealtimeUserId
     : null
   const realtimeToken = getAccessToken() ?? ''
+  const onTabAudioTrackEndedRef = useRef<(() => void) | undefined>(undefined)
   const audioRecorder = useAudioRecorder(liveMeetingId, {
     noiseSuppressionEnabled,
+    recordingSource: selectedRecordingSource,
+    onTrackEnded: () => onTabAudioTrackEndedRef.current?.(),
     timesliceMs: REALTIME_RECORDER_TIMESLICE_MS,
     preRollWindowMs: REALTIME_PREROLL_ENABLED
       ? Math.max(REALTIME_START_PREROLL_MS, REALTIME_RESUME_PREROLL_MS)
       : 0,
   })
   const voiceActivity = useVoiceActivityDetection({
-    enabled: audioRecorder.state === 'recording',
+    enabled: audioRecorder.state === 'recording' && selectedRecordingSource !== 'browser_tab',
     getRmsLevel: audioRecorder.getCurrentRms,
     silenceThreshold: DEFAULT_VAD_SILENCE_THRESHOLD,
     speechThreshold: DEFAULT_VAD_SPEECH_THRESHOLD,
@@ -993,6 +1010,33 @@ export default function App() {
     enabled: isAuthenticated && isRealtimeEnabled && featureScene === 'realtime',
     autoReconnect: true,
   })
+
+  useEffect(() => {
+    selectedRecordingSourceRef.current = selectedRecordingSource
+  }, [selectedRecordingSource])
+
+  useEffect(() => {
+    onTabAudioTrackEndedRef.current = () => {
+      if (!isBrowserTabRecordingSource(selectedRecordingSourceRef.current)) {
+        return
+      }
+      if (tabTrackEndedFinalizeRef.current) {
+        return
+      }
+      tabTrackEndedFinalizeRef.current = true
+      setLiveStatusMessage('Tab đã ngừng chia sẻ âm thanh. Đang dừng và lưu transcript...')
+      if (audioRecorder.state === 'recording' || audioRecorder.state === 'paused') {
+        audioRecorder.stopRecording()
+      }
+    }
+  }, [audioRecorder])
+
+  useEffect(() => {
+    console.info('[Realtime] RECORDING_SOURCE_SELECTED', {
+      source: selectedRecordingSource,
+      lifecycleState: liveLifecycleState,
+    })
+  }, [liveLifecycleState, selectedRecordingSource])
 
   useEffect(() => {
     const normalizedLanguage = normalizeRealtimeLanguage(selectedRealtimeLanguage)
@@ -1184,6 +1228,13 @@ export default function App() {
     }
 
     if (audioRecorder.state !== 'idle' || liveMeetingIdRef.current === null) {
+      return
+    }
+
+    if (isBrowserTabRecordingSource(selectedRecordingSourceRef.current)) {
+      restartAfterReconnectRef.current = false
+      setLiveError('Mất kết nối realtime trong khi ghi âm tab. Hãy dừng và bắt đầu lại để chọn tab Google Meet.')
+      setLiveLifecycleState('error')
       return
     }
 
@@ -1640,6 +1691,7 @@ export default function App() {
           selectedRealtimeLanguage={selectedRealtimeLanguage}
           selectedRealtimeSpeakerMode={selectedRealtimeSpeakerMode}
           selectedMicSensitivity={selectedMicSensitivity}
+          selectedRecordingSource={selectedRecordingSource}
           noiseSuppressionEnabled={noiseSuppressionEnabled}
           noiseSuppressionToggleEnabled={REALTIME_NOISE_SUPPRESSION_TOGGLE_ENABLED}
           noiseSuppressionSupported={noiseSuppressionSupported}
@@ -1647,9 +1699,11 @@ export default function App() {
           onRealtimeLanguageChange={(value) => setSelectedRealtimeLanguage(normalizeRealtimeLanguage(value))}
           onRealtimeSpeakerModeChange={(value) => setSelectedRealtimeSpeakerMode(normalizeRealtimeSpeakerMode(value))}
           onMicSensitivityChange={(value) => setSelectedMicSensitivity(normalizeMicSensitivityMode(value))}
+          onRecordingSourceChange={(value) => setSelectedRecordingSource(normalizeRecordingSource(value))}
           onNoiseSuppressionChange={setNoiseSuppressionEnabled}
           isRealtimeLanguageSelectorDisabled={isRealtimeLanguageSelectorDisabled(liveLifecycleState)}
           isRealtimeSpeakerModeSelectorDisabled={isRealtimeSpeakerModeSelectorDisabled(liveLifecycleState)}
+          isRecordingSourceSelectorDisabled={isRecordingSourceSelectorDisabled(liveLifecycleState)}
           liveMeetingId={liveMeetingId}
           audioRecorder={audioRecorder}
           onBeforeStartRecording={handlePrepareLiveMeeting}
@@ -1740,6 +1794,7 @@ export default function App() {
     setHydratedLiveTranscriptSegments(null)
     setLiveLifecycleState('connecting')
     liveTinyChunkStreakRef.current = 0
+    tabTrackEndedFinalizeRef.current = false
     realtimeStream.clearQueuedAudio?.()
     realtimeStream.disconnect(activeRealtimeSessionTokenRef.current)
     realtimeStream.clearTranscripts?.()
@@ -1785,7 +1840,14 @@ export default function App() {
         meetingId: normalizedMeetingId,
         sessionId,
         language: selectedRealtimeLanguage,
+        source: selectedRecordingSourceRef.current,
       })
+      if (isBrowserTabRecordingSource(selectedRecordingSourceRef.current)) {
+        console.info('[Realtime]', BROWSER_TAB_CAPTURE_TELEMETRY.REALTIME_STARTED, {
+          meetingId: normalizedMeetingId,
+          source: selectedRecordingSourceRef.current,
+        })
+      }
       setLiveStatusMessage(`Meeting ${normalizedMeetingId} đang kết nối realtime...`)
 
       await realtimeStream.waitForSessionReady(undefined, normalizedMeetingId, sessionToken)
@@ -1873,7 +1935,9 @@ export default function App() {
       recordingDurationSec >= REALTIME_TINY_CHUNK_MIN_RECORDING_SEC
       && liveTinyChunkStreakRef.current >= REALTIME_TINY_CHUNK_STREAK_THRESHOLD
     ) {
-      const captureError = 'Không nhận được âm thanh từ microphone. Hãy kiểm tra quyền mic, thiết bị đầu vào và thử ghi lại.'
+      const captureError = isBrowserTabRecordingSource(selectedRecordingSourceRef.current)
+        ? 'Không nhận được âm thanh từ tab Google Meet. Hãy chọn lại tab Meet và bật chia sẻ âm thanh tab.'
+        : 'Không nhận được âm thanh từ microphone. Hãy kiểm tra quyền mic, thiết bị đầu vào và thử ghi lại.'
       console.warn('[Realtime] REALTIME_TINY_CHUNK_STREAK_CLIENT', {
         meetingId: activeMeetingId,
         sessionId,

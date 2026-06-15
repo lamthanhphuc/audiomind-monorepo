@@ -1,13 +1,19 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { UseAudioRecorderReturn } from '../../hooks/useAudioRecorder'
+import {
+  RECORDING_SOURCE_LABELS,
+  type RecordingSource,
+  isBrowserTabRecordingSource,
+} from '../../constants/recordingSource'
 import './AudioRecorderButton.css'
 
 interface AudioRecorderButtonProps {
   recorder: UseAudioRecorderReturn
+  recordingSource?: RecordingSource
   onChunkReady?: (chunk: Blob, sessionId: number) => void | Promise<void>
   onRecordingComplete?: (fullAudio: Blob, sessionId: number) => void
   onBeforeStartRecording?: (recordingSessionId: number) => Promise<void> | void
-  lifecycleState?: 'idle' | 'connecting' | 'recording' | 'stopping' | 'stopped' | 'no_transcript_after_finalize' | 'stopped_no_analysis' | 'error'
+  lifecycleState?: 'idle' | 'connecting' | 'recording' | 'stopping' | 'stopped' | 'no_transcript_after_finalize' | 'stopped_no_analysis' | 'failed_audio_capture' | 'error'
 }
 
 const RECORDING_MIME_TYPE = 'audio/webm; codecs=opus'
@@ -20,6 +26,7 @@ const formatDuration = (durationSeconds: number): string => {
 
 export function AudioRecorderButton({
   recorder,
+  recordingSource = 'microphone',
   onChunkReady,
   onRecordingComplete,
   onBeforeStartRecording,
@@ -79,6 +86,9 @@ export function AudioRecorderButton({
     }
   }, [effectiveState, onRecordingComplete, recorder.audioChunks, recorder.recordingSessionId])
 
+  const isTabSource = isBrowserTabRecordingSource(recordingSource)
+  const sourceLabel = RECORDING_SOURCE_LABELS[recordingSource]
+
   const statusLabel = useMemo(() => {
     switch (effectiveState) {
       case 'connecting':
@@ -97,9 +107,9 @@ export function AudioRecorderButton({
       case 'stopped_no_analysis':
         return 'Đã dừng ghi âm (chưa có transcript)'
       default:
-        return 'Sẵn sàng ghi âm'
+        return isTabSource ? `Sẵn sàng ghi âm (${sourceLabel})` : 'Sẵn sàng ghi âm'
     }
-  }, [effectiveState, recorder.duration, recorder.errorMessage])
+  }, [effectiveState, isTabSource, recorder.duration, recorder.errorMessage, sourceLabel])
 
   const buttonLabel = useMemo(() => {
     switch (effectiveState) {
@@ -117,9 +127,9 @@ export function AudioRecorderButton({
       case 'stopped_no_analysis':
         return 'Bắt đầu ghi âm'
       default:
-        return 'Bắt đầu ghi âm'
+        return isTabSource ? `Bắt đầu ${sourceLabel}` : 'Bắt đầu ghi âm'
     }
-  }, [effectiveState])
+  }, [effectiveState, isTabSource, sourceLabel])
 
   const handleClick = async () => {
     if (isBusy || effectiveState === 'connecting' || effectiveState === 'stopping') {
@@ -170,7 +180,7 @@ export function AudioRecorderButton({
         aria-label={buttonLabel}
         title={statusLabel}
       >
-        <span className="audio-recorder-button__icon" aria-hidden="true">🎤</span>
+        <span className="audio-recorder-button__icon" aria-hidden="true">{isTabSource ? '🖥️' : '🎤'}</span>
       </button>
 
       <div className="audio-recorder-widget__meta">
@@ -184,7 +194,9 @@ export function AudioRecorderButton({
               ? 'Nhấn để dừng'
               : isPaused
                 ? 'Nhấn để tiếp tục'
-                : 'Nhấn để bắt đầu'}
+                : isTabSource
+                  ? 'Chọn tab Google Meet khi trình duyệt hỏi'
+                  : 'Nhấn để bắt đầu'}
         </div>
       </div>
 
