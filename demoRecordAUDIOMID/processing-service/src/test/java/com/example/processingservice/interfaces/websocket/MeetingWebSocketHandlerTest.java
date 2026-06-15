@@ -1824,7 +1824,7 @@ class MeetingWebSocketHandlerTest {
         attributes.put("AUDIO_RECEIVED_ATTR", Boolean.TRUE);
         attributes.put("lastAudioSeq", 1L);
 
-        when(aiServiceClient.streamAudioChunk(
+        lenient().when(aiServiceClient.streamAudioChunk(
                 eq(907L),
                 any(byte[].class),
                 anyLong(),
