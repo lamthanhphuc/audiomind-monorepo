@@ -9,7 +9,10 @@ from typing import Any
 from app.config import get_settings
 from app.database import SessionLocal
 from app.services.stt_adapter import DeepgramSTTAdapter
-from app.services.stt_persistence import TranscriptFragmentInput, TranscriptPersistenceRepository
+from app.services.stt_persistence import (
+    TranscriptFragmentInput,
+    TranscriptPersistenceRepository,
+)
 
 logger = logging.getLogger(__name__)
 
