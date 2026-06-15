@@ -115,6 +115,12 @@ class TranscriptPersistenceRepository:
     def __init__(self, db: Session):
         self._db = db
 
+    def _find_fragment_in_session(self, dedupe_key: str) -> TranscriptFragment | None:
+        for obj in self._db.new:
+            if isinstance(obj, TranscriptFragment) and obj.dedupe_key == dedupe_key:
+                return obj
+        return None
+
     def get_checkpoint(self, meeting_id: int) -> TranscriptCheckpointState:
         checkpoint = (
             self._db.query(TranscriptCheckpoint)
@@ -183,11 +189,13 @@ class TranscriptPersistenceRepository:
             bool(fragment.is_final),
             len(str(fragment.text or "")),
         )
-        existing = (
-            self._db.query(TranscriptFragment)
-            .filter(TranscriptFragment.dedupe_key == dedupe_key)
-            .first()
-        )
+        existing = self._find_fragment_in_session(dedupe_key)
+        if existing is None:
+            existing = (
+                self._db.query(TranscriptFragment)
+                .filter(TranscriptFragment.dedupe_key == dedupe_key)
+                .first()
+            )
         if existing is not None:
             logger.info(
                 "STT_FRAGMENT_DEDUPE_HIT meeting_id={} seq={} dedupe_key={}",

@@ -9,15 +9,19 @@ from app.services.stt_persistence import (
 )
 
 
-def _make_repo():
+def _make_repo(*, autoflush: bool = True):
     engine = create_engine(
         "sqlite://",
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
     Base.metadata.create_all(engine)
-    SessionLocal = sessionmaker(bind=engine)
+    SessionLocal = sessionmaker(bind=engine, autoflush=autoflush)
     return SessionLocal(), engine
+
+
+def _make_repo_legacy():
+    return _make_repo(autoflush=True)
 
 
 def test_append_fragment_is_deduplicated_and_versioned():
@@ -75,7 +79,7 @@ def test_append_fragment_is_deduplicated_and_versioned():
 
 
 def test_append_fragment_prefers_final_when_same_dedupe_key_in_same_batch():
-    db, engine = _make_repo()
+    db, engine = _make_repo_legacy()
     repo = TranscriptPersistenceRepository(db)
 
     interim = repo.append_fragment(
@@ -159,6 +163,86 @@ def test_duplicate_dedupe_key_already_in_db_is_idempotent():
         db2.close()
         db.close()
         engine.dispose()
+
+
+def test_append_fragment_prefers_final_with_autoflush_disabled_session():
+    db, engine = _make_repo(autoflush=False)
+    repo = TranscriptPersistenceRepository(db)
+
+    interim = repo.append_fragment(
+        TranscriptFragmentInput(
+            meeting_id=9,
+            seq=6,
+            text="AudioMine",
+            speaker="speaker_1",
+            start_time=6.98,
+            end_time=8.5,
+            event_id="meeting-9-start-6.980-speaker_1",
+            is_final=False,
+            confidence=0.82,
+        )
+    )
+    final = repo.append_fragment(
+        TranscriptFragmentInput(
+            meeting_id=9,
+            seq=6,
+            text="AudioMine",
+            speaker="speaker_1",
+            start_time=6.98,
+            end_time=8.5,
+            event_id="meeting-9-start-6.980-speaker_1",
+            is_final=True,
+            confidence=0.95,
+        )
+    )
+
+    db.commit()
+
+    assert interim.id == final.id
+    assert final.is_final is True
+    assert len(repo.list_fragments(9)) == 1
+    assert repo.assemble_transcript_text(9) == "AudioMine"
+    db.close()
+    engine.dispose()
+
+
+def test_duplicate_identical_fragment_with_autoflush_disabled_is_idempotent():
+    db, engine = _make_repo(autoflush=False)
+    repo = TranscriptPersistenceRepository(db)
+
+    first = repo.append_fragment(
+        TranscriptFragmentInput(
+            meeting_id=113,
+            seq=4,
+            text="AudioMine",
+            speaker="speaker_1",
+            start_time=6.98,
+            end_time=8.5,
+            event_id="meeting-113-start-6.980-speaker_1",
+            is_final=True,
+            confidence=0.91,
+        )
+    )
+    duplicate = repo.append_fragment(
+        TranscriptFragmentInput(
+            meeting_id=113,
+            seq=4,
+            text="AudioMine",
+            speaker="speaker_1",
+            start_time=6.98,
+            end_time=8.5,
+            event_id="meeting-113-start-6.980-speaker_1",
+            is_final=True,
+            confidence=0.91,
+        )
+    )
+
+    db.commit()
+
+    assert first.id == duplicate.id
+    assert len(repo.list_fragments(113)) == 1
+    db.close()
+    engine.dispose()
 
 
 def test_checkpoint_upsert_advances_durability_boundary():
