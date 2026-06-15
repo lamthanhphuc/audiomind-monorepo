@@ -2320,9 +2320,10 @@ class ProcessingServiceTest {
 
         Map<String, Object> response = processingService.getAnalysis(609L, "trace-609", AUTH_HEADER);
 
-        assertEquals("NO_TRANSCRIPT_AFTER_FINALIZE", response.get("status"));
+        assertEquals(RealtimeStatusCodes.NO_TRANSCRIPT, response.get("status"));
         assertEquals("NO_ANALYSIS", response.get("analysisStatus"));
-        assertEquals("NO_TRANSCRIPT_AFTER_FINALIZE", response.get("errorCode"));
+        assertEquals(RealtimeStatusCodes.NO_TRANSCRIPT, response.get("errorCode"));
+        assertEquals(RealtimeStatusCodes.NO_TRANSCRIPT_AFTER_FINALIZE, response.get("legacyErrorCode"));
         assertEquals(0, response.get("transcriptRows"));
         verify(aiServiceClient, never()).getTranscript(609L, "trace-609");
         verify(aiServiceClient, never()).analyzeRealtimeTranscript(
