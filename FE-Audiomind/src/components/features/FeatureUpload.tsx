@@ -28,7 +28,6 @@ export default function FeatureUpload({
 }: FeatureUploadProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const [dragActive, setDragActive] = useState(false)
-  const [subject, setSubject] = useState('')
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
 
   const handleDrag = (e: React.DragEvent) => {
@@ -112,16 +111,6 @@ export default function FeatureUpload({
           </div>
 
           <div className="upload-form">
-            <div className="form-group">
-              <label htmlFor="upload-subject">Môn học</label>
-              <select id="upload-subject" value={subject} onChange={(e) => setSubject(e.target.value)} disabled={disabled}>
-                <option value="">Chọn môn học (tuỳ chọn)</option>
-                <option value="Trí tuệ nhân tạo">Trí tuệ nhân tạo</option>
-                <option value="Toán rời rạc">Toán rời rạc</option>
-                <option value="Lập trình web">Lập trình web</option>
-              </select>
-            </div>
-
             <div className="form-group">
               <label htmlFor="upload-language">Ngôn ngữ</label>
               <select
