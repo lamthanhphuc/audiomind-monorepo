@@ -1,7 +1,7 @@
 import { createRoot } from 'react-dom/client'
 import { act } from 'react-dom/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { useAudioRecorder } from '../../hooks/useAudioRecorder'
+import { useAudioRecorder, type GracefulStopResult } from '../../hooks/useAudioRecorder'
 import { AudioRecorderButton } from './AudioRecorderButton'
 
 class MockMediaRecorder {
@@ -38,9 +38,18 @@ class MockMediaRecorder {
   })
 
   stop = vi.fn(() => {
+    if (this.postStopChunk) {
+      this.ondataavailable?.({ data: this.postStopChunk })
+    }
     this.state = 'inactive'
     this.onstop?.()
   })
+
+  requestData = vi.fn(() => {
+    this.emitChunk(new Blob(['request-data-chunk'], { type: 'audio/webm; codecs=opus' }))
+  })
+
+  postStopChunk: Blob | null = new Blob(['post-stop-chunk'], { type: 'audio/webm; codecs=opus' })
 
   emitChunk(blob: Blob) {
     this.ondataavailable?.({ data: blob })
@@ -142,6 +151,54 @@ describe('useAudioRecorder', () => {
     await flush()
 
     expect(latestRecorder?.state).toBe('stopped')
+  })
+
+  it('stopRecordingGraceful collects requestData and post-stop chunks without early cleanup (R1-T9)', async () => {
+    await act(async () => {
+      await latestRecorder!.startRecording()
+    })
+
+    const recorder = MockMediaRecorder.instances[0]
+    const initialChunk = new Blob(['initial-chunk'], { type: 'audio/webm; codecs=opus' })
+
+    act(() => {
+      recorder.emitChunk(initialChunk)
+    })
+
+    await flush()
+
+    let result!: GracefulStopResult
+    await act(async () => {
+      result = await latestRecorder!.stopRecordingGraceful()
+    })
+
+    expect(recorder.requestData).toHaveBeenCalled()
+    expect(recorder.stop).toHaveBeenCalled()
+    expect(latestRecorder?.audioChunks.length).toBeGreaterThanOrEqual(3)
+    expect(result?.fullBlob.size).toBeGreaterThan(0)
+    expect(result?.postStopChunkCount).toBeGreaterThanOrEqual(1)
+    expect(latestRecorder?.state).toBe('stopped')
+
+    latestRecorder!.cleanupRecordingResources()
+    expect(MockMediaRecorder.instances[0].ondataavailable).toBeNull()
+  })
+
+  it('cleanupRecordingResources is separate from mark stopped during graceful stop', async () => {
+    await act(async () => {
+      await latestRecorder!.startRecording()
+    })
+
+    const recorder = MockMediaRecorder.instances[0]
+    act(() => {
+      recorder.emitChunk(new Blob(['chunk'], { type: 'audio/webm; codecs=opus' }))
+    })
+
+    await act(async () => {
+      await latestRecorder!.stopRecordingGraceful()
+    })
+
+    expect(recorder.stream.getTracks).toBeDefined()
+    latestRecorder!.cleanupRecordingResources()
   })
 
   it('ignores stale chunks from a previous recording session after restart', async () => {
@@ -441,6 +498,8 @@ describe('AudioRecorderButton', () => {
   let recorder: ReturnType<typeof useAudioRecorder> | null = null
   let startSpy: ReturnType<typeof vi.fn>
   let stopSpy: ReturnType<typeof vi.fn>
+  let gracefulStopSpy: ReturnType<typeof vi.fn>
+  let cleanupSpy: ReturnType<typeof vi.fn>
   let beforeStartSpy: ReturnType<typeof vi.fn>
   let chunkSpy: ReturnType<typeof vi.fn>
   let completeSpy: ReturnType<typeof vi.fn>
@@ -451,6 +510,14 @@ describe('AudioRecorderButton', () => {
     root = createRoot(container)
     startSpy = vi.fn().mockResolvedValue(1)
     stopSpy = vi.fn()
+    gracefulStopSpy = vi.fn().mockResolvedValue({
+      fullBlob: new Blob(['final-audio'], { type: 'audio/webm; codecs=opus' }),
+      sessionId: 1,
+      collectedChunkCount: 1,
+      postStopChunkCount: 1,
+      chunks: [new Blob(['final-audio'], { type: 'audio/webm; codecs=opus' })],
+    })
+    cleanupSpy = vi.fn()
     beforeStartSpy = vi.fn().mockResolvedValue(undefined)
     chunkSpy = vi.fn()
     completeSpy = vi.fn()
@@ -462,6 +529,8 @@ describe('AudioRecorderButton', () => {
       recordingSessionId: 0,
       startRecording: startSpy,
       stopRecording: stopSpy,
+      stopRecordingGraceful: gracefulStopSpy,
+      cleanupRecordingResources: cleanupSpy,
       abortRecording: vi.fn(),
       pauseRecording: vi.fn(),
       resumeRecording: vi.fn(),
@@ -699,7 +768,7 @@ describe('AudioRecorderButton', () => {
     expect(startSpy).toHaveBeenCalledOnce()
   })
 
-  it('emits chunk and completion callbacks', async () => {
+  it('calls graceful stop when recording and disables button while stopping', async () => {
     recorder = {
       ...recorder!,
       state: 'recording',
@@ -712,6 +781,55 @@ describe('AudioRecorderButton', () => {
       root.render(
         <AudioRecorderButton
           recorder={recorder!}
+          lifecycleState="recording"
+          onBeforeStartRecording={beforeStartSpy}
+          onChunkReady={chunkSpy}
+          onRecordingComplete={completeSpy}
+        />,
+      )
+    })
+
+    await act(async () => {
+      container.querySelector('button')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await flush()
+    })
+
+    expect(gracefulStopSpy).toHaveBeenCalledOnce()
+    expect(stopSpy).not.toHaveBeenCalled()
+    expect(completeSpy).toHaveBeenCalledOnce()
+  })
+
+  it('disables button while finalizing_recording lifecycle is active', () => {
+    act(() => {
+      root.render(
+        <AudioRecorderButton
+          recorder={recorder!}
+          lifecycleState="finalizing_recording"
+          onBeforeStartRecording={beforeStartSpy}
+          onChunkReady={chunkSpy}
+          onRecordingComplete={completeSpy}
+        />,
+      )
+    })
+
+    expect(container.querySelector('button')?.disabled).toBe(true)
+    expect(container.textContent).toContain('Đang hoàn tất ghi âm')
+  })
+
+  it('emits chunk and completion callbacks after graceful stop', async () => {
+    recorder = {
+      ...recorder!,
+      state: 'recording',
+      audioChunks: [new Blob(['chunk-a'])],
+      duration: 1,
+      recordingSessionId: 1,
+    }
+
+    act(() => {
+      root.render(
+        <AudioRecorderButton
+          recorder={recorder!}
+          lifecycleState="recording"
           onBeforeStartRecording={beforeStartSpy}
           onChunkReady={chunkSpy}
           onRecordingComplete={completeSpy}
@@ -723,24 +841,12 @@ describe('AudioRecorderButton', () => {
 
     expect(chunkSpy).toHaveBeenCalledOnce()
 
-    recorder = {
-      ...recorder,
-      state: 'stopped',
-    }
-
-    act(() => {
-      root.render(
-        <AudioRecorderButton
-          recorder={recorder!}
-          onBeforeStartRecording={beforeStartSpy}
-          onChunkReady={chunkSpy}
-          onRecordingComplete={completeSpy}
-        />,
-      )
+    await act(async () => {
+      container.querySelector('button')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await flush()
     })
 
-    await flush()
-
+    expect(gracefulStopSpy).toHaveBeenCalledOnce()
     expect(completeSpy).toHaveBeenCalledOnce()
   })
 
@@ -753,9 +859,17 @@ describe('AudioRecorderButton', () => {
       callOrder.push('complete')
     })
 
+    gracefulStopSpy.mockImplementation(async () => ({
+      fullBlob: new Blob(['chunk-final']),
+      sessionId: 1,
+      collectedChunkCount: 1,
+      postStopChunkCount: 1,
+      chunks: [new Blob(['chunk-final'])],
+    }))
+
     recorder = {
       ...recorder!,
-      state: 'stopped',
+      state: 'recording',
       audioChunks: [],
       recordingSessionId: 1,
     }
@@ -764,6 +878,7 @@ describe('AudioRecorderButton', () => {
       root.render(
         <AudioRecorderButton
           recorder={recorder!}
+          lifecycleState="recording"
           onBeforeStartRecording={beforeStartSpy}
           onChunkReady={chunkSpy}
           onRecordingComplete={completeSpy}
@@ -776,23 +891,10 @@ describe('AudioRecorderButton', () => {
     expect(chunkSpy).not.toHaveBeenCalled()
     expect(completeSpy).not.toHaveBeenCalled()
 
-    recorder = {
-      ...recorder,
-      audioChunks: [new Blob(['chunk-final'])],
-    }
-
-    act(() => {
-      root.render(
-        <AudioRecorderButton
-          recorder={recorder!}
-          onBeforeStartRecording={beforeStartSpy}
-          onChunkReady={chunkSpy}
-          onRecordingComplete={completeSpy}
-        />,
-      )
+    await act(async () => {
+      container.querySelector('button')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await flush()
     })
-
-    await flush()
 
     expect(chunkSpy).toHaveBeenCalledOnce()
     expect(completeSpy).toHaveBeenCalledOnce()
@@ -816,22 +918,7 @@ describe('AudioRecorderButton', () => {
       root.render(
         <AudioRecorderButton
           recorder={recorder!}
-          onBeforeStartRecording={beforeStartSpy}
-          onChunkReady={chunkSpy}
-          onRecordingComplete={completeSpy}
-        />,
-      )
-    })
-
-    recorder = {
-      ...recorder,
-      state: 'stopped',
-    }
-
-    act(() => {
-      root.render(
-        <AudioRecorderButton
-          recorder={recorder!}
+          lifecycleState="recording"
           onBeforeStartRecording={beforeStartSpy}
           onChunkReady={chunkSpy}
           onRecordingComplete={completeSpy}
@@ -841,6 +928,13 @@ describe('AudioRecorderButton', () => {
 
     await flush()
     expect(chunkSpy).toHaveBeenCalledOnce()
+    expect(completeSpy).not.toHaveBeenCalled()
+
+    await act(async () => {
+      container.querySelector('button')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await flush()
+    })
+
     expect(completeSpy).not.toHaveBeenCalled()
 
     resolveChunk()

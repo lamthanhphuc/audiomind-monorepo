@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { UseAudioRecorderReturn } from '../../hooks/useAudioRecorder'
+import { AUDIO_DEBUG_ENABLED } from '../../services/config'
 import {
   RECORDING_SOURCE_LABELS,
   type RecordingSource,
@@ -7,16 +8,28 @@ import {
 } from '../../constants/recordingSource'
 import './AudioRecorderButton.css'
 
+type RecorderLifecycleState =
+  | 'idle'
+  | 'connecting'
+  | 'recording'
+  | 'stopping'
+  | 'finalizing_recording'
+  | 'stopped'
+  | 'no_transcript_after_finalize'
+  | 'stopped_no_analysis'
+  | 'failed_audio_capture'
+  | 'error'
+
 interface AudioRecorderButtonProps {
   recorder: UseAudioRecorderReturn
   recordingSource?: RecordingSource
   onChunkReady?: (chunk: Blob, sessionId: number) => void | Promise<void>
   onRecordingComplete?: (fullAudio: Blob, sessionId: number) => void
   onBeforeStartRecording?: (recordingSessionId: number) => Promise<void> | void
-  lifecycleState?: 'idle' | 'connecting' | 'recording' | 'stopping' | 'stopped' | 'no_transcript_after_finalize' | 'stopped_no_analysis' | 'failed_audio_capture' | 'error'
+  onStopRequested?: () => void
+  gracefulStopRef?: React.MutableRefObject<(() => Promise<void>) | null>
+  lifecycleState?: RecorderLifecycleState
 }
-
-const RECORDING_MIME_TYPE = 'audio/webm; codecs=opus'
 
 const formatDuration = (durationSeconds: number): string => {
   const minutes = Math.floor(durationSeconds / 60)
@@ -30,15 +43,35 @@ export function AudioRecorderButton({
   onChunkReady,
   onRecordingComplete,
   onBeforeStartRecording,
+  onStopRequested,
+  gracefulStopRef,
   lifecycleState,
 }: AudioRecorderButtonProps) {
   const emittedChunkCountRef = useRef(0)
   const pendingChunkDispatchesRef = useRef<Set<Promise<void>>>(new Set())
   const completionEmittedRef = useRef(false)
   const chunkDispatchEnabledRef = useRef(true)
+  const chunksAtGracefulStopRef = useRef(0)
   const [isBusy, setIsBusy] = useState(false)
   const [chunkDispatchRevision, setChunkDispatchRevision] = useState(0)
   const effectiveState = lifecycleState ?? recorder.state
+
+  const dispatchChunk = useCallback((chunk: Blob, sessionId: number, postStop: boolean) => {
+    if (AUDIO_DEBUG_ENABLED || import.meta.env.DEV) {
+      console.info('[Realtime] REALTIME_FINAL_CHUNK_ENQUEUED', {
+        sessionId,
+        size: chunk.size,
+        postStop,
+      })
+    }
+    const maybePromise = onChunkReady?.(chunk, sessionId)
+    if (maybePromise && typeof (maybePromise as Promise<void>).then === 'function') {
+      const trackedPromise = Promise.resolve(maybePromise).finally(() => {
+        pendingChunkDispatchesRef.current.delete(trackedPromise)
+      })
+      pendingChunkDispatchesRef.current.add(trackedPromise)
+    }
+  }, [onChunkReady])
 
   useEffect(() => {
     if (recorder.audioChunks.length < emittedChunkCountRef.current) {
@@ -52,39 +85,81 @@ export function AudioRecorderButton({
     if (recorder.audioChunks.length > emittedChunkCountRef.current) {
       const sessionId = recorder.recordingSessionId
       for (let index = emittedChunkCountRef.current; index < recorder.audioChunks.length; index += 1) {
-        const maybePromise = onChunkReady?.(recorder.audioChunks[index], sessionId)
-        if (maybePromise && typeof (maybePromise as Promise<void>).then === 'function') {
-          const trackedPromise = Promise.resolve(maybePromise).finally(() => {
-            pendingChunkDispatchesRef.current.delete(trackedPromise)
-          })
-          pendingChunkDispatchesRef.current.add(trackedPromise)
-        }
+        const postStop = index >= chunksAtGracefulStopRef.current && chunksAtGracefulStopRef.current > 0
+        dispatchChunk(recorder.audioChunks[index], sessionId, postStop)
       }
       emittedChunkCountRef.current = recorder.audioChunks.length
     }
-  }, [chunkDispatchRevision, onChunkReady, recorder.audioChunks, recorder.recordingSessionId])
+  }, [chunkDispatchRevision, dispatchChunk, recorder.audioChunks, recorder.recordingSessionId])
 
   useEffect(() => {
     if (effectiveState === 'recording' || effectiveState === 'paused' || effectiveState === 'connecting') {
       completionEmittedRef.current = false
+      chunksAtGracefulStopRef.current = 0
+    }
+  }, [effectiveState])
+
+  const performGracefulStop = useCallback(async () => {
+    if (
+      isBusy
+      || effectiveState === 'connecting'
+      || effectiveState === 'stopping'
+      || effectiveState === 'finalizing_recording'
+    ) {
+      return
     }
 
-    if (
-      effectiveState === 'stopped' &&
-      !completionEmittedRef.current &&
-      recorder.audioChunks.length > 0 &&
-      emittedChunkCountRef.current >= recorder.audioChunks.length
-    ) {
-      completionEmittedRef.current = true
-      void (async () => {
-        const pending = Array.from(pendingChunkDispatchesRef.current)
-        if (pending.length > 0) {
-          await Promise.allSettled(pending)
-        }
-        onRecordingComplete?.(new Blob(recorder.audioChunks, { type: RECORDING_MIME_TYPE }), recorder.recordingSessionId)
-      })()
+    if (effectiveState !== 'recording' && effectiveState !== 'paused') {
+      return
     }
-  }, [effectiveState, onRecordingComplete, recorder.audioChunks, recorder.recordingSessionId])
+
+    setIsBusy(true)
+    onStopRequested?.()
+    chunksAtGracefulStopRef.current = recorder.audioChunks.length
+
+    try {
+      const result = await recorder.stopRecordingGraceful()
+      setChunkDispatchRevision((revision) => revision + 1)
+      await Promise.resolve()
+
+      const sessionId = result.sessionId
+      const collectedChunks = result.chunks
+      for (let index = emittedChunkCountRef.current; index < collectedChunks.length; index += 1) {
+        const postStop = index >= chunksAtGracefulStopRef.current
+        dispatchChunk(collectedChunks[index], sessionId, postStop)
+        emittedChunkCountRef.current = index + 1
+      }
+
+      const pending = Array.from(pendingChunkDispatchesRef.current)
+      if (pending.length > 0) {
+        await Promise.allSettled(pending)
+      }
+
+      if (!completionEmittedRef.current) {
+        completionEmittedRef.current = true
+        onRecordingComplete?.(result.fullBlob, sessionId)
+      }
+    } finally {
+      setIsBusy(false)
+    }
+  }, [
+    dispatchChunk,
+    effectiveState,
+    isBusy,
+    onRecordingComplete,
+    onStopRequested,
+    recorder,
+  ])
+
+  useEffect(() => {
+    if (!gracefulStopRef) {
+      return undefined
+    }
+    gracefulStopRef.current = performGracefulStop
+    return () => {
+      gracefulStopRef.current = null
+    }
+  }, [gracefulStopRef, performGracefulStop])
 
   const isTabSource = isBrowserTabRecordingSource(recordingSource)
   const sourceLabel = RECORDING_SOURCE_LABELS[recordingSource]
@@ -94,7 +169,9 @@ export function AudioRecorderButton({
       case 'connecting':
         return 'Đang kết nối realtime...'
       case 'stopping':
-        return 'Đang dừng và lưu transcript...'
+        return 'Đang hoàn tất ghi âm...'
+      case 'finalizing_recording':
+        return 'Đang hoàn tất ghi âm...'
       case 'recording':
         return `Đang ghi âm ${formatDuration(recorder.duration)}`
       case 'paused':
@@ -120,6 +197,7 @@ export function AudioRecorderButton({
       case 'connecting':
         return 'Đang kết nối realtime...'
       case 'stopping':
+      case 'finalizing_recording':
         return 'Đang dừng...'
       case 'error':
         return 'Thử lại'
@@ -132,17 +210,17 @@ export function AudioRecorderButton({
   }, [effectiveState, isTabSource, sourceLabel])
 
   const handleClick = async () => {
-    if (isBusy || effectiveState === 'connecting' || effectiveState === 'stopping') {
+    if (
+      isBusy
+      || effectiveState === 'connecting'
+      || effectiveState === 'stopping'
+      || effectiveState === 'finalizing_recording'
+    ) {
       return
     }
 
-    if (effectiveState === 'recording') {
-      recorder.stopRecording()
-      return
-    }
-
-    if (effectiveState === 'paused') {
-      recorder.resumeRecording()
+    if (effectiveState === 'recording' || effectiveState === 'paused') {
+      await performGracefulStop()
       return
     }
 
@@ -168,7 +246,11 @@ export function AudioRecorderButton({
   const isActive = effectiveState === 'recording'
   const isPaused = effectiveState === 'paused'
   const isError = effectiveState === 'error'
-  const disabled = effectiveState === 'connecting' || effectiveState === 'stopping' || isBusy
+  const disabled =
+    effectiveState === 'connecting'
+    || effectiveState === 'stopping'
+    || effectiveState === 'finalizing_recording'
+    || isBusy
 
   return (
     <div className="audio-recorder-widget">

@@ -1015,6 +1015,35 @@ describe('useRealtimeMeetingStream', () => {
     })
   })
 
+  it('logs REALTIME_FINALIZE_AFTER_CLIENT_DRAIN before stream.stop is sent', async () => {
+    const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => {})
+    const socket = MockWebSocket.instances[0]
+
+    act(() => {
+      socket.open()
+      socket.receive({
+        type: 'session.ready',
+        meetingId: 88,
+        authenticated: true,
+        activeConnections: 1,
+      })
+    })
+
+    await flush()
+
+    await act(async () => {
+      await latest!.sendAudioChunk(new Blob(['abc'], { type: 'audio/webm; codecs=opus' }), '88')
+      await latest!.stopStream()
+    })
+
+    const drainLogIndex = infoSpy.mock.calls.findIndex(([message]) => message === '[Realtime] REALTIME_FINALIZE_AFTER_CLIENT_DRAIN')
+    const stopLogIndex = infoSpy.mock.calls.findIndex(([message]) => message === '[Realtime] STREAM_STOP_AFTER_FLUSH')
+    expect(drainLogIndex).toBeGreaterThan(-1)
+    expect(stopLogIndex).toBeGreaterThan(-1)
+    expect(drainLogIndex).toBeLessThan(stopLogIndex)
+    infoSpy.mockRestore()
+  })
+
   it('does not mark stop as sent when socket closes before stream.stop can be sent', async () => {
     const socket = MockWebSocket.instances[0]
 
