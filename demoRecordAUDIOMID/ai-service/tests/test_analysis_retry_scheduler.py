@@ -1,4 +1,5 @@
 import json
+import time
 
 from app.services.analysis_retry_scheduler import (
     BACKOFF_SCHEDULE_SECONDS,
@@ -89,3 +90,13 @@ def test_serialize_queue_member_roundtrip():
     )
     assert payload["meetingId"] == 1
     assert payload["analysisAttempt"] == 2
+
+
+def test_celery_beat_registers_analysis_retry_scheduled():
+    from app.celery_app import celery_app
+
+    schedule = celery_app.conf.beat_schedule
+    assert "analysis-retry-scheduled" in schedule
+    assert schedule["analysis-retry-scheduled"]["task"] == "app.tasks.analysis_retry_scheduled"
+    assert schedule["analysis-retry-scheduled"]["schedule"] == 60.0
+    assert celery_app.tasks.get("app.tasks.analysis_retry_scheduled") is not None

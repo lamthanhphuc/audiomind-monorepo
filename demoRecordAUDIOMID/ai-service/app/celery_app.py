@@ -22,9 +22,9 @@ celery_app.conf.update(
     task_soft_time_limit=settings.celery_task_soft_time_limit_seconds,
     task_default_retry_delay=2,
     beat_schedule={
-        "process-analysis-retry-queue": {
-            "task": "app.tasks.process_analysis_retry_queue",
-            "schedule": 30.0,
+        "analysis-retry-scheduled": {
+            "task": "app.tasks.analysis_retry_scheduled",
+            "schedule": 60.0,
         },
     },
 )

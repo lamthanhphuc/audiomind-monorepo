@@ -136,6 +136,28 @@ services:
     ports:
       - "8000:8000"
 
+  # Single celery-beat instance dispatches analysis.retry_scheduled every 60s.
+  # Do not run a separate worker-loop scheduler alongside beat.
+  celery-beat:
+    build:
+      context: ../demoRecordAUDIOMID/ai-service
+      args:
+        INSTALL_OFFLINE_STT: "false"
+    container_name: celery-beat
+    command: sh -c "celery -A app.celery_app.celery_app beat --loglevel=INFO"
+    environment:
+      - JWT_SECRET=${JWT_SECRET}
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-audiomind}:${POSTGRES_PASSWORD:-audiomind}@db:5432/${POSTGRES_DB:-audiomind}
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - JOB_STATE_REDIS_URL=redis://redis:6379/2
+      - ANALYSIS_BACKGROUND_RETRY_ENABLED=${ANALYSIS_BACKGROUND_RETRY_ENABLED:-true}
+    depends_on:
+      - redis
+      - ai-api
+    volumes:
+      - job_status:/app/storage
+
   celery-worker:
     build:
       context: ../demoRecordAUDIOMID/ai-service

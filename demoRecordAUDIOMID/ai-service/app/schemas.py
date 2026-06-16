@@ -195,6 +195,12 @@ class RealtimeTranscriptAnalysisResponse(BaseModel):
     analysisFeatureSet: Optional[str] = None
     retryAfterSeconds: Optional[int] = None
     errorCode: Optional[str] = None
+    retryable: Optional[bool] = None
+    retryExhausted: Optional[bool] = None
+    analysisRetryCount: Optional[int] = None
+    analysisNextRetryAt: Optional[str] = None
+    analysisTraceId: Optional[str] = None
+    analysisProviderAlias: Optional[str] = None
     analysisStatus: Optional[str] = None
     cacheHit: Optional[bool] = None
     provider: Optional[str] = None

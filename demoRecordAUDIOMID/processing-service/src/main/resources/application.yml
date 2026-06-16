@@ -81,6 +81,10 @@ realtime:
     max-size: 64
     stop-drain-timeout-ms: 5000
 
+processing:
+  analysis-lock-ttl-seconds: 600
+  analysis-failure-cooldown-seconds: 90
+
 resilience4j:
   retry:
     instances:

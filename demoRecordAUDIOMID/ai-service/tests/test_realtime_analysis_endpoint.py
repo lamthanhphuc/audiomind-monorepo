@@ -457,7 +457,7 @@ def test_realtime_analysis_cooldown_active_returns_failed_without_new_call(
     monkeypatch.setattr(
         main_module,
         "_try_begin_realtime_analysis",
-        lambda meeting_id, analysis_cache_key, source, prompt_version, schema_version: (
+        lambda *args, **kwargs: (
             False,
             "cooldown_active",
             "GEMINI_UNAVAILABLE",
@@ -485,7 +485,7 @@ def test_realtime_analysis_in_progress_returns_skipped_shape(db_session, monkeyp
     monkeypatch.setattr(
         main_module,
         "_try_begin_realtime_analysis",
-        lambda meeting_id, analysis_cache_key, source, prompt_version, schema_version: (
+        lambda *args, **kwargs: (
             False,
             "in_progress",
             None,
