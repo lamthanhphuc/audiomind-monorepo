@@ -16,6 +16,7 @@ type DashboardLayoutProps = {
   onNavigate: (scene: DashboardScene) => void
   showRealtime?: boolean
   recentFiles?: Array<{ id: string; label: string; active?: boolean }>
+  onRecentFileClick?: (id: string) => void
 }
 
 export default function DashboardLayout({
@@ -26,6 +27,7 @@ export default function DashboardLayout({
   onNavigate,
   showRealtime = true,
   recentFiles = [],
+  onRecentFileClick,
 }: DashboardLayoutProps) {
   const initial = user.name.trim()[0]?.toUpperCase() || 'A'
 
@@ -74,7 +76,12 @@ export default function DashboardLayout({
           <ul className="dashboard-recents-list">
             {recentFiles.length > 0 ? (
               recentFiles.map((item) => (
-                <li key={item.id} className={item.active ? 'active' : ''}>
+                <li
+                  key={item.id}
+                  className={item.active ? 'active' : ''}
+                  onClick={() => onRecentFileClick?.(item.id)}
+                  data-testid="dashboard-recent-item"
+                >
                   <span className="icon">🎵</span> {item.label}
                 </li>
               ))

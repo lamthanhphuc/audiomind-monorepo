@@ -56,6 +56,26 @@ describe('App history analysis navigation', () => {
     vi.restoreAllMocks()
   })
 
+  it('shows recent meetings in sidebar and opens analysis when clicked', async () => {
+    await act(async () => {
+      root.render(<App />)
+    })
+    await flush()
+
+    expect(container.textContent).not.toContain('Chưa có file gần đây')
+    const recentItem = Array.from(container.querySelectorAll('[data-testid="dashboard-recent-item"]'))
+      .find((item) => item.textContent?.includes('History item')) as HTMLLIElement | undefined
+    expect(recentItem).toBeTruthy()
+
+    await act(async () => {
+      recentItem?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    await flush()
+
+    expect(container.textContent).toContain('History analysis summary')
+    expect(container.textContent).toContain('History transcript line')
+  })
+
   it('returns to History after opening analysis from History and clicking back', async () => {
     await act(async () => {
       root.render(<App />)
