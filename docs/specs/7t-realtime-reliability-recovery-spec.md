@@ -3,7 +3,7 @@
 Status: SPEC-ONLY  
 Branch: `docs/7t-realtime-reliability-recovery-spec`  
 Baseline: `main` @ `51fac73` (`fix(ui): polish Google Meet demo interface (#98)`)  
-Updated: 2026-06-16
+Updated: 2026-06-16 (revision 2 — pre-implement tighten)
 
 Spec-only phase. Không implement runtime code, Docker smoke, browser smoke, deploy VPS, hoặc commit ngoài file spec này trong task spec.
 
@@ -140,62 +140,100 @@ Epic này **không** làm:
 - **No secrets in logs** — chỉ log `keyAlias`, `traceId`, `meetingId`, `sessionId`, `attempt`.
 - **Gateway-only FE** — FE không gọi ai-api trực tiếp cho analysis.
 
+### 5.3 PR boundary (locked — no scope creep)
+
+| In scope | Out of scope (PR khác) |
+| --- | --- |
+| **PR1:** FE audio tail, WS drain/finalize ordering, idempotent stop/finalize logs, final audio fallback integration check | **PR1 KHÔNG:** short transcript gate, processing pre-check length ≥80, Gemini retry/classification, analysis status migration, Celery retry, FE analysis UX |
+| **PR2:** short transcript gate, Gemini recovery, background retry, analysis metadata migration, FE retry UX | **PR2 KHÔNG:** `MediaRecorder` stop flow, `stopRecordingGraceful`, WS tail drain ordering changes |
+
+PR1 và PR2 **không** được gộp trong một implementation PR.
+
+### 5.4 Relationship to previous analysis resilience spec
+
+Spec này **supersedes** các phần retry/deferred của `docs/specs/7t-analysis-resilience-history-performance-spec.md` cho **Epic 1** realtime reliability:
+
+| Topic | Spec cũ (`7t-analysis-resilience`) | Spec mới (7T — locked) |
+| --- | --- | --- |
+| Background auto-retry | Deferred / optional / default off; single-node only | **Bounded background retry** enabled by default via feature flag |
+| DB migration | Không migration trong MVP cũ | **Alembic migration** cho `meeting_analysis_runs` retry metadata nếu cần |
+| Retry metadata | Redis `attemptCount`, `retryAfterSeconds` | Explicit fields: `analysis_retry_count`, `analysis_next_retry_at`, `analysis_trace_id`, lock payload |
+| History perf / scroll | In scope spec cũ | **Out of scope** Epic này — vẫn theo spec cũ khi implement riêng |
+| FE layout / debounce | In scope spec cũ | **Out of scope** Epic này |
+
+Khi implement Epic 1, ưu tiên spec này cho stop tail + analysis recovery. Spec cũ vẫn valid cho history hydration performance và layout fixes.
+
 ---
 
 ## 6. PR 1 — F9-R5 Stop Tail Preservation
 
+**PR1 scope reminder:** Chỉ FE final audio tail, WS drain/finalize ordering, idempotent stop/finalize logs, final audio fallback integration check. Không short gate, không Gemini, không analysis retry.
+
 ### 6.1 Target Flow
+
+**Quan trọng:** Không coi chunk từ `requestData()` là “final tail” cho đến khi `stop` event đã fire và grace window đã hết. `stop()` có thể phát sinh thêm `dataavailable` sau `requestData()` — phải collect **tất cả**.
 
 ```
 User bấm Stop
   → UI: "Đang hoàn tất ghi âm..." (lifecycle: stopping → finalizing_recording)
-  → FE: MediaRecorder.requestData() nếu state === 'recording' | 'paused'
-  → FE: MediaRecorder.stop()
-  → FE: chờ final dataavailable (Promise, timeout 500ms) HOẶC stop event (timeout 800ms)
-  → FE: enqueue/send chunk cuối qua sendAudioChunk (nếu size > 0)
+  → FE: đăng ký listeners dataavailable + stop TRƯỚC khi mutate recorder
+  → FE: nếu recording|paused → requestData() (log MEDIARECORDER_REQUEST_DATA)
+  → FE: recorder.stop()
+  → FE: collect MỌI dataavailable (từ requestData VÀ stop) vào buffer tạm
+  → FE: chờ stop event (timeout RECORDER_STOP_TIMEOUT_MS)
+  → FE: sau stop event → grace REQUEST_DATA_GRACE_MS để nhận late dataavailable
+  → FE: merge collected chunks + audioChunks hiện có → build fullBlob
+  → FE: enqueue/send TẤT CẢ chunks chưa gửi (kể cả phát sinh sau stop) qua sendAudioChunk
   → FE: chờ pending chunk dispatches (existing AudioRecorderButton logic)
-  → FE: build fullAudio Blob (giữ audioChunks — KHÔNG clear sớm)
   → FE: flushPendingMessages(true) + waitForBufferedAmountToDrain(1500ms)
   → FE: websocket.send stream.stop (existing stopStream)
   → FE: chờ stream.status terminal hoặc hydration ready
   → BE: finalizeSttSession idempotent + drain seq
   → Nếu transcript rows = 0 và fullAudio đủ lớn: final-audio-fallback (existing path)
   → Cleanup tracks/mixer/recorder SAU terminal status
+  → Overall timeout: OVERALL_GRACEFUL_STOP_TIMEOUT_MS — nếu vượt, proceed với chunks đã có + fallback path
 ```
 
 ### 6.2 FE requirements
 
 #### 6.2.1 `useAudioRecorder.ts`
 
-Thêm `stopRecordingGraceful(): Promise<{ fullBlob: Blob; sessionId: number }>`:
+Thêm `stopRecordingGraceful(): Promise<{ fullBlob: Blob; sessionId: number; collectedChunkCount: number }>`:
 
 1. Nếu recorder inactive → resolve với blob từ `audioChunks` hiện có.
 2. Nếu `recording` hoặc `paused`:
-   - Log `MEDIARECORDER_REQUEST_DATA`.
-   - Gọi `recorder.requestData()` trong try/catch (ignore nếu unsupported).
-   - Đăng ký one-shot listener chờ `dataavailable` với `size > 0` hoặc timeout 500ms (`MEDIARECORDER_FINAL_DATAAVAILABLE`).
-   - Gọi `recorder.stop()`; chờ `onstop` với timeout 800ms (`MEDIARECORDER_STOP_EVENT`).
-3. **Không** gọi `cleanupStream()` trong `onstop` — chuyển cleanup sang caller sau terminal.
-4. `finishRecording` tách thành:
+   - Tạo `collectedDuringStop: Blob[]` và flags `stopEventFired`, `graceComplete`.
+   - **Trước** `requestData()`/`stop()`: gắn `ondataavailable` collector — mọi event `size > 0` append vào `collectedDuringStop` và `audioChunks` state; log `MEDIARECORDER_DATAAVAILABLE_COLLECTED` với `{ phase: 'pre_stop' | 'post_request_data' | 'post_stop', size }`.
+   - Gắn `onstop` one-shot → set `stopEventFired=true`, log `MEDIARECORDER_STOP_EVENT`.
+   - Gọi `recorder.requestData()` trong try/catch (ignore nếu unsupported); log `MEDIARECORDER_REQUEST_DATA`.
+   - Gọi `recorder.stop()`.
+   - Chờ `stopEventFired` với timeout `RECORDER_STOP_TIMEOUT_MS`.
+   - Sau `stop` event: chờ thêm `REQUEST_DATA_GRACE_MS` để late `dataavailable` từ `stop()` đến (poll/setTimeout, không resolve sớm).
+   - **Không** label bất kỳ chunk nào là “final tail for WS” cho đến khi grace window kết thúc.
+   - Build `fullBlob` từ merge `audioChunks` + `collectedDuringStop` (dedupe by order, không drop post-stop chunks).
+3. Wrap toàn bộ trong `OVERALL_GRACEFUL_STOP_TIMEOUT_MS` — on timeout: log `MEDIARECORDER_GRACEFUL_STOP_TIMEOUT`, proceed với chunks đã collect.
+4. **Không** gọi `cleanupStream()` trong `onstop` — chuyển cleanup sang caller sau terminal.
+5. `finishRecording` tách thành:
    - `markRecordingStopped(sessionId)` — set state `stopped`, stop timers only.
    - `cleanupRecordingResources(sessionId)` — cleanup stream/mixer/recorder handlers (gọi sau finalize path).
-5. Không clear `audioChunks` / `rollingChunksRef` cho đến khi `handleLiveRecordingComplete` xác nhận terminal hoặc fallback xong.
+6. Không clear `audioChunks` / `rollingChunksRef` cho đến khi `handleLiveRecordingComplete` xác nhận terminal hoặc fallback xong.
 
-Constants (MVP):
+Constants (MVP — locked):
 
-| Constant | Value |
-| --- | --- |
-| `FINAL_DATAAVAILABLE_TIMEOUT_MS` | 500 |
-| `RECORDER_STOP_EVENT_TIMEOUT_MS` | 800 |
-| `STOP_DRAIN_TIMEOUT_MS` | 1500 (giữ hiện tại) |
+| Constant | Value | Purpose |
+| --- | --- | --- |
+| `REQUEST_DATA_GRACE_MS` | 1000 (range 750–1500) | Late `dataavailable` sau `stop` event |
+| `RECORDER_STOP_TIMEOUT_MS` | 2000 | Chờ `onstop` |
+| `OVERALL_GRACEFUL_STOP_TIMEOUT_MS` | 5000 | Hard cap toàn graceful stop |
+| `STOP_DRAIN_TIMEOUT_MS` | 1500 (giữ hiện tại) | WS `bufferedAmount` drain |
 
 #### 6.2.2 `AudioRecorderButton.tsx`
 
 - Stop click gọi `stopRecordingGraceful()` thay vì `stopRecording()`.
 - Set parent lifecycle `stopping` **trước** graceful stop (callback prop `onStopRequested`).
 - Disable button khi `stopping` | `finalizing_recording` | `finalizing_transcript`.
-- Completion effect: sau graceful stop + pending dispatches → `onRecordingComplete(fullBlob, sessionId)`.
-- Log `REALTIME_FINAL_CHUNK_ENQUEUED` khi chunk tail được dispatch.
+- Completion effect: sau graceful stop + **tất cả** post-stop chunks enqueued + pending dispatches → `onRecordingComplete(fullBlob, sessionId)`.
+- Log `REALTIME_FINAL_CHUNK_ENQUEUED` chỉ sau grace window kết thúc — khi dispatch chunk phát sinh từ `stop()` (có `postStop: true` trong log).
 
 #### 6.2.3 `useRealtimeMeetingStream.ts`
 
@@ -231,10 +269,11 @@ Constants (MVP):
 | Event | When |
 | --- | --- |
 | `REALTIME_STOP_REQUESTED` | User stop or tab track ended |
-| `MEDIARECORDER_REQUEST_DATA` | Before stop |
-| `MEDIARECORDER_FINAL_DATAAVAILABLE` | Final chunk received or timeout |
-| `MEDIARECORDER_STOP_EVENT` | onstop fired or timeout |
-| `REALTIME_FINAL_CHUNK_ENQUEUED` | Tail chunk sent to WS queue |
+| `MEDIARECORDER_REQUEST_DATA` | Before `stop()` |
+| `MEDIARECORDER_DATAAVAILABLE_COLLECTED` | Each collected chunk; include `phase`, `postStop` |
+| `MEDIARECORDER_STOP_EVENT` | `onstop` fired or `RECORDER_STOP_TIMEOUT_MS` |
+| `MEDIARECORDER_GRACE_COMPLETE` | `REQUEST_DATA_GRACE_MS` elapsed after stop |
+| `REALTIME_FINAL_CHUNK_ENQUEUED` | Post-grace chunk sent to WS; `postStop` flag |
 | `REALTIME_FINALIZE_AFTER_CLIENT_DRAIN` | Before stream.stop send |
 | `FINAL_AUDIO_BLOB_READY` | fullBlob assembled, size logged |
 
@@ -269,8 +308,8 @@ event=REALTIME_FINALIZE_COMPLETE
 ```
 
 - Double `stream.stop` / `afterConnectionClosed` không duplicate analysis trigger (existing test `handleTextMessage_duplicateStreamStop_shouldNotTriggerRealtimeAnalysisTwice`).
-- `transcriptRows = 0` hoặc `FAILED_AUDIO_CAPTURE` → **không** gọi Gemini (existing `REALTIME_ANALYSIS_SKIPPED`).
-- `transcriptRows > 0` và meaningful (PR2 gate ở ai-api; PR1 processing có thể pre-check length ≥ 80 chars để tránh trigger sớm — optional optimization, không bắt buộc PR1).
+- `transcriptRows = 0` hoặc `FAILED_AUDIO_CAPTURE` → **không** gọi Gemini (existing `REALTIME_ANALYSIS_SKIPPED` — behavior hiện có, **không đổi logic PR1**).
+- **PR1 không làm:** short transcript gate, processing pre-check length ≥80, thay đổi analysis trigger policy. Analysis skip semantics thuộc PR2.
 
 #### 6.3.2 Async audio queue
 
@@ -289,6 +328,7 @@ event=REALTIME_FINALIZE_COMPLETE
 | R1-T6 | Slow network | Throttle WS, Stop | Timeout/fallback, không kẹt processing | `STREAM_STOP_BUFFER_DRAIN_TIMEOUT` optional; meeting terminal trong 30s |
 | R1-T7 | Tiny/no audio | Im lặng < 2s | `FAILED_AUDIO_CAPTURE`, no Gemini | `REALTIME_ANALYSIS_SKIPPED reason=failed_audio_capture` |
 | R1-T8 | Full audio fallback | Stream thiếu transcript, blob ≥ min bytes | Fallback transcript rows > 0 | `REALTIME_FINAL_AUDIO_FALLBACK_SUCCEEDED` |
+| R1-T9 | Post-stop chunk in blob/queue | Mock MediaRecorder: `requestData` chunk + **additional** `dataavailable` after `stop()` | Cả hai chunks trong `fullBlob` và WS queue (last seq includes post-stop) | `MEDIARECORDER_DATAAVAILABLE_COLLECTED phase=post_stop`, `REALTIME_FINAL_CHUNK_ENQUEUED postStop=true` |
 
 ---
 
@@ -323,7 +363,17 @@ STT/transcript terminal (rows > 0)
 | G4 | Mostly filler/noise | ≥ 60% tokens ∈ filler set `{ừ, à, ờ, hmm, uh, um, ...}` (locale vi+en minimal set hardcoded MVP) |
 | G5 | Duplicate micro-loop | Same normalized line repeated ≥ 4 lần (reuse pipeline collapse heuristic) |
 
-**Shared module:** `demoRecordAUDIOMID/ai-service/app/services/transcript_quality_gate.py`
+**Gate ownership (MVP — locked):**
+
+- **`ai-api` owns gate logic** — module `transcript_quality_gate.py`.
+- Gate chạy **inside** existing analysis paths **before** any Gemini call:
+  - `POST /api/internal/realtime-analysis` (`analyze_realtime_transcript`)
+  - batch `pipeline.py` / `analyze_meeting` path
+- **Processing-api không gọi** endpoint evaluate riêng trong MVP — giữ một HTTP hop tới analysis endpoint như hiện tại; ai-api trả skipped response ngay nếu gate fail.
+- **Không** duplicate Java evaluator; **không** thêm `POST /api/internal/transcript-quality/evaluate` trong MVP runtime path.
+- Endpoint evaluate riêng chỉ khi sau này cần reuse external/test harness — deferred, không Epic 1.
+
+**Module interface** (`transcript_quality_gate.py`):
 
 ```python
 @dataclass(frozen=True)
@@ -333,8 +383,6 @@ class TranscriptQualityVerdict:
     normalized_chars: int
     word_count: int
 ```
-
-Processing-api gọi gate qua ai-api internal `POST /api/internal/transcript-quality/evaluate` **hoặc** duplicate lightweight Java evaluator với cùng constants (DECISION: **ai-api owns gate logic**; processing gọi evaluate trước `analyzeRealtimeTranscript` để tránh HTTP Gemini).
 
 **Status mapping:**
 
@@ -365,17 +413,56 @@ Processing-api gọi gate qua ai-api internal `POST /api/internal/transcript-qua
 
 ### 7.4 Retry policy
 
+#### 7.4.1 Attempt semantics (locked)
+
+Phân biệt rõ hai lớp attempt — **không** trộn trong `analysis_retry_count`:
+
+| Term | Scope | Counted in `analysis_retry_count`? | Log field |
+| --- | --- | --- | --- |
+| **providerAttempt** | Mỗi HTTP call / key rotation trong **một** analysis invocation (`GeminiClient.max_attempts`, primary → backup1 → …) | **No** | `providerAttempt`, `keyAlias` |
+| **analysisAttempt** | Mỗi lần scheduling analysis end-to-end (initial, background retry #N, manual re-analyze) | **Yes** | `analysisAttempt` |
+
+Rules:
+
+- `analysis_retry_count` = số **analysisAttempt** đã hoàn tất (background + manual), **không** tính từng key alias nội bộ.
+- Manual re-analyze (`mode=force`) tăng `analysisAttempt` nhưng **có thể** reset `analysis_retry_count` background queue (user-initiated fresh run).
+- Mọi log Gemini/analysis phải có đủ: `meetingId`, `analysisAttempt`, `providerAttempt`, `keyAlias`, `analysisInputHash`, `traceId`.
+
+#### 7.4.2 Background retry schedule
+
 **MVP (locked):**
 
 | Phase | Behavior |
 | --- | --- |
-| Immediate | `GeminiClient` rotates keys in-process (existing max_attempts=3 per request) |
-| Background | Celery beat task `analysis.retry_scheduled` mỗi 60s scan Redis retry queue |
-| Backoff schedule | Attempt 1: 30s, 2: 2m, 3: 5m, 4: 15m after prior failure |
-| Max background retries | 4 |
+| Immediate | `GeminiClient` rotates keys in-process (`providerAttempt` 1..N per `analysisAttempt`) |
+| Background | Scheduler scan Redis retry queue (Celery beat **hoặc** worker loop — §10.2) |
+| Backoff schedule | `analysisAttempt` 2: +30s, 3: +2m, 4: +5m, 5: +15m after prior failure |
+| Max background retries | 4 (tức max 5 `analysisAttempt` including initial) |
 | Jitter | ±10% per delay |
-| Stop conditions | Permanent error; transcript hash unchanged + permanent code; `mode=force` manual re-analyze resets count |
-| No infinite retry | After 4 background failures → status `ANALYSIS_FAILED_RETRYABLE` với `retryExhausted=true` |
+| Stop conditions | Permanent error; transcript hash unchanged + permanent code |
+| No infinite retry | After 4 background failures → `retryExhausted=true` |
+
+#### 7.4.3 Analysis lock / idempotency (locked)
+
+Background retry và manual re-analyze **không** được chạy song song cho cùng `meetingId` + `analysisInputHash`.
+
+**Redis lock:**
+
+| Field | Value |
+| --- | --- |
+| Key | `analysis:lock:{meetingId}` |
+| TTL | 600s (10 phút) — đủ cho một Gemini call dài; refresh on heartbeat optional |
+| Payload | `{ meetingId, analysisInputHash, triggerSource: "background" \| "manual", analysisAttempt, traceId }` |
+
+Behavior khi lock held:
+
+| Caller | Behavior |
+| --- | --- |
+| Background retry task | Skip/defer — re-enqueue với `next_retry_at` +30s; log `ANALYSIS_LOCK_DEFERRED` |
+| Manual re-analyze | HTTP 409 hoặc 200 skipped với `reason=in_progress`; FE message "Phân tích đang chạy, vui lòng đợi…" |
+| Same analysisAttempt duplicate | Idempotent no-op via existing `begin_analysis_run` + lock |
+
+Reuse/extend existing `_analysis_lock_key(meeting_id)` trong `ai-api/main.py` nếu đã có; chuẩn hóa payload trên.
 
 **Env flags:**
 
@@ -406,7 +493,7 @@ Bảng `meeting_analysis_runs` thêm columns (nullable, backward-compatible):
 
 | Column | Type | Purpose |
 | --- | --- | --- |
-| `analysis_retry_count` | INTEGER DEFAULT 0 | Background + manual attempts |
+| `analysis_retry_count` | INTEGER DEFAULT 0 | **analysisAttempt** count (background + manual), not provider key rotations |
 | `analysis_next_retry_at` | TIMESTAMP NULL | Next scheduled retry |
 | `analysis_last_attempt_at` | TIMESTAMP NULL | Observability |
 | `analysis_provider_alias` | VARCHAR(32) NULL | `primary`, `backup1` — logs only safe alias |
@@ -463,6 +550,7 @@ Files: `MeetingHistoryScene.tsx`, `FeatureAnalysis.tsx`, `RealtimeDashboardScene
 | R2-T7 | Zero rows | Empty DB transcript | No Gemini | `REALTIME_ANALYSIS_SKIPPED reason=no_transcript` |
 | R2-T8 | Manual re-analyze | Click re-analyze after retryable | New run `mode=force`, resets attempt optional | `REALTIME_ANALYSIS_TRIGGERED source=rerun` |
 | R2-T9 | Export pending | Export during retryable | No wrong report data | No `REALTIME_ANALYSIS_TRIGGERED` from export |
+| R2-T10 | Lock vs manual | Background retry in-flight + user re-analyze | **Không** duplicate Gemini call; manual deferred or 409 | `ANALYSIS_LOCK_DEFERRED` or `reason=in_progress` |
 
 ---
 
@@ -474,9 +562,10 @@ Files: `MeetingHistoryScene.tsx`, `FeatureAnalysis.tsx`, `RealtimeDashboardScene
 | --- | --- |
 | `REALTIME_STOP_REQUESTED` | `meetingId`, `sessionId`, `source` |
 | `MEDIARECORDER_REQUEST_DATA` | `sessionId`, `recorderState` |
-| `MEDIARECORDER_FINAL_DATAAVAILABLE` | `size`, `chunkSequence`, `timedOut` |
+| `MEDIARECORDER_DATAAVAILABLE_COLLECTED` | `phase`, `postStop`, `size`, `chunkSequence` |
 | `MEDIARECORDER_STOP_EVENT` | `sessionId`, `timedOut` |
-| `REALTIME_FINAL_CHUNK_ENQUEUED` | `meetingId`, `seq`, `size` |
+| `MEDIARECORDER_GRACE_COMPLETE` | `graceMs`, `collectedPostStopCount` |
+| `REALTIME_FINAL_CHUNK_ENQUEUED` | `meetingId`, `seq`, `size`, `postStop` |
 | `REALTIME_FINALIZE_AFTER_CLIENT_DRAIN` | `meetingId`, `lastSeq`, `bufferedAmount` |
 | `FINAL_AUDIO_BLOB_READY` | `meetingId`, `bytes` |
 
@@ -488,19 +577,21 @@ Files: `MeetingHistoryScene.tsx`, `FeatureAnalysis.tsx`, `RealtimeDashboardScene
 | `REALTIME_FINALIZE_COMPLETE` | `meetingId`, `finalizeSeq`, `transcriptRows`, `finalAudioBytes` |
 | `REALTIME_STOP_DUPLICATE_IGNORED` | `meetingId`, `finalizedSeq` |
 | `REALTIME_ANALYSIS_SKIPPED` | `meetingId`, `reason`, `source` |
-| `REALTIME_ANALYSIS_FAILED_RETRYABLE` | `meetingId`, `errorCode`, `retryAfterSeconds`, `attempt` |
+| `REALTIME_ANALYSIS_FAILED_RETRYABLE` | `meetingId`, `errorCode`, `retryAfterSeconds`, `analysisAttempt` |
 
 ### 8.3 ai-api Gemini
 
 | Event | Fields |
 | --- | --- |
-| `GEMINI_KEY_SELECTED` | `alias`, `attempt`, `meetingId`, `traceId` |
-| `GEMINI_KEY_FAILED` | `alias`, `statusCode`, `errorCode`, `retryable` |
-| `GEMINI_ALL_KEYS_EXHAUSTED` | `retryable`, `cooldownActive`, `meetingId` |
-| `ANALYSIS_SKIPPED_SHORT_TRANSCRIPT` | `meetingId`, `normalizedChars`, `wordCount` |
-| `ANALYSIS_BACKGROUND_RETRY_ENQUEUED` | `meetingId`, `attempt`, `nextRetryAt` |
-| `ANALYSIS_BACKGROUND_RETRY_SUCCESS` | `meetingId`, `attempt`, `alias` |
-| `ANALYSIS_BACKGROUND_RETRY_EXHAUSTED` | `meetingId`, `attemptCount` |
+| `GEMINI_KEY_SELECTED` | `keyAlias`, `providerAttempt`, `analysisAttempt`, `meetingId`, `traceId` |
+| `GEMINI_KEY_FAILED` | `keyAlias`, `providerAttempt`, `statusCode`, `errorCode`, `retryable` |
+| `GEMINI_ALL_KEYS_EXHAUSTED` | `retryable`, `cooldownActive`, `meetingId`, `analysisAttempt` |
+| `ANALYSIS_SKIPPED_SHORT_TRANSCRIPT` | `meetingId`, `normalizedChars`, `wordCount`, `skipReason` |
+| `ANALYSIS_LOCK_ACQUIRED` | `meetingId`, `triggerSource`, `analysisAttempt`, `analysisInputHash` |
+| `ANALYSIS_LOCK_DEFERRED` | `meetingId`, `triggerSource`, `holderTraceId` |
+| `ANALYSIS_BACKGROUND_RETRY_ENQUEUED` | `meetingId`, `analysisAttempt`, `nextRetryAt` |
+| `ANALYSIS_BACKGROUND_RETRY_SUCCESS` | `meetingId`, `analysisAttempt`, `keyAlias` |
+| `ANALYSIS_BACKGROUND_RETRY_EXHAUSTED` | `meetingId`, `analysisRetryCount` |
 
 **Never log:** raw API key, `x-goog-api-key`, full prompts, transcript body in error paths, JWT.
 
@@ -514,7 +605,7 @@ Theo TDD vertical slices: mỗi slice 1 test behavior → implement → green tr
 
 | Test file | Cases |
 | --- | --- |
-| `useAudioRecorder.test.ts` (new) | `requestData` before stop; final dataavailable wait; deferred cleanup |
+| `useAudioRecorder.test.ts` (new) | Listener-before-mutate; collect post-stop `dataavailable`; grace window; overall timeout; R1-T9 |
 | `AudioRecorderButton.test.tsx` | Tail chunk dispatch before complete; disabled when stopping |
 | `useRealtimeMeetingStream.test.tsx` | stopStream ordering; duplicate stop; drain timeout |
 | `App.test.tsx` | `handleLiveRecordingComplete` order; tab track ended graceful path |
@@ -528,35 +619,58 @@ Theo TDD vertical slices: mỗi slice 1 test behavior → implement → green tr
 | `test_transcript_quality_gate.py` (new) | Gate rules G1–G5 boundary (79 vs 80 chars, 11 vs 12 words) |
 | `test_gemini_analyzer.py` | Key rotation; all keys exhausted → retryable |
 | `test_realtime_analysis_endpoint.py` | Short transcript skip; ANALYSIS_FAILED_RETRYABLE status |
-| `test_analysis_retry_task.py` (new) | Backoff schedule; max attempts; jitter bounds |
-| `ProcessingServiceTest.java` | Retryable failure mapping; skip short transcript before ai call |
+| `test_analysis_retry_task.py` (new) | Backoff schedule; max attempts; jitter; lock defer when held |
+| `test_analysis_lock.py` (new) | Concurrent background + manual → single Gemini invocation |
+| `ProcessingServiceTest.java` | Retryable failure mapping; lock defer propagation in response |
 
 ### 9.3 Integration tests
 
 | Test | Scope |
 | --- | --- |
-| FE hook + mock WS | Stop tail: final seq reaches processing mock |
+| FE hook + mock WS | Stop tail: final seq reaches processing mock; **R1-T9** post-stop chunk |
 | processing → ai-api | Finalize → analysis trigger → 503 → retryable state in Redis |
-| Celery retry task | Enqueue → beat tick → success path |
+| Celery retry task | Enqueue → scheduler tick → success path; lock prevents duplicate |
 
-### 9.4 Manual smoke matrix
+### 9.4 Fault injection strategy (CI — no live Gemini)
+
+**CI không phụ thuộc Gemini live.** Không dùng API key thật để ép quota/503.
+
+| Layer | Mechanism |
+| --- | --- |
+| Unit (ai-api) | Inject `FakeGeminiClient` / monkeypatch `GeminiClient.post_json` — ép primary 429, backup 200, all 503, timeout, 400 |
+| Unit (processing) | Mock `AIServiceClient.analyzeRealtimeTranscript` responses |
+| Integration | Env `GEMINI_CLIENT_TEST_MODE=fault_injection` + fault profile (`primary_429_backup_ok`, `all_503`, `timeout`, `invalid_400`) — **chỉ** test/dev compose |
+| FE | Mock `fetch` / MSW for analysis status transitions |
+
+Fault profiles bắt buộc cho PR2 CI:
+
+| Profile | Expected |
+| --- | --- |
+| `primary_429_backup_ok` | `COMPLETED`, `keyAlias=backup1` |
+| `all_503` | `ANALYSIS_FAILED_RETRYABLE` |
+| `timeout` | `ANALYSIS_FAILED_RETRYABLE`, `GEMINI_UNAVAILABLE` |
+| `invalid_400` | `FAILED` permanent, no background enqueue |
+
+### 9.5 Manual smoke matrix
 
 | Gate | Cases |
 | --- | --- |
-| PR1 local | R1-T1..R1-T8 |
-| PR2 local | R2-T1..R2-T9 (Gemini fault via env mock keys) |
+| PR1 local | R1-T1..R1-T9 |
+| PR2 local | R2-T1..R2-T10 (fault injection / mock — không live Gemini) |
 | Production smoke | 1 mic + 1 tab meeting each PR after deploy |
 | Regression upload | 1 upload meeting end-to-end |
 | Regression mic-only | Pre-#96 microphone flow |
 | Regression tab/mic+tab | Google Meet demo paths |
 
-### 9.5 Test matrix (condensed)
+### 9.6 Test matrix (condensed)
 
 | ID | Layer | Input | Expected status | Key log |
 | --- | --- | --- | --- | --- |
 | R1-T1 | E2E | Mic fast stop | Transcript complete | `REALTIME_FINAL_CHUNK_ENQUEUED` |
 | R2-T6 | API | 13 char transcript | `ANALYSIS_SKIPPED_SHORT_TRANSCRIPT` | `ANALYSIS_SKIPPED_SHORT_TRANSCRIPT` |
 | R2-T2 | API | All 503 | `ANALYSIS_FAILED_RETRYABLE` | `GEMINI_ALL_KEYS_EXHAUSTED` |
+| R1-T9 | Unit | Mock post-stop dataavailable | Chunk in blob + queue | `postStop=true` |
+| R2-T10 | Integration | Lock held + manual re-analyze | No duplicate Gemini | `ANALYSIS_LOCK_DEFERRED` |
 | REG-U1 | E2E | Upload MP3 | `COMPLETED` + analysis | `ANALYSIS_CACHE_HIT` or `SAVED` |
 
 ---
@@ -584,12 +698,32 @@ Manual: 1 mic meeting fast-stop tail check.
 
 ### 10.2 PR2 deploy
 
-| Service | Action |
-| --- | --- |
-| `ai-api` | Deploy gate + retry status fixes |
-| `celery-worker` | Deploy retry task module |
-| `celery-beat` | Add to compose if not present — single scheduler instance |
-| `processing-api` | Deploy gate pre-check + response field extensions |
+**Hiện trạng compose (audited 2026-06-16):** `infra/docker-compose.mvp.yml` và `docker-compose.dev.yml` có `celery-worker` — **chưa có** `celery-beat` service.
+
+| Service | Action | Required? |
+| --- | --- | --- |
+| `ai-api` | Gate inside analysis endpoint + retry status + lock | **Yes** |
+| `celery-worker` | Retry task module + optional scheduler loop | **Yes** |
+| `celery-beat` | **Thêm mới** nếu chọn beat-based scheduler — **đúng 1 instance** | Preferred |
+| `processing-api` | Propagate extended analysis response fields (không gate pre-check) | **Yes** nếu response contract đổi |
+| `web` | Retryable / short-transcript UX | **Yes** |
+
+**Scheduler decision (MVP — locked):**
+
+| Option | When | Duplicate guard |
+| --- | --- | --- |
+| **A (preferred):** `celery-beat` + `analysis.retry_scheduled` every 60s | Production MVP | `analysis:lock:{meetingId}` + single beat replica |
+| **B (fallback):** Worker embedded loop (`celery worker` startup hook polls queue every 60s) | Nếu chưa muốn thêm beat service ngay | **Bắt buộc** Redis lock — không poll nếu lock held; **không** scale worker >1 without lock |
+
+Chỉ một scheduler path active per environment — không beat **và** worker loop cùng lúc.
+
+**PR2 deploy checklist (all environments):**
+
+1. `ai-api`
+2. `celery-worker`
+3. `celery-beat` (nếu Option A)
+4. `processing-api` (status propagation)
+5. `web` (UX)
 
 **DB migration:**
 
@@ -632,7 +766,8 @@ Không xóa volume. Không `git push --force` main.
 
 | Risk | Likelihood | Impact | Mitigation |
 | --- | --- | --- | --- |
-| Browser không emit final `dataavailable` | Medium | Tail loss | `requestData()` + timeout proceed; rely on timeslice last chunk + final audio fallback |
+| Browser không emit `dataavailable` sau `stop` | Medium | Tail loss | Collect all events in grace window; overall timeout + final audio fallback |
+| Duplicate background + manual analysis | Medium | Double Gemini cost | `analysis:lock:{meetingId}` §7.4.3; R2-T10 |
 | Stop sharing tab trước Stop | Medium | Truncated audio | `onTrackEnded` → same graceful path; user message |
 | Duplicate stop/finalize | Low | Duplicate analysis | `FINALIZED_ATTR` + FE `streamStopSentRef` |
 | WebSocket closed before drain | Medium | Missing tail | Drain timeout + disconnect fallback (existing) + PR1 ordering fix |
@@ -660,6 +795,11 @@ Epic **7T-Realtime-Reliability-Recovery** Done khi **tất cả**:
 - [ ] Export không ghi dữ liệu sai khi analysis chưa hoàn tất (R2-T9)
 - [ ] Logs đủ debug với `meetingId` + `traceId` — không cần SSH đọc thủ công quá nhiều
 - [ ] Production smoke pass sau PR1 + PR2
+- [ ] **PR1 không đụng** Gemini / short gate / analysis retry (§5.3)
+- [ ] **PR2 không đụng** MediaRecorder stop flow / `stopRecordingGraceful` (§5.3)
+- [ ] Không duplicate Gemini call khi background retry + manual re-analyze gần nhau (R2-T10)
+- [ ] CI pass **không** phụ thuộc Gemini live (§9.4)
+- [ ] Spec `7t-analysis-resilience-history-performance-spec.md` reconciled — retry parts superseded (§5.4)
 
 ---
 
@@ -667,17 +807,18 @@ Epic **7T-Realtime-Reliability-Recovery** Done khi **tất cả**:
 
 | # | Slice | PR | Deliverable |
 | --- | --- | --- | --- |
-| 1 | FE `stopRecordingGraceful` + requestData wait | PR1 | `useAudioRecorder.ts` |
+| 1 | FE `stopRecordingGraceful` — listeners-first, collect all dataavailable, grace window | PR1 | `useAudioRecorder.ts` |
 | 2 | FE deferred cleanup + lifecycle `finalizing_recording` | PR1 | `useAudioRecorder.ts`, `App.tsx` |
 | 3 | FE queue drain / finalize ordering | PR1 | `AudioRecorderButton`, `useRealtimeMeetingStream` |
 | 4 | Processing finalize idempotency + seq logs | PR1 | `MeetingWebSocketHandler.java` |
 | 5 | Final audio fallback integration check | PR1 | `App.tsx` + tests |
-| 6 | `transcript_quality_gate.py` + endpoint | PR2 | ai-api |
-| 7 | Gemini retry classification fix (`ANALYSIS_FAILED_RETRYABLE`) | PR2 | `main.py`, `analysis_runs.py` |
-| 8 | Redis retry queue + Celery beat task | PR2 | `tasks.py`, celery beat compose |
+| 6 | `transcript_quality_gate.py` inside analysis endpoints | PR2 | ai-api `main.py`, `pipeline.py` |
+| 7 | Gemini retry classification + `ANALYSIS_FAILED_RETRYABLE` | PR2 | `main.py`, `analysis_runs.py` |
+| 8 | Redis retry queue + analysis lock + scheduler (beat or worker loop) | PR2 | `tasks.py`, compose |
 | 9 | Alembic migration analysis run columns | PR2 | `models.py` |
 | 10 | FE retryable + short transcript UX | PR2 | `AnalysisStatusPanel`, scenes |
-| 11 | Smoke / log bundle script update | PR2 | `docs/deploy/production-smoke-checklist.md` append |
+| 11 | Fault injection test doubles + CI profiles | PR2 | `test_gemini_analyzer.py`, compose test env |
+| 12 | Smoke / log bundle script update | PR2 | `docs/deploy/production-smoke-checklist.md` append |
 
 ---
 
@@ -696,17 +837,17 @@ Epic **7T-Realtime-Reliability-Recovery** Done khi **tất cả**:
 | `FE-Audiomind/src/components/features/FeatureAnalysis.tsx` | hydrate analysis | Analysis page | Retryable banner polish | `FeatureAnalysis.test.tsx` |
 | `FE-Audiomind/src/services/api.ts` | API types | Response parsing | New metadata fields | `api.test.ts` |
 | `processing-service/.../MeetingWebSocketHandler.java` | `finalizeSttSession` | Terminal finalize | Structured seq logs | `MeetingWebSocketHandlerTest.java` |
-| `processing-service/.../ProcessingService.java` | `runLazyRealtimeAnalysis` | Trigger analysis | Pre-gate call; propagate new fields | `ProcessingServiceTest.java` |
+| `processing-service/.../ProcessingService.java` | `runLazyRealtimeAnalysis` | Trigger analysis | Propagate extended response fields only (no gate pre-check) | `ProcessingServiceTest.java` |
 | `processing-service/.../JobStateStore.java` | `markAnalysisFailed` | Redis state | `retryExhausted`, `nextRetryAt` fields | `ProcessingServiceTest.java` |
 | `processing-service/.../AnalysisFailureMapping.java` | error mapping | Retryable codes | Add `GEMINI_CONTENT_BLOCKED` permanent | existing tests |
 | `ai-service/app/services/transcript_quality_gate.py` | (new) | — | Short transcript evaluator | `test_transcript_quality_gate.py` |
-| `ai-service/app/main.py` | `analyze_realtime_transcript` | Analysis endpoint | Gate + retryable status fix | `test_realtime_analysis_endpoint.py` |
+| `ai-service/app/main.py` | `analyze_realtime_transcript` | Analysis endpoint | Gate before Gemini + retryable status + lock | `test_realtime_analysis_endpoint.py` |
 | `ai-service/app/services/gemini_client.py` | `post_json` | Key rotation | Emit `GEMINI_KEY_FAILED` | `test_gemini_analyzer.py` |
 | `ai-service/app/services/analysis_runs.py` | `mark_analysis_run_failed` | DB status | Retryable status + new columns | `test_analysis_runs.py` |
 | `ai-service/app/models.py` | `MeetingAnalysisRun` | Schema | Migration columns | alembic test |
 | `ai-service/app/tasks.py` | Celery tasks | Batch processing | `analysis.retry_scheduled` task | `test_analysis_retry_task.py` |
 | `ai-service/app/services/stt_session_actor.py` | `finalize` | STT drain | Verify no change PR1 | `test_stt_session_actor.py` |
-| `infra/docker-compose.mvp.yml` | celery-beat | Worker only | Add beat service + env flags | manual compose check |
+| `infra/docker-compose.mvp.yml` | celery services | Worker only today | Add optional `celery-beat` (1 instance) OR document worker-loop mode | manual compose check |
 
 ---
 
@@ -714,8 +855,8 @@ Epic **7T-Realtime-Reliability-Recovery** Done khi **tất cả**:
 
 | Question | Answer in this spec |
 | --- | --- |
-| Làm sao chắc không mất âm cuối? | §6.1 `requestData()` → wait final `dataavailable` → send tail chunk → WS drain → `stream.stop` → §6.4 R1-T1..T3 |
-| Làm sao biết final chunk đã gửi xong? | `REALTIME_FINAL_CHUNK_ENQUEUED` + `STREAM_STOP_AFTER_FLUSH` + `lastSeq`/`drainedSeq` logs §6.3.1, §8 |
+| Làm sao chắc không mất âm cuối? | §6.1 listeners-first → `requestData()` → `stop()` → collect **all** `dataavailable` → grace after `stop` → post-grace WS enqueue → §6.4 R1-T1..T3, R1-T9 |
+| Làm sao biết final chunk đã gửi xong? | `REALTIME_FINAL_CHUNK_ENQUEUED postStop=true` only after grace; `STREAM_STOP_AFTER_FLUSH` + seq logs §6.3.1, §8 |
 | Gemini backup key fail thì sao? | Rotate aliases §7.3; all exhausted → retryable + background retry §7.4 |
 | Gemini 503/429 thì meeting status gì? | Meeting `completed` + transcript; analysis `ANALYSIS_FAILED_RETRYABLE` §7.1, §5.2 |
 | Transcript quá ngắn thì status gì? | `ANALYSIS_SKIPPED_SHORT_TRANSCRIPT` / `NO_MEANINGFUL_TRANSCRIPT` §7.2 |
