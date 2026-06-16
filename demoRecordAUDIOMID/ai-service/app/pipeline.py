@@ -1087,7 +1087,9 @@ class ProcessingPipeline:
                     analysis_identity.analysis_input_mode,
                 )
                 from app.config import get_settings
-                from app.services.transcript_quality_gate import evaluate_transcript_quality
+                from app.services.transcript_quality_gate import (
+                    evaluate_transcript_quality,
+                )
 
                 quality_verdict = evaluate_transcript_quality(
                     formatted_transcript,
@@ -1104,11 +1106,14 @@ class ProcessingPipeline:
                     )
                     mark_analysis_run_skipped_short(
                         run=active_analysis_run,
-                        error_code=quality_verdict.skip_reason or "ANALYSIS_SKIPPED_SHORT_TRANSCRIPT",
+                        error_code=quality_verdict.skip_reason
+                        or "ANALYSIS_SKIPPED_SHORT_TRANSCRIPT",
                         analysis_input_hash=analysis_identity.canonical_transcript_hash,
                     )
                     db.commit()
-                    run_metadata = analysis_run_response_metadata(active_analysis_run, cache_hit=False)
+                    run_metadata = analysis_run_response_metadata(
+                        active_analysis_run, cache_hit=False
+                    )
                     return {
                         "meeting_id": meeting_id,
                         "status": "completed",

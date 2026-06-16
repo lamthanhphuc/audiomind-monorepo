@@ -711,11 +711,18 @@ def analysis_run_response_metadata(
         metadata["errorCode"] = run.error_code
     if run.error_message:
         metadata["errorMessage"] = run.error_message
-    if run.status in ANALYSIS_RETRYABLE_FAILURE_STATUSES or run.status == ANALYSIS_STATUS_FAILED_RETRYABLE:
+    if (
+        run.status in ANALYSIS_RETRYABLE_FAILURE_STATUSES
+        or run.status == ANALYSIS_STATUS_FAILED_RETRYABLE
+    ):
         metadata["retryable"] = True
-        metadata["analysisRetryCount"] = int(getattr(run, "analysis_retry_count", 0) or 0)
+        metadata["analysisRetryCount"] = int(
+            getattr(run, "analysis_retry_count", 0) or 0
+        )
         if getattr(run, "analysis_next_retry_at", None):
-            metadata["analysisNextRetryAt"] = _analysis_timestamp(run.analysis_next_retry_at)
+            metadata["analysisNextRetryAt"] = _analysis_timestamp(
+                run.analysis_next_retry_at
+            )
         if getattr(run, "analysis_trace_id", None):
             metadata["analysisTraceId"] = run.analysis_trace_id
         if getattr(run, "analysis_provider_alias", None):

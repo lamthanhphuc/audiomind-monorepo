@@ -19,11 +19,7 @@ class FakeRedis:
         self.zset.update(mapping)
 
     def zrangebyscore(self, key, _min, _max):
-        return [
-            member
-            for member, score in self.zset.items()
-            if score <= float(_max)
-        ]
+        return [member for member, score in self.zset.items() if score <= float(_max)]
 
     def zrem(self, key, member):
         self.zset.pop(member, None)
@@ -96,6 +92,9 @@ def test_celery_beat_registers_analysis_retry_scheduled():
 
     schedule = celery_app.conf.beat_schedule
     assert "analysis-retry-scheduled" in schedule
-    assert schedule["analysis-retry-scheduled"]["task"] == "app.tasks.analysis_retry_scheduled"
+    assert (
+        schedule["analysis-retry-scheduled"]["task"]
+        == "app.tasks.analysis_retry_scheduled"
+    )
     assert schedule["analysis-retry-scheduled"]["schedule"] == 60.0
     assert celery_app.tasks.get("app.tasks.analysis_retry_scheduled") is not None

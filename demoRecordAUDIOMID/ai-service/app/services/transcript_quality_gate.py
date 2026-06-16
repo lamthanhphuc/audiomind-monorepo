@@ -7,10 +7,27 @@ from dataclasses import dataclass
 SKIP_REASON_SHORT = "ANALYSIS_SKIPPED_SHORT_TRANSCRIPT"
 SKIP_REASON_NO_MEANINGFUL = "NO_MEANINGFUL_TRANSCRIPT"
 
-_FILLER_TOKENS = frozenset({
-    "ừ", "à", "ờ", "hmm", "uh", "um", "uhm", "erm", "ah", "oh",
-    "ừm", "àm", "ừa", "ừm", "hm", "mm", "mhm",
-})
+_FILLER_TOKENS = frozenset(
+    {
+        "ừ",
+        "à",
+        "ờ",
+        "hmm",
+        "uh",
+        "um",
+        "uhm",
+        "erm",
+        "ah",
+        "oh",
+        "ừm",
+        "àm",
+        "ừa",
+        "ừm",
+        "hm",
+        "mm",
+        "mhm",
+    }
+)
 
 _PUNCTUATION_RE = re.compile(r"[^\w\s]", flags=re.UNICODE)
 
@@ -50,12 +67,15 @@ def _has_duplicate_micro_loop(normalized: str, *, min_repeats: int = 4) -> bool:
     max_phrase_len = len(tokens) // min_repeats
     for size in range(1, max(max_phrase_len, 1) + 1):
         for start in range(0, len(tokens) - size * min_repeats + 1):
-            phrase_tokens = tokens[start:start + size]
+            phrase_tokens = tokens[start : start + size]
             if len(" ".join(phrase_tokens)) < 3:
                 continue
             repeats = 1
             cursor = start + size
-            while cursor + size <= len(tokens) and tokens[cursor:cursor + size] == phrase_tokens:
+            while (
+                cursor + size <= len(tokens)
+                and tokens[cursor : cursor + size] == phrase_tokens
+            ):
                 repeats += 1
                 cursor += size
             if repeats >= min_repeats:

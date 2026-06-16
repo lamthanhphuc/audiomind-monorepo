@@ -18,7 +18,12 @@ _SUCCESS_ANALYSIS_TEXT = json.dumps(
 
 
 class _FaultResponse:
-    def __init__(self, status_code: int, payload: dict[str, Any] | None = None, headers: dict[str, str] | None = None):
+    def __init__(
+        self,
+        status_code: int,
+        payload: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+    ):
         self.status_code = status_code
         self._payload = payload or {}
         self.headers = headers or {}
@@ -36,7 +41,14 @@ class GeminiFaultInjectionClient:
         self._attempt_by_alias: dict[str, int] = {}
         self._global_attempt = 0
 
-    def post(self, url: str, *, headers: dict[str, str] | None = None, json: dict[str, Any] | None = None, timeout: float | None = None):
+    def post(
+        self,
+        url: str,
+        *,
+        headers: dict[str, str] | None = None,
+        json: dict[str, Any] | None = None,
+        timeout: float | None = None,
+    ):
         _ = url, json, timeout or self.timeout, headers
         self._global_attempt += 1
         attempt = self._global_attempt
@@ -45,10 +57,22 @@ class GeminiFaultInjectionClient:
             if attempt == 1:
                 return _FaultResponse(
                     429,
-                    {"error": {"status": "RESOURCE_EXHAUSTED", "message": "rate limited"}},
+                    {
+                        "error": {
+                            "status": "RESOURCE_EXHAUSTED",
+                            "message": "rate limited",
+                        }
+                    },
                     {"Retry-After": "1"},
                 )
-            return _FaultResponse(200, {"candidates": [{"content": {"parts": [{"text": _SUCCESS_ANALYSIS_TEXT}]}}]})
+            return _FaultResponse(
+                200,
+                {
+                    "candidates": [
+                        {"content": {"parts": [{"text": _SUCCESS_ANALYSIS_TEXT}]}}
+                    ]
+                },
+            )
 
         if self.profile == "all_503":
             return _FaultResponse(
@@ -57,7 +81,9 @@ class GeminiFaultInjectionClient:
             )
 
         if self.profile == "timeout":
-            raise httpx.TimeoutException("injected timeout", request=httpx.Request("POST", url))
+            raise httpx.TimeoutException(
+                "injected timeout", request=httpx.Request("POST", url)
+            )
 
         if self.profile == "invalid_400":
             return _FaultResponse(
@@ -65,7 +91,14 @@ class GeminiFaultInjectionClient:
                 {"error": {"status": "INVALID_ARGUMENT", "message": "invalid request"}},
             )
 
-        return _FaultResponse(200, {"candidates": [{"content": {"parts": [{"text": _SUCCESS_ANALYSIS_TEXT}]}}]})
+        return _FaultResponse(
+            200,
+            {
+                "candidates": [
+                    {"content": {"parts": [{"text": _SUCCESS_ANALYSIS_TEXT}]}}
+                ]
+            },
+        )
 
     def __enter__(self):
         return self

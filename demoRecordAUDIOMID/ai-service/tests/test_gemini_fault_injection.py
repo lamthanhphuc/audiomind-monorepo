@@ -18,7 +18,14 @@ class _TrackingFaultClient(GeminiFaultInjectionClient):
         super().__init__(profile)
         self.api_keys: list[str] = []
 
-    def post(self, url: str, *, headers: dict[str, str] | None = None, json=None, timeout=None):
+    def post(
+        self,
+        url: str,
+        *,
+        headers: dict[str, str] | None = None,
+        json=None,
+        timeout=None
+    ):
         if headers and headers.get("x-goog-api-key"):
             self.api_keys.append(headers["x-goog-api-key"])
         return super().post(url, headers=headers, json=json, timeout=timeout)

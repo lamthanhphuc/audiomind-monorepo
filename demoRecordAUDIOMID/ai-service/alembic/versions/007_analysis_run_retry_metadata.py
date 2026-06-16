@@ -26,7 +26,9 @@ def upgrade() -> None:
     if "analysis_retry_count" not in existing:
         op.add_column(
             "meeting_analysis_runs",
-            sa.Column("analysis_retry_count", sa.Integer(), nullable=False, server_default="0"),
+            sa.Column(
+                "analysis_retry_count", sa.Integer(), nullable=False, server_default="0"
+            ),
         )
     if "analysis_next_retry_at" not in existing:
         op.add_column(
