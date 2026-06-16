@@ -34,7 +34,8 @@ import {
     BROWSER_TAB_CAPTURE_TELEMETRY,
     DEFAULT_RECORDING_SOURCE,
     isBrowserTabRecordingSource,
-    normalizeRecordingSource,
+    RECORDING_SOURCE_ERRORS,
+    getRecordingSourceTinyChunkError,
     type RecordingSource,
 } from '../constants/recordingSource'
 import { ApiError, createRealtimeMeeting, getAnalysis, getProcessingStatus, getTranscript, reanalyzeMeetingAnalysis, startProcessingByPath, submitRealtimeFinalAudioFallback, uploadToMeetingApi } from '../services/api'
@@ -1024,7 +1025,7 @@ export default function App() {
         return
       }
       tabTrackEndedFinalizeRef.current = true
-      setLiveStatusMessage('Tab đã ngừng chia sẻ âm thanh. Đang dừng và lưu transcript...')
+      setLiveStatusMessage(RECORDING_SOURCE_ERRORS.tabStopSharing)
       if (audioRecorder.state === 'recording' || audioRecorder.state === 'paused') {
         audioRecorder.stopRecording()
       }
@@ -1699,7 +1700,7 @@ export default function App() {
           onRealtimeLanguageChange={(value) => setSelectedRealtimeLanguage(normalizeRealtimeLanguage(value))}
           onRealtimeSpeakerModeChange={(value) => setSelectedRealtimeSpeakerMode(normalizeRealtimeSpeakerMode(value))}
           onMicSensitivityChange={(value) => setSelectedMicSensitivity(normalizeMicSensitivityMode(value))}
-          onRecordingSourceChange={(value) => setSelectedRecordingSource(normalizeRecordingSource(value))}
+          onRecordingSourceChange={setSelectedRecordingSource}
           onNoiseSuppressionChange={setNoiseSuppressionEnabled}
           isRealtimeLanguageSelectorDisabled={isRealtimeLanguageSelectorDisabled(liveLifecycleState)}
           isRealtimeSpeakerModeSelectorDisabled={isRealtimeSpeakerModeSelectorDisabled(liveLifecycleState)}
@@ -1935,9 +1936,7 @@ export default function App() {
       recordingDurationSec >= REALTIME_TINY_CHUNK_MIN_RECORDING_SEC
       && liveTinyChunkStreakRef.current >= REALTIME_TINY_CHUNK_STREAK_THRESHOLD
     ) {
-      const captureError = isBrowserTabRecordingSource(selectedRecordingSourceRef.current)
-        ? 'Không nhận được âm thanh từ tab Google Meet. Hãy chọn lại tab Meet và bật chia sẻ âm thanh tab.'
-        : 'Không nhận được âm thanh từ microphone. Hãy kiểm tra quyền mic, thiết bị đầu vào và thử ghi lại.'
+      const captureError = getRecordingSourceTinyChunkError(selectedRecordingSourceRef.current)
       console.warn('[Realtime] REALTIME_TINY_CHUNK_STREAK_CLIENT', {
         meetingId: activeMeetingId,
         sessionId,

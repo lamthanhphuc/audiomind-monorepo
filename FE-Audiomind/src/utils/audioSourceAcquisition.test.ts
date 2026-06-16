@@ -119,6 +119,7 @@ describe('acquireAudioSource', () => {
 
     await expect(acquireAudioSource({ source: 'browser_tab' })).rejects.toMatchObject({
       code: 'cancelled',
+      message: expect.stringContaining('hủy chọn tab Google Meet'),
     })
   })
 })

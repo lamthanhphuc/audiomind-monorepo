@@ -1,5 +1,5 @@
 import type { RecordingSource } from '../constants/recordingSource'
-import { BROWSER_TAB_CAPTURE_TELEMETRY } from '../constants/recordingSource'
+import { BROWSER_TAB_CAPTURE_TELEMETRY, RECORDING_SOURCE_ERRORS } from '../constants/recordingSource'
 
 export type AudioSourceErrorCode =
   | 'permission_denied'
@@ -70,12 +70,12 @@ const resolveCaptureError = (error: unknown, source: RecordingSource): AudioSour
   if (resolvedName === 'NotAllowedError' || resolvedName === 'PermissionDeniedError') {
     if (source === 'microphone') {
       return new AudioSourceError(
-        'Quyền microphone bị từ chối. Hãy cho phép truy cập microphone để ghi âm.',
+        RECORDING_SOURCE_ERRORS.micPermissionDenied,
         'permission_denied',
       )
     }
     return new AudioSourceError(
-      'Quyền chia sẻ tab bị từ chối. Hãy chọn tab Google Meet và bật chia sẻ âm thanh tab.',
+      RECORDING_SOURCE_ERRORS.tabPermissionDenied,
       'permission_denied',
     )
   }
@@ -100,7 +100,7 @@ const resolveCaptureError = (error: unknown, source: RecordingSource): AudioSour
 
   if (resolvedName === 'AbortError') {
     return new AudioSourceError(
-      'Đã hủy chọn tab. Mở Google Meet ở tab khác rồi thử lại.',
+      RECORDING_SOURCE_ERRORS.tabPickerCancelled,
       'cancelled',
     )
   }
@@ -124,7 +124,7 @@ const validateBrowserTabAudioTracks = (stream: MediaStream): void => {
     })
     stopTracks(stream)
     throw new AudioSourceError(
-      'Tab được chọn không có âm thanh. Hãy chọn lại tab Google Meet và bật «Chia sẻ âm thanh của tab».',
+      RECORDING_SOURCE_ERRORS.tabNoAudioTrack,
       'no_audio_track',
     )
   }
@@ -136,7 +136,7 @@ const validateBrowserTabAudioTracks = (stream: MediaStream): void => {
     })
     stopTracks(stream)
     throw new AudioSourceError(
-      'Không nhận được track âm thanh hợp lệ từ tab. Hãy chọn lại tab Google Meet và bật chia sẻ âm thanh.',
+      RECORDING_SOURCE_ERRORS.tabNoAudioTrack,
       'no_audio_track',
     )
   }
