@@ -8,11 +8,10 @@ import type { RealtimeLanguage, RealtimeSpeakerMode, TranscriptSegment } from '.
 import type { MicSensitivityMode } from '../../hooks/useVoiceActivityDetection'
 import type { AiAnalysis } from '../../types'
 import {
-  RECORDING_SOURCE_LABELS,
-  RECORDING_SOURCES,
   type RecordingSource,
   isBrowserTabRecordingSource,
 } from '../../constants/recordingSource'
+import { RecordingSourceSelector } from '../realtime/RecordingSourceSelector'
 
 const REALTIME_LANGUAGE_OPTIONS: Array<{ value: RealtimeLanguage; label: string }> = [
   { value: 'vi', label: 'Tiếng Việt' },
@@ -71,7 +70,7 @@ type RealtimeDashboardSceneProps = {
   onRealtimeLanguageChange: (value: string) => void
   onRealtimeSpeakerModeChange: (value: string) => void
   onMicSensitivityChange: (value: string) => void
-  onRecordingSourceChange: (value: string) => void
+  onRecordingSourceChange: (source: RecordingSource) => void
   onNoiseSuppressionChange: (enabled: boolean) => void
   isRealtimeLanguageSelectorDisabled: boolean
   isRealtimeSpeakerModeSelectorDisabled: boolean
@@ -260,6 +259,11 @@ export default function RealtimeDashboardScene({
                 </p>
               </div>
               <div className="realtime-panel__settings">
+                <RecordingSourceSelector
+                  value={selectedRecordingSource}
+                  disabled={isRecordingSourceSelectorDisabled}
+                  onChange={onRecordingSourceChange}
+                />
                 <label className="upload-panel__label">
                   <span className="upload-panel__label-text">Ngôn ngữ</span>
                   <select
@@ -290,27 +294,6 @@ export default function RealtimeDashboardScene({
                     ))}
                   </select>
                 </label>
-                <label className="upload-panel__label">
-                  <span className="upload-panel__label-text">Nguồn ghi âm</span>
-                  <select
-                    className="upload-panel__select"
-                    value={selectedRecordingSource}
-                    onChange={(event) => onRecordingSourceChange(event.target.value)}
-                    disabled={isRecordingSourceSelectorDisabled}
-                  >
-                    {RECORDING_SOURCES.map((source) => (
-                      <option key={source} value={source}>
-                        {RECORDING_SOURCE_LABELS[source]}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                {isTabAudioSource && (
-                  <div className="realtime-panel__hint realtime-panel__hint--capture" role="note">
-                    Mở Google Meet ở tab khác. Khi bấm ghi âm, chọn tab Meet trong hộp thoại trình duyệt
-                    và bật «Chia sẻ âm thanh của tab».
-                  </div>
-                )}
                 <label className="upload-panel__label">
                   <span className="upload-panel__label-text">Độ nhạy mic</span>
                   <select

@@ -565,7 +565,7 @@
   display: grid;
   gap: var(--space-3);
   margin-top: var(--space-4);
-  max-width: 380px;
+  max-width: min(100%, 52rem);
 }
 
 .realtime-panel__hint {

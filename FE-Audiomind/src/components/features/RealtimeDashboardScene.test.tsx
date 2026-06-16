@@ -240,18 +240,16 @@ describe('RealtimeDashboardScene', () => {
       )
     })
 
+    expect(container.querySelector('[data-testid="recording-source-selector"]')).not.toBeNull()
     expect(container.textContent).toContain('Nguồn ghi âm')
     expect(container.textContent).toContain('Ghi âm Google Meet')
-    expect(container.textContent).toContain('Chia sẻ âm thanh của tab')
-
-    const sourceSelect = Array.from(container.querySelectorAll('select'))
-      .find((select) => select.value === 'browser_tab')
-    expect(sourceSelect).toBeDefined()
+    expect(container.textContent).toContain('Hướng dẫn ghi âm Google Meet')
+    expect(container.textContent).toContain('Bật chia sẻ âm thanh tab')
 
     act(() => {
-      sourceSelect?.dispatchEvent(new Event('change', { bubbles: true }))
+      container.querySelector<HTMLButtonElement>('[data-testid="recording-source-option-browser_tab_with_mic"]')?.click()
     })
-    expect(onRecordingSourceChange).toHaveBeenCalled()
+    expect(onRecordingSourceChange).toHaveBeenCalledWith('browser_tab_with_mic')
   })
 
   it('hides noise suppression toggle for tab-only capture', () => {
