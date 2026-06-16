@@ -1,3 +1,4 @@
+import type { MutableRefObject } from 'react'
 import { AnalysisPanel } from '../analysis/AnalysisPanel'
 import { AnalysisStatusPanel } from '../analysis/AnalysisStatusPanel'
 import { AudioRecorderButton } from '../realtime/AudioRecorderButton'
@@ -37,6 +38,7 @@ type LiveLifecycleState =
   | 'silent_paused'
   | 'listening_resumed'
   | 'stopping'
+  | 'finalizing_recording'
   | 'finalizing_transcript'
   | 'transcript_ready'
   | 'analysis_pending'
@@ -80,6 +82,8 @@ type RealtimeDashboardSceneProps = {
   onBeforeStartRecording: (recordingSessionId: number) => Promise<void>
   onChunkReady: (chunk: Blob, sessionId: number) => void | Promise<void>
   onRecordingComplete?: (fullAudio: Blob, sessionId: number) => void
+  onStopRequested?: () => void
+  gracefulStopRef?: MutableRefObject<(() => Promise<void>) | null>
   liveError: string | null
   livePartialWarning: string | null
   showJoinOtherMeeting: boolean
@@ -165,6 +169,8 @@ export default function RealtimeDashboardScene({
   onBeforeStartRecording,
   onChunkReady,
   onRecordingComplete,
+  onStopRequested,
+  gracefulStopRef,
   liveError,
   livePartialWarning,
   showJoinOtherMeeting,
@@ -220,6 +226,7 @@ export default function RealtimeDashboardScene({
     || liveLifecycleState === 'silent_paused'
     || liveLifecycleState === 'listening_resumed'
     || liveLifecycleState === 'stopping'
+    || liveLifecycleState === 'finalizing_recording'
   const isTabAudioSource = isBrowserTabRecordingSource(selectedRecordingSource)
   const isTabOnlySource = selectedRecordingSource === 'browser_tab'
   const noiseSuppressionDisabled = isRecordingActive || !noiseSuppressionSupported || isTabOnlySource
@@ -339,6 +346,8 @@ export default function RealtimeDashboardScene({
               onBeforeStartRecording={onBeforeStartRecording}
               onChunkReady={onChunkReady}
               onRecordingComplete={onRecordingComplete}
+              onStopRequested={onStopRequested}
+              gracefulStopRef={gracefulStopRef}
             />
           </div>
         </div>

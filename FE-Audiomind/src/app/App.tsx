@@ -88,6 +88,7 @@ export type LiveLifecycleState =
   | 'silent_paused'
   | 'listening_resumed'
   | 'stopping'
+  | 'finalizing_recording'
   | 'finalizing_transcript'
   | 'transcript_ready'
   | 'analysis_pending'
@@ -155,6 +156,8 @@ export const isRealtimeLanguageSelectorDisabled = (lifecycleState: LiveLifecycle
     || lifecycleState === 'silent_paused'
     || lifecycleState === 'listening_resumed'
     || lifecycleState === 'stopping'
+    || lifecycleState === 'finalizing_recording'
+    || lifecycleState === 'finalizing_transcript'
   )
 }
 
@@ -976,6 +979,7 @@ export default function App() {
   const liveTinyChunkStreakRef = useRef(0)
   const selectedRecordingSourceRef = useRef<RecordingSource>(DEFAULT_RECORDING_SOURCE)
   const tabTrackEndedFinalizeRef = useRef(false)
+  const gracefulStopRef = useRef<(() => Promise<void>) | null>(null)
   const lastLoggedRealtimeLanguageRef = useRef<RealtimeLanguage | null>(null)
   const lastLoggedRealtimeSpeakerModeRef = useRef<RealtimeSpeakerMode | null>(null)
   const lastVoiceActivityStateRef = useRef<VoiceActivityState | null>(null)
@@ -1034,9 +1038,12 @@ export default function App() {
       }
       tabTrackEndedFinalizeRef.current = true
       setLiveStatusMessage(RECORDING_SOURCE_ERRORS.tabStopSharing)
-      if (audioRecorder.state === 'recording' || audioRecorder.state === 'paused') {
-        audioRecorder.stopRecording()
-      }
+      console.info('[Realtime] REALTIME_STOP_REQUESTED', {
+        meetingId: liveMeetingIdRef.current,
+        source: selectedRecordingSourceRef.current,
+        reason: 'tab_track_ended',
+      })
+      void gracefulStopRef.current?.()
     }
   }, [audioRecorder])
 
@@ -1792,6 +1799,14 @@ export default function App() {
           onBeforeStartRecording={handlePrepareLiveMeeting}
           onChunkReady={handleLiveChunkReady}
           onRecordingComplete={handleLiveRecordingComplete}
+          onStopRequested={() => {
+            setLiveLifecycleState('stopping')
+            console.info('[Realtime] REALTIME_STOP_REQUESTED', {
+              meetingId: liveMeetingIdRef.current,
+              source: selectedRecordingSource,
+            })
+          }}
+          gracefulStopRef={gracefulStopRef}
           liveError={liveError}
           livePartialWarning={livePartialWarning}
           showJoinOtherMeeting={showJoinOtherMeeting}
@@ -2208,6 +2223,11 @@ export default function App() {
     }
 
     setLiveStatusMessage(`Đã ghi âm ${Math.max(1, Math.round(fullAudio.size / 1024))} KB`)
+    console.info('[Realtime] FINAL_AUDIO_BLOB_READY', {
+      meetingId: completedMeetingId,
+      sessionId,
+      bytes: fullAudio.size,
+    })
     try {
       if (!isCurrentRealtimeSessionToken(sessionToken)) {
         console.info('[Realtime] STALE_SESSION_COMPLETE_IGNORED', {
@@ -2216,13 +2236,6 @@ export default function App() {
         })
         return
       }
-
-      setLiveLifecycleState('stopping')
-      // eslint-disable-next-line no-console
-      console.info('[Realtime] REALTIME_STOP', {
-        meetingId: liveMeetingIdRef.current,
-        sessionId,
-      })
 
       let stopSent = false
       if (realtimeStream?.stopStream) {
@@ -2395,11 +2408,11 @@ export default function App() {
         startRealtimeAnalysisPolling(completedMeetingId, sessionId, sessionToken)
       }
 
-      // eslint-disable-next-line no-console
       console.info('[Realtime] REALTIME_CLEANUP_DONE', {
         meetingId: liveMeetingIdRef.current,
         sessionId,
       })
+      audioRecorder.cleanupRecordingResources()
     } catch (err) {
       if (!isCurrentRealtimeSessionToken(sessionToken)) {
         console.info('[Realtime] STALE_HYDRATION_IGNORED', {

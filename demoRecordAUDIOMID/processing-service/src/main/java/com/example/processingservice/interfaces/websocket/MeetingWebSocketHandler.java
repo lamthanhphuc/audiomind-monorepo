@@ -339,8 +339,10 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
             }
 
             log.info(
-                    "event=REALTIME_STOP_FINALIZE_AFTER_DRAIN meetingId={} drainedSeq={}",
+                    "event=REALTIME_STOP_FINALIZE_AFTER_DRAIN meetingId={} sessionId={} lastClientSeq={} drainedSeq={}",
                     meetingId,
+                    session.getId(),
+                    getLongAttribute(session, LAST_AUDIO_SEQ_ATTR),
                     getLongAttribute(session, LAST_AUDIO_SEQ_ATTR)
             );
             if (realtimeAsyncAudioQueueEnabled) {
@@ -1186,6 +1188,14 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                             meetingId
                     );
                 } else {
+                    int transcriptRows = normalizeTranscriptRows(transcript.get("transcripts")).size();
+                    log.info(
+                            "event=REALTIME_FINALIZE_COMPLETE meetingId={} sessionId={} finalizeSeq={} transcriptRows={} finalAudioBytes=0",
+                            meetingId,
+                            session.getId(),
+                            finalSeq != null ? finalSeq : -1L,
+                            transcriptRows
+                    );
                     triggerRealtimeAnalysisAsync(meetingId, authorization, language, analysisSource);
                     syncRealtimeMeetingTerminalStatus(meetingId, authorization, RealtimeStatusCodes.COMPLETED);
                 }

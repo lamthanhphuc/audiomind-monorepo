@@ -37,6 +37,8 @@ export interface UseAudioRecorderReturn {
   recordingSessionId: number
   startRecording: (expectedSessionId?: number) => Promise<number | null>
   stopRecording: () => void
+  stopRecordingGraceful: () => Promise<GracefulStopResult>
+  cleanupRecordingResources: () => void
   abortRecording: () => void
   pauseRecording: () => void
   resumeRecording: () => void
@@ -48,6 +50,22 @@ export interface UseAudioRecorderReturn {
 const RECORDER_MIME_TYPE = 'audio/webm; codecs=opus'
 const DURATION_TICK_MS = 250
 const FALLBACK_RECORDER_TIMESLICE_MS = 250
+
+export const REQUEST_DATA_GRACE_MS = 1000
+export const RECORDER_STOP_TIMEOUT_MS = 2000
+export const OVERALL_GRACEFUL_STOP_TIMEOUT_MS = 5000
+
+export type GracefulStopResult = {
+  fullBlob: Blob
+  sessionId: number
+  collectedChunkCount: number
+  postStopChunkCount: number
+  chunks: Blob[]
+}
+
+const sleep = (ms: number) => new Promise<void>((resolve) => {
+  window.setTimeout(resolve, ms)
+})
 
 const logSafeMicSettings = (stream: MediaStream) => {
   const track = stream.getAudioTracks?.()[0] ?? stream.getTracks()[0]
@@ -92,6 +110,8 @@ export const useAudioRecorder = (
   const rollingChunksRef = useRef<RollingAudioChunk[]>([])
   const sourceCleanupRef = useRef<(() => void) | null>(null)
   const trackEndedDetachRef = useRef<(() => void) | null>(null)
+  const gracefulStopInProgressRef = useRef(false)
+  const audioChunksRef = useRef<Blob[]>([])
 
   const recorderTimesliceMs = Math.max(100, Math.floor(options.timesliceMs ?? REALTIME_RECORDER_TIMESLICE_MS))
   const preRollWindowMs = Math.max(
@@ -313,21 +333,85 @@ export const useAudioRecorder = (
     }
   }, [clearRecorderHandlers, cleanupStream, resetSessionState, state, stopAudioLevelDiagnostics, stopDurationTimer])
 
+  useEffect(() => {
+    audioChunksRef.current = audioChunks
+  }, [audioChunks])
+
+  const markRecordingStopped = useCallback((sessionId: number) => {
+    if (recordingSessionIdRef.current !== sessionId) {
+      return
+    }
+
+    pauseDurationTimer()
+    if (mountedRef.current) {
+      setState('stopped')
+    }
+  }, [pauseDurationTimer])
+
+  const cleanupRecordingResources = useCallback(() => {
+    const recorder = mediaRecorderRef.current
+    stopAudioLevelDiagnostics()
+    cleanupStream()
+    clearRecorderHandlers(recorder)
+    mediaRecorderRef.current = null
+    gracefulStopInProgressRef.current = false
+  }, [clearRecorderHandlers, cleanupStream, stopAudioLevelDiagnostics])
+
   const finishRecording = useCallback((sessionId: number) => {
     if (recordingSessionIdRef.current !== sessionId) {
       return
     }
 
-    const recorder = mediaRecorderRef.current
-    pauseDurationTimer()
-    cleanupStream()
-    stopAudioLevelDiagnostics()
-    clearRecorderHandlers(recorder)
-    mediaRecorderRef.current = null
-    if (mountedRef.current) {
-      setState('stopped')
+    markRecordingStopped(sessionId)
+    cleanupRecordingResources()
+  }, [cleanupRecordingResources, markRecordingStopped])
+
+  const appendRecordedChunk = useCallback((
+    sessionId: number,
+    blob: Blob,
+    recorder: MediaRecorder,
+    options?: { skipStateUpdate?: boolean },
+  ) => {
+    if (!mountedRef.current || recordingSessionIdRef.current !== sessionId || blob.size <= 0) {
+      return
     }
-  }, [clearRecorderHandlers, cleanupStream, pauseDurationTimer, stopAudioLevelDiagnostics])
+
+    audioChunkCountRef.current += 1
+    const chunkCount = audioChunkCountRef.current
+    const capturedAtMs = Date.now()
+
+    if (AUDIO_DEBUG_ENABLED) {
+      try {
+        // eslint-disable-next-line no-console
+        console.info('[AudioRecorder] chunk diagnostics', {
+          size: blob.size,
+          mimeType: blob.type || recorder.mimeType || RECORDER_MIME_TYPE,
+          recorderState: recorder.state,
+          chunkSequence: chunkCount,
+          bufferedChunks: chunkCount,
+        })
+      } catch {
+        // ignore debug logging failures
+      }
+    }
+
+    rollingChunksRef.current = [
+      ...rollingChunksRef.current,
+      { blob, capturedAtMs },
+    ].filter((chunk) => capturedAtMs - chunk.capturedAtMs <= preRollWindowMs)
+
+    if (!options?.skipStateUpdate) {
+      setAudioChunks((currentChunks) => {
+        const nextChunks = [...currentChunks, blob]
+        audioChunksRef.current = nextChunks
+        return nextChunks
+      })
+    } else {
+      const nextChunks = [...audioChunksRef.current, blob]
+      audioChunksRef.current = nextChunks
+      setAudioChunks(nextChunks)
+    }
+  }, [preRollWindowMs])
 
   const getRollingChunks = useCallback(() => {
     return rollingChunksRef.current.map((chunk) => chunk.blob)
@@ -384,36 +468,10 @@ export const useAudioRecorder = (
       startAudioLevelDiagnostics(stream, sessionId, diagnosticMeetingId)
 
       recorder.ondataavailable = (event) => {
-        if (!mountedRef.current || recordingSessionIdRef.current !== sessionId) {
+        if (gracefulStopInProgressRef.current) {
           return
         }
-
-        audioChunkCountRef.current += 1
-        const chunkCount = audioChunkCountRef.current
-
-        if (AUDIO_DEBUG_ENABLED) {
-          try {
-            // eslint-disable-next-line no-console
-            console.info('[AudioRecorder] chunk diagnostics', {
-              size: event.data.size,
-              mimeType: event.data.type || recorder.mimeType || RECORDER_MIME_TYPE,
-              recorderState: recorder.state,
-              chunkSequence: chunkCount,
-              bufferedChunks: chunkCount,
-            })
-          } catch {
-            // ignore debug logging failures
-          }
-        }
-
-        if (event.data.size > 0 && mountedRef.current) {
-          const capturedAtMs = Date.now()
-          rollingChunksRef.current = [
-            ...rollingChunksRef.current,
-            { blob: event.data, capturedAtMs },
-          ].filter((chunk) => capturedAtMs - chunk.capturedAtMs <= preRollWindowMs)
-          setAudioChunks((currentChunks) => [...currentChunks, event.data])
-        }
+        appendRecordedChunk(sessionId, event.data, recorder)
       }
 
       recorder.onpause = () => {
@@ -440,6 +498,9 @@ export const useAudioRecorder = (
       }
 
       recorder.onstop = () => {
+        if (gracefulStopInProgressRef.current) {
+          return
+        }
         finishRecording(sessionId)
       }
 
@@ -498,7 +559,179 @@ export const useAudioRecorder = (
       }
       return null
     }
-  }, [clearRecorderHandlers, cleanupStream, diagnosticMeetingId, finishRecording, noiseSuppressionEnabled, onTrackEnded, pauseDurationTimer, preRollWindowMs, recorderTimesliceMs, recordingSource, resetSessionState, startAudioLevelDiagnostics, startDurationTimer, state, stopAudioLevelDiagnostics])
+  }, [appendRecordedChunk, clearRecorderHandlers, cleanupStream, diagnosticMeetingId, finishRecording, markRecordingStopped, noiseSuppressionEnabled, onTrackEnded, pauseDurationTimer, preRollWindowMs, recorderTimesliceMs, recordingSource, resetSessionState, startAudioLevelDiagnostics, startDurationTimer, state, stopAudioLevelDiagnostics])
+
+  const stopRecordingGraceful = useCallback(async (): Promise<GracefulStopResult> => {
+    const sessionId = recordingSessionIdRef.current
+    const recorder = mediaRecorderRef.current
+
+    const buildResult = (chunks: Blob[], postStopChunkCount: number): GracefulStopResult => {
+      const fullBlob = new Blob(chunks.length > 0 ? chunks : [], { type: RECORDER_MIME_TYPE })
+      if (AUDIO_DEBUG_ENABLED || import.meta.env.DEV) {
+        console.info('[Realtime] FINAL_AUDIO_BLOB_READY', {
+          meetingId: diagnosticMeetingId,
+          sessionId,
+          bytes: fullBlob.size,
+          collectedChunkCount: chunks.length,
+          postStopChunkCount,
+        })
+      }
+      return {
+        fullBlob,
+        sessionId,
+        collectedChunkCount: chunks.length,
+        postStopChunkCount,
+        chunks,
+      }
+    }
+
+    if (!recorder || recorder.state === 'inactive') {
+      const chunks = [...audioChunksRef.current]
+      return buildResult(chunks, 0)
+    }
+
+    if (startedAtRef.current !== null) {
+      accumulatedMsRef.current += Date.now() - startedAtRef.current
+      startedAtRef.current = null
+    }
+    stopDurationTimer()
+    updateDuration()
+
+    const overallDeadline = Date.now() + OVERALL_GRACEFUL_STOP_TIMEOUT_MS
+    const chunksBeforeStop = audioChunksRef.current.length
+    let stopEventFired = false
+    let requestDataCalled = false
+    let stopCommandSent = false
+    let postStopChunkCount = 0
+    let timedOutOverall = false
+
+    gracefulStopInProgressRef.current = true
+
+    const logCollectedChunk = (blob: Blob, phase: 'pre_stop' | 'post_request_data' | 'post_stop') => {
+      const postStop = phase === 'post_stop'
+      if (postStop) {
+        postStopChunkCount += 1
+      }
+      if (AUDIO_DEBUG_ENABLED || import.meta.env.DEV) {
+        console.info('[Realtime] MEDIARECORDER_DATAAVAILABLE_COLLECTED', {
+          meetingId: diagnosticMeetingId,
+          sessionId,
+          size: blob.size,
+          phase,
+          postStop,
+        })
+      }
+    }
+
+    recorder.ondataavailable = (event) => {
+      if (!mountedRef.current || recordingSessionIdRef.current !== sessionId || event.data.size <= 0) {
+        return
+      }
+
+      const phase: 'pre_stop' | 'post_request_data' | 'post_stop' = !requestDataCalled
+        ? 'pre_stop'
+        : (stopCommandSent ? 'post_stop' : 'post_request_data')
+      logCollectedChunk(event.data, phase)
+      appendRecordedChunk(sessionId, event.data, recorder)
+    }
+
+    recorder.onstop = () => {
+      if (recordingSessionIdRef.current !== sessionId) {
+        return
+      }
+      stopEventFired = true
+      if (AUDIO_DEBUG_ENABLED || import.meta.env.DEV) {
+        console.info('[Realtime] MEDIARECORDER_STOP_EVENT', {
+          meetingId: diagnosticMeetingId,
+          sessionId,
+          timedOut: false,
+        })
+      }
+      markRecordingStopped(sessionId)
+    }
+
+    const waitUntil = async (predicate: () => boolean, timeoutMs: number) => {
+      const deadline = Math.min(Date.now() + timeoutMs, overallDeadline)
+      while (Date.now() < deadline) {
+        if (predicate()) {
+          return true
+        }
+        await sleep(25)
+      }
+      return predicate()
+    }
+
+    try {
+      if (recorder.state === 'recording' || recorder.state === 'paused') {
+        if (AUDIO_DEBUG_ENABLED || import.meta.env.DEV) {
+          console.info('[Realtime] MEDIARECORDER_REQUEST_DATA', {
+            meetingId: diagnosticMeetingId,
+            sessionId,
+            recorderState: recorder.state,
+          })
+        }
+        try {
+          recorder.requestData()
+        } catch {
+          // ignore unsupported requestData
+        }
+        requestDataCalled = true
+
+        stopCommandSent = true
+        try {
+          recorder.stop()
+        } catch {
+          stopEventFired = true
+          markRecordingStopped(sessionId)
+        }
+      }
+
+      const stopObserved = stopEventFired || await waitUntil(() => stopEventFired, RECORDER_STOP_TIMEOUT_MS)
+      if (!stopObserved && (AUDIO_DEBUG_ENABLED || import.meta.env.DEV)) {
+        console.info('[Realtime] MEDIARECORDER_STOP_EVENT', {
+          meetingId: diagnosticMeetingId,
+          sessionId,
+          timedOut: true,
+        })
+        markRecordingStopped(sessionId)
+      }
+
+      const graceRemaining = Math.max(0, overallDeadline - Date.now())
+      const graceMs = Math.min(REQUEST_DATA_GRACE_MS, graceRemaining)
+      if (graceMs > 0) {
+        await sleep(graceMs)
+      }
+
+      if (AUDIO_DEBUG_ENABLED || import.meta.env.DEV) {
+        console.info('[Realtime] MEDIARECORDER_GRACE_COMPLETE', {
+          meetingId: diagnosticMeetingId,
+          sessionId,
+          graceMs,
+          collectedPostStopCount: postStopChunkCount,
+        })
+      }
+    } catch {
+      markRecordingStopped(sessionId)
+    } finally {
+      timedOutOverall = Date.now() >= overallDeadline
+      if (timedOutOverall && (AUDIO_DEBUG_ENABLED || import.meta.env.DEV)) {
+        console.warn('[Realtime] MEDIARECORDER_GRACEFUL_STOP_TIMEOUT', {
+          meetingId: diagnosticMeetingId,
+          sessionId,
+        })
+      }
+      gracefulStopInProgressRef.current = false
+      recorder.ondataavailable = null
+      recorder.onstop = null
+    }
+
+    const finalChunks = [...audioChunksRef.current]
+    if (finalChunks.length < chunksBeforeStop) {
+      return buildResult(audioChunksRef.current, postStopChunkCount)
+    }
+
+    return buildResult(finalChunks, postStopChunkCount)
+  }, [appendRecordedChunk, diagnosticMeetingId, markRecordingStopped, stopDurationTimer, updateDuration])
 
   const stopRecording = useCallback(() => {
     const recorder = mediaRecorderRef.current
@@ -584,6 +817,8 @@ export const useAudioRecorder = (
     recordingSessionId: recordingSessionIdRef.current,
     startRecording,
     stopRecording,
+    stopRecordingGraceful,
+    cleanupRecordingResources,
     abortRecording,
     pauseRecording,
     resumeRecording,

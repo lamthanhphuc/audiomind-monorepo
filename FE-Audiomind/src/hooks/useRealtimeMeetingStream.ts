@@ -1054,6 +1054,15 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
       return false
     }
 
+    console.info('[Realtime] REALTIME_FINALIZE_AFTER_CLIENT_DRAIN', {
+      meetingId: tokenAtStop.meetingId,
+      recordingSessionId: tokenAtStop.recordingSessionId,
+      attemptId: tokenAtStop.attemptId,
+      lastSeq: audioSequenceRef.current,
+      queueDepth: pendingQueueRef.current.length,
+      bufferedAmount: websocket.bufferedAmount,
+    })
+
     try {
       websocket.send(JSON.stringify({
         type: 'stream.stop',
