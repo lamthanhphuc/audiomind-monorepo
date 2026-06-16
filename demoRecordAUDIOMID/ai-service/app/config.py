@@ -52,6 +52,13 @@ class Settings(BaseSettings):
     gemini_max_single_request_chars: int = 50000
     gemini_request_delay_seconds: float = 15.0
 
+    # Analysis recovery (PR2)
+    analysis_background_retry_enabled: bool = True
+    analysis_background_retry_max_attempts: int = 4
+    analysis_short_transcript_gate_enabled: bool = True
+    gemini_client_test_mode: str = ""
+    internal_api_base_url: str = "http://127.0.0.1:8000"
+
     # Deepgram
     deepgram_api_key: str = ""
     deepgram_model: str = "nova-3"
@@ -231,6 +238,9 @@ class Settings(BaseSettings):
         )
         self.gemini_rate_limit_retry_max_seconds = max(
             0.0, float(self.gemini_rate_limit_retry_max_seconds or 0.0)
+        )
+        self.analysis_background_retry_max_attempts = max(
+            0, int(self.analysis_background_retry_max_attempts or 4)
         )
 
         # Backward-compatible normalization for legacy variable usage.

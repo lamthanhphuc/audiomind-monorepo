@@ -2407,7 +2407,13 @@ class ProcessingServiceTest {
                         "GEMINI_RATE_LIMITED",
                         "Gemini rate limit reached",
                         System.currentTimeMillis() + 7000L,
-                        7
+                        7,
+                        true,
+                        false,
+                        2,
+                        "2026-06-16T10:00:00Z",
+                        "trace-abc123",
+                        null
                 )
         ));
 
@@ -2417,6 +2423,10 @@ class ProcessingServiceTest {
         assertEquals("GEMINI_RATE_LIMITED", response.get("errorCode"));
         assertEquals(7, response.get("retryAfterSeconds"));
         assertEquals(true, response.get("retryable"));
+        assertEquals(false, response.get("retryExhausted"));
+        assertEquals(2, response.get("analysisRetryCount"));
+        assertEquals("2026-06-16T10:00:00Z", response.get("analysisNextRetryAt"));
+        assertEquals("trace-abc123", response.get("analysisTraceId"));
         assertEquals(true, response.get("transcriptSaved"));
         verify(aiServiceClient, never()).analyzeRealtimeTranscript(
                 eq(619L),
@@ -2631,7 +2641,13 @@ class ProcessingServiceTest {
                         "GEMINI_UNAVAILABLE",
                         "Gemini unavailable",
                         System.currentTimeMillis() + 45000L,
-                        45
+                        45,
+                        true,
+                        true,
+                        4,
+                        null,
+                        "trace-exhausted",
+                        null
                 )
         ));
 
@@ -2641,6 +2657,9 @@ class ProcessingServiceTest {
         assertEquals("GEMINI_UNAVAILABLE", response.get("errorCode"));
         assertEquals(45, response.get("retryAfterSeconds"));
         assertEquals(true, response.get("retryable"));
+        assertEquals(true, response.get("retryExhausted"));
+        assertEquals(4, response.get("analysisRetryCount"));
+        assertEquals("trace-exhausted", response.get("analysisTraceId"));
         verify(aiServiceClient, never()).analyzeRealtimeTranscript(
                 eq(611L),
                 anyString(),

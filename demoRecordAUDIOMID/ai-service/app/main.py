@@ -78,7 +78,7 @@ from app.services.analysis_runs import (
     ANALYSIS_RETRYABLE_FAILURE_STATUSES,
     ANALYSIS_STATUS_ANALYZING,
     ANALYSIS_STATUS_FAILED,
-    ANALYSIS_STATUS_RATE_LIMITED,
+    ANALYSIS_STATUS_FAILED_RETRYABLE,
     analysis_payload_from_run,
     analysis_miss_response_metadata,
     analysis_run_response_metadata,
@@ -90,9 +90,23 @@ from app.services.analysis_runs import (
     find_latest_analysis_run_for_identity,
     latest_completed_analysis_run,
     mark_analysis_run_failed,
+    mark_analysis_run_skipped_short,
     normalize_analysis_mode,
     persist_completed_analysis_run,
 )
+from app.services.analysis_lock import (
+    acquire_analysis_lock,
+    holder_trace_id,
+    is_ai_owned_lock,
+    lock_token_from_raw,
+    release_analysis_lock,
+)
+from app.services.analysis_retry_scheduler import (
+    ANALYSIS_LOCK_TTL_SECONDS,
+    enqueue_background_retry,
+    is_retryable_error_code,
+)
+from app.services.transcript_quality_gate import evaluate_transcript_quality
 from app.services.glossary_repository import GlossaryRepository
 from app.services.glossary_service import GlossaryService
 from app.services.grpc_stt_service import AiStreamServicer, create_grpc_server
@@ -326,7 +340,7 @@ _stt_stream_retry_guards: dict[str, "MeetingStreamRetryGuard"] = {}
 _stt_finalized_responses: dict[str, tuple[SttStreamResponse, float]] = {}
 _STT_FINALIZED_RESPONSE_TTL_SECONDS = 300.0
 _REALTIME_ANALYSIS_GUARD_TTL_SECONDS = 30.0 * 60.0
-_REALTIME_ANALYSIS_LOCK_TTL_SECONDS = 180.0
+_REALTIME_ANALYSIS_LOCK_TTL_SECONDS = float(ANALYSIS_LOCK_TTL_SECONDS)
 _REALTIME_ANALYSIS_FAILURE_COOLDOWN_SECONDS = 90.0
 _REALTIME_ANALYSIS_STALE_SECONDS = max(300.0, _REALTIME_ANALYSIS_LOCK_TTL_SECONDS * 2.0)
 _REALTIME_ANALYSIS_LOCK_TOKEN_PREFIX = "aiapi:"
@@ -1706,7 +1720,7 @@ def _normalize_epoch_seconds(value: Any, default: float = 0.0) -> float:
 
 
 def _is_ai_owned_lock_token(lock_token: Any) -> bool:
-    return str(lock_token or "").startswith(_REALTIME_ANALYSIS_LOCK_TOKEN_PREFIX)
+    return is_ai_owned_lock(lock_token)
 
 
 def _analysis_state_owner(state: dict[str, str]) -> str:
@@ -1716,8 +1730,15 @@ def _analysis_state_owner(state: dict[str, str]) -> str:
     return owner.lower()
 
 
-def _release_realtime_analysis_lock(client: Any, meeting_id: int) -> None:
+def _release_realtime_analysis_lock(
+    client: Any,
+    meeting_id: int,
+    lock_token: str | None = None,
+) -> None:
     try:
+        if lock_token:
+            release_analysis_lock(client, _analysis_lock_key(meeting_id), lock_token)
+            return
         client.delete(_analysis_lock_key(meeting_id))
     except Exception:
         return
@@ -1786,6 +1807,8 @@ def _try_begin_realtime_analysis(
     source: str,
     prompt_version: str = AIAnalyzer.PROMPT_VERSION,
     schema_version: str = AIAnalyzer.SCHEMA_VERSION,
+    analysis_attempt: int = 1,
+    trace_id: str | None = None,
 ) -> tuple[bool, str | None, str | None, int, str | None]:
     now = time.time()
     state: dict[str, str] = {}
@@ -1911,22 +1934,30 @@ def _try_begin_realtime_analysis(
             safe_error_message(redis_error),
         )
 
-    lock_token = f"{_REALTIME_ANALYSIS_LOCK_TOKEN_PREFIX}{uuid4().hex}"
+    lock_token: str | None = None
+    resolved_trace_id = str(trace_id or uuid4().hex[:12])
+    trigger_source = (
+        "background" if "background" in str(source or "").lower() else "manual"
+    )
     try:
         client = _get_client()
         lock_key = _analysis_lock_key(meeting_id)
-        acquired = client.set(
-            lock_key,
-            lock_token,
-            nx=True,
-            ex=max(120, int(_REALTIME_ANALYSIS_LOCK_TTL_SECONDS)),
+        acquired, lock_token, holder_payload = acquire_analysis_lock(
+            client,
+            lock_key=lock_key,
+            meeting_id=meeting_id,
+            analysis_input_hash=analysis_cache_key,
+            trigger_source=trigger_source,
+            analysis_attempt=analysis_attempt,
+            trace_id=resolved_trace_id,
+            ttl_seconds=int(_REALTIME_ANALYSIS_LOCK_TTL_SECONDS),
         )
         if not acquired:
             lock_ttl = client.ttl(lock_key)
             lock_token_value = client.get(lock_key)
             state_snapshot = client.hgetall(_analysis_state_key(meeting_id)) or {}
             status_snapshot = str(state_snapshot.get("status") or "").strip().upper()
-            can_recover_foreign_or_orphan_lock = not _is_ai_owned_lock_token(
+            can_recover_foreign_or_orphan_lock = not is_ai_owned_lock(
                 lock_token_value
             ) and (
                 status_snapshot not in {"RUNNING", "PENDING", "QUEUED"}
@@ -1948,18 +1979,37 @@ def _try_begin_realtime_analysis(
                 _clear_realtime_analysis_running_state(
                     client, meeting_id, "foreign_or_orphan_lock"
                 )
-                acquired = client.set(
-                    lock_key,
-                    lock_token,
-                    nx=True,
-                    ex=max(120, int(_REALTIME_ANALYSIS_LOCK_TTL_SECONDS)),
+                acquired, lock_token, holder_payload = acquire_analysis_lock(
+                    client,
+                    lock_key=lock_key,
+                    meeting_id=meeting_id,
+                    analysis_input_hash=analysis_cache_key,
+                    trigger_source=trigger_source,
+                    analysis_attempt=analysis_attempt,
+                    trace_id=resolved_trace_id,
+                    ttl_seconds=int(_REALTIME_ANALYSIS_LOCK_TTL_SECONDS),
                 )
 
             if not acquired:
                 retry_after = int(
                     lock_ttl if isinstance(lock_ttl, int) and lock_ttl > 0 else 1
                 )
+                logger.info(
+                    "ANALYSIS_LOCK_DEFERRED meetingId={} triggerSource={} holderTraceId={}",
+                    meeting_id,
+                    trigger_source,
+                    holder_trace_id(holder_payload),
+                )
                 return False, "in_progress", error_code, retry_after, None
+
+        logger.info(
+            "ANALYSIS_LOCK_ACQUIRED meetingId={} triggerSource={} analysisAttempt={} analysisInputHash={} traceId={}",
+            meeting_id,
+            trigger_source,
+            analysis_attempt,
+            analysis_cache_key,
+            resolved_trace_id,
+        )
 
         with _realtime_analysis_guard_lock:
             _purge_realtime_analysis_guards(now)
@@ -1971,7 +2021,7 @@ def _try_begin_realtime_analysis(
                     active_hash == analysis_cache_key
                     and age_seconds <= _REALTIME_ANALYSIS_STALE_SECONDS
                 ):
-                    _release_realtime_analysis_lock(client, meeting_id)
+                    _release_realtime_analysis_lock(client, meeting_id, lock_token)
                     retry_after = max(
                         1, int(_REALTIME_ANALYSIS_STALE_SECONDS - age_seconds + 0.999)
                     )
@@ -2017,6 +2067,35 @@ def _try_begin_realtime_analysis(
     return True, None, None, 0, lock_token
 
 
+def _schedule_background_analysis_retry(
+    meeting_id: int,
+    *,
+    analysis_attempt: int,
+    analysis_input_hash: str,
+    trace_id: str,
+    source: str,
+) -> None:
+    try:
+        client = _get_client()
+        enqueue_background_retry(
+            client,
+            meeting_id=meeting_id,
+            analysis_attempt=analysis_attempt,
+            analysis_input_hash=analysis_input_hash,
+            trace_id=trace_id,
+            source=source,
+            max_attempts=settings.analysis_background_retry_max_attempts,
+            enabled=settings.analysis_background_retry_enabled,
+        )
+    except Exception as redis_error:
+        logger.warning(
+            "event=REDIS_OPERATION_FAILED operation=analysis_retry_enqueue meetingId={} errorCode={} error={}",
+            meeting_id,
+            type(redis_error).__name__,
+            safe_error_message(redis_error),
+        )
+
+
 def _finish_realtime_analysis(
     meeting_id: int,
     analysis_cache_key: str,
@@ -2028,6 +2107,12 @@ def _finish_realtime_analysis(
     error_code: str | None = None,
     error_reason: str | None = None,
     retry_after_seconds: int = 0,
+    *,
+    analysis_retry_count: int | None = None,
+    analysis_next_retry_at: str | None = None,
+    analysis_trace_id: str | None = None,
+    analysis_provider_alias: str | None = None,
+    retry_exhausted: bool | None = None,
 ) -> None:
     now = time.time()
     try:
@@ -2060,24 +2145,43 @@ def _finish_realtime_analysis(
                 retry_after_seconds or int(_REALTIME_ANALYSIS_FAILURE_COOLDOWN_SECONDS),
             )
             cooldown_until = now + retry_after
+            retryable = is_retryable_error_code(error_code)
+            failure_status = "ANALYSIS_FAILED_RETRYABLE" if retryable else "FAILED"
+            max_attempts = settings.analysis_background_retry_max_attempts
+            retry_count = int(analysis_retry_count or 0)
+            exhausted = (
+                retry_exhausted
+                if retry_exhausted is not None
+                else retry_count >= max_attempts
+            )
+            failure_mapping = {
+                "meeting_id": str(meeting_id),
+                "status": failure_status,
+                "transcript_hash": analysis_cache_key,
+                "analysis_cache_key": analysis_cache_key,
+                "prompt_version": prompt_version,
+                "schema_version": schema_version,
+                "source": source,
+                "updated_at": str(now),
+                "failed_at": str(now),
+                "owner": _REALTIME_ANALYSIS_STATE_OWNER,
+                "cooldown_until": str(cooldown_until),
+                "retry_after_seconds": str(retry_after),
+                "retryable": "true" if retryable else "false",
+                "retry_exhausted": "true" if exhausted else "false",
+                "analysis_retry_count": str(retry_count),
+                "error_code": str(error_code or "GEMINI_ANALYSIS_FAILED"),
+                "error_message": str(error_reason or "analysis_failed")[:180],
+            }
+            if analysis_next_retry_at:
+                failure_mapping["analysis_next_retry_at"] = analysis_next_retry_at
+            if analysis_trace_id:
+                failure_mapping["analysis_trace_id"] = analysis_trace_id
+            if analysis_provider_alias:
+                failure_mapping["analysis_provider_alias"] = analysis_provider_alias
             client.hset(
                 _analysis_state_key(meeting_id),
-                mapping={
-                    "meeting_id": str(meeting_id),
-                    "status": "FAILED",
-                    "transcript_hash": analysis_cache_key,
-                    "analysis_cache_key": analysis_cache_key,
-                    "prompt_version": prompt_version,
-                    "schema_version": schema_version,
-                    "source": source,
-                    "updated_at": str(now),
-                    "failed_at": str(now),
-                    "owner": _REALTIME_ANALYSIS_STATE_OWNER,
-                    "cooldown_until": str(cooldown_until),
-                    "retry_after_seconds": str(retry_after),
-                    "error_code": str(error_code or "GEMINI_ANALYSIS_FAILED"),
-                    "error_message": str(error_reason or "analysis_failed")[:180],
-                },
+                mapping=failure_mapping,
             )
             client.expire(
                 _analysis_state_key(meeting_id), int(settings.job_state_ttl_seconds)
@@ -2089,9 +2193,7 @@ def _finish_realtime_analysis(
             )
 
         if lock_token:
-            current_token = client.get(_analysis_lock_key(meeting_id))
-            if current_token and str(current_token) == lock_token:
-                client.delete(_analysis_lock_key(meeting_id))
+            release_analysis_lock(client, _analysis_lock_key(meeting_id), lock_token)
     except Exception as redis_error:
         logger.warning(
             "event=REDIS_OPERATION_FAILED operation=realtime_analysis_finish meetingId={} errorCode={} error={}",
@@ -2865,6 +2967,7 @@ async def analyze_realtime_transcript(
     try:
         meeting_id = int(request.meeting_id)
         source = str(request.source or "realtime").strip().lower() or "realtime"
+        analysis_trace_id = uuid4().hex[:12]
         transcript_text = _normalize_transcript_text(request.transcript)
         if not transcript_text:
             logger.warning(
@@ -2929,6 +3032,64 @@ async def analyze_realtime_transcript(
             if mode == ANALYSIS_MODE_CACHE_ONLY
             else _get_realtime_analysis_analyzer()
         )
+        quality_verdict = evaluate_transcript_quality(
+            transcript_text,
+            enabled=settings.analysis_short_transcript_gate_enabled,
+        )
+        if not quality_verdict.should_analyze:
+            logger.info(
+                "ANALYSIS_SKIPPED_SHORT_TRANSCRIPT meetingId={} normalizedChars={} wordCount={} skipReason={}",
+                meeting_id,
+                quality_verdict.normalized_chars,
+                quality_verdict.word_count,
+                quality_verdict.skip_reason,
+            )
+            skipped_run = None
+            if analyzer is not None:
+                cache_identity = build_analysis_cache_identity(
+                    db=db,
+                    meeting_id=meeting_id,
+                    analyzer=analyzer,
+                    fallback_transcript_hash=transcript_hash,
+                    fallback_text=transcript_text,
+                )
+                skipped_run, _ = begin_analysis_run(
+                    db=db,
+                    identity=cache_identity,
+                    mode=mode,
+                    requested_by=source,
+                    rerun_reason=request.reason,
+                )
+                mark_analysis_run_skipped_short(
+                    run=skipped_run,
+                    error_code=quality_verdict.skip_reason
+                    or "ANALYSIS_SKIPPED_SHORT_TRANSCRIPT",
+                    error_message="Transcript too short for analysis",
+                    analysis_input_hash=transcript_hash,
+                )
+                db.commit()
+            skip_metadata = analysis_run_response_metadata(skipped_run, cache_hit=False)
+            return RealtimeTranscriptAnalysisResponse(
+                meeting_id=meeting_id,
+                status="skipped",
+                reason="short_transcript",
+                transcript_hash=transcript_hash,
+                source=source,
+                promptVersion=prompt_version,
+                schemaVersion=schema_version,
+                analysisFeatureSet=analysis_feature_set,
+                analysisStatus=skip_metadata.get("analysisStatus") or "NO_ANALYSIS",
+                errorCode=quality_verdict.skip_reason
+                or "ANALYSIS_SKIPPED_SHORT_TRANSCRIPT",
+                cacheHit=False,
+                provider=skip_metadata.get("provider"),
+                model=skip_metadata.get("model"),
+                canonicalTranscriptHash=skip_metadata.get("canonicalTranscriptHash"),
+                canonicalTranscriptVersion=skip_metadata.get(
+                    "canonicalTranscriptVersion"
+                ),
+                analysisInputMode=skip_metadata.get("analysisInputMode"),
+            )
         cache_identity = None
         active_analysis_run = None
         if analyzer is None and mode == ANALYSIS_MODE_CACHE_ONLY:
@@ -3148,6 +3309,14 @@ async def analyze_realtime_transcript(
                 cache_identity.analysis_input_mode,
             )
 
+        analysis_attempt = 1
+        if cache_identity is not None:
+            latest_run = find_latest_analysis_run_for_identity(db, cache_identity)
+            if latest_run is not None:
+                analysis_attempt = (
+                    int(getattr(latest_run, "analysis_retry_count", 0) or 0) + 1
+                )
+
         (
             allowed,
             skip_reason,
@@ -3160,6 +3329,8 @@ async def analyze_realtime_transcript(
             source,
             prompt_version,
             schema_version,
+            analysis_attempt=analysis_attempt,
+            trace_id=analysis_trace_id,
         )
         if not allowed:
             if skip_reason in {"in_progress", "already_exists"}:
@@ -3274,9 +3445,11 @@ async def analyze_realtime_transcript(
                 try:
                     client = _get_client()
                     if lock_token:
-                        current_token = client.get(_analysis_lock_key(meeting_id))
-                        if current_token and str(current_token) == lock_token:
-                            client.delete(_analysis_lock_key(meeting_id))
+                        current_raw = client.get(_analysis_lock_key(meeting_id))
+                        if lock_token_from_raw(current_raw) == lock_token:
+                            release_analysis_lock(
+                                client, _analysis_lock_key(meeting_id), lock_token
+                            )
                 except Exception:
                     pass
                 return RealtimeTranscriptAnalysisResponse(
@@ -3338,13 +3511,19 @@ async def analyze_realtime_transcript(
             )
             mark_analysis_run_failed(
                 run=active_analysis_run,
-                status=ANALYSIS_STATUS_RATE_LIMITED,
+                status=ANALYSIS_STATUS_FAILED_RETRYABLE,
                 error_code=error_code,
                 error_message=safe_error_message(analysis_error),
+                analysis_retry_count=int(
+                    getattr(active_analysis_run, "analysis_retry_count", 0) or 0
+                )
+                + 1,
+                analysis_trace_id=uuid4().hex[:12],
+                analysis_input_hash=transcript_hash,
             )
             db.commit()
             logger.warning(
-                "event=REALTIME_ANALYSIS_FAILED meetingId={} source={} errorCode={} retryAfterSeconds={} error={}",
+                "event=REALTIME_ANALYSIS_FAILED_RETRYABLE meetingId={} source={} errorCode={} retryAfterSeconds={} error={}",
                 meeting_id,
                 source,
                 error_code,
@@ -3395,13 +3574,19 @@ async def analyze_realtime_transcript(
             db.rollback()
             mark_analysis_run_failed(
                 run=active_analysis_run,
-                status=ANALYSIS_STATUS_FAILED,
+                status=ANALYSIS_STATUS_FAILED_RETRYABLE,
                 error_code="GEMINI_UNAVAILABLE",
                 error_message=safe_error_message(analysis_error),
+                analysis_retry_count=int(
+                    getattr(active_analysis_run, "analysis_retry_count", 0) or 0
+                )
+                + 1,
+                analysis_trace_id=uuid4().hex[:12],
+                analysis_input_hash=transcript_hash,
             )
             db.commit()
             logger.warning(
-                "event=REALTIME_ANALYSIS_FAILED meetingId={} source={} errorCode=GEMINI_UNAVAILABLE error={}",
+                "event=REALTIME_ANALYSIS_FAILED_RETRYABLE meetingId={} source={} errorCode=GEMINI_UNAVAILABLE error={}",
                 meeting_id,
                 source,
                 safe_error_message(analysis_error),
@@ -3440,6 +3625,35 @@ async def analyze_realtime_transcript(
                 detail="Gemini analysis failed",
             ) from analysis_error
         finally:
+            finish_retry_count = None
+            finish_next_retry_at = None
+            finish_trace_id = analysis_trace_id
+            finish_provider_alias = None
+            finish_retry_exhausted = None
+            if active_analysis_run is not None:
+                finish_retry_count = int(
+                    getattr(active_analysis_run, "analysis_retry_count", 0) or 0
+                )
+                finish_trace_id = str(
+                    getattr(active_analysis_run, "analysis_trace_id", None)
+                    or analysis_trace_id
+                )
+                finish_provider_alias = getattr(
+                    active_analysis_run, "analysis_provider_alias", None
+                )
+                next_retry_at = getattr(
+                    active_analysis_run, "analysis_next_retry_at", None
+                )
+                if next_retry_at is not None:
+                    finish_next_retry_at = (
+                        next_retry_at.isoformat()
+                        if hasattr(next_retry_at, "isoformat")
+                        else str(next_retry_at)
+                    )
+                finish_retry_exhausted = (
+                    finish_retry_count
+                    >= settings.analysis_background_retry_max_attempts
+                )
             _finish_realtime_analysis(
                 meeting_id,
                 analysis_cache_key,
@@ -3451,7 +3665,29 @@ async def analyze_realtime_transcript(
                 error_code=finish_error_code,
                 error_reason=finish_error_reason,
                 retry_after_seconds=finish_retry_after_seconds,
+                analysis_retry_count=finish_retry_count,
+                analysis_next_retry_at=finish_next_retry_at,
+                analysis_trace_id=finish_trace_id,
+                analysis_provider_alias=finish_provider_alias,
+                retry_exhausted=finish_retry_exhausted,
             )
+            if (
+                not success
+                and is_retryable_error_code(finish_error_code)
+                and active_analysis_run is not None
+            ):
+                _schedule_background_analysis_retry(
+                    meeting_id,
+                    analysis_attempt=int(
+                        getattr(active_analysis_run, "analysis_retry_count", 0) or 0
+                    ),
+                    analysis_input_hash=transcript_hash,
+                    trace_id=str(
+                        getattr(active_analysis_run, "analysis_trace_id", None)
+                        or uuid4().hex[:12]
+                    ),
+                    source="background_retry",
+                )
 
     except HTTPException:
         raise

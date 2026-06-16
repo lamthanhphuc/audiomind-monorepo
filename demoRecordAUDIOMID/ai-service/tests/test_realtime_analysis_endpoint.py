@@ -174,6 +174,12 @@ def reset_realtime_analysis_guard(monkeypatch):
     monkeypatch.setattr(
         main_module, "_realtime_analysis_analyzer", FakeRealtimeAnalyzer()
     )
+    monkeypatch.setattr(
+        main_module.settings, "analysis_short_transcript_gate_enabled", False
+    )
+    monkeypatch.setattr(
+        main_module.settings, "analysis_background_retry_enabled", False
+    )
     yield main_module._realtime_analysis_analyzer
 
 
@@ -398,7 +404,7 @@ def test_realtime_analysis_rate_limit_preserves_metadata_and_cooldown(
     assert exc_info.value.detail["details"]["retryable"] is True
     assert exc_info.value.detail["details"]["retryAfterSeconds"] == 7
     state = client.hashes[main_module._analysis_state_key(914)]
-    assert state["status"] == "FAILED"
+    assert state["status"] == "ANALYSIS_FAILED_RETRYABLE"
     assert state["error_code"] == "GEMINI_RATE_LIMITED"
     assert state["retry_after_seconds"] == "7"
 
@@ -451,7 +457,7 @@ def test_realtime_analysis_cooldown_active_returns_failed_without_new_call(
     monkeypatch.setattr(
         main_module,
         "_try_begin_realtime_analysis",
-        lambda meeting_id, analysis_cache_key, source, prompt_version, schema_version: (
+        lambda *args, **kwargs: (
             False,
             "cooldown_active",
             "GEMINI_UNAVAILABLE",
@@ -479,7 +485,7 @@ def test_realtime_analysis_in_progress_returns_skipped_shape(db_session, monkeyp
     monkeypatch.setattr(
         main_module,
         "_try_begin_realtime_analysis",
-        lambda meeting_id, analysis_cache_key, source, prompt_version, schema_version: (
+        lambda *args, **kwargs: (
             False,
             "in_progress",
             None,

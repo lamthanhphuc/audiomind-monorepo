@@ -23,6 +23,7 @@ from app.services.analysis_errors import (
     AnalysisRateLimitError,
     AnalysisUnavailableError,
 )
+from app.services.gemini_fault_injection import resolve_gemini_http_client_factory
 from app.services.gemini_client import GeminiClient
 from app.services.gemini_key_manager import GeminiKeyConfigError, GeminiKeyManager
 
@@ -175,6 +176,13 @@ class AIAnalyzer:
                 )
             except GeminiKeyConfigError as exc:
                 raise AnalysisConfigError(str(exc), provider="gemini") from exc
+            from app.config import get_settings
+
+            test_mode = str(get_settings().gemini_client_test_mode or "").strip()
+            if test_mode:
+                http_client_factory = resolve_gemini_http_client_factory(test_mode)
+            else:
+                http_client_factory = httpx.Client
             self.gemini_client = GeminiClient(
                 self.gemini_key_manager,
                 max_attempts=self.gemini_max_attempts,
@@ -184,7 +192,7 @@ class AIAnalyzer:
                 backoff_max_ms=self.gemini_backoff_max_ms,
                 backoff_jitter=self.gemini_backoff_jitter,
                 fail_fast_seconds=self.gemini_fail_fast_seconds,
-                http_client_factory=httpx.Client,
+                http_client_factory=http_client_factory,
                 sleep=time.sleep,
             )
         if self.provider == "gemini":

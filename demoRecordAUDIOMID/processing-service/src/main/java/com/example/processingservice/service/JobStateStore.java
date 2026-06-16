@@ -94,7 +94,7 @@ public class JobStateStore {
 
     @Value("${processing.job-state-ttl-seconds:21600}")
     private long jobStateTtlSeconds;
-    @Value("${processing.analysis-lock-ttl-seconds:180}")
+    @Value("${processing.analysis-lock-ttl-seconds:600}")
     private long analysisLockTtlSeconds;
     @Value("${processing.analysis-failure-cooldown-seconds:90}")
     private long analysisFailureCooldownSeconds;
@@ -121,7 +121,13 @@ public class JobStateStore {
             String errorCode,
             String errorMessage,
             long cooldownUntilMs,
-            int retryAfterSeconds
+            int retryAfterSeconds,
+            boolean retryable,
+            boolean retryExhausted,
+            int analysisRetryCount,
+            String analysisNextRetryAt,
+            String analysisTraceId,
+            String analysisProviderAlias
     ) {
         boolean isRunning() {
             return "RUNNING".equals(status) || "PENDING".equals(status) || "QUEUED".equals(status);
@@ -305,9 +311,18 @@ public class JobStateStore {
         }
 
         String lockToken = UUID.randomUUID().toString();
+        String traceId = "processing-" + meetingId + "-" + System.currentTimeMillis();
+        String lockPayload = buildAnalysisLockPayload(
+                meetingId,
+                normalizedHash,
+                "manual",
+                1,
+                traceId,
+                lockToken
+        );
         Boolean locked = redisTemplate.opsForValue().setIfAbsent(
                 analysisLockKey(meetingId),
-                lockToken,
+                lockPayload,
                 analysisLockTtl()
         );
         if (!Boolean.TRUE.equals(locked)) {
@@ -386,6 +401,30 @@ public class JobStateStore {
             String errorMessage,
             int retryAfterSecondsOverride
     ) {
+        markAnalysisFailed(
+                meetingId,
+                transcriptHash,
+                source,
+                triggeredBy,
+                lockToken,
+                errorCode,
+                errorMessage,
+                retryAfterSecondsOverride,
+                AnalysisRetryMetadata.empty()
+        );
+    }
+
+    public void markAnalysisFailed(
+            Long meetingId,
+            String transcriptHash,
+            String source,
+            String triggeredBy,
+            String lockToken,
+            String errorCode,
+            String errorMessage,
+            int retryAfterSecondsOverride,
+            AnalysisRetryMetadata retryMetadata
+    ) {
         long nowMs = System.currentTimeMillis();
         int normalizedRetryAfterSeconds = retryAfterSecondsOverride > 0
                 ? retryAfterSecondsOverride
@@ -410,6 +449,21 @@ public class JobStateStore {
         state.put("errorMessage", safeText(errorMessage));
         state.put("retryable", String.valueOf(AnalysisFailureMapping.isRetryableErrorCode(errorCode)));
         state.put("attemptCount", String.valueOf(incrementAttemptCount(meetingId)));
+        if (retryMetadata != null) {
+            if (retryMetadata.analysisRetryCount() > 0) {
+                state.put("analysis_retry_count", String.valueOf(retryMetadata.analysisRetryCount()));
+            }
+            if (retryMetadata.analysisNextRetryAt() != null && !retryMetadata.analysisNextRetryAt().isBlank()) {
+                state.put("analysis_next_retry_at", retryMetadata.analysisNextRetryAt());
+            }
+            if (retryMetadata.analysisTraceId() != null && !retryMetadata.analysisTraceId().isBlank()) {
+                state.put("analysis_trace_id", retryMetadata.analysisTraceId());
+            }
+            if (retryMetadata.analysisProviderAlias() != null && !retryMetadata.analysisProviderAlias().isBlank()) {
+                state.put("analysis_provider_alias", retryMetadata.analysisProviderAlias());
+            }
+            state.put("retry_exhausted", String.valueOf(retryMetadata.retryExhausted()));
+        }
         redisTemplate.opsForHash().putAll(analysisStateKey(meetingId), state);
         redisTemplate.expire(analysisStateKey(meetingId), jobStateTtl());
         redisTemplate.opsForValue().set(
@@ -470,8 +524,14 @@ public class JobStateStore {
         String status = normalizeStatus(raw.get("status"));
         String transcriptHash = String.valueOf(raw.getOrDefault("transcriptHash", "")).trim().toLowerCase();
         String source = String.valueOf(raw.getOrDefault("source", "")).trim();
-        String errorCode = String.valueOf(raw.getOrDefault("errorCode", "")).trim();
-        String errorMessage = String.valueOf(raw.getOrDefault("errorMessage", "")).trim();
+        String errorCode = firstNonBlank(
+                String.valueOf(raw.getOrDefault("errorCode", "")),
+                String.valueOf(raw.getOrDefault("error_code", ""))
+        ).trim();
+        String errorMessage = firstNonBlank(
+                String.valueOf(raw.getOrDefault("errorMessage", "")),
+                String.valueOf(raw.getOrDefault("error_message", ""))
+        ).trim();
         long cooldownUntilMs = parseLong(String.valueOf(raw.getOrDefault("cooldownUntilMs", "0")), 0L);
         String cooldownValue = redisTemplate.opsForValue().get(analysisCooldownKey(meetingId));
         long cooldownFromKey = parseLong(cooldownValue, 0L);
@@ -480,15 +540,46 @@ public class JobStateStore {
         }
         int retryAfterSeconds = cooldownUntilMs > nowMs
                 ? Math.max(1, (int) Math.ceil((cooldownUntilMs - nowMs) / 1000.0))
-                : 0;
+                : parseIntField(raw, 0, "retryAfterSeconds", "retry_after_seconds");
+        boolean retryable = parseBooleanField(
+                raw,
+                AnalysisFailureMapping.isRetryableErrorCode(errorCode),
+                "retryable"
+        );
+        boolean retryExhausted = parseBooleanField(raw, false, "retryExhausted", "retry_exhausted");
+        int analysisRetryCount = parseIntField(
+                raw,
+                0,
+                "analysisRetryCount",
+                "analysis_retry_count",
+                "attemptCount"
+        );
+        String analysisNextRetryAt = firstNonBlank(
+                String.valueOf(raw.getOrDefault("analysisNextRetryAt", "")),
+                String.valueOf(raw.getOrDefault("analysis_next_retry_at", ""))
+        ).trim();
+        String analysisTraceId = firstNonBlank(
+                String.valueOf(raw.getOrDefault("analysisTraceId", "")),
+                String.valueOf(raw.getOrDefault("analysis_trace_id", ""))
+        ).trim();
+        String analysisProviderAlias = firstNonBlank(
+                String.valueOf(raw.getOrDefault("analysisProviderAlias", "")),
+                String.valueOf(raw.getOrDefault("analysis_provider_alias", ""))
+        ).trim();
         return Optional.of(new AnalysisStateSnapshot(
                 status,
                 transcriptHash,
                 source,
-                errorCode,
-                errorMessage,
+                errorCode.isBlank() ? "" : errorCode,
+                errorMessage.isBlank() ? "" : errorMessage,
                 cooldownUntilMs,
-                retryAfterSeconds
+                retryAfterSeconds,
+                retryable,
+                retryExhausted,
+                analysisRetryCount,
+                analysisNextRetryAt.isBlank() ? null : analysisNextRetryAt,
+                analysisTraceId.isBlank() ? null : analysisTraceId,
+                analysisProviderAlias.isBlank() ? null : analysisProviderAlias
         ));
     }
 
@@ -624,8 +715,103 @@ public class JobStateStore {
         }
         String key = analysisLockKey(meetingId);
         String current = redisTemplate.opsForValue().get(key);
-        if (lockToken.equals(current)) {
+        if (extractLockToken(current).equals(lockToken)) {
             redisTemplate.delete(key);
+        }
+    }
+
+    private String buildAnalysisLockPayload(
+            Long meetingId,
+            String analysisInputHash,
+            String triggerSource,
+            int analysisAttempt,
+            String traceId,
+            String lockToken
+    ) {
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("lockToken", lockToken);
+        payload.put("meetingId", meetingId);
+        payload.put("analysisInputHash", normalizeTranscriptHash(analysisInputHash));
+        payload.put("triggerSource", safeText(triggerSource));
+        payload.put("analysisAttempt", Math.max(1, analysisAttempt));
+        payload.put("traceId", safeText(traceId));
+        payload.put("startedAt", System.currentTimeMillis() / 1000.0);
+        return gson.toJson(payload);
+    }
+
+    private String extractLockToken(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return "";
+        }
+        String trimmed = raw.trim();
+        if (!trimmed.startsWith("{")) {
+            return trimmed;
+        }
+        try {
+            Map<String, Object> parsed = gson.fromJson(trimmed, MAP_TYPE);
+            if (parsed == null) {
+                return "";
+            }
+            Object token = parsed.get("lockToken");
+            return token == null ? "" : String.valueOf(token).trim();
+        } catch (RuntimeException ignored) {
+            return "";
+        }
+    }
+
+    private String firstNonBlank(String... values) {
+        if (values == null) {
+            return "";
+        }
+        for (String value : values) {
+            if (value != null && !value.isBlank() && !"null".equalsIgnoreCase(value)) {
+                return value;
+            }
+        }
+        return "";
+    }
+
+    private boolean parseBooleanField(Map<Object, Object> raw, boolean fallback, String... fields) {
+        for (String field : fields) {
+            Object value = raw.get(field);
+            if (value == null) {
+                continue;
+            }
+            String normalized = String.valueOf(value).trim().toLowerCase();
+            if ("true".equals(normalized) || "1".equals(normalized)) {
+                return true;
+            }
+            if ("false".equals(normalized) || "0".equals(normalized)) {
+                return false;
+            }
+        }
+        return fallback;
+    }
+
+    private int parseIntField(Map<Object, Object> raw, int fallback, String... fields) {
+        for (String field : fields) {
+            Object value = raw.get(field);
+            if (value == null) {
+                continue;
+            }
+            try {
+                return Integer.parseInt(String.valueOf(value).trim());
+            } catch (NumberFormatException ignored) {
+                continue;
+            }
+        }
+        return fallback;
+    }
+
+    public record AnalysisRetryMetadata(
+            boolean retryExhausted,
+            int analysisRetryCount,
+            String analysisNextRetryAt,
+            String analysisTraceId,
+            String analysisProviderAlias
+    ) {
+        public static AnalysisRetryMetadata empty() {
+            return new AnalysisRetryMetadata(false, 0, null, null, null);
         }
     }
 }

@@ -137,6 +137,12 @@ class MeetingAnalysisRun(Base):
     completed_at = Column(DateTime, nullable=True)
     requested_by = Column(String(128), nullable=True)
     rerun_reason = Column(Text, nullable=True)
+    analysis_retry_count = Column(Integer, nullable=False, default=0)
+    analysis_next_retry_at = Column(DateTime, nullable=True)
+    analysis_last_attempt_at = Column(DateTime, nullable=True)
+    analysis_provider_alias = Column(String(32), nullable=True)
+    analysis_trace_id = Column(String(64), nullable=True)
+    analysis_input_hash = Column(String(64), nullable=True)
 
 
 class GlossaryEntry(Base):

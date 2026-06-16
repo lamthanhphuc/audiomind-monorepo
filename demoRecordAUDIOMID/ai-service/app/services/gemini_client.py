@@ -180,6 +180,14 @@ class GeminiClient:
 
                 reason = _response_reason(response)
                 logger.warning(
+                    "GEMINI_KEY_FAILED alias={} providerAttempt={} statusCode={} errorCode={} retryable={}",
+                    entry.alias,
+                    attempt,
+                    status_code,
+                    reason,
+                    status_code in {429, 500, 502, 503, 504},
+                )
+                logger.warning(
                     "GEMINI_CALL_FAILED alias={} status={} reason={}",
                     entry.alias,
                     status_code,

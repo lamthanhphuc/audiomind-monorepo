@@ -606,18 +606,55 @@ def mark_analysis_run_failed(
     status: str = ANALYSIS_STATUS_FAILED,
     error_code: str | None = None,
     error_message: str | None = None,
+    analysis_retry_count: int | None = None,
+    analysis_next_retry_at: datetime | None = None,
+    analysis_trace_id: str | None = None,
+    analysis_provider_alias: str | None = None,
+    analysis_input_hash: str | None = None,
 ) -> MeetingAnalysisRun | None:
     if run is None:
         return None
     normalized_status = _clean_text(status).upper()
-    if normalized_status not in ANALYSIS_RETRYABLE_FAILURE_STATUSES:
+    allowed_statuses = ANALYSIS_RETRYABLE_FAILURE_STATUSES | {
+        ANALYSIS_STATUS_FAILED_RETRYABLE,
+        ANALYSIS_STATUS_NO_ANALYSIS,
+        ANALYSIS_STATUS_STALE,
+    }
+    if normalized_status not in allowed_statuses:
         normalized_status = ANALYSIS_STATUS_FAILED
     run.status = normalized_status
     run.error_code = _clean_text(error_code) or None
     run.error_message = _clean_text(error_message)[:1000] or None
     run.updated_at = datetime.utcnow()
+    run.analysis_last_attempt_at = datetime.utcnow()
     run.completed_at = None
+    if analysis_retry_count is not None:
+        run.analysis_retry_count = max(0, int(analysis_retry_count))
+    if analysis_next_retry_at is not None:
+        run.analysis_next_retry_at = analysis_next_retry_at
+    if analysis_trace_id:
+        run.analysis_trace_id = _clean_text(analysis_trace_id) or None
+    if analysis_provider_alias:
+        run.analysis_provider_alias = _clean_text(analysis_provider_alias)[:32] or None
+    if analysis_input_hash:
+        run.analysis_input_hash = _clean_text(analysis_input_hash)[:64] or None
     return run
+
+
+def mark_analysis_run_skipped_short(
+    *,
+    run: MeetingAnalysisRun | None,
+    error_code: str = "ANALYSIS_SKIPPED_SHORT_TRANSCRIPT",
+    error_message: str | None = None,
+    analysis_input_hash: str | None = None,
+) -> MeetingAnalysisRun | None:
+    return mark_analysis_run_failed(
+        run=run,
+        status=ANALYSIS_STATUS_NO_ANALYSIS,
+        error_code=error_code,
+        error_message=error_message,
+        analysis_input_hash=analysis_input_hash,
+    )
 
 
 def latest_completed_analysis_run(
@@ -674,8 +711,28 @@ def analysis_run_response_metadata(
         metadata["errorCode"] = run.error_code
     if run.error_message:
         metadata["errorMessage"] = run.error_message
-    if run.status in ANALYSIS_RETRYABLE_FAILURE_STATUSES:
+    if (
+        run.status in ANALYSIS_RETRYABLE_FAILURE_STATUSES
+        or run.status == ANALYSIS_STATUS_FAILED_RETRYABLE
+    ):
         metadata["retryable"] = True
+        metadata["analysisRetryCount"] = int(
+            getattr(run, "analysis_retry_count", 0) or 0
+        )
+        if getattr(run, "analysis_next_retry_at", None):
+            metadata["analysisNextRetryAt"] = _analysis_timestamp(
+                run.analysis_next_retry_at
+            )
+        if getattr(run, "analysis_trace_id", None):
+            metadata["analysisTraceId"] = run.analysis_trace_id
+        if getattr(run, "analysis_provider_alias", None):
+            metadata["analysisProviderAlias"] = run.analysis_provider_alias
+        if getattr(run, "analysis_input_hash", None):
+            metadata["analysisInputHash"] = run.analysis_input_hash
+        max_attempts = 4
+        metadata["retryExhausted"] = metadata["analysisRetryCount"] >= max_attempts
+    if run.status == ANALYSIS_STATUS_NO_ANALYSIS and run.error_code:
+        metadata["retryable"] = False
     return metadata
 
 

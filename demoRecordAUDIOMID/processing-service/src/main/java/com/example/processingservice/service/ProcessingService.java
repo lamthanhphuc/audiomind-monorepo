@@ -2602,17 +2602,102 @@ public class ProcessingService {
         if (AnalysisFailureMapping.ANALYSIS_STATUS_FAILED_RETRYABLE.equals(analysisState.status())) {
             response.put("status", AnalysisFailureMapping.ANALYSIS_STATUS_FAILED_RETRYABLE);
             response.put("analysisStatus", AnalysisFailureMapping.ANALYSIS_STATUS_FAILED_RETRYABLE);
+        } else if (analysisState.status() != null && !analysisState.status().isBlank()) {
+            response.put("analysisStatus", analysisState.status());
         }
         if (analysisState.retryAfterSeconds() > 0) {
             response.put("retryAfterSeconds", analysisState.retryAfterSeconds());
         }
         if (analysisState.errorCode() != null && !analysisState.errorCode().isBlank()) {
             response.put("errorCode", analysisState.errorCode());
-            response.put("retryable", AnalysisFailureMapping.isRetryableErrorCode(analysisState.errorCode()));
+        }
+        response.put("retryable", analysisState.retryable());
+        response.put("retryExhausted", analysisState.retryExhausted());
+        if (analysisState.analysisRetryCount() > 0) {
+            response.put("analysisRetryCount", analysisState.analysisRetryCount());
+        }
+        if (analysisState.analysisNextRetryAt() != null && !analysisState.analysisNextRetryAt().isBlank()) {
+            response.put("analysisNextRetryAt", analysisState.analysisNextRetryAt());
+        }
+        if (analysisState.analysisTraceId() != null && !analysisState.analysisTraceId().isBlank()) {
+            response.put("analysisTraceId", analysisState.analysisTraceId());
+        }
+        if (analysisState.analysisProviderAlias() != null && !analysisState.analysisProviderAlias().isBlank()) {
+            response.put("analysisProviderAlias", analysisState.analysisProviderAlias());
         }
         if (analysisState.errorMessage() != null && !analysisState.errorMessage().isBlank()) {
             response.put("errorMessage", analysisState.errorMessage());
         }
+    }
+
+    private JobStateStore.AnalysisRetryMetadata extractAnalysisRetryMetadata(Map<String, Object> response) {
+        if (response == null || response.isEmpty()) {
+            return JobStateStore.AnalysisRetryMetadata.empty();
+        }
+        boolean retryExhausted = parseBooleanResponseField(response, "retryExhausted", "retry_exhausted");
+        int analysisRetryCount = parseIntResponseField(response, "analysisRetryCount", "analysis_retry_count");
+        String analysisNextRetryAt = firstResponseString(response, "analysisNextRetryAt", "analysis_next_retry_at");
+        String analysisTraceId = firstResponseString(response, "analysisTraceId", "analysis_trace_id");
+        String analysisProviderAlias = firstResponseString(response, "analysisProviderAlias", "analysis_provider_alias");
+        return new JobStateStore.AnalysisRetryMetadata(
+                retryExhausted,
+                analysisRetryCount,
+                analysisNextRetryAt,
+                analysisTraceId,
+                analysisProviderAlias
+        );
+    }
+
+    private boolean parseBooleanResponseField(Map<String, Object> response, String... keys) {
+        for (String key : keys) {
+            Object value = response.get(key);
+            if (value == null) {
+                continue;
+            }
+            if (value instanceof Boolean boolValue) {
+                return boolValue;
+            }
+            String normalized = String.valueOf(value).trim().toLowerCase();
+            if ("true".equals(normalized) || "1".equals(normalized)) {
+                return true;
+            }
+            if ("false".equals(normalized) || "0".equals(normalized)) {
+                return false;
+            }
+        }
+        return false;
+    }
+
+    private int parseIntResponseField(Map<String, Object> response, String... keys) {
+        for (String key : keys) {
+            Object value = response.get(key);
+            if (value == null) {
+                continue;
+            }
+            if (value instanceof Number numberValue) {
+                return numberValue.intValue();
+            }
+            try {
+                return Integer.parseInt(String.valueOf(value).trim());
+            } catch (NumberFormatException ignored) {
+                continue;
+            }
+        }
+        return 0;
+    }
+
+    private String firstResponseString(Map<String, Object> response, String... keys) {
+        for (String key : keys) {
+            Object value = response.get(key);
+            if (value == null) {
+                continue;
+            }
+            String normalized = String.valueOf(value).trim();
+            if (!normalized.isBlank() && !"null".equalsIgnoreCase(normalized)) {
+                return normalized;
+            }
+        }
+        return null;
     }
 
     private String normalizeStatus(Object value) {
@@ -3620,7 +3705,8 @@ public class ProcessingService {
                         lockToken,
                         errorCode,
                         safeErrorText(response.get("reason")),
-                        retryAfterForFailure
+                        retryAfterForFailure,
+                        extractAnalysisRetryMetadata(response)
                 );
                 log.warn(
                         "event=REALTIME_ANALYSIS_FAILED_RETRYABLE meetingId={} source={} errorCode={} retryAfterSeconds={} retryable={}",
