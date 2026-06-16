@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import StudioAuthPage from '../components/auth/StudioAuthPage'
 import DashboardLayout, { type DashboardScene } from '../components/dashboard/DashboardLayout'
-import SubjectsList from '../components/dashboard/SubjectsList'
 import FeatureAnalysis from '../components/features/FeatureAnalysis'
 import FeatureUpload from '../components/features/FeatureUpload'
 import MeetingHistoryScene from '../components/features/MeetingHistoryScene'
@@ -1765,7 +1764,6 @@ export default function App() {
     if (featureScene === 'files') {
       return <MeetingHistoryScene onOpenAnalysis={handleOpenMeetingAnalysisFromHistory} />
     }
-    if (featureScene === 'subjects') return <SubjectsList />
 
     return (
       <FeatureUpload

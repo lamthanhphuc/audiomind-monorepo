@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 import { StudioAmbientBackground } from '../ui/StudioAmbientBackground'
 
-export type DashboardScene = 'upload' | 'realtime' | 'analysis' | 'files' | 'subjects'
+export type DashboardScene = 'upload' | 'realtime' | 'analysis' | 'files'
 
 type DashboardUser = {
   name: string
@@ -65,9 +65,6 @@ export default function DashboardLayout({
             </li>
             <li className={activeMenu === 'files' ? 'active' : ''} onClick={() => onNavigate('files')}>
               <span className="icon">⏱</span> Lịch sử meeting
-            </li>
-            <li className={activeMenu === 'subjects' ? 'active' : ''} onClick={() => onNavigate('subjects')}>
-              <span className="icon">📁</span> Môn học
             </li>
           </ul>
         </div>
