@@ -105,4 +105,44 @@ describe('AnalysisStatusPanel', () => {
 
     expect(onReanalyze).toHaveBeenCalledTimes(1)
   })
+
+  it('shows Vietnamese retryable overload banner', () => {
+    renderPanel({
+      metadata: {
+        analysisStatus: 'ANALYSIS_FAILED_RETRYABLE',
+        retryable: true,
+        retryAfterSeconds: 30,
+        errorCode: 'GEMINI_QUOTA_EXHAUSTED',
+      },
+      onReanalyze: vi.fn(),
+    })
+
+    expect(container.querySelector('[data-testid="analysis-status-banner"]')?.textContent)
+      .toContain('AI đang quá tải, hệ thống sẽ tự thử lại.')
+  })
+
+  it('shows short transcript skip message', () => {
+    renderPanel({
+      metadata: {
+        analysisStatus: 'NO_ANALYSIS',
+        errorCode: 'ANALYSIS_SKIPPED_SHORT_TRANSCRIPT',
+      },
+      onReanalyze: vi.fn(),
+    })
+
+    expect(container.querySelector('[data-testid="analysis-status-banner"]')?.textContent)
+      .toContain('Bản ghi quá ngắn hoặc chưa có đủ nội dung để phân tích.')
+  })
+
+  it('shows in-progress Vietnamese message', () => {
+    renderPanel({
+      metadata: {
+        analysisStatus: 'ANALYZING',
+      },
+      onReanalyze: vi.fn(),
+    })
+
+    expect(container.querySelector('[data-testid="analysis-status-banner"]')?.textContent)
+      .toContain('Phân tích đang chạy, vui lòng đợi…')
+  })
 })

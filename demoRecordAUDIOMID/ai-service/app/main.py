@@ -78,6 +78,7 @@ from app.services.analysis_runs import (
     ANALYSIS_RETRYABLE_FAILURE_STATUSES,
     ANALYSIS_STATUS_ANALYZING,
     ANALYSIS_STATUS_FAILED,
+    ANALYSIS_STATUS_FAILED_RETRYABLE,
     ANALYSIS_STATUS_RATE_LIMITED,
     analysis_payload_from_run,
     analysis_miss_response_metadata,
@@ -90,10 +91,17 @@ from app.services.analysis_runs import (
     find_latest_analysis_run_for_identity,
     latest_completed_analysis_run,
     mark_analysis_run_failed,
+    mark_analysis_run_skipped_short,
     normalize_analysis_mode,
     persist_completed_analysis_run,
 )
-from app.services.glossary_repository import GlossaryRepository
+from app.services.analysis_retry_scheduler import (
+    ANALYSIS_LOCK_TTL_SECONDS,
+    enqueue_background_retry,
+    is_retryable_error_code,
+    serialize_lock_payload,
+)
+from app.services.transcript_quality_gate import evaluate_transcript_quality
 from app.services.glossary_service import GlossaryService
 from app.services.grpc_stt_service import AiStreamServicer, create_grpc_server
 from app.services.stt_adapter import (
@@ -326,7 +334,7 @@ _stt_stream_retry_guards: dict[str, "MeetingStreamRetryGuard"] = {}
 _stt_finalized_responses: dict[str, tuple[SttStreamResponse, float]] = {}
 _STT_FINALIZED_RESPONSE_TTL_SECONDS = 300.0
 _REALTIME_ANALYSIS_GUARD_TTL_SECONDS = 30.0 * 60.0
-_REALTIME_ANALYSIS_LOCK_TTL_SECONDS = 180.0
+_REALTIME_ANALYSIS_LOCK_TTL_SECONDS = float(ANALYSIS_LOCK_TTL_SECONDS)
 _REALTIME_ANALYSIS_FAILURE_COOLDOWN_SECONDS = 90.0
 _REALTIME_ANALYSIS_STALE_SECONDS = max(300.0, _REALTIME_ANALYSIS_LOCK_TTL_SECONDS * 2.0)
 _REALTIME_ANALYSIS_LOCK_TOKEN_PREFIX = "aiapi:"
@@ -2017,6 +2025,35 @@ def _try_begin_realtime_analysis(
     return True, None, None, 0, lock_token
 
 
+def _schedule_background_analysis_retry(
+    meeting_id: int,
+    *,
+    analysis_attempt: int,
+    analysis_input_hash: str,
+    trace_id: str,
+    source: str,
+) -> None:
+    try:
+        client = _get_client()
+        enqueue_background_retry(
+            client,
+            meeting_id=meeting_id,
+            analysis_attempt=analysis_attempt,
+            analysis_input_hash=analysis_input_hash,
+            trace_id=trace_id,
+            source=source,
+            max_attempts=settings.analysis_background_retry_max_attempts,
+            enabled=settings.analysis_background_retry_enabled,
+        )
+    except Exception as redis_error:
+        logger.warning(
+            "event=REDIS_OPERATION_FAILED operation=analysis_retry_enqueue meetingId={} errorCode={} error={}",
+            meeting_id,
+            type(redis_error).__name__,
+            safe_error_message(redis_error),
+        )
+
+
 def _finish_realtime_analysis(
     meeting_id: int,
     analysis_cache_key: str,
@@ -2060,11 +2097,15 @@ def _finish_realtime_analysis(
                 retry_after_seconds or int(_REALTIME_ANALYSIS_FAILURE_COOLDOWN_SECONDS),
             )
             cooldown_until = now + retry_after
+            retryable = is_retryable_error_code(error_code)
+            failure_status = (
+                "ANALYSIS_FAILED_RETRYABLE" if retryable else "FAILED"
+            )
             client.hset(
                 _analysis_state_key(meeting_id),
                 mapping={
                     "meeting_id": str(meeting_id),
-                    "status": "FAILED",
+                    "status": failure_status,
                     "transcript_hash": analysis_cache_key,
                     "analysis_cache_key": analysis_cache_key,
                     "prompt_version": prompt_version,
@@ -2075,6 +2116,7 @@ def _finish_realtime_analysis(
                     "owner": _REALTIME_ANALYSIS_STATE_OWNER,
                     "cooldown_until": str(cooldown_until),
                     "retry_after_seconds": str(retry_after),
+                    "retryable": "true" if retryable else "false",
                     "error_code": str(error_code or "GEMINI_ANALYSIS_FAILED"),
                     "error_message": str(error_reason or "analysis_failed")[:180],
                 },
@@ -2929,6 +2971,60 @@ async def analyze_realtime_transcript(
             if mode == ANALYSIS_MODE_CACHE_ONLY
             else _get_realtime_analysis_analyzer()
         )
+        quality_verdict = evaluate_transcript_quality(
+            transcript_text,
+            enabled=settings.analysis_short_transcript_gate_enabled,
+        )
+        if not quality_verdict.should_analyze:
+            logger.info(
+                "ANALYSIS_SKIPPED_SHORT_TRANSCRIPT meetingId={} normalizedChars={} wordCount={} skipReason={}",
+                meeting_id,
+                quality_verdict.normalized_chars,
+                quality_verdict.word_count,
+                quality_verdict.skip_reason,
+            )
+            skipped_run = None
+            if analyzer is not None:
+                cache_identity = build_analysis_cache_identity(
+                    db=db,
+                    meeting_id=meeting_id,
+                    analyzer=analyzer,
+                    fallback_transcript_hash=transcript_hash,
+                    fallback_text=transcript_text,
+                )
+                skipped_run, _ = begin_analysis_run(
+                    db=db,
+                    identity=cache_identity,
+                    mode=mode,
+                    requested_by=source,
+                    rerun_reason=request.reason,
+                )
+                mark_analysis_run_skipped_short(
+                    run=skipped_run,
+                    error_code=quality_verdict.skip_reason or "ANALYSIS_SKIPPED_SHORT_TRANSCRIPT",
+                    error_message="Transcript too short for analysis",
+                    analysis_input_hash=transcript_hash,
+                )
+                db.commit()
+            skip_metadata = analysis_run_response_metadata(skipped_run, cache_hit=False)
+            return RealtimeTranscriptAnalysisResponse(
+                meeting_id=meeting_id,
+                status="skipped",
+                reason="short_transcript",
+                transcript_hash=transcript_hash,
+                source=source,
+                promptVersion=prompt_version,
+                schemaVersion=schema_version,
+                analysisFeatureSet=analysis_feature_set,
+                analysisStatus=skip_metadata.get("analysisStatus") or "NO_ANALYSIS",
+                errorCode=quality_verdict.skip_reason or "ANALYSIS_SKIPPED_SHORT_TRANSCRIPT",
+                cacheHit=False,
+                provider=skip_metadata.get("provider"),
+                model=skip_metadata.get("model"),
+                canonicalTranscriptHash=skip_metadata.get("canonicalTranscriptHash"),
+                canonicalTranscriptVersion=skip_metadata.get("canonicalTranscriptVersion"),
+                analysisInputMode=skip_metadata.get("analysisInputMode"),
+            )
         cache_identity = None
         active_analysis_run = None
         if analyzer is None and mode == ANALYSIS_MODE_CACHE_ONLY:
@@ -3338,13 +3434,16 @@ async def analyze_realtime_transcript(
             )
             mark_analysis_run_failed(
                 run=active_analysis_run,
-                status=ANALYSIS_STATUS_RATE_LIMITED,
+                status=ANALYSIS_STATUS_FAILED_RETRYABLE,
                 error_code=error_code,
                 error_message=safe_error_message(analysis_error),
+                analysis_retry_count=int(getattr(active_analysis_run, "analysis_retry_count", 0) or 0) + 1,
+                analysis_trace_id=uuid4().hex[:12],
+                analysis_input_hash=transcript_hash,
             )
             db.commit()
             logger.warning(
-                "event=REALTIME_ANALYSIS_FAILED meetingId={} source={} errorCode={} retryAfterSeconds={} error={}",
+                "event=REALTIME_ANALYSIS_FAILED_RETRYABLE meetingId={} source={} errorCode={} retryAfterSeconds={} error={}",
                 meeting_id,
                 source,
                 error_code,
@@ -3395,13 +3494,16 @@ async def analyze_realtime_transcript(
             db.rollback()
             mark_analysis_run_failed(
                 run=active_analysis_run,
-                status=ANALYSIS_STATUS_FAILED,
+                status=ANALYSIS_STATUS_FAILED_RETRYABLE,
                 error_code="GEMINI_UNAVAILABLE",
                 error_message=safe_error_message(analysis_error),
+                analysis_retry_count=int(getattr(active_analysis_run, "analysis_retry_count", 0) or 0) + 1,
+                analysis_trace_id=uuid4().hex[:12],
+                analysis_input_hash=transcript_hash,
             )
             db.commit()
             logger.warning(
-                "event=REALTIME_ANALYSIS_FAILED meetingId={} source={} errorCode=GEMINI_UNAVAILABLE error={}",
+                "event=REALTIME_ANALYSIS_FAILED_RETRYABLE meetingId={} source={} errorCode=GEMINI_UNAVAILABLE error={}",
                 meeting_id,
                 source,
                 safe_error_message(analysis_error),
@@ -3452,6 +3554,23 @@ async def analyze_realtime_transcript(
                 error_reason=finish_error_reason,
                 retry_after_seconds=finish_retry_after_seconds,
             )
+            if (
+                not success
+                and is_retryable_error_code(finish_error_code)
+                and active_analysis_run is not None
+            ):
+                _schedule_background_analysis_retry(
+                    meeting_id,
+                    analysis_attempt=int(
+                        getattr(active_analysis_run, "analysis_retry_count", 0) or 0
+                    ),
+                    analysis_input_hash=transcript_hash,
+                    trace_id=str(
+                        getattr(active_analysis_run, "analysis_trace_id", None)
+                        or uuid4().hex[:12]
+                    ),
+                    source="background_retry",
+                )
 
     except HTTPException:
         raise

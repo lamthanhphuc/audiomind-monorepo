@@ -94,6 +94,11 @@ export type AiAnalysis = {
   errorCode?: string
   errorMessage?: string
   retryable?: boolean
+  retryExhausted?: boolean
+  analysisRetryCount?: number
+  analysisNextRetryAt?: string
+  analysisTraceId?: string
+  analysisProviderAlias?: string
   attemptCount?: number
   transcriptSaved?: boolean
   transcriptRows?: number
@@ -725,6 +730,11 @@ export const normalizeAnalysisResponse = (value: unknown): AiAnalysis => {
     errorCode: firstString(nested.errorCode, nested.error_code, payload.errorCode, payload.error_code),
     errorMessage: firstString(nested.errorMessage, nested.error_message, payload.errorMessage, payload.error_message),
     retryable: firstBoolean(nested.retryable, payload.retryable),
+    retryExhausted: firstBoolean(nested.retryExhausted, nested.retry_exhausted, payload.retryExhausted, payload.retry_exhausted),
+    analysisRetryCount: firstNumber(nested.analysisRetryCount, nested.analysis_retry_count, payload.analysisRetryCount, payload.analysis_retry_count),
+    analysisNextRetryAt: firstString(nested.analysisNextRetryAt, nested.analysis_next_retry_at, payload.analysisNextRetryAt, payload.analysis_next_retry_at),
+    analysisTraceId: firstString(nested.analysisTraceId, nested.analysis_trace_id, payload.analysisTraceId, payload.analysis_trace_id),
+    analysisProviderAlias: firstString(nested.analysisProviderAlias, nested.analysis_provider_alias, payload.analysisProviderAlias, payload.analysis_provider_alias),
     attemptCount: firstNumber(nested.attemptCount, nested.attempt_count, payload.attemptCount, payload.attempt_count),
     transcriptSaved: firstBoolean(nested.transcriptSaved, nested.transcript_saved, payload.transcriptSaved, payload.transcript_saved),
     transcriptRows: firstNumber(nested.transcriptRows, nested.transcript_rows, payload.transcriptRows, payload.transcript_rows),

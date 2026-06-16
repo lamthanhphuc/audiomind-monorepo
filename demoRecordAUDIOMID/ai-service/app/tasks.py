@@ -204,3 +204,45 @@ def process_meeting(payload: dict) -> None:
         raise
     finally:
         db.close()
+
+
+@celery_app.task(name="app.tasks.process_analysis_retry_queue")
+def process_analysis_retry_queue() -> int:
+  """Scan Redis retry queue and dispatch due background analysis retries."""
+  import httpx
+
+  from app.job_status_store import _get_client
+  from app.services.analysis_retry_scheduler import pop_due_retries
+
+  if not settings.analysis_background_retry_enabled:
+    return 0
+
+  client = _get_client()
+  entries = pop_due_retries(client)
+  dispatched = 0
+  for entry in entries:
+    logger.info(
+      "ANALYSIS_BACKGROUND_RETRY_DISPATCH meetingId={} analysisAttempt={} traceId={}",
+      entry.meeting_id,
+      entry.analysis_attempt,
+      entry.trace_id,
+    )
+    try:
+      response = httpx.post(
+        f"{settings.internal_api_base_url.rstrip('/')}/api/internal/realtime-analysis",
+        json={
+          "meeting_id": entry.meeting_id,
+          "mode": "failed_retry",
+          "source": entry.source,
+        },
+        timeout=30.0,
+      )
+      if response.status_code < 500:
+        dispatched += 1
+    except Exception as dispatch_error:
+      logger.warning(
+        "ANALYSIS_BACKGROUND_RETRY_DISPATCH_FAILED meetingId={} error={}",
+        entry.meeting_id,
+        safe_error_message(dispatch_error),
+      )
+  return dispatched

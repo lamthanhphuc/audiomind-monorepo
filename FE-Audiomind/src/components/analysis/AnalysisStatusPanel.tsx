@@ -25,6 +25,12 @@ export type AnalysisMetadata = Pick<
   | 'analysisInputMode'
   | 'lastAnalyzedAt'
   | 'retryAfterSeconds'
+  | 'retryable'
+  | 'retryExhausted'
+  | 'analysisRetryCount'
+  | 'analysisNextRetryAt'
+  | 'analysisTraceId'
+  | 'analysisProviderAlias'
   | 'errorCode'
   | 'errorMessage'
 > | null
@@ -43,6 +49,12 @@ type NormalizedAnalysisMetadata = {
   analysisInputMode?: string
   lastAnalyzedAt?: string
   retryAfterSeconds?: number
+  retryable?: boolean
+  retryExhausted?: boolean
+  analysisRetryCount?: number
+  analysisNextRetryAt?: string
+  analysisTraceId?: string
+  analysisProviderAlias?: string
   errorCode?: string
   errorMessage?: string
 }
@@ -84,8 +96,11 @@ const normalizeRawStatus = (value: unknown): AnalysisDisplayStatus | null => {
   if (normalized === 'QUOTA_BLOCKED') {
     return 'QUOTA_BLOCKED'
   }
-  if (normalized === 'NOT_FOUND' || normalized === 'NO_ANALYSIS' || normalized === 'UNKNOWN') {
+  if (normalized === 'NO_ANALYSIS' || normalized === 'SKIPPED') {
     return 'NO_ANALYSIS'
+  }
+  if (normalized === 'ANALYZING') {
+    return 'ANALYZING'
   }
   return null
 }
@@ -110,6 +125,12 @@ export const normalizeAnalysisMetadata = (metadata: AnalysisMetadata): Normalize
     analysisInputMode: metadata?.analysisInputMode,
     lastAnalyzedAt: metadata?.lastAnalyzedAt,
     retryAfterSeconds: metadata?.retryAfterSeconds,
+    retryable: metadata?.retryable,
+    retryExhausted: metadata?.retryExhausted,
+    analysisRetryCount: metadata?.analysisRetryCount,
+    analysisNextRetryAt: metadata?.analysisNextRetryAt,
+    analysisTraceId: metadata?.analysisTraceId,
+    analysisProviderAlias: metadata?.analysisProviderAlias,
     errorCode: metadata?.errorCode,
     errorMessage: metadata?.errorMessage,
   }
@@ -141,6 +162,11 @@ export const AnalysisStatusPanel = ({
 }: AnalysisStatusPanelProps) => {
   const normalized = normalizeAnalysisMetadata(metadata)
   const retryAfterSeconds = normalized.retryAfterSeconds ?? 0
+  const isRetryableFailure = metadata?.analysisStatus === 'ANALYSIS_FAILED_RETRYABLE' || metadata?.retryable === true
+  const isShortTranscriptSkip = normalized.errorCode === 'ANALYSIS_SKIPPED_SHORT_TRANSCRIPT'
+    || normalized.errorCode === 'NO_MEANINGFUL_TRANSCRIPT'
+  const isQuotaExhausted = normalized.errorCode === 'GEMINI_QUOTA_EXHAUSTED'
+    || normalized.errorCode === 'GEMINI_RATE_LIMITED'
   const noTranscriptAfterFinalize = normalized.errorCode === 'NO_TRANSCRIPT_AFTER_FINALIZE'
     || normalized.errorCode === 'NO_TRANSCRIPT'
   const failedAudioCapture = normalized.errorCode === 'FAILED_AUDIO_CAPTURE'
@@ -148,7 +174,25 @@ export const AnalysisStatusPanel = ({
     || normalized.status === 'ANALYZING'
     || noTranscriptAfterFinalize
     || failedAudioCapture
+    || isShortTranscriptSkip
     || retryAfterSeconds > 0
+    || (isRetryableFailure && !normalized.retryExhausted && retryAfterSeconds > 0)
+
+  const statusBanner = (() => {
+    if (normalized.status === 'ANALYZING') {
+      return 'Phân tích đang chạy, vui lòng đợi…'
+    }
+    if (isShortTranscriptSkip) {
+      return 'Bản ghi quá ngắn hoặc chưa có đủ nội dung để phân tích. Bạn có thể ghi lại hoặc tải file khác.'
+    }
+    if (isRetryableFailure && (isQuotaExhausted || retryAfterSeconds > 0) && !normalized.retryExhausted) {
+      return 'AI đang quá tải, hệ thống sẽ tự thử lại.'
+    }
+    if (busy) {
+      return 'Phân tích đang chạy, vui lòng đợi…'
+    }
+    return null
+  })()
 
   const rows = [
     ['Provider', normalized.provider ?? 'unknown'],
@@ -186,6 +230,12 @@ export const AnalysisStatusPanel = ({
           {busy ? 'Re-analyzing...' : 'Re-analyze'}
         </button>
       </div>
+
+      {statusBanner && (
+        <p style={{ margin: 0, color: '#92400e', fontSize: '14px' }} data-testid="analysis-status-banner">
+          {statusBanner}
+        </p>
+      )}
 
       <dl style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '10px', margin: 0 }}>
         {rows.map(([label, value]) => (

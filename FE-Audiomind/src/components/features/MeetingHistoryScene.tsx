@@ -24,7 +24,7 @@ import { EmptyState } from '../ui/EmptyState'
 import { ErrorState } from '../ui/ErrorState'
 import { LoadingState } from '../ui/LoadingState'
 
-type DetailAnalysisState = 'idle' | 'processing' | 'completed' | 'failed' | 'missing'
+type DetailAnalysisState = 'idle' | 'processing' | 'completed' | 'failed' | 'failed_retryable' | 'missing'
 type ListState = 'idle' | 'loading' | 'ready' | 'empty' | 'error'
 type TranscriptSearchState = 'idle' | 'loading' | 'ready' | 'empty' | 'error'
 type TranscriptExportFormat = 'txt' | 'csv'
@@ -316,11 +316,7 @@ const getAnalysisStateFromResponse = (analysis: AiAnalysis | null): { state: Det
 
   const status = String(analysis.analysisStatus ?? analysis.status ?? '').trim().toUpperCase()
   if (status === 'ANALYSIS_FAILED_RETRYABLE' || analysis.retryable === true) {
-    const retryAfter = analysis.retryAfterSeconds && analysis.retryAfterSeconds > 0
-      ? ` Retry after ${analysis.retryAfterSeconds}s.`
-      : ''
-    const detail = analysis.errorCode ? ` ${analysis.errorCode}.` : ''
-    return { state: 'failed', analysis: null, error: `Analysis failed temporarily. Retry available.${detail}${retryAfter}` }
+    return { state: 'failed_retryable', analysis, error: null }
   }
   if (status === 'FAILED' || status === 'RATE_LIMITED' || status === 'QUOTA_BLOCKED') {
     const retryAfter = analysis.retryAfterSeconds && analysis.retryAfterSeconds > 0
@@ -726,6 +722,17 @@ export default function MeetingHistoryScene({ focusMeetingId = null, onOpenAnaly
 
   const handleExport = async () => {
     if (!selectedMeetingSummary || detail.transcriptState !== 'ready') {
+      return
+    }
+
+    const analysisState = getAnalysisStateFromResponse(detail.analysis)
+    const analysisStatus = String(detail.analysis?.analysisStatus ?? detail.analysis?.status ?? '').toUpperCase()
+    const retryPending = analysisStatus === 'ANALYZING'
+      || analysisStatus === 'ANALYSIS_FAILED_RETRYABLE'
+      || analysisState.state === 'processing'
+      || analysisState.state === 'failed_retryable'
+    if (retryPending && detail.analysis?.retryExhausted !== true) {
+      setExportError('Phân tích chưa hoàn tất. Vui lòng đợi hệ thống thử lại hoặc chạy phân tích lại trước khi xuất report.')
       return
     }
 
