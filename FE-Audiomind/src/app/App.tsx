@@ -1,7 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import StudioAuthPage from '../components/auth/StudioAuthPage'
 import DashboardLayout, { type DashboardScene } from '../components/dashboard/DashboardLayout'
-import SubjectsList from '../components/dashboard/SubjectsList'
 import FeatureAnalysis from '../components/features/FeatureAnalysis'
 import FeatureUpload from '../components/features/FeatureUpload'
 import MeetingHistoryScene from '../components/features/MeetingHistoryScene'
@@ -34,10 +33,12 @@ import {
     BROWSER_TAB_CAPTURE_TELEMETRY,
     DEFAULT_RECORDING_SOURCE,
     isBrowserTabRecordingSource,
-    normalizeRecordingSource,
+    RECORDING_SOURCE_ERRORS,
+    getRecordingSourceTinyChunkError,
     type RecordingSource,
 } from '../constants/recordingSource'
-import { ApiError, createRealtimeMeeting, getAnalysis, getProcessingStatus, getTranscript, reanalyzeMeetingAnalysis, startProcessingByPath, submitRealtimeFinalAudioFallback, uploadToMeetingApi } from '../services/api'
+import { ApiError, createRealtimeMeeting, getAnalysis, getProcessingStatus, getTranscript, listMeetingsWithParams, reanalyzeMeetingAnalysis, startProcessingByPath, submitRealtimeFinalAudioFallback, uploadToMeetingApi } from '../services/api'
+import type { Meeting } from '../types'
 import { clearAccessToken, getAccessToken, getCurrentUserId, login, register, setAccessToken } from '../services/auth'
 import {
     REALTIME_MIC_SENSITIVITY,
@@ -908,6 +909,12 @@ export const resolveFreshRealtimeMeetingId = (meeting: { id?: unknown; existingM
   return normalizedMeetingId
 }
 
+const RECENT_MEETINGS_LIMIT = 8
+
+const getMeetingLabel = (meeting: Pick<Meeting, 'id' | 'title' | 'originalFileName'>): string => {
+  return meeting.title?.trim() || meeting.originalFileName?.trim() || `Meeting #${meeting.id}`
+}
+
 export default function App() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [selectedUploadLanguage, setSelectedUploadLanguage] = useState<'vi' | 'en' | 'multi'>('vi')
@@ -939,6 +946,8 @@ export default function App() {
   const [featureScene, setFeatureScene] = useState<DashboardScene>('upload')
   const [historyAnalysisMeetingId, setHistoryAnalysisMeetingId] = useState<number | null>(null)
   const [historyAnalysisTitle, setHistoryAnalysisTitle] = useState<string | null>(null)
+  const [recentMeetings, setRecentMeetings] = useState<Meeting[]>([])
+  const [recentMeetingsReloadTick, setRecentMeetingsReloadTick] = useState(0)
   const [joinMeetingIdInput, setJoinMeetingIdInput] = useState('')
   const [showJoinOtherMeeting, setShowJoinOtherMeeting] = useState(false)
   const [hydratedLiveTranscriptSegments, setHydratedLiveTranscriptSegments] = useState<TranscriptSegment[] | null>(null)
@@ -1024,7 +1033,7 @@ export default function App() {
         return
       }
       tabTrackEndedFinalizeRef.current = true
-      setLiveStatusMessage('Tab đã ngừng chia sẻ âm thanh. Đang dừng và lưu transcript...')
+      setLiveStatusMessage(RECORDING_SOURCE_ERRORS.tabStopSharing)
       if (audioRecorder.state === 'recording' || audioRecorder.state === 'paused') {
         audioRecorder.stopRecording()
       }
@@ -1469,6 +1478,36 @@ export default function App() {
     navigateAuthRoute('login', true)
   }
 
+  const refreshRecentMeetings = useCallback(() => {
+    setRecentMeetingsReloadTick((value) => value + 1)
+  }, [])
+
+  useEffect(() => {
+    if (!isAuthenticated) {
+      setRecentMeetings([])
+      return
+    }
+
+    let cancelled = false
+    const loadRecentMeetings = async () => {
+      try {
+        const meetings = await listMeetingsWithParams({ sort: 'created_desc' })
+        if (!cancelled) {
+          setRecentMeetings(meetings)
+        }
+      } catch (error) {
+        if (!cancelled) {
+          console.warn('Failed to load recent meetings for sidebar', error)
+        }
+      }
+    }
+
+    void loadRecentMeetings()
+    return () => {
+      cancelled = true
+    }
+  }, [isAuthenticated, recentMeetingsReloadTick])
+
   const analysis = result?.analysis
   const liveTranscriptKeywords = useMemo(() => realtimeStream.keywords.map((keyword) => keyword.keyword), [realtimeStream.keywords])
   const liveTranscriptSegments = hydratedLiveTranscriptSegments ?? realtimeStream.transcripts
@@ -1515,6 +1554,26 @@ export default function App() {
     setFeatureScene('analysis')
   }
 
+  const handleRecentFileClick = (meetingIdRaw: string) => {
+    const meetingId = Number(meetingIdRaw)
+    if (!Number.isFinite(meetingId) || meetingId <= 0) {
+      return
+    }
+
+    if (result?.meetingId === meetingId) {
+      setHistoryAnalysisMeetingId(null)
+      setHistoryAnalysisTitle(null)
+      setFeatureScene('analysis')
+      return
+    }
+
+    const meeting = recentMeetings.find((item) => item.id === meetingId)
+    handleOpenMeetingAnalysisFromHistory(
+      meetingId,
+      meeting ? { title: getMeetingLabel(meeting) } : undefined,
+    )
+  }
+
   const handleBackToHistory = () => {
     setFeatureScene('files')
   }
@@ -1548,6 +1607,7 @@ export default function App() {
     })
     setStatus('completed')
     setFeatureScene('analysis')
+    refreshRecentMeetings()
   }
 
   const handleProcess = async (fileOverride?: File) => {
@@ -1670,17 +1730,40 @@ export default function App() {
   }), [currentUserId, username])
 
   const recentFiles = useMemo(() => {
-    if (!result && !selectedFile) return []
-    const items = []
-    if (result) {
+    const activeMeetingId = featureScene === 'analysis'
+      ? (historyAnalysisMeetingId ?? result?.meetingId ?? null)
+      : null
+    const items: Array<{ id: string; label: string; active?: boolean }> = []
+    const seen = new Set<number>()
+
+    const addItem = (meetingId: number, label: string) => {
+      if (seen.has(meetingId)) {
+        return
+      }
+      seen.add(meetingId)
       items.push({
-        id: String(result.meetingId),
-        label: selectedFile?.name || `Meeting #${result.meetingId}`,
-        active: featureScene === 'analysis',
+        id: String(meetingId),
+        label,
+        active: activeMeetingId === meetingId,
       })
     }
+
+    if (result?.meetingId) {
+      addItem(
+        result.meetingId,
+        selectedFile?.name?.trim() || `Meeting #${result.meetingId}`,
+      )
+    }
+
+    for (const meeting of recentMeetings) {
+      if (items.length >= RECENT_MEETINGS_LIMIT) {
+        break
+      }
+      addItem(meeting.id, getMeetingLabel(meeting))
+    }
+
     return items
-  }, [featureScene, result, selectedFile])
+  }, [featureScene, historyAnalysisMeetingId, recentMeetings, result, selectedFile])
 
   const renderDashboardScene = () => {
     if (featureScene === 'realtime' && isRealtimeEnabled && realtimeUserId !== null) {
@@ -1699,7 +1782,7 @@ export default function App() {
           onRealtimeLanguageChange={(value) => setSelectedRealtimeLanguage(normalizeRealtimeLanguage(value))}
           onRealtimeSpeakerModeChange={(value) => setSelectedRealtimeSpeakerMode(normalizeRealtimeSpeakerMode(value))}
           onMicSensitivityChange={(value) => setSelectedMicSensitivity(normalizeMicSensitivityMode(value))}
-          onRecordingSourceChange={(value) => setSelectedRecordingSource(normalizeRecordingSource(value))}
+          onRecordingSourceChange={setSelectedRecordingSource}
           onNoiseSuppressionChange={setNoiseSuppressionEnabled}
           isRealtimeLanguageSelectorDisabled={isRealtimeLanguageSelectorDisabled(liveLifecycleState)}
           isRealtimeSpeakerModeSelectorDisabled={isRealtimeSpeakerModeSelectorDisabled(liveLifecycleState)}
@@ -1764,7 +1847,6 @@ export default function App() {
     if (featureScene === 'files') {
       return <MeetingHistoryScene onOpenAnalysis={handleOpenMeetingAnalysisFromHistory} />
     }
-    if (featureScene === 'subjects') return <SubjectsList />
 
     return (
       <FeatureUpload
@@ -1935,9 +2017,7 @@ export default function App() {
       recordingDurationSec >= REALTIME_TINY_CHUNK_MIN_RECORDING_SEC
       && liveTinyChunkStreakRef.current >= REALTIME_TINY_CHUNK_STREAK_THRESHOLD
     ) {
-      const captureError = isBrowserTabRecordingSource(selectedRecordingSourceRef.current)
-        ? 'Không nhận được âm thanh từ tab Google Meet. Hãy chọn lại tab Meet và bật chia sẻ âm thanh tab.'
-        : 'Không nhận được âm thanh từ microphone. Hãy kiểm tra quyền mic, thiết bị đầu vào và thử ghi lại.'
+      const captureError = getRecordingSourceTinyChunkError(selectedRecordingSourceRef.current)
       console.warn('[Realtime] REALTIME_TINY_CHUNK_STREAK_CLIENT', {
         meetingId: activeMeetingId,
         sessionId,
@@ -2371,6 +2451,7 @@ export default function App() {
         onNavigate={setFeatureScene}
         showRealtime={isRealtimeEnabled}
         recentFiles={recentFiles}
+        onRecentFileClick={handleRecentFileClick}
       >
         {renderDashboardScene()}
       </DashboardLayout>

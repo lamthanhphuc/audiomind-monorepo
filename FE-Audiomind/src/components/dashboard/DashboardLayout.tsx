@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 import { StudioAmbientBackground } from '../ui/StudioAmbientBackground'
 
-export type DashboardScene = 'upload' | 'realtime' | 'analysis' | 'files' | 'subjects'
+export type DashboardScene = 'upload' | 'realtime' | 'analysis' | 'files'
 
 type DashboardUser = {
   name: string
@@ -16,6 +16,7 @@ type DashboardLayoutProps = {
   onNavigate: (scene: DashboardScene) => void
   showRealtime?: boolean
   recentFiles?: Array<{ id: string; label: string; active?: boolean }>
+  onRecentFileClick?: (id: string) => void
 }
 
 export default function DashboardLayout({
@@ -26,6 +27,7 @@ export default function DashboardLayout({
   onNavigate,
   showRealtime = true,
   recentFiles = [],
+  onRecentFileClick,
 }: DashboardLayoutProps) {
   const initial = user.name.trim()[0]?.toUpperCase() || 'A'
 
@@ -66,9 +68,6 @@ export default function DashboardLayout({
             <li className={activeMenu === 'files' ? 'active' : ''} onClick={() => onNavigate('files')}>
               <span className="icon">⏱</span> Lịch sử meeting
             </li>
-            <li className={activeMenu === 'subjects' ? 'active' : ''} onClick={() => onNavigate('subjects')}>
-              <span className="icon">📁</span> Môn học
-            </li>
           </ul>
         </div>
 
@@ -77,7 +76,12 @@ export default function DashboardLayout({
           <ul className="dashboard-recents-list">
             {recentFiles.length > 0 ? (
               recentFiles.map((item) => (
-                <li key={item.id} className={item.active ? 'active' : ''}>
+                <li
+                  key={item.id}
+                  className={item.active ? 'active' : ''}
+                  onClick={() => onRecentFileClick?.(item.id)}
+                  data-testid="dashboard-recent-item"
+                >
                   <span className="icon">🎵</span> {item.label}
                 </li>
               ))
