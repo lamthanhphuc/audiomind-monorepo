@@ -42,6 +42,7 @@
 
   color: var(--studio-text);
   background: var(--studio-bg);
+  color-scheme: dark;
 }
 
 body:has(.app--studio) {
@@ -102,11 +103,13 @@ body:has(.app--studio) {
 }
 
 .app--studio .studio-engine-badge {
-  display: inline-flex;
+  display: flex;
   align-items: center;
+  justify-content: center;
   gap: 8px;
-  margin-top: 12px;
-  padding: 5px 10px;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 12px;
   border-radius: 999px;
   border: 1px solid var(--studio-border);
   background: rgba(255, 255, 255, 0.04);
@@ -262,10 +265,38 @@ body:has(.app--studio) {
 
 .app--studio .form-group select,
 .app--studio .upload-panel__select,
+.app--studio .filter-select,
+.app--studio .history-toolbar select,
+.app--studio .audio-options select,
 .app--studio select {
-  background: rgba(255, 255, 255, 0.04);
-  border-color: var(--studio-border-strong);
+  color-scheme: dark;
+  background-color: var(--studio-elevated-2);
+  border: 1px solid var(--studio-border-strong);
   color: var(--studio-text);
+}
+
+.app--studio select option,
+.app--studio select optgroup {
+  background-color: var(--studio-elevated);
+  color: var(--studio-text);
+}
+
+.app--studio select option:checked {
+  background-color: rgba(124, 108, 255, 0.4);
+  color: #fff;
+}
+
+.app--studio select option:disabled {
+  color: var(--studio-muted);
+}
+
+.app--studio .upload-panel__select:disabled,
+.app--studio select:disabled {
+  opacity: 1;
+  color: var(--studio-muted);
+  background-color: rgba(255, 255, 255, 0.02);
+  border-color: var(--studio-border);
+  cursor: not-allowed;
 }
 
 .app--studio .btn-primary,
@@ -350,10 +381,14 @@ body:has(.app--studio) {
   color: var(--studio-muted);
 }
 
-.app--studio .audio-options select,
+.app--studio .audio-options select {
+  border-radius: 8px;
+}
+
 .app--studio .audio-options button {
   background: rgba(255, 255, 255, 0.06);
   color: var(--studio-text);
+  border-radius: 8px;
 }
 
 .app--studio .analysis-tabs {
@@ -682,11 +717,15 @@ body:has(.app--studio) {
   margin-bottom: 14px;
 }
 
-.app--studio .history-toolbar input,
-.app--studio .history-toolbar select {
+.app--studio .history-toolbar input {
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid var(--studio-border-strong);
   color: var(--studio-text);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.app--studio .history-toolbar select {
   border-radius: 8px;
   padding: 10px 12px;
 }
@@ -967,9 +1006,6 @@ body:has(.app--studio) {
 }
 
 .app--studio .filter-select {
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid var(--studio-border-strong);
-  color: var(--studio-text);
   border-radius: 8px;
   padding: 8px 12px;
 }
