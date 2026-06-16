@@ -1,5 +1,4 @@
 import json
-import time
 
 from app.services.analysis_lock import (
     ANALYSIS_LOCK_TTL_SECONDS,

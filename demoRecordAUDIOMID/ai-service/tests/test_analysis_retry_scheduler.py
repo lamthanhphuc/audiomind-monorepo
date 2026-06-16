@@ -1,5 +1,4 @@
 import json
-import time
 
 from app.services.analysis_retry_scheduler import (
     BACKOFF_SCHEDULE_SECONDS,

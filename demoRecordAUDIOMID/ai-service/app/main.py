@@ -79,7 +79,6 @@ from app.services.analysis_runs import (
     ANALYSIS_STATUS_ANALYZING,
     ANALYSIS_STATUS_FAILED,
     ANALYSIS_STATUS_FAILED_RETRYABLE,
-    ANALYSIS_STATUS_RATE_LIMITED,
     analysis_payload_from_run,
     analysis_miss_response_metadata,
     analysis_run_response_metadata,
@@ -108,6 +107,7 @@ from app.services.analysis_retry_scheduler import (
     is_retryable_error_code,
 )
 from app.services.transcript_quality_gate import evaluate_transcript_quality
+from app.services.glossary_repository import GlossaryRepository
 from app.services.glossary_service import GlossaryService
 from app.services.grpc_stt_service import AiStreamServicer, create_grpc_server
 from app.services.stt_adapter import (

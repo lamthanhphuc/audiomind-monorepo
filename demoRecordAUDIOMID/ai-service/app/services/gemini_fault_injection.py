@@ -37,11 +37,7 @@ class GeminiFaultInjectionClient:
         self._global_attempt = 0
 
     def post(self, url: str, *, headers: dict[str, str] | None = None, json: dict[str, Any] | None = None, timeout: float | None = None):
-        _ = url, json, timeout or self.timeout
-        alias = "primary"
-        if headers:
-            # key order in multi-key tests uses alias from manager; infer from attempt count
-            pass
+        _ = url, json, timeout or self.timeout, headers
         self._global_attempt += 1
         attempt = self._global_attempt
 
