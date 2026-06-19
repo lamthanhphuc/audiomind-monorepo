@@ -799,6 +799,105 @@ describe('AudioRecorderButton', () => {
     expect(completeSpy).toHaveBeenCalledOnce()
   })
 
+  it('calls onStopRequested before stopRecordingGraceful when stop is clicked', async () => {
+    const stopRequestedSpy = vi.fn()
+    const callOrder: string[] = []
+    stopRequestedSpy.mockImplementation(() => {
+      callOrder.push('stopRequested')
+    })
+    gracefulStopSpy.mockImplementation(async () => {
+      callOrder.push('gracefulStop')
+      return {
+        fullBlob: new Blob(['final-audio'], { type: 'audio/webm; codecs=opus' }),
+        sessionId: 1,
+        collectedChunkCount: 1,
+        postStopChunkCount: 0,
+        chunks: [new Blob(['final-audio'], { type: 'audio/webm; codecs=opus' })],
+      }
+    })
+
+    recorder = {
+      ...recorder!,
+      state: 'recording',
+      audioChunks: [new Blob(['chunk-a'])],
+      duration: 1,
+      recordingSessionId: 1,
+    }
+
+    act(() => {
+      root.render(
+        <AudioRecorderButton
+          recorder={recorder!}
+          lifecycleState="recording"
+          onStopRequested={stopRequestedSpy}
+          onBeforeStartRecording={beforeStartSpy}
+          onChunkReady={chunkSpy}
+          onRecordingComplete={completeSpy}
+        />,
+      )
+    })
+
+    await act(async () => {
+      container.querySelector('button')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await flush()
+    })
+
+    expect(stopRequestedSpy).toHaveBeenCalledOnce()
+    expect(gracefulStopSpy).toHaveBeenCalledOnce()
+    expect(callOrder).toEqual(['stopRequested', 'gracefulStop'])
+  })
+
+  it('logs REALTIME_FINAL_CHUNK_ENQUEUED with postStop true for tail chunks after graceful stop', async () => {
+    const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => {})
+    const preStopChunk = new Blob(['pre-stop'], { type: 'audio/webm; codecs=opus' })
+    const postStopChunk = new Blob(['post-stop'], { type: 'audio/webm; codecs=opus' })
+
+    gracefulStopSpy.mockResolvedValue({
+      fullBlob: new Blob(['pre-stop', 'post-stop'], { type: 'audio/webm; codecs=opus' }),
+      sessionId: 1,
+      collectedChunkCount: 2,
+      postStopChunkCount: 1,
+      chunks: [preStopChunk, postStopChunk],
+    })
+
+    recorder = {
+      ...recorder!,
+      state: 'recording',
+      audioChunks: [preStopChunk],
+      duration: 1,
+      recordingSessionId: 1,
+    }
+
+    act(() => {
+      root.render(
+        <AudioRecorderButton
+          recorder={recorder!}
+          lifecycleState="recording"
+          onBeforeStartRecording={beforeStartSpy}
+          onChunkReady={chunkSpy}
+          onRecordingComplete={completeSpy}
+        />,
+      )
+    })
+
+    await act(async () => {
+      container.querySelector('button')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await flush()
+    })
+
+    const tailLog = infoSpy.mock.calls.find(
+      ([message, payload]) => message === '[Realtime] REALTIME_FINAL_CHUNK_ENQUEUED'
+        && (payload as { postStop?: boolean }).postStop === true,
+    )
+    expect(tailLog).toBeDefined()
+    expect(tailLog?.[1]).toMatchObject({
+      sessionId: 1,
+      postStop: true,
+      size: postStopChunk.size,
+    })
+    infoSpy.mockRestore()
+  })
+
   it('disables button while finalizing_recording lifecycle is active', () => {
     act(() => {
       root.render(
@@ -814,6 +913,23 @@ describe('AudioRecorderButton', () => {
 
     expect(container.querySelector('button')?.disabled).toBe(true)
     expect(container.textContent).toContain('Đang hoàn tất ghi âm')
+  })
+
+  it('disables button while finalizing_transcript lifecycle is active', () => {
+    act(() => {
+      root.render(
+        <AudioRecorderButton
+          recorder={recorder!}
+          lifecycleState="finalizing_transcript"
+          onBeforeStartRecording={beforeStartSpy}
+          onChunkReady={chunkSpy}
+          onRecordingComplete={completeSpy}
+        />,
+      )
+    })
+
+    expect(container.querySelector('button')?.disabled).toBe(true)
+    expect(container.textContent).toContain('Đang hoàn tất transcript')
   })
 
   it('emits chunk and completion callbacks after graceful stop', async () => {

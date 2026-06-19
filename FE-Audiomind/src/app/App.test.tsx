@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { DEFAULT_REALTIME_LANGUAGE, REALTIME_LANGUAGE_OPTIONS, buildTranscriptEquivalenceSignature, getRealtimeConnectionView, getStatusBadgeClass, hydrateLiveTranscriptSegments, isCurrentLiveRecordingSession, isRealtimeLanguageSelectorDisabled, mergeHydratedTranscriptWithLive, pollRealtimeAnalysisAfterStop, resolveFreshRealtimeMeetingId, resolveTranscriptPartialState, resolveVoiceActivityLifecycleUpdate } from './App'
+import { DEFAULT_REALTIME_LANGUAGE, REALTIME_LANGUAGE_OPTIONS, beginGracefulStopLifecycle, buildFinalAudioBlobReadyLogPayload, buildTranscriptEquivalenceSignature, getRealtimeConnectionView, getStatusBadgeClass, hydrateLiveTranscriptSegments, isCurrentLiveRecordingSession, isRealtimeLanguageSelectorDisabled, mergeHydratedTranscriptWithLive, pollRealtimeAnalysisAfterStop, resolveFreshRealtimeMeetingId, resolveTranscriptPartialState, resolveVoiceActivityLifecycleUpdate, runLiveRecordingStopSequence, shouldAttemptRealtimeFinalAudioFallback } from './App'
 import { ApiError } from '../services/api'
 import { mergeTranscriptSegmentsForDisplay, normalizePersistedTranscriptForView, normalizePersistedTranscriptSegments, upsertTranscriptSegment } from '../utils/transcript'
 
@@ -1055,12 +1055,144 @@ describe('realtime language selector helpers', () => {
   })
 })
 
+describe('buildFinalAudioBlobReadyLogPayload', () => {
+  it('includes meetingId and bytes for FINAL_AUDIO_BLOB_READY logging', () => {
+    expect(buildFinalAudioBlobReadyLogPayload(42, 2048)).toEqual({
+      meetingId: 42,
+      bytes: 2048,
+    })
+  })
+})
+
+describe('shouldAttemptRealtimeFinalAudioFallback', () => {
+  it('requests fallback when transcript is empty and full blob is large enough after incomplete stop', () => {
+    expect(shouldAttemptRealtimeFinalAudioFallback({
+      mergedTranscriptCount: 0,
+      fullAudioBytes: 4096,
+      minFallbackAudioBytes: 1024,
+      stopIncomplete: true,
+      partialState: false,
+      resetRequired: false,
+      streamState: 'stopped',
+    })).toBe(true)
+  })
+
+  it('skips fallback when hydrated transcript rows exist', () => {
+    expect(shouldAttemptRealtimeFinalAudioFallback({
+      mergedTranscriptCount: 2,
+      fullAudioBytes: 4096,
+      minFallbackAudioBytes: 1024,
+      stopIncomplete: true,
+      partialState: false,
+      resetRequired: false,
+      streamState: 'stopped',
+    })).toBe(false)
+  })
+
+  it('skips fallback when full blob is below minimum bytes', () => {
+    expect(shouldAttemptRealtimeFinalAudioFallback({
+      mergedTranscriptCount: 0,
+      fullAudioBytes: 256,
+      minFallbackAudioBytes: 1024,
+      stopIncomplete: true,
+      partialState: false,
+      resetRequired: false,
+      streamState: 'stopped',
+    })).toBe(false)
+  })
+
+  it('skips fallback when stop completed cleanly without partial or error signals', () => {
+    expect(shouldAttemptRealtimeFinalAudioFallback({
+      mergedTranscriptCount: 0,
+      fullAudioBytes: 4096,
+      minFallbackAudioBytes: 1024,
+      stopIncomplete: false,
+      partialState: false,
+      resetRequired: false,
+      streamState: 'stopped',
+    })).toBe(false)
+  })
+})
+
 describe('getStatusBadgeClass', () => {
   it('maps processing and completed statuses to badge variants', () => {
     expect(getStatusBadgeClass('completed')).toContain('completed')
     expect(getStatusBadgeClass('processing')).toContain('processing')
     expect(getStatusBadgeClass('failed')).toContain('failed')
     expect(getStatusBadgeClass('idle')).toContain('idle')
+  })
+})
+
+describe('runLiveRecordingStopSequence', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('logs REALTIME_STOP_REQUESTED then stopping → stopStream → finalizing_transcript in order', async () => {
+    const lifecycleSteps: string[] = []
+    const executionSteps: string[] = []
+    const consoleSpy = vi.spyOn(console, 'info').mockImplementation(() => {})
+
+    const stopStream = vi.fn(async () => {
+      executionSteps.push('stopStream')
+      return true
+    })
+
+    const result = await runLiveRecordingStopSequence({
+      meetingId: 42,
+      sessionId: 7,
+      stopStream,
+      setLifecycleState: (state) => {
+        lifecycleSteps.push(state)
+        executionSteps.push(`lifecycle:${state}`)
+      },
+    })
+
+    expect(result).toEqual({ stopSent: true, stopIncomplete: false })
+    expect(executionSteps).toEqual([
+      'lifecycle:stopping',
+      'stopStream',
+      'lifecycle:finalizing_transcript',
+    ])
+    expect(consoleSpy).toHaveBeenCalledWith(
+      '[Realtime] REALTIME_STOP_REQUESTED',
+      expect.objectContaining({
+        meetingId: 42,
+        sessionId: 7,
+        phase: 'stream_finalize',
+      }),
+    )
+    expect(stopStream).toHaveBeenCalledTimes(1)
+  })
+
+  it('marks stopIncomplete when stopStream returns false', async () => {
+    const result = await runLiveRecordingStopSequence({
+      meetingId: 10,
+      sessionId: 3,
+      stopStream: vi.fn(async () => false),
+      setLifecycleState: vi.fn(),
+    })
+
+    expect(result).toEqual({ stopSent: false, stopIncomplete: true })
+  })
+})
+
+describe('beginGracefulStopLifecycle', () => {
+  it('transitions stopping then finalizing_recording via deferred scheduler', () => {
+    const lifecycleSteps: string[] = []
+    const deferredTasks: Array<() => void> = []
+
+    beginGracefulStopLifecycle(
+      (state) => lifecycleSteps.push(state),
+      (callback) => {
+        deferredTasks.push(callback)
+      },
+    )
+
+    expect(lifecycleSteps).toEqual(['stopping'])
+
+    deferredTasks.forEach((task) => task())
+    expect(lifecycleSteps).toEqual(['stopping', 'finalizing_recording'])
   })
 })
 

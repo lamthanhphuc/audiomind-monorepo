@@ -3,7 +3,7 @@ import { act } from 'react-dom/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { UseAudioRecorderReturn } from '../../hooks/useAudioRecorder'
 import type { AiAnalysis } from '../../types'
-import RealtimeDashboardScene from './RealtimeDashboardScene'
+import RealtimeDashboardScene, { resolveRealtimeLifecycleBadge } from './RealtimeDashboardScene'
 
 describe('RealtimeDashboardScene', () => {
   let container: HTMLDivElement
@@ -258,6 +258,26 @@ describe('RealtimeDashboardScene', () => {
       container.querySelector<HTMLButtonElement>('[data-testid="recording-source-option-browser_tab_with_mic"]')?.click()
     })
     expect(onRecordingSourceChange).toHaveBeenCalledWith('browser_tab_with_mic')
+  })
+
+  it('shows finalizing_recording lifecycle badge while recorder tail is flushing', () => {
+    const badge = resolveRealtimeLifecycleBadge('finalizing_recording', 'idle')
+    expect(badge.label).toBe('Finalizing recording')
+    expect(badge.tone).toBe('stopped')
+  })
+
+  it('renders finalizing_recording badge in the dashboard header', () => {
+    act(() => {
+      root.render(
+        <RealtimeDashboardScene
+          {...baseProps}
+          liveLifecycleState="finalizing_recording"
+          audioRecorder={{ ...recorder, state: 'stopped' }}
+        />,
+      )
+    })
+
+    expect(container.textContent).toContain('Finalizing recording')
   })
 
   it('hides noise suppression toggle for tab-only capture', () => {

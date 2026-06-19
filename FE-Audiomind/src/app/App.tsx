@@ -15,6 +15,7 @@ import {
     type RealtimeLanguage,
     type RealtimeSessionToken,
     type RealtimeSpeakerMode,
+    type RealtimeStatusEvent,
     type TranscriptSegment,
 } from '../hooks/useRealtimeMeetingStream'
 import {
@@ -912,6 +913,82 @@ export const resolveFreshRealtimeMeetingId = (meeting: { id?: unknown; existingM
   return normalizedMeetingId
 }
 
+export type LiveRecordingStopSequenceResult = {
+  stopSent: boolean
+  stopIncomplete: boolean
+}
+
+export type LiveRecordingStopSequenceInput = {
+  meetingId: number | null
+  sessionId: number
+  source?: string
+  stopStream?: () => Promise<boolean>
+  setLifecycleState: (state: LiveLifecycleState) => void
+}
+
+export async function runLiveRecordingStopSequence(
+  input: LiveRecordingStopSequenceInput,
+): Promise<LiveRecordingStopSequenceResult> {
+  console.info('[Realtime] REALTIME_STOP_REQUESTED', {
+    meetingId: input.meetingId,
+    sessionId: input.sessionId,
+    ...(input.source ? { source: input.source } : {}),
+    phase: 'stream_finalize',
+  })
+  input.setLifecycleState('stopping')
+
+  let stopSent = false
+  if (input.stopStream) {
+    stopSent = await input.stopStream()
+  }
+
+  input.setLifecycleState('finalizing_transcript')
+
+  return {
+    stopSent,
+    stopIncomplete: !stopSent,
+  }
+}
+
+export const beginGracefulStopLifecycle = (
+  setLifecycleState: (state: LiveLifecycleState) => void,
+  scheduleDeferred: (callback: () => void) => number | void = (callback) => window.setTimeout(callback, 0),
+): void => {
+  setLifecycleState('stopping')
+  scheduleDeferred(() => setLifecycleState('finalizing_recording'))
+}
+
+export type RealtimeFinalAudioFallbackInput = {
+  mergedTranscriptCount: number
+  fullAudioBytes: number
+  minFallbackAudioBytes: number
+  stopIncomplete: boolean
+  partialState: boolean
+  resetRequired: boolean
+  streamState: RealtimeStatusEvent['state']
+}
+
+export const shouldAttemptRealtimeFinalAudioFallback = (
+  input: RealtimeFinalAudioFallbackInput,
+): boolean => {
+  return input.mergedTranscriptCount === 0
+    && input.fullAudioBytes >= input.minFallbackAudioBytes
+    && (
+      input.stopIncomplete
+      || input.partialState
+      || input.resetRequired
+      || input.streamState === 'error'
+    )
+}
+
+export const buildFinalAudioBlobReadyLogPayload = (
+  meetingId: number | null,
+  bytes: number,
+): { meetingId: number | null; bytes: number } => ({
+  meetingId,
+  bytes,
+})
+
 const RECENT_MEETINGS_LIMIT = 8
 
 const getMeetingLabel = (meeting: Pick<Meeting, 'id' | 'title' | 'originalFileName'>): string => {
@@ -1800,11 +1877,12 @@ export default function App() {
           onChunkReady={handleLiveChunkReady}
           onRecordingComplete={handleLiveRecordingComplete}
           onStopRequested={() => {
-            setLiveLifecycleState('stopping')
             console.info('[Realtime] REALTIME_STOP_REQUESTED', {
               meetingId: liveMeetingIdRef.current,
               source: selectedRecordingSource,
+              phase: 'recorder_stop',
             })
+            beginGracefulStopLifecycle(setLiveLifecycleState)
           }}
           gracefulStopRef={gracefulStopRef}
           liveError={liveError}
@@ -2223,11 +2301,7 @@ export default function App() {
     }
 
     setLiveStatusMessage(`Đã ghi âm ${Math.max(1, Math.round(fullAudio.size / 1024))} KB`)
-    console.info('[Realtime] FINAL_AUDIO_BLOB_READY', {
-      meetingId: completedMeetingId,
-      sessionId,
-      bytes: fullAudio.size,
-    })
+    console.info('[Realtime] FINAL_AUDIO_BLOB_READY', buildFinalAudioBlobReadyLogPayload(completedMeetingId, fullAudio.size))
     try {
       if (!isCurrentRealtimeSessionToken(sessionToken)) {
         console.info('[Realtime] STALE_SESSION_COMPLETE_IGNORED', {
@@ -2237,11 +2311,14 @@ export default function App() {
         return
       }
 
-      let stopSent = false
-      if (realtimeStream?.stopStream) {
-        stopSent = await realtimeStream.stopStream()
-      }
-      const stopIncomplete = !stopSent
+      const { stopIncomplete } = await runLiveRecordingStopSequence({
+        meetingId: completedMeetingId,
+        sessionId,
+        stopStream: realtimeStream?.stopStream
+          ? () => realtimeStream.stopStream()
+          : undefined,
+        setLifecycleState: setLiveLifecycleState,
+      })
       if (stopIncomplete) {
         console.warn('[Realtime] STREAM_STOP_INCOMPLETE_DISCONNECT_FALLBACK', {
           meetingId: completedMeetingId,
@@ -2253,7 +2330,6 @@ export default function App() {
 
       const activeMeetingId = liveMeetingIdRef.current
       if (activeMeetingId) {
-        setLiveLifecycleState('finalizing_transcript')
         const hydrationRunId = hydrationRunIdRef.current + 1
         hydrationRunIdRef.current = hydrationRunId
         const partialState = resolveTranscriptPartialState({
@@ -2287,14 +2363,15 @@ export default function App() {
         if (mergedHydration.length === 0) {
           noTranscriptAfterFinalize = true
         }
-        const shouldAttemptFinalAudioFallback = mergedHydration.length === 0
-          && fullAudio.size >= REALTIME_MIN_FALLBACK_AUDIO_BYTES
-          && (
-            stopIncomplete
-            || partialState
-            || realtimeStream.status.resetRequired
-            || realtimeStream.status.state === 'error'
-          )
+        const shouldAttemptFinalAudioFallback = shouldAttemptRealtimeFinalAudioFallback({
+          mergedTranscriptCount: mergedHydration.length,
+          fullAudioBytes: fullAudio.size,
+          minFallbackAudioBytes: REALTIME_MIN_FALLBACK_AUDIO_BYTES,
+          stopIncomplete,
+          partialState,
+          resetRequired: realtimeStream.status.resetRequired,
+          streamState: realtimeStream.status.state,
+        })
         if (shouldAttemptFinalAudioFallback) {
           setLiveStatusMessage('Đang thử chuyển sang nhận dạng giọng nói dự phòng...')
           console.info('[Realtime] REALTIME_FINAL_AUDIO_FALLBACK_REQUESTED', {

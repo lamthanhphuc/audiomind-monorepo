@@ -103,7 +103,7 @@ type RealtimeDashboardSceneProps = {
   onLiveAnalysisRetry: () => void
 }
 
-const resolveRealtimeLifecycleBadge = (
+export const resolveRealtimeLifecycleBadge = (
   liveLifecycleState: LiveLifecycleState,
   liveAnalysisStatus: 'idle' | 'polling' | 'completed' | 'pending' | 'failed',
 ): { label: string; tone: 'listening' | 'paused' | 'resumed' | 'stopped' | 'analyzing' | 'idle' | 'error' } => {
@@ -121,6 +121,10 @@ const resolveRealtimeLifecycleBadge = (
 
   if (liveLifecycleState === 'recording') {
     return { label: 'Listening', tone: 'listening' }
+  }
+
+  if (liveLifecycleState === 'finalizing_recording') {
+    return { label: 'Finalizing recording', tone: 'stopped' }
   }
 
   if (liveLifecycleState === 'stopped') {
