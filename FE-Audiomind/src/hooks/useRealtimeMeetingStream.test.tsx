@@ -1044,6 +1044,44 @@ describe('useRealtimeMeetingStream', () => {
     infoSpy.mockRestore()
   })
 
+  it('clears pending queue only after stream.stop is sent successfully', async () => {
+    const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => {})
+    const socket = MockWebSocket.instances[0]
+
+    act(() => {
+      socket.open()
+      socket.receive({
+        type: 'session.ready',
+        meetingId: 88,
+        authenticated: true,
+        activeConnections: 1,
+      })
+    })
+
+    await flush()
+
+    await act(async () => {
+      await latest!.sendAudioChunk(new Blob(['abc'], { type: 'audio/webm; codecs=opus' }), '88')
+      await latest!.stopStream()
+    })
+
+    const queueClearedIndex = infoSpy.mock.calls.findIndex(
+      ([message, payload]) => message === '[Realtime] REALTIME_QUEUE_CLEARED'
+        && (payload as { reason?: string }).reason === 'stream_stop_sent',
+    )
+    const stopAfterFlushIndex = infoSpy.mock.calls.findIndex(
+      ([message]) => message === '[Realtime] STREAM_STOP_AFTER_FLUSH',
+    )
+    const drainIndex = infoSpy.mock.calls.findIndex(
+      ([message]) => message === '[Realtime] REALTIME_FINALIZE_AFTER_CLIENT_DRAIN',
+    )
+
+    expect(drainIndex).toBeGreaterThan(-1)
+    expect(stopAfterFlushIndex).toBeGreaterThan(drainIndex)
+    expect(queueClearedIndex).toBeGreaterThan(stopAfterFlushIndex)
+    infoSpy.mockRestore()
+  })
+
   it('does not mark stop as sent when socket closes before stream.stop can be sent', async () => {
     const socket = MockWebSocket.instances[0]
 

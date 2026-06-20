@@ -1062,6 +1062,90 @@ class MeetingWebSocketHandlerTest {
     }
 
     @Test
+    void handleTextMessage_streamStop_shouldEmitStructuredFinalizeLogs() throws Exception {
+        attributes.put("meetingId", 360L);
+        attributes.put("authenticated", true);
+        attributes.put("language", "vi");
+        attributes.put("authorization", "Bearer test-token");
+        attributes.put("lastAudioSeq", 17L);
+        attributes.put("AUDIO_RECEIVED_ATTR", Boolean.TRUE);
+
+        doReturn(Map.of("type", "stream.stop")).when(objectMapper).readValue(anyString(), any(Class.class));
+        when(aiServiceClient.streamAudioChunk(
+                eq(360L),
+                argThat(bytes -> bytes != null && bytes.length == 0),
+                eq(-1L),
+                eq("vi"),
+                eq(true),
+                isNull(),
+                eq("Bearer test-token")
+        )).thenReturn(Map.of(
+                "transcript", "final transcript",
+                "is_final", true,
+                "language", "vi",
+                "transcripts", java.util.List.of(
+                        Map.of("speaker", "SPEAKER_1", "text", "final transcript", "start_time", 1.0, "end_time", 2.0)
+                )
+        ));
+
+        Logger logger = (Logger) LoggerFactory.getLogger(MeetingWebSocketHandler.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+
+        try {
+            handler.handleTextMessage(session, new TextMessage("{\"type\":\"stream.stop\"}"));
+        } finally {
+            logger.detachAppender(appender);
+        }
+
+        assertTrue(appender.list.stream().anyMatch(logEvent ->
+                logEvent.getFormattedMessage().contains("event=REALTIME_STOP_FINALIZE_AFTER_DRAIN")
+                        && logEvent.getFormattedMessage().contains("meetingId=360")
+                        && logEvent.getFormattedMessage().contains("lastClientSeq=17")
+                        && logEvent.getFormattedMessage().contains("drainedSeq=17")
+        ));
+        assertTrue(appender.list.stream().anyMatch(logEvent ->
+                logEvent.getFormattedMessage().contains("event=REALTIME_FINALIZE_COMPLETE")
+                        && logEvent.getFormattedMessage().contains("meetingId=360")
+                        && logEvent.getFormattedMessage().contains("finalizeSeq=17")
+                        && logEvent.getFormattedMessage().contains("transcriptRows=1")
+                        && logEvent.getFormattedMessage().contains("finalAudioBytes=0")
+        ));
+    }
+
+    @Test
+    void handleTextMessage_duplicateStreamStop_shouldLogDuplicateIgnored() throws Exception {
+        attributes.put("meetingId", 361L);
+        attributes.put("authenticated", true);
+        attributes.put("language", "vi");
+        attributes.put("authorization", "Bearer test-token");
+        attributes.put("lastAudioSeq", 22L);
+        attributes.put("AUDIO_RECEIVED_ATTR", Boolean.TRUE);
+        attributes.put("FINALIZED_ATTR", Boolean.TRUE);
+
+        doReturn(Map.of("type", "stream.stop")).when(objectMapper).readValue(anyString(), any(Class.class));
+
+        Logger logger = (Logger) LoggerFactory.getLogger(MeetingWebSocketHandler.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+
+        try {
+            handler.handleTextMessage(session, new TextMessage("{\"type\":\"stream.stop\"}"));
+        } finally {
+            logger.detachAppender(appender);
+        }
+
+        assertTrue(appender.list.stream().anyMatch(logEvent ->
+                logEvent.getFormattedMessage().contains("event=REALTIME_STOP_DUPLICATE_IGNORED")
+                        && logEvent.getFormattedMessage().contains("meetingId=361")
+                        && logEvent.getFormattedMessage().contains("finalizedSeq=22")
+        ));
+        verifyNoInteractions(aiServiceClient);
+    }
+
+    @Test
     void handleTextMessage_streamStop_shouldNotMarkCompletedWhenRealtimeAnalysisSkippedInProgress() throws Exception {
         attributes.put("meetingId", 354L);
         attributes.put("authenticated", true);

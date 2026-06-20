@@ -49,6 +49,11 @@ logs/ci-fix/
 tmp/
 tmp-*
 *.tmp
+*.diff
+*.txt
+!**/requirements.txt
+!**/constraints*.txt
+!**/.env.example
 
 # Audio / binary
 *.wav
@@ -74,3 +79,4 @@ CODEBASE_REVIEW.md
 storage/job-status.json
 *.last-run.json
 contextcaddy-config.json
+.aider*

@@ -14,6 +14,7 @@ type RecorderLifecycleState =
   | 'recording'
   | 'stopping'
   | 'finalizing_recording'
+  | 'finalizing_transcript'
   | 'stopped'
   | 'no_transcript_after_finalize'
   | 'stopped_no_analysis'
@@ -52,14 +53,18 @@ export function AudioRecorderButton({
   const completionEmittedRef = useRef(false)
   const chunkDispatchEnabledRef = useRef(true)
   const chunksAtGracefulStopRef = useRef(0)
+  const chunkEnqueueSeqRef = useRef(0)
   const [isBusy, setIsBusy] = useState(false)
   const [chunkDispatchRevision, setChunkDispatchRevision] = useState(0)
   const effectiveState = lifecycleState ?? recorder.state
 
   const dispatchChunk = useCallback((chunk: Blob, sessionId: number, postStop: boolean) => {
-    if (AUDIO_DEBUG_ENABLED || import.meta.env.DEV) {
+    chunkEnqueueSeqRef.current += 1
+    const seq = chunkEnqueueSeqRef.current
+    if (postStop || AUDIO_DEBUG_ENABLED || import.meta.env.DEV) {
       console.info('[Realtime] REALTIME_FINAL_CHUNK_ENQUEUED', {
         sessionId,
+        seq,
         size: chunk.size,
         postStop,
       })
@@ -96,6 +101,7 @@ export function AudioRecorderButton({
     if (effectiveState === 'recording' || effectiveState === 'paused' || effectiveState === 'connecting') {
       completionEmittedRef.current = false
       chunksAtGracefulStopRef.current = 0
+      chunkEnqueueSeqRef.current = 0
     }
   }, [effectiveState])
 
@@ -105,6 +111,7 @@ export function AudioRecorderButton({
       || effectiveState === 'connecting'
       || effectiveState === 'stopping'
       || effectiveState === 'finalizing_recording'
+      || effectiveState === 'finalizing_transcript'
     ) {
       return
     }
@@ -172,6 +179,8 @@ export function AudioRecorderButton({
         return 'Đang hoàn tất ghi âm...'
       case 'finalizing_recording':
         return 'Đang hoàn tất ghi âm...'
+      case 'finalizing_transcript':
+        return 'Đang hoàn tất transcript...'
       case 'recording':
         return `Đang ghi âm ${formatDuration(recorder.duration)}`
       case 'paused':
@@ -198,6 +207,7 @@ export function AudioRecorderButton({
         return 'Đang kết nối realtime...'
       case 'stopping':
       case 'finalizing_recording':
+      case 'finalizing_transcript':
         return 'Đang dừng...'
       case 'error':
         return 'Thử lại'
@@ -215,6 +225,7 @@ export function AudioRecorderButton({
       || effectiveState === 'connecting'
       || effectiveState === 'stopping'
       || effectiveState === 'finalizing_recording'
+      || effectiveState === 'finalizing_transcript'
     ) {
       return
     }
@@ -250,6 +261,7 @@ export function AudioRecorderButton({
     effectiveState === 'connecting'
     || effectiveState === 'stopping'
     || effectiveState === 'finalizing_recording'
+    || effectiveState === 'finalizing_transcript'
     || isBusy
 
   return (
