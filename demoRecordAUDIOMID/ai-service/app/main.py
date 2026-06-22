@@ -124,6 +124,7 @@ from app.services.stt_persistence import TranscriptPersistenceRepository
 from app.services.transcript_canonicalizer import build_raw_transcript_hash
 from app.services.stt_session_actor import MeetingSessionActor, MeetingSessionState
 from app.upload_validation_policy import effective_allowed_extensions, effective_max_upload_bytes
+from app.routes.stt_stream import validate_stream_chunk
 from app.routes.upload import validate_upload_mime
 
 try:
@@ -1206,9 +1207,21 @@ def _map_http_exception(
         )
 
     if status_code == 413:
+        if detail_text == "REALTIME_CHUNK_TOO_LARGE":
+            return (
+                "REALTIME_CHUNK_TOO_LARGE",
+                _default_error_message("REALTIME_CHUNK_TOO_LARGE"),
+                details,
+            )
         return ("UPLOAD_TOO_LARGE", _default_error_message("UPLOAD_TOO_LARGE"), details)
 
     if status_code == 415:
+        if detail_text == "REALTIME_UNSUPPORTED_ENCODING":
+            return (
+                "REALTIME_UNSUPPORTED_ENCODING",
+                _default_error_message("REALTIME_UNSUPPORTED_ENCODING"),
+                details,
+            )
         if "mime" in normalized_detail or detail_text == "UPLOAD_MIME_MISMATCH":
             return (
                 "UPLOAD_MIME_MISMATCH",
@@ -1222,6 +1235,12 @@ def _map_http_exception(
         )
 
     if status_code in {400, 422}:
+        if detail_text == "REALTIME_INVALID_PAYLOAD":
+            return (
+                "REALTIME_INVALID_PAYLOAD",
+                _default_error_message("REALTIME_INVALID_PAYLOAD"),
+                details,
+            )
         if "language" in normalized_detail:
             return (
                 "INVALID_LANGUAGE",
@@ -4197,6 +4216,12 @@ async def stream_stt_chunk(
     effective_diarize = _resolve_effective_diarize(normalized_speaker_mode)
     endpointing_resolution = _resolve_realtime_endpointing(normalized_language)
     chunk_bytes = await audio_chunk.read()
+    validate_stream_chunk(
+        chunk_bytes,
+        seq=seq,
+        is_final=is_final,
+        enabled=settings.realtime_validation_enabled,
+    )
     realtime_model = _resolve_realtime_model()
     endpointing_value = (
         endpointing_resolution.endpointing

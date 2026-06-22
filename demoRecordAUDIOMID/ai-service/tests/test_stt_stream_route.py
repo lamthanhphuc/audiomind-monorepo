@@ -1282,3 +1282,26 @@ def test_get_transcript_falls_back_to_raw_when_canonical_sidecar_absent(monkeypa
     finally:
         db.close()
         engine.dispose()
+
+
+def test_stream_stt_chunk_rejects_oversized_chunk_when_validation_enabled(monkeypatch):
+    _reset_state(monkeypatch)
+    monkeypatch.setattr(main_module.settings, "realtime_validation_enabled", True)
+    oversized = b"\x1a\x45\xdf\xa3" + (b"\x00" * (1_048_576 + 1))
+
+    async def run_flow():
+        await main_module.stream_stt_chunk(
+            meeting_id=77,
+            audio_chunk=_make_upload_file(oversized),
+            seq=1,
+            language="vi",
+            speaker_mode="single",
+            is_final=False,
+            request=SimpleNamespace(state=SimpleNamespace(trace_id="trace-77", request_id="req-77")),
+        )
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(run_flow())
+
+    assert exc_info.value.status_code == 413
+    assert exc_info.value.detail == "REALTIME_CHUNK_TOO_LARGE"

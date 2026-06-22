@@ -104,6 +104,7 @@ class Settings(BaseSettings):
     allowed_upload_extensions: str = ".wav,.mp3,.m4a,.aac,.flac,.ogg,.webm,.mp4"
     upload_validation_strict: bool = False
     mime_sniff_enabled: bool = False
+    realtime_validation_enabled: bool = False
 
     # Storage
     audio_storage_path: str = "./storage/audio"

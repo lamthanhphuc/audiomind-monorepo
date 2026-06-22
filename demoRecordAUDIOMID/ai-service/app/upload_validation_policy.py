@@ -47,3 +47,11 @@ def effective_allowed_extensions(*, strict: bool, legacy_extensions: str) -> set
         for item in raw
         if str(item).strip()
     } or set(STRICT_ALLOWED_EXTENSIONS)
+
+
+def effective_realtime_max_chunk_bytes() -> int:
+    policy = load_upload_validation_policy()
+    realtime = policy.get("realtime")
+    if isinstance(realtime, dict):
+        return int(realtime.get("maxChunkBytes", 1_048_576))
+    return 1_048_576

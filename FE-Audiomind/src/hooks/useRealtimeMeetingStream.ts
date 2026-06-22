@@ -46,6 +46,8 @@ export interface RealtimeStatusEvent {
 export type RealtimeLanguage = 'vi' | 'en' | 'multi'
 export type RealtimeSpeakerMode = 'single' | 'multiple'
 
+export const REALTIME_MAX_CHUNK_BYTES = 1_048_576
+
 export const DEFAULT_REALTIME_LANGUAGE: RealtimeLanguage = 'vi'
 export const DEFAULT_REALTIME_SPEAKER_MODE: RealtimeSpeakerMode = 'single'
 
@@ -852,6 +854,16 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
         meetingId: normalizedMeetingId,
         connectionSeq: connectionSequenceRef.current,
         reason: 'stream_stopped',
+      })
+      return
+    }
+
+    if (audioChunk.size > REALTIME_MAX_CHUNK_BYTES) {
+      console.warn('[Realtime] REALTIME_CLIENT_CHUNK_SKIPPED', {
+        meetingId: normalizedMeetingId,
+        size: audioChunk.size,
+        maxChunkBytes: REALTIME_MAX_CHUNK_BYTES,
+        connectionSeq: connectionSequenceRef.current,
       })
       return
     }

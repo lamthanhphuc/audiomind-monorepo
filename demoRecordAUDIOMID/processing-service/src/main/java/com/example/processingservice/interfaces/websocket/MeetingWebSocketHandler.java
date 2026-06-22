@@ -19,6 +19,7 @@ import java.util.regex.Pattern;
 import java.util.UUID;
 
 import com.example.processingservice.client.AIServiceClient;
+import com.example.processingservice.config.Epic2FeatureFlags;
 import com.example.processingservice.config.TraceIdFilter;
 
 import org.springframework.beans.factory.annotation.Value;
@@ -59,6 +60,9 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
 
     private static final String AUTHENTICATED_ATTR = "authenticated";
     private static final String LAST_AUDIO_SEQ_ATTR = "lastAudioSeq";
+    private static final String LAST_ACCEPTED_SEQ_ATTR = "lastAcceptedAudioSeq";
+    private static final String LAST_AUDIO_MIME_TYPE_ATTR = "lastAudioMimeType";
+    private static final String LAST_AUDIO_ENCODING_ATTR = "lastAudioEncoding";
     private static final String LAST_AUDIO_DECLARED_SIZE_ATTR = "lastAudioDeclaredSize";
     private static final String LAST_AUDIO_IS_FINAL_ATTR = "lastAudioIsFinal";
     private static final String RECORDING_SESSION_ID_ATTR = "recordingSessionId";
@@ -99,6 +103,8 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
     private final ObjectMapper objectMapper;
     private final JwtUtil jwtUtil;
     private final RealtimeAudioWorkerRegistry realtimeAudioWorkerRegistry;
+    private final Epic2FeatureFlags epic2FeatureFlags;
+    private final RealtimePayloadValidator realtimePayloadValidator;
 
     @Value("${deepgram.language:vi}")
     private String deepgramLanguage;
@@ -130,7 +136,9 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
             JobStateStore jobStateStore,
             ObjectMapper objectMapper,
             JwtUtil jwtUtil,
-            RealtimeAudioWorkerRegistry realtimeAudioWorkerRegistry) {
+            RealtimeAudioWorkerRegistry realtimeAudioWorkerRegistry,
+            Epic2FeatureFlags epic2FeatureFlags,
+            RealtimePayloadValidator realtimePayloadValidator) {
         this.meetingChannelAuthorizer = meetingChannelAuthorizer;
         this.realtimeEventSubscriber = realtimeEventSubscriber;
         this.aiServiceClient = aiServiceClient;
@@ -139,6 +147,8 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
         this.objectMapper = objectMapper;
         this.jwtUtil = jwtUtil;
         this.realtimeAudioWorkerRegistry = realtimeAudioWorkerRegistry;
+        this.epic2FeatureFlags = epic2FeatureFlags;
+        this.realtimePayloadValidator = realtimePayloadValidator;
     }
 
     @Override
@@ -274,8 +284,20 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                 return;
             }
 
+            if (epic2FeatureFlags.isRealtimeValidationEnabled()) {
+                Long lastAcceptedSeq = getLongAttribute(session, LAST_ACCEPTED_SEQ_ATTR);
+                RealtimePayloadValidator.ValidationResult metadataValidation =
+                        realtimePayloadValidator.validateMetadata(seq, size, mimeType, encoding, lastAcceptedSeq);
+                if (!metadataValidation.valid()) {
+                    rejectRealtimeValidation(session, meetingId, seq, metadataValidation.errorCode());
+                    return;
+                }
+            }
+
             // Store seq so we can correlate with binary message
             session.getAttributes().put(LAST_AUDIO_SEQ_ATTR, seq);
+            session.getAttributes().put(LAST_AUDIO_MIME_TYPE_ATTR, mimeType);
+            session.getAttributes().put(LAST_AUDIO_ENCODING_ATTR, encoding);
             session.getAttributes().put(LAST_AUDIO_DECLARED_SIZE_ATTR, size);
             if (recordingSessionId != null) {
                 session.getAttributes().put(RECORDING_SESSION_ID_ATTR, recordingSessionId);
@@ -457,6 +479,18 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                 declaredSize,
                 isFinal
         );
+
+        if (epic2FeatureFlags.isRealtimeValidationEnabled()) {
+            RealtimePayloadValidator.ValidationResult binaryValidation =
+                    realtimePayloadValidator.validateBinary(audioBytes, declaredSize);
+            if (!binaryValidation.valid()) {
+                rejectRealtimeValidation(session, meetingId, lastSeq, binaryValidation.errorCode());
+                return;
+            }
+            log.info("event=REALTIME_VALIDATION_ACCEPTED meetingId={} seq={}", meetingId, lastSeq);
+            session.getAttributes().put(LAST_ACCEPTED_SEQ_ATTR, lastSeq);
+        }
+
         log.info(
                 "event=REALTIME_CHUNK_FORWARD_TO_AI meetingId={} seq={} byteLength={}",
                 meetingId,
@@ -935,6 +969,40 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
         }
 
         return false;
+    }
+
+    private void rejectRealtimeValidation(
+            WebSocketSession session,
+            Long meetingId,
+            Long seq,
+            RealtimePayloadValidator.ValidationError errorCode) {
+        session.getAttributes().remove(LAST_AUDIO_SEQ_ATTR);
+        session.getAttributes().remove(LAST_AUDIO_DECLARED_SIZE_ATTR);
+        session.getAttributes().remove(LAST_AUDIO_MIME_TYPE_ATTR);
+        session.getAttributes().remove(LAST_AUDIO_ENCODING_ATTR);
+        String code = errorCode == null ? "REALTIME_INVALID_PAYLOAD" : errorCode.name();
+        log.warn(
+                "event=REALTIME_VALIDATION_FAILED meetingId={} seq={} errorCode={}",
+                meetingId,
+                seq,
+                code
+        );
+        Map<String, Object> errorEvent = Map.of(
+                "type", "stream.error",
+                "meetingId", meetingId,
+                "message", "Realtime chunk validation failed",
+                "errorCode", code,
+                "recoverable", true
+        );
+        try {
+            realtimeEventSubscriber.broadcastToMeeting(meetingId, errorEvent);
+        } catch (Exception broadcastError) {
+            log.warn(
+                    "event=REALTIME_ANALYSIS_FAILED meetingId={} source=validation_reject errorCode={}",
+                    meetingId,
+                    safeErrorCode(broadcastError)
+            );
+        }
     }
 
     private void rejectTerminalMeeting(WebSocketSession session, Long meetingId, Long seq, String status) {
