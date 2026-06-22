@@ -1,4 +1,3 @@
-import pytest
 from fastapi import HTTPException
 
 from app.main import _map_http_exception

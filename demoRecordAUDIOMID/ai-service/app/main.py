@@ -126,6 +126,7 @@ from app.services.stt_session_actor import MeetingSessionActor, MeetingSessionSt
 from app.upload_validation_policy import effective_allowed_extensions, effective_max_upload_bytes
 from app.routes.stt_stream import validate_stream_chunk
 from app.routes.upload import validate_upload_mime
+from app.tasks import process_meeting
 
 try:
     from app.pipeline import ProcessingPipeline
