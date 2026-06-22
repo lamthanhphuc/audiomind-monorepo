@@ -988,6 +988,15 @@ def _normalize_error_text(value: object) -> str:
 
 
 def _default_error_message(error: str) -> str:
+    from app.config import get_settings
+    from app.errors.error_catalog import get_catalog_entry
+
+    settings = get_settings()
+    if settings.error_ux_enabled:
+        entry = get_catalog_entry(error)
+        if entry is not None:
+            return entry["message"]
+
     defaults = {
         "ANALYSIS_NOT_READY": "Analysis is not ready yet",
         "TRANSCRIPT_NOT_READY": "Transcript is not ready yet",
@@ -1010,6 +1019,25 @@ def _default_error_message(error: str) -> str:
         "INTERNAL_ERROR": "Unexpected server error",
     }
     return defaults.get(error, "Unexpected server error")
+
+
+def _attach_error_ux_details(
+    error: str, details: dict[str, object] | None
+) -> dict[str, object] | None:
+    from app.config import get_settings
+    from app.errors.error_catalog import resolve_cta
+
+    if not get_settings().error_ux_enabled:
+        return details
+
+    cta = resolve_cta(error)
+    if cta is None and details is None:
+        return None
+
+    merged: dict[str, object] = dict(details or {})
+    if cta is not None:
+        merged["cta"] = cta
+    return merged if merged else None
 
 
 def _is_sensitive_text(value: str) -> bool:
@@ -1136,7 +1164,7 @@ def build_error_response(
     if path:
         payload["path"] = path
 
-    safe_details = _sanitize_details(details)
+    safe_details = _sanitize_details(_attach_error_ux_details(error, details))
     if safe_details:
         payload["details"] = safe_details
 

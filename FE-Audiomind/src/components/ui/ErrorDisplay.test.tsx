@@ -38,6 +38,25 @@ describe('ErrorDisplay', () => {
     expect(container.textContent).toContain('INTERNAL_ERROR')
   })
 
+  it('renders CTA button for catalog error codes', () => {
+    act(() => {
+      root.render(
+        <ErrorDisplay
+          message="File vượt quá dung lượng cho phép (tối đa 100MB)."
+          ctaId="reduce_file_size"
+          ctaLabel="Giảm dung lượng file"
+          errorCode="UPLOAD_TOO_LARGE"
+          showCta
+        />,
+      )
+    })
+
+    const cta = container.querySelector('[data-testid="error-cta"]')
+    expect(cta).not.toBeNull()
+    expect(cta?.getAttribute('data-cta-id')).toBe('reduce_file_size')
+    expect(container.textContent).toContain('Giảm dung lượng file')
+  })
+
   it('hides traceId when showTraceId is disabled', () => {
     act(() => {
       root.render(

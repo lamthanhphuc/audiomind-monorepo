@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.example.meetingservice.config.Epic2FeatureFlags;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -12,9 +13,10 @@ import org.springframework.web.server.ResponseStatusException;
 
 class GlobalExceptionHandlerTest {
 
+    private final GlobalExceptionHandler handler = new GlobalExceptionHandler(new Epic2FeatureFlags());
+
     @Test
     void notFound_shouldReturnCanonicalShapeWithTraceId() {
-        GlobalExceptionHandler handler = new GlobalExceptionHandler();
         MockHttpServletRequest request = new MockHttpServletRequest();
         request.addHeader("X-Trace-Id", "meeting-trace-1");
         request.setRequestURI("/api/meetings/9999");
@@ -35,7 +37,6 @@ class GlobalExceptionHandlerTest {
 
     @Test
     void badRequest_shouldMapToValidationError() {
-        GlobalExceptionHandler handler = new GlobalExceptionHandler();
         MockHttpServletRequest request = new MockHttpServletRequest();
         request.setRequestURI("/meeting/upload");
 
@@ -52,7 +53,6 @@ class GlobalExceptionHandlerTest {
 
     @Test
     void unexpectedException_shouldReturnInternalErrorAndGeneratedTraceId() {
-        GlobalExceptionHandler handler = new GlobalExceptionHandler();
         MockHttpServletRequest request = new MockHttpServletRequest();
         request.setRequestURI("/meeting/internal");
 

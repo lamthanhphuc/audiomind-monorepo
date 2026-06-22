@@ -1,5 +1,6 @@
 package com.example.processingservice.controller;
 
+import com.example.processingservice.config.Epic2FeatureFlags;
 import com.example.processingservice.config.TraceIdFilter;
 import jakarta.servlet.http.HttpServletRequest;
 import java.time.Instant;
@@ -24,6 +25,12 @@ public class GlobalExceptionHandler {
     private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
 
     private static final Pattern MEETING_RESOURCE_PATH = Pattern.compile("^/processing/(\\d+)/(analysis|transcript)$");
+
+    private final Epic2FeatureFlags epic2FeatureFlags;
+
+    public GlobalExceptionHandler(Epic2FeatureFlags epic2FeatureFlags) {
+        this.epic2FeatureFlags = epic2FeatureFlags;
+    }
 
     @ExceptionHandler(NoSuchElementException.class)
     public ResponseEntity<ApiErrorResponse> handleNotFound(NoSuchElementException ex, HttpServletRequest request) {
@@ -94,9 +101,12 @@ public class GlobalExceptionHandler {
     ) {
         String traceId = resolveTraceId(request);
         String requestId = resolveRequestId(request);
+        boolean errorUxEnabled = epic2FeatureFlags.isErrorUxEnabled();
+        String fallbackMessage = code.displayMessage(errorUxEnabled);
         String resolvedMessage = shouldUseDefaultMessage(code)
-                ? code.defaultMessage()
-                : sanitizeMessage(message, code.defaultMessage());
+                ? fallbackMessage
+                : sanitizeMessage(message, fallbackMessage);
+        Map<String, Object> mergedDetails = code.mergeDetails(errorUxEnabled, details);
         ApiErrorResponse body = new ApiErrorResponse(
                 code.name(),
                 resolvedMessage,
@@ -104,7 +114,7 @@ public class GlobalExceptionHandler {
                 Instant.now().toString(),
                 traceId,
                 request == null ? null : request.getRequestURI(),
-                details
+                mergedDetails
         );
         log.info(
                 "event=ERROR_RESPONSE_SENT traceId={} requestId={} path={} httpStatus={} errorCode={}",
@@ -199,6 +209,15 @@ public class GlobalExceptionHandler {
                     GEMINI_UNAVAILABLE,
                     GEMINI_ANALYSIS_FAILED,
                     EMPTY_TRANSCRIPT,
+                    UPLOAD_EMPTY_FILE,
+                    UPLOAD_TOO_LARGE,
+                    UPLOAD_UNSUPPORTED_FORMAT,
+                    UPLOAD_INVALID_FILENAME,
+                    UPLOAD_MIME_MISMATCH,
+                    UPLOAD_SECURITY_SCAN_FAILED,
+                    REALTIME_CHUNK_TOO_LARGE,
+                    REALTIME_UNSUPPORTED_ENCODING,
+                    REALTIME_INVALID_PAYLOAD,
                     INTERNAL_ERROR -> true;
             default -> false;
         };
