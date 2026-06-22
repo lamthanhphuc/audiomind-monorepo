@@ -79,13 +79,14 @@ Plan này chia theo **TDD slices** (mỗi slice: test → implement → refactor
 | `UPLOAD_INVALID_FILENAME` | Tên file không hợp lệ. | `select_supported_file` | Chọn file khác |
 | `UPLOAD_MIME_MISMATCH` | Nội dung file không khớp định dạng đã chọn. | `select_supported_file` | Chọn file khác |
 | `UPLOAD_SECURITY_SCAN_FAILED` | File không vượt qua kiểm tra bảo mật. | `select_supported_file` | Chọn file khác |
-| `REALTIME_CHUNK_TOO_LARGE` | Đoạn âm thanh quá lớn. Hệ thống sẽ tự chia nhỏ hơn. | `retry_recording` | Ghi lại |
+| `REALTIME_CHUNK_TOO_LARGE` | Đoạn âm thanh quá lớn. Vui lòng thử ghi lại; nếu lỗi lặp lại, liên hệ hỗ trợ. | `retry_recording` | Thử ghi lại |
 | `REALTIME_UNSUPPORTED_ENCODING` | Định dạng ghi âm không được hỗ trợ. | `retry_recording` | Ghi lại |
 | `REALTIME_INVALID_PAYLOAD` | Dữ liệu realtime không hợp lệ. | `retry_recording` | Thử ghi lại |
 | `UNAUTHORIZED` | Phiên đăng nhập đã hết hạn. | `relogin` | Đăng nhập lại |
 | `FORBIDDEN` | Bạn không có quyền thực hiện thao tác này. | `contact_support` | Liên hệ hỗ trợ |
 
 - Catalog đầy đủ nằm trong code (Java `ErrorCode`, Python error map, FE `errorCatalog.ts`); bảng trên là subset P0.
+- **Product note**: `REALTIME_CHUNK_TOO_LARGE` dùng CTA **"Thử ghi lại"** (không yêu cầu user sửa chunk size trực tiếp); message gợi ý liên hệ hỗ trợ nếu lỗi lặp lại.
 - **Dependencies**: phụ thuộc Slice 2.
 - **Feature flag**: `ERROR_UX_ENABLED`
 - **Rollback plan**:
@@ -106,7 +107,9 @@ Plan này chia theo **TDD slices** (mỗi slice: test → implement → refactor
   - processing-service: validate before forwarding (fail fast) + propagate error codes.
   - FE: UI “Định dạng hỗ trợ …” lấy từ config, không hardcode.
   - FE preflight validate size/ext trước khi gọi API.
-  - **Dynamic policy endpoint (recommended)**: `GET /api/config/upload` trên processing-api (gateway) trả subset policy từ contract file — FE và services đọc policy động thay vì hardcode/env rời rạc.
+  - **Dynamic policy endpoint (recommended)**: `GET /api/config/upload` trên **meeting-service** — FE upload gọi trực tiếp meeting-service nên policy endpoint đặt tại đây.
+    - Route: `meeting-service` expose `GET /api/config/upload` (hoặc `GET /meetings/config/upload` nếu giữ prefix hiện tại).
+    - **Gateway (optional)**: nếu muốn single origin qua processing-api, document rõ reverse-proxy route `GET /api/config/upload` → `meeting-service` (không duplicate logic ở processing-api).
     - Response ví dụ: `{ maxUploadBytes, allowedExtensions, allowedMimeTypes }`
     - Cache ngắn (FE: session/local; services: startup reload + optional refresh)
     - Nếu endpoint unavailable, FE fallback về bundled defaults từ build-time import của contract JSON.
@@ -131,9 +134,17 @@ Plan này chia theo **TDD slices** (mỗi slice: test → implement → refactor
 
 ### Slice 5 — MIME sniff + mismatch handling (best-effort)
 - **Goal**: Chặn file “đổi đuôi” rõ ràng; không phụ thuộc antivirus.
+- **Service placement (locked — tránh double sniff)**:
+  - **meeting-service**: **Apache Tika** — điểm sniff Java duy nhất (FE upload ingress).
+  - **ai-service**: **`python-magic`** — sniff cho Python upload path (`/api/upload-audio`).
+  - **processing-service**: **không** chạy Tika; chỉ validate metadata nhẹ / propagate error từ upstream khi forward.
 - **Work**:
-  - Java: dùng **Apache Tika** để sniff MIME / container.
-  - Python: dùng **`python-magic`** để sniff MIME.
+  - meeting-service: Tika adapter sniff MIME/container trên upload bytes.
+  - ai-service: python-magic adapter cho upload path riêng.
+  - **Performance**:
+    - sniff chỉ trên **sample đầu file** (ví dụ 8–64KB) trước khi persist full file khi có thể.
+    - **cache Tika result** theo `(contentHashPrefix, fileSize)` hoặc `sha256` trong request scope để tránh re-sniff cùng file khi retry/duplicate upload.
+    - target P95 sniff latency `< 50ms` cho file ≤ 100MB (đo bằng perf test Slice 5).
   - **Fallback conditions (locked)**:
     - sniff library **unavailable** (Tika/magic not loaded, daemon missing) → dùng extension allowlist; log `UPLOAD_VALIDATION_MIME_FALLBACK reason=library_unavailable`
     - sniff result **ambiguous** (unknown, `application/octet-stream`, conflicting MIME vs extension) → dùng extension allowlist; log `UPLOAD_VALIDATION_MIME_FALLBACK reason=ambiguous_detected detectedMime={}`
@@ -156,6 +167,9 @@ Plan này chia theo **TDD slices** (mỗi slice: test → implement → refactor
   - **Integration tests**:
     - file extension hợp lệ nhưng bytes sai → `UPLOAD_MIME_MISMATCH`
     - sniff unavailable → upload dùng fallback path và log marker phù hợp
+  - **Performance / load tests**:
+    - benchmark Tika sniff P50/P95 trên fixture 1MB / 10MB / 100MB
+    - concurrent upload (ví dụ 10 parallel) không làm P95 vượt ngưỡng; verify cache hit trên duplicate hash
 
 ### Slice 6 — Realtime payload validation hardening
 - **Goal**: reject sớm invalid/malicious payload với `REALTIME_*` error codes.
@@ -200,11 +214,16 @@ Plan này chia theo **TDD slices** (mỗi slice: test → implement → refactor
     - scanner unavailable → policy điều khiển bởi `UPLOAD_SCAN_FAIL_OPEN`
     - **`UPLOAD_SCAN_FAIL_OPEN`** (default `true`): khi scanner không khả dụng/timeout, cho phép upload tiếp tục + log `UPLOAD_SCAN_INFRA_ERROR`; nếu `false` → reject với `UPLOAD_SECURITY_SCAN_FAILED`
     - infected/suspicious verdict → luôn reject, không phụ thuộc fail-open
+  - **Circuit breaker / auto fail-closed**:
+    - nếu scanner **fail > 3 lần trong 5 phút** (timeout, connection refused, infra error) → tự động chuyển sang **fail-closed** tạm thời (override `UPLOAD_SCAN_FAIL_OPEN` cho window đó)
+    - emit **alert** (metric + log marker `UPLOAD_SCAN_CIRCUIT_OPEN`) — không chỉ log
+    - implement bằng Resilience4j circuit breaker hoặc sliding-window counter + metric; recovery sau cooldown (ví dụ 5 phút) hoặc manual reset
   - Log markers:
     - `UPLOAD_SCAN_SKIPPED`
     - `UPLOAD_SCAN_PASSED`
     - `UPLOAD_SCAN_FAILED`
     - `UPLOAD_SCAN_INFRA_ERROR`
+    - `UPLOAD_SCAN_CIRCUIT_OPEN`
 - **Dependencies**:
   - phụ thuộc Slice 2 (structured errors)
   - phụ thuộc Slice 4 (upload path standardized)
@@ -218,6 +237,17 @@ Plan này chia theo **TDD slices** (mỗi slice: test → implement → refactor
   - **Integration tests**:
     - infected/suspicious fixture (mocked scanner verdict) → reject with errorCode phù hợp
     - scanner infra error + fail-open policy → upload tiếp tục nhưng có log marker
+    - 4 infra failures trong 5 phút → circuit open → fail-closed + alert marker
+
+## Testing Strategy (cross-slice)
+
+Ngoài unit/integration tests per slice:
+
+- **Performance / load tests (Slice 4–5)**:
+  - upload validation end-to-end latency baseline vs strict mode
+  - Tika sniff P50/P95 under concurrent load (không regression so với baseline upload)
+  - policy endpoint `GET /api/config/upload` cache hit ratio
+- **Regression suite**: upload hợp lệ, realtime webm/opus, analysis flow không đổi sau mỗi slice rollout
 
 ### Slice 8 — Observability + smoke scripts
 - **Goal**: dễ triage lỗi upload và realtime.
@@ -228,6 +258,7 @@ Plan này chia theo **TDD slices** (mỗi slice: test → implement → refactor
     - `MIME_MISMATCH`
     - `REALTIME_VALIDATION_*`
     - `UPLOAD_SCAN_*`
+    - `UPLOAD_SCAN_CIRCUIT_OPEN`
   - docs deploy checklist append Epic 2
 - **Dependencies**: nên đi sau Slice 4–7 để pattern phản ánh hành vi thật.
 - **Feature flag**: none
@@ -257,8 +288,8 @@ Plan này chia theo **TDD slices** (mỗi slice: test → implement → refactor
 - `ai-service`
 - FE (`FE-Audiomind`)
 - contract artifact (JSON/YAML)
-- Java MIME sniff: **Apache Tika**
-- Python MIME sniff: **python-magic**
+- Java MIME sniff: **Apache Tika** (meeting-service only)
+- Python MIME sniff: **python-magic** (ai-service only)
 - Upload scan: **ClamAV** or equivalent scanning service
 
 ### Slice dependency graph
@@ -289,7 +320,8 @@ Slices 4/5/6/7
 - **False negative MIME sniff**: best-effort + fallback to extension allowlist; log for tuning.
 - **False positive MIME sniff**: rollout `MIME_SNIFF_ENABLED` sau khi có fixture matrix thực tế.
 - **Realtime strictness too early**: bật `REALTIME_VALIDATION_ENABLED` ở mode logging-first/shadow validation trước nếu cần.
-- **Scanner infra flaky**: fail-open mặc định ở P0, có log + metric để theo dõi.
+- **Scanner infra flaky**: fail-open mặc định ở P0; circuit breaker auto fail-closed sau 3 failures/5min + alert.
+- **Tika latency**: sample-based sniff + cache; perf test gate trước khi bật `MIME_SNIFF_ENABLED` prod.
 - **Localization creep**: chỉ P0 codes; non-goals: full i18n framework.
 
 ## Rollback Plan
@@ -314,12 +346,13 @@ Expected rollback behavior:
 | --- | --- |
 | 1 — contract artifact | 0.5d |
 | 2–3 — error schema + VN catalog | 0.5–1d |
-| 4 — upload alignment + `/api/config/upload` | 1–2d |
-| 5 — MIME sniff (Tika + python-magic) | 1d |
+| 4 — upload alignment + `meeting-service` `/api/config/upload` | 1.5–2d |
+| 5 — MIME sniff (Tika @ meeting-service + python-magic @ ai-service) | 1–1.5d |
 | 6 — realtime validation | 1d |
-| 7 — ClamAV scan hook | 0.5–1d |
+| 7 — ClamAV scan hook + circuit breaker | 1–1.5d |
 | 8 — observability + smoke | 0.5d |
-| **Total** | **~6–7 developer-days** |
+| Integration / perf buffer | 1–1.5d |
+| **Total** | **~8–9 developer-days** |
 
-Lưu ý: timeline giả định 1 developer full-time; song song hóa Slice 2 và Slice 1 có thể rút ngắn nhưng Slice 4 vẫn phụ thuộc contract file.
+Lưu ý: timeline giả định 1 developer full-time; bao gồm buffer integration overhead và perf validation; song song hóa Slice 2 và Slice 1 có thể rút ngắn nhưng Slice 4 vẫn phụ thuộc contract file.
 
