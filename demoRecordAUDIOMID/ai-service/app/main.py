@@ -1126,6 +1126,7 @@ def build_error_response(
     trace_id = _resolve_trace_id(request)
     payload: dict[str, object] = {
         "error": error,
+        "errorCode": error,
         "message": _sanitize_message(message, _default_error_message(error)),
         "status": status,
         "timestamp": _utc_now_iso8601(),

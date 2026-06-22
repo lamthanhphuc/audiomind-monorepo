@@ -85,6 +85,14 @@ processing:
   analysis-lock-ttl-seconds: 600
   analysis-failure-cooldown-seconds: 90
 
+epic2:
+  error-ux-enabled: ${ERROR_UX_ENABLED:true}
+  upload-validation-strict: ${UPLOAD_VALIDATION_STRICT:false}
+  mime-sniff-enabled: ${MIME_SNIFF_ENABLED:false}
+  realtime-validation-enabled: ${REALTIME_VALIDATION_ENABLED:false}
+  upload-security-scan-enabled: ${UPLOAD_SECURITY_SCAN_ENABLED:false}
+  upload-scan-fail-open: ${UPLOAD_SCAN_FAIL_OPEN:true}
+
 resilience4j:
   retry:
     instances:

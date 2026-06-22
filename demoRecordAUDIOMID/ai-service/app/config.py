@@ -127,6 +127,9 @@ class Settings(BaseSettings):
     redis_max_connections: int = 10
     glossary_cache_ttl_seconds: int = 300
 
+    # Epic 2 — error UX
+    error_ux_enabled: bool = True
+
     # Deepgram STT hardening
     stt_audio_queue_max_items: int = 64
     stt_audio_queue_max_bytes: int = 8 * 1024 * 1024

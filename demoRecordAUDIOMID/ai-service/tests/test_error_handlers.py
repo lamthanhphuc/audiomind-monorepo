@@ -36,6 +36,7 @@ def test_http_exception_not_found_analysis_returns_canonical_payload():
     assert response.status_code == 404
     assert response.headers.get("x-trace-id") == "test-trace-123"
     assert payload["error"] == "ANALYSIS_NOT_READY"
+    assert payload["errorCode"] == "ANALYSIS_NOT_READY"
     assert payload["message"] == "Analysis is not ready yet"
     assert payload["status"] == 404
     assert payload["traceId"] == "test-trace-123"
@@ -62,6 +63,7 @@ def test_validation_exception_returns_canonical_payload_with_422_status():
 
     assert response.status_code == 422
     assert payload["error"] == "VALIDATION_ERROR"
+    assert payload["errorCode"] == "VALIDATION_ERROR"
     assert payload["status"] == 422
     assert payload["traceId"] == "trace-validation-1"
     assert payload["details"]["errors"][0]["type"] == "missing"

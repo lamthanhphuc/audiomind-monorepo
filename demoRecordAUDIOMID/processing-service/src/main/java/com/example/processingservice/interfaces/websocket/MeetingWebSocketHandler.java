@@ -16,6 +16,10 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CompletableFuture;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.UUID;
+
+import com.example.processingservice.client.AIServiceClient;
+import com.example.processingservice.config.TraceIdFilter;
 
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -28,7 +32,7 @@ import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.handler.AbstractWebSocketHandler;
 
-import com.example.processingservice.client.AIServiceClient;
+import com.example.processingservice.config.TraceIdFilter;
 import com.example.processingservice.client.AudioStreamResetRequiredException;
 import com.example.processingservice.client.MeetingServiceClient;
 import com.example.processingservice.interfaces.websocket.realtime.RealtimeAudioEnqueueResult;
@@ -166,7 +170,11 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
         }
         safeSendMessage(session, new TextMessage(objectMapper.writeValueAsString(readyEvent)));
 
-        log.info("event=REALTIME_SESSION_STARTED meetingId={} source=realtime", meetingId);
+        log.info(
+                "event=REALTIME_SESSION_STARTED meetingId={} traceId={} source=realtime",
+                meetingId,
+                resolveSessionTraceId(session)
+        );
     }
 
     @Override
@@ -1124,7 +1132,13 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                                 meetingId
                         );
                     } else {
-                        triggerRealtimeAnalysisAsync(meetingId, authorization, language, analysisSource);
+                        triggerRealtimeAnalysisAsync(
+                                meetingId,
+                                authorization,
+                                language,
+                                analysisSource,
+                                resolveSessionTraceId(session)
+                        );
                         syncRealtimeMeetingTerminalStatus(meetingId, authorization, RealtimeStatusCodes.COMPLETED);
                     }
                     return;
@@ -1196,7 +1210,13 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                             finalSeq != null ? finalSeq : -1L,
                             transcriptRows
                     );
-                    triggerRealtimeAnalysisAsync(meetingId, authorization, language, analysisSource);
+                    triggerRealtimeAnalysisAsync(
+                            meetingId,
+                            authorization,
+                            language,
+                            analysisSource,
+                            resolveSessionTraceId(session)
+                    );
                     syncRealtimeMeetingTerminalStatus(meetingId, authorization, RealtimeStatusCodes.COMPLETED);
                 }
                 return;
@@ -1237,16 +1257,18 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
             Long meetingId,
             String authorization,
             String language,
-            String source
+            String source,
+            String traceId
     ) {
         log.info(
-                "REALTIME_ANALYSIS_TRIGGER_ATTEMPT meetingId={} source={}",
+                "REALTIME_ANALYSIS_TRIGGER_ATTEMPT meetingId={} source={} traceId={}",
                 meetingId,
-                source
+                source,
+                traceId
         );
         try {
-            CompletableFuture.runAsync(() -> runRealtimeAnalysis(meetingId, authorization, language, source));
-            log.info("REALTIME_ANALYSIS_ENQUEUED meetingId={} source={}", meetingId, source);
+            CompletableFuture.runAsync(() -> runRealtimeAnalysis(meetingId, authorization, language, source, traceId));
+            log.info("REALTIME_ANALYSIS_ENQUEUED meetingId={} source={} traceId={}", meetingId, source, traceId);
         } catch (Exception ex) {
             log.warn(
                     "REALTIME_ANALYSIS_FAILED meetingId={} source={} reason=enqueue_failed errorCode={}",
@@ -1257,8 +1279,7 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
         }
     }
 
-    private void runRealtimeAnalysis(Long meetingId, String authorization, String language, String source) {
-        String traceId = "realtime-analysis-" + meetingId + "-" + System.currentTimeMillis();
+    private void runRealtimeAnalysis(Long meetingId, String authorization, String language, String source, String traceId) {
         Map<String, Object> transcriptResponse;
         try {
             transcriptResponse = aiServiceClient.getTranscript(meetingId, traceId);
@@ -1828,7 +1849,13 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                     transcriptResponse == null ? null : transcriptResponse.get("transcripts")
             );
             if (!buildTranscriptText(rows).isBlank()) {
-                triggerRealtimeAnalysisAsync(meetingId, authorization, language, analysisSource);
+                triggerRealtimeAnalysisAsync(
+                        meetingId,
+                        authorization,
+                        language,
+                        analysisSource,
+                        resolveSessionTraceId(session)
+                );
                 syncRealtimeMeetingTerminalStatus(meetingId, authorization, RealtimeStatusCodes.COMPLETED);
                 return;
             }
@@ -1893,7 +1920,13 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
             String transcriptText = buildTranscriptText(rows);
             if (!transcriptText.isBlank()) {
                 String language = getStringAttribute(session, LANGUAGE_ATTR);
-                triggerRealtimeAnalysisAsync(meetingId, authorization, language, analysisSource);
+                triggerRealtimeAnalysisAsync(
+                        meetingId,
+                        authorization,
+                        language,
+                        analysisSource,
+                        resolveSessionTraceId(session)
+                );
                 syncRealtimeMeetingTerminalStatus(meetingId, authorization, RealtimeStatusCodes.COMPLETED);
                 return;
             }
@@ -2299,6 +2332,7 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
         session.getAttributes().put("username", username);
         session.getAttributes().put("authorization", authorization);
         session.getAttributes().put(AUTHENTICATED_ATTR, true);
+        ensureSessionTraceId(session, data);
 
         String requestedLanguage = getStringValue(data.get("language"));
         String effectiveLanguage = normalizeRealtimeLanguage(requestedLanguage);
@@ -2390,5 +2424,27 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
         }
         String code = throwable.getClass().getSimpleName();
         return (code == null || code.isBlank()) ? "UNKNOWN_ERROR" : code;
+    }
+
+    private String resolveSessionTraceId(WebSocketSession session) {
+        Object existing = session.getAttributes().get(TraceIdFilter.TRACE_ID_ATTR);
+        if (existing instanceof String traceId && !traceId.isBlank()) {
+            return traceId;
+        }
+        String generated = UUID.randomUUID().toString();
+        session.getAttributes().put(TraceIdFilter.TRACE_ID_ATTR, generated);
+        return generated;
+    }
+
+    private void ensureSessionTraceId(WebSocketSession session, Map<String, Object> data) {
+        String fromPayload = getStringValue(data.get("traceId"));
+        if (fromPayload.isBlank()) {
+            fromPayload = getStringValue(data.get("trace_id"));
+        }
+        if (!fromPayload.isBlank()) {
+            session.getAttributes().put(TraceIdFilter.TRACE_ID_ATTR, fromPayload);
+            return;
+        }
+        resolveSessionTraceId(session);
     }
 }

@@ -28,6 +28,7 @@ class GlobalExceptionHandlerTest {
         ApiErrorResponse body = response.getBody();
         assertNotNull(body);
         assertEquals("ANALYSIS_NOT_READY", body.error());
+        assertEquals("ANALYSIS_NOT_READY", body.errorCode());
         assertEquals("Analysis is not ready yet", body.message());
         assertEquals(404, body.status());
         assertEquals("trace-123", body.traceId());

@@ -17,6 +17,7 @@ public class TraceIdFilter extends OncePerRequestFilter {
 
     public static final String TRACE_HEADER = "X-Trace-Id";
     public static final String REQUEST_HEADER = "X-Request-ID";
+    public static final String TRACE_ID_ATTR = "traceId";
     private static final Logger log = LoggerFactory.getLogger(TraceIdFilter.class);
 
     @Override
@@ -35,6 +36,7 @@ public class TraceIdFilter extends OncePerRequestFilter {
 
         MDC.put("traceId", traceId);
         MDC.put("requestId", requestId);
+        request.setAttribute(TRACE_ID_ATTR, traceId);
         response.setHeader(TRACE_HEADER, traceId);
         response.setHeader(REQUEST_HEADER, requestId);
         log.info(

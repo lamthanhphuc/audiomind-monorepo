@@ -60,3 +60,9 @@
 .ui-state--error .ui-state__title {
   color: #b91c1c;
 }
+
+.ui-state__trace-id {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: #7f1d1d;
+}

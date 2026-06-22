@@ -229,6 +229,7 @@ const parseApiErrorResponse = async (response: Response): Promise<ApiError> => {
   const traceId = response.headers.get('x-trace-id') ?? response.headers.get('x-request-id') ?? undefined
   let message = text || response.statusText
   let errorCode: string | undefined
+  let bodyTraceId: string | undefined
   let retryAfterSeconds: number | undefined
 
   try {
@@ -243,7 +244,8 @@ const parseApiErrorResponse = async (response: Response): Promise<ApiError> => {
       parsed.message,
       message,
     ) ?? message
-    errorCode = firstString(parsed.errorCode, parsed.error_code, detail?.errorCode, detail?.error_code)
+    errorCode = firstString(parsed.errorCode, parsed.error_code, parsed.error, detail?.errorCode, detail?.error_code, detail?.error)
+    bodyTraceId = firstString(parsed.traceId, parsed.trace_id)
     retryAfterSeconds = firstNumber(
       parsed.retryAfterSeconds,
       parsed.retry_after_seconds,
@@ -255,7 +257,7 @@ const parseApiErrorResponse = async (response: Response): Promise<ApiError> => {
   }
 
   retryAfterSeconds = retryAfterSeconds ?? parseRetryAfterFromText(message)
-  return new ApiError(message, response.status, traceId, errorCode, retryAfterSeconds)
+  return new ApiError(message, response.status, traceId ?? bodyTraceId, errorCode, retryAfterSeconds)
 }
 
 const fetchJsonNoConsole = async <T>(input: RequestInfo | URL, init?: RequestInit): Promise<T> => {

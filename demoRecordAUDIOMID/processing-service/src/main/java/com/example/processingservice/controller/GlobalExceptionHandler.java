@@ -206,6 +206,10 @@ public class GlobalExceptionHandler {
 
     private String resolveTraceId(HttpServletRequest request) {
         if (request != null) {
+            Object fromAttr = request.getAttribute(TraceIdFilter.TRACE_ID_ATTR);
+            if (fromAttr instanceof String attrTraceId && !attrTraceId.isBlank()) {
+                return attrTraceId;
+            }
             String fromHeader = request.getHeader(TraceIdFilter.TRACE_HEADER);
             if (fromHeader != null && !fromHeader.isBlank()) {
                 return fromHeader;
