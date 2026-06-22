@@ -106,6 +106,18 @@ describe('AnalysisStatusPanel', () => {
     expect(onReanalyze).toHaveBeenCalledTimes(1)
   })
 
+  it('shows Vietnamese re-analyze CTA label', () => {
+    renderPanel({
+      metadata: {
+        analysisStatus: 'COMPLETED',
+      },
+      onReanalyze: vi.fn(),
+    })
+
+    expect(container.querySelector('[data-testid="analysis-reanalyze-button"]')?.textContent)
+      .toContain('Thử phân tích lại')
+  })
+
   it('shows Vietnamese retryable overload banner', () => {
     renderPanel({
       metadata: {

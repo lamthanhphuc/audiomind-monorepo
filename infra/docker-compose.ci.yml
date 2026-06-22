@@ -1,0 +1,13 @@
+# CI / test overlay — fault injection for Gemini without live API keys.
+# Usage:
+#   docker compose -f infra/docker-compose.dev.yml -f infra/docker-compose.mvp.yml -f infra/docker-compose.ci.yml up -d ai-api celery-worker celery-beat
+services:
+  ai-api:
+    environment:
+      GEMINI_CLIENT_TEST_MODE: fault_injection
+      GEMINI_FAULT_INJECTION_PROFILE: ${GEMINI_FAULT_INJECTION_PROFILE:-primary_429_backup_ok}
+
+  celery-worker:
+    environment:
+      GEMINI_CLIENT_TEST_MODE: fault_injection
+      GEMINI_FAULT_INJECTION_PROFILE: ${GEMINI_FAULT_INJECTION_PROFILE:-primary_429_backup_ok}

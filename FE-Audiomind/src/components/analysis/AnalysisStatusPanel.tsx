@@ -227,7 +227,7 @@ export const AnalysisStatusPanel = ({
           disabled={reanalyzeDisabled}
           data-testid="analysis-reanalyze-button"
         >
-          {busy ? 'Re-analyzing...' : 'Re-analyze'}
+          {busy ? 'Đang phân tích lại…' : 'Thử phân tích lại'}
         </button>
       </div>
 

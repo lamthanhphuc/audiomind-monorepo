@@ -95,6 +95,44 @@ docker compose --env-file infra/.env -f infra/docker-compose.dev.yml -f infra/do
 - Logs do not expose provider keys, JWTs, raw Deepgram frames, or full
   transcript content.
 
+## Epic 7T PR1 — Stop Tail Preservation
+
+Run after deploying PR1 (`web`, optional `processing-api` log markers).
+
+- Record one mic meeting and stop immediately after the final sentence.
+- Confirm the last sentence is present in the transcript (repeat 3–5 times).
+- Record one browser-tab meeting with the same fast-stop pattern.
+- Confirm browser console shows `REALTIME_FINAL_CHUNK_ENQUEUED` with `postStop: true`.
+- Confirm processing logs include `REALTIME_FINALIZE_AFTER_CLIENT_DRAIN` or
+  `REALTIME_STOP_FINALIZE_AFTER_DRAIN` for the meeting.
+- Confirm no duplicate `stream.stop` finalize errors (`REALTIME_STOP_DUPLICATE_IGNORED`
+  is acceptable for idempotent retries).
+
+```bash
+bash scripts/log-bundle.sh --since 15m --grep PR1
+```
+
+## Epic 7T PR2 — Gemini Recovery + Short Transcript Gate
+
+Run after deploying PR2 (`ai-api`, `celery-worker`, `celery-beat`, `processing-api`, `web`).
+
+- Run `alembic upgrade head` inside `ai-api` before smoke (see rollout spec).
+- Confirm `celery-beat` is healthy and exactly one replica is running.
+- Upload or record a very short transcript (< 80 normalized chars) and confirm analysis
+  is skipped with status/message referencing short content.
+- Confirm logs show `ANALYSIS_SKIPPED_SHORT_TRANSCRIPT` (no live Gemini call).
+- With fault injection or staging quota limits, confirm retryable analysis failures show
+  `ANALYSIS_FAILED_RETRYABLE` in the UI banner ("AI đang quá tải, hệ thống sẽ tự thử lại.").
+- Confirm export is blocked while analysis is `ANALYZING` or `ANALYSIS_FAILED_RETRYABLE`
+  (unless `retryExhausted=true`).
+- Confirm background retry logs appear: `ANALYSIS_BACKGROUND_RETRY_ENQUEUED`,
+  `ANALYSIS_BACKGROUND_RETRY_DISPATCH`, or `ANALYSIS_BACKGROUND_RETRY_EXHAUSTED`.
+- Confirm Gemini key rotation logs use aliases only: `GEMINI_KEY_SELECTED`, `GEMINI_KEY_FAILED`.
+
+```bash
+bash scripts/log-bundle.sh --since 15m --grep PR2
+```
+
 ## Failure Capture
 
 If a smoke step fails, capture:
