@@ -2,7 +2,6 @@
 title: "7T — Error, Validation & Upload Safety — Implementation Plan"
 status: DRAFT
 updated: 2026-06-22
-branch: fix/error-validation-upload-safety
 ---
 
 ## Overview
@@ -18,8 +17,13 @@ Plan này chia theo **TDD slices** (mỗi slice: test → implement → refactor
 
 ### Slice 1 — Validation contract source-of-truth (doc + artifact)
 - **Goal**: Tạo một artifact dùng chung làm chuẩn cho upload/realtime validation policy.
+- **Contract file location (locked)**:
+  - **Primary**: `packages/contracts/upload-validation-policy.json` — monorepo đã có `packages/contracts/` (`error.schema.json`, `config.schema.json`, OpenAPI specs); policy này là contract runtime, không phải doc thuần.
+  - **Optional mirror**: `docs/contracts/upload-validation-policy.yaml` chỉ khi cần bản human-readable; JSON trong `packages/contracts/` là source of truth.
+  - Thêm entry vào `packages/contracts/config.schema.json` (hoặc schema riêng) để CI validate artifact.
 - **Deliverables**:
-  - `docs/contracts/upload-validation-policy.yaml` hoặc `packages/contracts/upload-validation-policy.json`
+  - `packages/contracts/upload-validation-policy.json`
+  - schema validation trong `packages/tooling/config-validation/`
   - fields tối thiểu:
     - `maxUploadBytes`
     - `allowedExtensions`
@@ -47,6 +51,7 @@ Plan này chia theo **TDD slices** (mỗi slice: test → implement → refactor
   - Python: thống nhất error payload (FastAPI exception handlers) để luôn có `traceId`, `errorCode`.
   - FE: hiển thị `traceId` trong `ErrorState` / upload failure UI.
   - Chuẩn payload bổ sung trường `details.cta` khi phù hợp.
+  - **TraceId trong realtime flow**: gắn `traceId` vào WebSocket session attributes và log xuyên suốt realtime path (`MeetingWebSocketHandler`, `AIServiceClient.streamAudioChunk`, ai-service `/api/v1/stt/stream`) — không chỉ HTTP REST.
 - **Feature flag**: `ERROR_UX_ENABLED`
 - **Rollback plan**:
   - nếu `ERROR_UX_ENABLED=false`, services vẫn trả baseline payload hiện tại; FE fallback về render `ApiError.message` + `traceId` nếu có, không phụ thuộc `cta`.
@@ -64,6 +69,23 @@ Plan này chia theo **TDD slices** (mỗi slice: test → implement → refactor
   - Java: replace defaultMessage English → Vietnamese for P0.
   - Python: normalize default error messages cho P0 thay vì đẩy message kỹ thuật ra ngoài.
   - FE: CTA mapping table (e.g. “chọn file khác”, “thử lại”, “đăng nhập lại”, “giảm dung lượng file”).
+- **P0 error catalog (sample)**:
+
+| errorCode | userMessage (VN) | CTA id | CTA label (VN) |
+| --- | --- | --- | --- |
+| `UPLOAD_EMPTY_FILE` | File trống. Vui lòng chọn file âm thanh hợp lệ. | `select_supported_file` | Chọn file khác |
+| `UPLOAD_TOO_LARGE` | File vượt quá dung lượng cho phép (tối đa 100MB). | `reduce_file_size` | Giảm dung lượng file |
+| `UPLOAD_UNSUPPORTED_FORMAT` | Định dạng file không được hỗ trợ. Vui lòng dùng .mp3, .wav hoặc .m4a. | `select_supported_file` | Chọn file khác |
+| `UPLOAD_INVALID_FILENAME` | Tên file không hợp lệ. | `select_supported_file` | Chọn file khác |
+| `UPLOAD_MIME_MISMATCH` | Nội dung file không khớp định dạng đã chọn. | `select_supported_file` | Chọn file khác |
+| `UPLOAD_SECURITY_SCAN_FAILED` | File không vượt qua kiểm tra bảo mật. | `select_supported_file` | Chọn file khác |
+| `REALTIME_CHUNK_TOO_LARGE` | Đoạn âm thanh quá lớn. Hệ thống sẽ tự chia nhỏ hơn. | `retry_recording` | Ghi lại |
+| `REALTIME_UNSUPPORTED_ENCODING` | Định dạng ghi âm không được hỗ trợ. | `retry_recording` | Ghi lại |
+| `REALTIME_INVALID_PAYLOAD` | Dữ liệu realtime không hợp lệ. | `retry_recording` | Thử ghi lại |
+| `UNAUTHORIZED` | Phiên đăng nhập đã hết hạn. | `relogin` | Đăng nhập lại |
+| `FORBIDDEN` | Bạn không có quyền thực hiện thao tác này. | `contact_support` | Liên hệ hỗ trợ |
+
+- Catalog đầy đủ nằm trong code (Java `ErrorCode`, Python error map, FE `errorCatalog.ts`); bảng trên là subset P0.
 - **Dependencies**: phụ thuộc Slice 2.
 - **Feature flag**: `ERROR_UX_ENABLED`
 - **Rollback plan**:
@@ -84,6 +106,10 @@ Plan này chia theo **TDD slices** (mỗi slice: test → implement → refactor
   - processing-service: validate before forwarding (fail fast) + propagate error codes.
   - FE: UI “Định dạng hỗ trợ …” lấy từ config, không hardcode.
   - FE preflight validate size/ext trước khi gọi API.
+  - **Dynamic policy endpoint (recommended)**: `GET /api/config/upload` trên processing-api (gateway) trả subset policy từ contract file — FE và services đọc policy động thay vì hardcode/env rời rạc.
+    - Response ví dụ: `{ maxUploadBytes, allowedExtensions, allowedMimeTypes }`
+    - Cache ngắn (FE: session/local; services: startup reload + optional refresh)
+    - Nếu endpoint unavailable, FE fallback về bundled defaults từ build-time import của contract JSON.
 - **Dependencies**:
   - phụ thuộc Slice 1 (contract file)
   - phụ thuộc Slice 2 (error schema)
@@ -108,10 +134,11 @@ Plan này chia theo **TDD slices** (mỗi slice: test → implement → refactor
 - **Work**:
   - Java: dùng **Apache Tika** để sniff MIME / container.
   - Python: dùng **`python-magic`** để sniff MIME.
-  - Nếu sniff library unavailable hoặc ambiguous:
-    - log marker
-    - fallback về extension allowlist
-  - Error code: `UPLOAD_MIME_MISMATCH`.
+  - **Fallback conditions (locked)**:
+    - sniff library **unavailable** (Tika/magic not loaded, daemon missing) → dùng extension allowlist; log `UPLOAD_VALIDATION_MIME_FALLBACK reason=library_unavailable`
+    - sniff result **ambiguous** (unknown, `application/octet-stream`, conflicting MIME vs extension) → dùng extension allowlist; log `UPLOAD_VALIDATION_MIME_FALLBACK reason=ambiguous_detected detectedMime={}`
+    - sniff result **confident mismatch** (detected MIME/container clearly not in policy) → reject với `UPLOAD_MIME_MISMATCH`; log `MIME_MISMATCH`
+  - Error code: `UPLOAD_MIME_MISMATCH` (chỉ khi confident mismatch, không khi ambiguous).
   - Log markers:
     - `UPLOAD_VALIDATION_MIME_CHECKED`
     - `UPLOAD_VALIDATION_MIME_FALLBACK`
@@ -170,8 +197,9 @@ Plan này chia theo **TDD slices** (mỗi slice: test → implement → refactor
   - Env flag `UPLOAD_SECURITY_SCAN_ENABLED`.
   - Implement “disabled scanner” + log markers.
   - Tích hợp **ClamAV** (hoặc dịch vụ scan tương tự) với fallback:
-    - scanner unavailable → configurable fail-open/fail-closed policy
-    - default P0: fail-open + log + metric, để tránh production lockout khi infra scan chưa ổn định
+    - scanner unavailable → policy điều khiển bởi `UPLOAD_SCAN_FAIL_OPEN`
+    - **`UPLOAD_SCAN_FAIL_OPEN`** (default `true`): khi scanner không khả dụng/timeout, cho phép upload tiếp tục + log `UPLOAD_SCAN_INFRA_ERROR`; nếu `false` → reject với `UPLOAD_SECURITY_SCAN_FAILED`
+    - infected/suspicious verdict → luôn reject, không phụ thuộc fail-open
   - Log markers:
     - `UPLOAD_SCAN_SKIPPED`
     - `UPLOAD_SCAN_PASSED`
@@ -181,6 +209,7 @@ Plan này chia theo **TDD slices** (mỗi slice: test → implement → refactor
   - phụ thuộc Slice 2 (structured errors)
   - phụ thuộc Slice 4 (upload path standardized)
 - **Feature flag**: `UPLOAD_SECURITY_SCAN_ENABLED`
+- **Env**: `UPLOAD_SCAN_FAIL_OPEN` (default `true`)
 - **Rollback plan**:
   - nếu `UPLOAD_SECURITY_SCAN_ENABLED=false`, scanner path bị bypass hoàn toàn và behavior quay về baseline upload validation của Slice 4/5.
 - **Tests**:
@@ -217,6 +246,7 @@ Plan này chia theo **TDD slices** (mỗi slice: test → implement → refactor
 | `MIME_SNIFF_ENABLED` | 5 | off by default initially | skip sniff; rely on size/ext only |
 | `REALTIME_VALIDATION_ENABLED` | 6 | off -> shadow logs -> on | revert về current realtime acceptance path |
 | `UPLOAD_SECURITY_SCAN_ENABLED` | 7 | off until infra ready | bypass security scanner path |
+| `UPLOAD_SCAN_FAIL_OPEN` | 7 | default `true` | when scanner infra fails: `true` = allow upload + log; `false` = reject |
 
 ## Dependencies
 
@@ -270,7 +300,7 @@ Rollback ưu tiên bằng **feature flag**, không rollback code ngay nếu khô
 2. Nếu strict upload block quá nhiều file hợp lệ: `UPLOAD_VALIDATION_STRICT=false`
 3. Nếu sniff gây false positive: `MIME_SNIFF_ENABLED=false`
 4. Nếu realtime strict validation làm drop stream hợp lệ: `REALTIME_VALIDATION_ENABLED=false`
-5. Nếu scan infra lỗi / timeout: `UPLOAD_SECURITY_SCAN_ENABLED=false`
+5. Nếu scan infra lỗi / timeout: `UPLOAD_SECURITY_SCAN_ENABLED=false` hoặc giữ scan on nhưng set `UPLOAD_SCAN_FAIL_OPEN=true` (default) để không block upload
 
 Expected rollback behavior:
 
@@ -280,11 +310,16 @@ Expected rollback behavior:
 
 ## Estimated Timeline
 
-- 0.5d: Slice 1
-- 0.5–1d: Slices 2–3
-- 1–2d: Slice 4 (alignment + FE preflight)
-- 1d: Slice 5
-- 1d: Slice 6
-- 0.5–1d: Slice 7
-- 0.5d: Slice 8
+| Slice | Estimate |
+| --- | --- |
+| 1 — contract artifact | 0.5d |
+| 2–3 — error schema + VN catalog | 0.5–1d |
+| 4 — upload alignment + `/api/config/upload` | 1–2d |
+| 5 — MIME sniff (Tika + python-magic) | 1d |
+| 6 — realtime validation | 1d |
+| 7 — ClamAV scan hook | 0.5–1d |
+| 8 — observability + smoke | 0.5d |
+| **Total** | **~6–7 developer-days** |
+
+Lưu ý: timeline giả định 1 developer full-time; song song hóa Slice 2 và Slice 1 có thể rút ngắn nhưng Slice 4 vẫn phụ thuộc contract file.
 
