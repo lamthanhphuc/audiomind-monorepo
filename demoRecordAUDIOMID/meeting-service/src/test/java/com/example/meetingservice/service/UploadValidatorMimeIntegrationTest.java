@@ -25,7 +25,9 @@ class UploadValidatorMimeIntegrationTest {
         UploadValidator validator = new UploadValidator(
                 new UploadValidationPolicy(new ObjectMapper()),
                 flags,
-                new MimeSniffer(new UploadValidationPolicy(new ObjectMapper()), new MimeSniffRequestCache())
+                new MimeSniffer(new UploadValidationPolicy(new ObjectMapper()), new MimeSniffRequestCache()),
+                new NoOpScanner(),
+                new ScanCircuitBreaker()
         );
 
         byte[] exeHeader = new byte[] {0x4D, 0x5A, (byte) 0x90, 0x00, 0x03, 0x00, 0x00, 0x00};

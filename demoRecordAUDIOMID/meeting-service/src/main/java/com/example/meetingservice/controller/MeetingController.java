@@ -60,7 +60,7 @@ public class MeetingController {
             @RequestParam(required = false) String language,
             Authentication authentication) {
 
-        uploadValidator.validate(file, file.getOriginalFilename());
+        uploadValidator.validate(file, file.getOriginalFilename(), MDC.get("traceId"));
 
         String originalName = Objects.requireNonNullElse(file.getOriginalFilename(), "audio-upload.bin");
         String cleanedFileName = StringUtils.cleanPath(originalName);

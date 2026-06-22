@@ -20,14 +20,17 @@ class UploadValidatorTest {
     private final UploadValidationPolicy policy = new UploadValidationPolicy(new ObjectMapper());
     private final Epic2FeatureFlags flags = Mockito.mock(Epic2FeatureFlags.class);
     private final MimeSniffer mimeSniffer = new MimeSniffer(policy, new MimeSniffRequestCache());
+    private final UploadSecurityScanner uploadSecurityScanner = Mockito.mock(UploadSecurityScanner.class);
+    private final ScanCircuitBreaker scanCircuitBreaker = new ScanCircuitBreaker();
 
     @BeforeEach
     void setUp() {
         when(flags.isMimeSniffEnabled()).thenReturn(false);
+        when(flags.isUploadSecurityScanEnabled()).thenReturn(false);
     }
 
     private UploadValidator validator() {
-        return new UploadValidator(policy, flags, mimeSniffer);
+        return new UploadValidator(policy, flags, mimeSniffer, uploadSecurityScanner, scanCircuitBreaker);
     }
 
     @Test

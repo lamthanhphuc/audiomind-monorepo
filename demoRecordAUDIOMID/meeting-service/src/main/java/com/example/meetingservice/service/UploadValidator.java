@@ -6,11 +6,15 @@ import com.example.meetingservice.controller.ErrorCode;
 import com.example.meetingservice.controller.UploadValidationException;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
 import java.util.Locale;
 import java.util.Set;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
@@ -18,6 +22,8 @@ import org.springframework.web.multipart.MultipartFile;
 
 @Component
 public class UploadValidator {
+
+    private static final Logger log = LoggerFactory.getLogger(UploadValidator.class);
 
     private static final int MIME_SNIFF_BYTES = 64 * 1024;
     private static final Set<String> LEGACY_EXTENSIONS = Set.of(
@@ -28,18 +34,28 @@ public class UploadValidator {
     private final UploadValidationPolicy policy;
     private final Epic2FeatureFlags featureFlags;
     private final MimeSniffer mimeSniffer;
+    private final UploadSecurityScanner uploadSecurityScanner;
+    private final ScanCircuitBreaker scanCircuitBreaker;
 
     public UploadValidator(
             UploadValidationPolicy policy,
             Epic2FeatureFlags featureFlags,
-            MimeSniffer mimeSniffer
+            MimeSniffer mimeSniffer,
+            UploadSecurityScanner uploadSecurityScanner,
+            ScanCircuitBreaker scanCircuitBreaker
     ) {
         this.policy = policy;
         this.featureFlags = featureFlags;
         this.mimeSniffer = mimeSniffer;
+        this.uploadSecurityScanner = uploadSecurityScanner;
+        this.scanCircuitBreaker = scanCircuitBreaker;
     }
 
     public void validate(MultipartFile file, String originalFilename) {
+        validate(file, originalFilename, null);
+    }
+
+    public void validate(MultipartFile file, String originalFilename, String traceId) {
         if (file == null || file.isEmpty()) {
             throw new UploadValidationException(ErrorCode.UPLOAD_EMPTY_FILE, HttpStatus.BAD_REQUEST);
         }
@@ -70,6 +86,64 @@ public class UploadValidator {
         if (featureFlags.isMimeSniffEnabled()) {
             validateMime(file, normalizedExtension);
         }
+
+        scanBeforePersist(file, normalizedExtension, traceId);
+    }
+
+    private void scanBeforePersist(MultipartFile file, String normalizedExtension, String traceId) {
+        String effectiveTraceId = traceId == null || traceId.isBlank() ? "unknown" : traceId;
+        if (!featureFlags.isUploadSecurityScanEnabled()) {
+            log.info("event=UPLOAD_SCAN_SKIPPED traceId={}", effectiveTraceId);
+            return;
+        }
+        if (scanCircuitBreaker.isOpen()) {
+            log.warn("event=UPLOAD_SCAN_CIRCUIT_OPEN traceId={}", effectiveTraceId);
+            throw new UploadValidationException(
+                    ErrorCode.UPLOAD_SECURITY_SCAN_FAILED,
+                    HttpStatus.UNPROCESSABLE_ENTITY
+            );
+        }
+
+        Path tempFile = null;
+        try {
+            tempFile = Files.createTempFile("upload-scan-", normalizedExtension);
+            Files.write(tempFile, file.getBytes());
+            ScanResult scanResult = uploadSecurityScanner.scan(tempFile, effectiveTraceId);
+            switch (scanResult) {
+                case PASSED -> {
+                    return;
+                }
+                case FAILED -> throw new UploadValidationException(
+                        ErrorCode.UPLOAD_SECURITY_SCAN_FAILED,
+                        HttpStatus.UNPROCESSABLE_ENTITY
+                );
+                case INFRA_ERROR -> handleScanInfraError(effectiveTraceId);
+            }
+        } catch (IOException ioError) {
+            handleScanInfraError(effectiveTraceId);
+        } finally {
+            if (tempFile != null) {
+                try {
+                    Files.deleteIfExists(tempFile);
+                } catch (IOException deleteError) {
+                    log.debug(
+                            "event=UPLOAD_SCAN_INFRA_ERROR traceId={} reason=temp_cleanup_failed",
+                            effectiveTraceId
+                    );
+                }
+            }
+        }
+    }
+
+    private void handleScanInfraError(String traceId) {
+        if (featureFlags.isUploadScanFailOpen()) {
+            log.warn("event=UPLOAD_SCAN_INFRA_ERROR traceId={}", traceId);
+            return;
+        }
+        throw new UploadValidationException(
+                ErrorCode.UPLOAD_SECURITY_SCAN_FAILED,
+                HttpStatus.UNPROCESSABLE_ENTITY
+        );
     }
 
     private void validateMime(MultipartFile file, String normalizedExtension) {

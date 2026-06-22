@@ -7,6 +7,8 @@ import com.example.meetingservice.config.UploadValidationPolicy;
 import com.example.meetingservice.service.MeetingService;
 import com.example.meetingservice.service.MimeSniffRequestCache;
 import com.example.meetingservice.service.MimeSniffer;
+import com.example.meetingservice.service.NoOpScanner;
+import com.example.meetingservice.service.ScanCircuitBreaker;
 import com.example.meetingservice.service.UploadValidator;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -40,7 +42,9 @@ class MeetingControllerTest {
         UploadValidator uploadValidator = new UploadValidator(
                 policy,
                 flags,
-                new MimeSniffer(policy, new MimeSniffRequestCache())
+                new MimeSniffer(policy, new MimeSniffRequestCache()),
+                new NoOpScanner(),
+                new ScanCircuitBreaker()
         );
         return new MeetingController(meetingService, uploadValidator);
     }

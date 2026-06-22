@@ -256,3 +256,19 @@ services:
       timeout: 5s
       retries: 5
       start_period: 20s
+
+  # Optional ClamAV daemon for upload security scanning (Epic 2 Slice 7).
+  # Enable UPLOAD_SECURITY_SCAN_ENABLED=true and mount the socket into meeting-api.
+  # clamav:
+  #   image: clamav/clamav:stable
+  #   restart: unless-stopped
+  #   volumes:
+  #     - clamav-run:/var/run/clamav
+  #   healthcheck:
+  #     test: ["CMD", "clamdscan", "--version"]
+  #     interval: 60s
+  #     timeout: 10s
+  #     retries: 3
+
+# volumes:
+#   clamav-run:
