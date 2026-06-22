@@ -123,7 +123,7 @@ from app.services.stt_ownership import (
 from app.services.stt_persistence import TranscriptPersistenceRepository
 from app.services.transcript_canonicalizer import build_raw_transcript_hash
 from app.services.stt_session_actor import MeetingSessionActor, MeetingSessionState
-from app.tasks import process_meeting
+from app.upload_validation_policy import effective_allowed_extensions, effective_max_upload_bytes
 
 try:
     from app.pipeline import ProcessingPipeline
@@ -1201,6 +1201,22 @@ def _map_http_exception(
             _sanitize_message(
                 detail_text, _default_error_message("RESOURCE_NOT_FOUND")
             ),
+            details,
+        )
+
+    if status_code == 413:
+        return ("UPLOAD_TOO_LARGE", _default_error_message("UPLOAD_TOO_LARGE"), details)
+
+    if status_code == 415:
+        if "mime" in normalized_detail:
+            return (
+                "UPLOAD_MIME_MISMATCH",
+                _default_error_message("UPLOAD_MIME_MISMATCH"),
+                details,
+            )
+        return (
+            "UPLOAD_UNSUPPORTED_FORMAT",
+            _default_error_message("UPLOAD_UNSUPPORTED_FORMAT"),
             details,
         )
 
@@ -4038,20 +4054,24 @@ async def upload_audio(file: UploadFile = File(...)):
 
         original_name = Path(file.filename or "audio.wav").name
         extension = (Path(original_name).suffix or ".wav").lower()
-        allowed_extensions = {
-            item.strip().lower()
-            for item in settings.allowed_upload_extensions.split(",")
-            if item.strip()
-        }
+        allowed_extensions = effective_allowed_extensions(
+            strict=settings.upload_validation_strict,
+            legacy_extensions=settings.allowed_upload_extensions,
+        )
         if extension not in allowed_extensions:
             raise HTTPException(
-                status_code=415, detail="Unsupported audio file extension"
+                status_code=415,
+                detail="UPLOAD_UNSUPPORTED_FORMAT",
             )
         saved_name = f"{uuid4().hex}{extension}"
         saved_path = uploads_dir / saved_name
 
         total_bytes = 0
         chunk_size = 1024 * 1024
+        max_upload_bytes = effective_max_upload_bytes(
+            strict=settings.upload_validation_strict,
+            legacy_max_bytes=settings.max_upload_size_bytes,
+        )
 
         with saved_path.open("wb") as output_file:
             while True:
@@ -4059,10 +4079,10 @@ async def upload_audio(file: UploadFile = File(...)):
                 if not chunk:
                     break
                 total_bytes += len(chunk)
-                if total_bytes > settings.max_upload_size_bytes:
+                if total_bytes > max_upload_bytes:
                     output_file.close()
                     saved_path.unlink(missing_ok=True)
-                    raise HTTPException(status_code=413, detail="File too large")
+                    raise HTTPException(status_code=413, detail="UPLOAD_TOO_LARGE")
                 output_file.write(chunk)
 
         await file.close()

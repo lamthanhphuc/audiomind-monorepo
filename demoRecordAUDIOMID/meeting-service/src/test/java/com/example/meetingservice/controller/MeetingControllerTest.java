@@ -3,6 +3,7 @@ package com.example.meetingservice.controller;
 import com.example.meetingservice.entity.Meeting;
 import com.example.meetingservice.security.UserPrincipal;
 import com.example.meetingservice.service.MeetingService;
+import com.example.meetingservice.service.UploadValidator;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.mock.web.MockMultipartFile;
@@ -27,10 +28,15 @@ class MeetingControllerTest {
     @TempDir
     Path tempDir;
 
+    private MeetingController newController(MeetingService meetingService) {
+        UploadValidator uploadValidator = mock(UploadValidator.class);
+        return new MeetingController(meetingService, uploadValidator);
+    }
+
     @Test
     void upload_shouldForwardAcceptedLanguage() {
         MeetingService meetingService = mock(MeetingService.class);
-        MeetingController controller = new MeetingController(meetingService);
+        MeetingController controller = newController(meetingService);
         Authentication authentication = mock(Authentication.class);
         when(authentication.getPrincipal()).thenReturn(new UserPrincipal(9L, "user"));
         when(meetingService.findActiveDuplicateForOwner(eq(9L), anyString())).thenReturn(Optional.empty());
@@ -51,7 +57,7 @@ class MeetingControllerTest {
     @Test
     void upload_shouldFallbackToViForInvalidLanguage() {
         MeetingService meetingService = mock(MeetingService.class);
-        MeetingController controller = new MeetingController(meetingService);
+        MeetingController controller = newController(meetingService);
         Authentication authentication = mock(Authentication.class);
         when(authentication.getPrincipal()).thenReturn(new UserPrincipal(9L, "user"));
         when(meetingService.findActiveDuplicateForOwner(eq(9L), anyString())).thenReturn(Optional.empty());
@@ -72,7 +78,7 @@ class MeetingControllerTest {
     @Test
     void upload_shouldReuseExistingMeetingWhenDuplicateDetected() {
         MeetingService meetingService = mock(MeetingService.class);
-        MeetingController controller = new MeetingController(meetingService);
+        MeetingController controller = newController(meetingService);
         Authentication authentication = mock(Authentication.class);
         when(authentication.getPrincipal()).thenReturn(new UserPrincipal(9L, "user"));
         when(meetingService.normalizeMeetingStatus(anyString())).thenAnswer((invocation) -> invocation.getArgument(0));
@@ -101,7 +107,7 @@ class MeetingControllerTest {
     @Test
     void createRealtimeMeeting_shouldAlwaysCreateFreshMeetingWithoutDuplicateLookup() {
         MeetingService meetingService = mock(MeetingService.class);
-        MeetingController controller = new MeetingController(meetingService);
+        MeetingController controller = newController(meetingService);
         Authentication authentication = mock(Authentication.class);
         when(authentication.getPrincipal()).thenReturn(new UserPrincipal(9L, "user"));
         when(meetingService.normalizeMeetingStatus(anyString())).thenAnswer((invocation) -> invocation.getArgument(0));

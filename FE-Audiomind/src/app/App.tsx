@@ -39,6 +39,10 @@ import {
     type RecordingSource,
 } from '../constants/recordingSource'
 import { ApiError, createRealtimeMeeting, getAnalysis, getProcessingStatus, getTranscript, listMeetingsWithParams, reanalyzeMeetingAnalysis, startProcessingByPath, submitRealtimeFinalAudioFallback, uploadToMeetingApi } from '../services/api'
+import { validateUploadFile } from '../hooks/useUpload'
+import { resolveErrorPresentation } from '../constants/errorCatalog'
+import { ERROR_UX_ENABLED } from '../services/config'
+import { getBundledUploadConfig } from '../services/configService'
 import type { Meeting } from '../types'
 import { clearAccessToken, getAccessToken, getCurrentUserId, login, register, setAccessToken } from '../services/auth'
 import {
@@ -1701,6 +1705,13 @@ export default function App() {
       return
     }
 
+    const preflight = validateUploadFile(file, getBundledUploadConfig())
+    if (!preflight.ok) {
+      setErrorMessage(preflight.message)
+      setStatus('failed')
+      return
+    }
+
     setBusy(true)
     setErrorMessage(null)
     setUploadNotice(null)
@@ -1750,20 +1761,15 @@ export default function App() {
       setStatus('failed')
       if (error instanceof DOMException && error.name === 'AbortError') {
         setErrorMessage('Processing cancelled')
-      } else {
-        const message = error.status === 401
-          ? 'Phiên đăng nhập hết hạn, vui lòng đăng nhập lại'
-          : error.status === 413
-          ? 'File quá lớn (tối đa 200MB)'
-          : error.status === 415
-          ? 'Định dạng file không được hỗ trợ'
-          : error.message || 'Lỗi không xác định, vui lòng thử lại'
-
-        setErrorMessage(message)
-
-        if (error.status === 401) {
+      } else if (error instanceof ApiError) {
+        const presentation = resolveErrorPresentation(error.errorCode, error.message, ERROR_UX_ENABLED)
+        setErrorMessage(presentation.message)
+        if (error.errorCode === 'UNAUTHORIZED' || error.status === 401) {
           handleLogout()
         }
+      } else {
+        const message = error.message || 'Lỗi không xác định, vui lòng thử lại'
+        setErrorMessage(message)
       }
       console.error('handleProcess error:', error)
     } finally {

@@ -102,6 +102,7 @@ class Settings(BaseSettings):
     cors_allowed_origins: str = "http://localhost:5173"
     max_upload_size_bytes: int = 524288000
     allowed_upload_extensions: str = ".wav,.mp3,.m4a,.aac,.flac,.ogg,.webm,.mp4"
+    upload_validation_strict: bool = False
 
     # Storage
     audio_storage_path: str = "./storage/audio"

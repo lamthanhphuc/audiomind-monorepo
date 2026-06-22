@@ -1,0 +1,20 @@
+{
+  "$schema": "./config.schema.json",
+  "version": "1.0.0",
+  "maxUploadBytes": 104857600,
+  "allowedExtensions": [".mp3", ".wav", ".m4a"],
+  "allowedMimeTypes": [
+    "audio/mpeg",
+    "audio/mp3",
+    "audio/wav",
+    "audio/x-wav",
+    "audio/mp4",
+    "audio/aac",
+    "audio/x-m4a"
+  ],
+  "realtime": {
+    "maxChunkBytes": 1048576,
+    "allowedContainer": "webm",
+    "allowedCodec": "opus"
+  }
+}

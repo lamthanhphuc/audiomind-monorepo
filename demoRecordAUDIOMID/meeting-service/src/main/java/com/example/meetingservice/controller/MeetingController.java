@@ -3,6 +3,7 @@ package com.example.meetingservice.controller;
 import com.example.meetingservice.entity.Meeting;
 import com.example.meetingservice.security.UserPrincipal;
 import com.example.meetingservice.service.MeetingService;
+import com.example.meetingservice.service.UploadValidator;
 import lombok.RequiredArgsConstructor;
 
 import org.springframework.web.bind.annotation.CrossOrigin;
@@ -45,11 +46,10 @@ import org.slf4j.MDC;
 public class MeetingController {
     private static final Logger log = LoggerFactory.getLogger(MeetingController.class);
 
-    private static final long MAX_UPLOAD_BYTES = 100L * 1024L * 1024L;
-    private static final Set<String> ALLOWED_EXTENSIONS = Set.of(".wav", ".mp3", ".m4a", ".ogg", ".aac", ".flac", ".webm", ".mp4");
     private static final Set<String> ALLOWED_UPLOAD_LANGUAGES = Set.of("vi", "en", "multi");
 
     private final MeetingService meetingService;
+    private final UploadValidator uploadValidator;
 
     private final String uploadDir = "uploads/";
 
@@ -60,23 +60,12 @@ public class MeetingController {
             @RequestParam(required = false) String language,
             Authentication authentication) {
 
-        if (file.isEmpty()) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "File is empty");
-        }
-        if (file.getSize() > MAX_UPLOAD_BYTES) {
-            throw new ResponseStatusException(HttpStatus.PAYLOAD_TOO_LARGE, "File exceeds 100MB limit");
-        }
+        uploadValidator.validate(file, file.getOriginalFilename());
 
         String originalName = Objects.requireNonNullElse(file.getOriginalFilename(), "audio-upload.bin");
         String cleanedFileName = StringUtils.cleanPath(originalName);
         String extension = StringUtils.getFilenameExtension(cleanedFileName);
         String normalizedExtension = extension == null ? "" : "." + extension.toLowerCase();
-        if (!ALLOWED_EXTENSIONS.contains(normalizedExtension)) {
-            throw new ResponseStatusException(HttpStatus.UNSUPPORTED_MEDIA_TYPE, "Unsupported file type");
-        }
-        if (cleanedFileName.contains("..")) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid file name");
-        }
 
         byte[] fileBytes;
         try {

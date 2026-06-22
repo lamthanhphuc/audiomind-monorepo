@@ -28,6 +28,19 @@ public class GlobalExceptionHandler {
         this.epic2FeatureFlags = epic2FeatureFlags;
     }
 
+    @ExceptionHandler(UploadValidationException.class)
+    public ResponseEntity<ApiErrorResponse> handleUploadValidation(
+            UploadValidationException ex,
+            HttpServletRequest request
+    ) {
+        return buildResponse(
+                ex.errorCode(),
+                ex.status(),
+                null,
+                request,
+                null);
+    }
+
     @ExceptionHandler(NoSuchElementException.class)
     public ResponseEntity<ApiErrorResponse> handleNotFound(NoSuchElementException ex, HttpServletRequest request) {
         return buildResponse(
