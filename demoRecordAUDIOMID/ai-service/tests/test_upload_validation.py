@@ -24,8 +24,14 @@ def _make_request(path: str = "/api/upload-audio") -> Request:
 
 
 def test_effective_policy_uses_contract_when_strict_enabled():
-    assert effective_max_upload_bytes(strict=True, legacy_max_bytes=999) == STRICT_MAX_UPLOAD_BYTES
-    assert effective_allowed_extensions(strict=True, legacy_extensions=".ogg") == STRICT_ALLOWED_EXTENSIONS
+    assert (
+        effective_max_upload_bytes(strict=True, legacy_max_bytes=999)
+        == STRICT_MAX_UPLOAD_BYTES
+    )
+    assert (
+        effective_allowed_extensions(strict=True, legacy_extensions=".ogg")
+        == STRICT_ALLOWED_EXTENSIONS
+    )
 
 
 def test_map_http_exception_maps_upload_too_large():

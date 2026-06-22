@@ -123,7 +123,10 @@ from app.services.stt_ownership import (
 from app.services.stt_persistence import TranscriptPersistenceRepository
 from app.services.transcript_canonicalizer import build_raw_transcript_hash
 from app.services.stt_session_actor import MeetingSessionActor, MeetingSessionState
-from app.upload_validation_policy import effective_allowed_extensions, effective_max_upload_bytes
+from app.upload_validation_policy import (
+    effective_allowed_extensions,
+    effective_max_upload_bytes,
+)
 from app.routes.stt_stream import validate_stream_chunk
 from app.routes.upload import validate_upload_mime
 from app.tasks import process_meeting

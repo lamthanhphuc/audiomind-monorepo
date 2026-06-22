@@ -1297,7 +1297,9 @@ def test_stream_stt_chunk_rejects_oversized_chunk_when_validation_enabled(monkey
             language="vi",
             speaker_mode="single",
             is_final=False,
-            request=SimpleNamespace(state=SimpleNamespace(trace_id="trace-77", request_id="req-77")),
+            request=SimpleNamespace(
+                state=SimpleNamespace(trace_id="trace-77", request_id="req-77")
+            ),
         )
 
     with pytest.raises(HTTPException) as exc_info:

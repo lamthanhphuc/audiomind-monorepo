@@ -4,6 +4,7 @@ from fastapi import HTTPException
 from loguru import logger
 
 from app.upload_validation_policy import effective_realtime_max_chunk_bytes
+
 WEBM_EBML_HEADER = bytes((0x1A, 0x45, 0xDF, 0xA3))
 
 

@@ -78,7 +78,9 @@ def _is_confident_mismatch(normalized_mime: str) -> bool:
     )
 
 
-def classify_mime(detected_mime: str, extension: str, allowed_mimes: set[str] | None = None) -> MimeClassification:
+def classify_mime(
+    detected_mime: str, extension: str, allowed_mimes: set[str] | None = None
+) -> MimeClassification:
     allowed = allowed_mimes or ALLOWED_MIME_TYPES
     normalized_mime = _normalize_mime(detected_mime)
     normalized_extension = _normalize_extension(extension)
@@ -140,7 +142,9 @@ def sniff_mime(
     if not detected_mime and detector is None:
         result = MimeSniffResult(MimeClassification.UNKNOWN, "")
         _request_cache[cache_key] = result
-        logger.warning("event=UPLOAD_VALIDATION_MIME_FALLBACK reason=library_unavailable")
+        logger.warning(
+            "event=UPLOAD_VALIDATION_MIME_FALLBACK reason=library_unavailable"
+        )
         return result
 
     classification = classify_mime(detected_mime, extension, allowed_mimes)

@@ -10,7 +10,9 @@ def test_effective_realtime_max_chunk_bytes_reads_contract():
 
 
 def test_validate_stream_chunk_rejects_oversized_payload_when_enabled():
-    oversized = b"\x1a\x45\xdf\xa3" + (b"\x00" * (effective_realtime_max_chunk_bytes() + 1))
+    oversized = b"\x1a\x45\xdf\xa3" + (
+        b"\x00" * (effective_realtime_max_chunk_bytes() + 1)
+    )
     with pytest.raises(HTTPException) as exc_info:
         validate_stream_chunk(oversized, seq=1, is_final=False, enabled=True)
     assert exc_info.value.status_code == 413

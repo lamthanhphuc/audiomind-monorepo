@@ -11,7 +11,10 @@ STRICT_ALLOWED_EXTENSIONS = {".mp3", ".wav", ".m4a"}
 @lru_cache()
 def load_upload_validation_policy() -> dict[str, object]:
     candidates = [
-        Path(__file__).resolve().parents[3] / "packages" / "contracts" / "upload-validation-policy.json",
+        Path(__file__).resolve().parents[3]
+        / "packages"
+        / "contracts"
+        / "upload-validation-policy.json",
         Path(__file__).resolve().parents[2] / "upload-validation-policy.json",
     ]
     for candidate in candidates:
@@ -43,7 +46,11 @@ def effective_allowed_extensions(*, strict: bool, legacy_extensions: str) -> set
     if not isinstance(raw, list):
         return set(STRICT_ALLOWED_EXTENSIONS)
     return {
-        str(item).strip().lower() if str(item).startswith(".") else f".{str(item).strip().lower()}"
+        (
+            str(item).strip().lower()
+            if str(item).startswith(".")
+            else f".{str(item).strip().lower()}"
+        )
         for item in raw
         if str(item).strip()
     } or set(STRICT_ALLOWED_EXTENSIONS)

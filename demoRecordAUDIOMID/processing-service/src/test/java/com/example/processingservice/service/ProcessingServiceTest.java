@@ -10,7 +10,6 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
-import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.timeout;
@@ -76,7 +75,7 @@ class ProcessingServiceTest {
                 meterRegistry,
                 new MeetingReportDocxGenerator());
         processingService.initMetrics();
-        doNothing().when(uploadValidator).validateIfStrict(any(), any());
+        lenient().doNothing().when(uploadValidator).validateIfStrict(any(), any());
         ReflectionTestUtils.setField(processingService, "uploadValidator", uploadValidator);
 
         when(meetingServiceClient.getMeetingById(anyLong(), anyString(), anyString()))

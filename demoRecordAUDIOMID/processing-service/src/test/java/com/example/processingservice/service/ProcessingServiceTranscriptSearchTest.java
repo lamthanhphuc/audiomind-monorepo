@@ -7,7 +7,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -71,7 +70,7 @@ class ProcessingServiceTranscriptSearchTest {
                 new SimpleMeterRegistry(),
                 new MeetingReportDocxGenerator());
         processingService.initMetrics();
-        doNothing().when(uploadValidator).validateIfStrict(any(), any());
+        lenient().doNothing().when(uploadValidator).validateIfStrict(any(), any());
         ReflectionTestUtils.setField(processingService, "uploadValidator", uploadValidator);
         ReflectionTestUtils.setField(processingService, "speakerStabilizationEnabled", false);
 
