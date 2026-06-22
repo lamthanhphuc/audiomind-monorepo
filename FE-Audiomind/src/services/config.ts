@@ -77,3 +77,8 @@ export const REALTIME_TINY_CHUNK_STREAK_THRESHOLD = resolveNumberEnv(['VITE_REAL
 export const REALTIME_TINY_CHUNK_MIN_RECORDING_SEC = resolveNumberEnv(['VITE_REALTIME_TINY_CHUNK_MIN_RECORDING_SEC'], 5, { min: 1, max: 120 })
 export const REALTIME_TINY_CHUNK_MAX_RMS = resolveNumberEnv(['VITE_REALTIME_TINY_CHUNK_MAX_RMS'], 0.01, { min: 0, max: 1 })
 export const REALTIME_MIN_FALLBACK_AUDIO_BYTES = resolveNumberEnv(['VITE_REALTIME_MIN_FALLBACK_AUDIO_BYTES'], 1024, { min: 128, max: 1_048_576 })
+
+export const ERROR_UX_ENABLED = resolveBooleanEnv(
+	['VITE_ERROR_UX_ENABLED', 'REACT_APP_ERROR_UX_ENABLED'],
+	true,
+)

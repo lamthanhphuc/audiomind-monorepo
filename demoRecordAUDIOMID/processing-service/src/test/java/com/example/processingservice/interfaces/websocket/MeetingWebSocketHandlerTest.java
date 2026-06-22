@@ -51,6 +51,7 @@ import org.springframework.web.socket.WebSocketSession;
 import com.example.processingservice.client.AIServiceClient;
 import com.example.processingservice.client.AudioStreamResetRequiredException;
 import com.example.processingservice.client.MeetingServiceClient;
+import com.example.processingservice.config.Epic2FeatureFlags;
 import com.example.processingservice.interfaces.websocket.realtime.RealtimeAudioEnqueueResult;
 import com.example.processingservice.interfaces.websocket.realtime.RealtimeAudioWorkerRegistry;
 import com.example.processingservice.interfaces.websocket.realtime.RealtimeSessionLifecycleState;
@@ -90,9 +91,13 @@ class MeetingWebSocketHandlerTest {
     private JwtUtil jwtUtil;
 
     @Mock
+    private Epic2FeatureFlags epic2FeatureFlags;
+
+    @Mock
     private WebSocketSession session;
 
     private MeetingWebSocketHandler handler;
+    private RealtimePayloadValidator realtimePayloadValidator;
     private Map<String, Object> attributes;
     private RealtimeAudioWorkerRegistry realtimeAudioWorkerRegistry;
 
@@ -114,6 +119,8 @@ class MeetingWebSocketHandlerTest {
     @BeforeEach
     void setUp() {
         realtimeAudioWorkerRegistry = new RealtimeAudioWorkerRegistry();
+        realtimePayloadValidator = new RealtimePayloadValidator();
+        lenient().when(epic2FeatureFlags.isRealtimeValidationEnabled()).thenReturn(false);
         handler = new MeetingWebSocketHandler(
                 meetingChannelAuthorizer,
                 realtimeEventSubscriber,
@@ -122,7 +129,9 @@ class MeetingWebSocketHandlerTest {
                 jobStateStore,
                 objectMapper,
                 jwtUtil,
-                realtimeAudioWorkerRegistry);
+                realtimeAudioWorkerRegistry,
+                epic2FeatureFlags,
+                realtimePayloadValidator);
 
         attributes = new HashMap<>();
         when(session.getAttributes()).thenReturn(attributes);
@@ -2113,6 +2122,103 @@ class MeetingWebSocketHandlerTest {
                 eq("realtime"),
                 anyString(),
                 anyString(),
+                eq("Bearer test-token")
+        );
+    }
+
+    @Test
+    void handleTextMessage_realtimeValidationEnabled_rejectsOversizedMetadata() throws Exception {
+        when(epic2FeatureFlags.isRealtimeValidationEnabled()).thenReturn(true);
+        attributes.put("meetingId", 501L);
+        attributes.put("authenticated", true);
+        when(objectMapper.readValue(any(String.class), eq(Map.class))).thenReturn(Map.of(
+                "type", "audio.chunk",
+                "seq", 1L,
+                "size", RealtimePayloadValidator.MAX_CHUNK_BYTES + 1,
+                "mime_type", "audio/webm; codecs=opus",
+                "encoding", "webm-opus"
+        ));
+
+        handler.handleTextMessage(session, new TextMessage("{}"));
+
+        ArgumentCaptor<Map<String, Object>> eventCaptor = ArgumentCaptor.forClass(Map.class);
+        verify(realtimeEventSubscriber).broadcastToMeeting(eq(501L), eventCaptor.capture());
+        Map<String, Object> errorEvent = eventCaptor.getValue();
+        assertEquals("stream.error", errorEvent.get("type"));
+        assertEquals("REALTIME_CHUNK_TOO_LARGE", errorEvent.get("errorCode"));
+        assertNull(attributes.get("lastAudioSeq"));
+        verifyNoInteractions(aiServiceClient);
+    }
+
+    @Test
+    void handleTextMessage_realtimeValidationEnabled_rejectsNonMonotonicSeq() throws Exception {
+        when(epic2FeatureFlags.isRealtimeValidationEnabled()).thenReturn(true);
+        attributes.put("meetingId", 502L);
+        attributes.put("authenticated", true);
+        attributes.put("lastAcceptedAudioSeq", 3L);
+        when(objectMapper.readValue(any(String.class), eq(Map.class))).thenReturn(Map.of(
+                "type", "audio.chunk",
+                "seq", 3L,
+                "size", 100L,
+                "mime_type", "audio/webm; codecs=opus",
+                "encoding", "webm-opus"
+        ));
+
+        handler.handleTextMessage(session, new TextMessage("{}"));
+
+        ArgumentCaptor<Map<String, Object>> eventCaptor = ArgumentCaptor.forClass(Map.class);
+        verify(realtimeEventSubscriber).broadcastToMeeting(eq(502L), eventCaptor.capture());
+        assertEquals("REALTIME_INVALID_PAYLOAD", eventCaptor.getValue().get("errorCode"));
+        verifyNoInteractions(aiServiceClient);
+    }
+
+    @Test
+    void handleBinaryMessage_realtimeValidationEnabled_rejectsNonWebmPayload() throws Exception {
+        when(epic2FeatureFlags.isRealtimeValidationEnabled()).thenReturn(true);
+        attributes.put("meetingId", 503L);
+        attributes.put("authenticated", true);
+        attributes.put("lastAudioSeq", 1L);
+        attributes.put("lastAudioDeclaredSize", 4L);
+
+        handler.handleBinaryMessage(session, new BinaryMessage(ByteBuffer.wrap(new byte[] {1, 2, 3, 4})));
+
+        ArgumentCaptor<Map<String, Object>> eventCaptor = ArgumentCaptor.forClass(Map.class);
+        verify(realtimeEventSubscriber).broadcastToMeeting(eq(503L), eventCaptor.capture());
+        assertEquals("REALTIME_UNSUPPORTED_ENCODING", eventCaptor.getValue().get("errorCode"));
+        verifyNoInteractions(aiServiceClient);
+    }
+
+    @Test
+    void handleBinaryMessage_realtimeValidationEnabled_acceptsValidWebmChunk() throws Exception {
+        when(epic2FeatureFlags.isRealtimeValidationEnabled()).thenReturn(true);
+        attributes.put("meetingId", 504L);
+        attributes.put("authenticated", true);
+        attributes.put("language", "vi");
+        attributes.put("authorization", "Bearer test-token");
+        attributes.put("lastAudioSeq", 1L);
+        attributes.put("lastAudioDeclaredSize", 5L);
+        byte[] webmChunk = new byte[] {0x1A, 0x45, (byte) 0xDF, (byte) 0xA3, 0x01};
+
+        when(aiServiceClient.streamAudioChunk(
+                eq(504L),
+                argThat(bytes -> bytes != null && bytes.length == 5),
+                eq(1L),
+                eq("vi"),
+                eq(false),
+                isNull(),
+                eq("Bearer test-token")
+        )).thenReturn(Map.of("transcript", "ok", "is_final", false));
+
+        handler.handleBinaryMessage(session, new BinaryMessage(ByteBuffer.wrap(webmChunk)));
+
+        assertEquals(1L, attributes.get("lastAcceptedAudioSeq"));
+        verify(aiServiceClient).streamAudioChunk(
+                eq(504L),
+                argThat(bytes -> bytes != null && bytes.length == 5),
+                eq(1L),
+                eq("vi"),
+                eq(false),
+                isNull(),
                 eq("Bearer test-token")
         );
     }

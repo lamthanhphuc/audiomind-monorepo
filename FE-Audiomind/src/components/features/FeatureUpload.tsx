@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react'
 import type { RealtimeLanguage } from '../../hooks/useRealtimeMeetingStream'
+import { useUpload } from '../../hooks/useUpload'
 import { ErrorState } from '../ui/ErrorState'
 import { getStatusBadgeClass } from '../../utils/statusBadge'
 
@@ -29,6 +30,8 @@ export default function FeatureUpload({
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const [dragActive, setDragActive] = useState(false)
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
+  const { supportedFormatsLabel, config } = useUpload()
+  const acceptExtensions = config.allowedExtensions.join(',')
 
   const handleDrag = (e: React.DragEvent) => {
     e.preventDefault()
@@ -98,12 +101,12 @@ export default function FeatureUpload({
             <p className="upload-text">
               {selectedFile ? selectedFile.name : 'Kéo thả file vào đây hoặc Chọn file'}
             </p>
-            <p className="upload-subtext">Định dạng hỗ trợ: .mp3, .wav, .m4a</p>
+            <p className="upload-subtext">{supportedFormatsLabel}</p>
             <input
               ref={fileInputRef}
               className="sr-only"
               type="file"
-              accept="audio/*"
+              accept={acceptExtensions}
               data-testid="e2e-upload-input"
               onChange={handleFileChange}
               disabled={disabled}

@@ -1,7 +1,9 @@
 package com.example.processingservice.interfaces.websocket;
 
+import com.example.processingservice.config.TraceIdFilter;
 import java.util.Map;
 import java.net.URI;
+import java.util.UUID;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.server.ServerHttpRequest;
@@ -30,8 +32,20 @@ public class WebSocketJwtHandshakeInterceptor implements HandshakeInterceptor {
             return false;
         }
         attributes.put("meetingId", meetingId);
+        String traceId = request.getHeaders().getFirst(TraceIdFilter.TRACE_HEADER);
+        if (traceId == null || traceId.isBlank()) {
+            traceId = request.getHeaders().getFirst("x-trace-id");
+        }
+        if (traceId == null || traceId.isBlank()) {
+            traceId = UUID.randomUUID().toString();
+        }
+        attributes.put(TraceIdFilter.TRACE_ID_ATTR, traceId);
 
-        log.info("WebSocket handshake proceeding for meetingId={} without JWT validation; auth.init will authenticate the session", meetingId);
+        log.info(
+                "WebSocket handshake proceeding meetingId={} traceId={}; auth.init will authenticate the session",
+                meetingId,
+                traceId
+        );
         return true;
     }
 

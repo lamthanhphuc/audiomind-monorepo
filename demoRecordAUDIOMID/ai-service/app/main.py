@@ -123,6 +123,12 @@ from app.services.stt_ownership import (
 from app.services.stt_persistence import TranscriptPersistenceRepository
 from app.services.transcript_canonicalizer import build_raw_transcript_hash
 from app.services.stt_session_actor import MeetingSessionActor, MeetingSessionState
+from app.upload_validation_policy import (
+    effective_allowed_extensions,
+    effective_max_upload_bytes,
+)
+from app.routes.stt_stream import validate_stream_chunk
+from app.routes.upload import validate_upload_mime
 from app.tasks import process_meeting
 
 try:
@@ -988,6 +994,15 @@ def _normalize_error_text(value: object) -> str:
 
 
 def _default_error_message(error: str) -> str:
+    from app.config import get_settings
+    from app.errors.error_catalog import get_catalog_entry
+
+    settings = get_settings()
+    if settings.error_ux_enabled:
+        entry = get_catalog_entry(error)
+        if entry is not None:
+            return entry["message"]
+
     defaults = {
         "ANALYSIS_NOT_READY": "Analysis is not ready yet",
         "TRANSCRIPT_NOT_READY": "Transcript is not ready yet",
@@ -1010,6 +1025,25 @@ def _default_error_message(error: str) -> str:
         "INTERNAL_ERROR": "Unexpected server error",
     }
     return defaults.get(error, "Unexpected server error")
+
+
+def _attach_error_ux_details(
+    error: str, details: dict[str, object] | None
+) -> dict[str, object] | None:
+    from app.config import get_settings
+    from app.errors.error_catalog import resolve_cta
+
+    if not get_settings().error_ux_enabled:
+        return details
+
+    cta = resolve_cta(error)
+    if cta is None and details is None:
+        return None
+
+    merged: dict[str, object] = dict(details or {})
+    if cta is not None:
+        merged["cta"] = cta
+    return merged if merged else None
 
 
 def _is_sensitive_text(value: str) -> bool:
@@ -1126,6 +1160,7 @@ def build_error_response(
     trace_id = _resolve_trace_id(request)
     payload: dict[str, object] = {
         "error": error,
+        "errorCode": error,
         "message": _sanitize_message(message, _default_error_message(error)),
         "status": status,
         "timestamp": _utc_now_iso8601(),
@@ -1135,7 +1170,7 @@ def build_error_response(
     if path:
         payload["path"] = path
 
-    safe_details = _sanitize_details(details)
+    safe_details = _sanitize_details(_attach_error_ux_details(error, details))
     if safe_details:
         payload["details"] = safe_details
 
@@ -1175,7 +1210,41 @@ def _map_http_exception(
             details,
         )
 
+    if status_code == 413:
+        if detail_text == "REALTIME_CHUNK_TOO_LARGE":
+            return (
+                "REALTIME_CHUNK_TOO_LARGE",
+                _default_error_message("REALTIME_CHUNK_TOO_LARGE"),
+                details,
+            )
+        return ("UPLOAD_TOO_LARGE", _default_error_message("UPLOAD_TOO_LARGE"), details)
+
+    if status_code == 415:
+        if detail_text == "REALTIME_UNSUPPORTED_ENCODING":
+            return (
+                "REALTIME_UNSUPPORTED_ENCODING",
+                _default_error_message("REALTIME_UNSUPPORTED_ENCODING"),
+                details,
+            )
+        if "mime" in normalized_detail or detail_text == "UPLOAD_MIME_MISMATCH":
+            return (
+                "UPLOAD_MIME_MISMATCH",
+                _default_error_message("UPLOAD_MIME_MISMATCH"),
+                details,
+            )
+        return (
+            "UPLOAD_UNSUPPORTED_FORMAT",
+            _default_error_message("UPLOAD_UNSUPPORTED_FORMAT"),
+            details,
+        )
+
     if status_code in {400, 422}:
+        if detail_text == "REALTIME_INVALID_PAYLOAD":
+            return (
+                "REALTIME_INVALID_PAYLOAD",
+                _default_error_message("REALTIME_INVALID_PAYLOAD"),
+                details,
+            )
         if "language" in normalized_detail:
             return (
                 "INVALID_LANGUAGE",
@@ -4009,32 +4078,56 @@ async def upload_audio(file: UploadFile = File(...)):
 
         original_name = Path(file.filename or "audio.wav").name
         extension = (Path(original_name).suffix or ".wav").lower()
-        allowed_extensions = {
-            item.strip().lower()
-            for item in settings.allowed_upload_extensions.split(",")
-            if item.strip()
-        }
+        allowed_extensions = effective_allowed_extensions(
+            strict=settings.upload_validation_strict,
+            legacy_extensions=settings.allowed_upload_extensions,
+        )
         if extension not in allowed_extensions:
             raise HTTPException(
-                status_code=415, detail="Unsupported audio file extension"
+                status_code=415,
+                detail="UPLOAD_UNSUPPORTED_FORMAT",
             )
         saved_name = f"{uuid4().hex}{extension}"
         saved_path = uploads_dir / saved_name
 
         total_bytes = 0
         chunk_size = 1024 * 1024
+        max_upload_bytes = effective_max_upload_bytes(
+            strict=settings.upload_validation_strict,
+            legacy_max_bytes=settings.max_upload_size_bytes,
+        )
+        sniff_buffer = bytearray()
+        mime_checked = False
 
         with saved_path.open("wb") as output_file:
             while True:
                 chunk = await file.read(chunk_size)
                 if not chunk:
                     break
+                if settings.mime_sniff_enabled and not mime_checked:
+                    sniff_buffer.extend(chunk)
+                    if len(sniff_buffer) >= min(64 * 1024, max(1, max_upload_bytes)):
+                        validate_upload_mime(
+                            bytes(sniff_buffer[: 64 * 1024]),
+                            extension,
+                            len(sniff_buffer),
+                            enabled=True,
+                        )
+                        mime_checked = True
                 total_bytes += len(chunk)
-                if total_bytes > settings.max_upload_size_bytes:
+                if total_bytes > max_upload_bytes:
                     output_file.close()
                     saved_path.unlink(missing_ok=True)
-                    raise HTTPException(status_code=413, detail="File too large")
+                    raise HTTPException(status_code=413, detail="UPLOAD_TOO_LARGE")
                 output_file.write(chunk)
+
+        if settings.mime_sniff_enabled and not mime_checked and total_bytes > 0:
+            validate_upload_mime(
+                bytes(sniff_buffer[: 64 * 1024]),
+                extension,
+                total_bytes,
+                enabled=True,
+            )
 
         await file.close()
 
@@ -4127,6 +4220,12 @@ async def stream_stt_chunk(
     effective_diarize = _resolve_effective_diarize(normalized_speaker_mode)
     endpointing_resolution = _resolve_realtime_endpointing(normalized_language)
     chunk_bytes = await audio_chunk.read()
+    validate_stream_chunk(
+        chunk_bytes,
+        seq=seq,
+        is_final=is_final,
+        enabled=settings.realtime_validation_enabled,
+    )
     realtime_model = _resolve_realtime_model()
     endpointing_value = (
         endpointing_resolution.endpointing

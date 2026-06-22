@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.example.processingservice.config.Epic2FeatureFlags;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -12,9 +13,10 @@ import org.springframework.web.server.ResponseStatusException;
 
 class GlobalExceptionHandlerTest {
 
+    private final GlobalExceptionHandler handler = new GlobalExceptionHandler(new Epic2FeatureFlags());
+
     @Test
     void responseStatusNotFoundOnAnalysis_shouldReturnCanonicalBodyAndTraceHeader() {
-        GlobalExceptionHandler handler = new GlobalExceptionHandler();
         MockHttpServletRequest request = new MockHttpServletRequest();
         request.addHeader("X-Trace-Id", "trace-123");
         request.setRequestURI("/processing/123/analysis");
@@ -28,6 +30,7 @@ class GlobalExceptionHandlerTest {
         ApiErrorResponse body = response.getBody();
         assertNotNull(body);
         assertEquals("ANALYSIS_NOT_READY", body.error());
+        assertEquals("ANALYSIS_NOT_READY", body.errorCode());
         assertEquals("Analysis is not ready yet", body.message());
         assertEquals(404, body.status());
         assertEquals("trace-123", body.traceId());
@@ -39,7 +42,6 @@ class GlobalExceptionHandlerTest {
 
     @Test
     void responseStatusServiceUnavailable_shouldMapToAiServiceUnavailable() {
-        GlobalExceptionHandler handler = new GlobalExceptionHandler();
         MockHttpServletRequest request = new MockHttpServletRequest();
         request.addHeader("X-Trace-Id", "trace-456");
         request.setRequestURI("/processing/start");
@@ -58,7 +60,6 @@ class GlobalExceptionHandlerTest {
 
     @Test
     void unexpectedException_shouldReturnInternalErrorWithoutStackTrace() {
-        GlobalExceptionHandler handler = new GlobalExceptionHandler();
         MockHttpServletRequest request = new MockHttpServletRequest();
         request.setRequestURI("/processing/1/analysis");
 

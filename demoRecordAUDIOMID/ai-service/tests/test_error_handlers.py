@@ -2,6 +2,7 @@ import asyncio
 import json
 
 import app.main as main_module
+from app.config import get_settings
 from fastapi.exceptions import RequestValidationError
 from starlette.requests import Request
 
@@ -36,6 +37,7 @@ def test_http_exception_not_found_analysis_returns_canonical_payload():
     assert response.status_code == 404
     assert response.headers.get("x-trace-id") == "test-trace-123"
     assert payload["error"] == "ANALYSIS_NOT_READY"
+    assert payload["errorCode"] == "ANALYSIS_NOT_READY"
     assert payload["message"] == "Analysis is not ready yet"
     assert payload["status"] == 404
     assert payload["traceId"] == "test-trace-123"
@@ -62,6 +64,7 @@ def test_validation_exception_returns_canonical_payload_with_422_status():
 
     assert response.status_code == 422
     assert payload["error"] == "VALIDATION_ERROR"
+    assert payload["errorCode"] == "VALIDATION_ERROR"
     assert payload["status"] == 422
     assert payload["traceId"] == "trace-validation-1"
     assert payload["details"]["errors"][0]["type"] == "missing"
@@ -81,6 +84,23 @@ def test_generic_exception_returns_internal_error_without_sensitive_text():
     assert payload["message"] == "Unexpected server error"
     assert "token=abc123" not in json.dumps(payload)
     assert payload["traceId"] == "trace-generic-1"
+
+
+def test_http_exception_unauthorized_includes_cta_when_error_ux_enabled(monkeypatch):
+    monkeypatch.setenv("ERROR_UX_ENABLED", "true")
+    get_settings.cache_clear()
+
+    request = _make_request("/api/meeting/1/analysis", trace_id="trace-auth-1")
+    exception = main_module.HTTPException(status_code=401, detail="Unauthorized")
+
+    response = asyncio.run(main_module.http_exception_handler(request, exception))
+    payload = json.loads(response.body.decode("utf-8"))
+
+    assert payload["error"] == "UNAUTHORIZED"
+    assert payload["message"] == "Phiên đăng nhập đã hết hạn."
+    assert payload["details"]["cta"]["id"] == "relogin"
+
+    get_settings.cache_clear()
 
 
 def test_analysis_provider_exception_maps_to_gemini_unavailable():

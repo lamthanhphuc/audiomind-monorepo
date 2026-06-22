@@ -60,3 +60,21 @@
 .ui-state--error .ui-state__title {
   color: #b91c1c;
 }
+
+.ui-state__trace-id {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: #7f1d1d;
+}
+
+.ui-state__cta {
+  justify-self: start;
+  margin: 0;
+  padding: 0.4rem 0.75rem;
+  border: 1px solid #fca5a5;
+  border-radius: var(--radius-sm);
+  background: #fff;
+  color: #991b1b;
+  font-size: var(--text-sm);
+  cursor: pointer;
+}

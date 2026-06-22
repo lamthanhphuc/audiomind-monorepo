@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.lenient;
@@ -54,6 +55,9 @@ class ProcessingServiceTranscriptSearchTest {
     @Mock
     private JobStateStore jobStateStore;
 
+    @Mock
+    private UploadValidator uploadValidator;
+
     private ProcessingService processingService;
     private ListAppender<ILoggingEvent> logAppender;
 
@@ -66,6 +70,8 @@ class ProcessingServiceTranscriptSearchTest {
                 new SimpleMeterRegistry(),
                 new MeetingReportDocxGenerator());
         processingService.initMetrics();
+        lenient().doNothing().when(uploadValidator).validateIfStrict(any(), any());
+        ReflectionTestUtils.setField(processingService, "uploadValidator", uploadValidator);
         ReflectionTestUtils.setField(processingService, "speakerStabilizationEnabled", false);
 
         lenient().when(meetingServiceClient.getMeetingById(anyLong(), anyString(), anyString()))

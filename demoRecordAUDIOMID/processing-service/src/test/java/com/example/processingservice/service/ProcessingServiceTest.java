@@ -31,6 +31,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.mock.web.MockMultipartFile;
@@ -57,6 +58,9 @@ class ProcessingServiceTest {
     @Mock
     private JobStateStore jobStateStore;
 
+    @Mock
+    private UploadValidator uploadValidator;
+
     private ProcessingService processingService;
     private SimpleMeterRegistry meterRegistry;
     private static final String AUTH_HEADER = "Bearer test-token";
@@ -71,6 +75,8 @@ class ProcessingServiceTest {
                 meterRegistry,
                 new MeetingReportDocxGenerator());
         processingService.initMetrics();
+        lenient().doNothing().when(uploadValidator).validateIfStrict(any(), any());
+        ReflectionTestUtils.setField(processingService, "uploadValidator", uploadValidator);
 
         when(meetingServiceClient.getMeetingById(anyLong(), anyString(), anyString()))
             .thenReturn(Map.of("id", 1L));

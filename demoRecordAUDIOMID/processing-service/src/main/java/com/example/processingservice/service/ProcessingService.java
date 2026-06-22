@@ -331,12 +331,16 @@ public class ProcessingService {
         return uploadAudio(file, traceId, null);
     }
 
+    @Autowired
+    private UploadValidator uploadValidator;
+
     public Map<String, Object> uploadAudio(MultipartFile file, String traceId, String authorization) {
         log.info(
                 "event=UPLOAD_REQUEST_RECEIVED traceId={} requestId={} source=upload path=/processing/upload",
                 traceId,
                 currentRequestId(traceId)
         );
+        uploadValidator.validateIfStrict(file, file == null ? null : file.getOriginalFilename());
         return aiServiceClient.uploadAudio(file, traceId, authorization);
     }
 

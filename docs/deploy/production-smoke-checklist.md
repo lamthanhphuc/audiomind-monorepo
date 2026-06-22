@@ -133,6 +133,24 @@ Run after deploying PR2 (`ai-api`, `celery-worker`, `celery-beat`, `processing-a
 bash scripts/log-bundle.sh --since 15m --grep PR2
 ```
 
+## Epic 2 — Upload Validation + Realtime Safety
+
+Run after deploying Epic 2 slices (`meeting-api`, `processing-api`, `ai-api`, `web`).
+
+- Upload an empty or invalid file and confirm the API returns a structured error with `errorCode` and `traceId`.
+- Upload an `.exe` renamed to `.mp3` with `MIME_SNIFF_ENABLED=true` and confirm `UPLOAD_MIME_MISMATCH`.
+- With `REALTIME_VALIDATION_ENABLED=true`, send a realtime chunk larger than 1MB and confirm
+  `REALTIME_CHUNK_TOO_LARGE` in processing/ai logs (browser console may show
+  `REALTIME_CLIENT_CHUNK_SKIPPED` before send).
+- With `UPLOAD_SECURITY_SCAN_ENABLED=true`, upload a known test signature (EICar) and confirm
+  `UPLOAD_SECURITY_SCAN_FAILED`; with scanner down and `UPLOAD_SCAN_FAIL_OPEN=true`, confirm
+  `UPLOAD_SCAN_INFRA_ERROR` and upload still succeeds.
+
+```bash
+bash scripts/log-bundle.sh --since 15m --grep EPIC2
+bash scripts/test_log_bundle_epic2.sh
+```
+
 ## Failure Capture
 
 If a smoke step fails, capture:

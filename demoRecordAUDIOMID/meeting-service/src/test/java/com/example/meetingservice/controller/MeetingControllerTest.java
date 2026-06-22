@@ -2,7 +2,14 @@ package com.example.meetingservice.controller;
 
 import com.example.meetingservice.entity.Meeting;
 import com.example.meetingservice.security.UserPrincipal;
+import com.example.meetingservice.config.Epic2FeatureFlags;
+import com.example.meetingservice.config.UploadValidationPolicy;
 import com.example.meetingservice.service.MeetingService;
+import com.example.meetingservice.service.MimeSniffRequestCache;
+import com.example.meetingservice.service.MimeSniffer;
+import com.example.meetingservice.service.NoOpScanner;
+import com.example.meetingservice.service.ScanCircuitBreaker;
+import com.example.meetingservice.service.UploadValidator;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.mock.web.MockMultipartFile;
@@ -27,10 +34,25 @@ class MeetingControllerTest {
     @TempDir
     Path tempDir;
 
+    private MeetingController newController(MeetingService meetingService) {
+        UploadValidationPolicy policy = new UploadValidationPolicy(new com.fasterxml.jackson.databind.ObjectMapper());
+        Epic2FeatureFlags flags = mock(Epic2FeatureFlags.class);
+        when(flags.isMimeSniffEnabled()).thenReturn(false);
+        when(flags.isUploadValidationStrict()).thenReturn(false);
+        UploadValidator uploadValidator = new UploadValidator(
+                policy,
+                flags,
+                new MimeSniffer(policy, new MimeSniffRequestCache()),
+                new NoOpScanner(),
+                new ScanCircuitBreaker()
+        );
+        return new MeetingController(meetingService, uploadValidator);
+    }
+
     @Test
     void upload_shouldForwardAcceptedLanguage() {
         MeetingService meetingService = mock(MeetingService.class);
-        MeetingController controller = new MeetingController(meetingService);
+        MeetingController controller = newController(meetingService);
         Authentication authentication = mock(Authentication.class);
         when(authentication.getPrincipal()).thenReturn(new UserPrincipal(9L, "user"));
         when(meetingService.findActiveDuplicateForOwner(eq(9L), anyString())).thenReturn(Optional.empty());
@@ -51,7 +73,7 @@ class MeetingControllerTest {
     @Test
     void upload_shouldFallbackToViForInvalidLanguage() {
         MeetingService meetingService = mock(MeetingService.class);
-        MeetingController controller = new MeetingController(meetingService);
+        MeetingController controller = newController(meetingService);
         Authentication authentication = mock(Authentication.class);
         when(authentication.getPrincipal()).thenReturn(new UserPrincipal(9L, "user"));
         when(meetingService.findActiveDuplicateForOwner(eq(9L), anyString())).thenReturn(Optional.empty());
@@ -72,7 +94,7 @@ class MeetingControllerTest {
     @Test
     void upload_shouldReuseExistingMeetingWhenDuplicateDetected() {
         MeetingService meetingService = mock(MeetingService.class);
-        MeetingController controller = new MeetingController(meetingService);
+        MeetingController controller = newController(meetingService);
         Authentication authentication = mock(Authentication.class);
         when(authentication.getPrincipal()).thenReturn(new UserPrincipal(9L, "user"));
         when(meetingService.normalizeMeetingStatus(anyString())).thenAnswer((invocation) -> invocation.getArgument(0));
@@ -101,7 +123,7 @@ class MeetingControllerTest {
     @Test
     void createRealtimeMeeting_shouldAlwaysCreateFreshMeetingWithoutDuplicateLookup() {
         MeetingService meetingService = mock(MeetingService.class);
-        MeetingController controller = new MeetingController(meetingService);
+        MeetingController controller = newController(meetingService);
         Authentication authentication = mock(Authentication.class);
         when(authentication.getPrincipal()).thenReturn(new UserPrincipal(9L, "user"));
         when(meetingService.normalizeMeetingStatus(anyString())).thenAnswer((invocation) -> invocation.getArgument(0));

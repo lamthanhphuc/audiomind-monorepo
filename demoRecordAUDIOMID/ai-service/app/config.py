@@ -102,6 +102,9 @@ class Settings(BaseSettings):
     cors_allowed_origins: str = "http://localhost:5173"
     max_upload_size_bytes: int = 524288000
     allowed_upload_extensions: str = ".wav,.mp3,.m4a,.aac,.flac,.ogg,.webm,.mp4"
+    upload_validation_strict: bool = False
+    mime_sniff_enabled: bool = False
+    realtime_validation_enabled: bool = False
 
     # Storage
     audio_storage_path: str = "./storage/audio"
@@ -126,6 +129,9 @@ class Settings(BaseSettings):
     chunk_state_ttl_seconds: int = 3600
     redis_max_connections: int = 10
     glossary_cache_ttl_seconds: int = 300
+
+    # Epic 2 — error UX
+    error_ux_enabled: bool = True
 
     # Deepgram STT hardening
     stt_audio_queue_max_items: int = 64
