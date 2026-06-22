@@ -33,9 +33,18 @@ def test_map_http_exception_maps_upload_too_large():
     request = _make_request()
     error_code, message, _details = _map_http_exception(
         request, HTTPException(status_code=413, detail="UPLOAD_TOO_LARGE")
-  )
+    )
     assert error_code == "UPLOAD_TOO_LARGE"
     assert "100MB" in message
+
+
+def test_map_http_exception_maps_upload_mime_mismatch_detail_code():
+    request = _make_request("/api/upload-audio")
+    error_code, message, _details = _map_http_exception(
+        request, HTTPException(status_code=415, detail="UPLOAD_MIME_MISMATCH")
+    )
+    assert error_code == "UPLOAD_MIME_MISMATCH"
+    assert message
 
 
 def test_map_http_exception_maps_upload_unsupported_format():

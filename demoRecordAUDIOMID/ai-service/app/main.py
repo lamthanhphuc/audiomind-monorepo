@@ -124,6 +124,7 @@ from app.services.stt_persistence import TranscriptPersistenceRepository
 from app.services.transcript_canonicalizer import build_raw_transcript_hash
 from app.services.stt_session_actor import MeetingSessionActor, MeetingSessionState
 from app.upload_validation_policy import effective_allowed_extensions, effective_max_upload_bytes
+from app.routes.upload import validate_upload_mime
 
 try:
     from app.pipeline import ProcessingPipeline
@@ -1208,7 +1209,7 @@ def _map_http_exception(
         return ("UPLOAD_TOO_LARGE", _default_error_message("UPLOAD_TOO_LARGE"), details)
 
     if status_code == 415:
-        if "mime" in normalized_detail:
+        if "mime" in normalized_detail or detail_text == "UPLOAD_MIME_MISMATCH":
             return (
                 "UPLOAD_MIME_MISMATCH",
                 _default_error_message("UPLOAD_MIME_MISMATCH"),
@@ -4072,18 +4073,38 @@ async def upload_audio(file: UploadFile = File(...)):
             strict=settings.upload_validation_strict,
             legacy_max_bytes=settings.max_upload_size_bytes,
         )
+        sniff_buffer = bytearray()
+        mime_checked = False
 
         with saved_path.open("wb") as output_file:
             while True:
                 chunk = await file.read(chunk_size)
                 if not chunk:
                     break
+                if settings.mime_sniff_enabled and not mime_checked:
+                    sniff_buffer.extend(chunk)
+                    if len(sniff_buffer) >= min(64 * 1024, max(1, max_upload_bytes)):
+                        validate_upload_mime(
+                            bytes(sniff_buffer[: 64 * 1024]),
+                            extension,
+                            len(sniff_buffer),
+                            enabled=True,
+                        )
+                        mime_checked = True
                 total_bytes += len(chunk)
                 if total_bytes > max_upload_bytes:
                     output_file.close()
                     saved_path.unlink(missing_ok=True)
                     raise HTTPException(status_code=413, detail="UPLOAD_TOO_LARGE")
                 output_file.write(chunk)
+
+        if settings.mime_sniff_enabled and not mime_checked and total_bytes > 0:
+            validate_upload_mime(
+                bytes(sniff_buffer[: 64 * 1024]),
+                extension,
+                total_bytes,
+                enabled=True,
+            )
 
         await file.close()
 

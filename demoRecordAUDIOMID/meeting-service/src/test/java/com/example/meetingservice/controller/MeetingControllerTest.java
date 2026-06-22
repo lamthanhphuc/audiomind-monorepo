@@ -2,7 +2,11 @@ package com.example.meetingservice.controller;
 
 import com.example.meetingservice.entity.Meeting;
 import com.example.meetingservice.security.UserPrincipal;
+import com.example.meetingservice.config.Epic2FeatureFlags;
+import com.example.meetingservice.config.UploadValidationPolicy;
 import com.example.meetingservice.service.MeetingService;
+import com.example.meetingservice.service.MimeSniffRequestCache;
+import com.example.meetingservice.service.MimeSniffer;
 import com.example.meetingservice.service.UploadValidator;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -29,7 +33,15 @@ class MeetingControllerTest {
     Path tempDir;
 
     private MeetingController newController(MeetingService meetingService) {
-        UploadValidator uploadValidator = mock(UploadValidator.class);
+        UploadValidationPolicy policy = new UploadValidationPolicy(new com.fasterxml.jackson.databind.ObjectMapper());
+        Epic2FeatureFlags flags = mock(Epic2FeatureFlags.class);
+        when(flags.isMimeSniffEnabled()).thenReturn(false);
+        when(flags.isUploadValidationStrict()).thenReturn(false);
+        UploadValidator uploadValidator = new UploadValidator(
+                policy,
+                flags,
+                new MimeSniffer(policy, new MimeSniffRequestCache())
+        );
         return new MeetingController(meetingService, uploadValidator);
     }
 
