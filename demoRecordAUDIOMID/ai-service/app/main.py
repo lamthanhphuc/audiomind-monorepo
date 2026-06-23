@@ -132,6 +132,7 @@ from app.routes.upload import validate_upload_mime
 from app.routes.internal_meetings import router as internal_meetings_router
 from app.routes.config_lexicon import router as config_lexicon_router
 from app.tasks import process_meeting
+from app.otel_setup import bind_trace_id_attribute, instrument_fastapi_app
 
 try:
     from app.pipeline import ProcessingPipeline
@@ -145,7 +146,6 @@ except Exception as pipeline_import_error:
 # Configure logging
 logger.remove()
 logger.add(sys.stderr, level="INFO", serialize=True)
-logger.add("logs/app.log", rotation="500 MB", level="DEBUG", serialize=True)
 
 
 @asynccontextmanager
@@ -340,6 +340,7 @@ def _retry_guard_snapshot_from_actor(actor: MeetingSessionActor) -> dict[str, ob
 settings = get_settings()
 
 app = FastAPI(lifespan=lifespan)
+instrument_fastapi_app(app)
 
 app.include_router(internal_meetings_router)
 app.include_router(config_lexicon_router)
@@ -959,6 +960,7 @@ async def inject_trace_headers(request: Request, call_next) -> Response:
     request_id = request.headers.get("x-request-id") or trace_id
     request.state.trace_id = trace_id
     request.state.request_id = request_id
+    bind_trace_id_attribute(trace_id)
     logger.bind(trace_id=trace_id, request_id=request_id).info(
         "event=REQUEST_RECEIVED traceId={} requestId={} path={}",
         trace_id,
@@ -3850,6 +3852,16 @@ async def health_check():
         dependencies={},
         legacy_status="healthy",
         extras=_runtime_metadata(),
+    )
+
+
+@app.get("/liveness")
+async def liveness_check():
+    """Process liveness only — no dependency checks."""
+    return _health_payload(
+        status="UP",
+        dependencies={},
+        legacy_status="alive",
     )
 
 

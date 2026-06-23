@@ -1,0 +1,23 @@
+# Staging observability notes for Beta Ops Gate.
+#
+# Jaeger is deployed via k8s/observability/stack.yaml (all-in-one, OTLP HTTP :4318).
+# This file documents the staging overlay; no additional Jaeger Operator CR is required.
+#
+# Verify:
+#   kubectl port-forward -n audiomind-staging svc/jaeger 16686:16686
+#
+# Core API env (set in core-deployments.yaml):
+#   OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
+#   OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+#   SPRING_PROFILES_ACTIVE=production
+#   OTEL_ENABLED=true
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: beta-ops-jaeger-staging-notes
+  namespace: audiomind-staging
+data:
+  README: |
+    Beta Ops Gate uses the shared Jaeger deployment from observability/stack.yaml.
+    Query UI port 16686, OTLP HTTP port 4318.

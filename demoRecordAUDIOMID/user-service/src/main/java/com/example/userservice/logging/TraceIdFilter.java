@@ -1,5 +1,6 @@
 package com.example.userservice.logging;
 
+import io.opentelemetry.api.trace.Span;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -35,6 +36,7 @@ public class TraceIdFilter extends OncePerRequestFilter {
 
         MDC.put("traceId", traceId);
         MDC.put("requestId", requestId);
+        attachOtelTraceId(traceId);
         response.setHeader(TRACE_HEADER, traceId);
         response.setHeader(REQUEST_HEADER, requestId);
         log.info(
@@ -68,6 +70,13 @@ public class TraceIdFilter extends OncePerRequestFilter {
             MDC.remove("traceId");
             MDC.remove("requestId");
             MDC.remove("userId");
+        }
+    }
+
+    private static void attachOtelTraceId(String traceId) {
+        Span span = Span.current();
+        if (span.getSpanContext().isValid()) {
+            span.setAttribute("audiomind.trace_id", traceId);
         }
     }
 }

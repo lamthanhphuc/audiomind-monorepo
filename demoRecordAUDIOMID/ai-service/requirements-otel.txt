@@ -1,0 +1,6 @@
+# Optional OpenTelemetry stack (install with INSTALL_OTEL=true in Dockerfile).
+# Pinned for compatibility with constraints.txt (protobuf 6.x).
+opentelemetry-api==1.42.1
+opentelemetry-sdk==1.42.1
+opentelemetry-exporter-otlp-proto-http==1.42.1
+opentelemetry-instrumentation-fastapi==0.63b1

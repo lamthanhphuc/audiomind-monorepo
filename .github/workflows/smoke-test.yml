@@ -102,12 +102,11 @@ jobs:
         run: |
           $deadline = (Get-Date).AddMinutes(5)
           $targets = @(
-            'http://localhost:8000/health',
             'http://localhost:8000/ready',
-            'http://localhost:8081/health',
-            'http://localhost:8082/health',
-            'http://localhost:8082/actuator/health',
-            'http://localhost:8083/actuator/health'
+            'http://localhost:8081/ready',
+            'http://localhost:8082/ready',
+            'http://localhost:8083/ready',
+            'http://localhost:8082/actuator/health'
           )
           $ready = $false
           $lastFailure = $null
