@@ -1,0 +1,16 @@
+logging:
+  level:
+    root: WARN
+    com.example: INFO
+    com.example.processingservice.security.JwtAuthenticationFilter: WARN
+    com.example.processingservice.interfaces.websocket: WARN
+    org.springframework.security: WARN
+
+management:
+  tracing:
+    enabled: ${OTEL_ENABLED:false}
+    sampling:
+      probability: ${OTEL_SAMPLER_PROBABILITY:1.0}
+  otlp:
+    tracing:
+      endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://localhost:4318}

@@ -75,6 +75,20 @@ check_url() {
   curl -fsS "$url" > /dev/null
 }
 
+check_health_json_url() {
+  local url="$1"
+  local label="${2:-$url}"
+  local body
+  local status
+
+  printf 'Checking %s (expect JSON status=UP)\n' "$label"
+  body="$(curl -fsS "$url")"
+  status="$(printf '%s' "$body" | python -c "import json,sys; print(json.load(sys.stdin).get('status',''))")"
+  if [[ "$status" != "UP" ]]; then
+    fail "${label} returned status=${status:-<missing>}, expected UP. body=${body}"
+  fi
+}
+
 check_celery_worker_state() {
   local container_id
   local inspect_output
@@ -112,15 +126,15 @@ check_celery_worker_state() {
 }
 
 check_url "https://${APP_HOST}/"
-check_url "https://${MEETING_HOST}/health"
-check_url "https://${MEETING_HOST}/ready"
-check_url "https://${PROCESSING_HOST}/health"
-check_url "https://${PROCESSING_HOST}/ready"
-check_url "https://${USER_HOST}/health"
-check_url "https://${USER_HOST}/ready"
+check_health_json_url "https://${MEETING_HOST}/health" "meeting-api /health"
+check_health_json_url "https://${MEETING_HOST}/ready" "meeting-api /ready"
+check_health_json_url "https://${PROCESSING_HOST}/health" "processing-api /health"
+check_health_json_url "https://${PROCESSING_HOST}/ready" "processing-api /ready"
+check_health_json_url "https://${USER_HOST}/health" "user-api /health"
+check_health_json_url "https://${USER_HOST}/ready" "user-api /ready"
 
 printf 'Checking private ai-api /ready through Compose\n'
-"${COMPOSE[@]}" exec -T ai-api python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=4).read()"
+"${COMPOSE[@]}" exec -T ai-api python -c "import json, urllib.request; body=urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=4).read().decode(); status=json.loads(body).get('status',''); assert status=='UP', f'expected UP got {status!r}: {body}'; print('ai-api /ready status=UP')"
 
 check_celery_worker_state
 

@@ -349,6 +349,8 @@ jobs:
           tags: ${{ steps.meta.outputs.temp_tag }}
           cache-from: ${{ steps.cache.outputs.cache_from }}
           cache-to: type=gha,scope=${{ steps.cache.outputs.scope }},mode=max
+          build-args: |
+            INSTALL_OTEL=${{ matrix.service.name == 'ai-api' && 'true' || 'false' }}
 
       - name: Run image smoke test
         if: matrix.service.name != 'none'
@@ -449,3 +451,9 @@ jobs:
               echo "ai-api-deployment not found in namespace ${K8S_NAMESPACE}, skipping ai-api rollout."
             fi
           fi
+
+      - name: Verify staging readiness
+        if: steps.kubeconfig.outputs.skipped != 'true'
+        run: |
+          chmod +x scripts/ci/verify-ready-staging.sh
+          K8S_NAMESPACE=${K8S_NAMESPACE} bash scripts/ci/verify-ready-staging.sh

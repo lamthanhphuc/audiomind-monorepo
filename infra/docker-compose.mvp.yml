@@ -227,6 +227,11 @@ services:
       ai-api:
         condition: service_healthy
     ports: !reset []
+    healthcheck:
+      <<: *http-healthcheck-defaults
+      test:
+        - CMD-SHELL
+        - python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=4).read()"
 
   web:
     <<: *mvp-restart-policy

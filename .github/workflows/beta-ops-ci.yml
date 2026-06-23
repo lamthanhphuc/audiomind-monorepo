@@ -1,0 +1,90 @@
+name: Beta Ops CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  beta-ops-verify:
+    name: beta-ops-verify
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      - name: Health contract tests (Java)
+        working-directory: demoRecordAUDIOMID
+        run: |
+          for svc in meeting-service processing-service user-service; do
+            mvn -B -pl "$svc" test -Dtest=HealthControllerTest
+          done
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Health and OTEL contract tests (ai-api)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r demoRecordAUDIOMID/ai-service/requirements.txt \
+            -r demoRecordAUDIOMID/ai-service/requirements-otel.txt \
+            -c demoRecordAUDIOMID/ai-service/constraints.txt pytest
+          python -m pytest -q demoRecordAUDIOMID/ai-service/tests/test_health.py \
+            demoRecordAUDIOMID/ai-service/tests/test_otel_setup.py
+
+      - name: Log safety scan
+        run: bash scripts/ci/log-safety-scan.sh
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: OpenAPI check
+        run: |
+          npm ci
+          npm run check:openapi
+
+      - name: OpenAPI /ready presence
+        run: |
+          set -euo pipefail
+          for spec in meeting-api processing-api ai-api; do
+            grep -qE '^  /ready:' "packages/contracts/${spec}.yaml" \
+              || { echo "missing /ready in packages/contracts/${spec}.yaml"; exit 1; }
+          done
+          grep -qE '^  /liveness:' packages/contracts/ai-api.yaml \
+            || { echo "missing /liveness in packages/contracts/ai-api.yaml"; exit 1; }
+
+      - name: Verify staging ready (dry-run on PR)
+        if: github.event_name == 'pull_request'
+        run: bash scripts/ci/verify-ready-staging.sh --dry-run
+
+  beta-ops-staging-gate:
+    name: beta-ops-staging-gate
+    runs-on: ubuntu-latest
+    needs: beta-ops-verify
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify staging ready script (dry-run without kube)
+        run: bash scripts/ci/verify-ready-staging.sh --dry-run
+
+      - name: Note
+        run: |
+          echo "Full staging /ready verification runs in ci-cd.yaml deploy-staging when KUBE_CONFIG is set."

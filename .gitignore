@@ -52,6 +52,7 @@ tmp-*
 *.diff
 *.txt
 !**/requirements.txt
+!**/requirements-otel.txt
 !**/constraints*.txt
 !**/.env.example
 

@@ -32,3 +32,12 @@ groups:
         annotations:
           summary: "AI service circuit breaker OPEN for more than 1 minute"
           description: "Resilience4j circuit breaker ai-service remains OPEN for over 1 minute"
+
+      - alert: AiApiTargetDown
+        expr: up{job="ai-api"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "ai-api Prometheus scrape target is down"
+          description: "Prometheus cannot scrape ai-api for more than 2 minutes"

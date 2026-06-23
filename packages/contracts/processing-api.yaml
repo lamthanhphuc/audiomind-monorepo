@@ -301,6 +301,14 @@ paths:
       responses:
         "200":
           description: OK
+  /ready:
+    get:
+      summary: Readiness check
+      responses:
+        "200":
+          description: Ready
+        "503":
+          description: Not ready
 components:
   schemas:
     CreateJobRequest:

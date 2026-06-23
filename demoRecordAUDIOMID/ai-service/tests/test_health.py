@@ -162,3 +162,14 @@ def test_ready_returns_503_with_down_payload_when_checks_fail(monkeypatch):
     assert payload["dependencies"]["pipeline"] == "DOWN"
     assert payload["dependencies"]["deepgramConfigured"] == "DOWN"
     assert payload["dependencies"]["geminiConfigured"] == "DOWN"
+
+
+def test_liveness_returns_up_without_touching_dependencies(monkeypatch):
+    monkeypatch.setattr(main_module, "_cleanup_stale_stt_actors", _noop_cleanup)
+
+    payload = asyncio.run(main_module.liveness_check())
+
+    assert payload["status"] == "UP"
+    assert payload["service"] == "ai-service"
+    assert payload["legacyStatus"] == "alive"
+    assert payload["dependencies"] == {}

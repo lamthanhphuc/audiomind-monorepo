@@ -14,14 +14,18 @@ RUN if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
     gosu \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt requirements-offline.txt constraints.txt constraints-offline.txt ./
+COPY requirements.txt requirements-otel.txt requirements-offline.txt constraints.txt constraints-offline.txt ./
 
 ARG INSTALL_OFFLINE_STT=false
+ARG INSTALL_OTEL=false
 
 RUN pip install --no-cache-dir --upgrade pip setuptools==80.9.0 wheel \
     && pip install --no-cache-dir -c constraints.txt -r requirements.txt \
     && if [ "$INSTALL_OFFLINE_STT" = "true" ]; then \
         pip install --no-cache-dir -c constraints-offline.txt -r requirements-offline.txt; \
+    fi \
+    && if [ "$INSTALL_OTEL" = "true" ]; then \
+        pip install --no-cache-dir -c constraints.txt -r requirements-otel.txt; \
     fi
 
 COPY . .
