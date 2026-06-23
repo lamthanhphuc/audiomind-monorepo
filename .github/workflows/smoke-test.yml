@@ -63,19 +63,20 @@ jobs:
             -replace '^JWT_SECRET=.*', "JWT_SECRET=$jwt" `
             | Set-Content demoRecordAUDIOMID/ai-service/.env
           Add-Content demoRecordAUDIOMID/ai-service/.env "GEMINI_CLIENT_TEST_MODE=fault_injection"
+          "GEMINI_CLIENT_TEST_MODE=fault_injection" | Out-File -FilePath $env:GITHUB_ENV -Append
+          $gemini = if ([string]::IsNullOrWhiteSpace($env:GEMINI_API_KEY)) {
+            'ci-smoke-gemini-placeholder'
+          } else {
+            $env:GEMINI_API_KEY
+          }
+          "GEMINI_API_KEY=$gemini" | Out-File -FilePath $env:GITHUB_ENV -Append
+          (Get-Content demoRecordAUDIOMID/ai-service/.env) `
+            -replace '^GEMINI_API_KEY=.*', "GEMINI_API_KEY=$gemini" |
+            Set-Content demoRecordAUDIOMID/ai-service/.env
           if (-not [string]::IsNullOrWhiteSpace($env:DEEPGRAM_API_KEY)) {
+            "DEEPGRAM_API_KEY=$($env:DEEPGRAM_API_KEY)" | Out-File -FilePath $env:GITHUB_ENV -Append
             (Get-Content demoRecordAUDIOMID/ai-service/.env) `
               -replace '^DEEPGRAM_API_KEY=.*', "DEEPGRAM_API_KEY=$($env:DEEPGRAM_API_KEY)" |
-              Set-Content demoRecordAUDIOMID/ai-service/.env
-          }
-          if ([string]::IsNullOrWhiteSpace($env:GEMINI_API_KEY)) {
-            (Get-Content demoRecordAUDIOMID/ai-service/.env) `
-              -replace '^GEMINI_API_KEY=.*', 'GEMINI_API_KEY=ci-smoke-gemini-placeholder' |
-              Set-Content demoRecordAUDIOMID/ai-service/.env
-          }
-          if (-not [string]::IsNullOrWhiteSpace($env:GEMINI_API_KEY)) {
-            (Get-Content demoRecordAUDIOMID/ai-service/.env) `
-              -replace '^GEMINI_API_KEY=.*', "GEMINI_API_KEY=$($env:GEMINI_API_KEY)" |
               Set-Content demoRecordAUDIOMID/ai-service/.env
           }
 
@@ -109,6 +110,7 @@ jobs:
             'http://localhost:8083/actuator/health'
           )
           $ready = $false
+          $lastFailure = $null
           while ((Get-Date) -lt $deadline) {
             $ready = $true
             foreach ($url in $targets) {
@@ -116,6 +118,7 @@ jobs:
                 Invoke-RestMethod -Method Get -Uri $url -TimeoutSec 5 | Out-Null
               } catch {
                 $ready = $false
+                $lastFailure = $url
                 break
               }
             }
@@ -126,6 +129,13 @@ jobs:
             Start-Sleep -Seconds 5
           }
           if (-not $ready) {
+            Write-Host "Last failing health endpoint: $lastFailure"
+            try {
+              $readyBody = Invoke-RestMethod -Method Get -Uri "http://localhost:8000/ready" -TimeoutSec 5
+              Write-Host "ai-api /ready payload: $($readyBody | ConvertTo-Json -Depth 6 -Compress)"
+            } catch {
+              Write-Host "ai-api /ready probe failed: $($_.Exception.Message)"
+            }
             docker compose -f infra/docker-compose.dev.yml -f infra/docker-compose.ci.yml ps
             docker compose -f infra/docker-compose.dev.yml -f infra/docker-compose.ci.yml logs ai-api --tail 200
             throw "Stack health endpoints not ready before smoke test"
