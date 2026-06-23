@@ -3894,7 +3894,10 @@ async def readiness_check():
 
     analysis_provider = (settings.analysis_provider or "").strip().lower()
     gemini_required = analysis_provider == "gemini"
-    gemini_configured = bool((settings.gemini_api_key or "").strip())
+    gemini_test_mode = (settings.gemini_client_test_mode or "").strip().lower()
+    gemini_configured = bool((settings.gemini_api_key or "").strip()) or (
+        gemini_test_mode == "fault_injection"
+    )
     dependencies["geminiConfigured"] = _dependency_state(gemini_configured)
     if gemini_required and not gemini_configured:
         ready = False
@@ -4055,12 +4058,21 @@ async def process_audio(
         raise
     except Exception as e:
         request_id = uuid4().hex
+        error_type = type(e).__name__
         logger.error(
             "event=REQUEST_FAILED requestId={} path=/api/process errorCode={} error={}",
             request_id,
-            type(e).__name__,
+            error_type,
             safe_error_message(e),
         )
+        if (
+            error_type in {"OperationalError", "ConnectionError"}
+            or "kombu" in str(type(e).__module__).lower()
+        ):
+            raise HTTPException(
+                status_code=503,
+                detail="Task broker unavailable. request_id={request_id}",
+            )
         raise HTTPException(
             status_code=500,
             detail=f"Internal server error. request_id={request_id}",

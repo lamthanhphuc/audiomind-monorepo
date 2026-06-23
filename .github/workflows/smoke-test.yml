@@ -68,6 +68,11 @@ jobs:
               -replace '^DEEPGRAM_API_KEY=.*', "DEEPGRAM_API_KEY=$($env:DEEPGRAM_API_KEY)" |
               Set-Content demoRecordAUDIOMID/ai-service/.env
           }
+          if ([string]::IsNullOrWhiteSpace($env:GEMINI_API_KEY)) {
+            (Get-Content demoRecordAUDIOMID/ai-service/.env) `
+              -replace '^GEMINI_API_KEY=.*', 'GEMINI_API_KEY=ci-smoke-gemini-placeholder' |
+              Set-Content demoRecordAUDIOMID/ai-service/.env
+          }
           if (-not [string]::IsNullOrWhiteSpace($env:GEMINI_API_KEY)) {
             (Get-Content demoRecordAUDIOMID/ai-service/.env) `
               -replace '^GEMINI_API_KEY=.*', "GEMINI_API_KEY=$($env:GEMINI_API_KEY)" |
@@ -80,7 +85,7 @@ jobs:
         run: |
           $maxAttempts = 3
           for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
-            docker compose -f infra/docker-compose.dev.yml up -d --build db redis user-api ai-api celery-worker meeting-api processing-api
+            docker compose -f infra/docker-compose.dev.yml -f infra/docker-compose.ci.yml up -d --build db redis user-api ai-api celery-worker meeting-api processing-api
             if ($LASTEXITCODE -eq 0) {
               break
             }
@@ -97,6 +102,8 @@ jobs:
           $deadline = (Get-Date).AddMinutes(5)
           $targets = @(
             'http://localhost:8000/health',
+            'http://localhost:8000/ready',
+            'http://localhost:8081/health',
             'http://localhost:8082/health',
             'http://localhost:8082/actuator/health',
             'http://localhost:8083/actuator/health'
@@ -119,20 +126,22 @@ jobs:
             Start-Sleep -Seconds 5
           }
           if (-not $ready) {
-            docker compose -f infra/docker-compose.dev.yml ps
-            docker compose -f infra/docker-compose.dev.yml logs ai-api --tail 200
+            docker compose -f infra/docker-compose.dev.yml -f infra/docker-compose.ci.yml ps
+            docker compose -f infra/docker-compose.dev.yml -f infra/docker-compose.ci.yml logs ai-api --tail 200
             throw "Stack health endpoints not ready before smoke test"
           }
 
       - name: Debug - Collect service logs on failure
-        if: failure()
+        if: failure() && steps.check-e2e-secrets.outputs.skip_e2e != 'true'
         shell: pwsh
         run: |
-          docker compose -f infra/docker-compose.dev.yml ps
-          docker compose -f infra/docker-compose.dev.yml logs ai-api --tail 500
-          docker compose -f infra/docker-compose.dev.yml logs processing-api --tail 200
-          docker compose -f infra/docker-compose.dev.yml logs user-api --tail 500
-          docker compose -f infra/docker-compose.dev.yml logs db --tail 100
+          docker compose -f infra/docker-compose.dev.yml -f infra/docker-compose.ci.yml ps
+          docker compose -f infra/docker-compose.dev.yml -f infra/docker-compose.ci.yml logs ai-api --tail 500
+          docker compose -f infra/docker-compose.dev.yml -f infra/docker-compose.ci.yml logs processing-api --tail 200
+          docker compose -f infra/docker-compose.dev.yml -f infra/docker-compose.ci.yml logs celery-worker --tail 300
+          docker compose -f infra/docker-compose.dev.yml -f infra/docker-compose.ci.yml logs meeting-api --tail 200
+          docker compose -f infra/docker-compose.dev.yml -f infra/docker-compose.ci.yml logs user-api --tail 200
+          docker compose -f infra/docker-compose.dev.yml -f infra/docker-compose.ci.yml logs db --tail 100
 
       - name: Setup smoke E2E account
         if: steps.check-e2e-secrets.outputs.skip_e2e != 'true'
@@ -184,7 +193,7 @@ jobs:
         run: |
           $maxAttempts = 3
           for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
-            ./scripts/smoke-e2e.ps1 -AudioFile "${{ github.workspace }}/tests/audio/it-overview.wav" -AiBaseUrl http://localhost:8000 -ProcessingBaseUrl http://localhost:8082 -UserServiceBaseUrl http://localhost:8083 -E2EUsername "$env:E2E_USERNAME" -E2EPassword "$env:E2E_PASSWORD" -PollIntervalSeconds 2 -TimeoutSeconds 300
+            ./scripts/smoke-e2e.ps1 -AudioFile "${{ github.workspace }}/tests/audio/it-overview.wav" -AiBaseUrl http://localhost:8000 -ProcessingBaseUrl http://localhost:8082 -MeetingBaseUrl http://localhost:8081 -UserServiceBaseUrl http://localhost:8083 -E2EUsername "$env:E2E_USERNAME" -E2EPassword "$env:E2E_PASSWORD" -PollIntervalSeconds 2 -TimeoutSeconds 300
             if ($LASTEXITCODE -eq 0) {
               break
             }
@@ -207,4 +216,4 @@ jobs:
         if: always() && steps.check-e2e-secrets.outputs.skip_e2e != 'true'
         shell: pwsh
         run: |
-          docker compose -f infra/docker-compose.dev.yml down -v
+          docker compose -f infra/docker-compose.dev.yml -f infra/docker-compose.ci.yml down -v
