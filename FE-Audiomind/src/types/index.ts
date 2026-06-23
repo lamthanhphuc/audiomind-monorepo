@@ -126,6 +126,17 @@ export type AiAnalysis = {
   analysisFeatureSet?: string
   groupedActionPlan?: GroupedActionPlan
   transcriptHash?: string
+  evidence?: {
+    matches?: Array<{
+      verificationStatus?: string
+      score?: number
+      snippet?: string
+      speaker?: string
+      startTime?: number
+      endTime?: number
+      dedupeKey?: string
+    }>
+  }
   domainMode: 'general' | 'it' | 'business' | 'education'
   createdAt?: string
   technical_terms?: Array<string | AnalysisTechnicalTerm>

@@ -1,0 +1,10 @@
+{
+  "domain": "it",
+  "version": "1.0.0",
+  "versionHash": "it-v1",
+  "terms": [
+    { "term": "API", "normalized": "api", "category": "protocol" },
+    { "term": "microservice", "normalized": "microservice", "category": "architecture" }
+  ],
+  "normalizationMap": {}
+}

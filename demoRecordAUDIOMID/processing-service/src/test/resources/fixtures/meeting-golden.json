@@ -1,0 +1,28 @@
+{
+  "meetingId": 12345,
+  "title": "Epic 3 Golden Meeting",
+  "language": "vi",
+  "transcriptRows": [
+    {
+      "speaker": "SPEAKER_1",
+      "startTime": 0.0,
+      "endTime": 5.0,
+      "text": "Mở đầu cuộc họp"
+    },
+    {
+      "speaker": "SPEAKER_1",
+      "startTime": 5.0,
+      "endTime": 10.0,
+      "text": "Hợp đồng dự thảo"
+    }
+  ],
+  "analysis": {
+    "summary": "Golden export fixture",
+    "actionItems": [
+      {
+        "task": "Ký hợp đồng",
+        "evidenceKeywords": ["hop_dong"]
+      }
+    ]
+  }
+}

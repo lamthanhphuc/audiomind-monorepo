@@ -52,6 +52,7 @@ import com.example.processingservice.client.AIServiceClient;
 import com.example.processingservice.client.AudioStreamResetRequiredException;
 import com.example.processingservice.client.MeetingServiceClient;
 import com.example.processingservice.config.Epic2FeatureFlags;
+import com.example.processingservice.config.Epic3FeatureFlags;
 import com.example.processingservice.interfaces.websocket.realtime.RealtimeAudioEnqueueResult;
 import com.example.processingservice.interfaces.websocket.realtime.RealtimeAudioWorkerRegistry;
 import com.example.processingservice.interfaces.websocket.realtime.RealtimeSessionLifecycleState;
@@ -94,6 +95,9 @@ class MeetingWebSocketHandlerTest {
     private Epic2FeatureFlags epic2FeatureFlags;
 
     @Mock
+    private Epic3FeatureFlags epic3FeatureFlags;
+
+    @Mock
     private WebSocketSession session;
 
     private MeetingWebSocketHandler handler;
@@ -121,6 +125,7 @@ class MeetingWebSocketHandlerTest {
         realtimeAudioWorkerRegistry = new RealtimeAudioWorkerRegistry();
         realtimePayloadValidator = new RealtimePayloadValidator();
         lenient().when(epic2FeatureFlags.isRealtimeValidationEnabled()).thenReturn(false);
+        lenient().when(epic3FeatureFlags.isTranscriptQualityEnabled()).thenReturn(false);
         handler = new MeetingWebSocketHandler(
                 meetingChannelAuthorizer,
                 realtimeEventSubscriber,
@@ -131,6 +136,7 @@ class MeetingWebSocketHandlerTest {
                 jwtUtil,
                 realtimeAudioWorkerRegistry,
                 epic2FeatureFlags,
+                epic3FeatureFlags,
                 realtimePayloadValidator);
 
         attributes = new HashMap<>();

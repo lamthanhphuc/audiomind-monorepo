@@ -12,6 +12,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.regex.Pattern;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
@@ -30,6 +32,8 @@ public class TranscriptEvidenceSearchService {
     private static final Pattern SEARCH_SEPARATOR_PATTERN = Pattern.compile("[^\\p{IsAlphabetic}\\p{IsDigit}]+");
     private static final Pattern SEARCH_WHITESPACE_PATTERN = Pattern.compile("\\s+");
 
+    private static final Logger log = LoggerFactory.getLogger(TranscriptEvidenceSearchService.class);
+
     public TranscriptSearchResponse searchTranscriptEvidence(
             Long meetingId,
             List<Map<String, Object>> readableRows,
@@ -40,15 +44,49 @@ public class TranscriptEvidenceSearchService {
             int limit,
             int context
     ) {
+        return searchTranscriptEvidence(
+                meetingId,
+                readableRows,
+                query,
+                transcriptMode,
+                canonicalTranscriptHash,
+                canonicalTranscriptVersion,
+                limit,
+                context,
+                TranscriptSearchOptions.baseline()
+        );
+    }
+
+    public TranscriptSearchResponse searchTranscriptEvidence(
+            Long meetingId,
+            List<Map<String, Object>> readableRows,
+            String query,
+            String transcriptMode,
+            String canonicalTranscriptHash,
+            String canonicalTranscriptVersion,
+            int limit,
+            int context,
+            TranscriptSearchOptions options
+    ) {
         String trimmedQuery = query == null ? "" : query.trim();
         String normalizedQuery = normalizeSearchText(trimmedQuery);
-        List<String> queryTokens = searchTokens(normalizedQuery);
-        if (normalizedQuery.length() < 2 || queryTokens.stream().anyMatch(token -> token.length() < 2)) {
+        List<String> queryTokens = searchTokens(normalizedQuery, options);
+        int minQueryLength = options == null ? 2 : options.minQueryLength();
+        int minTokenLength = options == null ? 2 : options.minTokenLength();
+        if (normalizedQuery.length() < minQueryLength
+                || queryTokens.stream().anyMatch(token -> token.length() < minTokenLength)) {
+            if (options != null && options.searchVerifyEnabled()) {
+                log.info(
+                        "event=TRANSCRIPT_SEARCH_REJECTED meetingId={} reason=query_too_short",
+                        meetingId
+                );
+            }
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "QUERY_TOO_SHORT");
         }
-        int effectiveLimit = normalizeLimit(limit);
+        int effectiveLimit = normalizeLimit(limit, options);
         int effectiveContext = normalizeContext(context);
         List<SearchableTranscriptSegment> segments = toSearchableTranscriptSegments(meetingId, readableRows);
+        segments = applyScanCap(meetingId, segments, options);
         List<SearchCandidate> candidates = new ArrayList<>();
 
         for (SearchableTranscriptSegment segment : segments) {
@@ -71,8 +109,13 @@ public class TranscriptEvidenceSearchService {
                     candidates.get(i),
                     segments,
                     effectiveContext,
-                    i + 1
+                    i + 1,
+                    options
             ));
+        }
+
+        if (options != null && options.evidenceQaEnabled()) {
+            matches = EvidenceQaScorer.dedupeMatches(meetingId, matches, options.dedupeWindowSeconds());
         }
 
         return new TranscriptSearchResponse(
@@ -98,10 +141,15 @@ public class TranscriptEvidenceSearchService {
     }
 
     public int normalizeLimit(int limit) {
+        return normalizeLimit(limit, null);
+    }
+
+    public int normalizeLimit(int limit, TranscriptSearchOptions options) {
         if (limit <= 0) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "INVALID_SEARCH_LIMIT");
         }
-        return Math.min(limit, MAX_TRANSCRIPT_SEARCH_LIMIT);
+        int cap = options == null ? MAX_TRANSCRIPT_SEARCH_LIMIT : options.maxLimit();
+        return Math.min(limit, cap);
     }
 
     public int normalizeContext(int context) {
@@ -237,10 +285,45 @@ public class TranscriptEvidenceSearchService {
             SearchCandidate candidate,
             List<SearchableTranscriptSegment> segments,
             int context,
-            int rank
+            int rank,
+            TranscriptSearchOptions options
     ) {
         SearchableTranscriptSegment segment = candidate.segment();
         TruncatedText truncatedText = truncateText(segment.text(), MAX_TRANSCRIPT_SEARCH_MATCH_TEXT_CHARS);
+        double displayScore = roundSearchScore(candidate.searchMatch().score());
+        String verificationStatus = null;
+        String dedupeKey = null;
+        if (options != null && options.evidenceQaEnabled() && options.qualityContext() != null) {
+            Map<String, Object> stabilizedRow = Map.of(
+                    "segmentId", segment.segmentId(),
+                    "speaker", segment.speaker(),
+                    "startTime", segment.startTime(),
+                    "endTime", segment.endTime(),
+                    "text", segment.text()
+            );
+            Map<String, Object> canonicalRow = EvidenceQaScorer.mapStabilizedToCanonical(
+                    meetingId,
+                    stabilizedRow,
+                    options.qualityContext()
+            );
+            String queryTerm = searchTokens(normalizedQuery, options).isEmpty()
+                    ? normalizedQuery
+                    : searchTokens(normalizedQuery, options).get(0);
+            EvidenceQaScorer.ScoredEvidence scored = EvidenceQaScorer.scoreMatch(
+                    meetingId,
+                    queryTerm,
+                    canonicalRow,
+                    segment.index(),
+                    options.qualityContext(),
+                    options.evidencePolicy(),
+                    true
+            );
+            if (scored.verificationStatus() != null) {
+                verificationStatus = scored.verificationStatus();
+                displayScore = roundSearchScore(scored.score());
+                dedupeKey = scored.dedupeKey();
+            }
+        }
         return new TranscriptEvidenceMatch(
                 generatedEvidenceId(meetingId, segment.index(), normalizedQuery),
                 segment.segmentId(),
@@ -252,9 +335,11 @@ public class TranscriptEvidenceSearchService {
                 truncatedText.truncated(),
                 contextSegments(segments, segment.index() - context, segment.index(), MAX_TRANSCRIPT_SEARCH_CONTEXT_TEXT_CHARS),
                 contextSegments(segments, segment.index() + 1, segment.index() + context + 1, MAX_TRANSCRIPT_SEARCH_CONTEXT_TEXT_CHARS),
-                roundSearchScore(candidate.searchMatch().score()),
+                displayScore,
                 rank,
-                candidate.searchMatch().matchType()
+                candidate.searchMatch().matchType(),
+                verificationStatus,
+                dedupeKey
         );
     }
 
@@ -287,10 +372,38 @@ public class TranscriptEvidenceSearchService {
     }
 
     private List<String> searchTokens(String normalizedQuery) {
+        return searchTokens(normalizedQuery, null);
+    }
+
+    private List<String> searchTokens(String normalizedQuery, TranscriptSearchOptions options) {
         if (normalizedQuery == null || normalizedQuery.isBlank()) {
             return List.of();
         }
+        if (options != null && options.searchVerifyEnabled()) {
+            return TokenizerUtil.tokenizeForTfIdf(normalizedQuery);
+        }
         return List.of(normalizedQuery.split(" "));
+    }
+
+    private List<SearchableTranscriptSegment> applyScanCap(
+            Long meetingId,
+            List<SearchableTranscriptSegment> segments,
+            TranscriptSearchOptions options
+    ) {
+        if (options == null || segments.size() <= options.maxScanSegments()) {
+            return segments;
+        }
+        log.info(
+                "event=SEARCH_QUERY_LIMITED meetingId={} scanPreference={} totalSegments={} scannedSegments={}",
+                meetingId,
+                options.scanPreference(),
+                segments.size(),
+                options.maxScanSegments()
+        );
+        if ("recent".equalsIgnoreCase(options.scanPreference())) {
+            return segments.subList(segments.size() - options.maxScanSegments(), segments.size());
+        }
+        return segments.subList(0, options.maxScanSegments());
     }
 
     private TruncatedText truncateText(String value, int maxChars) {

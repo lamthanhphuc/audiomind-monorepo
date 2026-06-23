@@ -69,7 +69,9 @@ paths:
                 $ref: "#/components/schemas/ProcessingStatusResponse"
   /processing/transcript/{jobId}:
     get:
-      summary: Get transcript payload by meeting/job identifier
+      summary: Get transcript payload by meeting/job identifier (legacy)
+      deprecated: true
+      description: Prefer GET /processing/{meetingId}/transcript
       operationId: getProcessingTranscript
       parameters:
         - in: path
@@ -141,6 +143,141 @@ paths:
             text/csv:
               schema:
                 type: string
+  /processing/{meetingId}/transcript:
+    get:
+      summary: Get saved transcript by meeting identifier
+      operationId: getMeetingTranscript
+      parameters:
+        - in: path
+          name: meetingId
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: Transcript payload
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TranscriptPayload"
+  /processing/{meetingId}/transcript/search:
+    get:
+      summary: Search transcript evidence
+      operationId: searchMeetingTranscriptEvidence
+      parameters:
+        - in: path
+          name: meetingId
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - in: query
+          name: q
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: limit
+          required: false
+          schema:
+            type: integer
+            default: 20
+        - in: query
+          name: context
+          required: false
+          schema:
+            type: integer
+            default: 1
+      responses:
+        "200":
+          description: Transcript search response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TranscriptSearchResponse"
+  /processing/{meetingId}/action-plan:
+    get:
+      summary: Get grouped action plan preview
+      operationId: getMeetingActionPlan
+      parameters:
+        - in: path
+          name: meetingId
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: Action plan preview
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ActionPlanResponse"
+  /processing/{meetingId}/action-plan/export:
+    get:
+      summary: Export action plan as DOCX
+      operationId: exportMeetingActionPlan
+      parameters:
+        - in: path
+          name: meetingId
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - in: query
+          name: format
+          required: false
+          schema:
+            type: string
+            enum: [docx]
+            default: docx
+      responses:
+        "200":
+          description: Action plan DOCX
+          content:
+            application/vnd.openxmlformats-officedocument.wordprocessingml.document:
+              schema:
+                type: string
+                format: binary
+  /processing/{meetingId}/report:
+    get:
+      summary: Export meeting report as DOCX
+      operationId: exportMeetingReport
+      parameters:
+        - in: path
+          name: meetingId
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - in: query
+          name: format
+          required: false
+          schema:
+            type: string
+            enum: [docx]
+            default: docx
+      responses:
+        "200":
+          description: Meeting report DOCX
+          content:
+            application/vnd.openxmlformats-officedocument.wordprocessingml.document:
+              schema:
+                type: string
+                format: binary
+  /api/config/transcript-quality:
+    get:
+      summary: Get transcript quality policy (Epic 3)
+      operationId: getTranscriptQualityPolicy
+      responses:
+        "200":
+          description: Transcript quality policy JSON
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
   /api/v1/jobs:
     post:
       summary: Create processing job
@@ -322,6 +459,117 @@ components:
         domainMode:
           type: string
           enum: [general, it, business, education]
+        evidence:
+          $ref: "#/components/schemas/EvidenceBlock"
+    EvidenceBlock:
+      type: object
+      properties:
+        matches:
+          type: array
+          items:
+            $ref: "#/components/schemas/AnalysisEvidenceMatch"
+    AnalysisEvidenceMatch:
+      type: object
+      properties:
+        verificationStatus:
+          type: string
+          x-epic3: true
+        score:
+          type: number
+          x-epic3: true
+        snippet:
+          type: string
+        speaker:
+          type: string
+        startTime:
+          type: number
+        endTime:
+          type: number
+        dedupeKey:
+          type: string
+          x-epic3: true
+    TranscriptEvidenceMatch:
+      type: object
+      additionalProperties: false
+      properties:
+        evidenceId:
+          type: string
+        segmentId:
+          type: string
+        index:
+          type: integer
+        speaker:
+          type: string
+        startTime:
+          type: number
+        endTime:
+          type: number
+        text:
+          type: string
+        textTruncated:
+          type: boolean
+        score:
+          type: number
+          x-epic3: true
+        rank:
+          type: integer
+        matchType:
+          type: string
+        verificationStatus:
+          type: string
+          x-epic3: true
+        dedupeKey:
+          type: string
+          x-epic3: true
+    TranscriptSearchResponse:
+      type: object
+      required:
+        - meetingId
+        - query
+        - matches
+      properties:
+        meetingId:
+          type: integer
+          format: int64
+        query:
+          type: string
+        normalizedQuery:
+          type: string
+        transcriptMode:
+          type: string
+        canonicalTranscriptHash:
+          type: string
+          nullable: true
+        canonicalTranscriptVersion:
+          type: string
+          nullable: true
+        matches:
+          type: array
+          items:
+            $ref: "#/components/schemas/TranscriptEvidenceMatch"
+    ActionPlanResponse:
+      type: object
+      additionalProperties: true
+      properties:
+        meeting:
+          type: object
+          additionalProperties: true
+        actionItems:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+            properties:
+              task:
+                type: string
+              evidence:
+                $ref: "#/components/schemas/TranscriptEvidenceMatch"
+        groupedActionPlan:
+          type: object
+          additionalProperties: true
+        analysisMetadata:
+          type: object
+          additionalProperties: true
     TechnicalTerm:
       type: object
       required:

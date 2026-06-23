@@ -172,6 +172,15 @@ public class MeetingActionPlanBuilder {
                     ? deriveTaskQuery(draft.task())
                     : String.join(" ", draft.evidenceKeywords());
             verified = evidenceResolver.resolve(query);
+            if (verified != null && verified.verificationStatus() != null
+                    && !"verified".equalsIgnoreCase(verified.verificationStatus())) {
+                return new EvidenceChoice(
+                        null,
+                        "weak".equalsIgnoreCase(verified.verificationStatus())
+                                ? "Transcript evidence match is weak for this action item."
+                                : "No verified transcript evidence available."
+                );
+            }
         }
         if (verified != null) {
             return new EvidenceChoice(verified, null);

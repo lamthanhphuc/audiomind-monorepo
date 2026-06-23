@@ -1,0 +1,12 @@
+spring:
+  profiles:
+    group:
+      epic3-e2e:
+        - test
+
+epic3:
+  transcript-quality-enabled: true
+  evidence-qa-enabled: true
+  search-verify-enabled: true
+  export-verify-enabled: false
+  domain-lexicon-enabled: false

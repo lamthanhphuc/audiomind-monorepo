@@ -20,6 +20,7 @@ import java.util.UUID;
 
 import com.example.processingservice.client.AIServiceClient;
 import com.example.processingservice.config.Epic2FeatureFlags;
+import com.example.processingservice.config.Epic3FeatureFlags;
 import com.example.processingservice.config.TraceIdFilter;
 
 import org.springframework.beans.factory.annotation.Value;
@@ -104,6 +105,7 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
     private final JwtUtil jwtUtil;
     private final RealtimeAudioWorkerRegistry realtimeAudioWorkerRegistry;
     private final Epic2FeatureFlags epic2FeatureFlags;
+    private final Epic3FeatureFlags epic3FeatureFlags;
     private final RealtimePayloadValidator realtimePayloadValidator;
 
     @Value("${deepgram.language:vi}")
@@ -138,6 +140,7 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
             JwtUtil jwtUtil,
             RealtimeAudioWorkerRegistry realtimeAudioWorkerRegistry,
             Epic2FeatureFlags epic2FeatureFlags,
+            Epic3FeatureFlags epic3FeatureFlags,
             RealtimePayloadValidator realtimePayloadValidator) {
         this.meetingChannelAuthorizer = meetingChannelAuthorizer;
         this.realtimeEventSubscriber = realtimeEventSubscriber;
@@ -148,6 +151,7 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
         this.jwtUtil = jwtUtil;
         this.realtimeAudioWorkerRegistry = realtimeAudioWorkerRegistry;
         this.epic2FeatureFlags = epic2FeatureFlags;
+        this.epic3FeatureFlags = epic3FeatureFlags;
         this.realtimePayloadValidator = realtimePayloadValidator;
     }
 
@@ -1207,6 +1211,7 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                                 analysisSource,
                                 resolveSessionTraceId(session)
                         );
+                        triggerCanonicalizeIfEnabled(meetingId, resolveSessionTraceId(session), "realtime");
                         syncRealtimeMeetingTerminalStatus(meetingId, authorization, RealtimeStatusCodes.COMPLETED);
                     }
                     return;
@@ -1285,6 +1290,7 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                             analysisSource,
                             resolveSessionTraceId(session)
                     );
+                    triggerCanonicalizeIfEnabled(meetingId, resolveSessionTraceId(session), "realtime");
                     syncRealtimeMeetingTerminalStatus(meetingId, authorization, RealtimeStatusCodes.COMPLETED);
                 }
                 return;
@@ -1342,6 +1348,27 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                     "REALTIME_ANALYSIS_FAILED meetingId={} source={} reason=enqueue_failed errorCode={}",
                     meetingId,
                     source,
+                    safeErrorCode(ex)
+            );
+        }
+    }
+
+    private void triggerCanonicalizeIfEnabled(Long meetingId, String traceId, String source) {
+        if (epic3FeatureFlags == null || !epic3FeatureFlags.isTranscriptQualityEnabled()) {
+            return;
+        }
+        try {
+            CompletableFuture.runAsync(() -> aiServiceClient.requestCanonicalize(meetingId, null, traceId));
+            log.info(
+                    "event=TRANSCRIPT_QUALITY_CANONICALIZE_ENQUEUED meetingId={} runId={} source={}",
+                    meetingId,
+                    null,
+                    source
+            );
+        } catch (Exception ex) {
+            log.warn(
+                    "event=TRANSCRIPT_QUALITY_CANONICALIZE_FAILED meetingId={} errorCode={}",
+                    meetingId,
                     safeErrorCode(ex)
             );
         }

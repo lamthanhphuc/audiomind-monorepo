@@ -28,6 +28,18 @@ container health checks succeed.
 - Realtime WebSocket URL uses `wss://processing.<domain>/ws/meetings`.
 - Realtime WebSocket connects when `VITE_REALTIME_WS_ENABLED=true`.
 
+## Epic 3 — Transcript, Evidence & Export Quality
+
+Flags default **off** in production; enable per slice after smoke.
+
+- `GET https://processing.<domain>/api/config/transcript-quality` returns policy JSON (no auth).
+- With `EPIC3_TRANSCRIPT_QUALITY_ENABLED=true`: after STT finalize, logs show `TRANSCRIPT_QUALITY_CANONICALIZE_ENQUEUED` and ai-service `TRANSCRIPT_QUALITY_CANONICAL_PERSISTED`.
+- `GET` ai-service `/api/internal/meetings/{id}/transcript-quality` returns `ready=true` when canonical rows + evidence_stats persisted.
+- With `EPIC3_EVIDENCE_QA_ENABLED=true`: action plan preview includes verified evidence; logs `EVIDENCE_QA_VERIFIED` or `EVIDENCE_QA_WEAK`.
+- With `EPIC3_SEARCH_VERIFY_ENABLED=true`: oversized meetings log `SEARCH_QUERY_LIMITED`; short queries log `TRANSCRIPT_SEARCH_REJECTED`.
+- With `EPIC3_DOMAIN_LEXICON_ENABLED=true`: `GET` ai-service `/api/config/lexicon?domain=legal` returns pack terms.
+- Run `bash scripts/test_log_bundle_epic3.sh` against recent logs — all §7.1 markers grep-able.
+
 Example commands:
 
 ```bash

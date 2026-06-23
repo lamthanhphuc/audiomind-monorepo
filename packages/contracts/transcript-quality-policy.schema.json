@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "transcript-quality-policy.schema.json",
+  "type": "object",
+  "required": ["version", "transcript", "search", "evidence", "export", "lexicon"],
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "transcript": {
+      "type": "object",
+      "required": [
+        "canonicalVersion",
+        "shortSegmentMaxWords",
+        "mergeMaxGapSeconds",
+        "displayGroupingEnabled"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "canonicalVersion": { "type": "string", "minLength": 1 },
+        "shortSegmentMaxWords": { "type": "integer", "minimum": 1 },
+        "mergeMaxGapSeconds": { "type": "number", "minimum": 0 },
+        "displayGroupingEnabled": { "type": "boolean" }
+      }
+    },
+    "search": {
+      "type": "object",
+      "required": [
+        "minQueryLength",
+        "minTokenLength",
+        "maxLimit",
+        "maxContext",
+        "phraseMinLength",
+        "maxScanSegments",
+        "scanPreference"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "minQueryLength": { "type": "integer", "minimum": 1 },
+        "minTokenLength": { "type": "integer", "minimum": 1 },
+        "maxLimit": { "type": "integer", "minimum": 1 },
+        "maxContext": { "type": "integer", "minimum": 0 },
+        "phraseMinLength": { "type": "integer", "minimum": 1 },
+        "maxScanSegments": { "type": "integer", "minimum": 1 },
+        "scanPreference": { "type": "string", "enum": ["recent", "oldest", "score"] }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "required": [
+        "minScore",
+        "dedupeWindowSeconds",
+        "maxMatchesPerActionItem",
+        "speakerBoost",
+        "positionNormDecay"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "minScore": { "type": "number", "minimum": 0, "maximum": 1 },
+        "dedupeWindowSeconds": { "type": "number", "minimum": 0 },
+        "maxMatchesPerActionItem": { "type": "integer", "minimum": 1 },
+        "speakerBoost": { "type": "number", "minimum": 0 },
+        "positionNormDecay": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "export": {
+      "type": "object",
+      "required": ["supportedFormats", "defaultTranscriptMode", "includeEvidenceNotes"],
+      "additionalProperties": false,
+      "properties": {
+        "supportedFormats": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "enum": ["txt", "csv", "docx"] }
+        },
+        "defaultTranscriptMode": { "type": "string", "enum": ["readable", "raw"] },
+        "includeEvidenceNotes": { "type": "boolean" }
+      }
+    },
+    "lexicon": {
+      "type": "object",
+      "required": ["defaultDomainPack", "supportedDomainPacks", "disabledTerms"],
+      "additionalProperties": false,
+      "properties": {
+        "defaultDomainPack": { "type": "string", "minLength": 1 },
+        "supportedDomainPacks": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "disabledTerms": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    }
+  }
+}

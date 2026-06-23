@@ -5,6 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "sync-policy": "bash ../scripts/sync-default-policy.sh",
+    "prebuild": "npm run sync-policy",
+    "prepare": "npm run sync-policy",
     "build": "tsc && vite build",
     "build-only": "vite build",
     "preview": "vite preview",

@@ -1,6 +1,7 @@
-import type { MutableRefObject } from 'react'
+import { useMemo, type MutableRefObject } from 'react'
 import { AnalysisPanel } from '../analysis/AnalysisPanel'
 import { AnalysisStatusPanel } from '../analysis/AnalysisStatusPanel'
+import { collectEvidenceMatchesFromAnalysis } from '../../utils/evidenceMatches'
 import { AudioRecorderButton } from '../realtime/AudioRecorderButton'
 import { RealtimeTranscript } from '../transcript/RealtimeTranscript'
 import { ErrorState } from '../ui/ErrorState'
@@ -224,6 +225,12 @@ export default function RealtimeDashboardScene({
         ? 'Transcript đã lưu. Phân tích AI tạm thời chưa sẵn sàng.'
         : 'Analysis failed temporarily. Retry available.')
       : 'No realtime analysis yet.'
+  const liveEvidenceMatches = useMemo(
+    () => collectEvidenceMatchesFromAnalysis(
+      (liveAnalysisMetadata ?? liveAnalysis) as Record<string, unknown> | null,
+    ),
+    [liveAnalysisMetadata, liveAnalysis],
+  )
   const isRecordingActive =
     liveLifecycleState === 'connecting'
     || liveLifecycleState === 'recording'
@@ -404,6 +411,7 @@ export default function RealtimeDashboardScene({
           <div className="realtime-analysis-section">
             <AnalysisStatusPanel
               metadata={liveAnalysisMetadata ?? liveAnalysis}
+              evidenceMatches={liveEvidenceMatches}
               busy={liveAnalysisStatus === 'polling'}
               error={liveAnalysisError}
               onReanalyze={onLiveAnalysisRetry}

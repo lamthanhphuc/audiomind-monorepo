@@ -17,6 +17,7 @@ import type { MeetingActionPlanData, TranscriptEvidenceMatch } from '../../servi
 import { formatGroupedActionPlanForCopy, normalizeGroupedActionPlan } from '../../types'
 import type { AiAnalysis, GroupedActionPlan, Meeting } from '../../types'
 import { normalizePersistedTranscriptForView } from '../../utils/transcript'
+import { collectEvidenceMatchesFromActionPlan, collectEvidenceMatchesFromAnalysis, mapSearchEvidenceMatches } from '../../utils/evidenceMatches'
 import { AnalysisPanel } from '../analysis/AnalysisPanel'
 import { AnalysisStatusPanel, normalizeAnalysisMetadata } from '../analysis/AnalysisStatusPanel'
 import { TranscriptDisplay } from '../transcript/TranscriptDisplay'
@@ -423,6 +424,20 @@ export default function MeetingHistoryScene({ focusMeetingId = null, onOpenAnaly
   const selectedMeetingSummary = useMemo(() => {
     return meetings.find((meeting) => meeting.id === selectedMeetingId) ?? null
   }, [meetings, selectedMeetingId])
+
+  const analysisEvidenceMatches = useMemo(() => {
+    const fromActionPlan = collectEvidenceMatchesFromActionPlan(actionPlanState.preview)
+    if (fromActionPlan.length > 0) {
+      return fromActionPlan
+    }
+    const fromAnalysis = collectEvidenceMatchesFromAnalysis(
+      (detail.analysisMetadata ?? detail.analysis) as Record<string, unknown> | null,
+    )
+    if (fromAnalysis.length > 0) {
+      return fromAnalysis
+    }
+    return mapSearchEvidenceMatches(transcriptEvidenceResults)
+  }, [actionPlanState.preview, detail.analysis, detail.analysisMetadata, transcriptEvidenceResults])
 
   useEffect(() => {
     selectedMeetingIdRef.current = selectedMeetingId
@@ -1271,7 +1286,14 @@ export default function MeetingHistoryScene({ focusMeetingId = null, onOpenAnaly
                             >
                               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
                                 <strong>{match.speaker || 'Speaker'}</strong>
-                                <span className="meta-pill">#{match.rank} {formatEvidenceTime(match.startTime, match.endTime)}</span>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                  {match.verificationStatus && (
+                                    <span className="meta-pill" data-testid="transcript-evidence-verification-status">
+                                      {match.verificationStatus}
+                                    </span>
+                                  )}
+                                  <span className="meta-pill">#{match.rank} {formatEvidenceTime(match.startTime, match.endTime)}</span>
+                                </div>
                               </div>
                               {match.contextBefore.map((context) => (
                                 <p key={`before-${context.segmentId}-${context.index}`} style={{ margin: 0, color: '#64748b', fontSize: '12px' }}>
@@ -1307,6 +1329,7 @@ export default function MeetingHistoryScene({ focusMeetingId = null, onOpenAnaly
                   </div>
                   <AnalysisStatusPanel
                     metadata={detail.analysisMetadata ?? detail.analysis}
+                    evidenceMatches={analysisEvidenceMatches}
                     busy={reanalyzeBusy}
                     error={reanalyzeError}
                     onReanalyze={() => void handleReanalyze()}

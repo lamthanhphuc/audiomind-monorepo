@@ -133,6 +133,43 @@ class Settings(BaseSettings):
     # Epic 2 — error UX
     error_ux_enabled: bool = True
 
+    # Epic 3 — transcript quality / evidence / lexicon
+    transcript_quality_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "EPIC3_TRANSCRIPT_QUALITY_ENABLED",
+            "TRANSCRIPT_QUALITY_ENABLED",
+        ),
+    )
+    domain_lexicon_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "EPIC3_DOMAIN_LEXICON_ENABLED",
+            "DOMAIN_LEXICON_ENABLED",
+        ),
+    )
+    evidence_qa_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "EPIC3_EVIDENCE_QA_ENABLED",
+            "EVIDENCE_QA_ENABLED",
+        ),
+    )
+    search_verify_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "EPIC3_SEARCH_VERIFY_ENABLED",
+            "SEARCH_VERIFY_ENABLED",
+        ),
+    )
+    export_verify_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "EPIC3_EXPORT_VERIFY_ENABLED",
+            "EXPORT_VERIFY_ENABLED",
+        ),
+    )
+
     # Deepgram STT hardening
     stt_audio_queue_max_items: int = 64
     stt_audio_queue_max_bytes: int = 8 * 1024 * 1024

@@ -36,6 +36,8 @@ import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
 import io.github.resilience4j.retry.annotation.Retry;
 import lombok.RequiredArgsConstructor;
 
+import com.example.processingservice.service.TranscriptQualityContext;
+
 @Service
 @RequiredArgsConstructor
 public class AIServiceClient {
@@ -886,6 +888,90 @@ public class AIServiceClient {
 
         String conflictDetail = exception.getResponseBodyAsString();
         return conflictDetail.contains("reset_required") || conflictDetail.contains("webm_continuation_after_reconnect_blocked");
+    }
+
+    public void requestCanonicalize(Long meetingId, Long runId, String traceId) {
+        HttpHeaders headers = new HttpHeaders();
+        String resolvedTraceId = resolveTraceId(traceId);
+        String resolvedRequestId = resolveRequestId(resolvedTraceId);
+        headers.add(TRACE_HEADER, resolvedTraceId);
+        headers.add(REQUEST_HEADER, resolvedRequestId);
+        headers.setContentType(MediaType.APPLICATION_JSON);
+
+        Map<String, Object> body = new HashMap<>();
+        if (runId != null) {
+            body.put("runId", runId);
+        }
+
+        try {
+            executeAiServiceCall(
+                    "requestCanonicalize",
+                    aiUrl + "/api/internal/meetings/" + meetingId + "/canonicalize",
+                    HttpMethod.POST,
+                    new HttpEntity<>(body, headers),
+                    resolvedTraceId,
+                    resolvedRequestId,
+                    meetingId
+            );
+        } catch (Exception ex) {
+            log.warn(
+                    "event=TRANSCRIPT_QUALITY_CANONICALIZE_FAILED meetingId={} errorCode={}",
+                    meetingId,
+                    ex.getClass().getSimpleName()
+            );
+        }
+    }
+
+    public TranscriptQualityContext getTranscriptQuality(Long meetingId, String traceId) {
+        HttpHeaders headers = new HttpHeaders();
+        String resolvedTraceId = resolveTraceId(traceId);
+        String resolvedRequestId = resolveRequestId(resolvedTraceId);
+        headers.add(TRACE_HEADER, resolvedTraceId);
+        headers.add(REQUEST_HEADER, resolvedRequestId);
+        try {
+            ResponseEntity<Map<String, Object>> response = executeAiServiceCall(
+                    "getTranscriptQuality",
+                    aiUrl + "/api/internal/meetings/" + meetingId + "/transcript-quality",
+                    HttpMethod.GET,
+                    new HttpEntity<>(headers),
+                    resolvedTraceId,
+                    resolvedRequestId,
+                    meetingId
+            );
+            Map<String, Object> body = requireBody(response, "getTranscriptQuality", meetingId);
+            return mapTranscriptQualityContext(body);
+        } catch (Exception ex) {
+            log.warn(
+                    "event=TRANSCRIPT_QUALITY_NOT_READY meetingId={} reason=http_error",
+                    meetingId
+            );
+            return TranscriptQualityContext.empty();
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private TranscriptQualityContext mapTranscriptQualityContext(Map<String, Object> body) {
+        if (body == null || !Boolean.TRUE.equals(body.get("ready"))) {
+            return TranscriptQualityContext.empty();
+        }
+        Object rowsRaw = body.get("canonicalTranscriptRows");
+        List<Map<String, Object>> rows = rowsRaw instanceof List<?> list
+                ? (List<Map<String, Object>>) list
+                : List.of();
+        Object statsRaw = body.get("evidenceStats");
+        Map<String, Object> stats = statsRaw instanceof Map<?, ?> map
+                ? (Map<String, Object>) map
+                : Map.of();
+        return new TranscriptQualityContext(
+                body.get("canonicalTranscriptVersion") == null
+                        ? null
+                        : String.valueOf(body.get("canonicalTranscriptVersion")),
+                body.get("canonicalTranscriptHash") == null
+                        ? null
+                        : String.valueOf(body.get("canonicalTranscriptHash")),
+                rows,
+                stats
+        );
     }
 
     private ByteArrayResource toNamedResource(MultipartFile file) {

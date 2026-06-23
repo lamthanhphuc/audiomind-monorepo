@@ -1,0 +1,11 @@
+{
+  "segment_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "text": "Hợp đồng luật sư đã ký",
+  "speaker": "SPEAKER_1",
+  "start_time": 12.5,
+  "end_time": 15.2,
+  "term_frequency": {
+    "hop_dong": 1,
+    "luat_su": 1
+  }
+}
