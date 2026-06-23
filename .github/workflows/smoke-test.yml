@@ -44,6 +44,32 @@ jobs:
         run: |
           Write-Host "ENVIRONMENT_BLOCKED: Smoke test skipped because required E2E secrets are missing."
 
+      - name: Prepare CI env files
+        if: steps.check-e2e-secrets.outputs.skip_e2e != 'true'
+        shell: pwsh
+        env:
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          Copy-Item demoRecordAUDIOMID/ai-service/.env.example demoRecordAUDIOMID/ai-service/.env
+          $jwt = if ([string]::IsNullOrWhiteSpace($env:JWT_SECRET)) {
+            'ci-smoke-test-jwt-secret-minimum-32-chars'
+          } else {
+            $env:JWT_SECRET
+          }
+          "JWT_SECRET=$jwt" | Out-File -FilePath $env:GITHUB_ENV -Append
+          if (-not [string]::IsNullOrWhiteSpace($env:DEEPGRAM_API_KEY)) {
+            (Get-Content demoRecordAUDIOMID/ai-service/.env) `
+              -replace '^DEEPGRAM_API_KEY=.*', "DEEPGRAM_API_KEY=$($env:DEEPGRAM_API_KEY)" |
+              Set-Content demoRecordAUDIOMID/ai-service/.env
+          }
+          if (-not [string]::IsNullOrWhiteSpace($env:GEMINI_API_KEY)) {
+            (Get-Content demoRecordAUDIOMID/ai-service/.env) `
+              -replace '^GEMINI_API_KEY=.*', "GEMINI_API_KEY=$($env:GEMINI_API_KEY)" |
+              Set-Content demoRecordAUDIOMID/ai-service/.env
+          }
+
       - name: Start stack
         if: steps.check-e2e-secrets.outputs.skip_e2e != 'true'
         shell: pwsh
