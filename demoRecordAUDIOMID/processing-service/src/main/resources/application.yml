@@ -93,6 +93,13 @@ epic2:
   upload-security-scan-enabled: ${UPLOAD_SECURITY_SCAN_ENABLED:false}
   upload-scan-fail-open: ${UPLOAD_SCAN_FAIL_OPEN:true}
 
+epic3:
+  transcript-quality-enabled: ${EPIC3_TRANSCRIPT_QUALITY_ENABLED:false}
+  domain-lexicon-enabled: ${EPIC3_DOMAIN_LEXICON_ENABLED:false}
+  evidence-qa-enabled: ${EPIC3_EVIDENCE_QA_ENABLED:false}
+  search-verify-enabled: ${EPIC3_SEARCH_VERIFY_ENABLED:false}
+  export-verify-enabled: ${EPIC3_EXPORT_VERIFY_ENABLED:false}
+
 resilience4j:
   retry:
     instances:

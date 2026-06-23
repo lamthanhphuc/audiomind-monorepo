@@ -2375,7 +2375,7 @@ export default function App() {
           minFallbackAudioBytes: REALTIME_MIN_FALLBACK_AUDIO_BYTES,
           stopIncomplete,
           partialState,
-          resetRequired: realtimeStream.status.resetRequired,
+          resetRequired: realtimeStream.status.resetRequired ?? false,
           streamState: realtimeStream.status.state,
         })
         if (shouldAttemptFinalAudioFallback) {

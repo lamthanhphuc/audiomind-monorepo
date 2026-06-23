@@ -59,8 +59,20 @@ type NormalizedAnalysisMetadata = {
   errorMessage?: string
 }
 
+type EvidenceMatchPreview = {
+  verificationStatus?: string
+  score?: number
+  snippet?: string
+  speaker?: string
+  startTime?: number
+  endTime?: number
+}
+
+export type { EvidenceMatchPreview }
+
 type AnalysisStatusPanelProps = {
   metadata: AnalysisMetadata
+  evidenceMatches?: EvidenceMatchPreview[]
   busy?: boolean
   error?: string | null
   onReanalyze: () => void
@@ -158,6 +170,7 @@ export const AnalysisStatusPanel = ({
   metadata,
   busy = false,
   error = null,
+  evidenceMatches = [],
   onReanalyze,
 }: AnalysisStatusPanelProps) => {
   const normalized = normalizeAnalysisMetadata(metadata)
@@ -267,6 +280,23 @@ export const AnalysisStatusPanel = ({
             <span key={label} className="meta-pill" style={{ maxWidth: '100%', overflowWrap: 'anywhere' }}>
               {label}: {value}
             </span>
+          ))}
+        </div>
+      )}
+      {evidenceMatches.length > 0 && (
+        <div data-testid="verified-evidence-block" style={{ display: 'grid', gap: '8px' }}>
+          <strong style={{ fontSize: '13px' }}>Verified evidence</strong>
+          {evidenceMatches.map((match, index) => (
+            <div
+              key={`${match.speaker ?? 'speaker'}-${match.startTime ?? index}`}
+              style={{ border: '1px solid #e2e8f0', borderRadius: '6px', padding: '8px', fontSize: '13px' }}
+            >
+              <span className="meta-pill" data-testid="evidence-verification-badge">
+                {match.verificationStatus ?? 'unverified'}
+              </span>
+              <div>{match.speaker} · {match.startTime}s–{match.endTime}s</div>
+              <div style={{ color: '#334155' }}>{match.snippet}</div>
+            </div>
           ))}
         </div>
       )}

@@ -3,6 +3,7 @@ import type { TranscriptSegment } from '../../hooks/useRealtimeMeetingStream'
 import { ApiError, getSavedAnalysis, getTranscript, reanalyzeMeetingAnalysis } from '../../services/api'
 import { normalizeAnalysisResponse, type AiAnalysis } from '../../types'
 import { normalizePersistedTranscriptForView } from '../../utils/transcript'
+import { collectEvidenceMatchesFromAnalysis } from '../../utils/evidenceMatches'
 import { AnalysisPanel } from '../analysis/AnalysisPanel'
 import { AnalysisStatusPanel, normalizeAnalysisMetadata } from '../analysis/AnalysisStatusPanel'
 import AiAssistant from '../dashboard/AiAssistant'
@@ -345,6 +346,12 @@ export default function FeatureAnalysis({
     () => (effectiveAnalysis ? normalizeAnalysisResponse(effectiveAnalysis) : null),
     [effectiveAnalysis],
   )
+  const analysisEvidenceMatches = useMemo(
+    () => collectEvidenceMatchesFromAnalysis(
+      (hydrateAnalysisMetadata ?? effectiveAnalysis) as Record<string, unknown> | null,
+    ),
+    [hydrateAnalysisMetadata, effectiveAnalysis],
+  )
   const title = meetingTitle || fileName || 'Kết quả phân tích'
   const audioLabel = fileName || meetingTitle || 'audio-file.mp3'
   const hasTranscript = effectiveSegments.length > 0 || effectiveTranscriptText.trim().length > 0
@@ -513,6 +520,7 @@ export default function FeatureAnalysis({
                   <div data-testid="feature-analysis-hydrated-controls">
                     <AnalysisStatusPanel
                       metadata={hydrateAnalysisMetadata ?? hydratedAnalysis}
+                      evidenceMatches={analysisEvidenceMatches}
                       busy={reanalyzeBusy}
                       error={reanalyzeError}
                       onReanalyze={() => void handleReanalyze()}

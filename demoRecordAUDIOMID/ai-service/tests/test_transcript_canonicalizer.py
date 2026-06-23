@@ -7,7 +7,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app.models import Base, Transcript
+from app.models import Base, MeetingAnalysisRun, Transcript
 from app.scripts import backfill_canonical as backfill_module
 from app.services.stt_persistence import (
     TranscriptFragmentInput,
@@ -710,6 +710,72 @@ def test_backfill_uses_persisted_segments_without_external_processing(monkeypatc
                 "text": "segment from storage",
             }
         ]
+    finally:
+        try:
+            session.close()
+        except Exception:
+            pass
+        engine.dispose()
+
+
+def test_backfill_meeting_analysis_run_writes_canonical_and_evidence_stats(monkeypatch):
+    session_local, engine = _make_session_factory()
+    session = session_local()
+    try:
+        meeting_id = 4301
+        session.add(
+            Transcript(
+                meeting_id=meeting_id,
+                speaker="SPEAKER_1",
+                start_time=1.0,
+                end_time=3.0,
+                text="We should finalize the launch plan.",
+            )
+        )
+        completed_at = datetime(2026, 6, 1, 1, 2, 3, tzinfo=timezone.utc)
+        session.add(
+            MeetingAnalysisRun(
+                meeting_id=meeting_id,
+                status="COMPLETED",
+                provider="gemini",
+                model="gemini-2.5-flash",
+                prompt_version="prompt-v1",
+                schema_version="schema-v1",
+                analysis_input_mode="readable_fallback",
+                idempotency_key="backfill-test-4301",
+                created_at=completed_at,
+                updated_at=completed_at,
+                completed_at=completed_at,
+            )
+        )
+        session.commit()
+        _seed_visible_fragments(session, meeting_id)
+        session.close()
+
+        monkeypatch.setattr(backfill_module, "SessionLocal", session_local)
+        outcome = backfill_module.backfill(
+            meeting_id,
+            rebuild_stats=True,
+            generated_at=completed_at,
+        )
+
+        assert outcome.status == "updated"
+        assert outcome.run_id is not None
+        assert outcome.row_count >= 1
+
+        verify_session = session_local()
+        run = (
+            verify_session.query(MeetingAnalysisRun)
+            .filter(MeetingAnalysisRun.meeting_id == meeting_id)
+            .first()
+        )
+        assert run is not None
+        assert isinstance(run.canonical_transcript_rows, list)
+        assert len(run.canonical_transcript_rows) >= 1
+        assert all(row.get("segment_id") for row in run.canonical_transcript_rows)
+        assert isinstance(run.evidence_stats, dict)
+        assert "idf" in run.evidence_stats
+        verify_session.close()
     finally:
         try:
             session.close()

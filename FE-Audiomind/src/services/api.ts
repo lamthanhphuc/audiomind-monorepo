@@ -42,6 +42,8 @@ export type TranscriptEvidenceMatch = TranscriptEvidenceContext & {
   score: number
   rank: number
   matchType: 'phrase' | 'token' | string
+  verificationStatus?: string | null
+  dedupeKey?: string | null
 }
 
 export type TranscriptSearchResponse = {

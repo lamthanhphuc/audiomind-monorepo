@@ -35,6 +35,8 @@ import org.springframework.web.server.ResponseStatusException;
 
 import com.example.processingservice.client.AIServiceClient;
 import com.example.processingservice.client.MeetingServiceClient;
+import com.example.processingservice.config.Epic3FeatureFlags;
+import com.example.processingservice.config.Epic3PolicyLoader;
 import com.example.processingservice.controller.dto.TranscriptEvidenceMatch;
 import com.example.processingservice.controller.dto.TranscriptSearchResponse;
 import com.example.processingservice.controller.dto.ProcessStartResponse;
@@ -93,6 +95,8 @@ public class ProcessingService {
     private final TranscriptEvidenceSearchService transcriptEvidenceSearchService;
     private final MeetingActionPlanBuilder meetingActionPlanBuilder;
     private final MeetingActionPlanDocxGenerator meetingActionPlanDocxGenerator;
+    private final Epic3FeatureFlags epic3FeatureFlags;
+    private final Epic3PolicyLoader epic3PolicyLoader;
     @Value("${processing.analysis.prompt-version:gemini-business-v2}")
     private String analysisPromptVersion;
     @Value("${processing.analysis.schema-version:gemini-business-v2}")
@@ -134,7 +138,9 @@ public class ProcessingService {
                 meetingReportDocxGenerator,
                 new TranscriptEvidenceSearchService(),
                 new MeetingActionPlanBuilder(),
-                new MeetingActionPlanDocxGenerator()
+                new MeetingActionPlanDocxGenerator(),
+                new Epic3FeatureFlags(),
+                new Epic3PolicyLoader(new com.fasterxml.jackson.databind.ObjectMapper())
         );
     }
 
@@ -147,7 +153,9 @@ public class ProcessingService {
             MeetingReportDocxGenerator meetingReportDocxGenerator,
             TranscriptEvidenceSearchService transcriptEvidenceSearchService,
             MeetingActionPlanBuilder meetingActionPlanBuilder,
-            MeetingActionPlanDocxGenerator meetingActionPlanDocxGenerator
+            MeetingActionPlanDocxGenerator meetingActionPlanDocxGenerator,
+            Epic3FeatureFlags epic3FeatureFlags,
+            Epic3PolicyLoader epic3PolicyLoader
     ) {
         this.aiServiceClient = aiServiceClient;
         this.meetingServiceClient = meetingServiceClient;
@@ -157,6 +165,8 @@ public class ProcessingService {
         this.transcriptEvidenceSearchService = transcriptEvidenceSearchService;
         this.meetingActionPlanBuilder = meetingActionPlanBuilder;
         this.meetingActionPlanDocxGenerator = meetingActionPlanDocxGenerator;
+        this.epic3FeatureFlags = epic3FeatureFlags;
+        this.epic3PolicyLoader = epic3PolicyLoader;
     }
 
     @PostConstruct
@@ -324,7 +334,21 @@ public class ProcessingService {
                 currentRequestId(traceId),
                 meetingId
         );
+        triggerCanonicalizeIfEnabled(meetingId, null, traceId, "upload");
         return aiResponse;
+    }
+
+    private void triggerCanonicalizeIfEnabled(Long meetingId, Long runId, String traceId, String source) {
+        if (epic3FeatureFlags == null || !epic3FeatureFlags.isTranscriptQualityEnabled()) {
+            return;
+        }
+        CompletableFuture.runAsync(() -> aiServiceClient.requestCanonicalize(meetingId, runId, traceId));
+        log.info(
+                "event=TRANSCRIPT_QUALITY_CANONICALIZE_ENQUEUED meetingId={} runId={} source={}",
+                meetingId,
+                runId,
+                source
+        );
     }
 
     public Map<String, Object> uploadAudio(MultipartFile file, String traceId) {
@@ -680,7 +704,9 @@ public class ProcessingService {
         TranscriptPayload aiTranscriptPayload = fetchTranscriptPayloadFromAiService(meetingId, traceId);
         TranscriptSourceDecision transcriptDecision = selectReadableTranscriptSource(
                 stateTranscriptPayload,
-                aiTranscriptPayload
+                aiTranscriptPayload,
+                meetingId,
+                traceId
         );
         if (!transcriptDecision.payload().readableRows().isEmpty()) {
             String responseStatus = "NOT_FOUND".equals(stateStatus) ? "COMPLETED" : stateStatus;
@@ -738,7 +764,7 @@ public class ProcessingService {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Transcript is not ready yet.");
         }
 
-        List<Map<String, Object>> stabilizedRows = stabilizeReadableTranscriptRows(payload.readableRows()).rows();
+        List<Map<String, Object>> stabilizedRows = stabilizeReadableTranscriptRows(payload.readableRows(), meetingId).rows();
         TranscriptSearchResponse response = transcriptEvidenceSearchService.searchTranscriptEvidence(
                 meetingId,
                 stabilizedRows,
@@ -747,7 +773,8 @@ public class ProcessingService {
                 payload.canonicalTranscriptHash(),
                 payload.canonicalTranscriptVersion(),
                 effectiveLimit,
-                effectiveContext
+                effectiveContext,
+                buildTranscriptSearchOptions(transcriptDecision.qualityContext())
         );
         long durationMs = Duration.ofNanos(System.nanoTime() - startedAtNanos).toMillis();
         log.info(
@@ -863,7 +890,7 @@ public class ProcessingService {
                 TranscriptExportMode.READABLE
         );
         List<Map<String, Object>> originalTranscriptRows = transcriptPayload.readableRows();
-        StabilizedTranscriptResult stabilizedTranscript = stabilizeReadableTranscriptRows(originalTranscriptRows);
+        StabilizedTranscriptResult stabilizedTranscript = stabilizeReadableTranscriptRows(originalTranscriptRows, meetingId);
         List<Map<String, Object>> transcriptRows = stabilizedTranscript.rows();
         Map<String, Object> state = jobStateStore.getJobState(meetingId).orElse(null);
         Map<String, Object> analysisPayload = extractAnalysisFromState(state);
@@ -900,7 +927,10 @@ public class ProcessingService {
                 analysisPayload,
                 analysisAvailable
         );
-        return meetingReportDocxGenerator.generate(reportData);
+        runExportVerifyPreflight(meetingId, "docx", "readable", transcriptRows.size());
+        byte[] bytes = meetingReportDocxGenerator.generate(reportData);
+        logExportVerifyCompleted(meetingId, "docx", "readable", bytes.length, transcriptRows.size());
+        return bytes;
     }
 
     public MeetingActionPlanData getMeetingActionPlan(Long meetingId, String traceId, String authorization) {
@@ -910,8 +940,16 @@ public class ProcessingService {
     public byte[] generateMeetingActionPlanDocx(Long meetingId, String traceId, String authorization) {
         long startedAtNanos = System.nanoTime();
         MeetingActionPlanData actionPlan = buildMeetingActionPlan(meetingId, traceId, authorization);
+        runExportVerifyPreflight(meetingId, "docx", "readable", actionPlan.actionItems().size());
         byte[] docxBytes = meetingActionPlanDocxGenerator.generate(actionPlan);
         long durationMs = Duration.ofNanos(System.nanoTime() - startedAtNanos).toMillis();
+        logExportVerifyCompleted(
+                meetingId,
+                "docx",
+                "readable",
+                docxBytes.length,
+                actionPlan.actionItems().size()
+        );
         log.info(
                 "event=ACTION_PLAN_EXPORT_REQUEST traceId={} requestId={} meetingId={} format=docx actionItemCount={} evidenceCount={} analysisSource={} docxFileSize={} durationMs={}",
                 traceId,
@@ -942,14 +980,17 @@ public class ProcessingService {
         );
         List<Map<String, Object>> selectedRows = exportMode == TranscriptExportMode.RAW
                 ? savedTranscriptPayload.rawRows()
-                : stabilizeReadableTranscriptRows(savedTranscriptPayload.readableRows()).rows();
+                : stabilizeReadableTranscriptRows(savedTranscriptPayload.readableRows(), meetingId).rows();
         List<MeetingReportData.RawTranscriptRow> transcriptRows = exportMode == TranscriptExportMode.RAW
                 ? buildRawTranscriptRows(selectedRows)
                 : savedTranscriptPayload.isCanonicalMode()
                         ? buildRawTranscriptRows(selectedRows)
                         : buildReadableTranscriptRows(selectedRows);
         String content = buildTranscriptTxt(meetingId, meeting, selectedRows, transcriptRows, exportMode);
-        return content.getBytes(StandardCharsets.UTF_8);
+        runExportVerifyPreflight(meetingId, "txt", exportMode.name().toLowerCase(Locale.ROOT), selectedRows.size());
+        byte[] bytes = content.getBytes(StandardCharsets.UTF_8);
+        logExportVerifyCompleted(meetingId, "txt", exportMode.name().toLowerCase(Locale.ROOT), bytes.length, selectedRows.size());
+        return bytes;
     }
 
     public byte[] generateMeetingTranscriptCsv(Long meetingId, String traceId, String authorization) {
@@ -968,14 +1009,17 @@ public class ProcessingService {
         );
         List<Map<String, Object>> selectedRows = exportMode == TranscriptExportMode.RAW
                 ? savedTranscriptPayload.rawRows()
-                : stabilizeReadableTranscriptRows(savedTranscriptPayload.readableRows()).rows();
+                : stabilizeReadableTranscriptRows(savedTranscriptPayload.readableRows(), meetingId).rows();
         List<MeetingReportData.RawTranscriptRow> transcriptRows = exportMode == TranscriptExportMode.RAW
                 ? buildRawTranscriptRows(selectedRows)
                 : savedTranscriptPayload.isCanonicalMode()
                         ? buildRawTranscriptRows(selectedRows)
                         : buildReadableTranscriptRows(selectedRows);
         String content = buildTranscriptCsv(transcriptRows);
-        return content.getBytes(StandardCharsets.UTF_8);
+        runExportVerifyPreflight(meetingId, "csv", exportMode.name().toLowerCase(Locale.ROOT), selectedRows.size());
+        byte[] bytes = content.getBytes(StandardCharsets.UTF_8);
+        logExportVerifyCompleted(meetingId, "csv", exportMode.name().toLowerCase(Locale.ROOT), bytes.length, selectedRows.size());
+        return bytes;
     }
 
     private MeetingReportData assembleMeetingReportData(
@@ -1103,7 +1147,7 @@ public class ProcessingService {
         );
         List<Map<String, Object>> transcriptRows = transcriptPayload.readableRows().isEmpty()
                 ? List.of()
-                : stabilizeReadableTranscriptRows(transcriptPayload.readableRows()).rows();
+                : stabilizeReadableTranscriptRows(transcriptPayload.readableRows(), meetingId).rows();
         Map<String, Object> state = jobStateStore.getJobState(meetingId).orElse(null);
         Map<String, Object> analysisPayload = extractAnalysisFromState(state);
         if (!hasStructuredAnalysis(analysisPayload) && !transcriptRows.isEmpty()) {
@@ -1178,6 +1222,90 @@ public class ProcessingService {
         return actionPlan.actionItems().stream()
                 .filter(item -> item.evidence() != null)
                 .count();
+    }
+
+    private Map<String, Object> attachEvidenceBlockIfEnabled(
+            Long meetingId,
+            String traceId,
+            String authorization,
+            Map<String, Object> response
+    ) {
+        if (epic3FeatureFlags == null
+                || !epic3FeatureFlags.isEvidenceQaEnabled()
+                || !hasStructuredAnalysis(response)) {
+            return response;
+        }
+        try {
+            MeetingActionPlanData plan = buildMeetingActionPlan(meetingId, traceId, authorization);
+            List<Map<String, Object>> matches = plan.actionItems().stream()
+                    .map(MeetingActionPlanData.ActionItem::evidence)
+                    .filter(java.util.Objects::nonNull)
+                    .map(this::toAnalysisEvidenceMatch)
+                    .toList();
+            if (!matches.isEmpty()) {
+                response.put("evidence", Map.of("matches", matches));
+            }
+        } catch (ResponseStatusException ex) {
+            log.debug("Skipping evidence block for meetingId={} reason={}", meetingId, ex.getReason());
+        }
+        return response;
+    }
+
+    private Map<String, Object> toAnalysisEvidenceMatch(TranscriptEvidenceMatch match) {
+        Map<String, Object> item = new LinkedHashMap<>();
+        if (match.verificationStatus() != null) {
+            item.put("verificationStatus", match.verificationStatus());
+        }
+        item.put("score", match.score());
+        item.put("snippet", match.text());
+        item.put("speaker", match.speaker());
+        item.put("startTime", match.startTime());
+        item.put("endTime", match.endTime());
+        if (match.dedupeKey() != null) {
+            item.put("dedupeKey", match.dedupeKey());
+        }
+        return item;
+    }
+
+    private void runExportVerifyPreflight(Long meetingId, String format, String mode, int rowCount) {
+        if (epic3FeatureFlags == null || !epic3FeatureFlags.isExportVerifyEnabled()) {
+            return;
+        }
+        log.info(
+                "event=EXPORT_VERIFY_STARTED meetingId={} format={} mode={}",
+                meetingId,
+                format,
+                mode
+        );
+        if (rowCount <= 0) {
+            log.warn(
+                    "event=EXPORT_VERIFY_FAILED meetingId={} format={} mode={} errorCode=EMPTY_TRANSCRIPT",
+                    meetingId,
+                    format,
+                    mode
+            );
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "EXPORT_VERIFY_FAILED");
+        }
+    }
+
+    private void logExportVerifyCompleted(
+            Long meetingId,
+            String format,
+            String mode,
+            int byteLength,
+            int rowCount
+    ) {
+        if (epic3FeatureFlags == null || !epic3FeatureFlags.isExportVerifyEnabled()) {
+            return;
+        }
+        log.info(
+                "event=EXPORT_VERIFY_COMPLETED meetingId={} format={} mode={} byteLength={} rowCount={}",
+                meetingId,
+                format,
+                mode,
+                byteLength,
+                rowCount
+        );
     }
 
     private RawTranscriptPreview buildReadableTranscriptPreviewRows(List<Map<String, Object>> transcriptRows) {
@@ -1287,6 +1415,13 @@ public class ProcessingService {
     }
 
     private StabilizedTranscriptResult stabilizeReadableTranscriptRows(List<Map<String, Object>> transcriptRows) {
+        return stabilizeReadableTranscriptRows(transcriptRows, null);
+    }
+
+    private StabilizedTranscriptResult stabilizeReadableTranscriptRows(
+            List<Map<String, Object>> transcriptRows,
+            Long meetingId
+    ) {
         if (transcriptRows == null || transcriptRows.isEmpty()) {
             return new StabilizedTranscriptResult(List.of(), Map.of(), null);
         }
@@ -1339,7 +1474,7 @@ public class ProcessingService {
 
             SpeakerStabilizationCounters counters = new SpeakerStabilizationCounters();
             mergeShortSpeakerIslands(segments, counters);
-            List<SpeakerDisplaySegment> mergedSegments = mergeStableSpeakerSegments(segments, counters);
+            List<SpeakerDisplaySegment> mergedSegments = mergeStableSpeakerSegments(segments, counters, meetingId);
             sortSpeakerSegments(mergedSegments);
 
             LinkedHashSet<String> stableSpeakers = new LinkedHashSet<>();
@@ -1584,7 +1719,8 @@ public class ProcessingService {
 
     private List<SpeakerDisplaySegment> mergeStableSpeakerSegments(
             List<SpeakerDisplaySegment> segments,
-            SpeakerStabilizationCounters counters
+            SpeakerStabilizationCounters counters,
+            Long meetingId
     ) {
         if (segments.isEmpty()) {
             return List.of();
@@ -1602,10 +1738,35 @@ public class ProcessingService {
             if (isTinySpeakerSegment(current) || isTinySpeakerSegment(next)) {
                 counters.mergedTinyFragmentCount++;
             }
+            logMergeNoSegmentIdIfNeeded(meetingId, current);
             current = current.merge(next);
         }
         merged.add(current);
         return merged;
+    }
+
+    private void logMergeNoSegmentIdIfNeeded(Long meetingId, SpeakerDisplaySegment firstSegment) {
+        if (meetingId == null || epic3FeatureFlags == null || !epic3FeatureFlags.isTranscriptQualityEnabled()) {
+            return;
+        }
+        String segmentId = firstNonBlank(firstSegment.row.get("segmentId"), firstSegment.row.get("segment_id"));
+        if (!segmentId.isBlank()) {
+            return;
+        }
+        log.info(
+                "event=TRANSCRIPT_QUALITY_MERGE_NO_SEGMENT_ID meetingId={} mergedStart={} mergedEnd={} speaker={}",
+                meetingId,
+                firstSegment.startTimeSeconds,
+                resolveEnd(firstSegment.startTimeSeconds, firstSegment.endTimeSeconds),
+                firstSegment.stableSpeaker
+        );
+    }
+
+    private List<SpeakerDisplaySegment> mergeStableSpeakerSegments(
+            List<SpeakerDisplaySegment> segments,
+            SpeakerStabilizationCounters counters
+    ) {
+        return mergeStableSpeakerSegments(segments, counters, null);
     }
 
     private boolean canMergeStableSpeakerSegments(SpeakerDisplaySegment current, SpeakerDisplaySegment next) {
@@ -2489,7 +2650,7 @@ public class ProcessingService {
                     meetingId,
                     stateStatus
             );
-            return response;
+            return attachEvidenceBlockIfEnabled(meetingId, traceId, authorization, response);
         }
 
         log.info(
@@ -2518,7 +2679,7 @@ public class ProcessingService {
                     meetingId,
                     response.get("status")
             );
-            return response;
+            return attachEvidenceBlockIfEnabled(meetingId, traceId, authorization, response);
         }
 
         if (!allowLazyTrigger) {
@@ -2989,7 +3150,7 @@ public class ProcessingService {
             String status,
             TranscriptPayload payload
     ) {
-        StabilizedTranscriptResult stabilizedTranscript = stabilizeReadableTranscriptRows(payload.readableRows());
+        StabilizedTranscriptResult stabilizedTranscript = stabilizeReadableTranscriptRows(payload.readableRows(), meetingId);
         Map<String, Object> response = new HashMap<>();
         response.put("meeting_id", meetingId);
         response.put("status", status);
@@ -3025,7 +3186,7 @@ public class ProcessingService {
         Map<String, Object> state = jobStateStore.getJobState(meetingId).orElse(null);
         TranscriptPayload stateTranscriptPayload = buildStateTranscriptPayload(state);
         TranscriptPayload aiTranscriptPayload = fetchTranscriptPayloadFromAiService(meetingId, traceId);
-        return selectReadableTranscriptSource(stateTranscriptPayload, aiTranscriptPayload);
+        return selectReadableTranscriptSource(stateTranscriptPayload, aiTranscriptPayload, meetingId, traceId);
     }
 
     private TranscriptPayload loadSavedTranscriptPayloadForExport(
@@ -3043,7 +3204,7 @@ public class ProcessingService {
                 ? fetchPersistedTranscriptPayloadForExport(meetingId, traceId)
                 : TranscriptPayload.empty();
         TranscriptSourceDecision decision = exportMode == TranscriptExportMode.READABLE
-                ? selectReadableTranscriptSource(statePayload, persistedTranscriptPayload)
+                ? selectReadableTranscriptSource(statePayload, persistedTranscriptPayload, meetingId, traceId)
                 : selectRawTranscriptSource(statePayload, persistedTranscriptPayload);
 
         if (!decision.payload().readableRows().isEmpty()) {
@@ -3072,7 +3233,7 @@ public class ProcessingService {
         Map<String, Object> state = jobStateStore.getJobState(meetingId).orElse(null);
         TranscriptPayload statePayload = buildStateTranscriptPayload(state);
         TranscriptPayload persistedPayload = fetchPersistedTranscriptPayloadForExport(meetingId, traceId);
-        TranscriptSourceDecision decision = selectReadableTranscriptSource(statePayload, persistedPayload);
+        TranscriptSourceDecision decision = selectReadableTranscriptSource(statePayload, persistedPayload, meetingId, traceId);
         log.info(
                 "ANALYSIS_RERUN_TRANSCRIPT_SOURCE meetingId={} source={} rows={}",
                 meetingId,
@@ -3086,16 +3247,88 @@ public class ProcessingService {
             TranscriptPayload statePayload,
             TranscriptPayload persistedPayload
     ) {
+        return selectReadableTranscriptSource(statePayload, persistedPayload, null, null);
+    }
+
+    private TranscriptSourceDecision selectReadableTranscriptSource(
+            TranscriptPayload statePayload,
+            TranscriptPayload persistedPayload,
+            Long meetingId,
+            String traceId
+    ) {
+        if (epic3FeatureFlags != null && epic3FeatureFlags.isTranscriptQualityEnabled() && meetingId != null) {
+            TranscriptQualityContext qualityContext = aiServiceClient.getTranscriptQuality(meetingId, traceId);
+            if (qualityContext.isReady()) {
+                String expectedVersion = epic3PolicyLoader.getPolicy()
+                        .path("transcript")
+                        .path("canonicalVersion")
+                        .asText("canonical-transcript-v2");
+                if (!expectedVersion.equals(qualityContext.canonicalTranscriptVersion())) {
+                    log.warn(
+                            "event=TRANSCRIPT_QUALITY_VERSION_MISMATCH meetingId={} storedVersion={} expectedVersion={}",
+                            meetingId,
+                            qualityContext.canonicalTranscriptVersion(),
+                            expectedVersion
+                    );
+                } else {
+                    List<Map<String, Object>> readableRows = mapQualityRowsToReadable(qualityContext.canonicalTranscriptRows());
+                    TranscriptPayload qualityPayload = new TranscriptPayload(
+                            readableRows,
+                            List.of(),
+                            TRANSCRIPT_MODE_CANONICAL,
+                            qualityContext.canonicalTranscriptVersion(),
+                            qualityContext.canonicalTranscriptHash(),
+                            null
+                    );
+                    return new TranscriptSourceDecision(qualityPayload, "analysis_run_canonical", qualityContext);
+                }
+            } else {
+                log.info(
+                        "event=TRANSCRIPT_QUALITY_NOT_READY meetingId={} reason=celery_pending",
+                        meetingId
+                );
+            }
+        }
         if (persistedPayload.isCanonicalMode() && !persistedPayload.readableRows().isEmpty()) {
-            return new TranscriptSourceDecision(persistedPayload, "ai_persisted_canonical");
+            return new TranscriptSourceDecision(persistedPayload, "ai_persisted_canonical", TranscriptQualityContext.empty());
         }
         if (!statePayload.rawRows().isEmpty()) {
-            return new TranscriptSourceDecision(statePayload, "processing_job_state");
+            return new TranscriptSourceDecision(statePayload, "processing_job_state", TranscriptQualityContext.empty());
         }
         if (!persistedPayload.readableRows().isEmpty()) {
-            return new TranscriptSourceDecision(persistedPayload, "ai_persisted_transcript");
+            return new TranscriptSourceDecision(persistedPayload, "ai_persisted_transcript", TranscriptQualityContext.empty());
         }
-        return new TranscriptSourceDecision(TranscriptPayload.empty(), "none");
+        return new TranscriptSourceDecision(TranscriptPayload.empty(), "none", TranscriptQualityContext.empty());
+    }
+
+    private List<Map<String, Object>> mapQualityRowsToReadable(List<Map<String, Object>> rows) {
+        List<Map<String, Object>> mapped = new ArrayList<>();
+        for (Map<String, Object> row : rows) {
+            if (row == null) {
+                continue;
+            }
+            Map<String, Object> copy = new HashMap<>(row);
+            if (copy.containsKey("startTime") && !copy.containsKey("start_time")) {
+                copy.put("start_time", copy.get("startTime"));
+            }
+            if (copy.containsKey("endTime") && !copy.containsKey("end_time")) {
+                copy.put("end_time", copy.get("endTime"));
+            }
+            if (copy.containsKey("segmentId") && !copy.containsKey("segment_id")) {
+                copy.put("segment_id", copy.get("segmentId"));
+            }
+            mapped.add(copy);
+        }
+        return mapped;
+    }
+
+    private TranscriptSearchOptions buildTranscriptSearchOptions(TranscriptQualityContext qualityContext) {
+        return new TranscriptSearchOptions(
+                epic3FeatureFlags != null && epic3FeatureFlags.isEvidenceQaEnabled(),
+                epic3FeatureFlags != null && epic3FeatureFlags.isSearchVerifyEnabled(),
+                epic3PolicyLoader == null ? null : epic3PolicyLoader.getPolicy(),
+                qualityContext == null ? TranscriptQualityContext.empty() : qualityContext
+        );
     }
 
     private TranscriptSourceDecision selectRawTranscriptSource(
@@ -3584,7 +3817,12 @@ public class ProcessingService {
 
         TranscriptPayload statePayload = buildStateTranscriptPayload(state);
         TranscriptPayload persistedPayload = fetchTranscriptPayloadFromAiService(meetingId, traceId);
-        TranscriptSourceDecision transcriptDecision = selectReadableTranscriptSource(statePayload, persistedPayload);
+        TranscriptSourceDecision transcriptDecision = selectReadableTranscriptSource(
+                statePayload,
+                persistedPayload,
+                meetingId,
+                traceId
+        );
         List<Map<String, Object>> transcriptRows = transcriptDecision.payload().readableRows();
 
         String transcriptText = buildTranscriptText(transcriptRows);
@@ -4185,7 +4423,14 @@ public class ProcessingService {
         }
     }
 
-    private record TranscriptSourceDecision(TranscriptPayload payload, String source) {
+    private record TranscriptSourceDecision(
+            TranscriptPayload payload,
+            String source,
+            TranscriptQualityContext qualityContext
+    ) {
+        TranscriptSourceDecision(TranscriptPayload payload, String source) {
+            this(payload, source, TranscriptQualityContext.empty());
+        }
     }
 
     private record AnalysisTriggerResult(String status, String errorCode, int retryAfterSeconds) {

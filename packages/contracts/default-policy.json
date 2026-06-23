@@ -1,0 +1,35 @@
+{
+  "version": "1.0.0",
+  "transcript": {
+    "canonicalVersion": "canonical-transcript-v2",
+    "shortSegmentMaxWords": 3,
+    "mergeMaxGapSeconds": 5,
+    "displayGroupingEnabled": true
+  },
+  "search": {
+    "minQueryLength": 2,
+    "minTokenLength": 2,
+    "maxLimit": 50,
+    "maxContext": 3,
+    "phraseMinLength": 4,
+    "maxScanSegments": 2000,
+    "scanPreference": "recent"
+  },
+  "evidence": {
+    "minScore": 0.35,
+    "dedupeWindowSeconds": 2.0,
+    "maxMatchesPerActionItem": 1,
+    "speakerBoost": 1.1,
+    "positionNormDecay": 0.5
+  },
+  "export": {
+    "supportedFormats": ["txt", "csv", "docx"],
+    "defaultTranscriptMode": "readable",
+    "includeEvidenceNotes": true
+  },
+  "lexicon": {
+    "defaultDomainPack": "general",
+    "supportedDomainPacks": ["general", "legal", "finance", "healthcare", "it"],
+    "disabledTerms": []
+  }
+}

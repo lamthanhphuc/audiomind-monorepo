@@ -1,0 +1,9 @@
+{
+  "idf": {
+    "hop_dong": 0.693,
+    "luat_su": 0.405
+  },
+  "segment_count": 42,
+  "computed_at": "2026-06-22T10:00:00Z",
+  "canonical_version": "canonical-transcript-v2"
+}

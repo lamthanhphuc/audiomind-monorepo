@@ -272,3 +272,59 @@ def analysis_retry_scheduled() -> int:
                 safe_error_message(dispatch_error),
             )
     return dispatched
+
+
+@celery_app.task(
+    name="app.tasks.canonicalize_and_persist",
+    autoretry_for=(Exception,),
+    retry_backoff=60,
+    max_retries=3,
+)
+def canonicalize_and_persist(meeting_id: int, run_id: int) -> dict:
+    """Persist canonical transcript rows + evidence stats on meeting_analysis_runs."""
+    import time
+
+    from app.services.canonical_persist_service import canonicalize_and_persist_run
+
+    db = SessionLocal()
+    started = time.perf_counter()
+    try:
+        return canonicalize_and_persist_run(db, meeting_id, run_id)
+    except Exception as exc:
+        duration_ms = int((time.perf_counter() - started) * 1000)
+        logger.error(
+            "event=TRANSCRIPT_QUALITY_PERSIST_FAILED meetingId={} errorCode={} durationMs={}",
+            meeting_id,
+            type(exc).__name__,
+            duration_ms,
+        )
+        raise
+    finally:
+        db.close()
+
+
+@celery_app.task(name="app.tasks.canonicalize_deferred_retry")
+def canonicalize_deferred_retry(meeting_id: int, attempt: int = 1) -> dict:
+    """Retry run resolution when no analysis run exists yet (§5.3.1)."""
+    from app.services.canonical_persist_service import resolve_latest_run_id
+
+    db = SessionLocal()
+    try:
+        run_id = resolve_latest_run_id(db, meeting_id)
+        if run_id is None:
+            if attempt >= 5:
+                logger.warning(
+                    "event=TRANSCRIPT_QUALITY_SKIP_NO_RUN meetingId={} attemptCount={}",
+                    meeting_id,
+                    attempt,
+                )
+                return {"status": "skipped", "attempt": attempt}
+            canonicalize_deferred_retry.apply_async(
+                args=[meeting_id, attempt + 1],
+                countdown=5,
+            )
+            return {"status": "deferred", "attempt": attempt}
+
+        return canonicalize_and_persist(meeting_id, run_id)
+    finally:
+        db.close()

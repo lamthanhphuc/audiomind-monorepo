@@ -129,6 +129,8 @@ from app.upload_validation_policy import (
 )
 from app.routes.stt_stream import validate_stream_chunk
 from app.routes.upload import validate_upload_mime
+from app.routes.internal_meetings import router as internal_meetings_router
+from app.routes.config_lexicon import router as config_lexicon_router
 from app.tasks import process_meeting
 
 try:
@@ -338,6 +340,9 @@ def _retry_guard_snapshot_from_actor(actor: MeetingSessionActor) -> dict[str, ob
 settings = get_settings()
 
 app = FastAPI(lifespan=lifespan)
+
+app.include_router(internal_meetings_router)
+app.include_router(config_lexicon_router)
 
 _stt_adapter: DeepgramSTTAdapter | None = None
 _stt_stream_sessions: dict[str, MeetingSessionActor] = {}

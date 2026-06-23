@@ -143,6 +143,8 @@ class MeetingAnalysisRun(Base):
     analysis_provider_alias = Column(String(32), nullable=True)
     analysis_trace_id = Column(String(64), nullable=True)
     analysis_input_hash = Column(String(64), nullable=True)
+    canonical_transcript_rows = Column(JSON, nullable=True)
+    evidence_stats = Column(JSON, nullable=True)
 
 
 class GlossaryEntry(Base):

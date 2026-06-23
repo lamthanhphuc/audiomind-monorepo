@@ -62,7 +62,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get transcript payload by meeting/job identifier */
+        /**
+         * Get transcript payload by meeting/job identifier (legacy)
+         * @deprecated
+         * @description Prefer GET /processing/{meetingId}/transcript
+         */
         get: operations["getProcessingTranscript"];
         put?: never;
         post?: never;
@@ -98,6 +102,108 @@ export interface paths {
         };
         /** Export saved transcript as readable or raw TXT/CSV */
         get: operations["exportRawTranscript"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/processing/{meetingId}/transcript": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get saved transcript by meeting identifier */
+        get: operations["getMeetingTranscript"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/processing/{meetingId}/transcript/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Search transcript evidence */
+        get: operations["searchMeetingTranscriptEvidence"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/processing/{meetingId}/action-plan": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get grouped action plan preview */
+        get: operations["getMeetingActionPlan"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/processing/{meetingId}/action-plan/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Export action plan as DOCX */
+        get: operations["exportMeetingActionPlan"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/processing/{meetingId}/report": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Export meeting report as DOCX */
+        get: operations["exportMeetingReport"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/config/transcript-quality": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get transcript quality policy (Epic 3) */
+        get: operations["getTranscriptQualityPolicy"];
         put?: never;
         post?: never;
         delete?: never;
@@ -226,6 +332,63 @@ export interface components {
             actionItems: string[];
             /** @enum {string} */
             domainMode: "general" | "it" | "business" | "education";
+            evidence?: components["schemas"]["EvidenceBlock"];
+        };
+        EvidenceBlock: {
+            matches?: components["schemas"]["AnalysisEvidenceMatch"][];
+        };
+        AnalysisEvidenceMatch: {
+            verificationStatus?: string;
+            score?: number;
+            snippet?: string;
+            speaker?: string;
+            startTime?: number;
+            endTime?: number;
+            dedupeKey?: string;
+        };
+        TranscriptEvidenceMatch: {
+            evidenceId?: string;
+            segmentId?: string;
+            index?: number;
+            speaker?: string;
+            startTime?: number;
+            endTime?: number;
+            text?: string;
+            textTruncated?: boolean;
+            score?: number;
+            rank?: number;
+            matchType?: string;
+            verificationStatus?: string;
+            dedupeKey?: string;
+        };
+        TranscriptSearchResponse: {
+            /** Format: int64 */
+            meetingId: number;
+            query: string;
+            normalizedQuery?: string;
+            transcriptMode?: string;
+            canonicalTranscriptHash?: string | null;
+            canonicalTranscriptVersion?: string | null;
+            matches: components["schemas"]["TranscriptEvidenceMatch"][];
+        };
+        ActionPlanResponse: {
+            meeting?: {
+                [key: string]: unknown;
+            };
+            actionItems?: ({
+                task?: string;
+                evidence?: components["schemas"]["TranscriptEvidenceMatch"];
+            } & {
+                [key: string]: unknown;
+            })[];
+            groupedActionPlan?: {
+                [key: string]: unknown;
+            };
+            analysisMetadata?: {
+                [key: string]: unknown;
+            };
+        } & {
+            [key: string]: unknown;
         };
         TechnicalTerm: {
             term: string;
@@ -388,6 +551,146 @@ export interface operations {
                 content: {
                     "text/plain": string;
                     "text/csv": string;
+                };
+            };
+        };
+    };
+    getMeetingTranscript: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                meetingId: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Transcript payload */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TranscriptPayload"];
+                };
+            };
+        };
+    };
+    searchMeetingTranscriptEvidence: {
+        parameters: {
+            query: {
+                q: string;
+                limit?: number;
+                context?: number;
+            };
+            header?: never;
+            path: {
+                meetingId: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Transcript search response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TranscriptSearchResponse"];
+                };
+            };
+        };
+    };
+    getMeetingActionPlan: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                meetingId: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Action plan preview */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ActionPlanResponse"];
+                };
+            };
+        };
+    };
+    exportMeetingActionPlan: {
+        parameters: {
+            query?: {
+                format?: "docx";
+            };
+            header?: never;
+            path: {
+                meetingId: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Action plan DOCX */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": string;
+                };
+            };
+        };
+    };
+    exportMeetingReport: {
+        parameters: {
+            query?: {
+                format?: "docx";
+            };
+            header?: never;
+            path: {
+                meetingId: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Meeting report DOCX */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": string;
+                };
+            };
+        };
+    };
+    getTranscriptQualityPolicy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Transcript quality policy JSON */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
                 };
             };
         };

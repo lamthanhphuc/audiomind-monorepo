@@ -26,6 +26,27 @@ describe('AnalysisStatusPanel', () => {
     })
   }
 
+  it('renders verified evidence block when matches provided', () => {
+    renderPanel({
+      metadata: { analysisStatus: 'COMPLETED' },
+      evidenceMatches: [
+        {
+          verificationStatus: 'verified',
+          score: 0.9,
+          snippet: 'Hợp đồng đã ký',
+          speaker: 'SPEAKER_1',
+          startTime: 10,
+          endTime: 15,
+        },
+      ],
+      onReanalyze: vi.fn(),
+    })
+
+    expect(container.querySelector('[data-testid="verified-evidence-block"]')).toBeTruthy()
+    expect(container.querySelector('[data-testid="evidence-verification-badge"]')?.textContent).toBe('verified')
+    expect(container.textContent).toContain('Hợp đồng đã ký')
+  })
+
   it('renders completed metadata', () => {
     renderPanel({
       metadata: {
