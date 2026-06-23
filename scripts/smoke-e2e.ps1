@@ -2,6 +2,7 @@ param(
     [string]$AudioFile = "D:\Bin\EXE101\Thu_muc_moi\smoke-short-12s.wav",
     [string]$AiBaseUrl = "http://localhost:8000",
     [string]$ProcessingBaseUrl = "http://localhost:8082",
+    [string]$MeetingBaseUrl = "http://localhost:8081",
     [string]$UserServiceBaseUrl = "http://localhost:8083",
     [string]$E2EUsername = "e2e_test_user",
     [string]$E2EPassword = "Test@123456",
@@ -176,6 +177,21 @@ if ($missing.Count -gt 0) {
 
 Write-Step "Required containers found: ai=$($resolved.ai), redis=$($resolved.redis), worker=$($resolved.worker), processing=$($resolved.processing)"
 
+function Resolve-MeetingId {
+    param([object]$MeetingResponse)
+
+    if ($null -eq $MeetingResponse) {
+        throw "Meeting response was empty"
+    }
+    if ($MeetingResponse.PSObject.Properties.Name -contains "id") {
+        return [int]$MeetingResponse.id
+    }
+    if ($MeetingResponse.PSObject.Properties.Name -contains "meetingId") {
+        return [int]$MeetingResponse.meetingId
+    }
+    throw "Meeting response missing id"
+}
+
 try {
     Write-Step "Step 0 Acquire JWT from user-service"
     $processingHeaders = Get-ProcessingAuthHeaders -BaseUrl $UserServiceBaseUrl -Username $E2EUsername -Password $E2EPassword
@@ -184,6 +200,13 @@ try {
         throw "Audio file not found: $AudioFile"
     }
 
+    Write-Step "Step 0.5 Create owned meeting in meeting-service"
+    $ownedMeeting = Invoke-Api -Method "POST" -Url "$MeetingBaseUrl/meetings/realtime" -Headers $processingHeaders -Body @{
+        title = "smoke-test"
+        language = "vi"
+    }
+    $meetingId = Resolve-MeetingId -MeetingResponse $ownedMeeting
+
     Write-Step "Step 1 Upload file: $AudioFile"
     $upload = Invoke-RestMethod -Method Post -Uri "$ProcessingBaseUrl/processing/upload" -Headers $processingHeaders -Form @{ file = Get-Item -LiteralPath $AudioFile }
     if (-not $upload.audio_path) {
@@ -191,7 +214,6 @@ try {
     }
     $report.Flow.Upload = "OK"
 
-    $meetingId = [int](Get-Date -UFormat %s)
     $fileId = [string]$upload.audio_path
     $processBody = @{
         meeting_id = $meetingId
@@ -408,6 +430,13 @@ catch {
     $aiLogs | Set-Content -LiteralPath "$debugDir/smoke-ai.log"
     $processingLogs | Set-Content -LiteralPath "$debugDir/smoke-processing.log"
     $redisKeys | Set-Content -LiteralPath "$debugDir/smoke-redis-keys.log"
+
+    Write-Host "[SMOKE] --- ai-api logs (tail) ---"
+    Write-Host $aiLogs
+    Write-Host "[SMOKE] --- processing-api logs (tail) ---"
+    Write-Host $processingLogs
+    Write-Host "[SMOKE] --- celery-worker logs (tail) ---"
+    Write-Host $workerLogs
 }
 
 $reportPath = "logs/smoke-test-report.md"
