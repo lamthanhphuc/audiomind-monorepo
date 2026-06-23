@@ -60,6 +60,9 @@ jobs:
       - name: Validate schema
         run: npm run validate:schema
 
+      - name: Validate transcript quality policy
+        run: npm run validate:policy
+
       - name: OpenAPI diff
         run: npm run check:openapi
 

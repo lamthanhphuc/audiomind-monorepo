@@ -48,6 +48,9 @@ jobs:
         run: |
           npm ci
 
+      - name: Validate transcript quality policy
+        run: npm run validate:policy
+
       - name: Lint (TS)
         run: |
           npm run lint
@@ -145,6 +148,9 @@ jobs:
       - name: Validate schemas
         run: |
           npm run validate:schema
+
+      - name: Validate transcript quality policy
+        run: npm run validate:policy
 
       - name: Check OpenAPI breaking changes
         run: |
