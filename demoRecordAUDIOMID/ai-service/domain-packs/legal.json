@@ -1,0 +1,12 @@
+{
+  "domain": "legal",
+  "version": "1.0.0",
+  "versionHash": "legal-v1",
+  "terms": [
+    { "term": "hợp đồng", "normalized": "hop_dong", "category": "legal" },
+    { "term": "luật sư", "normalized": "luat_su", "category": "legal" }
+  ],
+  "normalizationMap": {
+    "hop dong": "hop_dong"
+  }
+}
