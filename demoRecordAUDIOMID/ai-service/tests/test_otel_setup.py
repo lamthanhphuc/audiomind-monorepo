@@ -1,5 +1,8 @@
-import app.otel_setup as otel_setup
 import pytest
+
+pytest.importorskip("opentelemetry")
+
+import app.otel_setup as otel_setup
 from opentelemetry import trace
 
 
