@@ -15,7 +15,9 @@ def reset_tracer_provider():
 
 def _patch_in_memory_otel_export(monkeypatch):
     from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
 
     memory = InMemorySpanExporter()
 
@@ -84,7 +86,9 @@ def test_bind_trace_id_attribute_on_active_span(monkeypatch):
 
     from opentelemetry.sdk.trace import TracerProvider
     from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
 
     exporter = InMemorySpanExporter()
     provider = TracerProvider()
