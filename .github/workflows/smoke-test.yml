@@ -59,6 +59,10 @@ jobs:
             $env:JWT_SECRET
           }
           "JWT_SECRET=$jwt" | Out-File -FilePath $env:GITHUB_ENV -Append
+          (Get-Content demoRecordAUDIOMID/ai-service/.env) `
+            -replace '^JWT_SECRET=.*', "JWT_SECRET=$jwt" `
+            | Set-Content demoRecordAUDIOMID/ai-service/.env
+          Add-Content demoRecordAUDIOMID/ai-service/.env "GEMINI_CLIENT_TEST_MODE=fault_injection"
           if (-not [string]::IsNullOrWhiteSpace($env:DEEPGRAM_API_KEY)) {
             (Get-Content demoRecordAUDIOMID/ai-service/.env) `
               -replace '^DEEPGRAM_API_KEY=.*', "DEEPGRAM_API_KEY=$($env:DEEPGRAM_API_KEY)" |
@@ -86,11 +90,47 @@ jobs:
             Start-Sleep -Seconds (5 * $attempt)
           }
 
+      - name: Wait for stack health
+        if: steps.check-e2e-secrets.outputs.skip_e2e != 'true'
+        shell: pwsh
+        run: |
+          $deadline = (Get-Date).AddMinutes(5)
+          $targets = @(
+            'http://localhost:8000/health',
+            'http://localhost:8082/health',
+            'http://localhost:8082/actuator/health',
+            'http://localhost:8083/actuator/health'
+          )
+          $ready = $false
+          while ((Get-Date) -lt $deadline) {
+            $ready = $true
+            foreach ($url in $targets) {
+              try {
+                Invoke-RestMethod -Method Get -Uri $url -TimeoutSec 5 | Out-Null
+              } catch {
+                $ready = $false
+                break
+              }
+            }
+            if ($ready) {
+              Write-Host "All health endpoints ready"
+              break
+            }
+            Start-Sleep -Seconds 5
+          }
+          if (-not $ready) {
+            docker compose -f infra/docker-compose.dev.yml ps
+            docker compose -f infra/docker-compose.dev.yml logs ai-api --tail 200
+            throw "Stack health endpoints not ready before smoke test"
+          }
+
       - name: Debug - Collect service logs on failure
         if: failure()
         shell: pwsh
         run: |
           docker compose -f infra/docker-compose.dev.yml ps
+          docker compose -f infra/docker-compose.dev.yml logs ai-api --tail 500
+          docker compose -f infra/docker-compose.dev.yml logs processing-api --tail 200
           docker compose -f infra/docker-compose.dev.yml logs user-api --tail 500
           docker compose -f infra/docker-compose.dev.yml logs db --tail 100
 

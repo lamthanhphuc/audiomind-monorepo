@@ -1928,7 +1928,7 @@ class MeetingWebSocketHandlerTest {
                 any(byte[].class),
                 anyLong(),
                 eq("vi"),
-                any(Boolean.class),
+                eq(false),
                 isNull(),
                 eq("Bearer test-token")
         )).thenReturn(Map.of("transcript", "chunk", "is_final", false, "language", "vi"));
