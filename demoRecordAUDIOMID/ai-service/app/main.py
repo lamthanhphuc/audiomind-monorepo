@@ -4065,9 +4065,10 @@ async def process_audio(
             error_type,
             safe_error_message(e),
         )
-        if error_type in {"OperationalError", "ConnectionError"} or "kombu" in str(
-            type(e).__module__
-        ).lower():
+        if (
+            error_type in {"OperationalError", "ConnectionError"}
+            or "kombu" in str(type(e).__module__).lower()
+        ):
             raise HTTPException(
                 status_code=503,
                 detail="Task broker unavailable. request_id={request_id}",
