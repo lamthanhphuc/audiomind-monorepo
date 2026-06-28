@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "scripts": {
     "prepare": "husky install",
+    "postinstall": "npm ci --prefix FE-Audiomind --no-audit --no-fund",
     "clean:docker": "powershell -ExecutionPolicy Bypass -File ./scripts/docker-clean-deep.ps1",
     "docker:clean": "npm run clean:docker",
     "clean:docker:sh": "bash ./scripts/docker-clean.sh",

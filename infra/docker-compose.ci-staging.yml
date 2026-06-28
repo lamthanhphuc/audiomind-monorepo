@@ -28,6 +28,8 @@ services:
       EPIC3_SEARCH_VERIFY_ENABLED: "true"
       EPIC3_EXPORT_VERIFY_ENABLED: "true"
       GEMINI_SHARED_COOLDOWN_ENABLED: "false"
+    ports: !override
+      - "127.0.0.1:8000:8000"
 
   celery-worker:
     environment:
