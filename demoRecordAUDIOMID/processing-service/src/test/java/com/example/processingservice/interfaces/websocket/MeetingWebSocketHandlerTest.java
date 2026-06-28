@@ -1946,7 +1946,7 @@ class MeetingWebSocketHandlerTest {
         handler.handleBinaryMessage(session, new BinaryMessage(ByteBuffer.wrap(new byte[] {1, 2})));
         assertTrue(realtimeAudioWorkerRegistry.contains("ws-session-1"));
 
-        when(aiServiceClient.streamAudioChunk(
+        lenient().when(aiServiceClient.streamAudioChunk(
                 eq(907L),
                 argThat(bytes -> bytes != null && bytes.length == 0),
                 eq(-1L),

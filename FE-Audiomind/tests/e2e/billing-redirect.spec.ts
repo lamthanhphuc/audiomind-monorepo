@@ -1,7 +1,11 @@
 import { expect, test } from '@playwright/test'
 import { loginWithCredentials, requireRealBackendEnv } from './helpers/auth'
 
+const payosEnabled = process.env.SMOKE_PAYOS_ENABLED === '1'
+
 test.describe('Billing PayOS redirect', () => {
+  test.skip(!payosEnabled, 'PayOS billing UI is disabled in CI smoke stack')
+
   test('billing success route polls activation and shows notice', async ({ page }) => {
     const { username, password } = requireRealBackendEnv()
 
