@@ -74,6 +74,14 @@ async function mockMeetingTranscriptApis(page: Page): Promise<void> {
       }),
     })
   })
+
+  await page.route('**/processing/*/action-plan/export**', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/octet-stream',
+      body: Buffer.from('mock-action-plan-export'),
+    })
+  })
 }
 
 test.describe('Google integration', () => {
