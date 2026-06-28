@@ -386,10 +386,6 @@ export interface components {
             topic?: string;
             glossary_terms?: string[];
             language?: string;
-            /** @enum {string} */
-            domain_mode?: "general" | "it" | "business" | "education";
-            /** @enum {string} */
-            domainMode?: "general" | "it" | "business" | "education";
         };
         ProcessResponse: {
             /** Format: int64 */
@@ -455,8 +451,6 @@ export interface components {
             reason?: string;
             transcript?: string;
             transcript_hash?: string;
-            domain_mode?: string;
-            domainMode?: string;
         };
         TermExplainRequest: {
             term?: string;
@@ -508,8 +502,6 @@ export interface components {
             meeting_id: number;
             transcript: string;
             source?: string;
-            domain_mode?: string;
-            domainMode?: string;
             transcript_hash?: string;
             prompt_version?: string;
             schema_version?: string;
