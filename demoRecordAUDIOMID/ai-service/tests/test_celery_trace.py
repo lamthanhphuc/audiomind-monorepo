@@ -1,7 +1,5 @@
 """Tests for Celery OTEL trace bridge (Beta-Ops L2)."""
 
-from unittest.mock import patch
-
 import pytest
 
 from app.observability.celery_trace import celery_task_span

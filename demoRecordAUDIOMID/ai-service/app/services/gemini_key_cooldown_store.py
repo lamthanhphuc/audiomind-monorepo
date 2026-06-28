@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 from math import ceil
-from typing import Callable, Protocol
+from typing import Protocol
 
 
 class GeminiKeyCooldownStore(Protocol):

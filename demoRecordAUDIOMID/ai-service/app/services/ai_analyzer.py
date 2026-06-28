@@ -19,7 +19,6 @@ from app.services.analysis_errors import (
     AnalysisNotImplementedError,
     AnalysisParseError,
     AnalysisProviderError,
-    AnalysisRateLimitError,
     AnalysisUnavailableError,
 )
 from app.services.gemini_fault_injection import resolve_gemini_http_client_factory

@@ -348,12 +348,6 @@ components:
             type: string
         language:
           type: string
-        domain_mode:
-          type: string
-          enum: [general, it, business, education]
-        domainMode:
-          type: string
-          enum: [general, it, business, education]
     ProcessResponse:
       type: object
       required:
@@ -494,10 +488,6 @@ components:
           type: string
         transcript_hash:
           type: string
-        domain_mode:
-          type: string
-        domainMode:
-          type: string
     TermExplainRequest:
       type: object
       properties:
@@ -584,10 +574,6 @@ components:
         transcript:
           type: string
         source:
-          type: string
-        domain_mode:
-          type: string
-        domainMode:
           type: string
         transcript_hash:
           type: string
