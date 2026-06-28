@@ -19,6 +19,7 @@ services:
       REALTIME_VALIDATION_ENABLED: "true"
       ERROR_UX_ENABLED: "true"
       REALTIME_REDIS_STREAMS_ENABLED: "false"
+      CORS_ALLOWED_ORIGINS: "http://localhost:8080,http://127.0.0.1:8080,http://localhost:5173,http://127.0.0.1:5173"
 
   ai-api:
     environment:
@@ -44,6 +45,11 @@ services:
     environment:
       PAYOS_ENABLED: ${PAYOS_ENABLED:-false}
       GOOGLE_OAUTH_ENABLED: ${GOOGLE_OAUTH_ENABLED:-false}
+      CORS_ALLOWED_ORIGINS: "http://localhost:8080,http://127.0.0.1:8080,http://localhost:5173,http://127.0.0.1:5173"
+
+  meeting-api:
+    environment:
+      CORS_ALLOWED_ORIGINS: "http://localhost:8080,http://127.0.0.1:8080,http://localhost:5173,http://127.0.0.1:5173"
 
   web:
     build:
