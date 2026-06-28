@@ -10,8 +10,13 @@ pytest.importorskip("testcontainers")
 
 from testcontainers.redis import RedisContainer  # noqa: E402
 
-from app.services.gemini_key_cooldown_store import RedisGeminiKeyCooldownStore  # noqa: E402
-from app.services.gemini_key_manager import GeminiKeyEntry, GeminiKeyManager  # noqa: E402
+from app.services.gemini_key_cooldown_store import (
+    RedisGeminiKeyCooldownStore,
+)  # noqa: E402
+from app.services.gemini_key_manager import (
+    GeminiKeyEntry,
+    GeminiKeyManager,
+)  # noqa: E402
 
 
 @pytest.fixture(scope="module")

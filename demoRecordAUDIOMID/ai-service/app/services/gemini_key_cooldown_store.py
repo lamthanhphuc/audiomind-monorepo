@@ -6,11 +6,9 @@ from typing import Protocol
 
 
 class GeminiKeyCooldownStore(Protocol):
-    def cooldown_remaining(self, alias: str, *, now: float) -> float:
-        ...
+    def cooldown_remaining(self, alias: str, *, now: float) -> float: ...
 
-    def apply_cooldown(self, alias: str, *, seconds: float) -> None:
-        ...
+    def apply_cooldown(self, alias: str, *, seconds: float) -> None: ...
 
 
 class InMemoryGeminiKeyCooldownStore:

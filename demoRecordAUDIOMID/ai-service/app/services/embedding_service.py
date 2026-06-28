@@ -34,13 +34,19 @@ def embed_text(settings, content: str) -> list[float] | None:
     try:
         import google.generativeai as genai
 
-        api_key = getattr(settings, "gemini_api_key", None) or os.getenv("GEMINI_API_KEY")
+        api_key = getattr(settings, "gemini_api_key", None) or os.getenv(
+            "GEMINI_API_KEY"
+        )
         if not api_key:
             return None
         genai.configure(api_key=api_key)
         model = os.getenv("GEMINI_EMBEDDING_MODEL", "models/text-embedding-004")
         result = genai.embed_content(model=model, content=normalized[:6000])
-        values = result.get("embedding") if isinstance(result, dict) else getattr(result, "embedding", None)
+        values = (
+            result.get("embedding")
+            if isinstance(result, dict)
+            else getattr(result, "embedding", None)
+        )
         if isinstance(values, dict):
             values = values.get("values")
         if not isinstance(values, list):
@@ -61,8 +67,7 @@ def upsert_meeting_embedding(
     session: Session = SessionLocal()
     try:
         session.execute(
-            text(
-                """
+            text("""
                 INSERT INTO meeting_semantic_embeddings (meeting_id, user_id, embedding, content_preview, updated_at)
                 VALUES (:meeting_id, :user_id, CAST(:embedding AS jsonb), :content_preview, now())
                 ON CONFLICT (meeting_id) DO UPDATE SET
@@ -70,8 +75,7 @@ def upsert_meeting_embedding(
                     embedding = EXCLUDED.embedding,
                     content_preview = EXCLUDED.content_preview,
                     updated_at = now()
-                """
-            ),
+                """),
             {
                 "meeting_id": meeting_id,
                 "user_id": user_id,
@@ -82,7 +86,9 @@ def upsert_meeting_embedding(
         session.commit()
     except Exception as error:
         session.rollback()
-        logger.warning("embedding_upsert_failed meetingId={} error={}", meeting_id, error)
+        logger.warning(
+            "embedding_upsert_failed meetingId={} error={}", meeting_id, error
+        )
     finally:
         session.close()
 
@@ -93,13 +99,11 @@ def load_embeddings_for_meetings(meeting_ids: list[int]) -> dict[int, list[float
     session: Session = SessionLocal()
     try:
         rows = session.execute(
-            text(
-                """
+            text("""
                 SELECT meeting_id, embedding
                 FROM meeting_semantic_embeddings
                 WHERE meeting_id = ANY(:meeting_ids)
-                """
-            ),
+                """),
             {"meeting_ids": meeting_ids},
         ).fetchall()
         result: dict[int, list[float]] = {}
@@ -186,7 +190,11 @@ def embedding_rerank_meetings(
                 [
                     str(item.get("title") or ""),
                     str(item.get("summary") or ""),
-                    str(item.get("groupedPlanExcerpt") or item.get("grouped_plan_excerpt") or ""),
+                    str(
+                        item.get("groupedPlanExcerpt")
+                        or item.get("grouped_plan_excerpt")
+                        or ""
+                    ),
                 ]
             ).strip()
             vector = embed_text(settings, haystack)

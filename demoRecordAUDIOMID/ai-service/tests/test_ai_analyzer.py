@@ -149,8 +149,14 @@ def test_normalize_gemini_structured_analysis_does_not_invent_owner_or_due_date(
 def test_resolve_analysis_domain_mode_prefers_metadata_over_default():
     analyzer = AIAnalyzer(api_key="", provider="gemini", analysis_domain_mode="it")
 
-    assert analyzer._resolve_analysis_domain_mode({"domainMode": "education"}) == "education"
-    assert analyzer._resolve_analysis_domain_mode({"domain_mode": "business"}) == "business"
+    assert (
+        analyzer._resolve_analysis_domain_mode({"domainMode": "education"})
+        == "education"
+    )
+    assert (
+        analyzer._resolve_analysis_domain_mode({"domain_mode": "business"})
+        == "business"
+    )
     assert analyzer._resolve_analysis_domain_mode({"domainMode": "invalid"}) == "it"
     assert analyzer._resolve_analysis_domain_mode(None) == "it"
 

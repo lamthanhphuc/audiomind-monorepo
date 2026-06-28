@@ -7,7 +7,9 @@ from app.observability.celery_trace import celery_task_span
 
 def test_celery_task_span_logs_when_otel_disabled(monkeypatch):
     monkeypatch.setenv("OTEL_SDK_DISABLED", "true")
-    with celery_task_span("canonicalize_and_persist", meeting_id=42, trace_id="trace-42"):
+    with celery_task_span(
+        "canonicalize_and_persist", meeting_id=42, trace_id="trace-42"
+    ):
         pass
 
 

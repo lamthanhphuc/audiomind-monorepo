@@ -49,7 +49,11 @@ def semantic_rerank_meetings(
                 "meetingId": meeting_id,
                 "title": str(item.get("title") or item.get("originalFileName") or ""),
                 "summary": str(item.get("summary") or "")[:1200],
-                "groupedPlan": str(item.get("groupedPlanExcerpt") or item.get("grouped_plan_excerpt") or "")[:1200],
+                "groupedPlan": str(
+                    item.get("groupedPlanExcerpt")
+                    or item.get("grouped_plan_excerpt")
+                    or ""
+                )[:1200],
             }
         )
 
@@ -113,7 +117,11 @@ def _keyword_fallback(query: str, items: list[dict[str, Any]]) -> list[dict[str,
                 str(item.get("title") or ""),
                 str(item.get("originalFileName") or ""),
                 str(item.get("summary") or ""),
-                str(item.get("groupedPlanExcerpt") or item.get("grouped_plan_excerpt") or ""),
+                str(
+                    item.get("groupedPlanExcerpt")
+                    or item.get("grouped_plan_excerpt")
+                    or ""
+                ),
             ]
         ).lower()
         if not haystack.strip():
@@ -161,7 +169,10 @@ def ask_cross_meeting(
     try:
         analyzer = build_analysis_analyzer(settings)
     except AnalysisConfigError:
-        lines = [f"- Meeting #{item.get('meetingId')}: {item.get('title') or item.get('reason')}" for item in items[:5]]
+        lines = [
+            f"- Meeting #{item.get('meetingId')}: {item.get('title') or item.get('reason')}"
+            for item in items[:5]
+        ]
         return {
             "answer": "Các meeting liên quan:\n" + "\n".join(lines),
             "provider": "fallback",
@@ -183,5 +194,11 @@ def ask_cross_meeting(
         return {"answer": (answer or "").strip(), "provider": "gemini"}
     except Exception as error:
         logger.warning("cross_meeting_ask_failed error={}", error)
-        lines = [f"- #{item.get('meetingId')}: {item.get('reason') or item.get('title')}" for item in items[:5]]
-        return {"answer": "Tóm tắt từ semantic search:\n" + "\n".join(lines), "provider": "fallback"}
+        lines = [
+            f"- #{item.get('meetingId')}: {item.get('reason') or item.get('title')}"
+            for item in items[:5]
+        ]
+        return {
+            "answer": "Tóm tắt từ semantic search:\n" + "\n".join(lines),
+            "provider": "fallback",
+        }

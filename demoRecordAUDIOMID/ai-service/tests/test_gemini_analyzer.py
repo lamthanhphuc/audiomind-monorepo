@@ -855,7 +855,11 @@ def test_gemini_analyzer_retries_without_schema_after_invalid_json(monkeypatch):
     }
     invalid_response = _FakeResponse(
         200,
-        {"candidates": [{"content": {"parts": [{"text": '{"summary": "broken", bad}'}]}}]},
+        {
+            "candidates": [
+                {"content": {"parts": [{"text": '{"summary": "broken", bad}'}]}}
+            ]
+        },
     )
     valid_response = _FakeResponse(
         200,
@@ -1293,9 +1297,7 @@ def test_gemini_analyzer_max_tokens_retries_with_8192_when_primary_budget_is_409
                     "candidates": [
                         {
                             "finishReason": "MAX_TOKENS",
-                            "content": {
-                                "parts": [{"text": '{"summary":"truncated"}'}]
-                            },
+                            "content": {"parts": [{"text": '{"summary":"truncated"}'}]},
                         }
                     ],
                     "usageMetadata": {"candidatesTokenCount": 4084},
@@ -1760,4 +1762,3 @@ def test_normalize_gemini_proxy_url_resolves_host_docker_internal(monkeypatch):
     )
 
     assert normalized == "http://192.168.65.254:7890"
-

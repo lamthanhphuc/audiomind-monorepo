@@ -47,7 +47,11 @@ def celery_task_span(
             f"celery.{task_name}",
             attributes={
                 "audiomind.task": task_name,
-                **({"audiomind.meeting_id": meeting_id} if meeting_id is not None else {}),
+                **(
+                    {"audiomind.meeting_id": meeting_id}
+                    if meeting_id is not None
+                    else {}
+                ),
             },
         )
         span.__enter__()

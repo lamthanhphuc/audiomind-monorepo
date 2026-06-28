@@ -1127,7 +1127,10 @@ class ProcessingPipeline:
                 from app.services.user_quota_client import enforce_gemini_quota
 
                 enforce_gemini_quota(owner_user_id, formatted_transcript)
-                analysis_metadata = {"source": "upload", "domainMode": domain_mode or "it"}
+                analysis_metadata = {
+                    "source": "upload",
+                    "domainMode": domain_mode or "it",
+                }
                 analysis_result = self.ai_analyzer.analyze_meeting(
                     formatted_transcript,
                     metadata=analysis_metadata,

@@ -3040,8 +3040,14 @@ async def meeting_chat(
     question = str(payload.get("question") or "").strip()
     summary = str(payload.get("summary") or "")
     transcript_excerpt = str(payload.get("transcript_excerpt") or "")
-    analysis = payload.get("analysis") if isinstance(payload.get("analysis"), dict) else {}
-    source_segments = payload.get("source_segments") if isinstance(payload.get("source_segments"), list) else []
+    analysis = (
+        payload.get("analysis") if isinstance(payload.get("analysis"), dict) else {}
+    )
+    source_segments = (
+        payload.get("source_segments")
+        if isinstance(payload.get("source_segments"), list)
+        else []
+    )
     from app.services.meeting_chat_service import answer_meeting_question
 
     result = answer_meeting_question(
@@ -3064,10 +3070,14 @@ async def meeting_chat(
 async def semantic_rerank_endpoint(payload: dict = Body(...)):
     settings = get_settings()
     query = str(payload.get("query") or "").strip()
-    candidates = payload.get("candidates") if isinstance(payload.get("candidates"), list) else []
+    candidates = (
+        payload.get("candidates") if isinstance(payload.get("candidates"), list) else []
+    )
     from app.services.semantic_search_service import semantic_rerank_meetings
 
-    result = semantic_rerank_meetings(settings=settings, query=query, candidates=candidates)
+    result = semantic_rerank_meetings(
+        settings=settings, query=query, candidates=candidates
+    )
     return result
 
 
@@ -3075,7 +3085,9 @@ async def semantic_rerank_endpoint(payload: dict = Body(...)):
 async def cross_meeting_ask_endpoint(payload: dict = Body(...)):
     settings = get_settings()
     question = str(payload.get("question") or "").strip()
-    meetings = payload.get("meetings") if isinstance(payload.get("meetings"), list) else []
+    meetings = (
+        payload.get("meetings") if isinstance(payload.get("meetings"), list) else []
+    )
     from app.services.semantic_search_service import ask_cross_meeting
 
     return ask_cross_meeting(settings=settings, question=question, meetings=meetings)
@@ -3090,7 +3102,9 @@ async def explain_meeting_term_endpoint(
     term = str(payload.get("term") or "").strip()
     summary = str(payload.get("summary") or "")
     transcript_excerpt = str(payload.get("transcript_excerpt") or "")
-    analysis = payload.get("analysis") if isinstance(payload.get("analysis"), dict) else {}
+    analysis = (
+        payload.get("analysis") if isinstance(payload.get("analysis"), dict) else {}
+    )
     from app.services.meeting_chat_service import explain_meeting_term
 
     result = explain_meeting_term(

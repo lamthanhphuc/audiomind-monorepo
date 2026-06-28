@@ -2576,9 +2576,7 @@ NỘI DUNG:
             )
 
             started_at = time.time()
-            result = self._analyze_with_gemini(
-                truncated_transcript, metadata=metadata
-            )
+            result = self._analyze_with_gemini(truncated_transcript, metadata=metadata)
             logger.info(
                 "GEMINI_ANALYSIS_RESPONSE_PARSED provider=gemini model={} source={} durationMs={}",
                 self.model,

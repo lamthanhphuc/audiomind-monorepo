@@ -20,7 +20,11 @@ def answer_meeting_question(
 ) -> dict[str, Any]:
     normalized_question = (question or "").strip()
     if not normalized_question:
-        return {"answer": "Hãy nhập câu hỏi về nội dung cuộc họp.", "provider": "rules", "source_segments": []}
+        return {
+            "answer": "Hãy nhập câu hỏi về nội dung cuộc họp.",
+            "provider": "rules",
+            "source_segments": [],
+        }
 
     segments = source_segments or []
     try:
@@ -28,7 +32,9 @@ def answer_meeting_question(
     except AnalysisConfigError as error:
         logger.warning("meeting_chat_config_error error={}", error)
         return {
-            "answer": _fallback_answer(summary, transcript_excerpt, normalized_question, segments),
+            "answer": _fallback_answer(
+                summary, transcript_excerpt, normalized_question, segments
+            ),
             "provider": "fallback",
             "source_segments": segments,
         }
@@ -42,9 +48,9 @@ def answer_meeting_question(
         "Bạn là trợ lý cuộc họp Audiomind. Trả lời ngắn gọn, chính xác, bằng tiếng Việt "
         "trừ khi người dùng hỏi bằng tiếng Anh. Chỉ dựa trên summary, analysis JSON, transcript excerpt "
         "và source_segments. Khi trích dẫn, dùng định dạng: "
-        "\"Tên người nói — nguồn HH:MM:SS\" hoặc \"Speaker — nguồn HH:MM:SS\". "
+        '"Tên người nói — nguồn HH:MM:SS" hoặc "Speaker — nguồn HH:MM:SS". '
         "Không bịa timestamp hoặc speaker ngoài dữ liệu. "
-        "Trả về JSON: {\"answer\": string, \"source_segments\": [{\"speaker\", \"startTime\", \"quote\", \"segmentId\"?}]}."
+        'Trả về JSON: {"answer": string, "source_segments": [{"speaker", "startTime", "quote", "segmentId"?}]}.'
     )
     prompt = (
         f"Câu hỏi: {normalized_question}\n\n"
@@ -66,23 +72,40 @@ def answer_meeting_question(
         parsed = json.loads(raw) if isinstance(raw, str) else raw
         if isinstance(parsed, dict):
             answer = str(parsed.get("answer") or "").strip()
-            structured_segments = parsed.get("source_segments") or parsed.get("sourceSegments")
+            structured_segments = parsed.get("source_segments") or parsed.get(
+                "sourceSegments"
+            )
             merged_segments = segments
             if isinstance(structured_segments, list) and structured_segments:
-                merged_segments = _normalize_structured_segments(structured_segments, segments)
+                merged_segments = _normalize_structured_segments(
+                    structured_segments, segments
+                )
             if answer:
-                return {"answer": answer, "provider": "gemini", "source_segments": merged_segments}
-        raise AnalysisUnavailableError("Empty structured chat response", provider="gemini")
+                return {
+                    "answer": answer,
+                    "provider": "gemini",
+                    "source_segments": merged_segments,
+                }
+        raise AnalysisUnavailableError(
+            "Empty structured chat response", provider="gemini"
+        )
     except Exception as error:
         logger.warning("meeting_chat_failed error={}", error)
         return {
-            "answer": _fallback_answer(summary_text, excerpt, normalized_question, segments),
+            "answer": _fallback_answer(
+                summary_text, excerpt, normalized_question, segments
+            ),
             "provider": "fallback",
             "source_segments": segments,
         }
 
 
-def _fallback_answer(summary: str, excerpt: str, question: str, segments: list[dict[str, Any]] | None = None) -> str:
+def _fallback_answer(
+    summary: str,
+    excerpt: str,
+    question: str,
+    segments: list[dict[str, Any]] | None = None,
+) -> str:
     lowered = question.lower()
     if summary and ("tóm tắt" in lowered or "summary" in lowered):
         return f"Tóm tắt cuộc họp:\n{summary}"
@@ -188,7 +211,9 @@ def explain_meeting_term(
         )
         cleaned = (answer or "").strip()
         if not cleaned:
-            raise AnalysisUnavailableError("Empty term explain response", provider="gemini")
+            raise AnalysisUnavailableError(
+                "Empty term explain response", provider="gemini"
+            )
         return {"explanation": cleaned, "provider": "gemini", "term": normalized_term}
     except Exception as error:
         logger.warning("term_explain_failed error={}", error)

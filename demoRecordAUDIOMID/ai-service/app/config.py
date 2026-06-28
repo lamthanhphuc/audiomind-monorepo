@@ -70,7 +70,9 @@ class Settings(BaseSettings):
     )
     quota_fail_open: bool = Field(
         default=True,
-        validation_alias=AliasChoices("QUOTA_FAIL_OPEN",),
+        validation_alias=AliasChoices(
+            "QUOTA_FAIL_OPEN",
+        ),
     )
 
     # Deepgram

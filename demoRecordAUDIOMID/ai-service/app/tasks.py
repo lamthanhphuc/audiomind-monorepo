@@ -180,7 +180,9 @@ def process_meeting(payload: dict) -> None:
 
                 summary_text = ""
                 if isinstance(analysis, dict):
-                    summary_text = str(analysis.get("summary") or analysis.get("meetingSummary") or "")
+                    summary_text = str(
+                        analysis.get("summary") or analysis.get("meetingSummary") or ""
+                    )
                 index_meeting_for_search(
                     settings=app_settings,
                     meeting_id=meeting_id,
@@ -310,7 +312,9 @@ def canonicalize_and_persist(meeting_id: int, run_id: int) -> dict:
     from app.services.canonical_persist_service import canonicalize_and_persist_run
 
     trace_id = f"canonicalize-{meeting_id}-{run_id}"
-    with celery_task_span("canonicalize_and_persist", meeting_id=meeting_id, trace_id=trace_id):
+    with celery_task_span(
+        "canonicalize_and_persist", meeting_id=meeting_id, trace_id=trace_id
+    ):
         db = SessionLocal()
         started = time.perf_counter()
         try:
@@ -336,7 +340,9 @@ def canonicalize_deferred_retry(meeting_id: int, attempt: int = 1) -> dict:
     from app.services.canonical_persist_service import resolve_latest_run_id
 
     trace_id = f"canonicalize-deferred-{meeting_id}-a{attempt}"
-    with celery_task_span("canonicalize_deferred_retry", meeting_id=meeting_id, trace_id=trace_id):
+    with celery_task_span(
+        "canonicalize_deferred_retry", meeting_id=meeting_id, trace_id=trace_id
+    ):
         db = SessionLocal()
         try:
             run_id = resolve_latest_run_id(db, meeting_id)

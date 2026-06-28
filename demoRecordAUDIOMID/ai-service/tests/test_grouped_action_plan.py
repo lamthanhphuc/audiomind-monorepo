@@ -19,7 +19,9 @@ def _load_ai_analyzer_type():
         module_path = (
             Path(__file__).resolve().parents[1] / "app" / "services" / "ai_analyzer.py"
         )
-        spec = importlib.util.spec_from_file_location("ai_analyzer_grouped", module_path)
+        spec = importlib.util.spec_from_file_location(
+            "ai_analyzer_grouped", module_path
+        )
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         _AI_ANALYZER_TYPE = module.AIAnalyzer
@@ -74,9 +76,7 @@ def test_normalize_grouped_action_plan_caps_sections_and_dedupes_tasks(analyzer)
 
     assert len(normalized["sections"]) <= 8
     titles = [
-        item["title"]
-        for section in normalized["sections"]
-        for item in section["items"]
+        item["title"] for section in normalized["sections"] for item in section["items"]
     ]
     assert titles.count("Chuẩn bị demo") == 1
     assert normalized["version"] == GROUPED_ACTION_PLAN_FEATURE_SET
@@ -180,9 +180,7 @@ def test_stale_reason_when_analysis_feature_set_changes():
         schema_version=SCHEMA_VERSION,
         analysis_input_mode=ANALYSIS_INPUT_MODE_CANONICAL,
         speaker_stabilization_version="speaker-stabilization-v1",
-        analysis_payload_json={
-            "analysisFeatureSet": "legacy-v2-without-grouped-plan"
-        },
+        analysis_payload_json={"analysisFeatureSet": "legacy-v2-without-grouped-plan"},
     )
 
     reason = stale_reason_for_identity(identity, run)
