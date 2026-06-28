@@ -1,10 +1,17 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import StudioAuthPage from '../components/auth/StudioAuthPage'
 import DashboardLayout, { type DashboardScene } from '../components/dashboard/DashboardLayout'
 import FeatureAnalysis from '../components/features/FeatureAnalysis'
 import FeatureUpload from '../components/features/FeatureUpload'
 import MeetingHistoryScene from '../components/features/MeetingHistoryScene'
+import FeatureIntegrations from '../components/features/FeatureIntegrations'
+import ExpansionDashboardScene from '../components/features/ExpansionDashboardScene'
 import RealtimeDashboardScene from '../components/features/RealtimeDashboardScene'
+import { LoadingState } from '../components/ui/LoadingState'
+
+const BillingScene = lazy(() => import('../components/features/BillingScene'))
+const FeatureMindmap = lazy(() => import('../components/features/FeatureMindmap'))
+const KnowledgeVaultScene = lazy(() => import('../components/features/KnowledgeVaultScene'))
 import { useAudioRecorder, type AudioRecorderState } from '../hooks/useAudioRecorder'
 import {
     DEFAULT_REALTIME_LANGUAGE,
@@ -34,17 +41,56 @@ import {
     BROWSER_TAB_CAPTURE_TELEMETRY,
     DEFAULT_RECORDING_SOURCE,
     isBrowserTabRecordingSource,
+    REALTIME_FOCUS_MEET_CAPTURE_KEY,
+    REALTIME_MEET_CAPTURE_TITLE_KEY,
     RECORDING_SOURCE_ERRORS,
     getRecordingSourceTinyChunkError,
+    type RealtimeMeetCaptureContext,
     type RecordingSource,
 } from '../constants/recordingSource'
-import { ApiError, createRealtimeMeeting, getAnalysis, getProcessingStatus, getTranscript, listMeetingsWithParams, reanalyzeMeetingAnalysis, startProcessingByPath, submitRealtimeFinalAudioFallback, uploadToMeetingApi } from '../services/api'
-import { validateUploadFile } from '../hooks/useUpload'
-import { resolveErrorPresentation } from '../constants/errorCatalog'
+import { normalizeDomainMode, type DomainMode } from '../constants/domainMode'
+import { isOnboardingDismissed, loadUserPreferences, saveUserPreferences, applyServerDomainMode } from '../utils/userPreferences'
+import {
+  applyParsedStudioRoute,
+  buildStudioPath,
+  parseStudioRouteFromLocation,
+  pushStudioRoute,
+  resolveStudioRedirectAfter,
+  type ParsedStudioRoute,
+} from '../utils/studioRouting'
+import {
+  appendOpenMeetingQuery,
+  applyPostAuthDestination,
+  buildInviteGoogleRedirectAfter,
+  readOpenMeetingId,
+  resolvePostAuthDestination,
+  resolveDestinationFromRedirectAfter,
+} from '../utils/inviteAuth'
+import { INVITE_ACCESS_NOTICE, probeInvitedMeetingAccess } from '../utils/inviteAccess'
+import { returnToOAuthOpener, subscribeOAuthComplete } from '../utils/oauthCallbackHandoff'
+import { ApiError, createRealtimeMeeting, getAnalysis, getProcessingStatus, getSavedAnalysis, getTranscript, getUserProfile, listMeetingsWithParams, reanalyzeMeetingAnalysis, startProcessingByPath, submitRealtimeFinalAudioFallback, updateUserPreferences, uploadToMeetingApi } from '../services/api'
+import { resolveBatchPipelineErrorCode, resolveErrorPresentation } from '../constants/errorCatalog'
 import { ERROR_UX_ENABLED } from '../services/config'
+import { validateUploadFile } from '../hooks/useUpload'
 import { getBundledUploadConfig } from '../services/configService'
 import type { Meeting } from '../types'
-import { clearAccessToken, getAccessToken, getCurrentUserId, login, register, setAccessToken } from '../services/auth'
+import {
+  clearAccessToken,
+  exchangeGoogleLoginTicket,
+  getAccessToken,
+  getCurrentUserId,
+  getGoogleLoginUrl,
+  getJwtPlan,
+  login,
+  refreshAccessToken,
+  register,
+  setAccessToken,
+} from '../services/auth'
+import {
+  getGoogleStatus,
+  needsGoogleIntegrationGrant,
+  redirectToFullGoogleLink,
+} from '../services/googleIntegration'
 import {
     REALTIME_MIC_SENSITIVITY,
     REALTIME_MIN_FALLBACK_AUDIO_BYTES,
@@ -70,6 +116,39 @@ import {
     normalizePersistedTranscriptSegments,
     sortTranscriptSegmentsByTimeline,
 } from '../utils/transcript'
+
+const resolveZoomCallbackMessage = (reason: string | null): string => {
+  switch ((reason || '').toLowerCase()) {
+    case 'provider_error':
+      return 'Zoom từ chối yêu cầu. Hãy thử lại hoặc kiểm tra app OAuth trên Zoom Marketplace.'
+    case 'missing_code':
+      return 'Không nhận được mã xác thực từ Zoom. Hãy thử kết nối lại.'
+    case 'zoom_account_already_linked':
+      return 'Tài khoản Zoom này đã được liên kết với người dùng khác.'
+    case 'zoom_oauth_not_configured':
+      return 'Zoom chưa được cấu hình trên server. Liên hệ quản trị viên.'
+    default:
+      return 'Kết nối Zoom thất bại. Hãy thử lại.'
+  }
+}
+
+const resolveTeamsCallbackMessage = (reason: string | null, kind: 'linked' | 'error'): string => {
+  if (kind === 'linked') {
+    return 'Đã kết nối Microsoft Teams thành công. Chọn cloud recording để import.'
+  }
+  switch ((reason || '').toLowerCase()) {
+    case 'provider_error':
+      return 'Microsoft từ chối yêu cầu. Hãy thử lại hoặc kiểm tra app Azure AD.'
+    case 'missing_code':
+      return 'Không nhận được mã xác thực từ Microsoft. Hãy thử kết nối lại.'
+    case 'teams_account_already_linked':
+      return 'Tài khoản Microsoft này đã được liên kết với người dùng khác.'
+    case 'teams_oauth_not_configured':
+      return 'Teams chưa được cấu hình trên server. Liên hệ quản trị viên.'
+    default:
+      return 'Kết nối Teams thất bại. Hãy thử lại.'
+  }
+}
 
 export { DEFAULT_REALTIME_LANGUAGE } from '../hooks/useRealtimeMeetingStream'
 export { getStatusBadgeClass } from '../utils/statusBadge'
@@ -127,6 +206,11 @@ type RealtimeConnectionView = {
 
 type AuthRoute = 'login' | 'register'
 
+type GoogleCallbackState = 'idle' | 'processing' | 'linking'
+
+const GOOGLE_LOGIN_ENABLED = import.meta.env.VITE_GOOGLE_LOGIN_ENABLED === 'true'
+const PAYOS_ENABLED = import.meta.env.VITE_PAYOS_ENABLED === 'true'
+
 const resolveAuthRouteFromLocation = (): AuthRoute => {
   if (typeof window !== 'undefined' && window.location.pathname === '/register') {
     return 'register'
@@ -136,6 +220,24 @@ const resolveAuthRouteFromLocation = (): AuthRoute => {
 
 const resolveAuthPath = (route: AuthRoute): string => {
   return route === 'register' ? '/register' : '/'
+}
+
+const readInitialStudioRoute = (): ParsedStudioRoute => {
+  if (typeof window === 'undefined') {
+    return { scene: 'upload', meetingId: null }
+  }
+  return parseStudioRouteFromLocation() ?? { scene: 'upload', meetingId: null }
+}
+
+const resolveGoogleLoginError = (errorCode: string | null): string => {
+  switch (errorCode) {
+    case 'GOOGLE_EMAIL_CONFLICT':
+      return 'Email này đã tồn tại. Hãy đăng nhập bằng mật khẩu rồi kết nối Google.'
+    case 'GOOGLE_OAUTH_STATE_INVALID':
+      return 'Phiên xác thực Google không hợp lệ. Vui lòng thử lại.'
+    default:
+      return 'Đăng nhập Google thất bại. Vui lòng thử lại.'
+  }
 }
 
 export const REALTIME_LANGUAGE_OPTIONS: Array<{ value: RealtimeLanguage; label: string }> = [
@@ -150,8 +252,8 @@ export const UPLOAD_LANGUAGE_OPTIONS: Array<{ value: RealtimeLanguage; label: st
 ]
 
 export const REALTIME_SPEAKER_MODE_OPTIONS: Array<{ value: RealtimeSpeakerMode; label: string }> = [
-  { value: 'single', label: 'Single speaker' },
-  { value: 'multiple', label: 'Multiple speakers' },
+  { value: 'single', label: 'Một người nói' },
+  { value: 'multiple', label: 'Nhiều người nói' },
 ]
 
 export const isRealtimeLanguageSelectorDisabled = (lifecycleState: LiveLifecycleState): boolean => {
@@ -425,7 +527,15 @@ const pollUntilCompleted = async (
     }
 
     if (value === 'FAILED') {
-      throw new Error(status.error || 'Processing failed')
+      const errorMessage = status.error || 'Processing failed'
+      const pipelineErrorCode = resolveBatchPipelineErrorCode(errorMessage)
+      if (pipelineErrorCode === 'QUOTA_EXCEEDED') {
+        throw new ApiError(errorMessage, 402, undefined, 'QUOTA_EXCEEDED')
+      }
+      if (pipelineErrorCode) {
+        throw new ApiError(errorMessage, 500, undefined, pipelineErrorCode)
+      }
+      throw new Error(errorMessage)
     }
 
     if (i < maxAttempts - 1) {
@@ -1002,11 +1112,37 @@ const getMeetingLabel = (meeting: Pick<Meeting, 'id' | 'title' | 'originalFileNa
 export default function App() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [selectedUploadLanguage, setSelectedUploadLanguage] = useState<'vi' | 'en' | 'multi'>('vi')
+  const [selectedDomainMode, setSelectedDomainMode] = useState<DomainMode>(() => loadUserPreferences().domainMode)
+  const [showOnboarding, setShowOnboarding] = useState(() => !isOnboardingDismissed())
+  const handleDomainModeChange = useCallback((mode: DomainMode) => {
+    const normalized = normalizeDomainMode(mode)
+    setSelectedDomainMode(normalized)
+    saveUserPreferences({ domainMode: normalized })
+    void updateUserPreferences(normalized).catch(() => {
+      // Local preference still applies when offline or unauthenticated.
+    })
+  }, [])
+  const syncUserPreferencesFromServer = useCallback(async () => {
+    try {
+      const profile = await getUserProfile()
+      const normalized = applyServerDomainMode(profile.domainMode)
+      if (normalized) {
+        setSelectedDomainMode(normalized)
+      }
+    } catch {
+      // Keep local preferences when profile fetch fails.
+    }
+  }, [])
   const [busy, setBusy] = useState(false)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [status, setStatus] = useState('idle')
   const [result, setResult] = useState<ResultView | null>(null)
   const [uploadNotice, setUploadNotice] = useState<string | null>(null)
+  const [zoomIntegrationNotice, setZoomIntegrationNotice] = useState<string | null>(null)
+  const [zoomIntegrationNoticeTone, setZoomIntegrationNoticeTone] = useState<'success' | 'error' | 'info'>('info')
+  const [teamsIntegrationNotice, setTeamsIntegrationNotice] = useState<string | null>(null)
+  const [teamsIntegrationNoticeTone, setTeamsIntegrationNoticeTone] = useState<'success' | 'error' | 'info'>('info')
+  const [historyFocusMeetingId, setHistoryFocusMeetingId] = useState<number | null>(null)
   const [liveMeetingId, setLiveMeetingId] = useState<number | null>(null)
   const [liveError, setLiveError] = useState<string | null>(null)
   const [livePartialWarning, setLivePartialWarning] = useState<string | null>(null)
@@ -1020,6 +1156,9 @@ export default function App() {
   const [authError, setAuthError] = useState('')
   const [authNotice, setAuthNotice] = useState('')
   const [authRoute, setAuthRoute] = useState<AuthRoute>(resolveAuthRouteFromLocation)
+  const [googleCallbackState, setGoogleCallbackState] = useState<GoogleCallbackState>(() =>
+    window.location.pathname === '/auth/google/success' ? 'processing' : 'idle',
+  )
   const [registerUsername, setRegisterUsername] = useState('')
   const [registerEmail, setRegisterEmail] = useState('')
   const [registerPassword, setRegisterPassword] = useState('')
@@ -1027,8 +1166,23 @@ export default function App() {
   const [registerError, setRegisterError] = useState('')
   const [registerBusy, setRegisterBusy] = useState(false)
   const [isAuthenticated, setIsAuthenticated] = useState(false)
-  const [featureScene, setFeatureScene] = useState<DashboardScene>('upload')
-  const [historyAnalysisMeetingId, setHistoryAnalysisMeetingId] = useState<number | null>(null)
+  const [sessionPlanSyncTick, setSessionPlanSyncTick] = useState(0)
+  const initialStudioRoute = readInitialStudioRoute()
+  const [featureScene, setFeatureScene] = useState<DashboardScene>(initialStudioRoute.scene)
+  const [globalMeetingSearch, setGlobalMeetingSearch] = useState('')
+  const [googleIntegrationNotice, setGoogleIntegrationNotice] = useState<string | null>(null)
+  const [oauthRefreshTick, setOauthRefreshTick] = useState(0)
+  const [billingPaymentNotice, setBillingPaymentNotice] = useState<string | null>(null)
+  const [billingActivationOrderCode, setBillingActivationOrderCode] = useState<number | null>(null)
+  const [mindmapAnalysis, setMindmapAnalysis] = useState<AiAnalysis | null>(null)
+  const [mindmapSelectedMeetingId, setMindmapSelectedMeetingId] = useState<number | null>(
+    initialStudioRoute.scene === 'mindmap' ? initialStudioRoute.meetingId : null,
+  )
+  const [mindmapSelectedTitle, setMindmapSelectedTitle] = useState<string | null>(null)
+  const mindmapAbortRef = useRef<AbortController | null>(null)
+  const [historyAnalysisMeetingId, setHistoryAnalysisMeetingId] = useState<number | null>(
+    initialStudioRoute.scene === 'analysis' ? initialStudioRoute.meetingId : null,
+  )
   const [historyAnalysisTitle, setHistoryAnalysisTitle] = useState<string | null>(null)
   const [recentMeetings, setRecentMeetings] = useState<Meeting[]>([])
   const [recentMeetingsReloadTick, setRecentMeetingsReloadTick] = useState(0)
@@ -1073,11 +1227,14 @@ export default function App() {
     : null
   const realtimeToken = getAccessToken() ?? ''
   const onTabAudioTrackEndedRef = useRef<(() => void) | undefined>(undefined)
+  const recorderTimesliceMs = isBrowserTabRecordingSource(selectedRecordingSource)
+    ? Math.min(REALTIME_RECORDER_TIMESLICE_MS, 120)
+    : REALTIME_RECORDER_TIMESLICE_MS
   const audioRecorder = useAudioRecorder(liveMeetingId, {
     noiseSuppressionEnabled,
     recordingSource: selectedRecordingSource,
     onTrackEnded: () => onTabAudioTrackEndedRef.current?.(),
-    timesliceMs: REALTIME_RECORDER_TIMESLICE_MS,
+    timesliceMs: recorderTimesliceMs,
     preRollWindowMs: REALTIME_PREROLL_ENABLED
       ? Math.max(REALTIME_START_PREROLL_MS, REALTIME_RESUME_PREROLL_MS)
       : 0,
@@ -1101,6 +1258,7 @@ export default function App() {
     sessionToken: activeRealtimeSessionToken,
     language: selectedRealtimeLanguage,
     speakerMode: selectedRealtimeSpeakerMode,
+    domainMode: selectedDomainMode,
     enabled: isAuthenticated && isRealtimeEnabled && featureScene === 'realtime',
     autoReconnect: true,
   })
@@ -1134,6 +1292,14 @@ export default function App() {
       lifecycleState: liveLifecycleState,
     })
   }, [liveLifecycleState, selectedRecordingSource])
+
+  const handleRecordingSourceChange = useCallback((source: RecordingSource) => {
+    const previous = selectedRecordingSourceRef.current
+    setSelectedRecordingSource(source)
+    if (isBrowserTabRecordingSource(source) && !isBrowserTabRecordingSource(previous)) {
+      setSelectedRealtimeSpeakerMode('multiple')
+    }
+  }, [liveLifecycleState])
 
   useEffect(() => {
     const normalizedLanguage = normalizeRealtimeLanguage(selectedRealtimeLanguage)
@@ -1330,7 +1496,7 @@ export default function App() {
 
     if (isBrowserTabRecordingSource(selectedRecordingSourceRef.current)) {
       restartAfterReconnectRef.current = false
-      setLiveError('Mất kết nối realtime trong khi ghi âm tab. Hãy dừng và bắt đầu lại để chọn tab Google Meet.')
+      setLiveError('Mất kết nối realtime trong khi ghi âm tab. Hãy dừng và bắt đầu lại để chọn lại tab trình duyệt.')
       setLiveLifecycleState('error')
       return
     }
@@ -1419,8 +1585,262 @@ export default function App() {
   }, [audioRecorder.state, liveLifecycleState, voiceActivity.state])
 
   useEffect(() => {
-    setIsAuthenticated(Boolean(getAccessToken()))
+    let active = true
+    const path = window.location.pathname
+
+    if (path === '/billing/success') {
+      const orderCode = Number(new URLSearchParams(window.location.search).get('orderCode') || 0)
+      window.history.replaceState({}, '', buildStudioPath('billing'))
+      setIsAuthenticated(Boolean(getAccessToken()))
+      setFeatureScene('billing')
+      setBillingActivationOrderCode(orderCode > 0 ? orderCode : null)
+      if (orderCode <= 0) {
+        setBillingPaymentNotice('Thanh toán PayOS thành công. Đang đồng bộ gói Pro…')
+      }
+      void refreshAccessToken().catch(() => {
+        if (!active) return
+        setBillingPaymentNotice('Thanh toán thành công. Gói đã cập nhật trên server — bấm "Đồng bộ JWT" nếu badge vẫn hiện Free.')
+      })
+    } else if (path === '/billing/cancel') {
+      window.history.replaceState({}, '', buildStudioPath('billing'))
+      setIsAuthenticated(Boolean(getAccessToken()))
+      setFeatureScene('billing')
+      setBillingPaymentNotice('Bạn đã hủy thanh toán. Bạn có thể thử lại bất cứ lúc nào.')
+    } else if (path === '/settings/integrations/google/success') {
+      const redirectAfter = new URLSearchParams(window.location.search).get('redirectAfter')
+      const route = resolveStudioRedirectAfter(redirectAfter)
+      const message = 'Đã kết nối Google và cập nhật quyền truy cập.'
+      if (returnToOAuthOpener({
+        provider: 'google',
+        status: 'success',
+        message,
+        route,
+        tone: 'success',
+      })) {
+        return () => {
+          active = false
+          abortControllerRef.current?.abort()
+          liveAnalysisAbortControllerRef.current?.abort()
+        }
+      }
+      window.history.replaceState({}, '', buildStudioPath(route.scene, { meetingId: route.meetingId }))
+      setIsAuthenticated(Boolean(getAccessToken()))
+      applyParsedStudioRoute(route, {
+        setFeatureScene,
+        setHistoryAnalysisMeetingId,
+        setMindmapSelectedMeetingId,
+      })
+      setGoogleIntegrationNotice(message)
+      setOauthRefreshTick((tick) => tick + 1)
+    } else if (path === '/settings/integrations/google/error') {
+      const errorCode = new URLSearchParams(window.location.search).get('errorCode')
+      const message = errorCode === 'GOOGLE_ACCOUNT_ALREADY_LINKED'
+        ? 'Tài khoản Google này đã được liên kết với người dùng khác.'
+        : 'Không thể kết nối Google. Vui lòng thử lại.'
+      const route: ParsedStudioRoute = { scene: 'integrations', meetingId: null }
+      if (returnToOAuthOpener({
+        provider: 'google',
+        status: 'error',
+        message,
+        route,
+        tone: 'error',
+      })) {
+        return () => {
+          active = false
+          abortControllerRef.current?.abort()
+          liveAnalysisAbortControllerRef.current?.abort()
+        }
+      }
+      window.history.replaceState({}, '', buildStudioPath('integrations'))
+      setIsAuthenticated(Boolean(getAccessToken()))
+      setFeatureScene('integrations')
+      setGoogleIntegrationNotice(message)
+      setOauthRefreshTick((tick) => tick + 1)
+    } else if (path === '/auth/google/success') {
+      const ticket = new URLSearchParams(window.location.search).get('ticket')
+      window.history.replaceState({}, '', '/auth/google/success')
+      if (!ticket) {
+        setGoogleCallbackState('idle')
+        setAuthError('Phiên đăng nhập Google không hợp lệ. Vui lòng thử lại.')
+        window.history.replaceState({}, '', '/')
+      } else {
+        void exchangeGoogleLoginTicket(ticket)
+          .then(async (response) => {
+            if (!active) return
+            setAccessToken(response.token, response.expiresInSeconds)
+            setIsAuthenticated(true)
+            void syncUserPreferencesFromServer()
+            const redirectAfter = response.redirectAfter?.startsWith('/') ? response.redirectAfter : '/studio/upload'
+            const destination = resolveDestinationFromRedirectAfter(redirectAfter)
+            const studioPath = destination.scene === 'analysis'
+              ? buildStudioPath('analysis', { meetingId: destination.meetingId })
+              : buildStudioPath('upload')
+
+            if (destination.scene === 'analysis') {
+              const accessController = new AbortController()
+              const accessTimeout = window.setTimeout(() => accessController.abort(), 3000)
+              try {
+                const access = await probeInvitedMeetingAccess(destination.meetingId, {
+                  signal: accessController.signal,
+                })
+                if (access === 'forbidden') {
+                  setAuthNotice(INVITE_ACCESS_NOTICE)
+                }
+              } finally {
+                window.clearTimeout(accessTimeout)
+              }
+            }
+
+            try {
+              const googleStatus = await getGoogleStatus()
+              if (needsGoogleIntegrationGrant(googleStatus)) {
+                setGoogleCallbackState('linking')
+                await redirectToFullGoogleLink(studioPath)
+                return
+              }
+            } catch {
+              setGoogleIntegrationNotice('Không kiểm tra được quyền Google. Vào Tích hợp và bấm「Kết nối Calendar」trước khi tạo Meet.')
+            }
+
+            window.history.replaceState({}, '', studioPath)
+            applyPostAuthDestination(destination, {
+              setFeatureScene,
+              setHistoryAnalysisMeetingId,
+              setMindmapSelectedMeetingId,
+            })
+            setOauthRefreshTick((tick) => tick + 1)
+            setGoogleCallbackState('idle')
+          })
+          .catch((error) => {
+            if (!active) return
+            setAuthError(error instanceof Error ? error.message : 'Đăng nhập Google thất bại')
+            setGoogleCallbackState('idle')
+            window.history.replaceState({}, '', '/')
+          })
+      }
+    } else if (path === '/auth/google/error') {
+      const errorCode = new URLSearchParams(window.location.search).get('errorCode')
+      window.history.replaceState({}, '', '/')
+      setAuthError(resolveGoogleLoginError(errorCode))
+      setIsAuthenticated(false)
+    } else {
+      const hasToken = Boolean(getAccessToken())
+      setIsAuthenticated(hasToken)
+      if (hasToken) {
+        void refreshAccessToken()
+          .then(() => {
+            if (active) setSessionPlanSyncTick((tick) => tick + 1)
+          })
+          .catch(() => {})
+        void syncUserPreferencesFromServer()
+      }
+      const params = new URLSearchParams(window.location.search)
+      const zoom = params.get('zoom')
+      const teams = params.get('teams')
+      if (zoom || teams) {
+        const redirectAfter = params.get('redirectAfter')
+        const route = resolveStudioRedirectAfter(redirectAfter)
+        if (zoom === 'linked') {
+          const message = 'Đã kết nối Zoom thành công. Chọn cloud recording để import.'
+          if (returnToOAuthOpener({
+            provider: 'zoom',
+            status: 'success',
+            message,
+            route,
+            tone: 'success',
+          })) {
+            return () => {
+              active = false
+              abortControllerRef.current?.abort()
+              liveAnalysisAbortControllerRef.current?.abort()
+            }
+          }
+        } else if (zoom === 'error') {
+          const message = resolveZoomCallbackMessage(params.get('reason'))
+          if (returnToOAuthOpener({
+            provider: 'zoom',
+            status: 'error',
+            message,
+            route,
+            tone: 'error',
+          })) {
+            return () => {
+              active = false
+              abortControllerRef.current?.abort()
+              liveAnalysisAbortControllerRef.current?.abort()
+            }
+          }
+        }
+        if (teams === 'linked') {
+          const message = resolveTeamsCallbackMessage(null, 'linked')
+          if (returnToOAuthOpener({
+            provider: 'teams',
+            status: 'success',
+            message,
+            route,
+            tone: 'success',
+          })) {
+            return () => {
+              active = false
+              abortControllerRef.current?.abort()
+              liveAnalysisAbortControllerRef.current?.abort()
+            }
+          }
+        } else if (teams === 'error') {
+          const message = resolveTeamsCallbackMessage(params.get('reason'), 'error')
+          if (returnToOAuthOpener({
+            provider: 'teams',
+            status: 'error',
+            message,
+            route,
+            tone: 'error',
+          })) {
+            return () => {
+              active = false
+              abortControllerRef.current?.abort()
+              liveAnalysisAbortControllerRef.current?.abort()
+            }
+          }
+        }
+        window.history.replaceState({}, '', buildStudioPath('integrations'))
+        setFeatureScene('integrations')
+        if (zoom === 'linked') {
+          setZoomIntegrationNotice('Đã kết nối Zoom thành công. Chọn cloud recording để import.')
+          setZoomIntegrationNoticeTone('success')
+        } else if (zoom === 'error') {
+          setZoomIntegrationNotice(resolveZoomCallbackMessage(params.get('reason')))
+          setZoomIntegrationNoticeTone('error')
+        }
+        if (teams === 'linked') {
+          setTeamsIntegrationNotice(resolveTeamsCallbackMessage(null, 'linked'))
+          setTeamsIntegrationNoticeTone('success')
+        } else if (teams === 'error') {
+          setTeamsIntegrationNotice(resolveTeamsCallbackMessage(params.get('reason'), 'error'))
+          setTeamsIntegrationNoticeTone('error')
+        }
+      }
+      if (hasToken) {
+        const inviteDestination = resolvePostAuthDestination(params.toString())
+        if (inviteDestination.scene === 'analysis') {
+          applyPostAuthDestination(inviteDestination, {
+            setFeatureScene,
+            setHistoryAnalysisMeetingId,
+            setMindmapSelectedMeetingId,
+          })
+        } else {
+          const studioRoute = parseStudioRouteFromLocation()
+          if (studioRoute) {
+            applyParsedStudioRoute(studioRoute, {
+              setFeatureScene,
+              setHistoryAnalysisMeetingId,
+              setMindmapSelectedMeetingId,
+            })
+          }
+        }
+      }
+    }
     return () => {
+      active = false
       abortControllerRef.current?.abort()
       liveAnalysisAbortControllerRef.current?.abort()
     }
@@ -1443,13 +1863,75 @@ export default function App() {
     liveMeetingIdRef.current = liveMeetingId
   }, [liveMeetingId])
 
+  const navigateFeatureScene = useCallback((
+    scene: DashboardScene,
+    options?: { meetingId?: number | null; replace?: boolean },
+  ) => {
+    setFeatureScene(scene)
+    const meetingId = options?.meetingId
+    if (meetingId != null && Number.isFinite(meetingId) && meetingId > 0) {
+      if (scene === 'analysis') {
+        setHistoryAnalysisMeetingId(meetingId)
+      } else if (scene === 'mindmap') {
+        setMindmapSelectedMeetingId(meetingId)
+      } else if (scene === 'files') {
+        setHistoryFocusMeetingId(meetingId)
+      }
+    }
+    pushStudioRoute(scene, { meetingId, replace: options?.replace })
+  }, [])
+
+  useEffect(() => {
+    const syncStudioRouteFromBrowser = () => {
+      const parsed = parseStudioRouteFromLocation()
+      if (!parsed) return
+      applyParsedStudioRoute(parsed, {
+        setFeatureScene,
+        setHistoryAnalysisMeetingId,
+        setMindmapSelectedMeetingId,
+      })
+    }
+    window.addEventListener('popstate', syncStudioRouteFromBrowser)
+    return () => window.removeEventListener('popstate', syncStudioRouteFromBrowser)
+  }, [])
+
+  useEffect(() => {
+    return subscribeOAuthComplete((event) => {
+      if (event.route) {
+        applyParsedStudioRoute(event.route, {
+          setFeatureScene,
+          setHistoryAnalysisMeetingId,
+          setMindmapSelectedMeetingId,
+        })
+        pushStudioRoute(event.route.scene, { meetingId: event.route.meetingId, replace: true })
+      }
+      if (event.provider === 'google') {
+        setGoogleIntegrationNotice(event.message)
+      } else if (event.provider === 'zoom') {
+        setZoomIntegrationNotice(event.message)
+        setZoomIntegrationNoticeTone(event.tone ?? (event.status === 'success' ? 'success' : 'error'))
+      } else if (event.provider === 'teams') {
+        setTeamsIntegrationNotice(event.message)
+        setTeamsIntegrationNoticeTone(event.tone ?? (event.status === 'success' ? 'success' : 'error'))
+      }
+      setOauthRefreshTick((tick) => tick + 1)
+    })
+  }, [])
+
   const navigateAuthRoute = (route: AuthRoute, replace = false) => {
-    const nextPath = resolveAuthPath(route)
+    const nextPath = appendOpenMeetingQuery(resolveAuthPath(route), window.location.search)
     if (typeof window !== 'undefined') {
       const historyMethod = replace ? 'replaceState' : 'pushState'
       window.history[historyMethod]({}, '', nextPath)
     }
     setAuthRoute(route)
+  }
+
+  const postAuthHandlers = {
+    setFeatureScene,
+    setHistoryAnalysisMeetingId,
+    setMindmapSelectedMeetingId,
+    navigateFeatureScene,
   }
 
   useEffect(() => {
@@ -1473,10 +1955,16 @@ export default function App() {
       })
       setAccessToken(auth.accessToken, auth.expiresInSeconds)
       setIsAuthenticated(true)
-      navigateAuthRoute('login', true)
+      void syncUserPreferencesFromServer()
+      applyPostAuthDestination(resolvePostAuthDestination(), postAuthHandlers)
     } catch (loginError) {
       setAuthError(loginError instanceof Error ? loginError.message : 'Đăng nhập thất bại')
     }
+  }
+
+  const handleGoogleLogin = () => {
+    setAuthError('')
+    window.location.assign(getGoogleLoginUrl(buildInviteGoogleRedirectAfter()))
   }
 
   const handleRegister = async () => {
@@ -1504,18 +1992,11 @@ export default function App() {
       setRegisterBusy(true)
       setRegisterError('')
       setAuthError('')
-      const response = await register({
+      await register({
         username: normalizedUsername,
         email: normalizedEmail,
         password: registerPassword,
       })
-
-      if (response.accessToken) {
-        setAccessToken(response.accessToken, response.expiresInSeconds)
-        setIsAuthenticated(true)
-        navigateAuthRoute('login', true)
-        return
-      }
 
       setAuthNotice('Đăng ký thành công. Vui lòng đăng nhập.')
       setUsername(normalizedUsername)
@@ -1596,6 +2077,12 @@ export default function App() {
     }
   }, [isAuthenticated, recentMeetingsReloadTick])
 
+  useEffect(() => {
+    if (featureScene === 'integrations' && isAuthenticated) {
+      refreshRecentMeetings()
+    }
+  }, [featureScene, isAuthenticated, refreshRecentMeetings])
+
   const analysis = result?.analysis
   const liveTranscriptKeywords = useMemo(() => realtimeStream.keywords.map((keyword) => keyword.keyword), [realtimeStream.keywords])
   const liveTranscriptSegments = hydratedLiveTranscriptSegments ?? realtimeStream.transcripts
@@ -1630,16 +2117,81 @@ export default function App() {
   }, [liveMeetingId, featureScene])
 
   useEffect(() => {
+    if (featureScene !== 'upload') {
+      setZoomIntegrationNotice(null)
+      setTeamsIntegrationNotice(null)
+    }
+    if (featureScene !== 'files') {
+      setHistoryFocusMeetingId(null)
+    }
     if (featureScene !== 'analysis') {
       setHistoryAnalysisMeetingId(null)
       setHistoryAnalysisTitle(null)
     }
   }, [featureScene])
 
+  useEffect(() => {
+    if (featureScene !== 'mindmap') {
+      return undefined
+    }
+
+    const mindmapMeetingId = mindmapSelectedMeetingId
+      ?? result?.meetingId
+      ?? liveMeetingId
+      ?? recentMeetings[0]?.id
+      ?? null
+
+    if (!mindmapMeetingId) {
+      setMindmapAnalysis(null)
+      return undefined
+    }
+
+    mindmapAbortRef.current?.abort()
+    const controller = new AbortController()
+    mindmapAbortRef.current = controller
+
+    void getSavedAnalysis(mindmapMeetingId, { signal: controller.signal })
+      .then((analysis) => {
+        if (!controller.signal.aborted) {
+          setMindmapAnalysis(analysis)
+        }
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) {
+          setMindmapAnalysis(null)
+        }
+      })
+
+    return () => {
+      controller.abort()
+    }
+  }, [featureScene, mindmapSelectedMeetingId, liveMeetingId, recentMeetings, result?.meetingId])
+
+  const handleNavigateRealtimeMeetCapture = useCallback((source: RecordingSource, context?: RealtimeMeetCaptureContext) => {
+    setSelectedRecordingSource(source)
+    setSelectedRealtimeSpeakerMode('multiple')
+    setLiveError(null)
+    setLivePartialWarning(null)
+    navigateFeatureScene('realtime')
+    try {
+      sessionStorage.setItem(REALTIME_FOCUS_MEET_CAPTURE_KEY, '1')
+      const captureTitle = context?.title?.trim()
+      if (captureTitle) {
+        sessionStorage.setItem(REALTIME_MEET_CAPTURE_TITLE_KEY, captureTitle)
+      }
+    } catch {
+      // ignore storage errors
+    }
+  }, [navigateFeatureScene])
+
   const handleOpenMeetingAnalysisFromHistory = (meetingId: number, context?: { title?: string }) => {
-    setHistoryAnalysisMeetingId(meetingId)
     setHistoryAnalysisTitle(context?.title?.trim() || null)
-    setFeatureScene('analysis')
+    navigateFeatureScene('analysis', { meetingId })
+  }
+
+  const handleOpenMindmapFromHistory = (meetingId: number, context?: { title?: string }) => {
+    setMindmapSelectedTitle(context?.title?.trim() || null)
+    navigateFeatureScene('mindmap', { meetingId })
   }
 
   const handleRecentFileClick = (meetingIdRaw: string) => {
@@ -1647,11 +2199,32 @@ export default function App() {
     if (!Number.isFinite(meetingId) || meetingId <= 0) {
       return
     }
+    if (featureScene === 'mindmap') {
+      const meeting = recentMeetings.find((item) => item.id === meetingId)
+      setMindmapSelectedMeetingId(meetingId)
+      setMindmapSelectedTitle(meeting ? getMeetingLabel(meeting) : null)
+      pushStudioRoute('mindmap', { meetingId })
+      return
+    }
+    handleOpenMeetingFromDashboard(meetingId)
+  }
+
+  const handleMindmapMeetingSelect = (meetingId: number) => {
+    const meeting = recentMeetings.find((item) => item.id === meetingId)
+    setMindmapSelectedMeetingId(meetingId)
+    setMindmapSelectedTitle(meeting ? getMeetingLabel(meeting) : null)
+    pushStudioRoute('mindmap', { meetingId })
+  }
+
+  const handleOpenMeetingFromDashboard = (meetingId: number) => {
+    if (!Number.isFinite(meetingId) || meetingId <= 0) {
+      return
+    }
 
     if (result?.meetingId === meetingId) {
       setHistoryAnalysisMeetingId(null)
       setHistoryAnalysisTitle(null)
-      setFeatureScene('analysis')
+      navigateFeatureScene('analysis', { meetingId })
       return
     }
 
@@ -1663,7 +2236,7 @@ export default function App() {
   }
 
   const handleBackToHistory = () => {
-    setFeatureScene('files')
+    navigateFeatureScene('files')
   }
 
   const openAnalysisForMeeting = async (meetingId: number, statusValue: string = 'COMPLETED') => {
@@ -1694,7 +2267,7 @@ export default function App() {
       analysis,
     })
     setStatus('completed')
-    setFeatureScene('analysis')
+    navigateFeatureScene('analysis', { meetingId })
     refreshRecentMeetings()
   }
 
@@ -1724,7 +2297,7 @@ export default function App() {
     try {
       const effectiveUploadLanguage = normalizeRealtimeLanguage(selectedUploadLanguage)
       setStatus('uploading')
-      setFeatureScene('upload')
+      navigateFeatureScene('upload')
       console.info('UPLOAD_REQUEST_SEND language=' + effectiveUploadLanguage)
       const meeting = await uploadToMeetingApi(file.name, file, effectiveUploadLanguage)
       meetingId = Number(meeting.existingMeetingId ?? meeting.id)
@@ -1736,24 +2309,27 @@ export default function App() {
 
       if (isDuplicate) {
         if (duplicateStatus === 'completed' && meeting.reused && meetingId > 0) {
-          setUploadNotice('This audio was already analyzed. Opening previous result.')
+          setUploadNotice('File âm thanh này đã được phân tích trước đó. Đang mở kết quả cũ.')
           await openAnalysisForMeeting(meetingId, 'COMPLETED')
           return
         }
 
         if (duplicateStatus === 'failed') {
-          setUploadNotice('This audio was processed before but failed.')
-          setStatus('failed')
+          setUploadNotice('Đang thử xử lý lại file đã thất bại trước đó...')
+          setStatus('processing')
+          await startProcessingByPath(meetingId, effectiveUploadLanguage, selectedDomainMode)
+          await pollUntilCompleted(meetingId, abortControllerRef.current.signal)
+          await openAnalysisForMeeting(meetingId, 'COMPLETED')
           return
         }
 
-        setUploadNotice('This audio is already being processed.')
+        setUploadNotice('File này đang được xử lý. Vui lòng đợi hoặc mở Lịch sử meeting.')
         setStatus('processing')
         return
       }
 
       setStatus('processing')
-      await startProcessingByPath(meetingId, effectiveUploadLanguage)
+      await startProcessingByPath(meetingId, effectiveUploadLanguage, selectedDomainMode)
 
       await pollUntilCompleted(meetingId, abortControllerRef.current.signal)
       await openAnalysisForMeeting(meetingId, 'COMPLETED')
@@ -1762,14 +2338,29 @@ export default function App() {
       if (error instanceof DOMException && error.name === 'AbortError') {
         setErrorMessage('Processing cancelled')
       } else if (error instanceof ApiError) {
-        const presentation = resolveErrorPresentation(error.errorCode, error.message, ERROR_UX_ENABLED)
+        const resolvedCode = error.errorCode || (error.status === 402 ? 'QUOTA_EXCEEDED' : undefined)
+        const presentation = resolveErrorPresentation(resolvedCode, error.message, ERROR_UX_ENABLED)
         setErrorMessage(presentation.message)
+        if (resolvedCode === 'QUOTA_EXCEEDED' || presentation.ctaId === 'upgrade_plan') {
+          navigateFeatureScene('billing')
+          setBillingPaymentNotice(presentation.message)
+        }
         if (error.errorCode === 'UNAUTHORIZED' || error.status === 401) {
           handleLogout()
         }
       } else {
-        const message = error.message || 'Lỗi không xác định, vui lòng thử lại'
-        setErrorMessage(message)
+        const pipelineErrorCode = resolveBatchPipelineErrorCode(error?.message)
+        if (pipelineErrorCode) {
+          const presentation = resolveErrorPresentation(pipelineErrorCode, error.message, ERROR_UX_ENABLED)
+          setErrorMessage(presentation.message)
+          if (pipelineErrorCode === 'QUOTA_EXCEEDED' || presentation.ctaId === 'upgrade_plan') {
+            navigateFeatureScene('billing')
+            setBillingPaymentNotice(presentation.message)
+          }
+        } else {
+          const message = error.message || 'Lỗi không xác định, vui lòng thử lại'
+          setErrorMessage(message)
+        }
       }
       console.error('handleProcess error:', error)
     } finally {
@@ -1806,7 +2397,7 @@ export default function App() {
     liveRecordingSessionIdRef.current = 0
     setLiveLifecycleState('idle')
     setShowJoinOtherMeeting(false)
-    setFeatureScene('realtime')
+    navigateFeatureScene('realtime')
   }
 
   const handleDashboardUpload = async (_title: string, file: File) => {
@@ -1814,15 +2405,63 @@ export default function App() {
     await handleProcess(file)
   }
 
+  const handleImportedMeeting = async (
+    meetingId: number,
+    meta: { duplicate: boolean; reused: boolean; processingStarted: boolean },
+  ) => {
+    if (!Number.isFinite(meetingId) || meetingId <= 0) {
+      setErrorMessage('Meeting ID import không hợp lệ')
+      return
+    }
+    setBusy(true)
+    setErrorMessage(null)
+    setUploadNotice(null)
+    abortControllerRef.current?.abort()
+    abortControllerRef.current = new AbortController()
+    try {
+      navigateFeatureScene('upload')
+      if (meta.duplicate && meta.reused) {
+        setUploadNotice('Recording đã được phân tích trước đó. Đang mở kết quả cũ.')
+        await openAnalysisForMeeting(meetingId, 'COMPLETED')
+        return
+      }
+      if (!meta.processingStarted) {
+        setUploadNotice('Đã import meeting. Kiểm tra Lịch sử meeting nếu phân tích chưa chạy.')
+        setStatus('processing')
+        return
+      }
+      setStatus('processing')
+      await pollUntilCompleted(meetingId, abortControllerRef.current.signal)
+      await openAnalysisForMeeting(meetingId, 'COMPLETED')
+    } catch (error: unknown) {
+      setStatus('failed')
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        setErrorMessage('Processing cancelled')
+      } else if (error instanceof ApiError) {
+        setErrorMessage(error.message)
+      } else if (error instanceof Error) {
+        setErrorMessage(error.message)
+      } else {
+        setErrorMessage('Import cloud recording thất bại')
+      }
+    } finally {
+      abortControllerRef.current = null
+      setBusy(false)
+    }
+  }
+
   const dashboardUser = useMemo(() => ({
     name: username.trim() || `User ${currentUserId || ''}`.trim() || 'AudioMind',
     email: currentUserId ? `user-${currentUserId}@audiomind` : undefined,
-  }), [currentUserId, username])
+    plan: getJwtPlan(),
+  }), [currentUserId, username, sessionPlanSyncTick])
 
   const recentFiles = useMemo(() => {
     const activeMeetingId = featureScene === 'analysis'
       ? (historyAnalysisMeetingId ?? result?.meetingId ?? null)
-      : null
+      : featureScene === 'mindmap'
+        ? (mindmapSelectedMeetingId ?? result?.meetingId ?? liveMeetingId ?? recentMeetings[0]?.id ?? null)
+        : null
     const items: Array<{ id: string; label: string; active?: boolean }> = []
     const seen = new Set<number>()
 
@@ -1853,15 +2492,111 @@ export default function App() {
     }
 
     return items
-  }, [featureScene, historyAnalysisMeetingId, recentMeetings, result, selectedFile])
+  }, [featureScene, historyAnalysisMeetingId, liveMeetingId, mindmapSelectedMeetingId, recentMeetings, result, selectedFile])
+
+  const resolvedMindmapMeetingId = mindmapSelectedMeetingId
+    ?? result?.meetingId
+    ?? liveMeetingId
+    ?? recentMeetings[0]?.id
+    ?? null
 
   const renderDashboardScene = () => {
+    if (featureScene === 'billing') {
+      return (
+        <BillingScene
+          payosEnabled={PAYOS_ENABLED}
+          paymentNotice={billingPaymentNotice}
+          activationOrderCode={billingActivationOrderCode}
+          onActivationHandled={() => setBillingActivationOrderCode(null)}
+          onRefreshTokenHint={() => {
+            void refreshAccessToken()
+              .then(() => setBillingPaymentNotice('Đã đồng bộ JWT với gói trên server.'))
+              .catch(() => setBillingPaymentNotice('Không đồng bộ được JWT. Hãy đăng xuất và đăng nhập lại.'))
+          }}
+        />
+      )
+    }
+    if (featureScene === 'integrations') {
+      return (
+        <FeatureIntegrations
+          meetings={recentMeetings}
+          callbackNotice={googleIntegrationNotice}
+          oauthEnabled={GOOGLE_LOGIN_ENABLED}
+          realtimeEnabled={isRealtimeEnabled}
+          uploadLanguage={selectedUploadLanguage}
+          zoomCallbackNotice={zoomIntegrationNotice}
+          zoomCallbackNoticeTone={zoomIntegrationNoticeTone}
+          teamsCallbackNotice={teamsIntegrationNotice}
+          teamsCallbackNoticeTone={teamsIntegrationNoticeTone}
+          integrationsBusy={busy}
+          oauthRefreshTick={oauthRefreshTick}
+          onNavigateRealtimeMeetCapture={handleNavigateRealtimeMeetCapture}
+          onMeetingImported={handleImportedMeeting}
+        />
+      )
+    }
+    if (featureScene === 'mindmap') {
+      const inlineAnalysis = resolvedMindmapMeetingId != null && result?.meetingId === resolvedMindmapMeetingId
+        ? result.analysis ?? null
+        : resolvedMindmapMeetingId != null && liveMeetingId === resolvedMindmapMeetingId
+          ? liveAnalysis
+          : null
+      return (
+        <FeatureMindmap
+          meetings={recentMeetings}
+          selectedMeetingId={resolvedMindmapMeetingId}
+          meetingTitle={mindmapSelectedTitle ?? selectedFile?.name ?? undefined}
+          onMeetingSelect={handleMindmapMeetingSelect}
+          getMeetingLabel={getMeetingLabel}
+          meetingId={resolvedMindmapMeetingId}
+          analysis={mindmapAnalysis ?? inlineAnalysis ?? null}
+          busy={busy}
+          onLoadAnalysis={async () => {
+            if (!resolvedMindmapMeetingId) return
+            mindmapAbortRef.current?.abort()
+            const controller = new AbortController()
+            mindmapAbortRef.current = controller
+            try {
+              const analysis = await getSavedAnalysis(resolvedMindmapMeetingId, { signal: controller.signal })
+              if (!controller.signal.aborted) {
+                setMindmapAnalysis(analysis)
+              }
+            } catch {
+              if (!controller.signal.aborted) {
+                setMindmapAnalysis(null)
+              }
+            }
+          }}
+        />
+      )
+    }
+    if (featureScene === 'knowledge') {
+      return (
+        <KnowledgeVaultScene
+          onOpenMeeting={(meetingId) => {
+            handleOpenMeetingAnalysisFromHistory(meetingId)
+          }}
+        />
+      )
+    }
+    if (featureScene === 'insights') {
+      return (
+        <ExpansionDashboardScene
+          embeddingSearchEnabled={import.meta.env.VITE_EMBEDDING_SEARCH_ENABLED !== 'false'}
+          onOpenMeeting={(meetingId) => {
+            handleOpenMeetingAnalysisFromHistory(meetingId)
+          }}
+        />
+      )
+    }
     if (featureScene === 'realtime' && isRealtimeEnabled && realtimeUserId !== null) {
       return (
         <RealtimeDashboardScene
           liveStatusMessage={liveStatusMessage}
           connectionView={connectionView}
           selectedRealtimeLanguage={selectedRealtimeLanguage}
+          selectedDomainMode={selectedDomainMode}
+          onDomainModeChange={handleDomainModeChange}
           selectedRealtimeSpeakerMode={selectedRealtimeSpeakerMode}
           selectedMicSensitivity={selectedMicSensitivity}
           selectedRecordingSource={selectedRecordingSource}
@@ -1870,9 +2605,13 @@ export default function App() {
           noiseSuppressionSupported={noiseSuppressionSupported}
           liveLifecycleState={liveLifecycleState}
           onRealtimeLanguageChange={(value) => setSelectedRealtimeLanguage(normalizeRealtimeLanguage(value))}
-          onRealtimeSpeakerModeChange={(value) => setSelectedRealtimeSpeakerMode(normalizeRealtimeSpeakerMode(value))}
-          onMicSensitivityChange={(value) => setSelectedMicSensitivity(normalizeMicSensitivityMode(value))}
-          onRecordingSourceChange={setSelectedRecordingSource}
+          onRealtimeSpeakerModeChange={(value) => {
+            setSelectedRealtimeSpeakerMode(normalizeRealtimeSpeakerMode(value))
+          }}
+          onMicSensitivityChange={(value) => {
+            setSelectedMicSensitivity(normalizeMicSensitivityMode(value))
+          }}
+          onRecordingSourceChange={handleRecordingSourceChange}
           onNoiseSuppressionChange={setNoiseSuppressionEnabled}
           isRealtimeLanguageSelectorDisabled={isRealtimeLanguageSelectorDisabled(liveLifecycleState)}
           isRealtimeSpeakerModeSelectorDisabled={isRealtimeSpeakerModeSelectorDisabled(liveLifecycleState)}
@@ -1925,6 +2664,7 @@ export default function App() {
             meetingTitle={historyAnalysisTitle ?? undefined}
             hydrateFromApi
             onBackToHistory={handleBackToHistory}
+            preferredDomainMode={selectedDomainMode}
           />
         )
       }
@@ -1939,12 +2679,25 @@ export default function App() {
           transcriptSegments={result?.transcriptSegments}
           transcriptText={result?.transcript}
           statusLabel={status}
+          preferredDomainMode={selectedDomainMode}
         />
       )
     }
 
     if (featureScene === 'files') {
-      return <MeetingHistoryScene onOpenAnalysis={handleOpenMeetingAnalysisFromHistory} />
+      return (
+        <MeetingHistoryScene
+          focusMeetingId={historyFocusMeetingId}
+          onOpenAnalysis={handleOpenMeetingAnalysisFromHistory}
+          onOpenMindmap={handleOpenMindmapFromHistory}
+          searchQuery={globalMeetingSearch}
+          onSearchQueryChange={setGlobalMeetingSearch}
+          onNavigateUpload={() => navigateFeatureScene('upload')}
+          onNavigateRealtime={() => navigateFeatureScene('realtime')}
+          preferredDomainMode={selectedDomainMode}
+          oauthRefreshTick={oauthRefreshTick}
+        />
+      )
     }
 
     return (
@@ -1953,6 +2706,12 @@ export default function App() {
         userName={dashboardUser.name}
         uploadLanguage={selectedUploadLanguage}
         onUploadLanguageChange={setSelectedUploadLanguage}
+        domainMode={selectedDomainMode}
+        onDomainModeChange={handleDomainModeChange}
+        showOnboarding={showOnboarding}
+        onDismissOnboarding={() => setShowOnboarding(false)}
+        onNavigateRealtime={() => navigateFeatureScene('realtime')}
+        onNavigateIntegrations={() => navigateFeatureScene('integrations')}
         status={status}
         errorMessage={errorMessage}
         duplicateNotice={uploadNotice}
@@ -1975,7 +2734,6 @@ export default function App() {
     setHydratedLiveTranscriptSegments(null)
     setLiveLifecycleState('connecting')
     liveTinyChunkStreakRef.current = 0
-    tabTrackEndedFinalizeRef.current = false
     realtimeStream.clearQueuedAudio?.()
     realtimeStream.disconnect(activeRealtimeSessionTokenRef.current)
     realtimeStream.clearTranscripts?.()
@@ -1989,7 +2747,19 @@ export default function App() {
     let sessionToken: RealtimeSessionToken | null = null
 
     try {
-      const meeting = await createRealtimeMeeting('Live recording session', selectedRealtimeLanguage)
+      const resolveRealtimeMeetingTitle = (): string => {
+        try {
+          const stored = sessionStorage.getItem(REALTIME_MEET_CAPTURE_TITLE_KEY)?.trim()
+          if (stored) {
+            sessionStorage.removeItem(REALTIME_MEET_CAPTURE_TITLE_KEY)
+            return stored
+          }
+        } catch {
+          // ignore storage errors
+        }
+        return 'Live recording session'
+      }
+      const meeting = await createRealtimeMeeting(resolveRealtimeMeetingTitle(), selectedRealtimeLanguage, selectedDomainMode)
       const normalizedMeetingId = resolveFreshRealtimeMeetingId(meeting)
       if (!Number.isFinite(normalizedMeetingId)) {
         throw new Error('Meeting ID trả về không hợp lệ')
@@ -2103,17 +2873,19 @@ export default function App() {
 
     const chunkBytes = chunk.size
     const recordingDurationSec = audioRecorder.duration
+    const isTabCaptureSource = isBrowserTabRecordingSource(selectedRecordingSourceRef.current)
     const currentRms = audioRecorder.getCurrentRms()
     const isTinyChunk = chunkBytes > 0 && chunkBytes < REALTIME_TINY_CHUNK_MAX_BYTES
     const isSilentCapture = currentRms === null || currentRms <= REALTIME_TINY_CHUNK_MAX_RMS
-    if (isTinyChunk && isSilentCapture) {
+    if (!isTabCaptureSource && isTinyChunk && isSilentCapture) {
       liveTinyChunkStreakRef.current += 1
     } else if (chunkBytes >= REALTIME_TINY_CHUNK_MAX_BYTES) {
       liveTinyChunkStreakRef.current = 0
     }
 
     if (
-      recordingDurationSec >= REALTIME_TINY_CHUNK_MIN_RECORDING_SEC
+      !isTabCaptureSource
+      && recordingDurationSec >= REALTIME_TINY_CHUNK_MIN_RECORDING_SEC
       && liveTinyChunkStreakRef.current >= REALTIME_TINY_CHUNK_STREAK_THRESHOLD
     ) {
       const captureError = getRecordingSourceTinyChunkError(selectedRecordingSourceRef.current)
@@ -2258,7 +3030,11 @@ export default function App() {
     setLiveAnalysisError(null)
 
     try {
-      const response = await reanalyzeMeetingAnalysis(meetingId, { mode: 'force', reason: 'manual_reanalyze' })
+      const response = await reanalyzeMeetingAnalysis(meetingId, {
+        mode: 'force',
+        reason: 'manual_reanalyze',
+        domainMode: selectedDomainMode,
+      })
       const responseStatus = getAnalysisStatusValue(response)
       setLiveAnalysisMetadata(response)
 
@@ -2340,7 +3116,7 @@ export default function App() {
         hydrationRunIdRef.current = hydrationRunId
         const partialState = resolveTranscriptPartialState({
           stopIncomplete,
-          resetRequired: realtimeStream.status.resetRequired,
+          resetRequired: Boolean(realtimeStream.status.resetRequired),
           statusMessage: realtimeStream.status.message,
         })
         const liveSnapshot = [...realtimeStream.transcripts]
@@ -2375,7 +3151,7 @@ export default function App() {
           minFallbackAudioBytes: REALTIME_MIN_FALLBACK_AUDIO_BYTES,
           stopIncomplete,
           partialState,
-          resetRequired: realtimeStream.status.resetRequired ?? false,
+          resetRequired: Boolean(realtimeStream.status.resetRequired),
           streamState: realtimeStream.status.state,
         })
         if (shouldAttemptFinalAudioFallback) {
@@ -2511,6 +3287,18 @@ export default function App() {
     }
   }
 
+  if (googleCallbackState === 'processing' || googleCallbackState === 'linking') {
+    return (
+      <main className="studio-auth-callback" aria-live="polite">
+        <p>
+          {googleCallbackState === 'linking'
+            ? 'Đang chuyển sang Google để cấp quyền Calendar và Gmail…'
+            : 'Đang hoàn tất đăng nhập Google...'}
+        </p>
+      </main>
+    )
+  }
+
   if (!isAuthenticated) {
     return (
       <StudioAuthPage
@@ -2521,8 +3309,11 @@ export default function App() {
         onUsernameChange={setUsername}
         onPasswordChange={setPassword}
         onLogin={handleLogin}
+        onGoogleLogin={handleGoogleLogin}
+        googleLoginEnabled={GOOGLE_LOGIN_ENABLED}
         authError={authError}
         authNotice={authNotice}
+        inviteMeetingId={readOpenMeetingId()}
         registerUsername={registerUsername}
         registerEmail={registerEmail}
         registerPassword={registerPassword}
@@ -2540,16 +3331,30 @@ export default function App() {
 
   return (
     <div className="app app--dashboard app--studio">
+      {authNotice ? (
+        <p className="studio-auth__notice studio-auth__notice--dashboard" data-testid="auth-notice-banner" role="status">
+          {authNotice}
+        </p>
+      ) : null}
       <DashboardLayout
         user={dashboardUser}
         onLogout={handleLogout}
         activeMenu={featureScene}
-        onNavigate={setFeatureScene}
+        onNavigate={navigateFeatureScene}
         showRealtime={isRealtimeEnabled}
         recentFiles={recentFiles}
         onRecentFileClick={handleRecentFileClick}
+        onOpenMeeting={handleOpenMeetingFromDashboard}
+        globalMeetingSearch={globalMeetingSearch}
+        onGlobalMeetingSearchChange={setGlobalMeetingSearch}
+        onGlobalMeetingSearchSubmit={(query) => {
+          setGlobalMeetingSearch(query)
+          navigateFeatureScene('files')
+        }}
       >
-        {renderDashboardScene()}
+        <Suspense fallback={<LoadingState message="Đang tải màn hình..." />}>
+          {renderDashboardScene()}
+        </Suspense>
       </DashboardLayout>
     </div>
   )

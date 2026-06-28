@@ -1,4 +1,4 @@
-import { useMemo, type MutableRefObject } from 'react'
+import { useEffect, useMemo, useState, type MutableRefObject } from 'react'
 import { AnalysisPanel } from '../analysis/AnalysisPanel'
 import { AnalysisStatusPanel } from '../analysis/AnalysisStatusPanel'
 import { collectEvidenceMatchesFromAnalysis } from '../../utils/evidenceMatches'
@@ -10,9 +10,12 @@ import type { RealtimeLanguage, RealtimeSpeakerMode, TranscriptSegment } from '.
 import type { MicSensitivityMode } from '../../hooks/useVoiceActivityDetection'
 import type { AiAnalysis } from '../../types'
 import {
+  REALTIME_FOCUS_MEET_CAPTURE_KEY,
   type RecordingSource,
   isBrowserTabRecordingSource,
 } from '../../constants/recordingSource'
+import type { DomainMode } from '../../constants/domainMode'
+import DomainModeSelector from '../ui/DomainModeSelector'
 import { RecordingSourceSelector } from '../realtime/RecordingSourceSelector'
 
 const REALTIME_LANGUAGE_OPTIONS: Array<{ value: RealtimeLanguage; label: string }> = [
@@ -22,14 +25,14 @@ const REALTIME_LANGUAGE_OPTIONS: Array<{ value: RealtimeLanguage; label: string 
 ]
 
 const REALTIME_SPEAKER_MODE_OPTIONS: Array<{ value: RealtimeSpeakerMode; label: string }> = [
-  { value: 'single', label: 'Single speaker' },
-  { value: 'multiple', label: 'Multiple speakers' },
+  { value: 'single', label: 'Một người nói' },
+  { value: 'multiple', label: 'Nhiều người nói' },
 ]
 
 const REALTIME_MIC_SENSITIVITY_OPTIONS: Array<{ value: MicSensitivityMode; label: string }> = [
-  { value: 'low', label: 'Low' },
-  { value: 'normal', label: 'Normal' },
-  { value: 'high', label: 'High' },
+  { value: 'low', label: 'Thấp' },
+  { value: 'normal', label: 'Bình thường' },
+  { value: 'high', label: 'Cao' },
 ]
 
 type LiveLifecycleState =
@@ -63,6 +66,8 @@ type RealtimeDashboardSceneProps = {
   liveStatusMessage: string | null
   connectionView: RealtimeConnectionView
   selectedRealtimeLanguage: RealtimeLanguage
+  selectedDomainMode: DomainMode
+  onDomainModeChange: (mode: DomainMode) => void
   selectedRealtimeSpeakerMode: RealtimeSpeakerMode
   selectedMicSensitivity: MicSensitivityMode
   selectedRecordingSource: RecordingSource
@@ -109,51 +114,57 @@ export const resolveRealtimeLifecycleBadge = (
   liveAnalysisStatus: 'idle' | 'polling' | 'completed' | 'pending' | 'failed',
 ): { label: string; tone: 'listening' | 'paused' | 'resumed' | 'stopped' | 'analyzing' | 'idle' | 'error' } => {
   if (liveLifecycleState === 'error') {
-    return { label: 'Error', tone: 'error' }
+    return { label: 'Lỗi', tone: 'error' }
   }
 
   if (liveLifecycleState === 'silent_paused') {
-    return { label: 'Paused', tone: 'paused' }
+    return { label: 'Tạm dừng', tone: 'paused' }
   }
 
   if (liveLifecycleState === 'listening_resumed') {
-    return { label: 'Resumed', tone: 'resumed' }
+    return { label: 'Tiếp tục nghe', tone: 'resumed' }
   }
 
   if (liveLifecycleState === 'recording') {
-    return { label: 'Listening', tone: 'listening' }
+    return { label: 'Đang ghi âm', tone: 'listening' }
   }
 
   if (liveLifecycleState === 'finalizing_recording') {
-    return { label: 'Finalizing recording', tone: 'stopped' }
+    return { label: 'Đang hoàn tất ghi âm', tone: 'stopped' }
   }
 
   if (liveLifecycleState === 'stopped') {
     if (liveAnalysisStatus === 'polling') {
-      return { label: 'Analyzing', tone: 'analyzing' }
+      return { label: 'Đang phân tích', tone: 'analyzing' }
     }
-    return { label: 'Stopped', tone: 'stopped' }
+    return { label: 'Đã dừng', tone: 'stopped' }
   }
 
   if (liveLifecycleState === 'no_transcript_after_finalize' || liveLifecycleState === 'stopped_no_analysis') {
-    return { label: 'No transcript', tone: 'stopped' }
+    return { label: 'Không có transcript', tone: 'stopped' }
   }
 
   if (liveLifecycleState === 'failed_audio_capture') {
-    return { label: 'Audio capture failed', tone: 'error' }
+    return { label: 'Không thu được âm thanh', tone: 'error' }
   }
 
   if (liveLifecycleState === 'stopping') {
-    return { label: 'Stopped', tone: 'stopped' }
+    return { label: 'Đang dừng', tone: 'stopped' }
   }
 
-  return { label: 'Idle', tone: 'idle' }
+  if (liveLifecycleState === 'connecting') {
+    return { label: 'Đang kết nối', tone: 'idle' }
+  }
+
+  return { label: 'Sẵn sàng', tone: 'idle' }
 }
 
 export default function RealtimeDashboardScene({
   liveStatusMessage,
   connectionView,
   selectedRealtimeLanguage,
+  selectedDomainMode,
+  onDomainModeChange,
   selectedRealtimeSpeakerMode,
   selectedMicSensitivity,
   selectedRecordingSource,
@@ -194,6 +205,26 @@ export default function RealtimeDashboardScene({
   showLiveAnalysis,
   onLiveAnalysisRetry,
 }: RealtimeDashboardSceneProps) {
+  const [highlightMeetCapture, setHighlightMeetCapture] = useState(false)
+
+  useEffect(() => {
+    try {
+      if (sessionStorage.getItem(REALTIME_FOCUS_MEET_CAPTURE_KEY) !== '1') {
+        return
+      }
+      sessionStorage.removeItem(REALTIME_FOCUS_MEET_CAPTURE_KEY)
+      setHighlightMeetCapture(true)
+      window.requestAnimationFrame(() => {
+        document.querySelector('[data-testid="recording-source-selector"]')
+          ?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      })
+      const timeoutId = window.setTimeout(() => setHighlightMeetCapture(false), 5000)
+      return () => window.clearTimeout(timeoutId)
+    } catch {
+      return undefined
+    }
+  }, [])
+
   const lifecycleBadge = resolveRealtimeLifecycleBadge(liveLifecycleState, liveAnalysisStatus)
   const isNoTranscriptFinalized =
     liveLifecycleState === 'no_transcript_after_finalize'
@@ -219,12 +250,12 @@ export default function RealtimeDashboardScene({
   const liveAnalysisEmptyMessage = isNoTranscriptFinalized
     ? 'Không có nội dung để phân tích'
     : liveAnalysisStatus === 'pending'
-    ? 'Analysis is not ready yet. Use Re-analyze when the transcript is complete.'
+    ? 'Phân tích chưa sẵn sàng. Hãy thử phân tích lại khi transcript đã hoàn tất.'
     : liveAnalysisStatus === 'failed'
       ? (liveAnalysisMetadata?.transcriptSaved || liveAnalysisMetadata?.retryable
         ? 'Transcript đã lưu. Phân tích AI tạm thời chưa sẵn sàng.'
-        : 'Analysis failed temporarily. Retry available.')
-      : 'No realtime analysis yet.'
+        : 'Phân tích AI tạm thời thất bại. Có thể thử lại.')
+      : 'Chưa có phân tích realtime.'
   const liveEvidenceMatches = useMemo(
     () => collectEvidenceMatchesFromAnalysis(
       (liveAnalysisMetadata ?? liveAnalysis) as Record<string, unknown> | null,
@@ -240,11 +271,19 @@ export default function RealtimeDashboardScene({
     || liveLifecycleState === 'finalizing_recording'
   const isTabAudioSource = isBrowserTabRecordingSource(selectedRecordingSource)
   const isTabOnlySource = selectedRecordingSource === 'browser_tab'
+  const micSensitivityDisabled =
+    liveLifecycleState === 'stopping'
+    || (isTabOnlySource && isRecordingActive)
+  const micSensitivityHelper = isTabOnlySource
+    ? (isRecordingActive
+      ? 'Không áp dụng khi chỉ ghi âm thanh tab đang chạy.'
+      : 'Chỉ áp dụng khi ghi microphone hoặc Tab + Microphone.')
+    : null
   const noiseSuppressionDisabled = isRecordingActive || !noiseSuppressionSupported || isTabOnlySource
   const noiseSuppressionHelper = isTabOnlySource
     ? 'Không áp dụng khi chỉ ghi âm thanh tab.'
     : isTabAudioSource
-    ? 'Áp dụng cho microphone khi chọn Google Meet + Microphone.'
+    ? 'Áp dụng cho microphone khi chọn Tab trình duyệt + Microphone.'
     : !noiseSuppressionSupported
     ? 'Trình duyệt không hỗ trợ tùy chọn này, ghi âm vẫn hoạt động.'
     : isRecordingActive
@@ -253,16 +292,6 @@ export default function RealtimeDashboardScene({
 
   return (
     <div className="dashboard-page bg-gray-light">
-      <header className="dashboard-header border-b">
-        <div className="search-bar">
-          <span className="icon">🔍</span>
-          <input type="text" placeholder="Tìm bài giảng, môn học, ghi chú..." />
-        </div>
-        <div className="header-actions">
-          <button type="button" className="icon-btn" aria-label="Thông báo">🔔</button>
-        </div>
-      </header>
-
       <section className="realtime-panel realtime-panel--dashboard">
         <div className="realtime-hero">
           <div className="realtime-panel__header">
@@ -272,16 +301,31 @@ export default function RealtimeDashboardScene({
                 <span className={`realtime-status-badge realtime-status-badge--${lifecycleBadge.tone}`}>
                   {lifecycleBadge.label}
                 </span>
+                <span className="realtime-connection-chip meta-pill" data-testid="realtime-connection-status">
+                  {connectionView.title || 'Chưa kết nối'}
+                </span>
+                <span className="realtime-transcript-chip meta-pill" data-testid="realtime-transcript-status">
+                  {liveTranscriptSegments.length > 0
+                    ? `${liveTranscriptSegments.length} đoạn transcript`
+                    : 'Chưa có transcript live'}
+                </span>
                 <p className="realtime-panel__status">
                   {liveStatusMessage || connectionView.detail || 'Sẵn sàng tạo meeting và bắt đầu ghi âm'}
                 </p>
               </div>
               <div className="realtime-panel__settings">
-                <RecordingSourceSelector
-                  value={selectedRecordingSource}
-                  disabled={isRecordingSourceSelectorDisabled}
-                  onChange={onRecordingSourceChange}
-                />
+                {highlightMeetCapture && (
+                  <p className="realtime-meet-capture-banner" data-testid="realtime-meet-capture-banner">
+                    Đã chọn ghi âm tab trình duyệt. Mở tab cần ghi, rồi bấm nút ghi âm bên dưới.
+                  </p>
+                )}
+                <div className={highlightMeetCapture ? 'recording-source-selector-wrap--highlight' : undefined}>
+                  <RecordingSourceSelector
+                    value={selectedRecordingSource}
+                    disabled={isRecordingSourceSelectorDisabled}
+                    onChange={onRecordingSourceChange}
+                  />
+                </div>
                 <label className="upload-panel__label">
                   <span className="upload-panel__label-text">Ngôn ngữ</span>
                   <select
@@ -297,6 +341,14 @@ export default function RealtimeDashboardScene({
                     ))}
                   </select>
                 </label>
+                <DomainModeSelector
+                  id="realtime-domain-mode"
+                  value={selectedDomainMode}
+                  onChange={onDomainModeChange}
+                  disabled={isRealtimeLanguageSelectorDisabled}
+                  testId="realtime-domain-mode-select"
+                  compact
+                />
                 <label className="upload-panel__label">
                   <span className="upload-panel__label-text">Chế độ người nói</span>
                   <select
@@ -318,7 +370,7 @@ export default function RealtimeDashboardScene({
                     className="upload-panel__select"
                     value={selectedMicSensitivity}
                     onChange={(event) => onMicSensitivityChange(event.target.value)}
-                    disabled={liveLifecycleState === 'stopping' || isTabOnlySource}
+                    disabled={micSensitivityDisabled}
                   >
                     {REALTIME_MIC_SENSITIVITY_OPTIONS.map((option) => (
                       <option key={option.value} value={option.value}>
@@ -326,6 +378,9 @@ export default function RealtimeDashboardScene({
                       </option>
                     ))}
                   </select>
+                  {micSensitivityHelper && (
+                    <span className="realtime-panel__hint">{micSensitivityHelper}</span>
+                  )}
                 </label>
                 {noiseSuppressionToggleEnabled && !isTabOnlySource && (
                   <label className="realtime-toggle">
@@ -345,7 +400,7 @@ export default function RealtimeDashboardScene({
               </div>
             </div>
             {liveMeetingId && (
-              <span className="realtime-panel__meeting-badge">Meeting #{liveMeetingId}</span>
+              <span className="realtime-panel__meeting-badge">Cuộc họp #{liveMeetingId}</span>
             )}
           </div>
 
@@ -368,15 +423,15 @@ export default function RealtimeDashboardScene({
 
         {showJoinOtherMeeting && (
           <div className="join-meeting-panel">
-            <strong>Tham gia Meeting khác</strong>
+            <strong>Tham gia cuộc họp khác</strong>
             <input
               type="number"
-              placeholder="Meeting ID"
+              placeholder="ID cuộc họp"
               value={joinMeetingIdInput}
               onChange={(event) => onJoinMeetingIdChange(event.target.value)}
             />
             <button type="button" onClick={onJoinMeeting} disabled={!joinMeetingIdInput.trim()}>
-              Join Meeting
+              Tham gia
             </button>
           </div>
         )}
@@ -388,21 +443,22 @@ export default function RealtimeDashboardScene({
             highlightKeywords={liveTranscriptKeywords}
             emptyMessage={isNoTranscriptFinalized ? 'Chưa có transcript' : undefined}
             maxHeight="620px"
+            domainMode={liveAnalysis?.domainMode}
           />
 
           <aside className="realtime-panel__aside">
             <div className="status-card status-card--live">
-              <div className="status-card__label">Connection</div>
+              <div className="status-card__label">Kết nối</div>
               <div className="status-card__value">{connectionViewForAside.title}</div>
               <div className="status-card__detail">{connectionViewForAside.detail}</div>
             </div>
             <div className="status-card">
-              <div className="status-card__label">Keywords</div>
+              <div className="status-card__label">Từ khóa</div>
               <div className="status-card__value">{realtimeKeywordCount}</div>
             </div>
             <div className="status-card">
-              <div className="status-card__label">User</div>
-              <div className="status-card__value">{currentUserId || 'Unknown'}</div>
+              <div className="status-card__label">Người dùng</div>
+              <div className="status-card__value">{currentUserId || 'Chưa rõ'}</div>
             </div>
           </aside>
         </div>
@@ -420,7 +476,7 @@ export default function RealtimeDashboardScene({
               title="Phân tích realtime"
               analysis={liveAnalysis}
               status={liveAnalysisPanelStatus}
-              loadingMessage="Analysis is being generated..."
+              loadingMessage="Đang tạo phân tích…"
               errorMessage={liveAnalysisStatus === 'failed' ? liveAnalysisError : null}
               emptyMessage={liveAnalysisEmptyMessage}
               summaryFallback="(đang chờ phân tích)"

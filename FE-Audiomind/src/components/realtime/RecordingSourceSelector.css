@@ -4,6 +4,35 @@
   grid-column: 1 / -1;
 }
 
+.recording-source-selector-wrap--highlight {
+  padding: 10px;
+  border-radius: var(--radius-lg);
+  border: 1px solid rgba(124, 108, 255, 0.45);
+  background: rgba(124, 108, 255, 0.08);
+  box-shadow: 0 0 0 1px rgba(124, 108, 255, 0.12);
+  animation: recording-source-highlight-pulse 1.8s ease-in-out 2;
+}
+
+.realtime-meet-capture-banner {
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(124, 108, 255, 0.35);
+  background: rgba(124, 108, 255, 0.1);
+  color: var(--color-ink, #0f172a);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.app--studio .realtime-meet-capture-banner {
+  color: #e9d5ff;
+}
+
+@keyframes recording-source-highlight-pulse {
+  0%, 100% { box-shadow: 0 0 0 1px rgba(124, 108, 255, 0.12); }
+  50% { box-shadow: 0 0 0 3px rgba(124, 108, 255, 0.28); }
+}
+
 .recording-source-selector__label {
   margin: 0;
   font-size: var(--text-xs);
@@ -167,4 +196,63 @@
   .recording-source-selector__options {
     grid-template-columns: 1fr;
   }
+}
+
+.app--studio .recording-source-selector__label,
+.app--studio .recording-source-card__title {
+  color: var(--studio-text, #e2e8f0);
+}
+
+.app--studio .recording-source-card__description {
+  color: var(--studio-muted, #94a3b8);
+}
+
+.app--studio .recording-source-card {
+  border-color: var(--studio-border, rgba(148, 163, 184, 0.3));
+  background: rgba(15, 23, 42, 0.45);
+  color: var(--studio-text, #e2e8f0);
+}
+
+.app--studio .recording-source-card:hover:not(:disabled) {
+  border-color: rgba(124, 108, 255, 0.55);
+  background: rgba(124, 108, 255, 0.1);
+}
+
+.app--studio .recording-source-card--selected {
+  border-color: rgba(124, 108, 255, 0.7);
+  background: linear-gradient(180deg, rgba(124, 108, 255, 0.14) 0%, rgba(15, 23, 42, 0.5) 100%);
+  box-shadow: 0 0 0 1px rgba(124, 108, 255, 0.2);
+}
+
+.app--studio .recording-source-card__icon {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.app--studio .recording-source-card--selected .recording-source-card__icon {
+  background: rgba(124, 108, 255, 0.25);
+}
+
+.app--studio .recording-source-card__check {
+  border-color: var(--studio-border, rgba(148, 163, 184, 0.4));
+  background: rgba(15, 23, 42, 0.6);
+}
+
+.app--studio .recording-source-guide {
+  border-color: rgba(96, 165, 250, 0.35);
+  background: rgba(30, 58, 138, 0.25);
+  color: var(--studio-text, #e2e8f0);
+}
+
+.app--studio .recording-source-guide__title {
+  color: #bfdbfe;
+}
+
+.app--studio .recording-source-guide__list li {
+  color: #93c5fd;
+}
+
+.app--studio .recording-source-guide__note {
+  color: #fcd34d;
+  background: rgba(146, 64, 14, 0.25);
+  border-color: rgba(251, 191, 36, 0.35);
 }

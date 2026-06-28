@@ -328,7 +328,7 @@ class ProcessingServiceTest {
         assertTrue(response.get("rawTranscripts") instanceof List<?>);
         assertEquals(2, ((List<?>) response.get("rawTranscripts")).size());
         verify(aiServiceClient).getTranscript(892L, "trace-canonical-fallback");
-        verify(aiServiceClient, never()).processAudio(anyLong(), anyString(), anyString(), anyString(), any(), anyString(), anyString(), anyString());
+        verify(aiServiceClient, never()).processAudio(anyLong(), anyString(), anyString(), anyString(), any(), anyString(), anyString(), anyString(), anyString(), any());
         verify(aiServiceClient, never()).analyzeRealtimeTranscript(
                 anyLong(),
                 anyString(),
@@ -395,7 +395,7 @@ class ProcessingServiceTest {
         assertEquals("canonical readable row", row.get("text"));
         assertEquals(2, ((List<?>) response.get("rawTranscripts")).size());
         verify(aiServiceClient).getTranscript(893L, "trace-state-canonical");
-        verify(aiServiceClient, never()).processAudio(anyLong(), anyString(), anyString(), anyString(), any(), anyString(), anyString(), anyString());
+        verify(aiServiceClient, never()).processAudio(anyLong(), anyString(), anyString(), anyString(), any(), anyString(), anyString(), anyString(), anyString(), any());
         verify(aiServiceClient, never()).analyzeRealtimeTranscript(
                 anyLong(),
                 anyString(),
@@ -955,7 +955,7 @@ class ProcessingServiceTest {
         assertTrue(content.contains("We should publish the onboarding update this week."));
         assertTrue(!content.contains("[00:12–00:13] SPEAKER_2: onboarding update"));
         verify(aiServiceClient).getTranscript(903L, "trace-ai-readable");
-        verify(aiServiceClient, never()).processAudio(anyLong(), anyString(), anyString(), anyString(), any(), anyString(), anyString(), anyString());
+        verify(aiServiceClient, never()).processAudio(anyLong(), anyString(), anyString(), anyString(), any(), anyString(), anyString(), anyString(), anyString(), any());
         verify(aiServiceClient, never()).analyzeRealtimeTranscript(
                 anyLong(),
                 anyString(),
@@ -1004,7 +1004,7 @@ class ProcessingServiceTest {
         assertTrue(content.contains("1,\"00:02\",\"00:03\",\"SPEAKER_1\",\"raw row from ai source\""));
         assertTrue(content.contains("2,\"00:03\",\"00:04\",\"SPEAKER_2\",\"second raw row from ai source\""));
         verify(aiServiceClient).getTranscript(904L, "trace-ai-raw-csv");
-        verify(aiServiceClient, never()).processAudio(anyLong(), anyString(), anyString(), anyString(), any(), anyString(), anyString(), anyString());
+        verify(aiServiceClient, never()).processAudio(anyLong(), anyString(), anyString(), anyString(), any(), anyString(), anyString(), anyString(), anyString(), any());
         verify(aiServiceClient, never()).analyzeRealtimeTranscript(
                 anyLong(),
                 anyString(),
@@ -1066,7 +1066,7 @@ class ProcessingServiceTest {
         assertTrue(!content.contains("SPEAKER_1: Vocabulary\n"));
         assertTrue(!content.contains("SPEAKER_2: is a nightmare."));
         verify(aiServiceClient).getTranscript(906L, "trace-ai-canonical-readable");
-        verify(aiServiceClient, never()).processAudio(anyLong(), anyString(), anyString(), anyString(), any(), anyString(), anyString(), anyString());
+        verify(aiServiceClient, never()).processAudio(anyLong(), anyString(), anyString(), anyString(), any(), anyString(), anyString(), anyString(), anyString(), any());
         verify(aiServiceClient, never()).analyzeRealtimeTranscript(
                 anyLong(),
                 anyString(),
@@ -1128,7 +1128,7 @@ class ProcessingServiceTest {
         assertTrue(content.contains("SPEAKER_2: is a nightmare."));
         assertTrue(!content.contains("SPEAKER_1: Vocabulary is a nightmare."));
         verify(aiServiceClient).getTranscript(907L, "trace-ai-canonical-raw");
-        verify(aiServiceClient, never()).processAudio(anyLong(), anyString(), anyString(), anyString(), any(), anyString(), anyString(), anyString());
+        verify(aiServiceClient, never()).processAudio(anyLong(), anyString(), anyString(), anyString(), any(), anyString(), anyString(), anyString(), anyString(), any());
         verify(aiServiceClient, never()).analyzeRealtimeTranscript(
                 anyLong(),
                 anyString(),
@@ -1201,7 +1201,7 @@ class ProcessingServiceTest {
         assertTrue(!content.contains("raw overlap one"));
         assertTrue(!content.contains("raw overlap two"));
         verify(aiServiceClient).getTranscript(908L, "trace-state-canonical-readable");
-        verify(aiServiceClient, never()).processAudio(anyLong(), anyString(), anyString(), anyString(), any(), anyString(), anyString(), anyString());
+        verify(aiServiceClient, never()).processAudio(anyLong(), anyString(), anyString(), anyString(), any(), anyString(), anyString(), anyString(), anyString(), any());
         verify(aiServiceClient, never()).analyzeRealtimeTranscript(
                 anyLong(),
                 anyString(),
@@ -1339,7 +1339,7 @@ class ProcessingServiceTest {
         assertEquals(HttpStatus.NOT_FOUND, ex.getStatusCode());
         assertEquals("Transcript is not ready yet.", ex.getReason());
         verify(aiServiceClient).getTranscript(902L, "trace-missing");
-        verify(aiServiceClient, never()).processAudio(anyLong(), anyString(), anyString(), anyString(), any(), anyString(), anyString(), anyString());
+        verify(aiServiceClient, never()).processAudio(anyLong(), anyString(), anyString(), anyString(), any(), anyString(), anyString(), anyString(), anyString(), any());
         verify(aiServiceClient, never()).analyzeRealtimeTranscript(
                 anyLong(),
                 anyString(),
@@ -1537,7 +1537,7 @@ class ProcessingServiceTest {
                 eq("trace-920"),
                 eq(AUTH_HEADER)
         );
-        verify(aiServiceClient, never()).processAudio(anyLong(), anyString(), anyString(), anyString(), any(), anyString(), anyString(), anyString());
+        verify(aiServiceClient, never()).processAudio(anyLong(), anyString(), anyString(), anyString(), any(), anyString(), anyString(), anyString(), anyString(), any());
     }
 
     @Test
@@ -1660,7 +1660,7 @@ class ProcessingServiceTest {
             assertTrue(content.contains("Report row from ai persisted transcript."));
         }
         verify(aiServiceClient).getTranscript(926L, "trace-926");
-        verify(aiServiceClient, never()).processAudio(anyLong(), anyString(), anyString(), anyString(), any(), anyString(), anyString(), anyString());
+        verify(aiServiceClient, never()).processAudio(anyLong(), anyString(), anyString(), anyString(), any(), anyString(), anyString(), anyString(), anyString(), any());
         verify(aiServiceClient, never()).analyzeRealtimeTranscript(
                 anyLong(),
                 anyString(),
@@ -1724,7 +1724,7 @@ class ProcessingServiceTest {
             assertTrue(!content.contains("Raw report row duplicate B."));
         }
         verify(aiServiceClient).getTranscript(927L, "trace-927");
-        verify(aiServiceClient, never()).processAudio(anyLong(), anyString(), anyString(), anyString(), any(), anyString(), anyString(), anyString());
+        verify(aiServiceClient, never()).processAudio(anyLong(), anyString(), anyString(), anyString(), any(), anyString(), anyString(), anyString(), anyString(), any());
         verify(aiServiceClient, never()).analyzeRealtimeTranscript(
                 anyLong(),
                 anyString(),
@@ -1798,7 +1798,7 @@ class ProcessingServiceTest {
             assertTrue(!content.contains("raw preview duplicate B"));
         }
         verify(aiServiceClient).getTranscript(928L, "trace-928");
-        verify(aiServiceClient, never()).processAudio(anyLong(), anyString(), anyString(), anyString(), any(), anyString(), anyString(), anyString());
+        verify(aiServiceClient, never()).processAudio(anyLong(), anyString(), anyString(), anyString(), any(), anyString(), anyString(), anyString(), anyString(), any());
         verify(aiServiceClient, never()).analyzeRealtimeTranscript(
                 anyLong(),
                 anyString(),
@@ -2827,6 +2827,7 @@ class ProcessingServiceTest {
                 "grouped-action-plan-v1",
                 null,
                 null,
+                null,
                 "trace-616",
                 AUTH_HEADER
         )).thenReturn(Map.of(
@@ -2855,6 +2856,7 @@ class ProcessingServiceTest {
                 "gemini-business-v2",
                 "gemini-business-v2",
                 "grouped-action-plan-v1",
+                null,
                 null,
                 null,
                 "trace-616",
@@ -2907,6 +2909,7 @@ class ProcessingServiceTest {
                 anyString(),
                 anyString(),
                 anyString(),
+                anyString(),
                 anyString()
         );
     }
@@ -2933,6 +2936,7 @@ class ProcessingServiceTest {
                 eq("gemini-business-v2"),
                 eq("gemini-business-v2"),
                 eq("grouped-action-plan-v1"),
+                isNull(),
                 isNull(),
                 isNull(),
                 eq("trace-618"),
@@ -2998,13 +3002,13 @@ class ProcessingServiceTest {
         when(jobStateStore.claimIdempotency("legacy-meeting:1001", 1001L))
                 .thenReturn(new JobStateStore.IdempotencyClaim(1001L, true));
         when(meetingServiceClient.getMeetingById(1001L, "trace-1001", AUTH_HEADER))
-                .thenReturn(Map.of("id", 1001L, "audioPath", "/app/uploads/a.wav"));
-        when(aiServiceClient.processAudio(1001L, "/app/uploads/a.wav", "legacy-meeting:1001", null, null, "vi", "trace-1001", AUTH_HEADER))
+                .thenReturn(Map.of("id", 1001L, "audioPath", "/app/uploads/a.wav", "ownerUserId", 77L));
+        when(aiServiceClient.processAudio(1001L, "/app/uploads/a.wav", "legacy-meeting:1001", null, null, "vi", null, "trace-1001", AUTH_HEADER, 77L))
                 .thenThrow(new HttpClientErrorException(HttpStatus.SERVICE_UNAVAILABLE, "Service Unavailable"));
 
         ResponseStatusException ex = assertThrows(
                 ResponseStatusException.class,
-                () -> processingService.startProcessing(1001L, null, null, null, null, "vi", "trace-1001", AUTH_HEADER)
+                () -> processingService.startProcessing(1001L, null, null, null, null, "vi", null, "trace-1001", AUTH_HEADER)
         );
 
         assertEquals(HttpStatus.SERVICE_UNAVAILABLE, ex.getStatusCode());
@@ -3024,8 +3028,8 @@ class ProcessingServiceTest {
         when(jobStateStore.claimIdempotency("legacy-meeting:1002", 1002L))
                 .thenReturn(new JobStateStore.IdempotencyClaim(1002L, true));
         when(meetingServiceClient.getMeetingById(1002L, "trace-1002", AUTH_HEADER))
-                .thenReturn(Map.of("id", 1002L, "audioPath", "/app/uploads/b.wav"));
-        when(aiServiceClient.processAudio(1002L, "/app/uploads/b.wav", "legacy-meeting:1002", null, null, "vi", "trace-1002", AUTH_HEADER))
+                .thenReturn(Map.of("id", 1002L, "audioPath", "/app/uploads/b.wav", "ownerUserId", 77L));
+        when(aiServiceClient.processAudio(1002L, "/app/uploads/b.wav", "legacy-meeting:1002", null, null, "vi", null, "trace-1002", AUTH_HEADER, 77L))
                 .thenReturn(Map.of("status", "queued"));
 
         Map<String, Object> state = new HashMap<>();
@@ -3035,7 +3039,7 @@ class ProcessingServiceTest {
         state.put("updatedAt", "2026-05-20T00:00:00Z");
         when(jobStateStore.getJobState(1002L)).thenReturn(Optional.of(state));
 
-        var response = processingService.startProcessing(1002L, null, null, null, null, "vi", "trace-1002", AUTH_HEADER);
+        var response = processingService.startProcessing(1002L, null, null, null, null, "vi", null, "trace-1002", AUTH_HEADER);
 
         assertEquals(1002L, response.meetingId());
         assertEquals("QUEUED", response.status());
@@ -3046,14 +3050,14 @@ class ProcessingServiceTest {
         when(jobStateStore.claimIdempotency("legacy-meeting:2001", 2001L))
                 .thenReturn(new JobStateStore.IdempotencyClaim(2001L, true));
         when(meetingServiceClient.getMeetingById(2001L, "trace-2001", AUTH_HEADER))
-                .thenReturn(Map.of("id", 2001L, "audioPath", "/app/uploads/c.wav", "language", "vi"));
-        when(aiServiceClient.processAudio(2001L, "/app/uploads/c.wav", "legacy-meeting:2001", null, null, "en", "trace-2001", AUTH_HEADER))
+                .thenReturn(Map.of("id", 2001L, "audioPath", "/app/uploads/c.wav", "language", "vi", "ownerUserId", 77L));
+        when(aiServiceClient.processAudio(2001L, "/app/uploads/c.wav", "legacy-meeting:2001", null, null, "en", null, "trace-2001", AUTH_HEADER, 77L))
                 .thenReturn(Map.of("status", "queued"));
         when(jobStateStore.getJobState(2001L)).thenReturn(Optional.of(Map.of("status", "QUEUED", "progress", 0, "stage", "unknown")));
 
-        processingService.startProcessing(2001L, null, null, null, null, "en", "trace-2001", AUTH_HEADER);
+        processingService.startProcessing(2001L, null, null, null, null, "en", null, "trace-2001", AUTH_HEADER);
 
-        verify(aiServiceClient).processAudio(2001L, "/app/uploads/c.wav", "legacy-meeting:2001", null, null, "en", "trace-2001", AUTH_HEADER);
+        verify(aiServiceClient).processAudio(2001L, "/app/uploads/c.wav", "legacy-meeting:2001", null, null, "en", null, "trace-2001", AUTH_HEADER, 77L);
     }
 
     @Test
@@ -3061,14 +3065,14 @@ class ProcessingServiceTest {
         when(jobStateStore.claimIdempotency("legacy-meeting:2002", 2002L))
                 .thenReturn(new JobStateStore.IdempotencyClaim(2002L, true));
         when(meetingServiceClient.getMeetingById(2002L, "trace-2002", AUTH_HEADER))
-                .thenReturn(Map.of("id", 2002L, "audioPath", "/app/uploads/d.wav", "language", "multi"));
-        when(aiServiceClient.processAudio(2002L, "/app/uploads/d.wav", "legacy-meeting:2002", null, null, "multi", "trace-2002", AUTH_HEADER))
+                .thenReturn(Map.of("id", 2002L, "audioPath", "/app/uploads/d.wav", "language", "multi", "ownerUserId", 77L));
+        when(aiServiceClient.processAudio(2002L, "/app/uploads/d.wav", "legacy-meeting:2002", null, null, "multi", null, "trace-2002", AUTH_HEADER, 77L))
                 .thenReturn(Map.of("status", "queued"));
         when(jobStateStore.getJobState(2002L)).thenReturn(Optional.of(Map.of("status", "QUEUED", "progress", 0, "stage", "unknown")));
 
-        processingService.startProcessing(2002L, null, null, null, null, null, "trace-2002", AUTH_HEADER);
+        processingService.startProcessing(2002L, null, null, null, null, null, null, "trace-2002", AUTH_HEADER);
 
-        verify(aiServiceClient).processAudio(2002L, "/app/uploads/d.wav", "legacy-meeting:2002", null, null, "multi", "trace-2002", AUTH_HEADER);
+        verify(aiServiceClient).processAudio(2002L, "/app/uploads/d.wav", "legacy-meeting:2002", null, null, "multi", null, "trace-2002", AUTH_HEADER, 77L);
     }
 
     private static Map<String, Object> transcriptRow(String speaker, double startTime, double endTime, String text) {

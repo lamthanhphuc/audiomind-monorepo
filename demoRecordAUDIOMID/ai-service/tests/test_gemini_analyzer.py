@@ -6,6 +6,8 @@ from pathlib import Path
 import pytest
 
 from app.services.analysis_errors import (
+    AnalysisConfigError,
+    AnalysisParseError,
     AnalysisRateLimitError,
     AnalysisUnavailableError,
 )
@@ -504,14 +506,11 @@ def test_gemini_analyzer_retries_503_three_times_then_fails(monkeypatch):
         gemini_backoff_jitter=False,
     )
 
-    result = analyzer.analyze_meeting("hello world")
+    with pytest.raises(AnalysisUnavailableError):
+        analyzer.analyze_meeting("hello world")
 
     assert len(fake_client.calls) == 3
     assert sleep_calls == [2, 4]
-    assert result["summary"] != "hello world"
-    assert "hello world" in result["summary"]
-    assert result["keywords"] == []
-    assert result["actionItems"] == []
 
 
 def test_gemini_analyzer_retries_429_with_retry_after_then_succeeds(monkeypatch):
@@ -602,12 +601,11 @@ def test_gemini_analyzer_quota_429_fails_fast_by_default(monkeypatch):
         gemini_backoff_base_ms=0,
         gemini_backoff_jitter=False,
     )
-    result = analyzer.analyze_meeting("hello world")
+    with pytest.raises(AnalysisRateLimitError):
+        analyzer.analyze_meeting("hello world")
 
     assert len(fake_client.calls) == 1
     assert sleep_calls == []
-    assert result["summary"] != "Should not be called"
-    assert "hello world" in result["summary"]
 
 
 def test_gemini_analyzer_fills_missing_fields(monkeypatch):
@@ -837,13 +835,68 @@ def test_gemini_analyzer_invalid_json_does_not_log_raw_response(monkeypatch):
     monkeypatch.setattr(AI_MODULE, "logger", capture_logger)
 
     analyzer = GeminiAnalyzer(api_key="test-gemini-key")
-    result = analyzer.analyze_meeting("hello world")
+    with pytest.raises(AnalysisParseError):
+        analyzer.analyze_meeting("hello world")
 
-    assert result["summary"] != ""
     joined_logs = "\n".join(capture_logger.messages)
     assert "GEMINI_ANALYSIS_PARSE_FAILED" in joined_logs
     assert "RAW RESPONSE SECRET" not in joined_logs
     assert raw_response not in joined_logs
+
+
+def test_gemini_analyzer_retries_without_schema_after_invalid_json(monkeypatch):
+    valid_payload = {
+        "summary": "Tong hop hop",
+        "keywords": ["it"],
+        "technicalTerms": [],
+        "painPoints": [],
+        "actionItems": [{"task": "Follow up"}],
+        "domainMode": "it",
+    }
+    invalid_response = _FakeResponse(
+        200,
+        {"candidates": [{"content": {"parts": [{"text": '{"summary": "broken", bad}'}]}}]},
+    )
+    valid_response = _FakeResponse(
+        200,
+        {"candidates": [{"content": {"parts": [{"text": json.dumps(valid_payload)}]}}]},
+    )
+    fake_client = _FakeClient([invalid_response, valid_response])
+    monkeypatch.setattr(AI_MODULE.httpx, "Client", lambda timeout: fake_client)
+
+    analyzer = GeminiAnalyzer(api_key="test-gemini-key", analysis_domain_mode="it")
+    result = analyzer.analyze_meeting("Speaker 1: hello")
+
+    assert result["summary"] == "Tong hop hop"
+
+
+def test_gemini_analyzer_repairs_json_via_llm_after_double_parse_failure(monkeypatch):
+    valid_payload = {
+        "summary": "Tong hop hop",
+        "keywords": ["it"],
+        "technicalTerms": [],
+        "painPoints": [],
+        "actionItems": [{"task": "Follow up"}],
+        "domainMode": "it",
+    }
+    responses = [
+        '{"summary": "broken", bad}',
+        '{"summary": "still broken", bad}',
+        json.dumps(valid_payload),
+    ]
+
+    def fake_call(self, **kwargs):
+        if not responses:
+            raise AssertionError("unexpected extra Gemini call")
+        return responses.pop(0)
+
+    monkeypatch.setattr(GeminiAnalyzer, "_call_gemini_text", fake_call)
+
+    analyzer = GeminiAnalyzer(api_key="test-gemini-key", analysis_domain_mode="it")
+    result = analyzer.analyze_meeting("Speaker 1: hello")
+
+    assert result["summary"] == "Tong hop hop"
+    assert responses == []
 
 
 def test_gemini_analyzer_does_not_invent_owner_or_due_date(monkeypatch):
@@ -900,29 +953,15 @@ def test_gemini_analyzer_rejects_invalid_json(monkeypatch):
     )
 
     analyzer = GeminiAnalyzer(api_key="test-gemini-key")
-    result = analyzer.analyze_meeting("hello world")
-
-    assert result["summary"] != "hello world"
-    assert "hello world" in result["summary"]
-    assert result["keywords"] == []
-    assert result["technicalTerms"] == []
-    assert result["painPoints"] == []
-    assert result["actionItems"] == []
-    assert result["domainMode"] == "it"
+    with pytest.raises(AnalysisParseError):
+        analyzer.analyze_meeting("hello world")
 
 
 def test_gemini_analyzer_requires_api_key():
     analyzer = GeminiAnalyzer(api_key="")
 
-    result = analyzer.analyze_meeting("hello world")
-
-    assert result["summary"] != "hello world"
-    assert "hello world" in result["summary"]
-    assert result["keywords"] == []
-    assert result["technicalTerms"] == []
-    assert result["painPoints"] == []
-    assert result["actionItems"] == []
-    assert result["domainMode"] == "it"
+    with pytest.raises(AnalysisConfigError):
+        analyzer.analyze_meeting("hello world")
 
 
 def test_gemini_analyzer_parses_markdown_fenced_json(monkeypatch):
@@ -1243,6 +1282,43 @@ def test_gemini_analyzer_max_tokens_retries_once_with_larger_budget_without_sche
     assert "responseSchema" not in second_payload["generationConfig"]
 
 
+def test_gemini_analyzer_max_tokens_retries_with_8192_when_primary_budget_is_4096(
+    monkeypatch,
+):
+    fake_client = _FakeClient(
+        [
+            _FakeResponse(
+                200,
+                {
+                    "candidates": [
+                        {
+                            "finishReason": "MAX_TOKENS",
+                            "content": {
+                                "parts": [{"text": '{"summary":"truncated"}'}]
+                            },
+                        }
+                    ],
+                    "usageMetadata": {"candidatesTokenCount": 4084},
+                },
+            ),
+            _success_response(summary="Recovered with larger budget"),
+        ]
+    )
+    monkeypatch.setattr(AI_MODULE.httpx, "Client", lambda timeout: fake_client)
+
+    analyzer = GeminiAnalyzer(
+        api_key="test-gemini-key",
+        analysis_max_output_tokens=4096,
+    )
+    result = analyzer.analyze_meeting("hello world")
+
+    assert result["summary"] == "Recovered with larger budget"
+    assert len(fake_client.calls) == 2
+    second_payload = fake_client.calls[1][1]["json"]
+    assert second_payload["generationConfig"]["maxOutputTokens"] == 8192
+    assert "responseSchema" not in second_payload["generationConfig"]
+
+
 def test_gemini_analyzer_max_tokens_retry_can_be_disabled(monkeypatch):
     fake_client = _FakeClient(
         [
@@ -1272,11 +1348,10 @@ def test_gemini_analyzer_max_tokens_retry_can_be_disabled(monkeypatch):
         analysis_max_output_tokens=512,
         gemini_max_tokens_retry_enabled=False,
     )
-    result = analyzer.analyze_meeting("hello world")
+    with pytest.raises(AnalysisUnavailableError):
+        analyzer.analyze_meeting("hello world")
 
     assert len(fake_client.calls) == 1
-    assert result["summary"] != "Should not be called"
-    assert "hello world" in result["summary"]
 
 
 def test_gemini_analyzer_schema_400_then_json_400_falls_back_safely(monkeypatch):
@@ -1290,15 +1365,10 @@ def test_gemini_analyzer_schema_400_then_json_400_falls_back_safely(monkeypatch)
 
     analyzer = GeminiAnalyzer(api_key="test-gemini-key")
     transcript = "Speaker 1: Bàn về API gateway. Speaker 2: Cần cập nhật cấu hình."
-    result = analyzer.analyze_meeting(transcript)
+    with pytest.raises(AnalysisUnavailableError):
+        analyzer.analyze_meeting(transcript)
 
     assert len(fake_client.calls) == 2
-    assert result["summary"] != transcript
-    assert len(result["summary"]) <= 240
-    assert result["keywords"] == []
-    assert result["technicalTerms"] == []
-    assert result["painPoints"] == []
-    assert result["actionItems"] == []
 
 
 def test_gemini_analyzer_logs_safe_http_error_preview(monkeypatch):
@@ -1342,7 +1412,8 @@ def test_gemini_analyzer_logs_safe_http_error_preview(monkeypatch):
     monkeypatch.setattr(GEMINI_CLIENT_MODULE, "logger", capture_logger)
 
     analyzer = GeminiAnalyzer(api_key="super-secret-key")
-    analyzer.analyze_meeting(transcript)
+    with pytest.raises(AnalysisUnavailableError):
+        analyzer.analyze_meeting(transcript)
 
     http_error_logs = [
         message for message in captured_messages if "GEMINI_CALL_FAILED" in message
@@ -1489,14 +1560,9 @@ def test_gemini_analyzer_missing_summary_does_not_log_response_parsed(monkeypatc
     monkeypatch.setattr(AI_MODULE, "logger", _CaptureLogger())
 
     analyzer = GeminiAnalyzer(api_key="test-gemini-key")
-    result = analyzer.analyze_meeting("hello world")
 
-    assert result["summary"] != ""
-    assert any(
-        "GEMINI_ANALYSIS_FALLBACK reason=missing_summary" in m
-        for m in captured_messages
-    )
-    assert not any("GEMINI_ANALYSIS_RESPONSE_PARSED" in m for m in captured_messages)
+    with pytest.raises(AI_MODULE.AnalysisParseError):
+        analyzer.analyze_meeting("hello world")
 
 
 def test_gemini_analyzer_max_tokens_does_not_log_response_parsed(monkeypatch):
@@ -1557,7 +1623,8 @@ def test_gemini_analyzer_max_tokens_does_not_log_response_parsed(monkeypatch):
         api_key="test-gemini-key",
         analysis_max_output_tokens=4096,
     )
-    analyzer.analyze_meeting("hello world")
+    with pytest.raises(AnalysisUnavailableError):
+        analyzer.analyze_meeting("hello world")
 
     assert any(
         "GEMINI_ANALYSIS_INCOMPLETE reason=max_tokens" in m for m in captured_messages
@@ -1629,3 +1696,68 @@ def test_gemini_analyzer_truncates_long_transcripts_before_single_analysis(monke
     assert len(prompts) == 1
     assert "token1" in prompts[0]
     assert "token6" not in prompts[0]
+
+
+def test_gemini_client_maps_region_block_to_clear_error():
+    fake_client = _FakeClient(
+        [
+            _FakeResponse(
+                400,
+                text='{"error":{"status":"FAILED_PRECONDITION","message":"User location is not supported for the API use."}}',
+            )
+        ]
+    )
+    key_manager = KEY_MANAGER_MODULE.GeminiKeyManager.from_config(
+        gemini_api_key="primary-key",
+        gemini_api_keys="",
+        multi_key_enabled=False,
+    )
+    client = GEMINI_CLIENT_MODULE.GeminiClient(
+        key_manager,
+        max_attempts=1,
+        http_client_factory=lambda timeout: fake_client,
+        sleep=lambda seconds: None,
+    )
+
+    with pytest.raises(AnalysisUnavailableError) as exc_info:
+        client.post_json(
+            url="https://example.test/gemini",
+            payload={"contents": []},
+            timeout_seconds=30,
+        )
+
+    assert exc_info.value.error_code == "GEMINI_REGION_BLOCKED"
+    assert "GEMINI_HTTP_PROXY" in str(exc_info.value)
+
+
+def test_resolve_http_client_factory_wraps_proxy():
+    captured: dict[str, object] = {}
+
+    def base_factory(**kwargs):
+        captured.update(kwargs)
+        return object()
+
+    factory, proxy = GEMINI_CLIENT_MODULE.resolve_http_client_factory(
+        proxy="http://proxy.test:7890",
+        base_factory=base_factory,
+    )
+    factory(timeout=12)
+
+    assert proxy == "http://proxy.test:7890"
+    assert captured["proxies"] == "http://proxy.test:7890"
+    assert captured["timeout"] == 12
+
+
+def test_normalize_gemini_proxy_url_resolves_host_docker_internal(monkeypatch):
+    monkeypatch.setattr(
+        GEMINI_CLIENT_MODULE.socket,
+        "gethostbyname",
+        lambda host: "192.168.65.254",
+    )
+
+    normalized = GEMINI_CLIENT_MODULE._normalize_gemini_proxy_url(
+        "http://host.docker.internal:7890"
+    )
+
+    assert normalized == "http://192.168.65.254:7890"
+

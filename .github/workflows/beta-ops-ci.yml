@@ -45,6 +45,16 @@ jobs:
           python -m pytest -q demoRecordAUDIOMID/ai-service/tests/test_health.py \
             demoRecordAUDIOMID/ai-service/tests/test_otel_setup.py
 
+      - name: AI Celery trace tests
+        run: |
+          python -m pytest -q demoRecordAUDIOMID/ai-service/tests/test_celery_trace.py
+
+      - name: STT stress test
+        run: bash scripts/ci/stress-test.sh
+
+      - name: Chaos test (dry-run without cluster)
+        run: bash scripts/ci/chaos-test-dry-run.sh
+
       - name: Log safety scan
         run: bash scripts/ci/log-safety-scan.sh
 
@@ -62,7 +72,7 @@ jobs:
       - name: OpenAPI /ready presence
         run: |
           set -euo pipefail
-          for spec in meeting-api processing-api ai-api; do
+          for spec in meeting-api processing-api ai-api user-api; do
             grep -qE '^  /ready:' "packages/contracts/${spec}.yaml" \
               || { echo "missing /ready in packages/contracts/${spec}.yaml"; exit 1; }
           done

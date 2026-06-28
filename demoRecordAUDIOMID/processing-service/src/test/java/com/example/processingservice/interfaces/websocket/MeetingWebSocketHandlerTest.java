@@ -55,6 +55,7 @@ import com.example.processingservice.config.Epic2FeatureFlags;
 import com.example.processingservice.config.Epic3FeatureFlags;
 import com.example.processingservice.interfaces.websocket.realtime.RealtimeAudioEnqueueResult;
 import com.example.processingservice.interfaces.websocket.realtime.RealtimeAudioWorkerRegistry;
+import com.example.processingservice.interfaces.websocket.realtime.RealtimeFinalizeDeadlineService;
 import com.example.processingservice.interfaces.websocket.realtime.RealtimeSessionLifecycleState;
 import com.example.processingservice.security.JwtUtil;
 import com.example.processingservice.security.MeetingChannelAuthorizer;
@@ -137,7 +138,8 @@ class MeetingWebSocketHandlerTest {
                 realtimeAudioWorkerRegistry,
                 epic2FeatureFlags,
                 epic3FeatureFlags,
-                realtimePayloadValidator);
+                realtimePayloadValidator,
+                new RealtimeFinalizeDeadlineService());
 
         attributes = new HashMap<>();
         when(session.getAttributes()).thenReturn(attributes);
@@ -234,7 +236,7 @@ class MeetingWebSocketHandlerTest {
 
         assertEquals("completed", attributes.get("TERMINAL_MEETING_STATUS_ATTR"));
         verify(meetingServiceClient).getMeetingById(420L, null, "Bearer raw-token");
-        verify(realtimeEventSubscriber).broadcastToMeeting(eq(420L), any(Map.class));
+        verify(realtimeEventSubscriber).dispatchMeetingEvent(eq(420L), any(Map.class));
         verify(session).close(CloseStatus.POLICY_VIOLATION.withReason("Meeting already finalized"));
         verify(session, never()).sendMessage(any(TextMessage.class));
         verifyNoInteractions(aiServiceClient);
@@ -409,7 +411,7 @@ class MeetingWebSocketHandlerTest {
             eq("Bearer test-token")
         );
         verify(aiServiceClient, never()).getTranscript(anyLong(), anyString());
-        verify(realtimeEventSubscriber).broadcastToMeeting(eq(33L), eventCaptor.capture());
+        verify(realtimeEventSubscriber).dispatchMeetingEvent(eq(33L), eventCaptor.capture());
 
         Map<String, Object> event = eventCaptor.getValue();
         assertEquals("stream.status", event.get("type"));
@@ -491,7 +493,7 @@ class MeetingWebSocketHandlerTest {
             eq("Bearer test-token")
         );
         verify(aiServiceClient, never()).getTranscript(anyLong(), anyString());
-        verify(realtimeEventSubscriber).broadcastToMeeting(eq(34L), eventCaptor.capture());
+        verify(realtimeEventSubscriber).dispatchMeetingEvent(eq(34L), eventCaptor.capture());
 
         Map<String, Object> event = eventCaptor.getValue();
         assertEquals("transcript.partial", event.get("type"));
@@ -577,7 +579,7 @@ class MeetingWebSocketHandlerTest {
         handler.handleBinaryMessage(session, new BinaryMessage(ByteBuffer.wrap(new byte[] {8, 9, 10, 11})));
 
         ArgumentCaptor<Map<String, Object>> eventCaptor = ArgumentCaptor.forClass(Map.class);
-        verify(realtimeEventSubscriber).broadcastToMeeting(eq(340L), eventCaptor.capture());
+        verify(realtimeEventSubscriber).dispatchMeetingEvent(eq(340L), eventCaptor.capture());
 
         Map<String, Object> event = eventCaptor.getValue();
         assertEquals("transcript.final", event.get("type"));
@@ -620,7 +622,7 @@ class MeetingWebSocketHandlerTest {
         verify(meetingServiceClient).getMeetingById(346L, null, "Bearer test-token");
         verifyNoInteractions(aiServiceClient);
         ArgumentCaptor<Map<String, Object>> eventCaptor = ArgumentCaptor.forClass(Map.class);
-        verify(realtimeEventSubscriber).broadcastToMeeting(eq(346L), eventCaptor.capture());
+        verify(realtimeEventSubscriber).dispatchMeetingEvent(eq(346L), eventCaptor.capture());
         Map<String, Object> event = eventCaptor.getValue();
         assertEquals("stream.error", event.get("type"));
         assertEquals(346L, event.get("meetingId"));
@@ -806,7 +808,7 @@ class MeetingWebSocketHandlerTest {
         handler.handleBinaryMessage(session, new BinaryMessage(ByteBuffer.wrap(new byte[] {9, 10, 11, 12})));
 
         ArgumentCaptor<Map<String, Object>> eventCaptor = ArgumentCaptor.forClass(Map.class);
-        verify(realtimeEventSubscriber).broadcastToMeeting(eq(343L), eventCaptor.capture());
+        verify(realtimeEventSubscriber).dispatchMeetingEvent(eq(343L), eventCaptor.capture());
 
         Map<String, Object> event = eventCaptor.getValue();
         assertEquals("stream.error", event.get("type"));
@@ -912,7 +914,7 @@ class MeetingWebSocketHandlerTest {
             eq("Bearer test-token")
         );
             ArgumentCaptor<Map<String, Object>> eventCaptor = ArgumentCaptor.forClass(Map.class);
-            verify(realtimeEventSubscriber, atLeastOnce()).broadcastToMeeting(eq(35L), eventCaptor.capture());
+            verify(realtimeEventSubscriber, atLeastOnce()).dispatchMeetingEvent(eq(35L), eventCaptor.capture());
 
             Map<String, Object> event = lastCapturedBroadcast(eventCaptor);
             assertEquals("transcript.final", event.get("type"));
@@ -1009,7 +1011,7 @@ class MeetingWebSocketHandlerTest {
 
         assertEquals("completed", attributes.get("TERMINAL_MEETING_STATUS_ATTR"));
         verify(meetingServiceClient).getMeetingById(421L, null, "Bearer test-token");
-        verify(realtimeEventSubscriber).broadcastToMeeting(eq(421L), any(Map.class));
+        verify(realtimeEventSubscriber).dispatchMeetingEvent(eq(421L), any(Map.class));
         verify(session).close(CloseStatus.POLICY_VIOLATION.withReason("Meeting already finalized"));
         verifyNoInteractions(aiServiceClient);
     }
@@ -1262,7 +1264,7 @@ class MeetingWebSocketHandlerTest {
         }
 
         ArgumentCaptor<Map<String, Object>> eventCaptor = ArgumentCaptor.forClass(Map.class);
-        verify(realtimeEventSubscriber, atLeastOnce()).broadcastToMeeting(eq(36L), eventCaptor.capture());
+        verify(realtimeEventSubscriber, atLeastOnce()).dispatchMeetingEvent(eq(36L), eventCaptor.capture());
 
         Map<String, Object> event = lastCapturedBroadcast(eventCaptor);
         assertEquals("stream.status", event.get("type"));
@@ -1364,7 +1366,7 @@ class MeetingWebSocketHandlerTest {
         handler.handleTextMessage(session, new TextMessage("{\"type\":\"stream.stop\"}"));
 
         ArgumentCaptor<Map<String, Object>> eventCaptor = ArgumentCaptor.forClass(Map.class);
-        verify(realtimeEventSubscriber, atLeastOnce()).broadcastToMeeting(eq(112L), eventCaptor.capture());
+        verify(realtimeEventSubscriber, atLeastOnce()).dispatchMeetingEvent(eq(112L), eventCaptor.capture());
         Map<String, Object> event = findCapturedBroadcastByType(eventCaptor, "transcript.final");
         assertNotNull(event);
         assertEquals("meeting-112-start-30.950-unknown", event.get("segmentId"));
@@ -1410,7 +1412,7 @@ class MeetingWebSocketHandlerTest {
         handler.handleTextMessage(session, new TextMessage("{\"type\":\"stream.stop\"}"));
 
         ArgumentCaptor<Map<String, Object>> eventCaptor = ArgumentCaptor.forClass(Map.class);
-        verify(realtimeEventSubscriber, atLeastOnce()).broadcastToMeeting(eq(113L), eventCaptor.capture());
+        verify(realtimeEventSubscriber, atLeastOnce()).dispatchMeetingEvent(eq(113L), eventCaptor.capture());
         Map<String, Object> event = lastCapturedBroadcast(eventCaptor);
         assertEquals("transcript.final", event.get("type"));
         assertEquals(-1L, event.get("seq"));
@@ -1872,7 +1874,7 @@ class MeetingWebSocketHandlerTest {
         handler.handleBinaryMessage(session, new BinaryMessage(ByteBuffer.wrap(new byte[] {5, 6})));
 
         ArgumentCaptor<Map<String, Object>> eventCaptor = ArgumentCaptor.forClass(Map.class);
-        verify(realtimeEventSubscriber, timeout(3000)).broadcastToMeeting(eq(905L), eventCaptor.capture());
+        verify(realtimeEventSubscriber, timeout(3000)).dispatchMeetingEvent(eq(905L), eventCaptor.capture());
         Map<String, Object> errorEvent = eventCaptor.getValue();
         assertEquals("stream.error", errorEvent.get("type"));
         assertEquals(Boolean.FALSE, errorEvent.get("recoverable"));
@@ -2012,7 +2014,7 @@ class MeetingWebSocketHandlerTest {
         handler.handleTextMessage(session, new TextMessage("{\"type\":\"stream.stop\"}"));
 
         ArgumentCaptor<Map<String, Object>> eventCaptor = ArgumentCaptor.forClass(Map.class);
-        verify(realtimeEventSubscriber, atLeastOnce()).broadcastToMeeting(eq(114L), eventCaptor.capture());
+        verify(realtimeEventSubscriber, atLeastOnce()).dispatchMeetingEvent(eq(114L), eventCaptor.capture());
         assertEquals("transcript.final", lastCapturedBroadcast(eventCaptor).get("type"));
 
         verify(jobStateStore, timeout(1000)).markAnalysisFailed(
@@ -2040,7 +2042,7 @@ class MeetingWebSocketHandlerTest {
         handler.handleTextMessage(session, new TextMessage("{\"type\":\"stream.stop\"}"));
 
         ArgumentCaptor<Map<String, Object>> eventCaptor = ArgumentCaptor.forClass(Map.class);
-        verify(realtimeEventSubscriber, times(2)).broadcastToMeeting(eq(401L), eventCaptor.capture());
+        verify(realtimeEventSubscriber, times(2)).dispatchMeetingEvent(eq(401L), eventCaptor.capture());
         Map<String, Object> terminalEvent = eventCaptor.getAllValues().get(1);
         assertEquals("FAILED_AUDIO_CAPTURE", terminalEvent.get("status"));
         verify(jobStateStore).upsertJobState(
@@ -2071,7 +2073,7 @@ class MeetingWebSocketHandlerTest {
         handler.handleTextMessage(session, new TextMessage("{\"type\":\"stream.stop\"}"));
 
         ArgumentCaptor<Map<String, Object>> eventCaptor = ArgumentCaptor.forClass(Map.class);
-        verify(realtimeEventSubscriber, times(2)).broadcastToMeeting(eq(402L), eventCaptor.capture());
+        verify(realtimeEventSubscriber, times(2)).dispatchMeetingEvent(eq(402L), eventCaptor.capture());
         assertEquals("FAILED_AUDIO_CAPTURE", eventCaptor.getAllValues().get(1).get("status"));
         verify(aiServiceClient, never()).streamAudioChunk(anyLong(), any(), eq(-1L), anyString(), eq(true), any(), anyString());
     }
@@ -2118,7 +2120,7 @@ class MeetingWebSocketHandlerTest {
 
         handler.handleTextMessage(session, new TextMessage("{\"type\":\"stream.stop\"}"));
 
-        verify(realtimeEventSubscriber, never()).broadcastToMeeting(eq(403L), argThat(event ->
+        verify(realtimeEventSubscriber, never()).dispatchMeetingEvent(eq(403L), argThat(event ->
                 "stream.error".equals(event.get("type"))
         ));
         verify(aiServiceClient, timeout(1000)).analyzeRealtimeTranscript(
@@ -2148,7 +2150,7 @@ class MeetingWebSocketHandlerTest {
         handler.handleTextMessage(session, new TextMessage("{}"));
 
         ArgumentCaptor<Map<String, Object>> eventCaptor = ArgumentCaptor.forClass(Map.class);
-        verify(realtimeEventSubscriber).broadcastToMeeting(eq(501L), eventCaptor.capture());
+        verify(realtimeEventSubscriber).dispatchMeetingEvent(eq(501L), eventCaptor.capture());
         Map<String, Object> errorEvent = eventCaptor.getValue();
         assertEquals("stream.error", errorEvent.get("type"));
         assertEquals("REALTIME_CHUNK_TOO_LARGE", errorEvent.get("errorCode"));
@@ -2173,29 +2175,34 @@ class MeetingWebSocketHandlerTest {
         handler.handleTextMessage(session, new TextMessage("{}"));
 
         ArgumentCaptor<Map<String, Object>> eventCaptor = ArgumentCaptor.forClass(Map.class);
-        verify(realtimeEventSubscriber).broadcastToMeeting(eq(502L), eventCaptor.capture());
+        verify(realtimeEventSubscriber).dispatchMeetingEvent(eq(502L), eventCaptor.capture());
         assertEquals("REALTIME_INVALID_PAYLOAD", eventCaptor.getValue().get("errorCode"));
         verifyNoInteractions(aiServiceClient);
     }
 
     @Test
-    void handleBinaryMessage_realtimeValidationEnabled_rejectsNonWebmPayload() throws Exception {
+    void handleTextMessage_realtimeValidationEnabled_rejectsUnsupportedEncoding() throws Exception {
         when(epic2FeatureFlags.isRealtimeValidationEnabled()).thenReturn(true);
         attributes.put("meetingId", 503L);
         attributes.put("authenticated", true);
-        attributes.put("lastAudioSeq", 1L);
-        attributes.put("lastAudioDeclaredSize", 4L);
+        when(objectMapper.readValue(any(String.class), eq(Map.class))).thenReturn(Map.of(
+                "type", "audio.chunk",
+                "seq", 1L,
+                "size", 4L,
+                "mime_type", "audio/mp4",
+                "encoding", "aac"
+        ));
 
-        handler.handleBinaryMessage(session, new BinaryMessage(ByteBuffer.wrap(new byte[] {1, 2, 3, 4})));
+        handler.handleTextMessage(session, new TextMessage("{}"));
 
         ArgumentCaptor<Map<String, Object>> eventCaptor = ArgumentCaptor.forClass(Map.class);
-        verify(realtimeEventSubscriber).broadcastToMeeting(eq(503L), eventCaptor.capture());
+        verify(realtimeEventSubscriber).dispatchMeetingEvent(eq(503L), eventCaptor.capture());
         assertEquals("REALTIME_UNSUPPORTED_ENCODING", eventCaptor.getValue().get("errorCode"));
         verifyNoInteractions(aiServiceClient);
     }
 
     @Test
-    void handleBinaryMessage_realtimeValidationEnabled_acceptsValidWebmChunk() throws Exception {
+    void handleBinaryMessage_realtimeValidationEnabled_acceptsClusterFragmentWithoutEbmlMagic() throws Exception {
         when(epic2FeatureFlags.isRealtimeValidationEnabled()).thenReturn(true);
         attributes.put("meetingId", 504L);
         attributes.put("authenticated", true);
@@ -2203,7 +2210,7 @@ class MeetingWebSocketHandlerTest {
         attributes.put("authorization", "Bearer test-token");
         attributes.put("lastAudioSeq", 1L);
         attributes.put("lastAudioDeclaredSize", 5L);
-        byte[] webmChunk = new byte[] {0x1A, 0x45, (byte) 0xDF, (byte) 0xA3, 0x01};
+        byte[] clusterFragment = new byte[] {1, 2, 3, 4, 5};
 
         when(aiServiceClient.streamAudioChunk(
                 eq(504L),
@@ -2215,7 +2222,7 @@ class MeetingWebSocketHandlerTest {
                 eq("Bearer test-token")
         )).thenReturn(Map.of("transcript", "ok", "is_final", false));
 
-        handler.handleBinaryMessage(session, new BinaryMessage(ByteBuffer.wrap(webmChunk)));
+        handler.handleBinaryMessage(session, new BinaryMessage(ByteBuffer.wrap(clusterFragment)));
 
         assertEquals(1L, attributes.get("lastAcceptedAudioSeq"));
         verify(aiServiceClient).streamAudioChunk(

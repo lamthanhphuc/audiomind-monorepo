@@ -32,6 +32,27 @@ type AcquireAudioSourceOptions = {
 
 const PREFERRED_SAMPLE_RATE = 48_000
 
+type DisplayMediaAudioConstraints = MediaTrackConstraints & {
+  /** Chrome/Edge: capture tab audio without playing through local speakers. */
+  suppressLocalAudioPlayback?: boolean
+}
+
+const buildTabCaptureConstraints = (): DisplayMediaStreamOptions => ({
+  video: true,
+  audio: {
+    echoCancellation: false,
+    noiseSuppression: false,
+    autoGainControl: false,
+    suppressLocalAudioPlayback: true,
+  } as DisplayMediaAudioConstraints,
+})
+
+const prepareTabAudioTracks = (stream: MediaStream): void => {
+  stream.getAudioTracks().forEach((track) => {
+    track.enabled = true
+  })
+}
+
 const isNoiseSuppressionConstraintSupported = (): boolean =>
   Boolean(navigator.mediaDevices?.getSupportedConstraints?.().noiseSuppression)
 
@@ -145,6 +166,7 @@ const validateBrowserTabAudioTracks = (stream: MediaStream): void => {
     trackCount: audioTracks.length,
     muted: liveTrack.muted,
     enabled: liveTrack.enabled,
+    label: liveTrack.label,
   })
 }
 
@@ -171,14 +193,8 @@ const acquireBrowserTabStream = async (): Promise<MediaStream> => {
   }
 
   console.info('[Realtime]', BROWSER_TAB_CAPTURE_TELEMETRY.STARTED)
-  const stream = await navigator.mediaDevices.getDisplayMedia({
-    video: true,
-    audio: {
-      echoCancellation: false,
-      noiseSuppression: false,
-      autoGainControl: false,
-    } as MediaTrackConstraints,
-  })
+  const stream = await navigator.mediaDevices.getDisplayMedia(buildTabCaptureConstraints())
+  prepareTabAudioTracks(stream)
   discardDisplayVideoTracks(stream)
   validateBrowserTabAudioTracks(stream)
   return stream
@@ -187,14 +203,32 @@ const acquireBrowserTabStream = async (): Promise<MediaStream> => {
 const mixTabAndMicrophoneStreams = async (
   tabStream: MediaStream,
   noiseSuppressionEnabled: boolean,
-): Promise<{ stream: MediaStream; cleanup: () => void }> => {
-  const micStream = await acquireMicrophoneStream(noiseSuppressionEnabled)
+): Promise<{ stream: MediaStream; cleanup: () => void; micIncluded: boolean }> => {
+  let micStream: MediaStream | null = null
+  try {
+    micStream = await acquireMicrophoneStream(noiseSuppressionEnabled)
+  } catch (error) {
+    console.warn('[Realtime]', BROWSER_TAB_CAPTURE_TELEMETRY.CAPTURE_FAILED, {
+      reason: 'optional_mic_unavailable',
+      message: error instanceof Error ? error.message : String(error),
+    })
+    return {
+      stream: tabStream,
+      cleanup: () => {},
+      micIncluded: false,
+    }
+  }
+
   const AudioContextCtor = window.AudioContext
     || (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
 
   if (!AudioContextCtor) {
     stopTracks(micStream)
-    throw new AudioSourceError('Trình duyệt không hỗ trợ trộn âm thanh tab và microphone.', 'not_supported')
+    return {
+      stream: tabStream,
+      cleanup: () => {},
+      micIncluded: false,
+    }
   }
 
   const audioContext = new AudioContextCtor()
@@ -220,7 +254,7 @@ const mixTabAndMicrophoneStreams = async (
     void audioContext.close().catch(() => {})
   }
 
-  return { stream: mixedStream, cleanup }
+  return { stream: mixedStream, cleanup, micIncluded: true }
 }
 
 export const acquireAudioSource = async (
@@ -258,6 +292,7 @@ export const acquireAudioSource = async (
     console.info('[Realtime]', BROWSER_TAB_CAPTURE_TELEMETRY.REALTIME_STARTED, {
       meetingId,
       source,
+      micIncluded: mixed.micIncluded,
     })
     return {
       stream: mixed.stream,

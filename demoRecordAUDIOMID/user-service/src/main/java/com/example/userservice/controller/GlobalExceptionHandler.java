@@ -1,6 +1,9 @@
 package com.example.userservice.controller;
 
 import com.example.userservice.logging.TraceIdFilter;
+import com.example.userservice.google.GoogleOAuthException;
+import com.example.userservice.zoom.ZoomOAuthException;
+import com.example.userservice.teams.TeamsOAuthException;
 import jakarta.servlet.http.HttpServletRequest;
 import java.time.Instant;
 import java.util.Locale;
@@ -118,6 +121,30 @@ public class GlobalExceptionHandler {
                 null);
     }
 
+    @ExceptionHandler(GoogleOAuthException.class)
+    public ResponseEntity<ApiErrorResponse> handleGoogleOAuth(
+            GoogleOAuthException ex,
+            HttpServletRequest request) {
+        ErrorCode code = ErrorCode.valueOf(ex.error().name());
+        return buildResponse(code, ex.error().status(), code.defaultMessage(), request, ex.details());
+    }
+
+    @ExceptionHandler(ZoomOAuthException.class)
+    public ResponseEntity<ApiErrorResponse> handleZoomOAuth(
+            ZoomOAuthException ex,
+            HttpServletRequest request) {
+        ErrorCode code = ErrorCode.valueOf(ex.error().name());
+        return buildResponse(code, ex.error().status(), code.defaultMessage(), request, ex.details());
+    }
+
+    @ExceptionHandler(TeamsOAuthException.class)
+    public ResponseEntity<ApiErrorResponse> handleTeamsOAuth(
+            TeamsOAuthException ex,
+            HttpServletRequest request) {
+        ErrorCode code = ErrorCode.valueOf(ex.error().name());
+        return buildResponse(code, ex.error().status(), code.defaultMessage(), request, null);
+    }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiErrorResponse> handleUnexpected(Exception ex, HttpServletRequest request) {
         log.warn(
@@ -189,6 +216,7 @@ public class GlobalExceptionHandler {
             case UNAUTHORIZED -> ErrorCode.UNAUTHORIZED;
             case FORBIDDEN -> ErrorCode.FORBIDDEN;
             case CONFLICT -> ErrorCode.CONFLICT;
+            case TOO_MANY_REQUESTS -> ErrorCode.RATE_LIMITED;
             case SERVICE_UNAVAILABLE -> ErrorCode.SERVICE_UNAVAILABLE;
             case BAD_GATEWAY -> normalizedReason.contains("gemini")
                     ? ErrorCode.GEMINI_ANALYSIS_FAILED
@@ -228,6 +256,13 @@ public class GlobalExceptionHandler {
                     GEMINI_UNAVAILABLE,
                     GEMINI_ANALYSIS_FAILED,
                     EMPTY_TRANSCRIPT,
+                    GOOGLE_OAUTH_STATE_INVALID,
+                    GOOGLE_OAUTH_NOT_CONFIGURED,
+                    GOOGLE_OAUTH_PROVIDER_ERROR,
+                    GOOGLE_EMAIL_CONFLICT,
+                    GOOGLE_LOGIN_TICKET_INVALID,
+                    GOOGLE_LOGIN_TICKET_USED,
+                    GOOGLE_LOGIN_TICKET_EXPIRED,
                     INTERNAL_ERROR -> true;
             default -> false;
         };

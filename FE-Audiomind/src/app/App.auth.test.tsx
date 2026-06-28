@@ -69,6 +69,8 @@ vi.mock('../services/auth', async () => {
     ...actual,
     getAccessToken: vi.fn(() => null),
     getCurrentUserId: vi.fn(() => null),
+    exchangeGoogleLoginTicket: vi.fn(),
+    getGoogleLoginUrl: vi.fn(() => 'http://localhost:8083/auth/google/start?redirect_after=%2F'),
     login: vi.fn(),
     register: vi.fn(),
     setAccessToken: vi.fn(),
@@ -83,12 +85,33 @@ vi.mock('../services/api', async () => {
     getAnalysis: vi.fn(),
     getProcessingStatus: vi.fn(),
     getTranscript: vi.fn(),
+    getMeetingDetail: vi.fn(),
     startProcessingByPath: vi.fn(),
     uploadToMeetingApi: vi.fn(),
   }
 })
 
-import { login, register, setAccessToken } from '../services/auth'
+vi.mock('../services/googleIntegration', async () => {
+  const actual = await vi.importActual<typeof import('../services/googleIntegration')>('../services/googleIntegration')
+  return {
+    ...actual,
+    getGoogleStatus: vi.fn().mockResolvedValue({
+      linked: true,
+      googleEmail: 'google@example.com',
+      grantedScopes: [
+        'https://www.googleapis.com/auth/calendar.events',
+        'https://www.googleapis.com/auth/gmail.send',
+      ],
+      missingScopes: [],
+    }),
+    redirectToFullGoogleLink: vi.fn(),
+  }
+})
+
+import { buildInviteGoogleRedirectAfter } from '../utils/inviteAuth'
+import { exchangeGoogleLoginTicket, login, register, setAccessToken } from '../services/auth'
+import { ApiError, getMeetingDetail } from '../services/api'
+import { getGoogleStatus, redirectToFullGoogleLink } from '../services/googleIntegration'
 import App from './App'
 
 const flush = async () => {
@@ -121,6 +144,7 @@ describe('App auth entry', () => {
     vi.mocked(login).mockReset()
     vi.mocked(register).mockReset()
     vi.mocked(setAccessToken).mockReset()
+    vi.mocked(exchangeGoogleLoginTicket).mockReset()
   })
 
   afterEach(() => {
@@ -142,6 +166,39 @@ describe('App auth entry', () => {
 
     expect(container.textContent).toContain('Tạo tài khoản để upload audio, ghi âm realtime và nhận phân tích AI.')
     expect(container.querySelector('[data-testid="e2e-register-submit"]')).toBeTruthy()
+    expect(container.querySelector('[data-testid="invite-meeting-banner"]')).toBeNull()
+  })
+
+  it('shows invite banner when openMeeting is present on register', async () => {
+    window.history.pushState({}, '', '/register?openMeeting=15')
+
+    await act(async () => {
+      root.render(<App />)
+    })
+    await flush()
+
+    const banner = container.querySelector('[data-testid="invite-meeting-banner"]')
+    expect(banner).toBeTruthy()
+    expect(banner?.textContent).toMatch(/đúng email/i)
+  })
+
+  it('keeps openMeeting when switching from register to login', async () => {
+    window.history.pushState({}, '', '/register?openMeeting=15')
+
+    await act(async () => {
+      root.render(<App />)
+    })
+    await flush()
+
+    const switchLogin = container.querySelector('[data-testid="e2e-auth-switch-login"]') as HTMLButtonElement
+    await act(async () => {
+      switchLogin.click()
+    })
+    await flush()
+
+    expect(window.location.pathname).toBe('/')
+    expect(window.location.search).toBe('?openMeeting=15')
+    expect(container.querySelector('[data-testid="invite-meeting-banner"]')).toBeTruthy()
   })
 
   it('shows validation errors when register passwords do not match', async () => {
@@ -214,38 +271,6 @@ describe('App auth entry', () => {
     expect(container.textContent).toContain('Đăng ký thành công. Vui lòng đăng nhập.')
   })
 
-  it('auto-logs in when register returns an access token', async () => {
-    window.history.pushState({}, '', '/register')
-    vi.mocked(register).mockResolvedValue({ userId: 12, accessToken: 'register-token', expiresInSeconds: 120 })
-
-    await act(async () => {
-      root.render(<App />)
-    })
-    await flush()
-
-    const usernameInput = container.querySelector('[data-testid="e2e-register-username"]') as HTMLInputElement
-    const emailInput = container.querySelector('[data-testid="e2e-register-email"]') as HTMLInputElement
-    const passwordInput = container.querySelector('[data-testid="e2e-register-password"]') as HTMLInputElement
-    const confirmInput = container.querySelector('[data-testid="e2e-register-confirm-password"]') as HTMLInputElement
-    const submitButton = container.querySelector('[data-testid="e2e-register-submit"]') as HTMLButtonElement
-
-    await act(async () => {
-      setNativeValue(usernameInput, 'new-user')
-      usernameInput.dispatchEvent(new Event('input', { bubbles: true }))
-      setNativeValue(emailInput, 'new-user@example.com')
-      emailInput.dispatchEvent(new Event('input', { bubbles: true }))
-      setNativeValue(passwordInput, 'secret-pass')
-      passwordInput.dispatchEvent(new Event('input', { bubbles: true }))
-      setNativeValue(confirmInput, 'secret-pass')
-      confirmInput.dispatchEvent(new Event('input', { bubbles: true }))
-      submitButton.click()
-    })
-    await flush()
-
-    expect(setAccessToken).toHaveBeenCalledWith('register-token', 120)
-    expect(window.location.pathname).toBe('/')
-  })
-
   it('switches between login and register from the guest page links', async () => {
     await act(async () => {
       root.render(<App />)
@@ -273,5 +298,129 @@ describe('App auth entry', () => {
 
     expect(window.location.pathname).toBe('/')
     expect(container.querySelector('[data-testid="e2e-login-submit"]')).toBeTruthy()
+  })
+
+  it('removes the one-time ticket from the URL and exchanges it for a JWT', async () => {
+    window.history.pushState({}, '', '/auth/google/success?ticket=one-time-ticket')
+    vi.mocked(exchangeGoogleLoginTicket).mockResolvedValue({
+      token: 'google-jwt',
+      expiresInSeconds: 120,
+      user: { id: 15, email: 'google@example.com', name: 'Google User' },
+      redirectAfter: '/',
+    })
+
+    await act(async () => {
+      root.render(<App />)
+    })
+    await flush()
+
+    expect(exchangeGoogleLoginTicket).toHaveBeenCalledWith('one-time-ticket')
+    expect(window.location.search).toBe('')
+    expect(setAccessToken).toHaveBeenCalledWith('google-jwt', 120)
+    expect(getGoogleStatus).toHaveBeenCalled()
+    expect(redirectToFullGoogleLink).not.toHaveBeenCalled()
+    expect(window.location.pathname).toBe('/studio/upload')
+  })
+
+  it('opens analysis after google success when redirect targets invited meeting', async () => {
+    window.history.pushState({}, '', '/auth/google/success?ticket=invite-ticket')
+    vi.mocked(exchangeGoogleLoginTicket).mockResolvedValue({
+      token: 'google-jwt',
+      expiresInSeconds: 120,
+      user: { id: 15, email: 'google@example.com', name: 'Google User' },
+      redirectAfter: '/studio/analysis?meetingId=15',
+    })
+
+    await act(async () => {
+      root.render(<App />)
+    })
+    await flush()
+
+    expect(window.location.pathname).toBe('/studio/analysis')
+    expect(window.location.search).toBe('?meetingId=15')
+    expect(redirectToFullGoogleLink).not.toHaveBeenCalled()
+  })
+
+  it('redirects to full Google link with analysis path when invite scopes are missing', async () => {
+    window.history.pushState({}, '', '/auth/google/success?ticket=grant-invite-ticket')
+    vi.mocked(exchangeGoogleLoginTicket).mockResolvedValue({
+      token: 'google-jwt',
+      expiresInSeconds: 120,
+      user: { id: 15, email: 'google@example.com', name: 'Google User' },
+      redirectAfter: '/studio/analysis?meetingId=15',
+    })
+    vi.mocked(getGoogleStatus).mockResolvedValue({
+      linked: true,
+      googleEmail: 'google@example.com',
+      grantedScopes: [],
+      missingScopes: ['https://www.googleapis.com/auth/calendar.events', 'https://www.googleapis.com/auth/gmail.send'],
+    })
+    vi.mocked(redirectToFullGoogleLink).mockResolvedValue(undefined)
+
+    await act(async () => {
+      root.render(<App />)
+    })
+    await flush()
+
+    expect(redirectToFullGoogleLink).toHaveBeenCalledWith('/studio/analysis?meetingId=15')
+  })
+
+  it('shows invite access notice when google success cannot open invited meeting', async () => {
+    window.history.pushState({}, '', '/auth/google/success?ticket=invite-forbidden')
+    vi.mocked(exchangeGoogleLoginTicket).mockResolvedValue({
+      token: 'google-jwt',
+      expiresInSeconds: 120,
+      user: { id: 15, email: 'other@example.com', name: 'Google User' },
+      redirectAfter: '/studio/analysis?meetingId=15',
+    })
+    vi.mocked(getMeetingDetail).mockRejectedValue(new ApiError('Forbidden', 403))
+
+    await act(async () => {
+      root.render(<App />)
+    })
+    await flush()
+
+    expect(container.querySelector('[data-testid="auth-notice-banner"]')?.textContent).toMatch(/đúng email/i)
+    expect(window.location.pathname).toBe('/studio/analysis')
+  })
+
+  it('redirects to full Google link when integration scopes are missing after login', async () => {
+    window.history.pushState({}, '', '/auth/google/success?ticket=grant-ticket')
+    vi.mocked(exchangeGoogleLoginTicket).mockResolvedValue({
+      token: 'google-jwt',
+      expiresInSeconds: 120,
+      user: { id: 15, email: 'google@example.com', name: 'Google User' },
+      redirectAfter: '/',
+    })
+    vi.mocked(getGoogleStatus).mockResolvedValue({
+      linked: true,
+      googleEmail: 'google@example.com',
+      grantedScopes: [],
+      missingScopes: ['https://www.googleapis.com/auth/calendar.events', 'https://www.googleapis.com/auth/gmail.send'],
+    })
+    vi.mocked(redirectToFullGoogleLink).mockResolvedValue(undefined)
+
+    await act(async () => {
+      root.render(<App />)
+    })
+    await flush()
+
+    expect(redirectToFullGoogleLink).toHaveBeenCalledWith('/studio/upload')
+  })
+
+  it('uses analysis redirect when invite query is present', async () => {
+    const { getGoogleLoginUrl: realGetGoogleLoginUrl } = await vi.importActual<typeof import('../services/auth')>('../services/auth')
+    const redirect = buildInviteGoogleRedirectAfter('?openMeeting=15')
+    const url = new URL(realGetGoogleLoginUrl(redirect))
+
+    expect(redirect).toBe('/studio/analysis?meetingId=15')
+    expect(url.searchParams.get('redirect_after')).toBe('/studio/analysis?meetingId=15')
+  })
+
+  it('uses root redirect in google login url when invite query is absent', async () => {
+    const { getGoogleLoginUrl: realGetGoogleLoginUrl } = await vi.importActual<typeof import('../services/auth')>('../services/auth')
+    expect(buildInviteGoogleRedirectAfter('')).toBe('/')
+    const url = new URL(realGetGoogleLoginUrl('/'))
+    expect(url.searchParams.get('redirect_after')).toBe('/')
   })
 })

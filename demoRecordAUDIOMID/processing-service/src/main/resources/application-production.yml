@@ -5,6 +5,7 @@ logging:
     com.example.processingservice.security.JwtAuthenticationFilter: WARN
     com.example.processingservice.interfaces.websocket: WARN
     org.springframework.security: WARN
+    com.example.processingservice.client.UserQuotaClient: INFO
 
 management:
   tracing:
@@ -14,3 +15,7 @@ management:
   otlp:
     tracing:
       endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://localhost:4318}
+
+app:
+  internal:
+    quota-fail-open: false

@@ -9,6 +9,7 @@ import {
   getMeetingDetail,
   getSavedAnalysis,
   getTranscript,
+  getUserProfile,
   listMeetings,
   listMeetingsWithParams,
   reanalyzeMeetingAnalysis,
@@ -139,6 +140,8 @@ describe('upload language request wiring', () => {
     await getTranscript(7, { signal: controller.signal })
     await getSavedAnalysis(7, { signal: controller.signal })
 
+    const urls = fetchMock.mock.calls.map((call) => call[0] as string)
+    expect(urls[0]).toContain('/processing/7/transcript')
     const inits = fetchMock.mock.calls.map((call) => call[1] as RequestInit)
     expect(inits[0]?.signal).toBe(controller.signal)
     expect(inits[1]?.signal).toBe(controller.signal)
@@ -425,5 +428,39 @@ describe('upload language request wiring', () => {
     expect(urls.some((url) => url.includes('/processing/7/transcript/export?format=csv&mode=readable'))).toBe(true)
     expect(urls.some((url) => url.includes('/processing/7/transcript/export?format=txt&mode=raw'))).toBe(true)
     expect(urls.some((url) => url.includes('/processing/7/transcript/export?format=csv&mode=raw'))).toBe(true)
+  })
+})
+
+describe('user profile', () => {
+  const fetchMock = vi.fn()
+
+  beforeEach(() => {
+    vi.stubGlobal('fetch', fetchMock)
+    fetchMock.mockReset()
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('loads current user profile with domain mode', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        userId: 42,
+        username: 'tester',
+        email: 'tester@example.com',
+        domainMode: 'business',
+      }),
+      headers: new Headers(),
+    })
+
+    const profile = await getUserProfile()
+
+    expect(profile.userId).toBe(42)
+    expect(profile.username).toBe('tester')
+    expect(profile.domainMode).toBe('business')
+    const [url] = fetchMock.mock.calls[0] as [string]
+    expect(url).toContain('/api/users/me')
   })
 })

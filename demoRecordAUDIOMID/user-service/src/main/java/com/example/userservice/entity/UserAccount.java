@@ -28,8 +28,20 @@ public class UserAccount {
     @Column(nullable = false, unique = true, length = 255)
     private String email;
 
-    @Column(name = "password_hash", nullable = false, length = 255)
+    @Column(name = "password_hash", length = 255)
     private String passwordHash;
+
+    @Column(name = "auth_provider_primary", nullable = false, length = 50)
+    private String authProviderPrimary = "local";
+
+    @Column(name = "role", nullable = false, length = 30)
+    private String role = "USER";
+
+    @Column(name = "plan", nullable = false, length = 30)
+    private String plan = "FREE";
+
+    @Column(name = "preferences_json")
+    private String preferencesJson;
 
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;

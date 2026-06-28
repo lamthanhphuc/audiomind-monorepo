@@ -97,6 +97,24 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AnalysisResponse"
+  /api/config/lexicon:
+    get:
+      summary: Get domain lexicon pack for transcript highlighting
+      operationId: getDomainLexicon
+      parameters:
+        - in: query
+          name: domain
+          required: false
+          schema:
+            type: string
+            default: general
+      responses:
+        "200":
+          description: Domain lexicon terms and normalization map
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DomainLexicon"
   /api/v1/process:
     post:
       summary: Process meeting in AI service
@@ -115,6 +133,176 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ProcessResult"
+  /api/meeting/{meeting_id}/analysis/rerun:
+    post:
+      summary: Re-run analysis for a meeting
+      operationId: rerunMeetingAnalysis
+      parameters:
+        - in: path
+          name: meeting_id
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AnalysisRerunRequest"
+      responses:
+        "200":
+          description: Analysis rerun accepted or completed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnalysisResponse"
+  /api/meeting/{meeting_id}/chat:
+    post:
+      summary: Ask a question about meeting content
+      operationId: meetingChat
+      parameters:
+        - in: path
+          name: meeting_id
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        "200":
+          description: Chat answer
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /api/meeting/{meeting_id}/terms/explain:
+    post:
+      summary: Explain a technical term in meeting context
+      operationId: explainMeetingTerm
+      parameters:
+        - in: path
+          name: meeting_id
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TermExplainRequest"
+      responses:
+        "200":
+          description: Term explanation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TermExplainResponse"
+  /api/search/semantic-rerank:
+    post:
+      summary: Semantic rerank of meeting search candidates
+      operationId: semanticRerankMeetings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SemanticRerankRequest"
+      responses:
+        "200":
+          description: Ranked candidates
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /api/search/cross-meeting/ask:
+    post:
+      summary: Ask a question across multiple meetings
+      operationId: crossMeetingAsk
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CrossMeetingAskRequest"
+      responses:
+        "200":
+          description: Cross-meeting answer
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /api/internal/meetings/{meeting_id}/canonicalize:
+    post:
+      summary: Queue canonical transcript generation (internal)
+      operationId: canonicalizeMeetingTranscript
+      parameters:
+        - in: path
+          name: meeting_id
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CanonicalizeRequest"
+      responses:
+        "202":
+          description: Canonicalize task accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CanonicalizeResponse"
+  /api/internal/meetings/{meeting_id}/transcript-quality:
+    get:
+      summary: Get transcript quality metadata (internal)
+      operationId: getMeetingTranscriptQuality
+      parameters:
+        - in: path
+          name: meeting_id
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: Transcript quality payload
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TranscriptQualityResponse"
+  /api/internal/realtime-analysis:
+    post:
+      summary: Analyze realtime transcript (internal)
+      operationId: analyzeRealtimeTranscript
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RealtimeAnalysisRequest"
+      responses:
+        "200":
+          description: Realtime analysis result
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
   /health:
     get:
       summary: Health check
@@ -160,6 +348,12 @@ components:
             type: string
         language:
           type: string
+        domain_mode:
+          type: string
+          enum: [general, it, business, education]
+        domainMode:
+          type: string
+          enum: [general, it, business, education]
     ProcessResponse:
       type: object
       required:
@@ -253,10 +447,151 @@ components:
           type: integer
           format: int64
       additionalProperties: true
+    DomainLexicon:
+      type: object
+      required:
+        - domain
+        - versionHash
+        - terms
+        - normalizationMap
+      properties:
+        domain:
+          type: string
+        versionHash:
+          type: string
+        terms:
+          type: array
+          items:
+            type: object
+            properties:
+              term:
+                type: string
+              normalized:
+                type: string
+              category:
+                type: string
+              source:
+                type: string
+        normalizationMap:
+          type: object
+          additionalProperties:
+            type: string
     ErrorResponse:
       type: object
       required:
         - detail
       properties:
         detail:
+          type: string
+    AnalysisRerunRequest:
+      type: object
+      properties:
+        mode:
+          type: string
+        reason:
+          type: string
+        transcript:
+          type: string
+        transcript_hash:
+          type: string
+        domain_mode:
+          type: string
+        domainMode:
+          type: string
+    TermExplainRequest:
+      type: object
+      properties:
+        term:
+          type: string
+        summary:
+          type: string
+        transcript_excerpt:
+          type: string
+        analysis:
+          type: object
+          additionalProperties: true
+    TermExplainResponse:
+      type: object
+      properties:
+        meetingId:
+          type: integer
+          format: int64
+        term:
+          type: string
+        explanation:
+          type: string
+        provider:
+          type: string
+    SemanticRerankRequest:
+      type: object
+      required:
+        - query
+      properties:
+        query:
+          type: string
+        candidates:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+    CrossMeetingAskRequest:
+      type: object
+      required:
+        - question
+      properties:
+        question:
+          type: string
+        meetings:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+    CanonicalizeRequest:
+      type: object
+      properties:
+        runId:
+          type: integer
+          format: int64
+        run_id:
+          type: integer
+          format: int64
+        force:
+          type: boolean
+          default: false
+    CanonicalizeResponse:
+      type: object
+      properties:
+        taskId:
+          type: string
+    TranscriptQualityResponse:
+      type: object
+      properties:
+        meetingId:
+          type: integer
+          format: int64
+        ready:
+          type: boolean
+      additionalProperties: true
+    RealtimeAnalysisRequest:
+      type: object
+      required:
+        - meeting_id
+        - transcript
+      properties:
+        meeting_id:
+          type: integer
+          format: int64
+        transcript:
+          type: string
+        source:
+          type: string
+        domain_mode:
+          type: string
+        domainMode:
+          type: string
+        transcript_hash:
+          type: string
+        prompt_version:
+          type: string
+        schema_version:
           type: string

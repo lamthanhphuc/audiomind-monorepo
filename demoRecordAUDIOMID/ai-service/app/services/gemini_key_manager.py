@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from math import ceil
 from typing import Callable
 
+from app.services.gemini_key_cooldown_store import GeminiKeyCooldownStore
+
 ALIAS_PATTERN = re.compile(r"^[a-z0-9_-]+$")
 
 
@@ -119,9 +121,11 @@ class GeminiKeyManager:
         entries: list[GeminiKeyEntry],
         *,
         clock: Callable[[], float] | None = None,
+        cooldown_store: GeminiKeyCooldownStore | None = None,
     ):
         self._entries = _validate_entries(entries)
         self._clock = clock or time.monotonic
+        self._cooldown_store = cooldown_store
         self._lock = threading.RLock()
         self._states = {entry.alias: _KeyState() for entry in self._entries}
         self._next_index = 0
@@ -134,16 +138,25 @@ class GeminiKeyManager:
         gemini_api_keys: str = "",
         multi_key_enabled: bool = False,
         clock: Callable[[], float] | None = None,
+        cooldown_store: GeminiKeyCooldownStore | None = None,
     ) -> "GeminiKeyManager":
         if multi_key_enabled:
             parsed_entries = parse_gemini_api_keys(gemini_api_keys)
             if parsed_entries:
-                return cls(parsed_entries, clock=clock)
+                return cls(parsed_entries, clock=clock, cooldown_store=cooldown_store)
             primary = _validate_key(gemini_api_key)
-            return cls([GeminiKeyEntry(alias="primary", secret=primary)], clock=clock)
+            return cls(
+                [GeminiKeyEntry(alias="primary", secret=primary)],
+                clock=clock,
+                cooldown_store=cooldown_store,
+            )
 
         primary = _validate_key(gemini_api_key)
-        return cls([GeminiKeyEntry(alias="primary", secret=primary)], clock=clock)
+        return cls(
+            [GeminiKeyEntry(alias="primary", secret=primary)],
+            clock=clock,
+            cooldown_store=cooldown_store,
+        )
 
     @property
     def entries(self) -> tuple[GeminiKeyEntry, ...]:
@@ -159,15 +172,14 @@ class GeminiKeyManager:
             for offset in range(size):
                 index = (self._next_index + offset) % size
                 entry = self._entries[index]
-                state = self._states[entry.alias]
-                if state.disabled_until_monotonic <= now:
+                if self._cooldown_remaining(entry.alias, now=now) <= 0:
                     self._next_index = (index + 1) % size
                     return GeminiKeySelection(available=True, entry=entry)
 
             retry_after_values = [
-                max(0, ceil(state.disabled_until_monotonic - now))
-                for state in self._states.values()
-                if state.disabled_until_monotonic > now
+                int(ceil(self._cooldown_remaining(entry.alias, now=now)))
+                for entry in self._entries
+                if self._cooldown_remaining(entry.alias, now=now) > 0
             ]
             retry_after = min(retry_after_values) if retry_after_values else 0
             return GeminiKeySelection(
@@ -188,10 +200,21 @@ class GeminiKeyManager:
             if state is None:
                 return
             cooldown_seconds = max(0.0, float(seconds or 0.0))
-            state.disabled_until_monotonic = max(
-                state.disabled_until_monotonic,
-                self._clock() + cooldown_seconds,
-            )
+            if self._cooldown_store is not None:
+                self._cooldown_store.apply_cooldown(alias, seconds=cooldown_seconds)
+            else:
+                state.disabled_until_monotonic = max(
+                    state.disabled_until_monotonic,
+                    self._clock() + cooldown_seconds,
+                )
             state.last_error_code = str(reason or "unknown")
             state.last_retry_after_seconds = int(ceil(cooldown_seconds))
             state.consecutive_failures += 1
+
+    def _cooldown_remaining(self, alias: str, *, now: float) -> float:
+        if self._cooldown_store is not None:
+            return self._cooldown_store.cooldown_remaining(alias, now=now)
+        state = self._states.get(alias)
+        if state is None:
+            return 0.0
+        return max(0.0, state.disabled_until_monotonic - now)

@@ -1,4 +1,11 @@
 import type { AiAnalysis } from '../../types'
+import {
+  formatAnalysisStatus,
+  formatBooleanVi,
+  formatDateTimeVi,
+  formatVerificationStatus,
+} from '../../utils/uiLabels'
+import './analysis-status-panel.css'
 
 export type AnalysisDisplayStatus =
   | 'NO_ANALYSIS'
@@ -148,23 +155,8 @@ export const normalizeAnalysisMetadata = (metadata: AnalysisMetadata): Normalize
   }
 }
 
-const formatBoolean = (value: boolean | undefined): string => {
-  if (value === undefined) {
-    return 'unknown'
-  }
-  return value ? 'yes' : 'no'
-}
-
-const formatDateTime = (value: string | undefined): string => {
-  if (!value) {
-    return 'unknown'
-  }
-  const parsed = new Date(value)
-  if (Number.isNaN(parsed.getTime())) {
-    return value
-  }
-  return parsed.toLocaleString()
-}
+const formatBoolean = formatBooleanVi
+const formatDateTime = formatDateTimeVi
 
 export const AnalysisStatusPanel = ({
   metadata,
@@ -208,31 +200,40 @@ export const AnalysisStatusPanel = ({
   })()
 
   const rows = [
-    ['Provider', normalized.provider ?? 'unknown'],
-    ['Model', normalized.model ?? 'unknown'],
-    ['Last analyzed', formatDateTime(normalized.lastAnalyzedAt)],
-    ['Cache hit', formatBoolean(normalized.cacheHit)],
-    ['Input', normalized.analysisInputMode ?? 'unknown'],
+    ['Nhà cung cấp', normalized.provider ?? 'Chưa rõ'],
+    ['Mô hình', normalized.model ?? 'Chưa rõ'],
+    ['Phân tích lần cuối', formatDateTime(normalized.lastAnalyzedAt)],
+    ['Cache', formatBoolean(normalized.cacheHit)],
+    ['Đầu vào', normalized.analysisInputMode ?? 'Chưa rõ'],
+    ...(normalized.analysisRetryCount != null
+      ? [['Lần thử lại', String(normalized.analysisRetryCount)] as [string, string]]
+      : []),
+    ...(normalized.retryExhausted != null
+      ? [['Hết lượt thử', formatBoolean(normalized.retryExhausted)] as [string, string]]
+      : []),
+    ...(normalized.analysisNextRetryAt
+      ? [['Thử lại lúc', formatDateTime(normalized.analysisNextRetryAt)] as [string, string]]
+      : []),
+    ...(normalized.analysisTraceId
+      ? [['Trace ID', normalized.analysisTraceId] as [string, string]]
+      : []),
   ]
   const technicalRows = [
     ['Prompt', normalized.promptVersion],
     ['Schema', normalized.schemaVersion],
-    ['Canonical hash', normalized.canonicalTranscriptHash],
-    ['Canonical version', normalized.canonicalTranscriptVersion],
+    ['Hash transcript', normalized.canonicalTranscriptHash],
+    ['Phiên bản transcript', normalized.canonicalTranscriptVersion],
   ].filter(([, value]) => Boolean(value))
 
   return (
-    <section
-      data-testid="analysis-status-panel"
-      style={{ border: '1px solid #e5e7eb', borderRadius: '8px', padding: '14px', display: 'grid', gap: '12px' }}
-    >
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap' }}>
+    <section className="analysis-status-panel" data-testid="analysis-status-panel">
+      <div className="analysis-status-panel__header">
         <span
           data-testid="analysis-status-badge"
-          className="meta-pill"
-          style={{ textTransform: 'uppercase' }}
+          data-status={normalized.status}
+          className="meta-pill analysis-status-panel__badge"
         >
-          {normalized.status}
+          {formatAnalysisStatus(normalized.status)}
         </span>
         <button
           type="button"
@@ -245,63 +246,63 @@ export const AnalysisStatusPanel = ({
       </div>
 
       {statusBanner && (
-        <p style={{ margin: 0, color: '#92400e', fontSize: '14px' }} data-testid="analysis-status-banner">
+        <p className="analysis-status-panel__banner" data-testid="analysis-status-banner">
           {statusBanner}
         </p>
       )}
 
-      <dl style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '10px', margin: 0 }}>
+      <dl className="analysis-status-panel__grid">
         {rows.map(([label, value]) => (
           <div key={label}>
-            <dt style={{ color: '#64748b', fontSize: '12px' }}>{label}</dt>
-            <dd style={{ margin: '4px 0 0', color: '#0f172a', fontSize: '13px', overflowWrap: 'anywhere' }}>{value}</dd>
+            <dt>{label}</dt>
+            <dd>{value}</dd>
           </div>
         ))}
       </dl>
 
       {normalized.staleReason && (
-        <p style={{ margin: 0, color: '#92400e', fontSize: '13px' }} data-testid="analysis-stale-reason">
-          staleReason: {normalized.staleReason}
+        <p className="analysis-status-panel__meta" data-testid="analysis-stale-reason">
+          Lý do dữ liệu cũ: {normalized.staleReason}
         </p>
       )}
       {retryAfterSeconds > 0 && (
-        <p style={{ margin: 0, color: '#64748b', fontSize: '13px' }} data-testid="analysis-retry-after">
-          retryAfterSeconds: {retryAfterSeconds}
+        <p className="analysis-status-panel__meta" data-testid="analysis-retry-after">
+          Thử lại sau {retryAfterSeconds} giây
         </p>
       )}
       {(normalized.errorCode || normalized.errorMessage) && (
-        <p style={{ margin: 0, color: '#b91c1c', fontSize: '13px' }} data-testid="analysis-error-metadata">
+        <p className="analysis-status-panel__error" data-testid="analysis-error-metadata">
           {[normalized.errorCode, normalized.errorMessage].filter(Boolean).join(': ')}
         </p>
       )}
       {technicalRows.length > 0 && (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }} data-testid="analysis-technical-metadata">
+        <div className="analysis-status-panel__technical" data-testid="analysis-technical-metadata">
           {technicalRows.map(([label, value]) => (
-            <span key={label} className="meta-pill" style={{ maxWidth: '100%', overflowWrap: 'anywhere' }}>
+            <span key={label} className="meta-pill">
               {label}: {value}
             </span>
           ))}
         </div>
       )}
       {evidenceMatches.length > 0 && (
-        <div data-testid="verified-evidence-block" style={{ display: 'grid', gap: '8px' }}>
-          <strong style={{ fontSize: '13px' }}>Verified evidence</strong>
+        <div className="analysis-status-panel__evidence" data-testid="verified-evidence-block">
+          <strong className="analysis-status-panel__evidence-title">Bằng chứng đã xác minh</strong>
           {evidenceMatches.map((match, index) => (
             <div
               key={`${match.speaker ?? 'speaker'}-${match.startTime ?? index}`}
-              style={{ border: '1px solid #e2e8f0', borderRadius: '6px', padding: '8px', fontSize: '13px' }}
+              className="analysis-status-panel__evidence-card"
             >
               <span className="meta-pill" data-testid="evidence-verification-badge">
-                {match.verificationStatus ?? 'unverified'}
+                {formatVerificationStatus(match.verificationStatus)}
               </span>
               <div>{match.speaker} · {match.startTime}s–{match.endTime}s</div>
-              <div style={{ color: '#334155' }}>{match.snippet}</div>
+              <div className="analysis-status-panel__evidence-snippet">{match.snippet}</div>
             </div>
           ))}
         </div>
       )}
       {error && (
-        <p style={{ margin: 0, color: '#b91c1c', fontSize: '13px' }} data-testid="analysis-rerun-error">
+        <p className="analysis-status-panel__error" data-testid="analysis-rerun-error">
           {error}
         </p>
       )}

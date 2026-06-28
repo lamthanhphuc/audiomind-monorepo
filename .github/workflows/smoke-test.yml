@@ -2,6 +2,9 @@ name: Smoke Test E2E
 
 on:
   workflow_dispatch:
+  pull_request:
+  schedule:
+    - cron: '0 3 * * *'
   push:
     branches:
       - main
@@ -84,9 +87,17 @@ jobs:
         if: steps.check-e2e-secrets.outputs.skip_e2e != 'true'
         shell: pwsh
         run: |
+          if (-not (Test-Path infra/.env)) {
+            Copy-Item infra/.env.example infra/.env
+          }
           $maxAttempts = 3
           for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
-            docker compose -f infra/docker-compose.dev.yml -f infra/docker-compose.ci.yml up -d --build db redis user-api ai-api celery-worker meeting-api processing-api
+            docker compose --env-file infra/.env `
+              -f infra/docker-compose.dev.yml `
+              -f infra/docker-compose.mvp.yml `
+              -f infra/docker-compose.ci.yml `
+              -f infra/docker-compose.staging.yml `
+              -f infra/docker-compose.ci-staging.yml up -d --build db redis user-api ai-api celery-worker meeting-api processing-api
             if ($LASTEXITCODE -eq 0) {
               break
             }
@@ -135,8 +146,18 @@ jobs:
             } catch {
               Write-Host "ai-api /ready probe failed: $($_.Exception.Message)"
             }
-            docker compose -f infra/docker-compose.dev.yml -f infra/docker-compose.ci.yml ps
-            docker compose -f infra/docker-compose.dev.yml -f infra/docker-compose.ci.yml logs ai-api --tail 200
+            docker compose --env-file infra/.env `
+              -f infra/docker-compose.dev.yml `
+              -f infra/docker-compose.mvp.yml `
+              -f infra/docker-compose.ci.yml `
+              -f infra/docker-compose.staging.yml `
+              -f infra/docker-compose.ci-staging.yml ps
+            docker compose --env-file infra/.env `
+              -f infra/docker-compose.dev.yml `
+              -f infra/docker-compose.mvp.yml `
+              -f infra/docker-compose.ci.yml `
+              -f infra/docker-compose.staging.yml `
+              -f infra/docker-compose.ci-staging.yml logs ai-api --tail 200
             throw "Stack health endpoints not ready before smoke test"
           }
 
@@ -144,13 +165,48 @@ jobs:
         if: failure() && steps.check-e2e-secrets.outputs.skip_e2e != 'true'
         shell: pwsh
         run: |
-          docker compose -f infra/docker-compose.dev.yml -f infra/docker-compose.ci.yml ps
-          docker compose -f infra/docker-compose.dev.yml -f infra/docker-compose.ci.yml logs ai-api --tail 500
-          docker compose -f infra/docker-compose.dev.yml -f infra/docker-compose.ci.yml logs processing-api --tail 200
-          docker compose -f infra/docker-compose.dev.yml -f infra/docker-compose.ci.yml logs celery-worker --tail 300
-          docker compose -f infra/docker-compose.dev.yml -f infra/docker-compose.ci.yml logs meeting-api --tail 200
-          docker compose -f infra/docker-compose.dev.yml -f infra/docker-compose.ci.yml logs user-api --tail 200
-          docker compose -f infra/docker-compose.dev.yml -f infra/docker-compose.ci.yml logs db --tail 100
+          docker compose --env-file infra/.env `
+            -f infra/docker-compose.dev.yml `
+            -f infra/docker-compose.mvp.yml `
+            -f infra/docker-compose.ci.yml `
+            -f infra/docker-compose.staging.yml `
+            -f infra/docker-compose.ci-staging.yml ps
+          docker compose --env-file infra/.env `
+            -f infra/docker-compose.dev.yml `
+            -f infra/docker-compose.mvp.yml `
+            -f infra/docker-compose.ci.yml `
+            -f infra/docker-compose.staging.yml `
+            -f infra/docker-compose.ci-staging.yml logs ai-api --tail 500
+          docker compose --env-file infra/.env `
+            -f infra/docker-compose.dev.yml `
+            -f infra/docker-compose.mvp.yml `
+            -f infra/docker-compose.ci.yml `
+            -f infra/docker-compose.staging.yml `
+            -f infra/docker-compose.ci-staging.yml logs processing-api --tail 200
+          docker compose --env-file infra/.env `
+            -f infra/docker-compose.dev.yml `
+            -f infra/docker-compose.mvp.yml `
+            -f infra/docker-compose.ci.yml `
+            -f infra/docker-compose.staging.yml `
+            -f infra/docker-compose.ci-staging.yml logs celery-worker --tail 300
+          docker compose --env-file infra/.env `
+            -f infra/docker-compose.dev.yml `
+            -f infra/docker-compose.mvp.yml `
+            -f infra/docker-compose.ci.yml `
+            -f infra/docker-compose.staging.yml `
+            -f infra/docker-compose.ci-staging.yml logs meeting-api --tail 200
+          docker compose --env-file infra/.env `
+            -f infra/docker-compose.dev.yml `
+            -f infra/docker-compose.mvp.yml `
+            -f infra/docker-compose.ci.yml `
+            -f infra/docker-compose.staging.yml `
+            -f infra/docker-compose.ci-staging.yml logs user-api --tail 200
+          docker compose --env-file infra/.env `
+            -f infra/docker-compose.dev.yml `
+            -f infra/docker-compose.mvp.yml `
+            -f infra/docker-compose.ci.yml `
+            -f infra/docker-compose.staging.yml `
+            -f infra/docker-compose.ci-staging.yml logs db --tail 100
 
       - name: Setup smoke E2E account
         if: steps.check-e2e-secrets.outputs.skip_e2e != 'true'
@@ -202,7 +258,7 @@ jobs:
         run: |
           $maxAttempts = 3
           for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
-            ./scripts/smoke-e2e.ps1 -AudioFile "${{ github.workspace }}/tests/audio/it-overview.wav" -AiBaseUrl http://localhost:8000 -ProcessingBaseUrl http://localhost:8082 -MeetingBaseUrl http://localhost:8081 -UserServiceBaseUrl http://localhost:8083 -E2EUsername "$env:E2E_USERNAME" -E2EPassword "$env:E2E_PASSWORD" -PollIntervalSeconds 2 -TimeoutSeconds 300
+            ./scripts/smoke-e2e.ps1 -Epic3Matrix -AudioFile "${{ github.workspace }}/tests/audio/it-overview.wav" -AiBaseUrl http://localhost:8000 -ProcessingBaseUrl http://localhost:8082 -MeetingBaseUrl http://localhost:8081 -UserServiceBaseUrl http://localhost:8083 -E2EUsername "$env:E2E_USERNAME" -E2EPassword "$env:E2E_PASSWORD" -PollIntervalSeconds 2 -TimeoutSeconds 300
             if ($LASTEXITCODE -eq 0) {
               break
             }
@@ -211,6 +267,27 @@ jobs:
             }
             Start-Sleep -Seconds (5 * $attempt)
           }
+
+      - name: Install Playwright browsers
+        if: steps.check-e2e-secrets.outputs.skip_e2e != 'true'
+        shell: pwsh
+        run: |
+          cd FE-Audiomind
+          npm ci
+          npx playwright install chromium --with-deps
+
+      - name: Run Playwright E2E (real backend)
+        if: steps.check-e2e-secrets.outputs.skip_e2e != 'true'
+        shell: pwsh
+        env:
+          PLAYWRIGHT_REAL_BACKEND: '1'
+          E2E_USERNAME: ${{ secrets.E2E_USERNAME }}
+          E2E_PASSWORD: ${{ secrets.E2E_PASSWORD }}
+          PLAYWRIGHT_BASE_URL: http://127.0.0.1:5173
+          PLAYWRIGHT_AUDIO_FILE: ${{ github.workspace }}/tests/audio/it-overview.wav
+        run: |
+          cd FE-Audiomind
+          npm run test:e2e:ci -- tests/e2e/billing-redirect.spec.ts tests/e2e/epic3-history.spec.ts
 
       - name: Upload smoke artifacts
         if: always() && steps.check-e2e-secrets.outputs.skip_e2e != 'true'
@@ -225,4 +302,9 @@ jobs:
         if: always() && steps.check-e2e-secrets.outputs.skip_e2e != 'true'
         shell: pwsh
         run: |
-          docker compose -f infra/docker-compose.dev.yml -f infra/docker-compose.ci.yml down -v
+          docker compose --env-file infra/.env `
+            -f infra/docker-compose.dev.yml `
+            -f infra/docker-compose.mvp.yml `
+            -f infra/docker-compose.ci.yml `
+            -f infra/docker-compose.staging.yml `
+            -f infra/docker-compose.ci-staging.yml down -v

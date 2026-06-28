@@ -1,4 +1,5 @@
 import type { AiAnalysis } from '../../types'
+import { formatDomainModeLabel } from '../../constants/domainMode'
 import { EmptyState } from '../ui/EmptyState'
 import { ErrorState } from '../ui/ErrorState'
 import { LoadingState } from '../ui/LoadingState'
@@ -29,7 +30,7 @@ export const AnalysisPanel = ({
   loadingMessage = 'Đang tải phân tích...',
   errorMessage = null,
   emptyMessage = 'Chưa có kết quả phân tích',
-  summaryFallback = '(empty)',
+  summaryFallback = '(trống)',
   testId,
   summaryTestId,
 }: AnalysisPanelProps) => {
@@ -98,7 +99,7 @@ export const AnalysisPanel = ({
     <section className="analysis-panel" data-testid={testId}>
       <header className="analysis-panel__header">
         <h2 className="analysis-panel__title">{title}</h2>
-        <span className="analysis-panel__domain">{analysis.domainMode ?? 'it'}</span>
+        <span className="analysis-panel__domain">{formatDomainModeLabel(analysis.domainMode)}</span>
       </header>
 
       <AnalysisSection title="Tóm tắt" isEmpty={!summaryText}>
@@ -132,7 +133,7 @@ export const AnalysisPanel = ({
         ))}
       </AnalysisSection>
 
-      <AnalysisSection title="Pain points" isEmpty={painPoints.length === 0} emptyMessage="Không có pain points">
+      <AnalysisSection title="Vấn đề / pain points" isEmpty={painPoints.length === 0} emptyMessage="Không có vấn đề được ghi nhận">
         {painPoints.map((item) => (
           <PainPointCard key={`${item.title}-${item.severity}`} item={item} />
         ))}
@@ -145,13 +146,13 @@ export const AnalysisPanel = ({
               <div className="analysis-action-item__task">{item.task}</div>
               {(item.owner || item.dueDate || item.deadline || item.priority || item.status) && (
                 <div className="analysis-action-item__meta">
-                  {item.owner && <span>Owner: {item.owner}</span>}
-                  {(item.dueDate || item.deadline) && <span>Due: {item.dueDate ?? item.deadline}</span>}
-                  {item.priority && <span>Priority: {item.priority}</span>}
-                  {item.status && <span>Status: {item.status}</span>}
+                  {item.owner && <span>Người phụ trách: {item.owner}</span>}
+                  {(item.dueDate || item.deadline) && <span>Hạn: {item.dueDate ?? item.deadline}</span>}
+                  {item.priority && <span>Ưu tiên: {item.priority}</span>}
+                  {item.status && <span>Trạng thái: {item.status}</span>}
                 </div>
               )}
-              {item.evidence && <div className="analysis-action-item__evidence">Evidence: {item.evidence}</div>}
+              {item.evidence && <div className="analysis-action-item__evidence">Bằng chứng: {item.evidence}</div>}
             </li>
           ))}
         </ul>
@@ -165,7 +166,7 @@ export const AnalysisPanel = ({
         </ul>
       </AnalysisSection>
 
-      <AnalysisSection title="Blockers" isEmpty={blockers.length === 0} emptyMessage="Không có blockers">
+      <AnalysisSection title="Điểm nghẽn" isEmpty={blockers.length === 0} emptyMessage="Không có điểm nghẽn">
         <ul className="analysis-action-list">
           {blockers.map((item) => (
             <li key={item}>{item}</li>
@@ -182,9 +183,9 @@ export const AnalysisPanel = ({
       </AnalysisSection>
 
       <AnalysisSection title="Tác động" isEmpty={!hasImpact} emptyMessage="Không có thông tin tác động">
-        {analysis.businessImpact && <p className="analysis-panel__summary"><strong>Business:</strong> {analysis.businessImpact}</p>}
-        {analysis.customerImpact && <p className="analysis-panel__summary"><strong>Customer:</strong> {analysis.customerImpact}</p>}
-        {analysis.technicalImpact && <p className="analysis-panel__summary"><strong>Technical:</strong> {analysis.technicalImpact}</p>}
+        {analysis.businessImpact && <p className="analysis-panel__summary"><strong>Kinh doanh:</strong> {analysis.businessImpact}</p>}
+        {analysis.customerImpact && <p className="analysis-panel__summary"><strong>Khách hàng:</strong> {analysis.customerImpact}</p>}
+        {analysis.technicalImpact && <p className="analysis-panel__summary"><strong>Kỹ thuật:</strong> {analysis.technicalImpact}</p>}
       </AnalysisSection>
 
       <AnalysisSection

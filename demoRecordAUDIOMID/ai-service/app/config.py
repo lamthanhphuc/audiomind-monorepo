@@ -20,16 +20,11 @@ class Settings(BaseSettings):
     # Database
     database_url: str = "postgresql://postgres:postgres@db:5432/audiomind"
 
-    # OpenAI
-    openai_api_key: str = ""
-    openai_model: str = "gpt-4o"
-    openai_analysis_model: str = ""
-    openai_summary_model: str = ""
-
     # Gemini
     gemini_api_key: str = ""
     gemini_api_keys: str = ""
     gemini_multi_key_enabled: bool = False
+    gemini_shared_cooldown_enabled: bool = False
     gemini_max_attempts: int = 3
     gemini_key_cooldown_seconds: float = 90.0
     gemini_key_hard_cooldown_seconds: float = 900.0
@@ -51,6 +46,7 @@ class Settings(BaseSettings):
     gemini_max_tokens_retry_enabled: bool = True
     gemini_max_single_request_chars: int = 50000
     gemini_request_delay_seconds: float = 15.0
+    gemini_http_proxy: str = ""
 
     # Analysis recovery (PR2)
     analysis_background_retry_enabled: bool = True
@@ -58,6 +54,24 @@ class Settings(BaseSettings):
     analysis_short_transcript_gate_enabled: bool = True
     gemini_client_test_mode: str = ""
     internal_api_base_url: str = "http://127.0.0.1:8000"
+    user_api_base_url: str = Field(
+        default="http://user-api:8083",
+        validation_alias=AliasChoices(
+            "USER_API_BASE_URL",
+            "AUDIOMIND_USER_API_BASE_URL",
+        ),
+    )
+    internal_service_token: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "INTERNAL_SERVICE_TOKEN",
+            "GOOGLE_INTERNAL_SERVICE_TOKEN",
+        ),
+    )
+    quota_fail_open: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("QUOTA_FAIL_OPEN",),
+    )
 
     # Deepgram
     deepgram_api_key: str = ""
@@ -233,7 +247,7 @@ class Settings(BaseSettings):
             self.stt_provider = "deepgram"
 
         self.analysis_provider = (self.analysis_provider or "gemini").strip().lower()
-        if self.analysis_provider not in {"openai", "gemini", "ollama", "local"}:
+        if self.analysis_provider not in {"gemini", "ollama", "local"}:
             self.analysis_provider = "gemini"
 
         self.gemini_analysis_domain_mode = (
@@ -288,7 +302,7 @@ class Settings(BaseSettings):
 
         # Backward-compatible normalization for legacy variable usage.
         self.ai_provider = (self.ai_provider or "gemini").strip().lower()
-        if self.ai_provider not in {"openai", "gemini", "ollama", "local"}:
+        if self.ai_provider not in {"gemini", "ollama", "local"}:
             self.ai_provider = "gemini"
 
         return self
@@ -329,14 +343,6 @@ class Settings(BaseSettings):
             )
 
         if (
-            self.analysis_provider == "openai"
-            and not (self.openai_api_key or "").strip()
-        ):
-            raise ValueError(
-                "Invalid production openai_api_key: empty secret is not allowed when analysis_provider=openai"
-            )
-
-        if (
             self.analysis_provider == "gemini"
             and not (self.gemini_api_key or "").strip()
             and not (
@@ -346,13 +352,6 @@ class Settings(BaseSettings):
         ):
             raise ValueError(
                 "Invalid production gemini_api_key: empty secret is not allowed when analysis_provider=gemini"
-            )
-
-        if (self.ai_provider or "").strip().lower() == "openai" and not (
-            self.openai_api_key or ""
-        ).strip():
-            raise ValueError(
-                "Invalid production openai_api_key: empty secret is not allowed when ai_provider=openai"
             )
 
         native_deepgram_diarization_enabled = bool(

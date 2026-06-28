@@ -77,7 +77,7 @@ Inventory này liệt kê symbols hiện có cần modify ở các slice sau, en
 
 | Endpoint | FE usage | OpenAPI / REST canonical | Drift |
 |----------|----------|--------------------------|-------|
-| Transcript read | `GET ${API_BASE}/processing/transcript/{meetingId}` (`api.ts` `getTranscript`) | `GET /processing/{meetingId}/transcript` | **Legacy path in FE** — migrate Slice 1+ or defer with tech debt note |
+| Transcript read | `GET ${API_BASE}/processing/{meetingId}/transcript` (`api.ts` `getTranscript`) | `GET /processing/{meetingId}/transcript` | **Resolved** (FE migrated) |
 | Transcript search | `searchMeetingTranscriptEvidence` | Documented partial | OpenAPI gap noted in spec §11 |
 | Action plan | `getMeetingActionPlan` | Partial | OpenAPI gap |
 | Upload config | `${MEETING_API_BASE}/api/config/upload` | meeting-service | OK (Epic 2) |

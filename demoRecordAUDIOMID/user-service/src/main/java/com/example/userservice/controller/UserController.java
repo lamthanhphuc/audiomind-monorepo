@@ -6,6 +6,7 @@ import com.example.userservice.controller.dto.AuthResponse;
 import com.example.userservice.controller.dto.LoginRequest;
 import com.example.userservice.controller.dto.RegisterRequest;
 import com.example.userservice.controller.dto.RegisterResponse;
+import com.example.userservice.controller.dto.UserPreferencesRequest;
 import com.example.userservice.controller.dto.UserProfileResponse;
 import com.example.userservice.security.UserPrincipal;
 import com.example.userservice.service.UserService;
@@ -17,6 +18,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
@@ -49,18 +51,36 @@ public class UserController {
         return ResponseEntity.ok(Map.of("status", "logged_out"));
     }
 
+    @PostMapping("/refresh-token")
+    public AuthResponse refreshToken(Authentication authentication) {
+        UserPrincipal principal = (UserPrincipal) authentication.getPrincipal();
+        return userService.refreshAccessToken(principal);
+    }
+
     @GetMapping("/me")
     public UserProfileResponse me(Authentication authentication) {
         UserPrincipal principal = (UserPrincipal) authentication.getPrincipal();
         return userService.me(principal);
     }
 
-    @GetMapping("/me/jobs")
-    public ResponseEntity<Map<String, Object>> myJobs(Authentication authentication) {
+    @PatchMapping("/me/preferences")
+    public Map<String, Object> updatePreferences(
+            Authentication authentication,
+            @RequestBody UserPreferencesRequest request
+    ) {
         UserPrincipal principal = (UserPrincipal) authentication.getPrincipal();
-        Map<String, Object> payload = Map.of(
-                "processing", processingClient.getUserJobs(principal.userId()),
-                "meeting", meetingClient.getUserMeetings(principal.userId()));
-        return ResponseEntity.status(HttpStatus.NOT_IMPLEMENTED).body(payload);
+        return userService.updatePreferences(principal, request);
+    }
+
+    @GetMapping("/me/jobs")
+    public Map<String, Object> myJobs(
+            Authentication authentication,
+            @RequestHeader(HttpHeaders.AUTHORIZATION) String authorization
+    ) {
+        UserPrincipal principal = (UserPrincipal) authentication.getPrincipal();
+        return Map.of(
+                "status", "ok",
+                "processing", processingClient.getUserJobs(principal.userId(), authorization),
+                "meeting", meetingClient.getUserMeetings(principal.userId(), authorization));
     }
 }

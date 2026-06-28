@@ -1,0 +1,32 @@
+# Staging multi-replica overlay for realtime Redis Streams smoke tests.
+
+#
+
+# Usage (from repo root):
+
+#   docker compose --env-file infra/.env \
+
+#     -f infra/docker-compose.dev.yml \
+
+#     -f infra/docker-compose.mvp.yml \
+
+#     -f infra/docker-compose.staging.yml \
+
+#     -f infra/docker-compose.staging-scale.yml up -d --build --scale processing-api=2
+
+#
+
+# Requires REALTIME_REDIS_STREAMS_ENABLED=true (set by docker-compose.staging.yml).
+
+# Run smoke: bash scripts/smoke/realtime-redis-streams-smoke.sh
+
+
+
+services:
+
+  processing-api:
+
+    environment:
+
+      REALTIME_REDIS_STREAMS_ENABLED: ${REALTIME_REDIS_STREAMS_ENABLED:-true}
+

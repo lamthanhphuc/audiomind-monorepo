@@ -89,9 +89,31 @@ describe('acquireAudioSource', () => {
 
     const acquired = await acquireAudioSource({ source: 'browser_tab' })
 
-    expect(getDisplayMedia).toHaveBeenCalled()
+    expect(getDisplayMedia).toHaveBeenCalledWith(expect.objectContaining({
+      audio: expect.objectContaining({
+        suppressLocalAudioPlayback: true,
+      }),
+    }))
     expect(videoTrack.stop).toHaveBeenCalled()
     expect(acquired.source).toBe('browser_tab')
+    acquired.cleanup()
+    expect(audioTrack.stop).toHaveBeenCalled()
+  })
+
+  it('falls back to tab-only when microphone is unavailable for tab+mic source', async () => {
+    const audioTrack = createMockTrack()
+    const videoTrack = createMockTrack({ id: 'video-1', kind: 'video' })
+    const getDisplayMedia = vi.fn().mockResolvedValue(createMockStream([audioTrack], [videoTrack]))
+    const getUserMedia = vi.fn().mockRejectedValue(Object.assign(new Error('denied'), { name: 'NotAllowedError' }))
+    Object.defineProperty(navigator, 'mediaDevices', {
+      value: { getDisplayMedia, getUserMedia },
+      configurable: true,
+    })
+
+    const acquired = await acquireAudioSource({ source: 'browser_tab_with_mic' })
+
+    expect(acquired.source).toBe('browser_tab_with_mic')
+    expect(acquired.stream.getAudioTracks()).toHaveLength(1)
     acquired.cleanup()
     expect(audioTrack.stop).toHaveBeenCalled()
   })
@@ -119,7 +141,7 @@ describe('acquireAudioSource', () => {
 
     await expect(acquireAudioSource({ source: 'browser_tab' })).rejects.toMatchObject({
       code: 'cancelled',
-      message: expect.stringContaining('hủy chọn tab Google Meet'),
+      message: expect.stringContaining('hủy chọn tab trình duyệt'),
     })
   })
 })

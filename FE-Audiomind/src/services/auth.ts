@@ -25,8 +25,17 @@ export type RegisterRequest = {
 
 export type RegisterResponse = {
   userId: number
-  accessToken?: string
-  expiresInSeconds?: number
+}
+
+export type GoogleTicketExchangeResponse = {
+  token: string
+  expiresInSeconds: number
+  user: {
+    id: number
+    email: string
+    name: string
+  }
+  redirectAfter?: string | null
 }
 
 const USER_API_BASE = resolveUserApiBase()
@@ -109,6 +118,22 @@ export const getCurrentUserId = (): string | null => {
   return normalized.length > 0 ? normalized : null
 }
 
+export const getJwtPlan = (): string => {
+  const token = getAccessToken()
+  if (!token) return 'FREE'
+  const payload = parseJwt(token)
+  const plan = payload?.plan
+  return typeof plan === 'string' && plan.trim() ? plan.trim().toUpperCase() : 'FREE'
+}
+
+export const getJwtRole = (): string => {
+  const token = getAccessToken()
+  if (!token) return 'USER'
+  const payload = parseJwt(token)
+  const role = payload?.role
+  return typeof role === 'string' && role.trim() ? role.trim().toUpperCase() : 'USER'
+}
+
 export const setAccessToken = (token: string, expiresInSeconds?: number): void => {
   localStorage.setItem(TOKEN_STORAGE_KEY, token)
   if (typeof expiresInSeconds === 'number' && Number.isFinite(expiresInSeconds) && expiresInSeconds > 0) {
@@ -145,6 +170,33 @@ export const login = async (payload: LoginRequest): Promise<AuthResponse> => {
   return data
 }
 
+export const getGoogleLoginUrl = (redirectAfter = '/'): string => {
+  const url = new URL(`${USER_API_BASE}/auth/google/start`)
+  url.searchParams.set('redirect_after', redirectAfter)
+  return url.toString()
+}
+
+export const exchangeGoogleLoginTicket = async (ticket: string): Promise<GoogleTicketExchangeResponse> => {
+  const response = await fetch(`${USER_API_BASE}/auth/google/exchange-ticket`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ ticket }),
+  })
+
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null) as { message?: string } | null
+    throw new Error(payload?.message || `Google login failed: ${response.status}`)
+  }
+
+  const data = await response.json() as GoogleTicketExchangeResponse
+  if (!data.token) {
+    throw new Error('Google login response did not contain an access token')
+  }
+  return data
+}
+
 export const register = async (payload: RegisterRequest): Promise<RegisterResponse> => {
   const response = await fetch(`${USER_API_BASE}/api/users/register`, {
     method: 'POST',
@@ -159,6 +211,32 @@ export const register = async (payload: RegisterRequest): Promise<RegisterRespon
   }
 
   return response.json() as Promise<RegisterResponse>
+}
+
+export const refreshAccessToken = async (): Promise<AuthResponse> => {
+  const token = getAccessToken()
+  if (!token) {
+    throw new Error('Missing access token')
+  }
+
+  const response = await fetch(`${USER_API_BASE}/api/users/refresh-token`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  })
+
+  if (!response.ok) {
+    throw new Error(`Refresh token failed: ${response.status}`)
+  }
+
+  const data = (await response.json()) as AuthResponse
+  if (!data.accessToken) {
+    throw new Error('Refresh response did not contain accessToken')
+  }
+
+  setAccessToken(data.accessToken, data.expiresInSeconds)
+  return data
 }
 
 export const logout = async (): Promise<void> => {

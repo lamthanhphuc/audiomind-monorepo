@@ -1,0 +1,5 @@
+# Local-only: expose ai-api to host for FE lexicon calls (VITE_API_CPU_BASE=http://localhost:8000).
+services:
+  ai-api:
+    ports:
+      - "127.0.0.1:8000:8000"

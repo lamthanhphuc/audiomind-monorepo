@@ -72,8 +72,8 @@ describe('App history analysis navigation', () => {
     })
     await flush()
 
-    expect(container.textContent).toContain('History analysis summary')
     expect(container.textContent).toContain('History transcript line')
+    expect(container.querySelector('[data-testid="e2e-transcript"]')).toBeTruthy()
   })
 
   it('returns to History after opening analysis from History and clicking back', async () => {
@@ -90,7 +90,7 @@ describe('App history analysis navigation', () => {
     })
     await flush()
 
-    expect(container.textContent).toContain('Meeting history')
+    expect(container.textContent).toContain('Lịch sử cuộc họp')
 
     const meetingButton = Array.from(container.querySelectorAll('[data-testid="meeting-list"] button'))
       .find((item) => item.textContent?.includes('#7')) as HTMLButtonElement | undefined
@@ -109,8 +109,8 @@ describe('App history analysis navigation', () => {
     })
     await flush()
 
-    expect(container.textContent).toContain('History analysis summary')
     expect(container.textContent).toContain('History transcript line')
+    expect(container.querySelector('[data-testid="e2e-transcript"]')).toBeTruthy()
     expect(container.querySelector('[data-testid="feature-analysis-back"]')).toBeTruthy()
 
     const backButton = container.querySelector('[data-testid="feature-analysis-back"]') as HTMLButtonElement
@@ -119,7 +119,7 @@ describe('App history analysis navigation', () => {
     })
     await flush()
 
-    expect(container.textContent).toContain('Meeting history')
+    expect(container.textContent).toContain('Lịch sử cuộc họp')
     expect(container.querySelector('[data-testid="feature-analysis-back"]')).toBeNull()
     expect(container.querySelector('[data-testid="meeting-list"]')).toBeTruthy()
   })

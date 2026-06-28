@@ -120,7 +120,7 @@ def test_ready_returns_up_when_required_dependencies_are_available(monkeypatch):
     monkeypatch.setattr(main_module, "_get_client", lambda: _HealthyRedisClient())
     monkeypatch.setattr(main_module, "pipeline", object())
     monkeypatch.setattr(main_module.settings, "stt_provider", "local_whisper")
-    monkeypatch.setattr(main_module.settings, "analysis_provider", "openai")
+    monkeypatch.setattr(main_module.settings, "analysis_provider", "gemini")
     monkeypatch.setattr(main_module.settings, "deepgram_api_key", "")
     monkeypatch.setattr(main_module.settings, "gemini_api_key", "gm-secret-value")
 

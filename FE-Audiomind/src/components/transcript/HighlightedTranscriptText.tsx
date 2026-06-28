@@ -8,6 +8,7 @@ interface HighlightedTranscriptTextProps {
   terms?: HighlightTermInput[]
   enabled?: boolean
   className?: string
+  onTermClick?: (term: string) => void
 }
 
 const renderPlainText = (text: string, className?: string) => {
@@ -23,6 +24,7 @@ export const HighlightedTranscriptText: React.FC<HighlightedTranscriptTextProps>
   terms = DEFAULT_IT_TERMS,
   enabled = true,
   className,
+  onTermClick,
 }) => {
   const parts = useMemo(() => {
     if (!enabled) {
@@ -44,8 +46,17 @@ export const HighlightedTranscriptText: React.FC<HighlightedTranscriptTextProps>
     return (
       <mark
         key={`h-${index}`}
-        className="it-term-highlight"
+        className={`it-term-highlight${onTermClick ? ' it-term-highlight--clickable' : ''}`}
         data-canonical={part.canonical}
+        onClick={onTermClick ? () => onTermClick(part.canonical || part.text) : undefined}
+        onKeyDown={onTermClick ? (event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault()
+            onTermClick(part.canonical || part.text)
+          }
+        } : undefined}
+        role={onTermClick ? 'button' : undefined}
+        tabIndex={onTermClick ? 0 : undefined}
       >
         {part.text}
       </mark>

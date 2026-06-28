@@ -25,10 +25,6 @@ def _build_settings(provider: str = "gemini", *, allow_legacy_local_ai: bool = F
         gemini_analysis_retry_max_attempts=3,
         gemini_max_single_request_chars=50000,
         gemini_request_delay_seconds=15.0,
-        openai_api_key="test-openai-key",
-        openai_model="gpt-4o",
-        openai_analysis_model="",
-        openai_summary_model="",
     )
 
 

@@ -1,0 +1,21 @@
+{
+  "domain": "education",
+  "version": "1.0.0",
+  "versionHash": "education-v1",
+  "terms": [
+    { "term": "bài giảng", "normalized": "bài giảng", "category": "content" },
+    { "term": "học phần", "normalized": "học phần", "category": "curriculum" },
+    { "term": "đánh giá", "normalized": "đánh giá", "category": "assessment" },
+    { "term": "bài tập", "normalized": "bài tập", "category": "assignment" },
+    { "term": "học viên", "normalized": "học viên", "category": "learner" },
+    { "term": "rubric", "normalized": "rubric", "category": "assessment" },
+    { "term": "syllabus", "normalized": "syllabus", "category": "curriculum" }
+  ],
+  "normalizationMap": {
+    "bai giang": "bài giảng",
+    "hoc phan": "học phần",
+    "danh gia": "đánh giá",
+    "bai tap": "bài tập",
+    "hoc vien": "học viên"
+  }
+}

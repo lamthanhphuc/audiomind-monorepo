@@ -10,6 +10,8 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.security.authentication.BadCredentialsException;
+import com.example.userservice.google.GoogleOAuthError;
+import com.example.userservice.google.GoogleOAuthException;
 
 class GlobalExceptionHandlerTest {
 
@@ -65,5 +67,19 @@ class GlobalExceptionHandlerTest {
         assertEquals("INTERNAL_ERROR", body.error());
         assertEquals("Unexpected server error", body.message());
         assertTrue(body.traceId() != null && !body.traceId().isBlank());
+    }
+
+    @Test
+    void googleOAuthFailure_shouldReturnSpecificSafeErrorCode() {
+        GlobalExceptionHandler handler = new GlobalExceptionHandler();
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        request.setRequestURI("/auth/google/exchange-ticket");
+
+        ResponseEntity<ApiErrorResponse> response = handler.handleGoogleOAuth(
+                new GoogleOAuthException(GoogleOAuthError.GOOGLE_LOGIN_TICKET_USED),
+                request);
+
+        assertEquals(HttpStatus.BAD_REQUEST, response.getStatusCode());
+        assertEquals("GOOGLE_LOGIN_TICKET_USED", response.getBody().error());
     }
 }

@@ -55,6 +55,127 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/meetings/scheduled": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create scheduled meeting for Google Calendar linking */
+        post: operations["createScheduledMeeting"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/meetings/{id}/google/calendar-event": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create Google Calendar event for meeting */
+        post: operations["createGoogleCalendarEvent"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/meetings/{id}/google/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Poll Google Calendar creation status */
+        get: operations["getGoogleCalendarStatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/meetings/google/calendars": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Google calendars for linked account */
+        get: operations["listGoogleCalendars"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/meetings/google/meet": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create quick Google Meet */
+        post: operations["createQuickGoogleMeet"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/meetings/{meetingId}/speakers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List speaker display profiles */
+        get: operations["listMeetingSpeakerProfiles"];
+        /** Upsert speaker display profiles */
+        put: operations["upsertMeetingSpeakerProfiles"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/meetings/{meetingId}/tasks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List meeting tasks */
+        get: operations["listMeetingTasks"];
+        put?: never;
+        /** Create meeting task */
+        post: operations["createMeetingTask"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/health": {
         parameters: {
             query?: never;
@@ -140,6 +261,43 @@ export interface components {
             transcript?: string | null;
             summary?: string | null;
         };
+        ScheduledMeetingCreate: {
+            title: string;
+            /** Format: date-time */
+            startDateTime: string;
+            /** Format: date-time */
+            endDateTime: string;
+            timeZone: string;
+            language?: string;
+        };
+        ScheduledMeeting: {
+            /** Format: int64 */
+            id: number;
+            title: string;
+            status: string;
+            /** Format: date-time */
+            scheduledStartAt?: string;
+            /** Format: date-time */
+            scheduledEndAt?: string;
+            scheduledTimezone?: string;
+        };
+        GoogleCalendarEventCreate: {
+            startDateTime: string;
+            endDateTime: string;
+            timeZone: string;
+            attendees?: string[];
+        };
+        GoogleCalendarStatus: {
+            /** Format: int64 */
+            meetingId: number;
+            /** @enum {string} */
+            creationStatus: "not_created" | "creating" | "success" | "failed";
+            conferenceStatus: string;
+            googleCalendarEventId?: string | null;
+            meetUri?: string | null;
+            hangoutLink?: string | null;
+            errorCode?: string | null;
+        };
         MeetingResultUpdate: {
             transcript: string;
             summary: string;
@@ -218,6 +376,240 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["Meeting"];
                 };
+            };
+        };
+    };
+    createScheduledMeeting: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ScheduledMeetingCreate"];
+            };
+        };
+        responses: {
+            /** @description Scheduled meeting created */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScheduledMeeting"];
+                };
+            };
+        };
+    };
+    createGoogleCalendarEvent: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GoogleCalendarEventCreate"];
+            };
+        };
+        responses: {
+            /** @description Calendar link status */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GoogleCalendarStatus"];
+                };
+            };
+            /** @description Calendar event creation in progress */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GoogleCalendarStatus"];
+                };
+            };
+        };
+    };
+    getGoogleCalendarStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current Google Calendar status */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GoogleCalendarStatus"];
+                };
+            };
+            /** @description Calendar event still being created */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GoogleCalendarStatus"];
+                };
+            };
+        };
+    };
+    listGoogleCalendars: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Calendar list payload */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+        };
+    };
+    createQuickGoogleMeet: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    summary?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Meet link created */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+        };
+    };
+    listMeetingSpeakerProfiles: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                meetingId: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Speaker profiles */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    upsertMeetingSpeakerProfiles: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                meetingId: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    profiles?: {
+                        [key: string]: unknown;
+                    }[];
+                };
+            };
+        };
+        responses: {
+            /** @description Updated profiles */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listMeetingTasks: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                meetingId: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Task list */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createMeetingTask: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                meetingId: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    [key: string]: unknown;
+                };
+            };
+        };
+        responses: {
+            /** @description Created task */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

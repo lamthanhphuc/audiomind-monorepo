@@ -1,0 +1,15 @@
+/* Dynamic layout values via CSS custom properties */
+
+.transcript-display__container,
+.keywords-container,
+.transcript-container {
+  max-height: var(--scroll-max-height, none);
+}
+
+.billing-meter__bar {
+  width: var(--meter-fill, 0%);
+}
+
+.hero-chart__bar {
+  height: var(--bar-height, 50%);
+}

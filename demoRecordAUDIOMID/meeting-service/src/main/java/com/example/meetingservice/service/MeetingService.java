@@ -2,14 +2,19 @@ package com.example.meetingservice.service;
 
 import com.example.meetingservice.entity.Meeting;
 import com.example.meetingservice.repository.MeetingRepository;
+import com.example.meetingservice.repository.MeetingShareRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.NoSuchElementException;
 import java.util.Optional;
+import java.util.Set;
 import java.util.stream.Stream;
 
 @Service
@@ -19,8 +24,10 @@ public class MeetingService {
     public static final String MEETING_STATUS_PROCESSING = "processing";
     public static final String MEETING_STATUS_COMPLETED = "completed";
     public static final String MEETING_STATUS_FAILED = "failed";
+    public static final String MEETING_STATUS_SCHEDULED = "scheduled";
 
     private final MeetingRepository meetingRepository;
+    private final MeetingShareRepository meetingShareRepository;
 
     public Meeting saveMeeting(String title, String audioPath){
         return saveMeeting(title, audioPath, null);
@@ -70,9 +77,55 @@ public class MeetingService {
                 .orElseThrow(() -> new NoSuchElementException("Meeting not found: " + id));
     }
 
+    public Meeting saveScheduledMeeting(
+            String title,
+            Long ownerUserId,
+            String language,
+            OffsetDateTime startAt,
+            OffsetDateTime endAt,
+            String timeZone) {
+        if (ownerUserId == null) {
+            throw new IllegalArgumentException("Owner is required");
+        }
+        if (startAt == null || endAt == null || !endAt.isAfter(startAt)) {
+            throw new IllegalArgumentException("Scheduled end time must be after start time");
+        }
+        // Allow ongoing slots (e.g. 7–8 PM while user schedules at 7:30 PM) as long as the meeting has not ended.
+        if (!endAt.isAfter(OffsetDateTime.now())) {
+            throw new IllegalArgumentException("Scheduled end time must be in the future");
+        }
+        Meeting meeting = new Meeting();
+        meeting.setTitle(normalizeTitle(title));
+        meeting.setAudioPath("");
+        meeting.setOriginalFileName("scheduled");
+        meeting.setOwnerUserId(ownerUserId);
+        meeting.setLanguage(normalizeLanguage(language));
+        meeting.setFileSize(0L);
+        meeting.setStatus(MEETING_STATUS_SCHEDULED);
+        meeting.setCreatedAt(LocalDateTime.now());
+        meeting.setScheduledStartAt(startAt);
+        meeting.setScheduledEndAt(endAt);
+        meeting.setScheduledTimezone(timeZone);
+        meeting.setDeletedAt(null);
+        return meetingRepository.save(meeting);
+    }
+
     public Meeting findByIdForOwner(Long id, Long ownerUserId) {
         return meetingRepository.findByIdAndOwnerUserIdAndDeletedAtIsNull(id, ownerUserId)
                 .orElseThrow(() -> new NoSuchElementException("Meeting not found: " + id));
+    }
+
+    public Meeting findByIdForUser(Long id, Long userId) {
+        Optional<Meeting> owned = meetingRepository.findByIdAndOwnerUserIdAndDeletedAtIsNull(id, userId);
+        if (owned.isPresent()) {
+            return owned.get();
+        }
+        if (meetingShareRepository.existsByMeetingIdAndSharedWithUserId(id, userId)) {
+            return meetingRepository.findById(id)
+                    .filter(meeting -> meeting.getDeletedAt() == null)
+                    .orElseThrow(() -> new NoSuchElementException("Meeting not found: " + id));
+        }
+        throw new NoSuchElementException("Meeting not found: " + id);
     }
 
     public List<Meeting> findRecentMeetings() {
@@ -119,6 +172,56 @@ public class MeetingService {
         return stream.toList();
     }
 
+    public List<Meeting> findMeetingsForUser(
+            Long userId,
+            String query,
+            String status,
+            String language,
+            String sort
+    ) {
+        List<Meeting> owned = findMeetingsForOwner(userId, query, status, language, sort);
+        Set<Long> seen = new LinkedHashSet<>(owned.stream().map(Meeting::getId).toList());
+        List<Meeting> sharedMeetings = new ArrayList<>();
+        for (var share : meetingShareRepository.findBySharedWithUserIdOrderByCreatedAtDesc(userId)) {
+            if (seen.contains(share.getMeetingId())) {
+                continue;
+            }
+            meetingRepository.findById(share.getMeetingId())
+                    .filter(meeting -> meeting.getDeletedAt() == null)
+                    .ifPresent(meeting -> {
+                        if (matchesMeetingFilters(meeting, query, status, language)) {
+                            sharedMeetings.add(meeting);
+                            seen.add(meeting.getId());
+                        }
+                    });
+        }
+        List<Meeting> merged = new ArrayList<>(owned);
+        merged.addAll(sharedMeetings);
+        return merged;
+    }
+
+    private boolean matchesMeetingFilters(Meeting meeting, String query, String status, String language) {
+        String normalizedQuery = normalizeNullable(query);
+        if (normalizedQuery != null) {
+            String queryValue = normalizedQuery.toLowerCase(Locale.ROOT);
+            if (!containsIgnoreCase(meeting.getTitle(), queryValue)
+                    && !containsIgnoreCase(meeting.getOriginalFileName(), queryValue)) {
+                return false;
+            }
+        }
+        String normalizedStatus = normalizeFilterStatus(status);
+        if (normalizedStatus != null
+                && !normalizedStatus.equals(normalizeMeetingStatus(meeting.getStatus()))) {
+            return false;
+        }
+        String normalizedLanguage = normalizeNullable(language);
+        if (normalizedLanguage != null
+                && !normalizedLanguage.equalsIgnoreCase(normalizeLanguage(meeting.getLanguage()))) {
+            return false;
+        }
+        return true;
+    }
+
     public Optional<DuplicateMatch> findActiveDuplicateForOwner(Long ownerUserId, String audioHash) {
         String normalizedHash = normalizeNullable(audioHash);
         if (normalizedHash == null) {
@@ -163,6 +266,7 @@ public class MeetingService {
         return switch (lowered) {
             case MEETING_STATUS_COMPLETED, "success", "succeeded" -> MEETING_STATUS_COMPLETED;
             case MEETING_STATUS_FAILED, "error" -> MEETING_STATUS_FAILED;
+            case MEETING_STATUS_SCHEDULED -> MEETING_STATUS_SCHEDULED;
             default -> MEETING_STATUS_PROCESSING;
         };
     }
@@ -185,6 +289,7 @@ public class MeetingService {
         return switch (lowered) {
             case MEETING_STATUS_COMPLETED, "success", "succeeded" -> MEETING_STATUS_COMPLETED;
             case MEETING_STATUS_FAILED, "error" -> MEETING_STATUS_FAILED;
+            case MEETING_STATUS_SCHEDULED -> MEETING_STATUS_SCHEDULED;
             case MEETING_STATUS_PROCESSING, "queued", "running", "pending", "unknown", "not_found" -> MEETING_STATUS_PROCESSING;
             default -> null;
         };

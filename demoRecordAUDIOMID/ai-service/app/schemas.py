@@ -90,6 +90,8 @@ class ProcessRequest(BaseModel):
     glossary_terms: Optional[List[str]] = None
     glossary_ref: Optional[GlossaryReference] = None
     language: Optional[str] = "vi"
+    domain_mode: Optional[str] = "it"
+    owner_user_id: Optional[int] = None
 
 
 class ProcessResponse(BaseModel):
@@ -181,6 +183,7 @@ class AnalysisRerunRequest(BaseModel):
     analysis_feature_set: Optional[str] = None
     canonical_transcript_hash: Optional[str] = None
     canonical_transcript_version: Optional[str] = None
+    domain_mode: Optional[str] = None
 
 
 class RealtimeTranscriptAnalysisResponse(BaseModel):

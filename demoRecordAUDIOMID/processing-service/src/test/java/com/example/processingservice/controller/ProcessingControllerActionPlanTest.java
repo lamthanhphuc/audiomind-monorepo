@@ -89,7 +89,7 @@ class ProcessingControllerActionPlanTest {
 
         ResponseStatusException ex = assertThrows(
                 ResponseStatusException.class,
-                () -> controller.exportActionPlan(18L, "pdf", "trace-18", "Bearer token")
+                () -> controller.exportActionPlan(18L, "html", "trace-18", "Bearer token")
         );
 
         assertEquals(HttpStatus.BAD_REQUEST, ex.getStatusCode());
@@ -97,7 +97,7 @@ class ProcessingControllerActionPlanTest {
 
     private void authenticate() {
         SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(
-                new UserPrincipal(11L, "tester"),
+                new UserPrincipal(11L, "tester", "USER", "FREE"),
                 null
         ));
     }

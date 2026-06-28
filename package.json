@@ -18,9 +18,10 @@
     "test": "jest --passWithNoTests --testPathIgnorePatterns=FE-Audiomind",
     "validate:config:node": "node packages/tooling/config-validation/validate-config.mjs",
     "validate:policy": "node packages/tooling/config-validation/validate-policy.mjs",
-    "generate:client": "openapi-typescript ./packages/contracts/meeting-api.yaml -o ./packages/api-clients/meeting.ts && openapi-typescript ./packages/contracts/processing-api.yaml -o ./packages/api-clients/processing.ts && openapi-typescript ./packages/contracts/ai-api.yaml -o ./packages/api-clients/ai.ts",
+    "generate:client": "openapi-typescript ./packages/contracts/meeting-api.yaml -o ./packages/api-clients/meeting.ts && openapi-typescript ./packages/contracts/processing-api.yaml -o ./packages/api-clients/processing.ts && openapi-typescript ./packages/contracts/ai-api.yaml -o ./packages/api-clients/ai.ts && openapi-typescript ./packages/contracts/user-api.yaml -o ./packages/api-clients/user.ts",
     "typecheck:client": "tsc --noEmit -p tsconfig.generated.json",
     "validate:schema": "node ./packages/tooling/config-validation/validate-schemas.mjs",
+    "validate:contracts": "node ./packages/tooling/config-validation/validate-contracts.mjs",
     "check:openapi": "node ./infra/scripts/check-openapi-main.mjs"
   },
   "devDependencies": {

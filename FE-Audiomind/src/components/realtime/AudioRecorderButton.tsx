@@ -273,12 +273,13 @@ export function AudioRecorderButton({
         disabled={disabled}
         aria-label={buttonLabel}
         title={statusLabel}
+        data-testid="e2e-realtime-record-toggle"
       >
         <span className="audio-recorder-button__icon" aria-hidden="true">{isTabSource ? '🖥️' : '🎤'}</span>
       </button>
 
       <div className="audio-recorder-widget__meta">
-        <div className="audio-recorder-widget__status">{statusLabel}</div>
+        <div className="audio-recorder-widget__status" data-testid="e2e-realtime-status">{statusLabel}</div>
         <div className="audio-recorder-widget__hint">
           {effectiveState === 'stopped'
             ? 'Đã lưu transcript'
@@ -289,7 +290,7 @@ export function AudioRecorderButton({
               : isPaused
                 ? 'Nhấn để tiếp tục'
                 : isTabSource
-                  ? 'Chọn tab Google Meet khi trình duyệt hỏi'
+                  ? 'Chọn tab đang phát âm thanh khi trình duyệt hỏi'
                   : 'Nhấn để bắt đầu'}
         </div>
       </div>

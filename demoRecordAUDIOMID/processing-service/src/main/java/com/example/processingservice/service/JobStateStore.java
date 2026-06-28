@@ -174,6 +174,13 @@ public class JobStateStore {
         return new IdempotencyClaim(existing, false);
     }
 
+    public void releaseIdempotency(String fileId) {
+        if (fileId == null || fileId.isBlank()) {
+            return;
+        }
+        redisTemplate.delete(idempotencyKey(fileId));
+    }
+
     public void upsertJobState(
             Long jobId,
             String status,
@@ -813,5 +820,14 @@ public class JobStateStore {
         public static AnalysisRetryMetadata empty() {
             return new AnalysisRetryMetadata(false, 0, null, null, null);
         }
+    }
+
+    public boolean claimJobStatusNotification(Long meetingId, String status) {
+        if (meetingId == null || status == null || status.isBlank()) {
+            return false;
+        }
+        String key = "notification:job:" + meetingId + ":" + status.trim().toUpperCase();
+        Boolean claimed = redisTemplate.opsForValue().setIfAbsent(key, "1", Duration.ofDays(30));
+        return Boolean.TRUE.equals(claimed);
     }
 }

@@ -159,3 +159,30 @@ def test_selection_is_thread_safe():
         )
 
     assert set(aliases) == {"primary", "backup1", "backup2"}
+
+
+def test_redis_cooldown_store_shares_state_across_managers():
+    class FakeRedis:
+        def __init__(self):
+            self.values: dict[str, int] = {}
+
+        def ttl(self, key):
+            return self.values.get(key, -2)
+
+        def setex(self, key, ttl, value):
+            current = self.values.get(key, -2)
+            ttl_value = int(ttl)
+            if current < 0 or ttl_value > current:
+                self.values[key] = ttl_value
+
+    from app.services.gemini_key_cooldown_store import RedisGeminiKeyCooldownStore
+    from app.services.gemini_key_manager import GeminiKeyEntry
+
+    redis = FakeRedis()
+    store = RedisGeminiKeyCooldownStore(redis)
+    entry = GeminiKeyEntry(alias="primary", secret="key-a")
+    manager_a = GeminiKeyManager([entry], clock=FakeClock(), cooldown_store=store)
+    manager_b = GeminiKeyManager([entry], clock=FakeClock(), cooldown_store=store)
+
+    manager_a.cooldown_key("primary", seconds=30, reason="429")
+    assert manager_b.select_key().available is False

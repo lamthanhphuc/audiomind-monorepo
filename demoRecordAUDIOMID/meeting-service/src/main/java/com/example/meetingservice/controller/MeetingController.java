@@ -1,11 +1,16 @@
 package com.example.meetingservice.controller;
 
 import com.example.meetingservice.entity.Meeting;
+import com.example.meetingservice.controller.dto.CreateScheduledMeetingRequest;
 import com.example.meetingservice.security.UserPrincipal;
 import com.example.meetingservice.service.MeetingService;
 import com.example.meetingservice.service.UploadValidator;
 import lombok.RequiredArgsConstructor;
 
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.CrossOrigin;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -34,10 +39,15 @@ import java.util.Set;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
+import java.time.OffsetDateTime;
+import java.time.ZoneId;
+import java.time.format.DateTimeParseException;
 import org.springframework.security.core.Authentication;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
+import org.springframework.core.io.FileSystemResource;
+import org.springframework.core.io.Resource;
 
 @CrossOrigin(origins = "${CORS_ALLOWED_ORIGINS:http://localhost:5173}")
 @RestController
@@ -180,6 +190,40 @@ public class MeetingController {
         return response;
     }
 
+    @PostMapping("/scheduled")
+    public Meeting createScheduledMeeting(
+            @RequestBody CreateScheduledMeetingRequest request,
+            Authentication authentication) {
+        UserPrincipal principal = requirePrincipal(authentication);
+        if (request == null || request.title() == null || request.title().isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Title is required");
+        }
+        if (request.startDateTime() == null || request.endDateTime() == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Start and end times are required");
+        }
+        try {
+            OffsetDateTime startAt = OffsetDateTime.parse(request.startDateTime());
+            OffsetDateTime endAt = OffsetDateTime.parse(request.endDateTime());
+            String timeZone = request.timeZone() == null || request.timeZone().isBlank()
+                    ? "Asia/Ho_Chi_Minh"
+                    : request.timeZone().trim();
+            ZoneId.of(timeZone);
+            Meeting saved = meetingService.saveScheduledMeeting(
+                    request.title(),
+                    principal.userId(),
+                    normalizeUploadLanguage(request.language()),
+                    startAt,
+                    endAt,
+                    timeZone);
+            log.info(
+                    "event=SCHEDULED_MEETING_CREATED traceId={} requestId={} ownerUserId={} meetingId={}",
+                    MDC.get("traceId"), resolveRequestId(), principal.userId(), saved.getId());
+            return saved;
+        } catch (DateTimeParseException | java.time.zone.ZoneRulesException ex) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid scheduled date, offset, or time zone");
+        }
+    }
+
     @GetMapping("/{id}")
     public Meeting getById(@PathVariable Long id, Authentication authentication) {
         UserPrincipal principal = requirePrincipal(authentication);
@@ -190,7 +234,45 @@ public class MeetingController {
                 id,
                 id
         );
-        return meetingService.findByIdForOwner(id, principal.userId());
+        return meetingService.findByIdForUser(id, principal.userId());
+    }
+
+    @GetMapping("/{id}/audio")
+    public ResponseEntity<Resource> streamMeetingAudio(@PathVariable Long id, Authentication authentication) {
+        UserPrincipal principal = requirePrincipal(authentication);
+        Meeting meeting = meetingService.findByIdForUser(id, principal.userId());
+        String audioPath = meeting.getAudioPath();
+        if (!StringUtils.hasText(audioPath)) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Meeting has no audio file");
+        }
+
+        Path file = Paths.get(audioPath).toAbsolutePath().normalize();
+        if (!Files.isRegularFile(file)) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Audio file not found");
+        }
+
+        Path uploadRoot = Paths.get(System.getProperty("user.dir"), uploadDir).toAbsolutePath().normalize();
+        if (!file.startsWith(uploadRoot)) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Invalid audio path");
+        }
+
+        String filename = StringUtils.hasText(meeting.getOriginalFileName())
+                ? meeting.getOriginalFileName()
+                : file.getFileName().toString();
+        String contentType;
+        try {
+            contentType = Files.probeContentType(file);
+        } catch (IOException probeError) {
+            contentType = null;
+        }
+        if (!StringUtils.hasText(contentType)) {
+            contentType = MediaType.APPLICATION_OCTET_STREAM_VALUE;
+        }
+
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CONTENT_DISPOSITION, "inline; filename=\"" + filename + "\"")
+                .contentType(MediaType.parseMediaType(contentType))
+                .body(new FileSystemResource(file));
     }
 
     @GetMapping
@@ -202,7 +284,20 @@ public class MeetingController {
             Authentication authentication
     ) {
         UserPrincipal principal = requirePrincipal(authentication);
-        return meetingService.findMeetingsForOwner(principal.userId(), query, status, language, sort);
+        List<Meeting> meetings = meetingService.findMeetingsForUser(
+                principal.userId(),
+                query,
+                status,
+                language,
+                sort
+        );
+        Long userId = principal.userId();
+        for (Meeting meeting : meetings) {
+            meeting.setSharedWithMe(
+                    meeting.getOwnerUserId() != null && !meeting.getOwnerUserId().equals(userId)
+            );
+        }
+        return meetings;
     }
 
     @PatchMapping("/{id}")
@@ -290,6 +385,9 @@ public class MeetingController {
         response.put("language", meeting.getLanguage());
         response.put("fileSize", meeting.getFileSize());
         response.put("status", meetingService.normalizeMeetingStatus(status));
+        response.put("scheduledStartAt", meeting.getScheduledStartAt());
+        response.put("scheduledEndAt", meeting.getScheduledEndAt());
+        response.put("scheduledTimezone", meeting.getScheduledTimezone());
         response.put("duplicate", duplicate);
         response.put("reused", reused);
         response.put("existingMeetingId", existingMeetingId);

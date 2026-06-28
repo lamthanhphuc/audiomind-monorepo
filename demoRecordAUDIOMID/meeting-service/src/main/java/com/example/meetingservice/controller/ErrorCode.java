@@ -31,6 +31,13 @@ public enum ErrorCode {
     INVALID_LANGUAGE(400, "Invalid language"),
     EMPTY_TRANSCRIPT(422, "Transcript is empty"),
     DUPLICATE_REQUEST_SKIPPED(200, "Duplicate request skipped"),
+    GOOGLE_SCOPE_MISSING(403, "Required Google Calendar permission is missing"),
+    GOOGLE_REFRESH_TOKEN_REVOKED(401, "Google authorization was revoked"),
+    GOOGLE_CALENDAR_CREATION_IN_PROGRESS(202, "Google Calendar event creation is in progress"),
+    GOOGLE_CALENDAR_VALIDATION_ERROR(400, "Google Calendar request is invalid"),
+    GOOGLE_CALENDAR_PERMISSION_DENIED(403, "Google Calendar access was denied"),
+    GOOGLE_CALENDAR_API_ERROR(502, "Google Calendar is unavailable"),
+    GOOGLE_INTERNAL_TOKEN_UNAVAILABLE(503, "Google authorization service is unavailable"),
     VALIDATION_ERROR(400, "Request validation failed"),
     UPLOAD_EMPTY_FILE(
             400,

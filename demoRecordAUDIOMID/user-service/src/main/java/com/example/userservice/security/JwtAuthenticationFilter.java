@@ -31,6 +31,14 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         String path = resolvePath(request);
         return path.equals("/api/users/register")
                 || path.equals("/api/users/login")
+                || path.equals("/api/billing/payos/webhook")
+                || path.equals("/auth/google/start")
+                || path.equals("/auth/google/callback")
+                || path.equals("/auth/google/exchange-ticket")
+                || path.equals("/auth/google/link/callback")
+                || path.equals("/auth/zoom/callback")
+                || path.equals("/auth/teams/callback")
+                || path.startsWith("/internal/")
                 || path.equals("/health")
                 || path.equals("/ready")
                 || path.startsWith("/actuator");
@@ -59,12 +67,21 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
             throws ServletException, IOException {
         String authHeader = request.getHeader(HttpHeaders.AUTHORIZATION);
-        if (authHeader == null || !authHeader.startsWith("Bearer ")) {
+        String token = null;
+        if (authHeader != null && authHeader.startsWith("Bearer ")) {
+            token = authHeader.substring(7);
+        } else {
+            String accessToken = request.getParameter("access_token");
+            if (accessToken != null && !accessToken.isBlank()) {
+                token = accessToken;
+            }
+        }
+
+        if (token == null || token.isBlank()) {
             filterChain.doFilter(request, response);
             return;
         }
 
-        String token = authHeader.substring(7);
         if (tokenBlacklistStore.isBlacklisted(token)) {
             SecurityContextHolder.clearContext();
             filterChain.doFilter(request, response);
@@ -75,8 +92,15 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             Claims claims = jwtUtil.parseClaims(token);
             Long userId = Long.parseLong(claims.getSubject());
             String username = claims.get("username", String.class);
+            String role = claims.get("role", String.class);
+            String plan = claims.get("plan", String.class);
 
-            UserPrincipal principal = new UserPrincipal(userId, username);
+            UserPrincipal principal = new UserPrincipal(
+                    userId,
+                    username,
+                    role == null || role.isBlank() ? "USER" : role,
+                    plan == null || plan.isBlank() ? "FREE" : plan
+            );
             UsernamePasswordAuthenticationToken authentication =
                     new UsernamePasswordAuthenticationToken(principal, null, List.of());
 

@@ -130,6 +130,8 @@ def process_meeting(payload: dict) -> None:
             glossary_context=glossary_context,
             language=payload.get("language"),
             trace_id=trace_id,
+            owner_user_id=payload.get("owner_user_id"),
+            domain_mode=payload.get("domain_mode"),
         )
 
         transcripts = pipeline.get_transcript(meeting_id, db)
@@ -172,6 +174,26 @@ def process_meeting(payload: dict) -> None:
 
         if analysis:
             result_data["analysis"] = analysis
+            try:
+                from app.config import settings as app_settings
+                from app.services.embedding_service import index_meeting_for_search
+
+                summary_text = ""
+                if isinstance(analysis, dict):
+                    summary_text = str(analysis.get("summary") or analysis.get("meetingSummary") or "")
+                index_meeting_for_search(
+                    settings=app_settings,
+                    meeting_id=meeting_id,
+                    user_id=int(payload.get("owner_user_id") or 0),
+                    title=str(payload.get("topic") or ""),
+                    summary=summary_text,
+                )
+            except Exception as index_error:
+                logger.warning(
+                    "embedding_index_after_process_failed meetingId={} error={}",
+                    meeting_id,
+                    index_error,
+                )
 
         set_job_status(
             meeting_id,
@@ -284,47 +306,55 @@ def canonicalize_and_persist(meeting_id: int, run_id: int) -> dict:
     """Persist canonical transcript rows + evidence stats on meeting_analysis_runs."""
     import time
 
+    from app.observability.celery_trace import celery_task_span
     from app.services.canonical_persist_service import canonicalize_and_persist_run
 
-    db = SessionLocal()
-    started = time.perf_counter()
-    try:
-        return canonicalize_and_persist_run(db, meeting_id, run_id)
-    except Exception as exc:
-        duration_ms = int((time.perf_counter() - started) * 1000)
-        logger.error(
-            "event=TRANSCRIPT_QUALITY_PERSIST_FAILED meetingId={} errorCode={} durationMs={}",
-            meeting_id,
-            type(exc).__name__,
-            duration_ms,
-        )
-        raise
-    finally:
-        db.close()
+    trace_id = f"canonicalize-{meeting_id}-{run_id}"
+    with celery_task_span("canonicalize_and_persist", meeting_id=meeting_id, trace_id=trace_id):
+        db = SessionLocal()
+        started = time.perf_counter()
+        try:
+            return canonicalize_and_persist_run(db, meeting_id, run_id)
+        except Exception as exc:
+            duration_ms = int((time.perf_counter() - started) * 1000)
+            logger.error(
+                "event=TRANSCRIPT_QUALITY_PERSIST_FAILED meetingId={} errorCode={} durationMs={} traceId={}",
+                meeting_id,
+                type(exc).__name__,
+                duration_ms,
+                trace_id,
+            )
+            raise
+        finally:
+            db.close()
 
 
 @celery_app.task(name="app.tasks.canonicalize_deferred_retry")
 def canonicalize_deferred_retry(meeting_id: int, attempt: int = 1) -> dict:
     """Retry run resolution when no analysis run exists yet (§5.3.1)."""
+    from app.observability.celery_trace import celery_task_span
     from app.services.canonical_persist_service import resolve_latest_run_id
 
-    db = SessionLocal()
-    try:
-        run_id = resolve_latest_run_id(db, meeting_id)
-        if run_id is None:
-            if attempt >= 5:
-                logger.warning(
-                    "event=TRANSCRIPT_QUALITY_SKIP_NO_RUN meetingId={} attemptCount={}",
-                    meeting_id,
-                    attempt,
+    trace_id = f"canonicalize-deferred-{meeting_id}-a{attempt}"
+    with celery_task_span("canonicalize_deferred_retry", meeting_id=meeting_id, trace_id=trace_id):
+        db = SessionLocal()
+        try:
+            run_id = resolve_latest_run_id(db, meeting_id)
+            if run_id is None:
+                if attempt >= 5:
+                    logger.warning(
+                        "event=TRANSCRIPT_QUALITY_SKIP_NO_RUN meetingId={} attemptCount={} traceId={}",
+                        meeting_id,
+                        attempt,
+                        trace_id,
+                    )
+                    return {"status": "skipped", "attempt": attempt}
+                canonicalize_deferred_retry.apply_async(
+                    args=[meeting_id, attempt + 1],
+                    countdown=5,
                 )
-                return {"status": "skipped", "attempt": attempt}
-            canonicalize_deferred_retry.apply_async(
-                args=[meeting_id, attempt + 1],
-                countdown=5,
-            )
-            return {"status": "deferred", "attempt": attempt}
+                return {"status": "deferred", "attempt": attempt}
 
-        return canonicalize_and_persist(meeting_id, run_id)
-    finally:
-        db.close()
+            return canonicalize_and_persist(meeting_id, run_id)
+        finally:
+            db.close()

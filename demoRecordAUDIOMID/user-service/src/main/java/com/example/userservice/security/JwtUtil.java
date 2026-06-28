@@ -24,12 +24,18 @@ public class JwtUtil {
     }
 
     public String createAccessToken(Long userId, String username) {
+        return createAccessToken(userId, username, "USER", "FREE");
+    }
+
+    public String createAccessToken(Long userId, String username, String role, String plan) {
         Instant now = Instant.now();
         Instant expiry = now.plusSeconds(accessExpirationSeconds);
 
         return Jwts.builder()
                 .subject(String.valueOf(userId))
                 .claim("username", username)
+                .claim("role", role == null ? "USER" : role)
+                .claim("plan", plan == null ? "FREE" : plan)
                 .issuedAt(Date.from(now))
                 .expiration(Date.from(expiry))
                 .signWith(secretKey)

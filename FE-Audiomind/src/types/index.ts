@@ -8,6 +8,10 @@ export type Meeting = {
   language?: string | null
   status?: string | null
   fileSize?: number | null
+  scheduledStartAt?: string | null
+  scheduledEndAt?: string | null
+  scheduledTimezone?: string | null
+  sharedWithMe?: boolean | null
 }
 
 export type AnalysisTechnicalTerm = {

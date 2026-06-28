@@ -1,0 +1,90 @@
+.analysis-status-panel {
+  border: 1px solid var(--studio-border, #e5e7eb);
+  border-radius: 12px;
+  padding: 14px;
+  display: grid;
+  gap: 12px;
+  background: var(--studio-elevated, rgba(255, 255, 255, 0.03));
+}
+
+.analysis-status-panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.analysis-status-panel__badge {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.analysis-status-panel__banner {
+  margin: 0;
+  color: #fbbf24;
+  font-size: 14px;
+}
+
+.analysis-status-panel__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+  margin: 0;
+}
+
+.analysis-status-panel__grid dt {
+  color: var(--studio-muted, #64748b);
+  font-size: 12px;
+}
+
+.analysis-status-panel__grid dd {
+  margin: 4px 0 0;
+  color: var(--studio-text, #0f172a);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.analysis-status-panel__meta {
+  margin: 0;
+  color: var(--studio-muted, #64748b);
+  font-size: 13px;
+}
+
+.analysis-status-panel__error {
+  margin: 0;
+  color: #f87171;
+  font-size: 13px;
+}
+
+.analysis-status-panel__technical {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.analysis-status-panel__technical .meta-pill {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.analysis-status-panel__evidence {
+  display: grid;
+  gap: 8px;
+}
+
+.analysis-status-panel__evidence-title {
+  font-size: 13px;
+}
+
+.analysis-status-panel__evidence-card {
+  border: 1px solid var(--studio-border, #e2e8f0);
+  border-radius: 8px;
+  padding: 8px;
+  font-size: 13px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.analysis-status-panel__evidence-snippet {
+  color: var(--studio-muted, #334155);
+}

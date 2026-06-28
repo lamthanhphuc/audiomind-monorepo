@@ -1,5 +1,6 @@
 import { StudioAmbientBackground } from '../ui/StudioAmbientBackground'
 import { StudioWaveform } from '../ui/StudioWaveform'
+import { GoogleAuthButton } from './GoogleAuthButton'
 
 type AuthRoute = 'login' | 'register'
 
@@ -11,8 +12,11 @@ type StudioAuthPageProps = {
   onUsernameChange: (value: string) => void
   onPasswordChange: (value: string) => void
   onLogin: () => void
+  onGoogleLogin: () => void
+  googleLoginEnabled: boolean
   authError: string
   authNotice: string
+  inviteMeetingId?: number | null
   registerUsername: string
   registerEmail: string
   registerPassword: string
@@ -34,8 +38,11 @@ export default function StudioAuthPage({
   onUsernameChange,
   onPasswordChange,
   onLogin,
+  onGoogleLogin,
+  googleLoginEnabled,
   authError,
   authNotice,
+  inviteMeetingId,
   registerUsername,
   registerEmail,
   registerPassword,
@@ -117,6 +124,12 @@ export default function StudioAuthPage({
 
           {authNotice && <p className="studio-auth__notice">{authNotice}</p>}
 
+          {inviteMeetingId != null && (
+            <p className="studio-auth__notice" data-testid="invite-meeting-banner">
+              Bạn được mời xem một cuộc họp. Hãy đăng ký hoặc đăng nhập bằng đúng email trong lời mời.
+            </p>
+          )}
+
           {isLogin ? (
             <form
               className="studio-auth__form"
@@ -150,6 +163,9 @@ export default function StudioAuthPage({
               <button type="submit" className="studio-auth__submit" data-testid="e2e-login-submit">
                 Enter studio
               </button>
+              {googleLoginEnabled && (
+                <GoogleAuthButton onClick={onGoogleLogin} />
+              )}
               <button
                 type="button"
                 className="studio-auth__link"
@@ -216,6 +232,9 @@ export default function StudioAuthPage({
               >
                 {registerBusy ? 'Đang đăng ký...' : 'Create account'}
               </button>
+              {googleLoginEnabled && (
+                <GoogleAuthButton onClick={onGoogleLogin} testId="e2e-google-register" />
+              )}
               <button
                 type="button"
                 className="studio-auth__link"

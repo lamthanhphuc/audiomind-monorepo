@@ -1,3 +1,5 @@
+from typing import Any, Callable
+
 import httpx
 from loguru import logger
 
@@ -32,6 +34,7 @@ class GeminiAnalyzer(AIAnalyzer):
         gemini_backoff_jitter: bool = True,
         gemini_fail_fast_seconds: float = 30.0,
         timeout_seconds: int = 300,
+        http_client_factory: Callable[..., Any] | None = None,
     ):
         super().__init__(
             api_key=api_key,
@@ -59,6 +62,7 @@ class GeminiAnalyzer(AIAnalyzer):
             gemini_backoff_jitter=gemini_backoff_jitter,
             gemini_fail_fast_seconds=gemini_fail_fast_seconds,
             timeout_seconds=timeout_seconds,
+            http_client_factory=http_client_factory,
         )
 
 

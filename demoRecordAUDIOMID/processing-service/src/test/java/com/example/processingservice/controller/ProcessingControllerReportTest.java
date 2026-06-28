@@ -39,7 +39,7 @@ class ProcessingControllerReportTest {
 
         when(processingService.generateMeetingReportDocx(15L, "trace-15", "Bearer token")).thenReturn(payload);
         SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(
-                new UserPrincipal(11L, "tester"),
+                new UserPrincipal(11L, "tester", "USER", "FREE"),
                 null
         ));
 
@@ -60,17 +60,41 @@ class ProcessingControllerReportTest {
     }
 
     @Test
+    void exportReport_shouldReturnPdfWithAttachmentHeaders() {
+        ProcessingService processingService = mock(ProcessingService.class);
+        ProcessingController controller = new ProcessingController(processingService);
+        byte[] payload = "pdf-bytes".getBytes();
+
+        when(processingService.generateMeetingReportPdf(15L, "trace-15", "Bearer token")).thenReturn(payload);
+        SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(
+                new UserPrincipal(11L, "tester", "USER", "FREE"),
+                null
+        ));
+
+        ResponseEntity<?> response = controller.exportReport(15L, "pdf", "trace-15", "Bearer token");
+
+        assertEquals(HttpStatus.OK, response.getStatusCode());
+        assertEquals("application/pdf", response.getHeaders().getContentType().toString());
+        assertEquals(
+                "attachment; filename=\"meeting-15-report.pdf\"",
+                response.getHeaders().getFirst(HttpHeaders.CONTENT_DISPOSITION)
+        );
+        ByteArrayResource resource = (ByteArrayResource) response.getBody();
+        assertArrayEquals(payload, resource.getByteArray());
+    }
+
+    @Test
     void exportReport_shouldRejectUnsupportedFormat() {
         ProcessingService processingService = mock(ProcessingService.class);
         ProcessingController controller = new ProcessingController(processingService);
         SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(
-                new UserPrincipal(11L, "tester"),
+                new UserPrincipal(11L, "tester", "USER", "FREE"),
                 null
         ));
 
         ResponseStatusException ex = assertThrows(
                 ResponseStatusException.class,
-                () -> controller.exportReport(15L, "pdf", "trace-15", "Bearer token")
+                () -> controller.exportReport(15L, "html", "trace-15", "Bearer token")
         );
 
         assertEquals(HttpStatus.BAD_REQUEST, ex.getStatusCode());
@@ -84,7 +108,7 @@ class ProcessingControllerReportTest {
 
         when(processingService.generateMeetingTranscriptTxt(16L, "trace-txt", "Bearer token", "readable")).thenReturn(payload);
         SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(
-                new UserPrincipal(11L, "tester"),
+                new UserPrincipal(11L, "tester", "USER", "FREE"),
                 null
         ));
 
@@ -109,7 +133,7 @@ class ProcessingControllerReportTest {
 
         when(processingService.generateMeetingTranscriptCsv(17L, "trace-csv", "Bearer token", "readable")).thenReturn(payload);
         SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(
-                new UserPrincipal(11L, "tester"),
+                new UserPrincipal(11L, "tester", "USER", "FREE"),
                 null
         ));
 
@@ -134,7 +158,7 @@ class ProcessingControllerReportTest {
 
         when(processingService.generateMeetingTranscriptTxt(18L, "trace-raw-txt", "Bearer token", "raw")).thenReturn(payload);
         SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(
-                new UserPrincipal(11L, "tester"),
+                new UserPrincipal(11L, "tester", "USER", "FREE"),
                 null
         ));
 
@@ -159,7 +183,7 @@ class ProcessingControllerReportTest {
 
         when(processingService.generateMeetingTranscriptCsv(19L, "trace-raw-csv", "Bearer token", "raw")).thenReturn(payload);
         SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(
-                new UserPrincipal(11L, "tester"),
+                new UserPrincipal(11L, "tester", "USER", "FREE"),
                 null
         ));
 
@@ -192,11 +216,12 @@ class ProcessingControllerReportTest {
                 "manual_reanalyze",
                 null,
                 null,
+                null,
                 "trace-rerun",
                 "Bearer token"
         )).thenReturn(payload);
         SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(
-                new UserPrincipal(11L, "tester"),
+                new UserPrincipal(11L, "tester", "USER", "FREE"),
                 null
         ));
 
@@ -205,6 +230,7 @@ class ProcessingControllerReportTest {
                 new AnalysisRerunRequest(
                         "force",
                         "manual_reanalyze",
+                        null,
                         null,
                         null,
                         null,
@@ -223,6 +249,7 @@ class ProcessingControllerReportTest {
                 20L,
                 "force",
                 "manual_reanalyze",
+                null,
                 null,
                 null,
                 "trace-rerun",

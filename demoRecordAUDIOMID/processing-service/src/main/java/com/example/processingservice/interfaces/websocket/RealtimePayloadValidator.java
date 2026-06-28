@@ -59,9 +59,8 @@ public class RealtimePayloadValidator {
         if (declared > MAX_CHUNK_BYTES) {
             return ValidationResult.reject(ValidationError.REALTIME_CHUNK_TOO_LARGE);
         }
-        if (payloadSize > 0 && !looksLikeWebm(payload)) {
-            return ValidationResult.reject(ValidationError.REALTIME_UNSUPPORTED_ENCODING);
-        }
+        // MediaRecorder timeslice chunks are often WebM cluster fragments without the EBML
+        // magic prefix on every packet. Metadata validation already enforces webm/opus.
         return ValidationResult.ok();
     }
 

@@ -23,6 +23,17 @@ spring:
     baseline-on-migrate: true
     baseline-version: 0
     table: flyway_schema_history_user
+  mail:
+    host: ${SMTP_HOST:}
+    port: ${SMTP_PORT:587}
+    username: ${SMTP_USER:}
+    password: ${SMTP_PASSWORD:}
+    properties:
+      mail:
+        smtp:
+          auth: ${SMTP_AUTH:true}
+          starttls:
+            enable: ${SMTP_STARTTLS:true}
 
 management:
   endpoints:
@@ -38,12 +49,86 @@ management:
       enabled: true
     readinessstate:
       enabled: true
+    mail:
+      enabled: ${MANAGEMENT_HEALTH_MAIL_ENABLED:false}
 
 app:
   security:
     jwt:
       secret: ${JWT_SECRET}
       access-expiration-seconds: ${JWT_ACCESS_EXPIRATION_SECONDS:86400}
+  internal:
+    service-token: ${INTERNAL_SERVICE_TOKEN:${GOOGLE_INTERNAL_SERVICE_TOKEN:}}
+    quota-fail-open: ${QUOTA_FAIL_OPEN:true}
+  notifications:
+    meeting-share-enabled: ${MEETING_SHARE_NOTIFICATIONS_ENABLED:true}
+    gmail-send-enabled: ${GMAIL_SEND_ENABLED:true}
+    from-email: ${NOTIFICATION_FROM_EMAIL:noreply@audiomind.local}
+    frontend-base-url: ${NOTIFICATION_FRONTEND_BASE_URL:${PUBLIC_FRONTEND_ORIGIN:http://localhost:8080}}
+    brand-name: ${NOTIFICATION_BRAND_NAME:AudioMind}
+    brand-accent-color: ${NOTIFICATION_BRAND_ACCENT_COLOR:#5b4bff}
+  rate-limit:
+    enabled: ${HTTP_RATE_LIMIT_ENABLED:true}
+    login-per-minute: ${HTTP_RATE_LIMIT_LOGIN_PER_MINUTE:20}
+    register-per-minute: ${HTTP_RATE_LIMIT_REGISTER_PER_MINUTE:10}
+    checkout-per-minute: ${HTTP_RATE_LIMIT_CHECKOUT_PER_MINUTE:5}
+    google-oauth-per-minute: ${HTTP_RATE_LIMIT_GOOGLE_OAUTH_PER_MINUTE:30}
+
+audiomind:
+  meeting-api:
+    base-url: ${AUDIOMIND_MEETING_API_BASE_URL:http://localhost:8081}
+  processing-api:
+    base-url: ${AUDIOMIND_PROCESSING_API_BASE_URL:http://localhost:8082}
 
 cors:
   allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:3000,http://localhost:8080,http://localhost:5173}
+
+google:
+  oauth:
+    enabled: ${GOOGLE_OAUTH_ENABLED:false}
+    client-id: ${GOOGLE_OAUTH_CLIENT_ID:}
+    client-secret: ${GOOGLE_OAUTH_CLIENT_SECRET:}
+    redirect-uri: ${GOOGLE_OAUTH_REDIRECT_URI:http://localhost:8083/auth/google/callback}
+    link-redirect-uri: ${GOOGLE_OAUTH_LINK_REDIRECT_URI:http://localhost:8083/auth/google/link/callback}
+    frontend-base-url: ${GOOGLE_OAUTH_FRONTEND_BASE_URL:http://localhost:8080}
+    token-encryption-key: ${GOOGLE_TOKEN_ENCRYPTION_KEY:}
+    token-encryption-kid: ${GOOGLE_TOKEN_ENCRYPTION_KID:v1}
+    internal-service-token: ${GOOGLE_INTERNAL_SERVICE_TOKEN:}
+    allowed-redirect-origins: ${GOOGLE_OAUTH_ALLOWED_REDIRECT_ORIGINS:http://localhost:8080,http://127.0.0.1:8080}
+    state-ttl: ${GOOGLE_OAUTH_STATE_TTL:10m}
+    ticket-ttl: ${GOOGLE_LOGIN_TICKET_TTL:90s}
+    ticket-marker-ttl: ${GOOGLE_LOGIN_TICKET_MARKER_TTL:10m}
+
+zoom:
+  oauth:
+    enabled: ${ZOOM_OAUTH_ENABLED:false}
+    client-id: ${ZOOM_OAUTH_CLIENT_ID:}
+    client-secret: ${ZOOM_OAUTH_CLIENT_SECRET:}
+    redirect-uri: ${ZOOM_OAUTH_REDIRECT_URI:http://localhost:8083/auth/zoom/callback}
+    frontend-base-url: ${ZOOM_OAUTH_FRONTEND_BASE_URL:http://localhost:8080}
+    token-encryption-key: ${ZOOM_TOKEN_ENCRYPTION_KEY:${GOOGLE_TOKEN_ENCRYPTION_KEY:}}
+    token-encryption-kid: ${ZOOM_TOKEN_ENCRYPTION_KID:${GOOGLE_TOKEN_ENCRYPTION_KID:v1}}
+    state-ttl: ${ZOOM_OAUTH_STATE_TTL:10m}
+    allowed-redirect-origins: ${ZOOM_OAUTH_ALLOWED_REDIRECT_ORIGINS:http://localhost:8080,http://127.0.0.1:8080}
+
+teams:
+  oauth:
+    enabled: ${TEAMS_OAUTH_ENABLED:false}
+    client-id: ${TEAMS_OAUTH_CLIENT_ID:}
+    client-secret: ${TEAMS_OAUTH_CLIENT_SECRET:}
+    redirect-uri: ${TEAMS_OAUTH_REDIRECT_URI:http://localhost:8083/auth/teams/callback}
+    frontend-base-url: ${TEAMS_OAUTH_FRONTEND_BASE_URL:http://localhost:8080}
+    tenant-id: ${TEAMS_OAUTH_TENANT_ID:common}
+    token-encryption-key: ${TEAMS_TOKEN_ENCRYPTION_KEY:${GOOGLE_TOKEN_ENCRYPTION_KEY:}}
+    token-encryption-kid: ${TEAMS_TOKEN_ENCRYPTION_KID:${GOOGLE_TOKEN_ENCRYPTION_KID:v1}}
+    state-ttl: ${TEAMS_OAUTH_STATE_TTL:10m}
+    allowed-redirect-origins: ${TEAMS_OAUTH_ALLOWED_REDIRECT_ORIGINS:http://localhost:8080,http://127.0.0.1:8080}
+
+payos:
+  enabled: ${PAYOS_ENABLED:false}
+  base-url: ${PAYOS_BASE_URL:https://api-merchant.payos.vn}
+  client-id: ${PAYOS_CLIENT_ID:}
+  api-key: ${PAYOS_API_KEY:}
+  checksum-key: ${PAYOS_CHECKSUM_KEY:}
+  return-url: ${PAYOS_RETURN_URL:http://localhost:8080/billing/success}
+  cancel-url: ${PAYOS_CANCEL_URL:http://localhost:8080/billing/cancel}

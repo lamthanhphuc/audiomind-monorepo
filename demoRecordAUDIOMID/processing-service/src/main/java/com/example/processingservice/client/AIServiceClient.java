@@ -58,7 +58,7 @@ public class AIServiceClient {
     private String deepgramLanguage;
 
     public Map<String, Object> processAudio(Long meetingId, String audioPath) {
-        return processAudio(meetingId, audioPath, null, null, null, "vi", null, null);
+        return processAudio(meetingId, audioPath, null, null, null, "vi", null, null, null, null);
     }
 
     public Map<String, Object> streamAudioChunk(
@@ -88,6 +88,31 @@ public class AIServiceClient {
             String language,
             String traceId,
             String authorization) {
+        return processAudio(
+                meetingId,
+                audioPath,
+                fileId,
+                topic,
+                glossaryTerms,
+                language,
+                null,
+                traceId,
+                authorization,
+                null
+        );
+    }
+
+    public Map<String, Object> processAudio(
+            Long meetingId,
+            String audioPath,
+            String fileId,
+            String topic,
+            List<String> glossaryTerms,
+            String language,
+            String domainMode,
+            String traceId,
+            String authorization,
+            Long ownerUserId) {
 
         Map<String, Object> request = new HashMap<>();
 
@@ -105,6 +130,14 @@ public class AIServiceClient {
 
         if (language != null && !language.isBlank()) {
             request.put("language", language);
+        }
+
+        if (StringUtils.hasText(domainMode)) {
+            request.put("domain_mode", domainMode.trim());
+        }
+
+        if (ownerUserId != null && ownerUserId > 0) {
+            request.put("owner_user_id", ownerUserId);
         }
 
         HttpHeaders headers = new HttpHeaders();
@@ -209,6 +242,7 @@ public class AIServiceClient {
                 DEFAULT_ANALYSIS_FEATURE_SET,
                 canonicalTranscriptHash,
                 canonicalTranscriptVersion,
+                null,
                 traceId,
                 authorization
         );
@@ -225,6 +259,7 @@ public class AIServiceClient {
             String analysisFeatureSet,
             String canonicalTranscriptHash,
             String canonicalTranscriptVersion,
+            String domainMode,
             String traceId,
             String authorization) {
         HttpHeaders headers = new HttpHeaders();
@@ -261,6 +296,9 @@ public class AIServiceClient {
         if (StringUtils.hasText(canonicalTranscriptVersion)) {
             request.put("canonical_transcript_version", canonicalTranscriptVersion);
         }
+        if (StringUtils.hasText(domainMode)) {
+            request.put("domain_mode", domainMode.trim());
+        }
 
         ResponseEntity<Map<String, Object>> response = executeAiServiceCall(
                 "rerunAnalysis",
@@ -272,6 +310,144 @@ public class AIServiceClient {
                 meetingId
         );
         return requireBody(response, "rerunAnalysis", meetingId);
+    }
+
+    public Map<String, Object> answerMeetingChat(
+            Long meetingId,
+            String question,
+            String summary,
+            String transcriptExcerpt,
+            Map<String, Object> analysis,
+            List<Map<String, Object>> sourceSegments,
+            String traceId,
+            String authorization
+    ) {
+        HttpHeaders headers = new HttpHeaders();
+        String resolvedTraceId = resolveTraceId(traceId);
+        String resolvedRequestId = resolveRequestId(resolvedTraceId);
+        headers.add(TRACE_HEADER, resolvedTraceId);
+        headers.add(REQUEST_HEADER, resolvedRequestId);
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        if (StringUtils.hasText(authorization)) {
+            headers.add(HttpHeaders.AUTHORIZATION, authorization);
+        }
+
+        Map<String, Object> request = new HashMap<>();
+        request.put("question", question);
+        request.put("summary", summary);
+        request.put("transcript_excerpt", transcriptExcerpt);
+        request.put("analysis", analysis == null ? Map.of() : analysis);
+        request.put("source_segments", sourceSegments == null ? List.of() : sourceSegments);
+
+        ResponseEntity<Map<String, Object>> response = executeAiServiceCall(
+                "answerMeetingChat",
+                aiUrl + "/api/meeting/" + meetingId + "/chat",
+                HttpMethod.POST,
+                new HttpEntity<>(request, headers),
+                resolvedTraceId,
+                resolvedRequestId,
+                meetingId
+        );
+        return requireBody(response, "answerMeetingChat", meetingId);
+    }
+
+    public Map<String, Object> semanticRerankMeetings(
+            String query,
+            List<Map<String, Object>> candidates,
+            String traceId,
+            String authorization
+    ) {
+        HttpHeaders headers = new HttpHeaders();
+        String resolvedTraceId = resolveTraceId(traceId);
+        String resolvedRequestId = resolveRequestId(resolvedTraceId);
+        headers.add(TRACE_HEADER, resolvedTraceId);
+        headers.add(REQUEST_HEADER, resolvedRequestId);
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        if (StringUtils.hasText(authorization)) {
+            headers.add(HttpHeaders.AUTHORIZATION, authorization);
+        }
+
+        Map<String, Object> request = new HashMap<>();
+        request.put("query", query);
+        request.put("candidates", candidates == null ? List.of() : candidates);
+
+        ResponseEntity<Map<String, Object>> response = executeAiServiceCall(
+                "semanticRerankMeetings",
+                aiUrl + "/api/search/semantic-rerank",
+                HttpMethod.POST,
+                new HttpEntity<>(request, headers),
+                resolvedTraceId,
+                resolvedRequestId,
+                null
+        );
+        return requireBody(response, "semanticRerankMeetings", null);
+    }
+
+    public Map<String, Object> askCrossMeeting(
+            String question,
+            List<Map<String, Object>> meetings,
+            String traceId,
+            String authorization
+    ) {
+        HttpHeaders headers = new HttpHeaders();
+        String resolvedTraceId = resolveTraceId(traceId);
+        String resolvedRequestId = resolveRequestId(resolvedTraceId);
+        headers.add(TRACE_HEADER, resolvedTraceId);
+        headers.add(REQUEST_HEADER, resolvedRequestId);
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        if (StringUtils.hasText(authorization)) {
+            headers.add(HttpHeaders.AUTHORIZATION, authorization);
+        }
+        Map<String, Object> request = new HashMap<>();
+        request.put("question", question);
+        request.put("meetings", meetings == null ? List.of() : meetings);
+        ResponseEntity<Map<String, Object>> response = executeAiServiceCall(
+                "askCrossMeeting",
+                aiUrl + "/api/search/cross-meeting/ask",
+                HttpMethod.POST,
+                new HttpEntity<>(request, headers),
+                resolvedTraceId,
+                resolvedRequestId,
+                null
+        );
+        return requireBody(response, "askCrossMeeting", null);
+    }
+
+    public Map<String, Object> explainMeetingTerm(
+            Long meetingId,
+            String term,
+            String summary,
+            String transcriptExcerpt,
+            Map<String, Object> analysis,
+            String traceId,
+            String authorization
+    ) {
+        HttpHeaders headers = new HttpHeaders();
+        String resolvedTraceId = resolveTraceId(traceId);
+        String resolvedRequestId = resolveRequestId(resolvedTraceId);
+        headers.add(TRACE_HEADER, resolvedTraceId);
+        headers.add(REQUEST_HEADER, resolvedRequestId);
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        if (StringUtils.hasText(authorization)) {
+            headers.add(HttpHeaders.AUTHORIZATION, authorization);
+        }
+
+        Map<String, Object> request = new HashMap<>();
+        request.put("term", term);
+        request.put("summary", summary);
+        request.put("transcript_excerpt", transcriptExcerpt);
+        request.put("analysis", analysis == null ? Map.of() : analysis);
+
+        ResponseEntity<Map<String, Object>> response = executeAiServiceCall(
+                "explainMeetingTerm",
+                aiUrl + "/api/meeting/" + meetingId + "/terms/explain",
+                HttpMethod.POST,
+                new HttpEntity<>(request, headers),
+                resolvedTraceId,
+                resolvedRequestId,
+                meetingId
+        );
+        return requireBody(response, "explainMeetingTerm", meetingId);
     }
 
     public Map<String, Object> getSavedAnalysisCacheOnly(

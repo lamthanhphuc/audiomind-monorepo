@@ -33,8 +33,7 @@ $SensitiveKeys = @(
     'DEEPGRAM_API_KEY',
     'GEMINI_API_KEY',
     'JWT_SECRET',
-    'POSTGRES_PASSWORD',
-    'OPENAI_API_KEY'
+    'POSTGRES_PASSWORD'
 )
 
 $MisnamedFinalDrainKeys = @(

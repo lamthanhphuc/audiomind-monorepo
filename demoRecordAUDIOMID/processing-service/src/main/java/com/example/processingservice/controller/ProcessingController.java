@@ -1,6 +1,7 @@
 package com.example.processingservice.controller;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 
@@ -89,6 +90,7 @@ public class ProcessingController {
                 request == null ? null : request.topic(),
                 request == null ? null : request.glossary_terms(),
                 request == null ? null : request.language(),
+                request == null ? null : request.domain_mode(),
                 ensureTraceId(traceId),
                 authorization
         );
@@ -101,9 +103,19 @@ public class ProcessingController {
             @RequestParam(required = false) String topic,
             @RequestParam(name = "glossary_terms", required = false) List<String> glossaryTerms,
             @RequestParam(required = false) String language,
+            @RequestParam(name = "domain_mode", required = false) String domainMode,
             @RequestHeader(value = "x-trace-id", required = false) String traceId,
             @RequestHeader(HttpHeaders.AUTHORIZATION) String authorization) {
-        return processingService.startProcessing(meetingId, null, fileId, topic, glossaryTerms, language, ensureTraceId(traceId), authorization);
+        return processingService.startProcessing(meetingId, null, fileId, topic, glossaryTerms, language, domainMode, ensureTraceId(traceId), authorization);
+    }
+
+    @GetMapping("/me/jobs")
+    public Map<String, Object> myJobs(
+            @RequestHeader(value = "x-trace-id", required = false) String traceId,
+            @RequestHeader(HttpHeaders.AUTHORIZATION) String authorization
+    ) {
+        requirePrincipal();
+        return processingService.listMyJobs(ensureTraceId(traceId), authorization);
     }
 
     @GetMapping("/status/{jobId}")
@@ -122,15 +134,6 @@ public class ProcessingController {
             @RequestHeader(HttpHeaders.AUTHORIZATION) String authorization) {
         requirePrincipal();
         return processingService.getProcessingStatus(meetingId, ensureTraceId(traceId), authorization);
-    }
-
-    @GetMapping("/transcript/{jobId}")
-    public Map<String, Object> transcriptByJob(
-            @PathVariable Long jobId,
-            @RequestHeader(value = "x-trace-id", required = false) String traceId,
-            @RequestHeader(HttpHeaders.AUTHORIZATION) String authorization) {
-        requirePrincipal();
-        return processingService.getTranscript(jobId, ensureTraceId(traceId), authorization);
     }
 
     @GetMapping("/{meetingId}/transcript")
@@ -235,6 +238,7 @@ public class ProcessingController {
         String reason = request == null ? null : request.reason();
         String promptVersion = request == null ? null : request.prompt_version();
         String schemaVersion = request == null ? null : request.schema_version();
+        String domainMode = request == null ? null : request.domain_mode();
         return new AnalysisResponse(
                 meetingId,
                 processingService.reanalyzeMeetingAnalysis(
@@ -243,6 +247,7 @@ public class ProcessingController {
                         reason,
                         promptVersion,
                         schemaVersion,
+                        domainMode,
                         ensureTraceId(traceId),
                         authorization
                 )
@@ -256,14 +261,23 @@ public class ProcessingController {
             @RequestHeader(value = "x-trace-id", required = false) String traceId,
             @RequestHeader(HttpHeaders.AUTHORIZATION) String authorization) {
         requirePrincipal();
-        if (!"docx".equalsIgnoreCase(format)) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Only docx format is supported");
+        String normalizedFormat = format == null ? "docx" : format.trim().toLowerCase(Locale.ROOT);
+        byte[] reportBytes;
+        MediaType contentType;
+        String filename;
+        if ("pdf".equals(normalizedFormat)) {
+            reportBytes = processingService.generateMeetingReportPdf(meetingId, ensureTraceId(traceId), authorization);
+            contentType = MediaType.APPLICATION_PDF;
+            filename = "meeting-" + meetingId + "-report.pdf";
+        } else if ("docx".equals(normalizedFormat)) {
+            reportBytes = processingService.generateMeetingReportDocx(meetingId, ensureTraceId(traceId), authorization);
+            contentType = MediaType.parseMediaType("application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+            filename = "meeting-" + meetingId + "-report.docx";
+        } else {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Only docx and pdf formats are supported");
         }
-
-        byte[] reportBytes = processingService.generateMeetingReportDocx(meetingId, ensureTraceId(traceId), authorization);
-        String filename = "meeting-" + meetingId + "-report.docx";
         return ResponseEntity.ok()
-                .contentType(MediaType.parseMediaType("application/vnd.openxmlformats-officedocument.wordprocessingml.document"))
+                .contentType(contentType)
                 .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + filename + "\"")
                 .contentLength(reportBytes.length)
                 .body(new ByteArrayResource(reportBytes));
@@ -276,17 +290,84 @@ public class ProcessingController {
             @RequestHeader(value = "x-trace-id", required = false) String traceId,
             @RequestHeader(HttpHeaders.AUTHORIZATION) String authorization) {
         requirePrincipal();
-        if (!"docx".equalsIgnoreCase(format)) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Only docx format is supported");
+        String normalizedFormat = format == null ? "docx" : format.trim().toLowerCase(Locale.ROOT);
+        byte[] exportBytes;
+        MediaType contentType;
+        String filename;
+        if ("pdf".equals(normalizedFormat)) {
+            exportBytes = processingService.generateMeetingActionPlanPdf(meetingId, ensureTraceId(traceId), authorization);
+            contentType = MediaType.APPLICATION_PDF;
+            filename = "meeting-" + meetingId + "-action-plan.pdf";
+        } else if ("docx".equals(normalizedFormat)) {
+            exportBytes = processingService.generateMeetingActionPlanDocx(meetingId, ensureTraceId(traceId), authorization);
+            contentType = MediaType.parseMediaType("application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+            filename = "meeting-" + meetingId + "-action-plan.docx";
+        } else {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Only docx and pdf formats are supported");
         }
-
-        byte[] exportBytes = processingService.generateMeetingActionPlanDocx(meetingId, ensureTraceId(traceId), authorization);
-        String filename = "meeting-" + meetingId + "-action-plan.docx";
         return ResponseEntity.ok()
-                .contentType(MediaType.parseMediaType("application/vnd.openxmlformats-officedocument.wordprocessingml.document"))
+                .contentType(contentType)
                 .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + filename + "\"")
                 .contentLength(exportBytes.length)
                 .body(new ByteArrayResource(exportBytes));
+    }
+
+    @PostMapping("/{meetingId}/chat")
+    public Map<String, Object> meetingChat(
+            @PathVariable Long meetingId,
+            @RequestBody Map<String, Object> body,
+            @RequestHeader(value = "x-trace-id", required = false) String traceId,
+            @RequestHeader(HttpHeaders.AUTHORIZATION) String authorization) {
+        requirePrincipal();
+        String question = body == null || body.get("question") == null
+                ? ""
+                : String.valueOf(body.get("question"));
+        return processingService.answerMeetingChat(meetingId, question, ensureTraceId(traceId), authorization);
+    }
+
+    @PostMapping("/{meetingId}/terms/explain")
+    public Map<String, Object> explainMeetingTerm(
+            @PathVariable Long meetingId,
+            @RequestBody Map<String, Object> body,
+            @RequestHeader(value = "x-trace-id", required = false) String traceId,
+            @RequestHeader(HttpHeaders.AUTHORIZATION) String authorization) {
+        requirePrincipal();
+        String term = body == null || body.get("term") == null
+                ? ""
+                : String.valueOf(body.get("term"));
+        return processingService.explainMeetingTerm(meetingId, term, ensureTraceId(traceId), authorization);
+    }
+
+    @PostMapping("/search/semantic")
+    public Map<String, Object> semanticSearch(
+            @RequestBody Map<String, Object> body,
+            @RequestParam(required = false, defaultValue = "10") String limit,
+            @RequestHeader(value = "x-trace-id", required = false) String traceId,
+            @RequestHeader(HttpHeaders.AUTHORIZATION) String authorization) {
+        requirePrincipal();
+        String query = body == null || body.get("query") == null
+                ? ""
+                : String.valueOf(body.get("query"));
+        return processingService.semanticSearchMeetings(
+                query,
+                parseSearchLimit(limit),
+                ensureTraceId(traceId),
+                authorization
+        );
+    }
+
+    @PostMapping("/cross-meeting/ask")
+    public Map<String, Object> askCrossMeeting(
+            @RequestBody Map<String, Object> body,
+            @RequestParam(required = false, defaultValue = "5") String limit,
+            @RequestHeader(value = "x-trace-id", required = false) String traceId,
+            @RequestHeader(HttpHeaders.AUTHORIZATION) String authorization) {
+        requirePrincipal();
+        String question = body == null || body.get("question") == null
+                ? ""
+                : String.valueOf(body.get("question"));
+        int parsedLimit = parseSearchLimit(limit);
+        return processingService.askCrossMeeting(question, parsedLimit, ensureTraceId(traceId), authorization);
     }
 
     private UserPrincipal requirePrincipal() {

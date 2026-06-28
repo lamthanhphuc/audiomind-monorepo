@@ -2,6 +2,8 @@ import { createRoot } from 'react-dom/client'
 import { act } from 'react-dom/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as api from '../services/api'
+import * as zoomIntegration from '../services/zoomIntegration'
+import * as teamsIntegration from '../services/teamsIntegration'
 import App from './App'
 
 describe('Upload language selector (integration)', () => {
@@ -9,11 +11,13 @@ describe('Upload language selector (integration)', () => {
   let root: ReturnType<typeof createRoot>
 
   beforeEach(() => {
+    window.history.pushState({}, '', '/')
     container = document.createElement('div')
     document.body.appendChild(container)
     root = createRoot(container)
-    // mark as authenticated
     localStorage.setItem('audiomind.access_token', 'dummy-token')
+    vi.spyOn(zoomIntegration, 'getZoomStatus').mockResolvedValue({ linked: false, zoomEmail: null, grantedScopes: [] })
+    vi.spyOn(teamsIntegration, 'getTeamsStatus').mockResolvedValue({ linked: false, teamsEmail: null, grantedScopes: [] })
   })
 
   afterEach(() => {
@@ -62,7 +66,10 @@ describe('Upload language selector (integration)', () => {
 
     await act(async () => {
       submit.click()
-      // allow attached async work to complete
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    })
+
+    await act(async () => {
       await Promise.resolve()
     })
 
@@ -142,6 +149,6 @@ describe('Upload language selector (integration)', () => {
     })
 
     expect(startSpy).not.toHaveBeenCalled()
-    expect(container.textContent).toContain('This audio is already being processed.')
+    expect(container.textContent).toContain('File này đang được xử lý')
   })
 })

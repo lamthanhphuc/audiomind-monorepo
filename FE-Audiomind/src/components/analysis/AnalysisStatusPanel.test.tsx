@@ -43,7 +43,7 @@ describe('AnalysisStatusPanel', () => {
     })
 
     expect(container.querySelector('[data-testid="verified-evidence-block"]')).toBeTruthy()
-    expect(container.querySelector('[data-testid="evidence-verification-badge"]')?.textContent).toBe('verified')
+    expect(container.querySelector('[data-testid="evidence-verification-badge"]')?.textContent).toBe('Đã xác minh')
     expect(container.textContent).toContain('Hợp đồng đã ký')
   })
 
@@ -59,10 +59,10 @@ describe('AnalysisStatusPanel', () => {
       onReanalyze: vi.fn(),
     })
 
-    expect(container.querySelector('[data-testid="analysis-status-badge"]')?.textContent).toBe('COMPLETED')
+    expect(container.querySelector('[data-testid="analysis-status-badge"]')?.textContent).toBe('Hoàn tất')
     expect(container.textContent).toContain('gemini')
     expect(container.textContent).toContain('gemini-2.5-flash')
-    expect(container.textContent).toContain('yes')
+    expect(container.textContent).toContain('Có')
   })
 
   it('renders stale status and stale reason', () => {
@@ -75,7 +75,7 @@ describe('AnalysisStatusPanel', () => {
       onReanalyze: vi.fn(),
     })
 
-    expect(container.querySelector('[data-testid="analysis-status-badge"]')?.textContent).toBe('STALE')
+    expect(container.querySelector('[data-testid="analysis-status-badge"]')?.textContent).toBe('Dữ liệu cũ')
     expect(container.textContent).toContain('canonical_hash_changed')
   })
 
@@ -90,7 +90,7 @@ describe('AnalysisStatusPanel', () => {
 
     const button = container.querySelector('[data-testid="analysis-reanalyze-button"]') as HTMLButtonElement
     expect(button.disabled).toBe(true)
-    expect(container.textContent).toContain('retryAfterSeconds: 30')
+    expect(container.textContent).toContain('Thử lại sau 30 giây')
   })
 
   it('disables re-analyze during failed cooldown and shows error metadata', () => {
@@ -107,7 +107,7 @@ describe('AnalysisStatusPanel', () => {
     const button = container.querySelector('[data-testid="analysis-reanalyze-button"]') as HTMLButtonElement
     expect(button.disabled).toBe(true)
     expect(container.querySelector('[data-testid="analysis-error-metadata"]')?.textContent).toContain('GEMINI_UNAVAILABLE')
-    expect(container.textContent).toContain('retryAfterSeconds: 45')
+    expect(container.textContent).toContain('Thử lại sau 45 giây')
   })
 
   it('clicking re-analyze calls handler', () => {
@@ -167,15 +167,23 @@ describe('AnalysisStatusPanel', () => {
       .toContain('Bản ghi quá ngắn hoặc chưa có đủ nội dung để phân tích.')
   })
 
-  it('shows in-progress Vietnamese message', () => {
+  it('shows 7U retry metadata rows', () => {
     renderPanel({
       metadata: {
-        analysisStatus: 'ANALYZING',
+        analysisStatus: 'COMPLETED',
+        canonicalTranscriptHash: 'abc123hash',
+        canonicalTranscriptVersion: 'canonical-transcript-v2',
+        analysisRetryCount: 2,
+        retryExhausted: false,
+        analysisNextRetryAt: '2026-06-01T01:00:00Z',
+        analysisTraceId: 'trace-7u-1',
       },
       onReanalyze: vi.fn(),
     })
 
-    expect(container.querySelector('[data-testid="analysis-status-banner"]')?.textContent)
-      .toContain('Phân tích đang chạy, vui lòng đợi…')
+    expect(container.textContent).toContain('abc123hash')
+    expect(container.textContent).toContain('canonical-transcript-v2')
+    expect(container.textContent).toContain('Lần thử lại')
+    expect(container.textContent).toContain('trace-7u-1')
   })
 })

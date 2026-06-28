@@ -2,6 +2,7 @@
   "meetingId": 12345,
   "title": "Epic 3 Golden Meeting",
   "language": "vi",
+  "domainMode": "legal",
   "transcriptRows": [
     {
       "speaker": "SPEAKER_1",
@@ -18,11 +19,41 @@
   ],
   "analysis": {
     "summary": "Golden export fixture",
-    "actionItems": [
+    "domainMode": "legal",
+    "provider": "gemini",
+    "model": "gemini-2.5-flash",
+    "promptVersion": "gemini-business-v2",
+    "schemaVersion": "gemini-business-v2",
+    "analysisFeatureSet": "grouped-action-plan-v1",
+    "action_items": [
       {
         "task": "Ký hợp đồng",
-        "evidenceKeywords": ["hop_dong"]
+        "evidenceKeywords": ["hop_dong", "hợp đồng"],
+        "priority": "high",
+        "status": "open"
       }
-    ]
+    ],
+    "groupedActionPlan": {
+      "version": "grouped-action-plan-v1",
+      "language": "vi",
+      "intro": "Công việc theo nhóm chức năng",
+      "sections": [
+        {
+          "id": "legal-section",
+          "order": 1,
+          "title": "Pháp lý",
+          "items": [
+            {
+              "id": "legal-item-1",
+              "title": "Ký hợp đồng",
+              "confidence": "SUPPORTED",
+              "sourceActionItemIds": ["action-1"],
+              "evidenceKeywords": ["hợp đồng"]
+            }
+          ]
+        }
+      ],
+      "notes": []
+    }
   }
 }

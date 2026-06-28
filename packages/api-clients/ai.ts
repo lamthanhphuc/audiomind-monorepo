@@ -89,6 +89,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/config/lexicon": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get domain lexicon pack for transcript highlighting */
+        get: operations["getDomainLexicon"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/process": {
         parameters: {
             query?: never;
@@ -103,6 +120,142 @@ export interface paths {
          * @deprecated
          */
         post: operations["processMeetingV1"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/meeting/{meeting_id}/analysis/rerun": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Re-run analysis for a meeting */
+        post: operations["rerunMeetingAnalysis"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/meeting/{meeting_id}/chat": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Ask a question about meeting content */
+        post: operations["meetingChat"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/meeting/{meeting_id}/terms/explain": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Explain a technical term in meeting context */
+        post: operations["explainMeetingTerm"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/search/semantic-rerank": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Semantic rerank of meeting search candidates */
+        post: operations["semanticRerankMeetings"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/search/cross-meeting/ask": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Ask a question across multiple meetings */
+        post: operations["crossMeetingAsk"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/internal/meetings/{meeting_id}/canonicalize": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Queue canonical transcript generation (internal) */
+        post: operations["canonicalizeMeetingTranscript"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/internal/meetings/{meeting_id}/transcript-quality": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get transcript quality metadata (internal) */
+        get: operations["getMeetingTranscriptQuality"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/internal/realtime-analysis": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Analyze realtime transcript (internal) */
+        post: operations["analyzeRealtimeTranscript"];
         delete?: never;
         options?: never;
         head?: never;
@@ -233,6 +386,10 @@ export interface components {
             topic?: string;
             glossary_terms?: string[];
             language?: string;
+            /** @enum {string} */
+            domain_mode?: "general" | "it" | "business" | "education";
+            /** @enum {string} */
+            domainMode?: "general" | "it" | "business" | "education";
         };
         ProcessResponse: {
             /** Format: int64 */
@@ -277,8 +434,85 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        DomainLexicon: {
+            domain: string;
+            versionHash: string;
+            terms: {
+                term?: string;
+                normalized?: string;
+                category?: string;
+                source?: string;
+            }[];
+            normalizationMap: {
+                [key: string]: string;
+            };
+        };
         ErrorResponse: {
             detail: string;
+        };
+        AnalysisRerunRequest: {
+            mode?: string;
+            reason?: string;
+            transcript?: string;
+            transcript_hash?: string;
+            domain_mode?: string;
+            domainMode?: string;
+        };
+        TermExplainRequest: {
+            term?: string;
+            summary?: string;
+            transcript_excerpt?: string;
+            analysis?: {
+                [key: string]: unknown;
+            };
+        };
+        TermExplainResponse: {
+            /** Format: int64 */
+            meetingId?: number;
+            term?: string;
+            explanation?: string;
+            provider?: string;
+        };
+        SemanticRerankRequest: {
+            query: string;
+            candidates?: {
+                [key: string]: unknown;
+            }[];
+        };
+        CrossMeetingAskRequest: {
+            question: string;
+            meetings?: {
+                [key: string]: unknown;
+            }[];
+        };
+        CanonicalizeRequest: {
+            /** Format: int64 */
+            runId?: number;
+            /** Format: int64 */
+            run_id?: number;
+            /** @default false */
+            force: boolean;
+        };
+        CanonicalizeResponse: {
+            taskId?: string;
+        };
+        TranscriptQualityResponse: {
+            /** Format: int64 */
+            meetingId?: number;
+            ready?: boolean;
+        } & {
+            [key: string]: unknown;
+        };
+        RealtimeAnalysisRequest: {
+            /** Format: int64 */
+            meeting_id: number;
+            transcript: string;
+            source?: string;
+            domain_mode?: string;
+            domainMode?: string;
+            transcript_hash?: string;
+            prompt_version?: string;
+            schema_version?: string;
         };
     };
     responses: never;
@@ -406,6 +640,28 @@ export interface operations {
             };
         };
     };
+    getDomainLexicon: {
+        parameters: {
+            query?: {
+                domain?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Domain lexicon terms and normalization map */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DomainLexicon"];
+                };
+            };
+        };
+    };
     processMeetingV1: {
         parameters: {
             query?: never;
@@ -426,6 +682,214 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ProcessResult"];
+                };
+            };
+        };
+    };
+    rerunMeetingAnalysis: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                meeting_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["AnalysisRerunRequest"];
+            };
+        };
+        responses: {
+            /** @description Analysis rerun accepted or completed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AnalysisResponse"];
+                };
+            };
+        };
+    };
+    meetingChat: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                meeting_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    [key: string]: unknown;
+                };
+            };
+        };
+        responses: {
+            /** @description Chat answer */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+        };
+    };
+    explainMeetingTerm: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                meeting_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TermExplainRequest"];
+            };
+        };
+        responses: {
+            /** @description Term explanation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TermExplainResponse"];
+                };
+            };
+        };
+    };
+    semanticRerankMeetings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SemanticRerankRequest"];
+            };
+        };
+        responses: {
+            /** @description Ranked candidates */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+        };
+    };
+    crossMeetingAsk: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CrossMeetingAskRequest"];
+            };
+        };
+        responses: {
+            /** @description Cross-meeting answer */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+        };
+    };
+    canonicalizeMeetingTranscript: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                meeting_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["CanonicalizeRequest"];
+            };
+        };
+        responses: {
+            /** @description Canonicalize task accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CanonicalizeResponse"];
+                };
+            };
+        };
+    };
+    getMeetingTranscriptQuality: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                meeting_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Transcript quality payload */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TranscriptQualityResponse"];
+                };
+            };
+        };
+    };
+    analyzeRealtimeTranscript: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RealtimeAnalysisRequest"];
+            };
+        };
+        responses: {
+            /** @description Realtime analysis result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
                 };
             };
         };

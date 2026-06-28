@@ -101,21 +101,16 @@ test.describe('Audio processing flow', () => {
       }
 
       const transcriptLine = page.locator('[data-testid="e2e-transcript"]').first()
-      const summaryLine = page.locator('[data-testid="e2e-summary"]').first()
 
       await expect(transcriptLine).toBeVisible({ timeout: 120_000 })
-      await expect(summaryLine).toBeVisible({ timeout: 120_000 })
 
       const transcriptText = (await transcriptLine.innerText()).replace(/^\s*Transcript:\s*/i, '').trim()
-      const summaryText = (await summaryLine.innerText()).replace(/^\s*Summary:\s*/i, '').trim()
 
       log(`Transcript preview: ${transcriptText.slice(0, 120)}`)
-      log(`Summary preview: ${summaryText.slice(0, 120)}`)
 
       expect(transcriptText.length, 'Transcript is empty').toBeGreaterThan(0)
-      expect(summaryText.length, 'Summary is empty').toBeGreaterThan(0)
 
-      log('Assertions passed: transcript and summary are rendered')
+      log('Assertions passed: transcript is rendered')
     } catch (error) {
       const failureMessage = error instanceof Error ? error.stack || error.message : String(error)
       log(`TEST FAILED: ${failureMessage}`)

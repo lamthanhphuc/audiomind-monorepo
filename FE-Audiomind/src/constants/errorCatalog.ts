@@ -4,6 +4,29 @@ export type ErrorCatalogEntry = {
   ctaLabel: string
 }
 
+/** Maps Gate-A / legacy backend codes to catalog keys. */
+export const ERROR_CODE_ALIASES: Record<string, string> = {
+  EMPTY_FILE: 'UPLOAD_EMPTY_FILE',
+  UNSUPPORTED_AUDIO_TYPE: 'UPLOAD_UNSUPPORTED_FORMAT',
+  OWNER_FORBIDDEN: 'FORBIDDEN',
+  MIC_PERMISSION_DENIED: 'MIC_PERMISSION_DENIED',
+  CHECK_MIC: 'MIC_PERMISSION_DENIED',
+  INVALID_AUDIO_CAPTURE: 'INVALID_AUDIO_CAPTURE',
+  FAILED_AUDIO_CAPTURE: 'INVALID_AUDIO_CAPTURE',
+  ANALYSIS_BUSY: 'ANALYSIS_BUSY',
+  GEMINI_UNAVAILABLE: 'ANALYSIS_BUSY',
+  CIRCUIT_OPEN: 'ANALYSIS_BUSY',
+  EXPORT_ANALYSIS_REQUIRED: 'EXPORT_ANALYSIS_REQUIRED',
+  GROUPED_ACTION_PLAN_UNAVAILABLE: 'GROUPED_ACTION_PLAN_UNAVAILABLE',
+  GROUPED_ACTION_PLAN_INVALID: 'GROUPED_ACTION_PLAN_INVALID',
+  GROUPED_ACTION_PLAN_EXPORT_FAILED: 'GROUPED_ACTION_PLAN_EXPORT_FAILED',
+  QUERY_TOO_SHORT: 'QUERY_TOO_SHORT',
+  RATE_LIMITED: 'RATE_LIMITED',
+  NO_TRANSCRIPT_AFTER_FINALIZE: 'NO_TRANSCRIPT_AFTER_FINALIZE',
+  NO_TRANSCRIPT: 'NO_TRANSCRIPT_AFTER_FINALIZE',
+  GEMINI_QUOTA_EXHAUSTED: 'QUOTA_EXCEEDED',
+}
+
 export const ERROR_CATALOG: Record<string, ErrorCatalogEntry> = {
   UPLOAD_EMPTY_FILE: {
     message: 'File trống. Vui lòng chọn file âm thanh hợp lệ.',
@@ -50,6 +73,56 @@ export const ERROR_CATALOG: Record<string, ErrorCatalogEntry> = {
     ctaId: 'retry_recording',
     ctaLabel: 'Thử ghi lại',
   },
+  MIC_PERMISSION_DENIED: {
+    message: 'Microphone bị từ chối. Hãy cho phép quyền mic trong trình duyệt rồi thử lại.',
+    ctaId: 'check_mic',
+    ctaLabel: 'Kiểm tra microphone',
+  },
+  INVALID_AUDIO_CAPTURE: {
+    message: 'Không ghi được âm thanh từ thiết bị. Kiểm tra mic hoặc thử nguồn ghi khác.',
+    ctaId: 'check_mic',
+    ctaLabel: 'Kiểm tra microphone',
+  },
+  NO_TRANSCRIPT_AFTER_FINALIZE: {
+    message: 'Không phát hiện giọng nói trong phiên ghi âm.',
+    ctaId: 'retry_recording',
+    ctaLabel: 'Ghi lại',
+  },
+  ANALYSIS_BUSY: {
+    message: 'AI đang bận, vui lòng thử lại sau.',
+    ctaId: 'retry_later',
+    ctaLabel: 'Thử lại sau',
+  },
+  EXPORT_ANALYSIS_REQUIRED: {
+    message: 'Cần có phân tích cuộc họp trước khi xuất báo cáo hoặc action plan.',
+    ctaId: 'run_analysis',
+    ctaLabel: 'Chạy phân tích',
+  },
+  GROUPED_ACTION_PLAN_UNAVAILABLE: {
+    message: 'Action plan nhóm chưa sẵn sàng cho cuộc họp này.',
+    ctaId: 'view_analysis',
+    ctaLabel: 'Xem phân tích',
+  },
+  GROUPED_ACTION_PLAN_INVALID: {
+    message: 'Action plan nhóm không hợp lệ hoặc vượt giới hạn.',
+    ctaId: 'contact_support',
+    ctaLabel: 'Liên hệ hỗ trợ',
+  },
+  GROUPED_ACTION_PLAN_EXPORT_FAILED: {
+    message: 'Không xuất được action plan nhóm. Vui lòng thử lại.',
+    ctaId: 'retry_export',
+    ctaLabel: 'Thử xuất lại',
+  },
+  QUERY_TOO_SHORT: {
+    message: 'Từ khóa tìm kiếm quá ngắn. Nhập ít nhất 2 ký tự.',
+    ctaId: 'refine_search',
+    ctaLabel: 'Sửa từ khóa',
+  },
+  RATE_LIMITED: {
+    message: 'Bạn thao tác quá nhanh. Vui lòng đợi vài giây rồi thử lại.',
+    ctaId: 'retry_later',
+    ctaLabel: 'Thử lại sau',
+  },
   UNAUTHORIZED: {
     message: 'Phiên đăng nhập đã hết hạn.',
     ctaId: 'relogin',
@@ -60,12 +133,57 @@ export const ERROR_CATALOG: Record<string, ErrorCatalogEntry> = {
     ctaId: 'contact_support',
     ctaLabel: 'Liên hệ hỗ trợ',
   },
+  QUOTA_EXCEEDED: {
+    message: 'Bạn đã vượt quota sử dụng tháng này. Nâng cấp Pro hoặc liên hệ admin để tiếp tục.',
+    ctaId: 'upgrade_plan',
+    ctaLabel: 'Xem gói & thanh toán',
+  },
 }
 
 export type ErrorPresentation = {
   message: string
   ctaId?: string
   ctaLabel?: string
+}
+
+const resolveCatalogKey = (errorCode: string | undefined): string | undefined => {
+  if (!errorCode) return undefined
+  const normalized = errorCode.trim().toUpperCase()
+  return ERROR_CODE_ALIASES[normalized] ?? normalized
+}
+
+/** Maps batch pipeline / polling error strings to catalog error codes. */
+export const resolveBatchPipelineErrorCode = (
+  errorMessage: string | null | undefined,
+): string | undefined => {
+  const normalized = (errorMessage || '').trim().toLowerCase()
+  if (!normalized) {
+    return undefined
+  }
+
+  const errorCodeMatch = normalized.match(/errorcode=([a-z0-9_]+)/i)
+  if (errorCodeMatch?.[1]) {
+    const aliased = resolveCatalogKey(errorCodeMatch[1].toUpperCase())
+    if (aliased && ERROR_CATALOG[aliased]) {
+      return aliased
+    }
+  }
+
+  if (
+    normalized.includes('geminiquotaexceedederror')
+    || normalized.includes('gemini_quota_exhausted')
+  ) {
+    return 'QUOTA_EXCEEDED'
+  }
+
+  if (
+    normalized.includes('analysisparseerror')
+    || normalized.includes('invalid json')
+  ) {
+    return 'ANALYSIS_BUSY'
+  }
+
+  return undefined
 }
 
 export const resolveErrorPresentation = (
@@ -77,7 +195,8 @@ export const resolveErrorPresentation = (
     return { message: fallbackMessage }
   }
 
-  const entry = ERROR_CATALOG[errorCode.trim().toUpperCase()]
+  const catalogKey = resolveCatalogKey(errorCode)
+  const entry = catalogKey ? ERROR_CATALOG[catalogKey] : undefined
   if (!entry) {
     return { message: fallbackMessage }
   }

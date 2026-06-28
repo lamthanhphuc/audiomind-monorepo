@@ -2,14 +2,17 @@ package com.example.meetingservice.entity;
 
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Column;
+import jakarta.persistence.Transient;
 import lombok.Data;
 
 import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
 
 @Entity
 @Data
@@ -46,7 +49,20 @@ public class Meeting {
     @Column(name = "status")
     private String status;
 
+    @Column(name = "scheduled_start_at")
+    private OffsetDateTime scheduledStartAt;
+
+    @Column(name = "scheduled_end_at")
+    private OffsetDateTime scheduledEndAt;
+
+    @Column(name = "scheduled_timezone", length = 100)
+    private String scheduledTimezone;
+
     @JsonIgnore
     @Column(name = "deleted_at")
     private LocalDateTime deletedAt;
+
+    @Transient
+    @JsonProperty("sharedWithMe")
+    private Boolean sharedWithMe;
 }

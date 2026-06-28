@@ -266,7 +266,7 @@ describe('hydrateLiveTranscriptSegments', () => {
       },
     )
 
-    // Initial hydration delay -> first fetch /processing/transcript/7
+    // Initial hydration delay -> first fetch /processing/{meetingId}/transcript
     await vi.advanceTimersByTimeAsync(1500)
     await vi.runAllTicks()
 

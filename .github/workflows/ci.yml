@@ -56,10 +56,9 @@ jobs:
           npm run lint
 
       - name: Install Python deps
-        continue-on-error: true
         run: |
-          test -f demoRecordAUDIOMID/ai-service/requirements.txt || (echo "demoRecordAUDIOMID/ai-service/requirements.txt missing" && exit 1)
-          pip install -r demoRecordAUDIOMID/ai-service/requirements.txt
+          pip install -r demoRecordAUDIOMID/ai-service/requirements.txt \
+            -r demoRecordAUDIOMID/ai-service/requirements-dev.txt
 
       - name: Lint Python
         run: |
@@ -76,44 +75,19 @@ jobs:
 
       - name: Run tests
         run: |
-          npm test --if-present
+          cd FE-Audiomind
+          npm test
+          npx tsc --noEmit
+          cd ..
           cd demoRecordAUDIOMID
           chmod +x ./mvnw
           ./mvnw test --no-transfer-progress
           cd ..
-          pip install pytest
-          pip install fastapi==0.109.1 starlette==0.35.0 python-multipart==0.0.22 uvicorn[standard]==0.27.0 sqlalchemy==2.0.25 psycopg2-binary==2.9.9 alembic==1.13.1 openai==1.10.0 loguru==0.7.2 redis==5.0.8 httpx==0.26.0 pydantic==2.5.3 pydantic-settings==2.1.0 python-dotenv==1.2.2 celery==5.4.0 tenacity==8.2.3 torch==2.5.1 prometheus-client==0.20.0 numpy==1.24.3 grpcio==1.80.0 protobuf==6.31.1
-          pytest demoRecordAUDIOMID/ai-service
+          python -m pytest demoRecordAUDIOMID/ai-service/tests --ignore=demoRecordAUDIOMID/ai-service/tests/stress
 
-      - name: Setup E2E test account
-        continue-on-error: true
-        shell: pwsh
-        env:
-          E2E_USERNAME: ${{ secrets.E2E_USERNAME }}
-          E2E_PASSWORD: ${{ secrets.E2E_PASSWORD }}
-          E2E_USER_SERVICE_BASE_URL: http://localhost:8083
+      - name: Note E2E
         run: |
-          if (-not $env:E2E_USERNAME -or -not $env:E2E_PASSWORD) {
-            Write-Host "Skipping setup-e2e-account: missing E2E secrets"
-            exit 0
-          }
-          ./scripts/setup-e2e-account.ps1
-
-      - name: Run FE E2E (real-backend, gated)
-        env:
-          PLAYWRIGHT_REAL_BACKEND: '1'
-          E2E_USERNAME: ${{ secrets.E2E_USERNAME }}
-          E2E_PASSWORD: ${{ secrets.E2E_PASSWORD }}
-          PLAYWRIGHT_BASE_URL: http://127.0.0.1:5173
-        run: |
-          if [ -z "$E2E_USERNAME" ] || [ -z "$E2E_PASSWORD" ]; then
-            echo "Skipping E2E: missing E2E secrets"
-          elif curl --silent --fail http://localhost:8082/health > /dev/null; then
-            cd FE-Audiomind
-            npm run test:e2e:ci
-          else
-            echo "Skipping E2E: processing backend not ready on http://localhost:8082/health"
-          fi
+          echo "Full-stack E2E runs in smoke-test.yml (PR/nightly) when E2E_USERNAME/E2E_PASSWORD secrets are set."
 
   contract-check:
     runs-on: ubuntu-latest
@@ -148,6 +122,10 @@ jobs:
       - name: Validate schemas
         run: |
           npm run validate:schema
+          npm run validate:contracts
+
+      - name: Log safety scan
+        run: bash scripts/ci/log-safety-scan.sh
 
       - name: Validate transcript quality policy
         run: npm run validate:policy
@@ -198,3 +176,32 @@ jobs:
           else
             npx commitlint --from HEAD~1 --to HEAD --verbose
           fi
+
+  gate-a:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install deps (node)
+        run: npm ci
+
+      - name: Run Gate-A verification
+        run: bash scripts/ci/gate-a-verify.sh

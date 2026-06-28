@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import {
+  getLexicon,
   getTranscriptQualityPolicy,
   getUploadConfig,
   resetTranscriptQualityPolicyCacheForTests,
@@ -9,6 +10,7 @@ import { FALLBACK_POLICY } from '../config/fallback-policy'
 vi.mock('./config', () => ({
   MEETING_API_BASE: 'http://meeting.test',
   PROCESSING_API_BASE: 'http://processing.test',
+  AI_INTERNAL_BASE: 'http://ai.test',
 }))
 
 describe('configService', () => {
@@ -56,5 +58,21 @@ describe('configService', () => {
     expect(policy.evidence.minScore).toBe(FALLBACK_POLICY.evidence.minScore)
     expect(policy.evidence.speakerBoost).toBe(1.1)
     expect(policy.transcript.canonicalVersion).toBe('canonical-transcript-v2')
+  })
+
+  it('loads domain lexicon from ai-service', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      new Response(JSON.stringify({
+        domain: 'legal',
+        versionHash: 'legal-v1',
+        terms: [{ term: 'hợp đồng', normalized: 'hop_dong' }],
+        normalizationMap: { 'hop dong': 'hợp đồng' },
+      }), { status: 200 }),
+    )
+
+    const lexicon = await getLexicon('legal')
+
+    expect(fetch).toHaveBeenCalledWith('http://ai.test/api/config/lexicon?domain=legal')
+    expect(lexicon.terms[0]?.term).toBe('hợp đồng')
   })
 })

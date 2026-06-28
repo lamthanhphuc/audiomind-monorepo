@@ -904,8 +904,6 @@ def _analysis_cache_metadata_analyzer():
     provider = (settings.analysis_provider or "gemini").strip().lower()
     if provider in {"ollama", "local"}:
         return _AnalysisCacheMetadataAnalyzer("ollama", settings.ollama_model)
-    if provider == "openai":
-        return _AnalysisCacheMetadataAnalyzer("openai", settings.openai_model)
     return _AnalysisCacheMetadataAnalyzer("gemini", settings.gemini_analysis_model)
 
 
@@ -2998,6 +2996,7 @@ async def rerun_analysis(
             analysis_feature_set=request.analysis_feature_set,
             mode=mode,
             reason=request.reason,
+            domain_mode=request.domain_mode,
         ),
         db,
     )
@@ -3030,6 +3029,83 @@ async def rerun_analysis(
         staleReason=realtime_response.staleReason,
         retryAfterSeconds=realtime_response.retryAfterSeconds,
     )
+
+
+@app.post("/api/meeting/{meeting_id}/chat")
+async def meeting_chat(
+    meeting_id: int,
+    payload: dict = Body(...),
+):
+    settings = get_settings()
+    question = str(payload.get("question") or "").strip()
+    summary = str(payload.get("summary") or "")
+    transcript_excerpt = str(payload.get("transcript_excerpt") or "")
+    analysis = payload.get("analysis") if isinstance(payload.get("analysis"), dict) else {}
+    source_segments = payload.get("source_segments") if isinstance(payload.get("source_segments"), list) else []
+    from app.services.meeting_chat_service import answer_meeting_question
+
+    result = answer_meeting_question(
+        settings=settings,
+        question=question,
+        summary=summary,
+        transcript_excerpt=transcript_excerpt,
+        analysis=analysis,
+        source_segments=source_segments,
+    )
+    return {
+        "meetingId": meeting_id,
+        "answer": result.get("answer", ""),
+        "provider": result.get("provider", "unknown"),
+        "source_segments": result.get("source_segments", source_segments),
+    }
+
+
+@app.post("/api/search/semantic-rerank")
+async def semantic_rerank_endpoint(payload: dict = Body(...)):
+    settings = get_settings()
+    query = str(payload.get("query") or "").strip()
+    candidates = payload.get("candidates") if isinstance(payload.get("candidates"), list) else []
+    from app.services.semantic_search_service import semantic_rerank_meetings
+
+    result = semantic_rerank_meetings(settings=settings, query=query, candidates=candidates)
+    return result
+
+
+@app.post("/api/search/cross-meeting/ask")
+async def cross_meeting_ask_endpoint(payload: dict = Body(...)):
+    settings = get_settings()
+    question = str(payload.get("question") or "").strip()
+    meetings = payload.get("meetings") if isinstance(payload.get("meetings"), list) else []
+    from app.services.semantic_search_service import ask_cross_meeting
+
+    return ask_cross_meeting(settings=settings, question=question, meetings=meetings)
+
+
+@app.post("/api/meeting/{meeting_id}/terms/explain")
+async def explain_meeting_term_endpoint(
+    meeting_id: int,
+    payload: dict = Body(...),
+):
+    settings = get_settings()
+    term = str(payload.get("term") or "").strip()
+    summary = str(payload.get("summary") or "")
+    transcript_excerpt = str(payload.get("transcript_excerpt") or "")
+    analysis = payload.get("analysis") if isinstance(payload.get("analysis"), dict) else {}
+    from app.services.meeting_chat_service import explain_meeting_term
+
+    result = explain_meeting_term(
+        settings=settings,
+        term=term,
+        summary=summary,
+        transcript_excerpt=transcript_excerpt,
+        analysis=analysis,
+    )
+    return {
+        "meetingId": meeting_id,
+        "term": result.get("term", term),
+        "explanation": result.get("explanation", ""),
+        "provider": result.get("provider", "unknown"),
+    }
 
 
 @app.post(

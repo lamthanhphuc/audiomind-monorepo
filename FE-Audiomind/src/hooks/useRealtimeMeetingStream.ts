@@ -74,6 +74,7 @@ interface UseRealtimeMeetingStreamOptions {
   sessionToken?: RealtimeSessionToken | null
   language?: RealtimeLanguage
   speakerMode?: RealtimeSpeakerMode
+  domainMode?: string
   enabled?: boolean
   onTranscript?: (segment: TranscriptSegment) => void
   onKeyword?: (hit: KeywordHit) => void
@@ -172,6 +173,7 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
     sessionToken = null,
     language = DEFAULT_REALTIME_LANGUAGE,
     speakerMode = DEFAULT_REALTIME_SPEAKER_MODE,
+    domainMode = 'it',
     enabled = true,
     onTranscript,
     onKeyword,
@@ -208,6 +210,7 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
   const streamStopSentRef = useRef(false)
   const selectedLanguageRef = useRef<RealtimeLanguage>(DEFAULT_REALTIME_LANGUAGE)
   const selectedSpeakerModeRef = useRef<RealtimeSpeakerMode>(DEFAULT_REALTIME_SPEAKER_MODE)
+  const selectedDomainModeRef = useRef<string>('it')
 
   const resolvedToken = token || getAccessToken() || ''
   const canConnect = enabled && meetingId !== null && userId !== null && resolvedToken.trim().length > 0 && sessionToken !== null
@@ -219,6 +222,10 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
   useEffect(() => {
     selectedSpeakerModeRef.current = normalizeRealtimeSpeakerMode(speakerMode)
   }, [speakerMode])
+
+  useEffect(() => {
+    selectedDomainModeRef.current = String(domainMode || 'it').trim() || 'it'
+  }, [domainMode])
 
   const isSameSessionToken = useCallback((left: RealtimeSessionToken | null, right: RealtimeSessionToken | null) => {
     if (!left || !right) {
@@ -519,6 +526,7 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
           meetingId,
           language: selectedLanguageRef.current,
           speakerMode: selectedSpeakerModeRef.current,
+          domainMode: selectedDomainModeRef.current,
         }))
 
         flushPendingMessages(false)
