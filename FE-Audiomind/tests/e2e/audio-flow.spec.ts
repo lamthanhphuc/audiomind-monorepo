@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test'
 import fs from 'node:fs'
 import path from 'node:path'
+import { waitForAuthenticatedDashboard } from './helpers/auth'
 
 const DEFAULT_FIXTURE_PATH = path.resolve(
   process.cwd(),
@@ -59,8 +60,10 @@ test.describe('Audio processing flow', () => {
       await page.locator('[data-testid="e2e-login-password"]').fill(e2ePassword)
       await page.locator('[data-testid="e2e-login-submit"]').click()
 
+      await waitForAuthenticatedDashboard(page)
+
       const uploadInput = page.locator('[data-testid="e2e-upload-input"]')
-      await expect(uploadInput).toBeVisible({ timeout: 30_000 })
+      await expect(uploadInput).toBeAttached({ timeout: 30_000 })
 
       log(`Set audio file: ${resolvedAudioPath}`)
       await uploadInput.setInputFiles(resolvedAudioPath)

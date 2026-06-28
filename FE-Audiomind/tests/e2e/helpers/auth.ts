@@ -16,12 +16,16 @@ export async function gotoInviteRegister(page: Page, meetingId: number): Promise
   await page.goto(`/register?openMeeting=${meetingId}`, { waitUntil: 'domcontentloaded' })
 }
 
+export async function waitForAuthenticatedDashboard(page: Page): Promise<void> {
+  await expect(page.locator('[data-testid="dashboard-nav-history"]')).toBeVisible({ timeout: 30_000 })
+}
+
 export async function loginWithCredentials(page: Page, username: string, password: string): Promise<void> {
   await page.goto('/', { waitUntil: 'domcontentloaded' })
   await page.locator('[data-testid="e2e-login-username"]').fill(username)
   await page.locator('[data-testid="e2e-login-password"]').fill(password)
   await page.locator('[data-testid="e2e-login-submit"]').click()
-  await expect(page.locator('[data-testid="e2e-upload-input"]')).toBeVisible({ timeout: 30_000 })
+  await waitForAuthenticatedDashboard(page)
 }
 
 export async function openMeetingHistory(page: Page): Promise<void> {
