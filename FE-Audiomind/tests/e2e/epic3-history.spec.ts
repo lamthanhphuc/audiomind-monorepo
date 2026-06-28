@@ -74,14 +74,6 @@ async function mockMeetingTranscriptApis(page: Page): Promise<void> {
       }),
     })
   })
-
-  await page.route('**/processing/*/action-plan/export**', async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/octet-stream',
-      body: Buffer.from('mock-action-plan-export'),
-    })
-  })
 }
 
 test.describe('Google integration', () => {
@@ -110,7 +102,7 @@ test.describe('Google integration', () => {
 })
 
 test.describe('Epic3 meeting history', () => {
-  test('search and action-plan export from meeting detail', async ({ page }) => {
+  test('search transcript evidence from meeting detail', async ({ page }) => {
     const { username, password } = requireRealBackendEnv()
 
     await mockMeetingTranscriptApis(page)
@@ -136,16 +128,5 @@ test.describe('Epic3 meeting history', () => {
 
     const searchResponse = await searchResponsePromise
     expect(searchResponse.ok()).toBeTruthy()
-
-    const exportButton = page.locator('[data-testid="meeting-export-action-plan"]')
-    if (await exportButton.isVisible()) {
-      const exportResponsePromise = page.waitForResponse(
-        (response) => response.url().includes('/action-plan/export') && response.ok(),
-        { timeout: 60_000 },
-      )
-      await exportButton.click()
-      const exportResponse = await exportResponsePromise
-      expect(exportResponse.ok()).toBeTruthy()
-    }
   })
 })

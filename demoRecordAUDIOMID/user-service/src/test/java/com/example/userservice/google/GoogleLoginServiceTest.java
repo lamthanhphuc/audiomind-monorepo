@@ -23,6 +23,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.web.util.UriComponentsBuilder;
 
 @ExtendWith(MockitoExtension.class)
 class GoogleLoginServiceTest {
@@ -87,8 +88,10 @@ class GoogleLoginServiceTest {
         URI redirect = service.handleCallback("code-1", "state-1", null);
 
         assertTrue(redirect.getPath().endsWith("/auth/google/success"));
-        assertTrue(redirect.getQuery().startsWith("ticket="));
-        assertFalse(redirect.toString().contains("jwt"));
+        var queryParams = UriComponentsBuilder.fromUri(redirect).build().getQueryParams();
+        assertTrue(queryParams.containsKey("ticket"));
+        assertFalse(queryParams.containsKey("jwt"));
+        assertFalse(queryParams.containsKey("accessToken"));
         verify(pendingMeetingShareClient).acceptPendingInvites(51L, "user@example.com");
         verify(redisStore).saveTicket(anyString(), eq(51L), eq("/"));
     }
