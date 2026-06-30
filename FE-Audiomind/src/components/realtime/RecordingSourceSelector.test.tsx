@@ -71,6 +71,21 @@ describe('RecordingSourceSelector', () => {
     expect(container.textContent).toContain('Nên dùng tai nghe để tránh vọng âm.')
   })
 
+  it('shows dual-stream quota note when enabled for tab + microphone', () => {
+    act(() => {
+      root.render(
+        <RecordingSourceSelector
+          value="browser_tab_with_mic"
+          showDualStreamQuotaNote
+          onChange={vi.fn()}
+        />,
+      )
+    })
+
+    expect(container.querySelector('[data-testid="recording-source-quota-note"]')).not.toBeNull()
+    expect(container.textContent).toMatch(/hai luồng|gấp đôi quota STT/i)
+  })
+
   it('calls onChange when another source card is clicked', () => {
     const onChange = vi.fn()
 

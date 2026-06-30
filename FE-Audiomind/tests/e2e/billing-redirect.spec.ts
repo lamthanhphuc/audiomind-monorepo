@@ -18,7 +18,7 @@ test.describe('Billing PayOS redirect', () => {
         body: JSON.stringify({
           orderCode: 9001,
           status: 'PAID',
-          amount: 99000,
+          amount: 79000,
           plan: 'PRO',
         }),
       })

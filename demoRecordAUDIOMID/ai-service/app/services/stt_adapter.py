@@ -1147,8 +1147,9 @@ class DeepgramSTTAdapter:
                 session.speech_final_count = (
                     int(getattr(session, "speech_final_count", 0)) + 1
                 )
-        if self._speaker_diarization_enabled() and not is_final:
-            speaker = None
+        # Keep interim speaker labels when diarization is enabled so the UI can
+        # show evolving speaker attribution (Deepgram often provides speaker at
+        # the word/utterance level even before is_final).
         alternatives_count = self._count_alternatives(payload)
         duration = None
         if start_time is not None and end_time is not None:

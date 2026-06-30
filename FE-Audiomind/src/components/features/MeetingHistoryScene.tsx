@@ -23,7 +23,9 @@ import { getUserProfile } from '../../services/api'
 import { getGoogleStatus, GOOGLE_GMAIL_SEND_SCOPE, hasGoogleGmailSendScope, missingGoogleLinkScopes, startGoogleLink, type GoogleStatus } from '../../services/googleIntegration'
 import { buildStudioPath } from '../../utils/studioRouting'
 import { buildExistingUserMeetingUrl } from '../../utils/inviteAuth'
-import { PUBLIC_FRONTEND_ORIGIN } from '../../services/config'
+import { PUBLIC_FRONTEND_ORIGIN, ERROR_UX_ENABLED } from '../../services/config'
+import { getJwtPlan } from '../../services/auth'
+import { isUserQuotaExceeded, resolveQuotaPresentation, type UserPlan } from '../../utils/quotaUx'
 import {
   closeOAuthTab,
   completeOAuthNavigation,
@@ -116,6 +118,7 @@ type MeetingHistorySceneProps = {
   onSearchQueryChange?: (value: string) => void
   onNavigateUpload?: () => void
   onNavigateRealtime?: () => void
+  onNavigateBilling?: () => void
   preferredDomainMode?: DomainMode
   oauthRefreshTick?: number
 }
@@ -350,7 +353,20 @@ const getAnalysisStateFromResponse = (analysis: AiAnalysis | null): { state: Det
   if (status === 'ANALYSIS_FAILED_RETRYABLE' || analysis.retryable === true) {
     return { state: 'failed_retryable', analysis, error: null }
   }
-  if (status === 'FAILED' || status === 'RATE_LIMITED' || status === 'QUOTA_BLOCKED') {
+  if (status === 'QUOTA_BLOCKED' || analysis.errorCode === 'QUOTA_EXCEEDED') {
+    const plan = (getJwtPlan() || 'FREE') as UserPlan
+    const presentation = resolveQuotaPresentation(
+      {
+        errorCode: analysis.errorCode,
+        analysisStatus: status,
+        fallbackMessage: analysis.errorMessage ?? undefined,
+      },
+      plan,
+      ERROR_UX_ENABLED,
+    )
+    return { state: 'failed', analysis: null, error: presentation.message }
+  }
+  if (status === 'FAILED' || status === 'RATE_LIMITED') {
     const retryAfter = analysis.retryAfterSeconds && analysis.retryAfterSeconds > 0
       ? ` Retry after ${analysis.retryAfterSeconds}s.`
       : ''
@@ -388,6 +404,7 @@ export default function MeetingHistoryScene({
   onSearchQueryChange,
   onNavigateUpload,
   onNavigateRealtime,
+  onNavigateBilling,
   preferredDomainMode: _preferredDomainMode,
   oauthRefreshTick = 0,
 }: MeetingHistorySceneProps) {
@@ -1466,6 +1483,21 @@ export default function MeetingHistoryScene({
                   )}
                 </div>
                 {exportError && <ErrorState title="Xuất report thất bại" message={exportError} />}
+                {detail.analysisState === 'failed' && detail.analysisError && (
+                  <ErrorState
+                    title="Phân tích không khả dụng"
+                    message={detail.analysisError}
+                    errorCode={detail.analysisMetadata?.errorCode ?? undefined}
+                    onCtaClick={
+                      isUserQuotaExceeded({
+                        errorCode: detail.analysisMetadata?.errorCode,
+                        analysisStatus: String(detail.analysisMetadata?.analysisStatus ?? detail.analysisMetadata?.status ?? ''),
+                      })
+                        ? onNavigateBilling
+                        : undefined
+                    }
+                  />
+                )}
                 {transcriptExportError && <ErrorState title="Xuất transcript thất bại" message={transcriptExportError} />}
                 {actionPlanState.error && <ErrorState title="Xuất action plan thất bại" message={actionPlanState.error} />}
                 {actionPlanState.success && (

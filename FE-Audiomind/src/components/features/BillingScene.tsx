@@ -94,6 +94,8 @@ export default function BillingScene({
   const sttPercent = formatQuotaPercent(quota?.sttSecondsUsed ?? 0, quota?.sttSecondsLimit ?? 0)
   const geminiPercent = formatQuotaPercent(quota?.geminiInputCharsUsed ?? 0, quota?.geminiInputCharsLimit ?? 0)
   const isPro = (overview?.plan || jwtPlan || 'FREE').toUpperCase() === 'PRO'
+  const proPriceVnd = overview?.proPriceVnd ?? 79_000
+  const payosCheckoutEnabled = payosEnabled && (overview?.payosEnabled ?? true)
 
   const quotaWarnings = useMemo(() => {
     const warnings: string[] = []
@@ -138,16 +140,16 @@ export default function BillingScene({
               type="button"
               className="primary-cta"
               onClick={() => void handleUpgrade()}
-              disabled={busy || !payosEnabled}
-              title={!payosEnabled ? 'Thanh toán PayOS chưa bật trên môi trường này' : undefined}
+              disabled={busy || !payosCheckoutEnabled}
+              title={!payosCheckoutEnabled ? 'Thanh toán PayOS chưa bật trên môi trường này' : undefined}
             >
-              {busy ? 'Đang tạo link PayOS…' : 'Nâng cấp Pro (99.000đ)'}
+              {busy ? 'Đang tạo link PayOS…' : `Nâng cấp Pro (${proPriceVnd.toLocaleString('vi-VN')}đ)`}
             </button>
           )}
         </div>
       </header>
 
-      {!payosEnabled && (
+      {!payosCheckoutEnabled && (
         <div className="billing-scene__notice billing-scene__notice--muted" data-testid="billing-payos-disabled">
           Thanh toán PayOS chưa bật trên môi trường này. Liên hệ admin để nâng cấp thủ công hoặc bật PAYOS_ENABLED trên server.
         </div>
@@ -209,7 +211,7 @@ export default function BillingScene({
                 <strong>Pro</strong>
                 <span>~10 giờ STT/tháng</span>
                 <span>~2M ký tự Gemini/tháng</span>
-                <span>Thanh toán PayOS hoặc admin mark paid</span>
+                <span>{proPriceVnd.toLocaleString('vi-VN')}đ/tháng qua PayOS</span>
               </div>
             </div>
             {jwtPlan !== (overview?.plan || 'FREE').toUpperCase() && onRefreshTokenHint && (

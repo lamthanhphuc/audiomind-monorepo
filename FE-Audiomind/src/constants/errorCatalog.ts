@@ -24,7 +24,7 @@ export const ERROR_CODE_ALIASES: Record<string, string> = {
   RATE_LIMITED: 'RATE_LIMITED',
   NO_TRANSCRIPT_AFTER_FINALIZE: 'NO_TRANSCRIPT_AFTER_FINALIZE',
   NO_TRANSCRIPT: 'NO_TRANSCRIPT_AFTER_FINALIZE',
-  GEMINI_QUOTA_EXHAUSTED: 'QUOTA_EXCEEDED',
+  QUOTA_BLOCKED: 'QUOTA_EXCEEDED',
 }
 
 export const ERROR_CATALOG: Record<string, ErrorCatalogEntry> = {
@@ -134,9 +134,14 @@ export const ERROR_CATALOG: Record<string, ErrorCatalogEntry> = {
     ctaLabel: 'Liên hệ hỗ trợ',
   },
   QUOTA_EXCEEDED: {
-    message: 'Bạn đã vượt quota sử dụng tháng này. Nâng cấp Pro hoặc liên hệ admin để tiếp tục.',
+    message: 'Bạn đã vượt quota sử dụng tháng này. Nâng cấp Pro để tiếp tục.',
     ctaId: 'upgrade_plan',
     ctaLabel: 'Xem gói & thanh toán',
+  },
+  GEMINI_QUOTA_EXHAUSTED: {
+    message: 'AI đang quá tải (Gemini). Hệ thống sẽ tự thử lại.',
+    ctaId: 'retry_later',
+    ctaLabel: 'Thử lại sau',
   },
 }
 
@@ -172,6 +177,13 @@ export const resolveBatchPipelineErrorCode = (
   if (
     normalized.includes('geminiquotaexceedederror')
     || normalized.includes('gemini_quota_exhausted')
+  ) {
+    return 'GEMINI_QUOTA_EXHAUSTED'
+  }
+
+  if (
+    normalized.includes('quota_exceeded')
+    || normalized.includes('payment_required')
   ) {
     return 'QUOTA_EXCEEDED'
   }

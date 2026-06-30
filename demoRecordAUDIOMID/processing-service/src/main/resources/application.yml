@@ -107,6 +107,8 @@ realtime:
     enabled: ${REALTIME_ASYNC_AUDIO_QUEUE_ENABLED:true}
     max-size: 64
     stop-drain-timeout-ms: 5000
+  dual-stream-tab-mic:
+    enabled: ${REALTIME_DUAL_STREAM_TAB_MIC_ENABLED:false}
 
 processing:
   analysis-lock-ttl-seconds: 600

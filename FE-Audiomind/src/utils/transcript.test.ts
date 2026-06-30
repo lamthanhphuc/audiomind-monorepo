@@ -403,3 +403,39 @@ describe('groupUploadTranscriptSegmentsForDisplay', () => {
     expect(groupUploadTranscriptSegmentsForDisplay(undefined as unknown as TranscriptSegment[])).toEqual([])
   })
 })
+
+describe('dual-stream transcript helpers', () => {
+  it('formats TAB and MIC speaker badges for display', async () => {
+    const { formatDualStreamSpeakerLabel, inferStreamIdFromSpeaker } = await import('./transcript')
+
+    expect(formatDualStreamSpeakerLabel('TAB_SPEAKER_1')).toBe('Tab 1')
+    expect(formatDualStreamSpeakerLabel('MIC_SPEAKER_2')).toBe('Mic 2')
+    expect(inferStreamIdFromSpeaker('TAB_SPEAKER_1')).toBe('tab')
+    expect(inferStreamIdFromSpeaker('MIC_SPEAKER_1')).toBe('mic')
+  })
+
+  it('does not merge display segments across tab and mic streams', () => {
+    const tabSegment: TranscriptSegment = {
+      id: 'tab-1',
+      speaker: 'TAB_SPEAKER_1',
+      streamId: 'tab',
+      text: 'Hello from tab',
+      start: 1,
+      end: 2,
+      isFinal: true,
+    }
+    const micSegment: TranscriptSegment = {
+      id: 'mic-1',
+      speaker: 'MIC_SPEAKER_1',
+      streamId: 'mic',
+      text: 'Hello from mic',
+      start: 1.2,
+      end: 2.2,
+      isFinal: true,
+    }
+
+    const merged = mergeTranscriptSegmentsForDisplay([tabSegment, micSegment], { maxGapSeconds: 5 })
+    expect(merged).toHaveLength(2)
+    expect(merged.map((segment) => segment.streamId)).toEqual(['tab', 'mic'])
+  })
+})

@@ -1,4 +1,6 @@
 import type { AiAnalysis } from '../../types'
+import { resolveErrorPresentation } from '../../constants/errorCatalog'
+import { ERROR_UX_ENABLED } from '../../services/config'
 import {
   formatAnalysisStatus,
   formatBooleanVi,
@@ -83,6 +85,7 @@ type AnalysisStatusPanelProps = {
   busy?: boolean
   error?: string | null
   onReanalyze: () => void
+  onUpgradePlan?: () => void
 }
 
 const ACTIVE_OR_BLOCKING_STATUSES = new Set<AnalysisDisplayStatus>([
@@ -164,12 +167,15 @@ export const AnalysisStatusPanel = ({
   error = null,
   evidenceMatches = [],
   onReanalyze,
+  onUpgradePlan,
 }: AnalysisStatusPanelProps) => {
   const normalized = normalizeAnalysisMetadata(metadata)
   const retryAfterSeconds = normalized.retryAfterSeconds ?? 0
   const isRetryableFailure = metadata?.analysisStatus === 'ANALYSIS_FAILED_RETRYABLE' || metadata?.retryable === true
   const isShortTranscriptSkip = normalized.errorCode === 'ANALYSIS_SKIPPED_SHORT_TRANSCRIPT'
     || normalized.errorCode === 'NO_MEANINGFUL_TRANSCRIPT'
+  const isUserQuotaBlocked = normalized.status === 'QUOTA_BLOCKED'
+    || normalized.errorCode === 'QUOTA_EXCEEDED'
   const isQuotaExhausted = normalized.errorCode === 'GEMINI_QUOTA_EXHAUSTED'
     || normalized.errorCode === 'GEMINI_RATE_LIMITED'
   const noTranscriptAfterFinalize = normalized.errorCode === 'NO_TRANSCRIPT_AFTER_FINALIZE'
@@ -186,6 +192,9 @@ export const AnalysisStatusPanel = ({
   const statusBanner = (() => {
     if (normalized.status === 'ANALYZING') {
       return 'Phân tích đang chạy, vui lòng đợi…'
+    }
+    if (isUserQuotaBlocked) {
+      return resolveErrorPresentation('QUOTA_EXCEEDED', normalized.errorMessage || 'Hết quota', ERROR_UX_ENABLED).message
     }
     if (isShortTranscriptSkip) {
       return 'Bản ghi quá ngắn hoặc chưa có đủ nội dung để phân tích. Bạn có thể ghi lại hoặc tải file khác.'
@@ -249,6 +258,16 @@ export const AnalysisStatusPanel = ({
         <p className="analysis-status-panel__banner" data-testid="analysis-status-banner">
           {statusBanner}
         </p>
+      )}
+      {isUserQuotaBlocked && onUpgradePlan && (
+        <button
+          type="button"
+          className="btn-primary"
+          data-testid="analysis-quota-upgrade-button"
+          onClick={onUpgradePlan}
+        >
+          {resolveErrorPresentation('QUOTA_EXCEEDED', '', ERROR_UX_ENABLED).ctaLabel || 'Xem gói & thanh toán'}
+        </button>
       )}
 
       <dl className="analysis-status-panel__grid">

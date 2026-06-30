@@ -21,6 +21,7 @@ class TranscriptFragmentInput:
     event_id: str | None = None
     is_final: bool = False
     confidence: float | None = None
+    stream_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -40,6 +41,7 @@ def build_fragment_dedupe_key(fragment: TranscriptFragmentInput) -> str:
     dedupe_source = "|".join(
         [
             str(fragment.meeting_id),
+            (fragment.stream_id or "").strip().lower(),
             str(fragment.seq),
             f"{float(fragment.start_time):.3f}",
             f"{float(fragment.end_time):.3f}",
@@ -121,10 +123,14 @@ class TranscriptPersistenceRepository:
                 return obj
         return None
 
-    def get_checkpoint(self, meeting_id: int) -> TranscriptCheckpointState:
+    def get_checkpoint(self, meeting_id: int, stream_id: str = "") -> TranscriptCheckpointState:
+        normalized_stream_id = (stream_id or "").strip().lower()
         checkpoint = (
             self._db.query(TranscriptCheckpoint)
-            .filter(TranscriptCheckpoint.meeting_id == meeting_id)
+            .filter(
+                TranscriptCheckpoint.meeting_id == meeting_id,
+                TranscriptCheckpoint.stream_id == normalized_stream_id,
+            )
             .first()
         )
         if checkpoint is None:
@@ -140,17 +146,25 @@ class TranscriptPersistenceRepository:
         self,
         meeting_id: int,
         *,
+        stream_id: str = "",
         last_ack_seq: int | None = None,
         last_persisted_seq: int | None = None,
         last_finalized_seq: int | None = None,
     ) -> TranscriptCheckpointState:
+        normalized_stream_id = (stream_id or "").strip().lower()
         checkpoint = (
             self._db.query(TranscriptCheckpoint)
-            .filter(TranscriptCheckpoint.meeting_id == meeting_id)
+            .filter(
+                TranscriptCheckpoint.meeting_id == meeting_id,
+                TranscriptCheckpoint.stream_id == normalized_stream_id,
+            )
             .first()
         )
         if checkpoint is None:
-            checkpoint = TranscriptCheckpoint(meeting_id=meeting_id)
+            checkpoint = TranscriptCheckpoint(
+                meeting_id=meeting_id,
+                stream_id=normalized_stream_id,
+            )
             self._db.add(checkpoint)
 
         if last_ack_seq is not None:
@@ -211,6 +225,7 @@ class TranscriptPersistenceRepository:
             self._db.query(func.max(TranscriptFragment.version))
             .filter(
                 TranscriptFragment.meeting_id == fragment.meeting_id,
+                TranscriptFragment.stream_id == (fragment.stream_id or ""),
                 TranscriptFragment.seq == fragment.seq,
             )
             .scalar()
@@ -218,6 +233,7 @@ class TranscriptPersistenceRepository:
         next_version = int(version_query or 0) + 1
         row = TranscriptFragment(
             meeting_id=fragment.meeting_id,
+            stream_id=(fragment.stream_id or "").strip().lower(),
             seq=fragment.seq,
             version=next_version,
             event_id=(fragment.event_id or None),

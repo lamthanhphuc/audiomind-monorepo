@@ -51,6 +51,7 @@ import org.springframework.web.socket.WebSocketSession;
 import com.example.processingservice.client.AIServiceClient;
 import com.example.processingservice.client.AudioStreamResetRequiredException;
 import com.example.processingservice.client.MeetingServiceClient;
+import com.example.processingservice.client.UserQuotaClient;
 import com.example.processingservice.config.Epic2FeatureFlags;
 import com.example.processingservice.config.Epic3FeatureFlags;
 import com.example.processingservice.interfaces.websocket.realtime.RealtimeAudioEnqueueResult;
@@ -2234,5 +2235,40 @@ class MeetingWebSocketHandlerTest {
                 isNull(),
                 eq("Bearer test-token")
         );
+    }
+
+    @Test
+    void handleBinaryMessage_shouldSendVietnameseQuotaErrorWhenSttQuotaExceeded() throws Exception {
+        UserQuotaClient userQuotaClient = org.mockito.Mockito.mock(UserQuotaClient.class);
+        ReflectionTestUtils.setField(handler, "userQuotaClient", userQuotaClient);
+        ReflectionTestUtils.setField(handler, "quotaFailOpen", false);
+        ReflectionTestUtils.setField(handler, "objectMapper", new ObjectMapper());
+        when(epic2FeatureFlags.isErrorUxEnabled()).thenReturn(true);
+
+        attributes.put("meetingId", 900L);
+        attributes.put("userId", 1L);
+        attributes.put("authenticated", true);
+        attributes.put("language", "vi");
+        attributes.put("authorization", "Bearer test-token");
+        attributes.put("lastAudioSeq", 1L);
+        when(userQuotaClient.consume(eq(1L), anyLong(), eq(0L)))
+                .thenReturn(new UserQuotaClient.QuotaConsumeResult(false, Map.of(), null));
+        when(session.isOpen()).thenReturn(true);
+
+        ArgumentCaptor<TextMessage> messageCaptor = ArgumentCaptor.forClass(TextMessage.class);
+        doNothing().when(session).sendMessage(messageCaptor.capture());
+        doNothing().when(session).close(any(CloseStatus.class));
+
+        handler.handleBinaryMessage(session, new BinaryMessage(ByteBuffer.wrap(new byte[4000])));
+
+        verify(session).sendMessage(any(TextMessage.class));
+        verify(session).close(any(CloseStatus.class));
+        verifyNoInteractions(aiServiceClient);
+
+        TextMessage sent = messageCaptor.getValue();
+        @SuppressWarnings("unchecked")
+        Map<String, Object> parsed = new ObjectMapper().readValue(sent.getPayload(), Map.class);
+        assertEquals("QUOTA_EXCEEDED", parsed.get("errorCode"));
+        assertTrue(String.valueOf(parsed.get("message")).contains("Nâng cấp Pro"));
     }
 }

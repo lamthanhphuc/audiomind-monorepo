@@ -8,11 +8,13 @@ import FeatureIntegrations from '../components/features/FeatureIntegrations'
 import ExpansionDashboardScene from '../components/features/ExpansionDashboardScene'
 import RealtimeDashboardScene from '../components/features/RealtimeDashboardScene'
 import { LoadingState } from '../components/ui/LoadingState'
+import { QuotaWarningBanner } from '../components/ui/QuotaWarningBanner'
 
 const BillingScene = lazy(() => import('../components/features/BillingScene'))
 const FeatureMindmap = lazy(() => import('../components/features/FeatureMindmap'))
 const KnowledgeVaultScene = lazy(() => import('../components/features/KnowledgeVaultScene'))
 import { useAudioRecorder, type AudioRecorderState } from '../hooks/useAudioRecorder'
+import { useDualAudioRecorder, type DualTabMicStreamId } from '../hooks/useDualAudioRecorder'
 import {
     DEFAULT_REALTIME_LANGUAGE,
     DEFAULT_REALTIME_SPEAKER_MODE,
@@ -24,6 +26,7 @@ import {
     type RealtimeSpeakerMode,
     type RealtimeStatusEvent,
     type TranscriptSegment,
+    type RealtimeAudioStreamId,
 } from '../hooks/useRealtimeMeetingStream'
 import {
     DEFAULT_VAD_RESUMED_LABEL_MS,
@@ -37,6 +40,7 @@ import {
     type MicSensitivityMode,
     type VoiceActivityState,
 } from '../hooks/useVoiceActivityDetection'
+import { useQuotaOverview } from '../hooks/useQuotaOverview'
 import {
     BROWSER_TAB_CAPTURE_TELEMETRY,
     DEFAULT_RECORDING_SOURCE,
@@ -71,6 +75,12 @@ import { returnToOAuthOpener, subscribeOAuthComplete } from '../utils/oauthCallb
 import { ApiError, createRealtimeMeeting, getAnalysis, getProcessingStatus, getSavedAnalysis, getTranscript, getUserProfile, listMeetingsWithParams, reanalyzeMeetingAnalysis, startProcessingByPath, submitRealtimeFinalAudioFallback, updateUserPreferences, uploadToMeetingApi } from '../services/api'
 import { resolveBatchPipelineErrorCode, resolveErrorPresentation } from '../constants/errorCatalog'
 import { ERROR_UX_ENABLED } from '../services/config'
+import {
+  isUserQuotaExceeded,
+  resolveQuotaPresentation,
+  type QuotaSignal,
+  type UserPlan,
+} from '../utils/quotaUx'
 import { validateUploadFile } from '../hooks/useUpload'
 import { getBundledUploadConfig } from '../services/configService'
 import type { Meeting } from '../types'
@@ -92,6 +102,7 @@ import {
   redirectToFullGoogleLink,
 } from '../services/googleIntegration'
 import {
+    REALTIME_DUAL_STREAM_TAB_MIC,
     REALTIME_MIC_SENSITIVITY,
     REALTIME_MIN_FALLBACK_AUDIO_BYTES,
     REALTIME_NOISE_SUPPRESSION_DEFAULT,
@@ -629,8 +640,18 @@ const getRealtimeAnalysisFailureMessage = (metadata: AiAnalysis | null, fallback
   const retryAfter = metadata?.retryAfterSeconds
   const errorCode = metadata?.errorCode
   const errorMessage = metadata?.errorMessage
+  const analysisStatus = getAnalysisStatusValue(metadata)
   const isRetryable = metadata?.retryable === true
     || String(metadata?.analysisStatus ?? metadata?.status ?? '').trim().toUpperCase() === 'ANALYSIS_FAILED_RETRYABLE'
+
+  if (isUserQuotaExceeded({ errorCode, analysisStatus, fallbackMessage: errorMessage ?? undefined })) {
+    const plan = (getJwtPlan() || 'FREE') as UserPlan
+    return resolveQuotaPresentation(
+      { errorCode, analysisStatus, fallbackMessage: errorMessage ?? undefined },
+      plan,
+      ERROR_UX_ENABLED,
+    ).message
+  }
 
   if (isRetryable) {
     const retrySuffix = retryAfter && retryAfter > 0 ? ` Thử lại sau ${retryAfter}s.` : ''
@@ -646,6 +667,25 @@ const getRealtimeAnalysisFailureMessage = (metadata: AiAnalysis | null, fallback
 }
 
 const metadataFromAnalysisError = (meetingId: number, error: ApiError): AiAnalysis => {
+  if (error.status === 402 || error.errorCode === 'QUOTA_EXCEEDED') {
+    const plan = (getJwtPlan() || 'FREE') as UserPlan
+    const presentation = resolveQuotaPresentation(
+      {
+        httpStatus: error.status,
+        errorCode: error.errorCode,
+        fallbackMessage: error.message,
+      },
+      plan,
+      ERROR_UX_ENABLED,
+    )
+    return buildLiveAnalysisMetadata(meetingId, 'QUOTA_BLOCKED', {
+      errorCode: 'QUOTA_EXCEEDED',
+      errorMessage: presentation.message,
+      retryable: false,
+      transcriptSaved: true,
+    })
+  }
+
   const errorCode = error.errorCode
     ?? (error.status === 429
       ? 'GEMINI_RATE_LIMITED'
@@ -1135,6 +1175,7 @@ export default function App() {
   }, [])
   const [busy, setBusy] = useState(false)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
+  const [uploadErrorCode, setUploadErrorCode] = useState<string | null>(null)
   const [status, setStatus] = useState('idle')
   const [result, setResult] = useState<ResultView | null>(null)
   const [uploadNotice, setUploadNotice] = useState<string | null>(null)
@@ -1145,6 +1186,7 @@ export default function App() {
   const [historyFocusMeetingId, setHistoryFocusMeetingId] = useState<number | null>(null)
   const [liveMeetingId, setLiveMeetingId] = useState<number | null>(null)
   const [liveError, setLiveError] = useState<string | null>(null)
+  const [liveErrorCode, setLiveErrorCode] = useState<string | null>(null)
   const [livePartialWarning, setLivePartialWarning] = useState<string | null>(null)
   const [liveStatusMessage, setLiveStatusMessage] = useState<string | null>(null)
   const [liveAnalysis, setLiveAnalysis] = useState<AiAnalysis | null>(null)
@@ -1215,6 +1257,7 @@ export default function App() {
   const selectedRecordingSourceRef = useRef<RecordingSource>(DEFAULT_RECORDING_SOURCE)
   const tabTrackEndedFinalizeRef = useRef(false)
   const gracefulStopRef = useRef<(() => Promise<void>) | null>(null)
+  const quotaBillingRedirectRef = useRef(false)
   const lastLoggedRealtimeLanguageRef = useRef<RealtimeLanguage | null>(null)
   const lastLoggedRealtimeSpeakerModeRef = useRef<RealtimeSpeakerMode | null>(null)
   const lastVoiceActivityStateRef = useRef<VoiceActivityState | null>(null)
@@ -1230,7 +1273,8 @@ export default function App() {
   const recorderTimesliceMs = isBrowserTabRecordingSource(selectedRecordingSource)
     ? Math.min(REALTIME_RECORDER_TIMESLICE_MS, 120)
     : REALTIME_RECORDER_TIMESLICE_MS
-  const audioRecorder = useAudioRecorder(liveMeetingId, {
+  const dualStreamActive = REALTIME_DUAL_STREAM_TAB_MIC && selectedRecordingSource === 'browser_tab_with_mic'
+  const singleAudioRecorder = useAudioRecorder(liveMeetingId, {
     noiseSuppressionEnabled,
     recordingSource: selectedRecordingSource,
     onTrackEnded: () => onTabAudioTrackEndedRef.current?.(),
@@ -1239,8 +1283,18 @@ export default function App() {
       ? Math.max(REALTIME_START_PREROLL_MS, REALTIME_RESUME_PREROLL_MS)
       : 0,
   })
+  const handleDualChunkReadyRef = useRef<(chunk: Blob, streamId: DualTabMicStreamId, sessionId: number) => void>(() => {})
+  const dualAudioRecorder = useDualAudioRecorder({
+    diagnosticMeetingId: liveMeetingId,
+    timesliceMs: recorderTimesliceMs,
+    onTrackEnded: () => onTabAudioTrackEndedRef.current?.(),
+    onChunkReady: (chunk, streamId, sessionId) => {
+      handleDualChunkReadyRef.current(chunk, streamId, sessionId)
+    },
+  })
+  const audioRecorder = dualStreamActive ? dualAudioRecorder : singleAudioRecorder
   const voiceActivity = useVoiceActivityDetection({
-    enabled: audioRecorder.state === 'recording' && selectedRecordingSource !== 'browser_tab',
+    enabled: audioRecorder.state === 'recording' && selectedRecordingSource === 'microphone',
     getRmsLevel: audioRecorder.getCurrentRms,
     silenceThreshold: DEFAULT_VAD_SILENCE_THRESHOLD,
     speechThreshold: DEFAULT_VAD_SPEECH_THRESHOLD,
@@ -1261,6 +1315,10 @@ export default function App() {
     domainMode: selectedDomainMode,
     enabled: isAuthenticated && isRealtimeEnabled && featureScene === 'realtime',
     autoReconnect: true,
+    dualStream: dualStreamActive,
+    activeStreams: dualStreamActive
+      ? (audioRecorder.getActiveStreamIds?.() ?? ['tab'])
+      : undefined,
   })
 
   useEffect(() => {
@@ -1291,6 +1349,7 @@ export default function App() {
       source: selectedRecordingSource,
       lifecycleState: liveLifecycleState,
     })
+
   }, [liveLifecycleState, selectedRecordingSource])
 
   const handleRecordingSourceChange = useCallback((source: RecordingSource) => {
@@ -1394,12 +1453,19 @@ export default function App() {
     console.info('[Realtime] FRONTEND_RESET_RECORDER_AFTER_RESET_REQUIRED', {
       meetingId: liveMeetingIdRef.current,
       recorderState: audioRecorder.state,
+      dualStream: dualStreamActive,
     })
     realtimeStream.clearQueuedAudio?.()
     audioRecorder.abortRecording()
     setLivePartialWarning('Transcript có thể chưa đầy đủ')
 
-    void audioRecorder.startRecording().catch((error) => {
+    void audioRecorder.startRecording()
+      .then(() => {
+        if (dualStreamActive && audioRecorder.getActiveStreamIds) {
+          realtimeStream.configureDualStreams(audioRecorder.getActiveStreamIds())
+        }
+      })
+      .catch((error) => {
       setLiveError(error instanceof Error ? error.message : 'Không thể khởi động lại ghi âm')
     })
   }, [audioRecorder, realtimeStream, realtimeStream.status.resetRequired])
@@ -1881,6 +1947,92 @@ export default function App() {
     pushStudioRoute(scene, { meetingId, replace: options?.replace })
   }, [])
 
+  const handleNavigateBilling = useCallback(() => {
+    navigateFeatureScene('billing')
+  }, [navigateFeatureScene])
+
+  const handleQuotaExceeded = useCallback((signal: QuotaSignal) => {
+    const plan = (getJwtPlan() || 'FREE') as UserPlan
+    const presentation = resolveQuotaPresentation(signal, plan, ERROR_UX_ENABLED)
+    setBillingPaymentNotice(presentation.message)
+    if (!quotaBillingRedirectRef.current) {
+      quotaBillingRedirectRef.current = true
+      navigateFeatureScene('billing')
+    }
+    return presentation
+  }, [navigateFeatureScene])
+
+  useEffect(() => {
+    if (featureScene !== 'billing') {
+      quotaBillingRedirectRef.current = false
+    }
+  }, [featureScene])
+
+  useEffect(() => {
+    if (featureScene !== 'realtime') {
+      return
+    }
+    const streamStatus = realtimeStream.status
+    if (
+      streamStatus.state === 'error'
+      && isUserQuotaExceeded({
+        errorCode: streamStatus.errorCode,
+        fallbackMessage: streamStatus.message,
+      })
+    ) {
+      const presentation = handleQuotaExceeded({
+        errorCode: streamStatus.errorCode,
+        fallbackMessage: streamStatus.message,
+      })
+      setLiveError(presentation.message)
+      setLiveErrorCode('QUOTA_EXCEEDED')
+      setLiveLifecycleState('error')
+    }
+  }, [
+    featureScene,
+    handleQuotaExceeded,
+    realtimeStream.status,
+    realtimeStream.status.errorCode,
+    realtimeStream.status.message,
+    realtimeStream.status.state,
+  ])
+
+  useEffect(() => {
+    if (featureScene !== 'realtime' || !liveAnalysisMetadata) {
+      return
+    }
+    const analysisStatus = getAnalysisStatusValue(liveAnalysisMetadata)
+    if (
+      isUserQuotaExceeded({
+        errorCode: liveAnalysisMetadata.errorCode,
+        analysisStatus,
+      })
+    ) {
+      const presentation = handleQuotaExceeded({
+        errorCode: liveAnalysisMetadata.errorCode,
+        analysisStatus,
+        fallbackMessage: liveAnalysisMetadata.errorMessage ?? undefined,
+      })
+      setLiveAnalysisError(presentation.message)
+      setLiveErrorCode('QUOTA_EXCEEDED')
+    }
+  }, [featureScene, handleQuotaExceeded, liveAnalysisMetadata])
+
+  const { sttPercent, geminiPercent, isHighUsage } = useQuotaOverview(isAuthenticated)
+
+  const renderQuotaWarningBanner = () => {
+    if (!isHighUsage) {
+      return null
+    }
+    return (
+      <QuotaWarningBanner
+        sttPercent={sttPercent}
+        geminiPercent={geminiPercent}
+        onNavigateBilling={handleNavigateBilling}
+      />
+    )
+  }
+
   useEffect(() => {
     const syncStudioRouteFromBrowser = () => {
       const parsed = parseStudioRouteFromLocation()
@@ -2287,6 +2439,7 @@ export default function App() {
 
     setBusy(true)
     setErrorMessage(null)
+    setUploadErrorCode(null)
     setUploadNotice(null)
     setResult(null)
     abortControllerRef.current?.abort()
@@ -2339,11 +2492,19 @@ export default function App() {
         setErrorMessage('Processing cancelled')
       } else if (error instanceof ApiError) {
         const resolvedCode = error.errorCode || (error.status === 402 ? 'QUOTA_EXCEEDED' : undefined)
-        const presentation = resolveErrorPresentation(resolvedCode, error.message, ERROR_UX_ENABLED)
-        setErrorMessage(presentation.message)
-        if (resolvedCode === 'QUOTA_EXCEEDED' || presentation.ctaId === 'upgrade_plan') {
-          navigateFeatureScene('billing')
-          setBillingPaymentNotice(presentation.message)
+        const quotaSignal: QuotaSignal = {
+          httpStatus: error.status,
+          errorCode: resolvedCode,
+          fallbackMessage: error.message,
+        }
+        if (isUserQuotaExceeded(quotaSignal)) {
+          const presentation = handleQuotaExceeded(quotaSignal)
+          setErrorMessage(presentation.message)
+          setUploadErrorCode('QUOTA_EXCEEDED')
+        } else {
+          const presentation = resolveErrorPresentation(resolvedCode, error.message, ERROR_UX_ENABLED)
+          setErrorMessage(presentation.message)
+          setUploadErrorCode(resolvedCode ?? null)
         }
         if (error.errorCode === 'UNAUTHORIZED' || error.status === 401) {
           handleLogout()
@@ -2351,15 +2512,23 @@ export default function App() {
       } else {
         const pipelineErrorCode = resolveBatchPipelineErrorCode(error?.message)
         if (pipelineErrorCode) {
-          const presentation = resolveErrorPresentation(pipelineErrorCode, error.message, ERROR_UX_ENABLED)
-          setErrorMessage(presentation.message)
-          if (pipelineErrorCode === 'QUOTA_EXCEEDED' || presentation.ctaId === 'upgrade_plan') {
-            navigateFeatureScene('billing')
-            setBillingPaymentNotice(presentation.message)
+          const quotaSignal: QuotaSignal = {
+            errorCode: pipelineErrorCode,
+            fallbackMessage: error.message,
+          }
+          if (isUserQuotaExceeded(quotaSignal)) {
+            const presentation = handleQuotaExceeded(quotaSignal)
+            setErrorMessage(presentation.message)
+            setUploadErrorCode('QUOTA_EXCEEDED')
+          } else {
+            const presentation = resolveErrorPresentation(pipelineErrorCode, error.message, ERROR_UX_ENABLED)
+            setErrorMessage(presentation.message)
+            setUploadErrorCode(pipelineErrorCode)
           }
         } else {
           const message = error.message || 'Lỗi không xác định, vui lòng thử lại'
           setErrorMessage(message)
+          setUploadErrorCode(null)
         }
       }
       console.error('handleProcess error:', error)
@@ -2591,7 +2760,9 @@ export default function App() {
     }
     if (featureScene === 'realtime' && isRealtimeEnabled && realtimeUserId !== null) {
       return (
-        <RealtimeDashboardScene
+        <>
+          {renderQuotaWarningBanner()}
+          <RealtimeDashboardScene
           liveStatusMessage={liveStatusMessage}
           connectionView={connectionView}
           selectedRealtimeLanguage={selectedRealtimeLanguage}
@@ -2619,7 +2790,7 @@ export default function App() {
           liveMeetingId={liveMeetingId}
           audioRecorder={audioRecorder}
           onBeforeStartRecording={handlePrepareLiveMeeting}
-          onChunkReady={handleLiveChunkReady}
+          onChunkReady={dualStreamActive ? undefined : handleLiveChunkReady}
           onRecordingComplete={handleLiveRecordingComplete}
           onStopRequested={() => {
             console.info('[Realtime] REALTIME_STOP_REQUESTED', {
@@ -2631,6 +2802,8 @@ export default function App() {
           }}
           gracefulStopRef={gracefulStopRef}
           liveError={liveError}
+          liveErrorCode={liveErrorCode}
+          onNavigateBilling={handleNavigateBilling}
           livePartialWarning={livePartialWarning}
           showJoinOtherMeeting={showJoinOtherMeeting}
           joinMeetingIdInput={joinMeetingIdInput}
@@ -2652,7 +2825,12 @@ export default function App() {
             || liveAnalysisStatus !== 'idle'
           }
           onLiveAnalysisRetry={() => void handleLiveAnalysisRetry()}
+          onUpgradePlan={handleNavigateBilling}
+          dualStreamActive={dualStreamActive}
+          dualStreamBackendEnabled={realtimeStream.status.dualStreamBackendEnabled}
+          sttQuotaPercent={sttPercent}
         />
+        </>
       )
     }
 
@@ -2694,6 +2872,7 @@ export default function App() {
           onSearchQueryChange={setGlobalMeetingSearch}
           onNavigateUpload={() => navigateFeatureScene('upload')}
           onNavigateRealtime={() => navigateFeatureScene('realtime')}
+          onNavigateBilling={handleNavigateBilling}
           preferredDomainMode={selectedDomainMode}
           oauthRefreshTick={oauthRefreshTick}
         />
@@ -2701,7 +2880,9 @@ export default function App() {
     }
 
     return (
-      <FeatureUpload
+      <>
+        {renderQuotaWarningBanner()}
+        <FeatureUpload
         disabled={busy}
         userName={dashboardUser.name}
         uploadLanguage={selectedUploadLanguage}
@@ -2714,15 +2895,19 @@ export default function App() {
         onNavigateIntegrations={() => navigateFeatureScene('integrations')}
         status={status}
         errorMessage={errorMessage}
+        errorCode={uploadErrorCode ?? undefined}
+        onNavigateBilling={handleNavigateBilling}
         duplicateNotice={uploadNotice}
         onUpload={handleDashboardUpload}
         onCancel={handleCancel}
       />
+      </>
     )
   }
 
   const handlePrepareLiveMeeting = async (recordingSessionId?: number): Promise<void> => {
     setLiveError(null)
+    setLiveErrorCode(null)
     setLivePartialWarning(null)
     liveAnalysisAbortControllerRef.current?.abort()
     liveAnalysisAbortControllerRef.current = null
@@ -2812,6 +2997,9 @@ export default function App() {
       }
 
       setLiveStatusMessage(`Meeting ${normalizedMeetingId} sẵn sàng ghi âm`)
+      if (dualStreamActive && audioRecorder.getActiveStreamIds) {
+        realtimeStream.configureDualStreams(audioRecorder.getActiveStreamIds())
+      }
       return
     } catch (error) {
       if (sessionToken !== null && !isCurrentRealtimeSessionToken(sessionToken)) {
@@ -2839,7 +3027,11 @@ export default function App() {
     }
   }
 
-  const handleLiveChunkReady = async (chunk: Blob, sessionId: number) => {
+  const handleLiveChunkReady = async (
+    chunk: Blob,
+    sessionId: number,
+    streamId?: RealtimeAudioStreamId,
+  ) => {
     const activeToken = activeRealtimeSessionTokenRef.current
     const activeMeetingId = liveMeetingIdRef.current
     if (!activeMeetingId || sessionId !== liveRecordingSessionIdRef.current || !activeToken) {
@@ -2874,17 +3066,18 @@ export default function App() {
     const chunkBytes = chunk.size
     const recordingDurationSec = audioRecorder.duration
     const isTabCaptureSource = isBrowserTabRecordingSource(selectedRecordingSourceRef.current)
+    const validateMicTinyChunks = streamId === 'mic' || (!streamId && !isTabCaptureSource)
     const currentRms = audioRecorder.getCurrentRms()
     const isTinyChunk = chunkBytes > 0 && chunkBytes < REALTIME_TINY_CHUNK_MAX_BYTES
     const isSilentCapture = currentRms === null || currentRms <= REALTIME_TINY_CHUNK_MAX_RMS
-    if (!isTabCaptureSource && isTinyChunk && isSilentCapture) {
+    if (validateMicTinyChunks && isTinyChunk && isSilentCapture) {
       liveTinyChunkStreakRef.current += 1
     } else if (chunkBytes >= REALTIME_TINY_CHUNK_MAX_BYTES) {
       liveTinyChunkStreakRef.current = 0
     }
 
     if (
-      !isTabCaptureSource
+      validateMicTinyChunks
       && recordingDurationSec >= REALTIME_TINY_CHUNK_MIN_RECORDING_SEC
       && liveTinyChunkStreakRef.current >= REALTIME_TINY_CHUNK_STREAK_THRESHOLD
     ) {
@@ -2908,13 +3101,19 @@ export default function App() {
     }
 
     try {
-      await realtimeStream.sendAudioChunk(chunk, String(activeMeetingId))
+      await realtimeStream.sendAudioChunk(chunk, String(activeMeetingId), streamId)
     } catch (error) {
       console.error('Failed to send audio chunk:', error)
       setLiveError(error instanceof Error ? error.message : 'Không thể gửi audio chunk')
       setLiveLifecycleState('error')
     }
   }
+
+  useEffect(() => {
+    handleDualChunkReadyRef.current = (chunk, streamId, sessionId) => {
+      void handleLiveChunkReady(chunk, sessionId, streamId)
+    }
+  })
 
   const startRealtimeAnalysisPolling = (
     meetingId: number,

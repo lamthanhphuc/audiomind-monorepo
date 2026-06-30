@@ -25,6 +25,7 @@ describe('errorCatalog', () => {
       'UNAUTHORIZED',
       'FORBIDDEN',
       'QUOTA_EXCEEDED',
+      'GEMINI_QUOTA_EXHAUSTED',
       'RATE_LIMITED',
     ]
     for (const code of expected) {
@@ -63,12 +64,18 @@ describe('errorCatalog', () => {
     expect(result.ctaId).toBeUndefined()
   })
 
-  it('resolveBatchPipelineErrorCode maps Gemini quota failures', () => {
+  it('resolveBatchPipelineErrorCode maps Gemini quota failures to provider code', () => {
     expect(resolveBatchPipelineErrorCode(
       'BATCH_PIPELINE_FAILED errorType=GeminiQuotaExceededError stage=analysis',
-    )).toBe('QUOTA_EXCEEDED')
+    )).toBe('GEMINI_QUOTA_EXHAUSTED')
     expect(resolveBatchPipelineErrorCode(
       'BATCH_PIPELINE_FAILED errorType=GeminiQuotaExceededError errorCode=GEMINI_QUOTA_EXHAUSTED stage=analysis',
+    )).toBe('GEMINI_QUOTA_EXHAUSTED')
+  })
+
+  it('resolveBatchPipelineErrorCode maps user quota failures', () => {
+    expect(resolveBatchPipelineErrorCode(
+      'BATCH_PIPELINE_FAILED errorCode=QUOTA_EXCEEDED stage=upload',
     )).toBe('QUOTA_EXCEEDED')
   })
 

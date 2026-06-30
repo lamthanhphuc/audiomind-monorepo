@@ -30,7 +30,7 @@ describe('meetingChatbot', () => {
     const result = await answerMeetingQuestion(7, 'hỏi gì đó', { summary: 'x' } as any)
 
     expect(result.provider).toBe('fallback')
-    expect(result.answer).toContain('quota Gemini')
+    expect(result.answer).toContain('quota')
   })
 
   it('falls back to action items keywords', async () => {

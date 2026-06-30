@@ -262,6 +262,21 @@ describe('RealtimeDashboardScene', () => {
     expect(onRecordingSourceChange).toHaveBeenCalledWith('browser_tab_with_mic')
   })
 
+  it('shows dual-stream quota banner when dualStreamActive is enabled', () => {
+    act(() => {
+      root.render(
+        <RealtimeDashboardScene
+          {...baseProps}
+          selectedRecordingSource="browser_tab_with_mic"
+          dualStreamActive
+        />,
+      )
+    })
+
+    expect(container.querySelector('[data-testid="dual-stream-quota-info"]')).not.toBeNull()
+    expect(container.textContent).toMatch(/hai luồng|gấp đôi quota STT/i)
+  })
+
   it('shows finalizing_recording lifecycle badge while recorder tail is flushing', () => {
     const badge = resolveRealtimeLifecycleBadge('finalizing_recording', 'idle')
     expect(badge.label).toBe('Đang hoàn tất ghi âm')

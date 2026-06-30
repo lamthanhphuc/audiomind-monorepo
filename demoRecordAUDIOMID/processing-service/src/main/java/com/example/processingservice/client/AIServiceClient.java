@@ -72,6 +72,18 @@ public class AIServiceClient {
         return streamAudioChunk(meetingId, audioChunk, seq, language, null, isFinal, traceId, authorization);
     }
 
+    public Map<String, Object> streamAudioChunk(
+            Long meetingId,
+            String streamId,
+            byte[] audioChunk,
+            Long seq,
+            String language,
+            boolean isFinal,
+            String traceId,
+            String authorization) {
+        return streamAudioChunk(meetingId, streamId, audioChunk, seq, language, null, isFinal, traceId, authorization);
+    }
+
     @Retry(name = "ai-service")
     @CircuitBreaker(name = "ai-service")
     @Retryable(
@@ -791,6 +803,36 @@ public class AIServiceClient {
             boolean isFinal,
             String traceId,
             String authorization) {
+        return streamAudioChunk(
+                meetingId,
+                null,
+                audioChunk,
+                seq,
+                language,
+                speakerMode,
+                isFinal,
+                traceId,
+                authorization
+        );
+    }
+
+    @Retry(name = "ai-service")
+    @CircuitBreaker(name = "ai-service")
+    @Retryable(
+        retryFor = { RestClientException.class, IllegalStateException.class },
+        maxAttempts = 3,
+        backoff = @Backoff(delay = 1000, multiplier = 2.0)
+    )
+    public Map<String, Object> streamAudioChunk(
+            Long meetingId,
+            String streamId,
+            byte[] audioChunk,
+            Long seq,
+            String language,
+            String speakerMode,
+            boolean isFinal,
+            String traceId,
+            String authorization) {
 
         HttpHeaders headers = new HttpHeaders();
         String resolvedTraceId = resolveTraceId(traceId);
@@ -804,6 +846,9 @@ public class AIServiceClient {
 
         MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
         body.add("meeting_id", String.valueOf(meetingId));
+        if (StringUtils.hasText(streamId)) {
+            body.add("stream_id", streamId.trim().toLowerCase());
+        }
         body.add("audio_chunk", toNamedResource(audioChunk, meetingId, seq));
         body.add("seq", String.valueOf(seq == null ? 0L : seq));
         body.add("language", normalizeRealtimeLanguage(language));

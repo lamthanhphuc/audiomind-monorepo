@@ -21,6 +21,8 @@ type FeatureUploadProps = {
   onNavigateIntegrations?: () => void
   status?: string
   errorMessage?: string | null
+  errorCode?: string
+  onNavigateBilling?: () => void
   duplicateNotice?: string | null
   onUpload: (title: string, file: File) => Promise<void>
   onCancel?: () => void
@@ -39,6 +41,8 @@ export default function FeatureUpload({
   onNavigateIntegrations,
   status = 'idle',
   errorMessage,
+  errorCode,
+  onNavigateBilling,
   duplicateNotice,
   onUpload,
   onCancel,
@@ -167,7 +171,14 @@ export default function FeatureUpload({
             </div>
           )}
 
-          {errorMessage && <ErrorState message={errorMessage} title="Lỗi xử lý" />}
+          {errorMessage && (
+            <ErrorState
+              message={errorMessage}
+              errorCode={errorCode}
+              title="Lỗi xử lý"
+              onCtaClick={onNavigateBilling}
+            />
+          )}
 
           <div className="upload-actions-row">
             <button

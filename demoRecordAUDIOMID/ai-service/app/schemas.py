@@ -162,7 +162,7 @@ class AnalysisResponse(BaseModel):
 
 class RealtimeTranscriptAnalysisRequest(BaseModel):
     meeting_id: int
-    transcript: str
+    transcript: Optional[str] = None
     domain_mode: Optional[str] = "it"
     source: Optional[str] = "realtime"
     transcript_hash: Optional[str] = None

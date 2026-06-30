@@ -45,6 +45,54 @@ public class PayosClient {
         this.restTemplate = restTemplate;
     }
 
+    public boolean isEnabled() {
+        return enabled
+                && StringUtils.hasText(clientId)
+                && StringUtils.hasText(apiKey)
+                && StringUtils.hasText(checksumKey);
+    }
+
+    public PayosPaymentInfo getPaymentRequest(long orderCode) {
+        if (!enabled) {
+            throw new IllegalStateException("PayOS is disabled");
+        }
+        if (!StringUtils.hasText(clientId) || !StringUtils.hasText(apiKey) || !StringUtils.hasText(checksumKey)) {
+            throw new IllegalStateException("PayOS config missing");
+        }
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.add("x-client-id", clientId);
+        headers.add("x-api-key", apiKey);
+
+        ResponseEntity<PayosModels.CreatePaymentLinkResponse> response = restTemplate.exchange(
+                normalizeBaseUrl(baseUrl) + "/v2/payment-requests/" + orderCode,
+                HttpMethod.GET,
+                new HttpEntity<>(headers),
+                PayosModels.CreatePaymentLinkResponse.class
+        );
+
+        PayosModels.CreatePaymentLinkResponse body = response.getBody();
+        if (body == null) {
+            throw new IllegalStateException("PayOS empty response");
+        }
+        if (!"00".equals(body.code())) {
+            throw new IllegalStateException("PayOS error: " + body.desc());
+        }
+        if (body.data() == null || body.signature() == null) {
+            throw new IllegalStateException("PayOS invalid response body");
+        }
+        String expected = PayosCrypto.createSignatureFromObject(body.data(), checksumKey);
+        if (!expected.equals(body.signature())) {
+            throw new IllegalStateException("PayOS response signature mismatch");
+        }
+
+        String status = stringField(body.data(), "status");
+        long amount = parseLongField(body.data(), "amount");
+        long amountPaid = parseLongField(body.data(), "amountPaid");
+        return new PayosPaymentInfo(status, amount, amountPaid);
+    }
+
     public PayosCreateResult createPaymentLink(long orderCode, long amountVnd, String description) {
         if (!enabled) {
             throw new IllegalStateException("PayOS is disabled");
@@ -132,7 +180,25 @@ public class PayosClient {
         return baseReturnUrl + separator + "orderCode=" + orderCode;
     }
 
+    private static long parseLongField(Map<String, Object> data, String key) {
+        Object raw = data.get(key);
+        if (raw instanceof Number num) {
+            return num.longValue();
+        }
+        if (raw == null) {
+            return 0L;
+        }
+        try {
+            return Long.parseLong(String.valueOf(raw));
+        } catch (NumberFormatException ex) {
+            return 0L;
+        }
+    }
+
     public record PayosCreateResult(String paymentLinkId, String checkoutUrl, String qrCode) {
+    }
+
+    public record PayosPaymentInfo(String status, long amount, long amountPaid) {
     }
 }
 

@@ -1,6 +1,7 @@
 import {
   TAB_CAPTURE_GUIDE_STEPS,
   TAB_WITH_MIC_HEADPHONE_NOTE,
+  TAB_WITH_MIC_QUOTA_NOTE,
   RECORDING_SOURCE_DESCRIPTIONS,
   RECORDING_SOURCE_ICONS,
   RECORDING_SOURCE_LABELS,
@@ -14,15 +15,18 @@ type RecordingSourceSelectorProps = {
   value: RecordingSource
   disabled?: boolean
   onChange: (source: RecordingSource) => void
+  showDualStreamQuotaNote?: boolean
 }
 
 export function RecordingSourceSelector({
   value,
   disabled = false,
   onChange,
+  showDualStreamQuotaNote = false,
 }: RecordingSourceSelectorProps) {
   const showTabGuide = isBrowserTabRecordingSource(value)
   const showHeadphoneNote = value === 'browser_tab_with_mic'
+  const showQuotaNote = showDualStreamQuotaNote && value === 'browser_tab_with_mic'
 
   return (
     <div className="recording-source-selector" data-testid="recording-source-selector">
@@ -87,6 +91,11 @@ export function RecordingSourceSelector({
           </p>
           {showHeadphoneNote && (
             <p className="recording-source-guide__note">{TAB_WITH_MIC_HEADPHONE_NOTE}</p>
+          )}
+          {showQuotaNote && (
+            <p className="recording-source-guide__quota" data-testid="recording-source-quota-note">
+              {TAB_WITH_MIC_QUOTA_NOTE}
+            </p>
           )}
         </div>
       )}

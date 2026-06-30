@@ -89,7 +89,8 @@ HTTP status guidance:
 | `GROUPED_ACTION_PLAN_INVALID` | 409/500 | Kế hoạch công việc theo nhóm chưa hợp lệ. Vui lòng chạy lại phân tích hoặc liên hệ hỗ trợ. | false | `CONTACT_SUPPORT` | grouped action plan normalization | Use only when malformed grouped payload cannot safely fallback; no raw payload leak. |
 | `GROUPED_ACTION_PLAN_EXPORT_FAILED` | 500 | Không thể xuất kế hoạch công việc theo nhóm. Vui lòng thử lại. | true | `RETRY` | grouped action plan export | Actual DOCX/export generation failure; must include traceId and no raw payload. |
 | `EXPORT_FAILED` | 500 | Không thể xuất tài liệu. Vui lòng thử lại. | true | `RETRY` | report/export | Export failure has traceId. |
-| `QUOTA_EXCEEDED` | 429 | Bạn đã vượt quá giới hạn sử dụng. Vui lòng nâng cấp hoặc thử lại sau. | false | `UPGRADE` | future quota gate | FE shows upgrade CTA. |
+| `QUOTA_EXCEEDED` | 402 | Bạn đã vượt quota sử dụng tháng này. Nâng cấp Pro để tiếp tục. | false | `UPGRADE` | user quota gate (STT/Gemini monthly limits) | FE shows billing CTA; distinct from `GEMINI_QUOTA_EXHAUSTED` (provider retry). |
+| `GEMINI_QUOTA_EXHAUSTED` | 429 | AI đang quá tải (Gemini). Hệ thống sẽ tự thử lại. | true | `RETRY` | ai-service Gemini provider overload | FE shows retry banner, not billing upgrade. |
 | `PAYMENT_PENDING` | 402 | Thanh toán đang chờ xử lý. Vui lòng kiểm tra lại sau. | true | `RETRY` | future billing | Retryable billing state. |
 | `PAYMENT_FAILED` | 402 | Thanh toán thất bại. Vui lòng cập nhật phương thức thanh toán. | false | `UPGRADE` | future billing | Billing CTA. |
 | `VALIDATION_ERROR` | 400 | Dữ liệu không hợp lệ. Vui lòng kiểm tra lại. | false | `NONE` | all validation | Field errors map safely. |
@@ -122,7 +123,8 @@ Likely FE surfaces:
 - `FE-Audiomind/src/services/auth.ts` (login/register/logout error parsing).
 - `FE-Audiomind/src/app/App.tsx` (global auth/upload/realtime errors).
 - `FE-Audiomind/src/components/features/RealtimeDashboardScene.tsx`.
-- `FE-Audiomind/src/components/features/MeetingHistoryScene.tsx`.
+- `FE-Audiomind/src/utils/quotaUx.ts` (quota presentation hub).
+- Realtime WebSocket `type: error` payloads include `errorCode` and Vietnamese `message` for `QUOTA_EXCEEDED`.
 
 ## 5. Acceptance
 

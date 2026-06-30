@@ -98,9 +98,9 @@ public enum ErrorCode {
     QUOTA_EXCEEDED(
             402,
             "Usage quota exceeded",
-            "Bạn đã vượt quota sử dụng. Vui lòng nâng cấp gói hoặc thanh toán để tiếp tục.",
+            "Bạn đã vượt quota sử dụng tháng này. Nâng cấp Pro để tiếp tục.",
             "upgrade_plan",
-            "Nâng cấp gói"
+            "Xem gói & thanh toán"
     ),
     EXPORT_ANALYSIS_REQUIRED(
             409,

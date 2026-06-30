@@ -3,6 +3,7 @@ package com.example.processingservice.interfaces.websocket.realtime;
 public final class RealtimeAudioWorkItem {
 
     private final long meetingId;
+    private final String streamId;
     private final long seq;
     private byte[] audioBytes;
     private final int byteLength;
@@ -20,7 +21,20 @@ public final class RealtimeAudioWorkItem {
             String speakerMode,
             boolean isFinal,
             String authorization) {
+        this(meetingId, RealtimeStreamAudioState.LEGACY_STREAM_ID, seq, audioBytes, language, speakerMode, isFinal, authorization);
+    }
+
+    public RealtimeAudioWorkItem(
+            long meetingId,
+            String streamId,
+            long seq,
+            byte[] audioBytes,
+            String language,
+            String speakerMode,
+            boolean isFinal,
+            String authorization) {
         this.meetingId = meetingId;
+        this.streamId = RealtimeStreamAudioState.normalizeStreamId(streamId);
         this.seq = seq;
         this.audioBytes = audioBytes;
         this.byteLength = audioBytes == null ? 0 : audioBytes.length;
@@ -33,6 +47,10 @@ public final class RealtimeAudioWorkItem {
 
     public long meetingId() {
         return meetingId;
+    }
+
+    public String streamId() {
+        return streamId;
     }
 
     public long seq() {

@@ -124,6 +124,9 @@ teams:
     state-ttl: ${TEAMS_OAUTH_STATE_TTL:10m}
     allowed-redirect-origins: ${TEAMS_OAUTH_ALLOWED_REDIRECT_ORIGINS:http://localhost:8080,http://127.0.0.1:8080}
 
+billing:
+  pro-price-vnd: ${BILLING_PRO_PRICE_VND:79000}
+
 payos:
   enabled: ${PAYOS_ENABLED:false}
   base-url: ${PAYOS_BASE_URL:https://api-merchant.payos.vn}

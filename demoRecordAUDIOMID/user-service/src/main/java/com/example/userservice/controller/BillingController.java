@@ -6,6 +6,7 @@ import com.example.userservice.entity.BillingInvoice;
 import com.example.userservice.quota.QuotaService;
 import com.example.userservice.security.UserPrincipal;
 import jakarta.validation.Valid;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
@@ -37,7 +38,9 @@ public class BillingController {
                 "plan", quota.plan(),
                 "jwtPlan", principal.plan(),
                 "quota", quota,
-                "invoices", invoices
+                "invoices", invoices,
+                "proPriceVnd", billingService.proPriceVnd(),
+                "payosEnabled", billingService.payosEnabled()
         );
     }
 
@@ -61,13 +64,17 @@ public class BillingController {
     ) {
         UserPrincipal principal = requirePrincipal(authentication);
         BillingInvoice invoice = billingService.getInvoiceForUser(principal.userId(), orderCode);
-        return Map.of(
-                "orderCode", invoice.getOrderCode(),
-                "status", invoice.getStatus(),
-                "amountVnd", invoice.getAmountVnd(),
-                "paidAt", invoice.getPaidAt(),
-                "checkoutUrl", invoice.getCheckoutUrl()
-        );
+        return invoicePayload(invoice);
+    }
+
+    @PostMapping("/orders/{orderCode}/sync")
+    public Map<String, Object> syncOrder(
+            Authentication authentication,
+            @PathVariable long orderCode
+    ) {
+        UserPrincipal principal = requirePrincipal(authentication);
+        BillingInvoice invoice = billingService.syncProPayment(principal.userId(), orderCode);
+        return invoicePayload(invoice);
     }
 
     @PostMapping("/payos/webhook")
@@ -81,6 +88,20 @@ public class BillingController {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Unauthorized");
         }
         return principal;
+    }
+
+    private static Map<String, Object> invoicePayload(BillingInvoice invoice) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("orderCode", invoice.getOrderCode());
+        payload.put("status", invoice.getStatus());
+        payload.put("amountVnd", invoice.getAmountVnd());
+        if (invoice.getPaidAt() != null) {
+            payload.put("paidAt", invoice.getPaidAt());
+        }
+        if (invoice.getCheckoutUrl() != null) {
+            payload.put("checkoutUrl", invoice.getCheckoutUrl());
+        }
+        return payload;
     }
 }
 

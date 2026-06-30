@@ -26,6 +26,8 @@ export type BillingOverview = {
   plan: string
   quota: QuotaSnapshot
   invoices: BillingInvoice[]
+  proPriceVnd?: number
+  payosEnabled?: boolean
 }
 
 export type CheckoutProResult = {
@@ -92,6 +94,8 @@ export const getBillingOverview = async (): Promise<BillingOverview> => {
     plan: String(data.plan ?? 'FREE'),
     quota: normalizeQuota(data.quota),
     invoices: invoicesRaw.map(normalizeInvoice),
+    proPriceVnd: Number(data.proPriceVnd ?? data.pro_price_vnd ?? 79000),
+    payosEnabled: data.payosEnabled === true || data.payos_enabled === true ? true : undefined,
   }
 }
 
@@ -106,6 +110,18 @@ export const getBillingOrderStatus = async (orderCode: number): Promise<BillingI
   return normalizeInvoice(await response.json())
 }
 
+export const syncBillingOrder = async (orderCode: number): Promise<BillingInvoice> => {
+  const response = await fetch(`${USER_API_BASE}/api/billing/orders/${orderCode}/sync`, {
+    method: 'POST',
+    headers: authHeaders(),
+  })
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null) as { message?: string } | null
+    throw new Error(payload?.message || `Không đồng bộ được trạng thái thanh toán (${response.status})`)
+  }
+  return normalizeInvoice(await response.json())
+}
+
 const BILLING_POLL_DELAYS_MS = [1000, 2000, 4000, 8000, 12000]
 
 export const pollBillingActivation = async (
@@ -113,6 +129,13 @@ export const pollBillingActivation = async (
   options: { maxAttempts?: number } = {},
 ): Promise<{ invoice: BillingInvoice; overview: BillingOverview }> => {
   const maxAttempts = options.maxAttempts ?? BILLING_POLL_DELAYS_MS.length
+
+  try {
+    await syncBillingOrder(orderCode)
+  } catch {
+    // Webhook may have already updated the invoice; continue polling.
+  }
+
   let invoice = await getBillingOrderStatus(orderCode)
 
   for (let attempt = 0; attempt < maxAttempts && invoice.status !== 'PAID'; attempt += 1) {

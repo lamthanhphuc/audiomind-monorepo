@@ -91,7 +91,7 @@ const ANALYSIS_STATUS_VI: Record<string, string> = {
   FAILED: 'Thất bại',
   STALE: 'Dữ liệu cũ',
   RATE_LIMITED: 'Giới hạn tốc độ',
-  QUOTA_BLOCKED: 'Hết quota',
+  QUOTA_BLOCKED: 'Hết quota tháng này',
 }
 
 const DOMAIN_MODE_VI: Record<string, string> = {

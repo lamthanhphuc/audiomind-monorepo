@@ -45,6 +45,7 @@ export interface UseAudioRecorderReturn {
   duration: number
   getCurrentRms: () => number | null
   getRollingChunks: () => Blob[]
+  getActiveStreamIds?: () => Array<'tab' | 'mic'>
 }
 
 const RECORDER_MIME_TYPE = 'audio/webm; codecs=opus'

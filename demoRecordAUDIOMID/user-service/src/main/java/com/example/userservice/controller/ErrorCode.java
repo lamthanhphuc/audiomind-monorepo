@@ -41,6 +41,7 @@ public enum ErrorCode {
     ZOOM_RECORDING_IMPORT_FAILED(502, "Unable to import Zoom recording"),
     TEAMS_OAUTH_NOT_CONFIGURED(503, "Microsoft Teams integration is not configured"),
     VALIDATION_ERROR(400, "Request validation failed"),
+    BILLING_PAYOS_ERROR(502, "Thanh toán PayOS thất bại"),
     RATE_LIMITED(429, "Too many requests"),
     INTERNAL_ERROR(500, "Unexpected server error");
 

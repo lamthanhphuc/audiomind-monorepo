@@ -1307,3 +1307,36 @@ def test_stream_stt_chunk_rejects_oversized_chunk_when_validation_enabled(monkey
 
     assert exc_info.value.status_code == 413
     assert exc_info.value.detail == "REALTIME_CHUNK_TOO_LARGE"
+
+
+def test_stream_stt_chunk_dual_stream_creates_separate_actors(monkeypatch):
+    _reset_state(monkeypatch)
+
+    async def run_flow():
+        tab_response = await main_module.stream_stt_chunk(
+            meeting_id=701,
+            audio_chunk=_make_upload_file(b"tab"),
+            seq=1,
+            language="vi",
+            is_final=False,
+            stream_id="tab",
+        )
+        mic_response = await main_module.stream_stt_chunk(
+            meeting_id=701,
+            audio_chunk=_make_upload_file(b"mic"),
+            seq=1,
+            language="vi",
+            is_final=False,
+            stream_id="mic",
+        )
+        return tab_response, mic_response
+
+    tab_response, mic_response = asyncio.run(run_flow())
+
+    assert tab_response.transcript == "Xin chao audiomind"
+    assert mic_response.transcript == "Xin chao audiomind"
+    assert len(FakeActor.instances) == 2
+    assert "701:tab" in main_module._stt_stream_sessions
+    assert "701:mic" in main_module._stt_stream_sessions
+    assert FakeActor.instances[0].meeting_key != FakeActor.instances[1].meeting_key
+

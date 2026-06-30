@@ -30,6 +30,25 @@ public class GlobalExceptionHandler {
 
     private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
 
+    @ExceptionHandler(IllegalStateException.class)
+    public ResponseEntity<ApiErrorResponse> handleIllegalState(IllegalStateException ex, HttpServletRequest request) {
+        String message = ex.getMessage();
+        if (message != null && message.startsWith("PayOS")) {
+            return buildResponse(
+                    ErrorCode.BILLING_PAYOS_ERROR,
+                    HttpStatus.BAD_GATEWAY,
+                    resolvePayosMessage(message),
+                    request,
+                    null);
+        }
+        return buildResponse(
+                ErrorCode.INTERNAL_ERROR,
+                HttpStatus.INTERNAL_SERVER_ERROR,
+                null,
+                request,
+                null);
+    }
+
     @ExceptionHandler(IllegalArgumentException.class)
     public ResponseEntity<ApiErrorResponse> handleBadRequest(IllegalArgumentException ex, HttpServletRequest request) {
         ErrorCode code = isLanguageError(ex.getMessage()) ? ErrorCode.INVALID_LANGUAGE : ErrorCode.VALIDATION_ERROR;
@@ -314,5 +333,18 @@ public class GlobalExceptionHandler {
             return "";
         }
         return value.trim().toLowerCase(Locale.ROOT);
+    }
+
+    private static String resolvePayosMessage(String message) {
+        if (message.contains("disabled")) {
+            return "Thanh toán PayOS chưa được bật trên server.";
+        }
+        if (message.contains("config missing")) {
+            return "Cấu hình PayOS chưa đầy đủ. Liên hệ quản trị viên.";
+        }
+        if (message.startsWith("PayOS error:")) {
+            return message.substring("PayOS error:".length()).trim();
+        }
+        return "Không thể kết nối PayOS. Vui lòng thử lại sau.";
     }
 }

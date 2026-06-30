@@ -11,6 +11,8 @@ vi.mock('../../services/auth')
 const overviewFixture: billing.BillingOverview = {
   userId: 1,
   plan: 'FREE',
+  proPriceVnd: 79000,
+  payosEnabled: true,
   quota: {
     plan: 'FREE',
     periodYyyymm: '202606',
@@ -23,7 +25,7 @@ const overviewFixture: billing.BillingOverview = {
     {
       orderCode: 1001,
       status: 'PENDING',
-      amountVnd: 99000,
+      amountVnd: 79000,
       description: 'Audiomind PRO',
       checkoutUrl: 'https://pay.payos.vn/web/1001',
     },
@@ -45,7 +47,7 @@ describe('BillingScene', () => {
       orderCode: 2002,
       checkoutUrl: 'https://pay.payos.vn/web/2002',
       status: 'PENDING',
-      amountVnd: 99000,
+      amountVnd: 79000,
     })
   })
 
@@ -69,7 +71,7 @@ describe('BillingScene', () => {
     expect(container.querySelector('[data-testid="billing-scene"]')).toBeTruthy()
     expect(container.textContent).toContain('Quota STT')
     expect(container.textContent).toContain('#1001')
-    expect(container.textContent).toContain('99.000')
+    expect(container.textContent).toContain('79.000')
   })
 
   it('starts PayOS checkout when upgrade clicked', async () => {

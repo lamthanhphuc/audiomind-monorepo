@@ -3,7 +3,7 @@ import { DEFAULT_IT_TERMS } from '../../constants/itTerms'
 import { useDomainLexiconTerms } from '../../hooks/useDomainLexiconTerms'
 import type { TranscriptSegment } from '../../hooks/useRealtimeMeetingStream'
 import { cssVars } from '../../utils/cssVars'
-import { formatTranscriptTimestamp, normalizeSpeaker, sortTranscriptSegmentsByTimeline } from '../../utils/transcript'
+import { formatTranscriptTimestamp, formatDualStreamSpeakerLabel, sortTranscriptSegmentsByTimeline } from '../../utils/transcript'
 import { HighlightedTranscriptText } from './HighlightedTranscriptText'
 import './RealtimeTranscript.css'
 
@@ -114,7 +114,7 @@ export const RealtimeTranscript: React.FC<RealtimeTranscriptProps> = ({
               key={segment.mergeKey ?? segment.id}
               className="transcript-segment"
             >
-              <div className="segment-speaker">{normalizeSpeaker(segment.speaker, 'SPEAKER_1')}</div>
+              <div className="segment-speaker">{formatDualStreamSpeakerLabel(segment.speaker, segment.streamId)}</div>
               <div className="segment-text">
                 {segment.text && segment.text.trim().length > 0 ? (
                   <HighlightedTranscriptText

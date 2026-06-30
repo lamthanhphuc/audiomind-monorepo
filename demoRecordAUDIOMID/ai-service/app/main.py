@@ -378,6 +378,41 @@ def _normalize_meeting_key(meeting_id: int | str) -> str:
     return str(meeting_id).strip()
 
 
+def _as_optional_text(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    return ""
+
+
+def _normalize_stream_key(meeting_id: int | str, stream_id: str | None = "") -> str:
+    base = _normalize_meeting_key(meeting_id)
+    normalized_stream = _as_optional_text(stream_id).strip().lower()
+    if normalized_stream in {"tab", "mic"}:
+        return f"{base}:{normalized_stream}"
+    return base
+
+
+def _resolve_speaker_prefix(stream_id: str | None) -> str | None:
+    normalized = _as_optional_text(stream_id).strip().lower()
+    if normalized == "tab":
+        return "TAB"
+    if normalized == "mic":
+        return "MIC"
+    return None
+
+
+def _parse_stream_id_from_key(meeting_key: str) -> str:
+    parts = str(meeting_key).split(":", 1)
+    return parts[1].strip().lower() if len(parts) == 2 else ""
+
+
+def _parse_meeting_id_from_key(meeting_key: str) -> int:
+    base = str(meeting_key).split(":", 1)[0].strip()
+    return int(base) if base.isdigit() else 0
+
+
 def _normalize_stt_language(language: str | None) -> str:
     default_language = (settings.deepgram_language or "vi").strip().lower() or "vi"
     if default_language not in {"vi", "en", "multi"}:
@@ -3134,7 +3169,9 @@ async def analyze_realtime_transcript(
         meeting_id = int(request.meeting_id)
         source = str(request.source or "realtime").strip().lower() or "realtime"
         analysis_trace_id = uuid4().hex[:12]
-        transcript_text = _normalize_transcript_text(request.transcript)
+        transcript_text = _normalize_transcript_text(request.transcript or "")
+        if not transcript_text:
+            transcript_text = _normalize_transcript_text(_meeting_transcript_text_for_analysis(db, meeting_id))
         if not transcript_text:
             logger.warning(
                 "event=REALTIME_ANALYSIS_FAILED meetingId={} source={} errorCode=EMPTY_TRANSCRIPT",
@@ -4319,6 +4356,7 @@ async def stream_stt_chunk(
     language: str = Form(default=""),
     speaker_mode: str = Form(default=""),
     is_final: bool = Form(default=False),
+    stream_id: str = Form(default=""),
     request: Request = None,
 ):
     started_at = time.time()
@@ -4345,6 +4383,7 @@ async def stream_stt_chunk(
         is_final=is_final,
         enabled=settings.realtime_validation_enabled,
     )
+    stream_id = _as_optional_text(stream_id)
     realtime_model = _resolve_realtime_model()
     endpointing_value = (
         endpointing_resolution.endpointing
@@ -4442,7 +4481,8 @@ async def stream_stt_chunk(
     if not chunk_bytes and not is_final:
         raise HTTPException(status_code=400, detail="audio_chunk is empty")
 
-    meeting_key = _normalize_meeting_key(meeting_id)
+    meeting_key = _normalize_stream_key(meeting_id, stream_id)
+    speaker_prefix = _resolve_speaker_prefix(stream_id)
     now = time.time()
     guard = _get_stream_retry_guard(meeting_key)
     previous_seq = guard.last_seq
@@ -4572,6 +4612,14 @@ async def stream_stt_chunk(
                 bool(getattr(settings, "local_whisper_enabled", False)),
                 _legacy_local_stt_allowed(),
             )
+        logger.exception(
+            "event=DEEPGRAM_STT_FAILED_TRACE traceId={} requestId={} meetingId={} source=realtime seq={} errorCode={}",
+            trace_id,
+            request_id,
+            meeting_id,
+            seq,
+            type(exc).__name__,
+        )
         logger.warning(
             "event=DEEPGRAM_STT_FAILED traceId={} requestId={} meetingId={} source=realtime errorCode={} error={}",
             trace_id,

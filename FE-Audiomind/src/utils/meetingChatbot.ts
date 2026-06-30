@@ -1,5 +1,8 @@
 import { askMeetingChat, searchMeetingTranscriptEvidence, type TranscriptEvidenceMatch } from '../services/api'
 import { ApiError } from '../services/api'
+import { getJwtPlan } from '../services/auth'
+import { ERROR_UX_ENABLED } from '../services/config'
+import { resolveQuotaPresentation, type UserPlan } from './quotaUx'
 import type { AiAnalysis } from '../types'
 
 export type MeetingChatProvider = 'gemini' | 'fallback' | 'evidence'
@@ -179,9 +182,15 @@ export const answerMeetingQuestion = async (
       }
     } catch (error) {
       if (error instanceof ApiError && error.status === 402) {
+        const plan = (getJwtPlan() || 'FREE') as UserPlan
+        const presentation = resolveQuotaPresentation(
+          { httpStatus: 402, errorCode: error.errorCode, fallbackMessage: error.message },
+          plan,
+          ERROR_UX_ENABLED,
+        )
         return {
           provider: 'fallback',
-          answer: 'Đã hết quota Gemini tháng này. Vào Gói & thanh toán để nâng cấp hoặc thử lại sau.',
+          answer: `${presentation.message} ${presentation.ctaLabel ? `(${presentation.ctaLabel})` : ''}`.trim(),
         }
       }
     }

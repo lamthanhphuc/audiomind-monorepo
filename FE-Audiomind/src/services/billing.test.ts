@@ -32,18 +32,18 @@ describe('billing service formatters', () => {
     expect(formatCharsShort(2_500_000)).toBe('2.5M')
   })
 
-  it('pollBillingActivation polls until invoice is PAID', async () => {
+  it('pollBillingActivation syncs then polls until invoice is PAID', async () => {
     vi.useFakeTimers()
     const fetchMock = vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(new Response(JSON.stringify({
         orderCode: 9001,
-        status: 'PENDING',
-        amountVnd: 99000,
+        status: 'PAID',
+        amountVnd: 79000,
       }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
       .mockResolvedValueOnce(new Response(JSON.stringify({
         orderCode: 9001,
         status: 'PAID',
-        amountVnd: 99000,
+        amountVnd: 79000,
       }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
       .mockResolvedValueOnce(new Response(JSON.stringify({
         userId: 1,
@@ -59,12 +59,12 @@ describe('billing service formatters', () => {
         invoices: [],
       }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
 
-    const pollPromise = pollBillingActivation(9001, { maxAttempts: 2 })
-    await vi.advanceTimersByTimeAsync(1000)
+    const pollPromise = pollBillingActivation(9001, { maxAttempts: 1 })
+    await vi.advanceTimersByTimeAsync(0)
     const result = await pollPromise
 
     expect(result.invoice.status).toBe('PAID')
-    expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/api/billing/orders/9001'))).toBe(true)
+    expect(fetchMock.mock.calls.some(([url, init]) => String(url).includes('/api/billing/orders/9001/sync') && init?.method === 'POST')).toBe(true)
     vi.useRealTimers()
   })
 
@@ -72,7 +72,7 @@ describe('billing service formatters', () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response(JSON.stringify({
       orderCode: 42,
       status: 'PENDING',
-      amountVnd: 99000,
+      amountVnd: 79000,
     }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
 
     const invoice = await getBillingOrderStatus(42)

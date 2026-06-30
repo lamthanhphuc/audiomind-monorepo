@@ -15,6 +15,7 @@ export interface TranscriptSegment {
   language?: string
   isFinal?: boolean
   source?: 'live' | 'hydration'
+  streamId?: 'tab' | 'mic'
   providerSpeaker?: string
   originalSpeaker?: string
   providerSpeakers?: string[]
@@ -41,6 +42,7 @@ export interface RealtimeStatusEvent {
   analysisStatus?: string
   transcriptRows?: number
   finalized?: boolean
+  dualStreamBackendEnabled?: boolean
 }
 
 export type RealtimeLanguage = 'vi' | 'en' | 'multi'
@@ -67,6 +69,8 @@ export const normalizeRealtimeSpeakerMode = (speakerMode?: string | null): Realt
   return DEFAULT_REALTIME_SPEAKER_MODE
 }
 
+export type RealtimeAudioStreamId = 'tab' | 'mic'
+
 interface UseRealtimeMeetingStreamOptions {
   meetingId: number | null
   userId: number | null
@@ -76,6 +80,8 @@ interface UseRealtimeMeetingStreamOptions {
   speakerMode?: RealtimeSpeakerMode
   domainMode?: string
   enabled?: boolean
+  dualStream?: boolean
+  activeStreams?: RealtimeAudioStreamId[]
   onTranscript?: (segment: TranscriptSegment) => void
   onKeyword?: (hit: KeywordHit) => void
   onStatusChange?: (status: RealtimeStatusEvent) => void
@@ -181,6 +187,8 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
     autoReconnect = true,
     reconnectAttempts = 5,
     reconnectDelay = 1000,
+    dualStream = false,
+    activeStreams = ['tab', 'mic'],
   } = options
 
   const [isConnected, setIsConnected] = useState(false)
@@ -197,6 +205,11 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
   const sessionReadyWaitersRef = useRef<SessionReadyWaiter[]>([])
   const activeSessionTokenRef = useRef<RealtimeSessionToken | null>(null)
   const audioSequenceRef = useRef(0)
+  const tabAudioSequenceRef = useRef(0)
+  const micAudioSequenceRef = useRef(0)
+  const sendChainRef = useRef(Promise.resolve())
+  const dualStreamRef = useRef(dualStream)
+  const activeStreamsRef = useRef<RealtimeAudioStreamId[]>(activeStreams)
   const connectionSequenceRef = useRef(0)
   const readyConnectionSeqRef = useRef(0)
   const readyMeetingIdRef = useRef<number | null>(null)
@@ -226,6 +239,11 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
   useEffect(() => {
     selectedDomainModeRef.current = String(domainMode || 'it').trim() || 'it'
   }, [domainMode])
+
+  useEffect(() => {
+    dualStreamRef.current = dualStream
+    activeStreamsRef.current = activeStreams
+  }, [activeStreams, dualStream])
 
   const isSameSessionToken = useCallback((left: RealtimeSessionToken | null, right: RealtimeSessionToken | null) => {
     if (!left || !right) {
@@ -362,6 +380,9 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
     const queueDepth = pendingQueueRef.current.length
     pendingQueueRef.current = []
     audioSequenceRef.current = 0
+    tabAudioSequenceRef.current = 0
+    micAudioSequenceRef.current = 0
+    sendChainRef.current = Promise.resolve()
     console.info('[Realtime] REALTIME_QUEUE_CLEARED', {
       meetingId,
       lastSeq,
@@ -527,6 +548,12 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
           language: selectedLanguageRef.current,
           speakerMode: selectedSpeakerModeRef.current,
           domainMode: selectedDomainModeRef.current,
+          ...(dualStreamRef.current
+            ? {
+                dualStream: true,
+                activeStreams: activeStreamsRef.current,
+              }
+            : {}),
         }))
 
         flushPendingMessages(false)
@@ -550,6 +577,9 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
               updateStatus({
                 state: 'connected',
                 activeConnections: toNumber(data.activeConnections),
+                dualStreamBackendEnabled: data.dualStreamBackendEnabled === undefined
+                  ? undefined
+                  : Boolean(data.dualStreamBackendEnabled),
               })
               // mark authenticated when backend indicates it
               const authenticated = Boolean(data.authenticated || data.auth || false)
@@ -594,6 +624,7 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
               if (!nextSegment) {
                 break
               }
+
               lastTranscriptAtRef.current = Date.now()
               stalledWarningLoggedRef.current = false
 
@@ -650,10 +681,17 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
               })
               break
             }
+            case 'error': {
+              const errorCode = toStringValue(data.errorCode, data.error_code) || undefined
+              const message = toStringValue(data.message) || 'Stream error'
+              updateStatus({ state: 'error', message, errorCode, resetRequired: true })
+              break
+            }
             case 'stream.error': {
+              const errorCode = toStringValue(data.errorCode, data.error_code) || undefined
               const message = toStringValue(data.message) || 'Stream error'
               const resetRequired = Boolean(data.resetRequired || data.reset_required)
-              updateStatus({ state: 'error', message, resetRequired })
+              updateStatus({ state: 'error', message, errorCode, resetRequired })
               if (data.recoverable === false) {
                 websocket.close()
               }
@@ -843,7 +881,12 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
     }
   }, [isAuthenticated, isConnected, resolveSessionReadyWaiters, sessionToken])
 
-  const sendAudioChunk = useCallback(async (audioChunk: Blob, meetingIdValue: string) => {
+  const sendAudioChunk = useCallback(async (
+    audioChunk: Blob,
+    meetingIdValue: string,
+    streamId?: RealtimeAudioStreamId,
+  ) => {
+    const executeSend = async () => {
     if (meetingId === null) {
       console.error('[Realtime] STARTUP_INVARIANT_BROKEN', {
         reason: 'send_audio_chunk_without_active_meeting',
@@ -899,7 +942,10 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
     }
 
     // Send metadata as JSON first
-    const seq = (audioSequenceRef.current += 1)
+    const isDual = dualStreamRef.current && streamId
+    const seq = isDual
+      ? (streamId === 'tab' ? (tabAudioSequenceRef.current += 1) : (micAudioSequenceRef.current += 1))
+      : (audioSequenceRef.current += 1)
     const tsMs = Date.now()
     lastChunkSentAtRef.current = tsMs
     if (firstChunkSentAtRef.current <= 0) {
@@ -917,6 +963,7 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
       mime_type: audioChunk.type || 'audio/webm; codecs=opus',
       recording_session_id: tokenAtSendStart.recordingSessionId,
       attempt_id: tokenAtSendStart.attemptId,
+      ...(isDual && streamId ? { stream_id: streamId } : {}),
     }
 
     // Convert audio Blob to ArrayBuffer now so we can queue/send atomically
@@ -1020,6 +1067,18 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
         error,
       })
     }
+    }
+
+    sendChainRef.current = sendChainRef.current
+      .then(() => executeSend())
+      .catch((error) => {
+        console.error('[Realtime] REALTIME_SEND_CHAIN_ERROR', {
+          meetingId,
+          streamId: streamId ?? null,
+          error,
+        })
+      })
+    return sendChainRef.current
   }, [autoReconnect, canConnect, isActiveSessionToken, isAuthenticated, meetingId, updateStatus])
 
   const pause = useCallback(() => {
@@ -1124,6 +1183,18 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
     sendRaw({ type: 'stream.resume' })
   }, [sendRaw])
 
+  const configureDualStreams = useCallback((streams: RealtimeAudioStreamId[]) => {
+    activeStreamsRef.current = streams
+    if (!dualStreamRef.current) {
+      return
+    }
+    sendRaw({
+      type: 'dual_stream.configure',
+      dualStream: true,
+      activeStreams: streams,
+    })
+  }, [sendRaw])
+
   const clearTranscripts = useCallback(() => {
     setTranscripts([])
   }, [])
@@ -1206,6 +1277,7 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
     clearTranscripts,
     clearKeywords,
     clearQueuedAudio,
+    configureDualStreams,
   }
 }
 

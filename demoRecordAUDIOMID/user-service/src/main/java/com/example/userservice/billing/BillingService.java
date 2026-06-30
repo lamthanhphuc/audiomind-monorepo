@@ -16,6 +16,7 @@ import java.util.Optional;
 import java.util.concurrent.ThreadLocalRandom;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -32,14 +33,29 @@ public class BillingService {
     private final BillingWebhookEventRepository webhookEventRepository;
     private final UserAccountRepository userAccountRepository;
 
+    @Value("${billing.pro-price-vnd:79000}")
+    private long proPriceVnd;
+
+    public long proPriceVnd() {
+        return proPriceVnd;
+    }
+
+    public boolean payosEnabled() {
+        return payosClient.isEnabled();
+    }
+
     @Transactional
     public BillingInvoice createProCheckout(Long userId) {
         UserAccount user = userAccountRepository.findById(userId)
                 .orElseThrow(() -> new IllegalArgumentException("User not found"));
+        if ("PRO".equalsIgnoreCase(user.getPlan())) {
+            throw new IllegalArgumentException("Tài khoản đã là gói Pro");
+        }
 
-        long amountVnd = 99000; // MVP: fixed Pro price
+        long amountVnd = proPriceVnd;
         long orderCode = generateOrderCode();
-        String description = "Audiomind PRO subscription";
+        // PayOS giới hạn mô tả ngắn (9 ký tự với một số kênh thanh toán).
+        String description = "Audiomind";
 
         PayosClient.PayosCreateResult payos = payosClient.createPaymentLink(orderCode, amountVnd, description);
 
@@ -62,6 +78,30 @@ public class BillingService {
     @Transactional(readOnly = true)
     public List<BillingInvoice> listMyInvoices(Long userId) {
         return invoiceRepository.findTop50ByUserIdOrderByCreatedAtDesc(userId);
+    }
+
+    @Transactional
+    public BillingInvoice syncProPayment(Long userId, long orderCode) {
+        BillingInvoice invoice = getInvoiceForUser(userId, orderCode);
+        if ("PAID".equalsIgnoreCase(invoice.getStatus())) {
+            return invoice;
+        }
+
+        PayosClient.PayosPaymentInfo payment = payosClient.getPaymentRequest(orderCode);
+        if (isPayosPaymentSettled(payment, invoice.getAmountVnd())) {
+            markInvoicePaid(invoice, "payos_sync");
+            upgradeUserToPro(invoice.getUserId());
+            invoice.setUpdatedAt(Instant.now());
+            invoiceRepository.save(invoice);
+            log.info(
+                    "event=PAYOS_PAYMENT_SYNCED orderCode={} userId={} status={} amountPaid={}",
+                    orderCode,
+                    userId,
+                    payment.status(),
+                    payment.amountPaid()
+            );
+        }
+        return invoice;
     }
 
     @Transactional(readOnly = true)
@@ -157,10 +197,20 @@ public class BillingService {
         userAccountRepository.save(user);
     }
 
+    private static boolean isPayosPaymentSettled(PayosClient.PayosPaymentInfo payment, long expectedAmountVnd) {
+        if (payment == null) {
+            return false;
+        }
+        if ("PAID".equalsIgnoreCase(payment.status())) {
+            return true;
+        }
+        return payment.amountPaid() >= expectedAmountVnd && expectedAmountVnd > 0;
+    }
+
     private static long generateOrderCode() {
-        long now = System.currentTimeMillis();
+        long epochSec = System.currentTimeMillis() / 1000L;
         long rand = ThreadLocalRandom.current().nextInt(100, 999);
-        return now * 1000L + rand;
+        return epochSec * 1000L + rand;
     }
 
     private static Long parseLong(Object value) {

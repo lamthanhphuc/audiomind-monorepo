@@ -11,6 +11,7 @@ from sqlalchemy import (
     JSON,
     Index,
     UniqueConstraint,
+    PrimaryKeyConstraint,
 )
 from sqlalchemy.orm import relationship
 from datetime import datetime
@@ -48,6 +49,7 @@ class TranscriptFragment(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     meeting_id = Column(BigInteger, nullable=False, index=True)
+    stream_id = Column(String(8), nullable=False, default="", index=True)
     seq = Column(Integer, nullable=False, index=True)
     version = Column(Integer, nullable=False, default=1)
     event_id = Column(String(64), nullable=True, index=True)
@@ -64,8 +66,12 @@ class TranscriptFragment(Base):
 
 class TranscriptCheckpoint(Base):
     __tablename__ = "transcript_checkpoints"
+    __table_args__ = (
+        PrimaryKeyConstraint("meeting_id", "stream_id"),
+    )
 
     meeting_id = Column(BigInteger, primary_key=True, index=True)
+    stream_id = Column(String(8), primary_key=True, default="", nullable=False)
     last_ack_seq = Column(Integer, nullable=False, default=0)
     last_persisted_seq = Column(Integer, nullable=False, default=0)
     last_finalized_seq = Column(Integer, nullable=False, default=0)

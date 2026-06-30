@@ -16,6 +16,52 @@ const MERGE_MAX_TEXT_CHARS = 700
 const MERGE_MAX_DURATION_SECONDS = 90
 
 const normalizeText = (value: string): string => value.replace(/\s+/g, ' ').trim().toLowerCase()
+
+export type DualStreamTranscriptId = 'tab' | 'mic'
+
+export const inferStreamIdFromSpeaker = (speaker: string): DualStreamTranscriptId | undefined => {
+  const upper = speaker.trim().toUpperCase()
+  if (upper.startsWith('TAB_')) {
+    return 'tab'
+  }
+  if (upper.startsWith('MIC_')) {
+    return 'mic'
+  }
+  return undefined
+}
+
+const resolveStreamId = (
+  data: TranscriptSource,
+  speaker: string,
+): DualStreamTranscriptId | undefined => {
+  const raw = toStringValue(data.streamId, data.stream_id).toLowerCase()
+  if (raw === 'tab' || raw === 'mic') {
+    return raw
+  }
+  return inferStreamIdFromSpeaker(speaker)
+}
+
+export const formatDualStreamSpeakerLabel = (
+  speaker: string,
+  streamId?: DualStreamTranscriptId,
+): string => {
+  const normalized = speaker.trim().toUpperCase()
+  const effectiveStream = streamId ?? inferStreamIdFromSpeaker(speaker)
+  const speakerNumber = normalized.match(/SPEAKER_(\d+)/)?.[1]
+
+  if (effectiveStream === 'tab') {
+    return speakerNumber ? `Tab ${speakerNumber}` : 'Tab'
+  }
+  if (effectiveStream === 'mic') {
+    return speakerNumber ? `Mic ${speakerNumber}` : 'Mic'
+  }
+
+  return normalizeSpeakerBadge(speaker)
+}
+
+const streamKeySuffix = (streamId?: DualStreamTranscriptId): string =>
+  streamId ? `|${streamId}` : ''
+
 const canonicalSpeakerKey = (value: string): string => {
   const normalized = normalizeText(value)
   if (!normalized || normalized === 'unknown' || normalized === 'system') {
@@ -226,6 +272,7 @@ const resolveMergeKey = (data: TranscriptSource, timing: { start: number; end: n
   const explicitId = toStringValue(data.segmentId, data.segment_id, data.id)
   const dedupeKey = toStringValue(data.dedupeKey, data.dedupe_key)
   const speaker = canonicalSpeakerKey(toStringValue(data.speaker))
+  const streamSuffix = streamKeySuffix(resolveStreamId(data, toStringValue(data.speaker)))
 
   if (explicitId && !isLikelySequenceId(explicitId)) {
     return `segment:${canonicalizeSegmentId(explicitId)}`
@@ -236,12 +283,12 @@ const resolveMergeKey = (data: TranscriptSource, timing: { start: number; end: n
   }
 
   if (timing) {
-    return `semantic:${timing.start.toFixed(3)}|${speaker}`
+    return `semantic:${timing.start.toFixed(3)}|${speaker}${streamSuffix}`
   }
 
   const fallbackText = normalizeText(toStringValue(data.text, data.transcript))
   if (fallbackText) {
-    return `text:${speaker}|${fallbackText}`
+    return `text:${speaker}${streamSuffix}|${fallbackText}`
   }
 
   return resolveDisplayId(data, timing)
@@ -251,7 +298,7 @@ const getComparableText = (segment: TranscriptSegment): string => normalizeText(
 
 const getSemanticKey = (segment: TranscriptSegment): string => {
   const speaker = canonicalSpeakerKey(segment.speaker)
-  return `semantic:${segment.start.toFixed(3)}|${speaker}`
+  return `semantic:${segment.start.toFixed(3)}|${speaker}${streamKeySuffix(segment.streamId)}`
 }
 
 const isFallbackDisplayId = (value: string): boolean =>
@@ -490,11 +537,13 @@ export const normalizeTranscriptEvent = (
   const start = timing?.start ?? toNumber(data.startTime, data.start_time, data.timestamp)
   const end = timing?.end ?? toNumber(data.endTime, data.end_time, start)
   const isFinal = messageType === 'transcript.final' || Boolean(data.isFinal || data.is_final)
+  const speaker = normalizeSpeaker(toStringValue(data.speaker), options?.fallbackSpeaker)
+  const streamId = resolveStreamId(data, speaker)
 
   return {
     id: resolveDisplayId(data, timing),
     mergeKey: resolveMergeKey(data, timing),
-    speaker: normalizeSpeaker(toStringValue(data.speaker), options?.fallbackSpeaker),
+    speaker,
     text,
     start,
     end,
@@ -503,6 +552,7 @@ export const normalizeTranscriptEvent = (
     language: toStringValue(data.language) || undefined,
     isFinal,
     source: options?.source ?? 'live',
+    streamId,
     providerSpeaker: toStringValue(data.providerSpeaker, data.provider_speaker) || undefined,
     originalSpeaker: toStringValue(data.originalSpeaker, data.original_speaker) || undefined,
     providerSpeakers: toStringArray(data.providerSpeakers, data.provider_speakers),
@@ -1108,6 +1158,9 @@ export const mergeTranscriptSegmentsForDisplay = (
     }
 
     const sameSpeaker = canonicalSpeakerKey(previous.speaker) === canonicalSpeakerKey(segment.speaker)
+    const sameStream = !previous.streamId
+      || !segment.streamId
+      || previous.streamId === segment.streamId
     const previousEnd = previous.end ?? previous.start ?? 0
     const previousStart = previous.start ?? 0
     const nextEnd = segment.end ?? segment.start ?? 0
@@ -1127,6 +1180,7 @@ export const mergeTranscriptSegmentsForDisplay = (
     const punctuationBoundary = hasStrongPunctuationEnd(previous.text)
     const canMerge =
       sameSpeaker &&
+      sameStream &&
       gap <= maxGapSeconds &&
       overlap <= maxOverlapSeconds &&
       withinSegmentCount &&

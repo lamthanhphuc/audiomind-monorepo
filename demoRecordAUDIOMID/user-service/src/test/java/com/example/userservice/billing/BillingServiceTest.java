@@ -10,12 +10,14 @@ import com.example.userservice.repository.BillingWebhookEventRepository;
 import com.example.userservice.repository.UserAccountRepository;
 import java.util.Map;
 import java.util.Optional;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
@@ -42,13 +44,18 @@ class BillingServiceTest {
   @InjectMocks
   private BillingService billingService;
 
+  @BeforeEach
+  void setUp() {
+    ReflectionTestUtils.setField(billingService, "proPriceVnd", 79000L);
+  }
+
   @Test
   void handlePayosWebhook_shouldMarkPaidAndUpgradeUserOnSuccess() {
     PayosModels.WebhookBody webhook = new PayosModels.WebhookBody(
         "00",
         "success",
         true,
-        Map.of("orderCode", 9001L, "code", "00", "amount", 99000L),
+        Map.of("orderCode", 9001L, "code", "00", "amount", 79000L),
         "sig-success-1"
     );
     when(payosClient.verifyWebhookAndExtractData(webhook)).thenReturn(webhook.data());
@@ -121,6 +128,30 @@ class BillingServiceTest {
     ArgumentCaptor<BillingWebhookEvent> eventCaptor = ArgumentCaptor.forClass(BillingWebhookEvent.class);
     verify(webhookEventRepository).save(eventCaptor.capture());
     assertEquals("sig-replay", eventCaptor.getValue().getSignature());
+  }
+
+  @Test
+  void syncProPayment_shouldMarkPaidWhenPayosReportsPaid() {
+    BillingInvoice invoice = new BillingInvoice();
+    invoice.setUserId(42L);
+    invoice.setOrderCode(9004L);
+    invoice.setAmountVnd(79000L);
+    invoice.setStatus("PENDING");
+    when(invoiceRepository.findByOrderCode(9004L)).thenReturn(Optional.of(invoice));
+    when(payosClient.getPaymentRequest(9004L))
+        .thenReturn(new PayosClient.PayosPaymentInfo("PAID", 79000L, 79000L));
+
+    UserAccount user = new UserAccount();
+    user.setId(42L);
+    user.setPlan("FREE");
+    when(userAccountRepository.findById(42L)).thenReturn(Optional.of(user));
+
+    BillingInvoice result = billingService.syncProPayment(42L, 9004L);
+
+    assertEquals("PAID", result.getStatus());
+    assertEquals("PRO", user.getPlan());
+    verify(invoiceRepository).save(invoice);
+    verify(userAccountRepository).save(user);
   }
 
   @Test

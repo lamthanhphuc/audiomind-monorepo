@@ -129,7 +129,7 @@ describe('App billing success redirect', () => {
     root = createRoot(container)
     window.history.replaceState({}, '', '/billing/success?orderCode=9001')
     pollBillingActivation.mockResolvedValue({
-      invoice: { orderCode: 9001, status: 'PAID', amountVnd: 99000 },
+      invoice: { orderCode: 9001, status: 'PAID', amountVnd: 79000 },
       overview: { userId: 1, plan: 'PRO', quota: {}, invoices: [] },
     })
   })

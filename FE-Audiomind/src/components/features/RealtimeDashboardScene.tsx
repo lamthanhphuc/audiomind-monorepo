@@ -17,6 +17,7 @@ import {
 import type { DomainMode } from '../../constants/domainMode'
 import DomainModeSelector from '../ui/DomainModeSelector'
 import { RecordingSourceSelector } from '../realtime/RecordingSourceSelector'
+import { DualStreamQuotaInfoBanner } from '../ui/DualStreamQuotaInfoBanner'
 
 const REALTIME_LANGUAGE_OPTIONS: Array<{ value: RealtimeLanguage; label: string }> = [
   { value: 'vi', label: 'Tiếng Việt' },
@@ -86,11 +87,13 @@ type RealtimeDashboardSceneProps = {
   liveMeetingId: number | null
   audioRecorder: ReturnType<typeof useAudioRecorder>
   onBeforeStartRecording: (recordingSessionId: number) => Promise<void>
-  onChunkReady: (chunk: Blob, sessionId: number) => void | Promise<void>
+  onChunkReady?: (chunk: Blob, sessionId: number) => void | Promise<void>
   onRecordingComplete?: (fullAudio: Blob, sessionId: number) => void
   onStopRequested?: () => void
   gracefulStopRef?: MutableRefObject<(() => Promise<void>) | null>
   liveError: string | null
+  liveErrorCode?: string | null
+  onNavigateBilling?: () => void
   livePartialWarning: string | null
   showJoinOtherMeeting: boolean
   joinMeetingIdInput: string
@@ -107,6 +110,10 @@ type RealtimeDashboardSceneProps = {
   liveAnalysisError: string | null
   showLiveAnalysis: boolean
   onLiveAnalysisRetry: () => void
+  onUpgradePlan?: () => void
+  dualStreamActive?: boolean
+  dualStreamBackendEnabled?: boolean
+  sttQuotaPercent?: number
 }
 
 export const resolveRealtimeLifecycleBadge = (
@@ -188,6 +195,8 @@ export default function RealtimeDashboardScene({
   onStopRequested,
   gracefulStopRef,
   liveError,
+  liveErrorCode,
+  onNavigateBilling,
   livePartialWarning,
   showJoinOtherMeeting,
   joinMeetingIdInput,
@@ -204,6 +213,10 @@ export default function RealtimeDashboardScene({
   liveAnalysisError,
   showLiveAnalysis,
   onLiveAnalysisRetry,
+  onUpgradePlan,
+  dualStreamActive = false,
+  dualStreamBackendEnabled,
+  sttQuotaPercent,
 }: RealtimeDashboardSceneProps) {
   const [highlightMeetCapture, setHighlightMeetCapture] = useState(false)
 
@@ -323,6 +336,7 @@ export default function RealtimeDashboardScene({
                   <RecordingSourceSelector
                     value={selectedRecordingSource}
                     disabled={isRecordingSourceSelectorDisabled}
+                    showDualStreamQuotaNote={dualStreamActive}
                     onChange={onRecordingSourceChange}
                   />
                 </div>
@@ -405,6 +419,17 @@ export default function RealtimeDashboardScene({
           </div>
 
           <div className="realtime-panel__recorder-wrap">
+            {dualStreamActive && dualStreamBackendEnabled === false && (
+              <div className="warning-banner" role="alert">
+                Dual-stream chưa bật trên server. Ghi âm sẽ dùng chế độ một luồng cho đến khi admin bật REALTIME_DUAL_STREAM_TAB_MIC_ENABLED.
+              </div>
+            )}
+            <DualStreamQuotaInfoBanner
+              visible={dualStreamActive && selectedRecordingSource === 'browser_tab_with_mic'}
+              isRecording={liveLifecycleState === 'recording'}
+              sttPercent={sttQuotaPercent}
+              onNavigateBilling={onNavigateBilling}
+            />
             <AudioRecorderButton
               recorder={audioRecorder}
               lifecycleState={recorderLifecycleState}
@@ -418,7 +443,14 @@ export default function RealtimeDashboardScene({
           </div>
         </div>
 
-        {liveError && <ErrorState message={liveError} title="Lỗi realtime" />}
+        {liveError && (
+          <ErrorState
+            message={liveError}
+            errorCode={liveErrorCode ?? undefined}
+            title="Lỗi realtime"
+            onCtaClick={onNavigateBilling}
+          />
+        )}
         {livePartialWarning && <div className="warning-banner">{livePartialWarning}</div>}
 
         {showJoinOtherMeeting && (
@@ -471,6 +503,7 @@ export default function RealtimeDashboardScene({
               busy={liveAnalysisStatus === 'polling'}
               error={liveAnalysisError}
               onReanalyze={onLiveAnalysisRetry}
+              onUpgradePlan={onUpgradePlan}
             />
             <AnalysisPanel
               title="Phân tích realtime"

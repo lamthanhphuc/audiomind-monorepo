@@ -13,7 +13,7 @@ export const RECORDING_SOURCE_LABELS: Record<RecordingSource, string> = {
 export const RECORDING_SOURCE_DESCRIPTIONS: Record<RecordingSource, string> = {
   microphone: 'Ghi âm giọng nói từ micro của bạn.',
   browser_tab: 'Chọn bất kỳ tab nào (Meet, Teams, YouTube, …) để ghi âm thanh phát từ tab.',
-  browser_tab_with_mic: 'Ghi cả âm thanh tab trình duyệt và giọng nói của bạn.',
+  browser_tab_with_mic: 'Ghi cả âm thanh tab trình duyệt và giọng nói của bạn. Tiêu thụ quota STT cao hơn (~2×) khi bật ghi kép.',
 }
 
 export const RECORDING_SOURCE_ICONS: Record<RecordingSource, string> = {
@@ -50,6 +50,15 @@ export const MEET_BROWSER_COMPAT_NOTES = TAB_BROWSER_COMPAT_NOTES
 
 export const TAB_WITH_MIC_HEADPHONE_NOTE =
   'Nên dùng tai nghe để tránh vọng âm.'
+
+export const TAB_WITH_MIC_QUOTA_NOTE =
+  'Chế độ Tab + Microphone gửi hai luồng nhận dạng giọng nói song song (tab và mic). Mỗi giây ghi âm có thể tiêu tốn khoảng gấp đôi quota STT so với chỉ dùng microphone hoặc chỉ tab.'
+
+export const TAB_WITH_MIC_QUOTA_RECORDING_BADGE =
+  'Đang ghi 2 luồng STT — quota tiêu thụ nhanh hơn'
+
+export const TAB_WITH_MIC_MIC_UNAVAILABLE_NOTE =
+  'Microphone không khả dụng — chỉ ghi âm tab (quota ~1×).'
 
 export const MEET_WITH_MIC_HEADPHONE_NOTE = TAB_WITH_MIC_HEADPHONE_NOTE
 
