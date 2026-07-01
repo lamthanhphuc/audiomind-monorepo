@@ -2342,6 +2342,68 @@ class MeetingWebSocketHandlerTest {
     }
 
     @Test
+    void handleTextMessage_streamStop_v2ShouldFetchTranscriptForSameAttemptBeforeAnalysis() throws Exception {
+        attributes.put("meetingId", 501L);
+        attributes.put("authenticated", true);
+        attributes.put("language", "vi");
+        attributes.put("authorization", "Bearer test-token");
+        attributes.put("lastAudioSeq", 35L);
+        attributes.put("AUDIO_RECEIVED_ATTR", Boolean.TRUE);
+        attributes.put("recordingSessionId", 9001L);
+        attributes.put("attemptId", 2L);
+
+        doReturn(Map.of("type", "stream.stop")).when(objectMapper).readValue(anyString(), any(Class.class));
+        when(aiServiceClient.streamAudioChunk(
+                eq(501L),
+                isNull(),
+                any(byte[].class),
+                eq(-1L),
+                eq("vi"),
+                isNull(),
+                eq(true),
+                isNull(),
+                eq("Bearer test-token"),
+                eq(9001L),
+                eq(2L)
+        )).thenReturn(Map.of(
+                "transcript", "attempt scoped line",
+                "is_final", true,
+                "language", "vi",
+                "start_time", 1.0,
+                "end_time", 2.0
+        ));
+        when(aiServiceClient.getTranscript(eq(501L), anyString(), eq(9001L), eq(2L))).thenReturn(Map.of(
+                "meeting_id", 501L,
+                "transcripts", List.of(
+                        Map.of("speaker", "SPEAKER_1", "text", "attempt scoped line")
+                )
+        ));
+        when(aiServiceClient.analyzeRealtimeTranscript(
+                eq(501L),
+                anyString(),
+                eq("it"),
+                eq("realtime"),
+                anyString(),
+                anyString(),
+                eq("Bearer test-token")
+        )).thenReturn(Map.of("status", "SUCCEEDED"));
+
+        handler.handleTextMessage(session, new TextMessage("{\"type\":\"stream.stop\"}"));
+
+        verify(aiServiceClient, timeout(1000)).getTranscript(eq(501L), anyString(), eq(9001L), eq(2L));
+        verify(aiServiceClient, never()).getTranscript(eq(501L), anyString());
+        verify(aiServiceClient, timeout(1000)).analyzeRealtimeTranscript(
+                eq(501L),
+                eq("SPEAKER_1: attempt scoped line"),
+                eq("it"),
+                eq("realtime"),
+                anyString(),
+                anyString(),
+                eq("Bearer test-token")
+        );
+    }
+
+    @Test
     void handleTextMessage_streamStop_withoutAudio_shouldMarkFailedAudioCapture() throws Exception {
         attributes.put("meetingId", 401L);
         attributes.put("authenticated", true);

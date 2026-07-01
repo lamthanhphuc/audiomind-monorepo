@@ -142,16 +142,20 @@ def build_fragment_dedupe_key(fragment: TranscriptFragmentInput) -> str:
 
 
 def _build_visible_segment_key(fragment: TranscriptFragment) -> str:
+    provenance = "legacy"
+    if fragment.recording_session_id is not None and fragment.attempt_id is not None:
+        provenance = f"v2:{fragment.recording_session_id}:{fragment.attempt_id}"
+    stream_id = _normalize_storage_stream_id(fragment.stream_id)
     event_id = str(fragment.event_id or "").strip()
     if event_id:
-        return event_id
+        return f"{provenance}:{stream_id}:{event_id}"
 
     start_time = float(fragment.start_time or 0.0)
     if start_time > 0:
         speaker = (fragment.speaker or "system").strip() or "system"
-        return f"{fragment.meeting_id}:{speaker}:{start_time:.3f}"
+        return f"{provenance}:{stream_id}:{fragment.meeting_id}:{speaker}:{start_time:.3f}"
 
-    return f"{fragment.meeting_id}:seq:{int(fragment.seq or 0)}"
+    return f"{provenance}:{stream_id}:{fragment.meeting_id}:seq:{int(fragment.seq or 0)}"
 
 
 def _fragment_preference_score(
@@ -521,7 +525,7 @@ class TranscriptPersistenceRepository:
         *,
         recording_session_id: int,
         attempt_id: int,
-        stream_id: str,
+        stream_id: str | None = None,
     ) -> list[TranscriptFragment]:
         return (
             self._fragment_query(
@@ -548,7 +552,7 @@ class TranscriptPersistenceRepository:
         *,
         recording_session_id: int,
         attempt_id: int,
-        stream_id: str,
+        stream_id: str | None = None,
     ) -> str:
         fragments = self.assemble_attempt_visible_fragments(
             meeting_id,
@@ -580,7 +584,7 @@ class TranscriptPersistenceRepository:
         *,
         recording_session_id: int,
         attempt_id: int,
-        stream_id: str,
+        stream_id: str | None = None,
     ) -> list[TranscriptFragment]:
         fragments = self.list_attempt_fragments(
             meeting_id,
@@ -654,6 +658,9 @@ class TranscriptPersistenceRepository:
                     "end_time": float(fragment.end_time or 0.0),
                     "text": fragment.text or "",
                     "segment_id": (fragment.event_id or None),
+                    "stream_id": _normalize_storage_stream_id(fragment.stream_id),
+                    "recording_session_id": fragment.recording_session_id,
+                    "attempt_id": fragment.attempt_id,
                     "seq": int(fragment.seq or 0),
                     "version": int(fragment.version or 0),
                     "is_final": bool(fragment.is_final),
@@ -672,6 +679,10 @@ class TranscriptPersistenceRepository:
                     "start_time": float(fragment.start_time or 0.0),
                     "end_time": float(fragment.end_time or 0.0),
                     "text": fragment.text or "",
+                    "segment_id": (fragment.event_id or None),
+                    "stream_id": _normalize_storage_stream_id(fragment.stream_id),
+                    "recording_session_id": fragment.recording_session_id,
+                    "attempt_id": fragment.attempt_id,
                     "seq": int(fragment.seq or 0),
                     "version": int(fragment.version or 0),
                     "is_final": bool(fragment.is_final),
@@ -685,7 +696,7 @@ class TranscriptPersistenceRepository:
         *,
         recording_session_id: int,
         attempt_id: int,
-        stream_id: str,
+        stream_id: str | None = None,
     ) -> list[dict[str, object]]:
         segments: list[dict[str, object]] = []
         for fragment in self.assemble_attempt_visible_fragments(
@@ -700,6 +711,10 @@ class TranscriptPersistenceRepository:
                     "start_time": float(fragment.start_time or 0.0),
                     "end_time": float(fragment.end_time or 0.0),
                     "text": fragment.text or "",
+                    "segment_id": (fragment.event_id or None),
+                    "stream_id": _normalize_storage_stream_id(fragment.stream_id),
+                    "recording_session_id": fragment.recording_session_id,
+                    "attempt_id": fragment.attempt_id,
                     "seq": int(fragment.seq or 0),
                     "version": int(fragment.version or 0),
                     "is_final": bool(fragment.is_final),

@@ -33,6 +33,7 @@ import org.springframework.web.client.HttpStatusCodeException;
 import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.multipart.MultipartFile;
+import org.springframework.web.util.UriComponentsBuilder;
 
 import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
 import io.github.resilience4j.retry.annotation.Retry;
@@ -191,40 +192,96 @@ public class AIServiceClient {
     }
 
     public Map<String, Object> getTranscript(Long meetingId, String traceId) {
-        HttpHeaders headers = new HttpHeaders();
-        String resolvedTraceId = resolveTraceId(traceId);
-        String resolvedRequestId = resolveRequestId(resolvedTraceId);
-        headers.add(TRACE_HEADER, resolvedTraceId);
-        headers.add(REQUEST_HEADER, resolvedRequestId);
-        ResponseEntity<Map<String, Object>> response = executeAiServiceCall(
+        return getTranscriptInternal(restTemplate, "getTranscript", meetingId, traceId, null, null);
+    }
+
+    @Retry(name = "ai-service")
+    @CircuitBreaker(name = "ai-service")
+    @Retryable(
+        retryFor = { RestClientException.class, IllegalStateException.class },
+        maxAttempts = 3,
+        backoff = @Backoff(delay = 1000, multiplier = 2.0)
+    )
+    public Map<String, Object> getTranscript(
+            Long meetingId,
+            String traceId,
+            Long recordingSessionId,
+            Long attemptId) {
+        return getTranscriptInternal(
+                restTemplate,
                 "getTranscript",
-                aiUrl + "/api/meeting/" + meetingId + "/transcript",
-                HttpMethod.GET,
-                new HttpEntity<>(headers),
-                resolvedTraceId,
-                resolvedRequestId,
-                meetingId
+                meetingId,
+                traceId,
+                recordingSessionId,
+                attemptId
         );
-        return requireBody(response, "getTranscript", meetingId);
     }
 
     public Map<String, Object> getTranscriptForRecovery(Long meetingId, String traceId, long timeoutMs) {
+        return getTranscriptInternal(
+                createRecoveryRestTemplate(timeoutMs),
+                "getTranscriptRecovery",
+                meetingId,
+                traceId,
+                null,
+                null
+        );
+    }
+
+    public Map<String, Object> getTranscriptForRecovery(
+            Long meetingId,
+            String traceId,
+            long timeoutMs,
+            Long recordingSessionId,
+            Long attemptId) {
+        return getTranscriptInternal(
+                createRecoveryRestTemplate(timeoutMs),
+                "getTranscriptRecovery",
+                meetingId,
+                traceId,
+                recordingSessionId,
+                attemptId
+        );
+    }
+
+    private Map<String, Object> getTranscriptInternal(
+            RestTemplate client,
+            String operation,
+            Long meetingId,
+            String traceId,
+            Long recordingSessionId,
+            Long attemptId) {
+        if ((recordingSessionId == null) != (attemptId == null)) {
+            throw new IllegalArgumentException("recordingSessionId and attemptId must be provided together");
+        }
         HttpHeaders headers = new HttpHeaders();
         String resolvedTraceId = resolveTraceId(traceId);
         String resolvedRequestId = resolveRequestId(resolvedTraceId);
         headers.add(TRACE_HEADER, resolvedTraceId);
         headers.add(REQUEST_HEADER, resolvedRequestId);
+        String url = buildTranscriptUrl(meetingId, recordingSessionId, attemptId);
         ResponseEntity<Map<String, Object>> response = executeAiServiceCall(
-                createRecoveryRestTemplate(timeoutMs),
-                "getTranscriptRecovery",
-                aiUrl + "/api/meeting/" + meetingId + "/transcript",
+                client,
+                operation,
+                url,
                 HttpMethod.GET,
                 new HttpEntity<>(headers),
                 resolvedTraceId,
                 resolvedRequestId,
                 meetingId
         );
-        return requireBody(response, "getTranscriptRecovery", meetingId);
+        return requireBody(response, operation, meetingId);
+    }
+
+    private String buildTranscriptUrl(Long meetingId, Long recordingSessionId, Long attemptId) {
+        UriComponentsBuilder builder = UriComponentsBuilder
+                .fromUriString(aiUrl)
+                .pathSegment("api", "meeting", String.valueOf(meetingId), "transcript");
+        if (recordingSessionId != null) {
+            builder.queryParam("recording_session_id", recordingSessionId);
+            builder.queryParam("attempt_id", attemptId);
+        }
+        return builder.toUriString();
     }
 
     @Retry(name = "ai-service")

@@ -1188,6 +1188,146 @@ def test_get_transcript_returns_200_from_fragment_persistence(monkeypatch):
     assert [segment.end_time for segment in response.transcripts] == [5.2, 15.06, 27.4]
 
 
+def test_get_transcript_scopes_legacy_and_v2_attempt_rows(monkeypatch):
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    SessionLocal = sessionmaker(bind=engine)
+    db = SessionLocal()
+    repo = TranscriptPersistenceRepository(db)
+    repo.append_fragment(
+        TranscriptFragmentInput(
+            meeting_id=130,
+            seq=1,
+            text="legacy visible",
+            speaker="system",
+            start_time=1.0,
+            end_time=1.5,
+            event_id="legacy-130-1",
+            is_final=True,
+        )
+    )
+    repo.append_fragment(
+        TranscriptFragmentInput(
+            meeting_id=130,
+            stream_id="tab",
+            recording_session_id=9001,
+            attempt_id=1,
+            seq=1,
+            text="attempt one tab",
+            speaker="system",
+            start_time=2.0,
+            end_time=2.5,
+            event_id="v2-130-9001-1-tab",
+            is_final=True,
+        )
+    )
+    repo.append_fragment(
+        TranscriptFragmentInput(
+            meeting_id=130,
+            stream_id="mic",
+            recording_session_id=9001,
+            attempt_id=2,
+            seq=1,
+            text="attempt two mic",
+            speaker="system",
+            start_time=3.0,
+            end_time=3.5,
+            event_id="v2-130-9001-2-mic",
+            is_final=True,
+        )
+    )
+    db.commit()
+    monkeypatch.setattr(main_module, "pipeline", None)
+
+    async def run_legacy():
+        return await main_module.get_transcript(130, db=db)
+
+    async def run_attempt_one():
+        return await main_module.get_transcript(
+            130,
+            recording_session_id=9001,
+            attempt_id=1,
+            db=db,
+        )
+
+    try:
+        legacy_response = asyncio.run(run_legacy())
+        attempt_response = asyncio.run(run_attempt_one())
+    finally:
+        db.close()
+        engine.dispose()
+
+    assert [segment.text for segment in legacy_response.transcripts] == ["legacy visible"]
+    assert [segment.text for segment in attempt_response.transcripts] == ["attempt one tab"]
+    assert attempt_response.transcripts[0].stream_id == "tab"
+    assert attempt_response.transcripts[0].recording_session_id == 9001
+    assert attempt_response.transcripts[0].attempt_id == 1
+
+
+def test_get_transcript_rejects_partial_provenance(monkeypatch):
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    SessionLocal = sessionmaker(bind=engine)
+    db = SessionLocal()
+    monkeypatch.setattr(main_module, "pipeline", None)
+
+    async def run_flow():
+        return await main_module.get_transcript(
+            131,
+            recording_session_id=9001,
+            db=db,
+        )
+
+    try:
+        with pytest.raises(HTTPException) as exc_info:
+            asyncio.run(run_flow())
+    finally:
+        db.close()
+        engine.dispose()
+
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.detail["errorCode"] == "INVALID_PROVENANCE"
+
+
+def test_get_transcript_v2_empty_does_not_fallback_to_legacy(monkeypatch):
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    SessionLocal = sessionmaker(bind=engine)
+    db = SessionLocal()
+    repo = TranscriptPersistenceRepository(db)
+    repo.append_fragment(
+        TranscriptFragmentInput(
+            meeting_id=132,
+            seq=1,
+            text="legacy only",
+            speaker="system",
+            start_time=1.0,
+            end_time=1.5,
+            event_id="legacy-132-1",
+            is_final=True,
+        )
+    )
+    db.commit()
+    monkeypatch.setattr(main_module, "pipeline", None)
+
+    async def run_flow():
+        return await main_module.get_transcript(
+            132,
+            recording_session_id=9001,
+            attempt_id=1,
+            db=db,
+        )
+
+    try:
+        with pytest.raises(HTTPException) as exc_info:
+            asyncio.run(run_flow())
+    finally:
+        db.close()
+        engine.dispose()
+
+    assert exc_info.value.status_code == 404
+
+
 def test_get_transcript_empty_recording_returns_explicit_404(monkeypatch):
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)

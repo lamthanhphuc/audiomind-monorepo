@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -277,6 +278,94 @@ class AIServiceClientTest {
         MultiValueMap<String, Object> body = captor.getValue().getBody();
         assertNull(body.getFirst("recording_session_id"));
         assertNull(body.getFirst("attempt_id"));
+    }
+
+    @Test
+    void getTranscript_shouldSendV2ScopeAsSnakeCaseQueryParams() {
+        RestTemplate restTemplate = mock(RestTemplate.class);
+        AIServiceClient client = new AIServiceClient(restTemplate);
+        ReflectionTestUtils.setField(client, "aiUrl", "http://ai-service");
+
+        ResponseEntity<Map<String, Object>> response = new ResponseEntity<>(Map.of("transcripts", java.util.List.of()), HttpStatus.OK);
+        when(restTemplate.exchange(
+                any(String.class),
+                eq(HttpMethod.GET),
+                any(HttpEntity.class),
+                any(org.springframework.core.ParameterizedTypeReference.class)
+        )).thenReturn(response);
+
+        client.getTranscript(88L, "trace-v2", 1001L, 2L);
+
+        ArgumentCaptor<String> urlCaptor = ArgumentCaptor.forClass(String.class);
+        verify(restTemplate).exchange(
+                urlCaptor.capture(),
+                eq(HttpMethod.GET),
+                any(HttpEntity.class),
+                any(org.springframework.core.ParameterizedTypeReference.class)
+        );
+        String url = urlCaptor.getValue();
+        assertTrue(url.startsWith("http://ai-service/api/meeting/88/transcript?"));
+        assertTrue(url.contains("recording_session_id=1001"));
+        assertTrue(url.contains("attempt_id=2"));
+    }
+
+    @Test
+    void getTranscript_shouldOmitProvenanceForLegacyScope() {
+        RestTemplate restTemplate = mock(RestTemplate.class);
+        AIServiceClient client = new AIServiceClient(restTemplate);
+        ReflectionTestUtils.setField(client, "aiUrl", "http://ai-service");
+
+        ResponseEntity<Map<String, Object>> response = new ResponseEntity<>(Map.of("transcripts", java.util.List.of()), HttpStatus.OK);
+        when(restTemplate.exchange(
+                any(String.class),
+                eq(HttpMethod.GET),
+                any(HttpEntity.class),
+                any(org.springframework.core.ParameterizedTypeReference.class)
+        )).thenReturn(response);
+
+        client.getTranscript(89L, "trace-legacy");
+
+        ArgumentCaptor<String> urlCaptor = ArgumentCaptor.forClass(String.class);
+        verify(restTemplate).exchange(
+                urlCaptor.capture(),
+                eq(HttpMethod.GET),
+                any(HttpEntity.class),
+                any(org.springframework.core.ParameterizedTypeReference.class)
+        );
+        assertEquals("http://ai-service/api/meeting/89/transcript", urlCaptor.getValue());
+    }
+
+    @Test
+    void getTranscript_shouldRejectPartialProvenanceBeforeHttp() {
+        RestTemplate restTemplate = mock(RestTemplate.class);
+        AIServiceClient client = new AIServiceClient(restTemplate);
+        ReflectionTestUtils.setField(client, "aiUrl", "http://ai-service");
+
+        assertThrows(IllegalArgumentException.class, () ->
+                client.getTranscript(90L, "trace-partial", 1001L, null)
+        );
+
+        verify(restTemplate, never()).exchange(
+                any(String.class),
+                any(HttpMethod.class),
+                any(HttpEntity.class),
+                any(org.springframework.core.ParameterizedTypeReference.class)
+        );
+    }
+
+    @Test
+    void getTranscript_v2OverloadShouldKeepResilienceAnnotations() throws Exception {
+        Method v2GetTranscript = AIServiceClient.class.getMethod(
+                "getTranscript",
+                Long.class,
+                String.class,
+                Long.class,
+                Long.class
+        );
+
+        assertTrue(v2GetTranscript.isAnnotationPresent(Retry.class));
+        assertTrue(v2GetTranscript.isAnnotationPresent(CircuitBreaker.class));
+        assertTrue(v2GetTranscript.isAnnotationPresent(Retryable.class));
     }
 
     @Test

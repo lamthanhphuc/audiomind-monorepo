@@ -118,7 +118,7 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
 
     // Cache for finalized transcripts (key: meetingId, value: final transcript event)
     private final ConcurrentHashMap<Long, CachedTranscript> finalizedTranscriptCache = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<Long, RecoveryControl> transcriptRecoveryControls = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, RecoveryControl> transcriptRecoveryControls = new ConcurrentHashMap<>();
     private final ExecutorService transcriptRecoveryIoExecutor = Executors.newFixedThreadPool(2, runnable -> {
         Thread thread = new Thread(runnable, "realtime-transcript-recovery");
         thread.setDaemon(true);
@@ -1505,7 +1505,9 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                                 language,
                                 analysisSource,
                                 resolveSessionTraceId(session),
-                                normalizeDomainMode(getStringAttribute(session, DOMAIN_MODE_ATTR))
+                                normalizeDomainMode(getStringAttribute(session, DOMAIN_MODE_ATTR)),
+                                currentRecordingSessionId(session),
+                                currentAttemptId(session)
                         );
                         triggerCanonicalizeIfEnabled(meetingId, resolveSessionTraceId(session), "realtime");
                         syncRealtimeMeetingTerminalStatus(meetingId, authorization, RealtimeStatusCodes.COMPLETED);
@@ -1587,7 +1589,9 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                             language,
                             analysisSource,
                             resolveSessionTraceId(session),
-                            normalizeDomainMode(getStringAttribute(session, DOMAIN_MODE_ATTR))
+                            normalizeDomainMode(getStringAttribute(session, DOMAIN_MODE_ATTR)),
+                            currentRecordingSessionId(session),
+                            currentAttemptId(session)
                     );
                     triggerCanonicalizeIfEnabled(meetingId, resolveSessionTraceId(session), "realtime");
                     syncRealtimeMeetingTerminalStatus(meetingId, authorization, RealtimeStatusCodes.COMPLETED);
@@ -1635,11 +1639,46 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
             String traceId,
             String domainMode
     ) {
+        triggerRealtimeAnalysisAsync(
+                meetingId,
+                userId,
+                authorization,
+                language,
+                source,
+                traceId,
+                domainMode,
+                null,
+                null
+        );
+    }
+
+    private void triggerRealtimeAnalysisAsync(
+            Long meetingId,
+            Long userId,
+            String authorization,
+            String language,
+            String source,
+            String traceId,
+            String domainMode,
+            Long recordingSessionId,
+            Long attemptId
+    ) {
+        if (hasPartialProvenance(recordingSessionId, attemptId)) {
+            log.warn(
+                    "event=REALTIME_ANALYSIS_SKIPPED_INVALID_PROVENANCE meetingId={} source={} recordingSessionId={} attemptId={}",
+                    meetingId,
+                    source,
+                    recordingSessionId,
+                    attemptId
+            );
+            return;
+        }
         log.info(
-                "REALTIME_ANALYSIS_TRIGGER_ATTEMPT meetingId={} source={} traceId={}",
+                "REALTIME_ANALYSIS_TRIGGER_ATTEMPT meetingId={} source={} traceId={} scope={}",
                 meetingId,
                 source,
-                traceId
+                traceId,
+                hasCompleteProvenance(recordingSessionId, attemptId) ? "v2" : "legacy"
         );
         try {
             CompletableFuture.runAsync(() -> runRealtimeAnalysis(
@@ -1649,7 +1688,9 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                     language,
                     source,
                     traceId,
-                    domainMode
+                    domainMode,
+                    recordingSessionId,
+                    attemptId
             ));
             log.info("REALTIME_ANALYSIS_ENQUEUED meetingId={} source={} traceId={}", meetingId, source, traceId);
         } catch (Exception ex) {
@@ -1690,11 +1731,40 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
             String language,
             String source,
             String traceId,
-            String domainMode
+            String domainMode,
+            Long recordingSessionId,
+            Long attemptId
     ) {
         Map<String, Object> transcriptResponse;
         try {
-            transcriptResponse = aiServiceClient.getTranscript(meetingId, traceId);
+            if (hasPartialProvenance(recordingSessionId, attemptId)) {
+                log.warn(
+                        "event=REALTIME_ANALYSIS_SKIPPED_INVALID_PROVENANCE meetingId={} source={} recordingSessionId={} attemptId={}",
+                        meetingId,
+                        source,
+                        recordingSessionId,
+                        attemptId
+                );
+                return;
+            }
+            if (hasCompleteProvenance(recordingSessionId, attemptId)) {
+                log.info(
+                        "event=REALTIME_TRANSCRIPT_FETCH_V2 meetingId={} recordingSessionId={} attemptId={} source={}",
+                        meetingId,
+                        recordingSessionId,
+                        attemptId,
+                        source
+                );
+                transcriptResponse = aiServiceClient.getTranscript(
+                        meetingId,
+                        traceId,
+                        recordingSessionId,
+                        attemptId
+                );
+            } else {
+                log.info("event=REALTIME_TRANSCRIPT_FETCH_LEGACY meetingId={} source={}", meetingId, source);
+                transcriptResponse = aiServiceClient.getTranscript(meetingId, traceId);
+            }
         } catch (Exception ex) {
             log.warn(
                     "REALTIME_ANALYSIS_FAILED meetingId={} source={} reason=transcript_fetch_error errorCode={}",
@@ -1711,7 +1781,7 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
         String transcriptText = buildTranscriptText(transcriptRows);
         if (transcriptText.isBlank()) {
             log.info(
-                    "REALTIME_ANALYSIS_SKIPPED reason=empty_transcript source={} meetingId={}",
+                    "event=REALTIME_ANALYSIS_SKIPPED_EMPTY_TRANSCRIPT source={} meetingId={}",
                     source,
                     meetingId
             );
@@ -2382,14 +2452,39 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
             return;
         }
 
-        RecoveryControl control = new RecoveryControl();
-        RecoveryControl existing = transcriptRecoveryControls.putIfAbsent(meetingId, control);
-        if (existing != null) {
-            log.info(
-                    "event=REALTIME_FINALIZE_RECOVER_ALREADY_PENDING meetingId={} source={} reason={}",
+        Long recordingSessionId = currentRecordingSessionId(session);
+        Long attemptId = currentAttemptId(session);
+        if (hasPartialProvenance(recordingSessionId, attemptId)) {
+            log.warn(
+                    "event=REALTIME_ANALYSIS_SKIPPED_INVALID_PROVENANCE meetingId={} source={} reason={} recordingSessionId={} attemptId={}",
                     meetingId,
                     analysisSource,
-                    reason
+                    reason,
+                    recordingSessionId,
+                    attemptId
+            );
+            completeTerminalRealtimeOutcome(
+                    session,
+                    meetingId,
+                    sessionStillOpen,
+                    analysisSource,
+                    authorization,
+                    fallbackStatusCode,
+                    fallbackMessage
+            );
+            return;
+        }
+
+        RecoveryControl control = new RecoveryControl();
+        String recoveryKey = transcriptScopeKey(meetingId, recordingSessionId, attemptId);
+        RecoveryControl existing = transcriptRecoveryControls.putIfAbsent(recoveryKey, control);
+        if (existing != null) {
+            log.info(
+                    "event=REALTIME_FINALIZE_RECOVER_ALREADY_PENDING meetingId={} source={} reason={} scope={}",
+                    meetingId,
+                    analysisSource,
+                    reason,
+                    hasCompleteProvenance(recordingSessionId, attemptId) ? "v2" : "legacy"
             );
             return;
         }
@@ -2399,6 +2494,7 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
         control.timeoutFuture = transcriptRecoveryTimeoutScheduler.schedule(
                 () -> completeTimedOutTranscriptRecovery(
                         control,
+                        recoveryKey,
                         session,
                         meetingId,
                         sessionStillOpen,
@@ -2421,7 +2517,7 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
             String transcriptText = "";
             boolean fetchSucceeded = false;
             try {
-                rows = fetchPersistedTranscriptRows(meetingId, timeoutMs);
+                rows = fetchPersistedTranscriptRows(meetingId, timeoutMs, recordingSessionId, attemptId);
                 transcriptText = buildTranscriptText(rows);
                 fetchSucceeded = true;
             } catch (Exception ex) {
@@ -2448,7 +2544,7 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
             if (timeoutFuture != null) {
                 timeoutFuture.cancel(false);
             }
-            transcriptRecoveryControls.remove(meetingId, control);
+            transcriptRecoveryControls.remove(recoveryKey, control);
             session.getAttributes().remove(TRANSCRIPT_RECOVERY_PENDING_ATTR);
 
             log.info(
@@ -2469,7 +2565,9 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                         authorization,
                         reason,
                         rows.size(),
-                        transcriptText.length()
+                        transcriptText.length(),
+                        recordingSessionId,
+                        attemptId
                 );
                 return;
             }
@@ -2487,12 +2585,34 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
         control.recoveryFuture = recoveryFuture;
     }
 
-    private List<Map<String, Object>> fetchPersistedTranscriptRows(Long meetingId, long timeoutMs) {
-        Map<String, Object> transcriptResponse = aiServiceClient.getTranscriptForRecovery(
-                meetingId,
-                "realtime-finalize-recover-" + meetingId,
-                timeoutMs
-        );
+    private List<Map<String, Object>> fetchPersistedTranscriptRows(
+            Long meetingId,
+            long timeoutMs,
+            Long recordingSessionId,
+            Long attemptId) {
+        Map<String, Object> transcriptResponse;
+        if (hasCompleteProvenance(recordingSessionId, attemptId)) {
+            log.info(
+                    "event=REALTIME_TRANSCRIPT_FETCH_V2 meetingId={} recordingSessionId={} attemptId={}",
+                    meetingId,
+                    recordingSessionId,
+                    attemptId
+            );
+            transcriptResponse = aiServiceClient.getTranscriptForRecovery(
+                    meetingId,
+                    "realtime-finalize-recover-" + meetingId,
+                    timeoutMs,
+                    recordingSessionId,
+                    attemptId
+            );
+        } else {
+            log.info("event=REALTIME_TRANSCRIPT_FETCH_LEGACY meetingId={}", meetingId);
+            transcriptResponse = aiServiceClient.getTranscriptForRecovery(
+                    meetingId,
+                    "realtime-finalize-recover-" + meetingId,
+                    timeoutMs
+            );
+        }
         return normalizeTranscriptRows(
                 transcriptResponse == null ? null : transcriptResponse.get("transcripts")
         );
@@ -2500,6 +2620,7 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
 
     private void completeTimedOutTranscriptRecovery(
             RecoveryControl control,
+            String recoveryKey,
             WebSocketSession session,
             Long meetingId,
             boolean sessionStillOpen,
@@ -2517,7 +2638,7 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
         if (recoveryFuture != null) {
             recoveryFuture.cancel(true);
         }
-        transcriptRecoveryControls.remove(meetingId, control);
+        transcriptRecoveryControls.remove(recoveryKey, control);
         session.getAttributes().remove(TRANSCRIPT_RECOVERY_PENDING_ATTR);
         log.warn(
                 "event=REALTIME_FINALIZE_RECOVER_TIMEOUT meetingId={} source={} reason={} timeoutMs={}",
@@ -2544,7 +2665,9 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
             String authorization,
             String reason,
             int transcriptRows,
-            int transcriptLength
+            int transcriptLength,
+            Long recordingSessionId,
+            Long attemptId
     ) {
         log.info(
                 "event=REALTIME_FINALIZE_RECOVERED_TRANSCRIPT meetingId={} source={} reason={} transcriptRows={} transcriptLength={}",
@@ -2561,7 +2684,9 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                 getStringAttribute(session, LANGUAGE_ATTR),
                 analysisSource,
                 resolveSessionTraceId(session),
-                normalizeDomainMode(getStringAttribute(session, DOMAIN_MODE_ATTR))
+                normalizeDomainMode(getStringAttribute(session, DOMAIN_MODE_ATTR)),
+                recordingSessionId,
+                attemptId
         );
         syncRealtimeMeetingTerminalStatus(meetingId, authorization, RealtimeStatusCodes.COMPLETED);
     }
@@ -2741,6 +2866,29 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
     private String getStringAttribute(WebSocketSession session, String key) {
         Object value = session.getAttributes().get(key);
         return value == null ? null : String.valueOf(value);
+    }
+
+    private boolean hasPartialProvenance(Long recordingSessionId, Long attemptId) {
+        return (recordingSessionId == null) != (attemptId == null);
+    }
+
+    private boolean hasCompleteProvenance(Long recordingSessionId, Long attemptId) {
+        return recordingSessionId != null && attemptId != null;
+    }
+
+    private Long currentRecordingSessionId(WebSocketSession session) {
+        return getLongAttribute(session, RECORDING_SESSION_ID_ATTR);
+    }
+
+    private Long currentAttemptId(WebSocketSession session) {
+        return getLongAttribute(session, ATTEMPT_ID_ATTR);
+    }
+
+    private String transcriptScopeKey(Long meetingId, Long recordingSessionId, Long attemptId) {
+        if (hasCompleteProvenance(recordingSessionId, attemptId)) {
+            return meetingId + ":v2:" + recordingSessionId + ":" + attemptId;
+        }
+        return meetingId + ":legacy";
     }
 
     private Boolean getBooleanAttribute(WebSocketSession session, String key) {

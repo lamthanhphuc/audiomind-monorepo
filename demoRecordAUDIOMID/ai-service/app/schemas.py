@@ -10,6 +10,12 @@ class TranscriptSegment(BaseModel):
     end_time: float
     text: str
     segment_id: Optional[str] = None
+    stream_id: Optional[str] = None
+    recording_session_id: Optional[int] = None
+    attempt_id: Optional[int] = None
+    seq: Optional[int] = None
+    version: Optional[int] = None
+    is_final: Optional[bool] = None
 
 
 class ActionItem(BaseModel):

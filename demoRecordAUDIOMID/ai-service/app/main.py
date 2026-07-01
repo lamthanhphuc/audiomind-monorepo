@@ -2576,12 +2576,39 @@ def _fallback_grouped_action_plan(action_items: list[Any]) -> dict[str, Any]:
 
 
 @app.get("/api/meeting/{meeting_id}/transcript", response_model=TranscriptResponse)
-async def get_transcript(meeting_id: int, db: Session = Depends(get_db)):
+async def get_transcript(
+    meeting_id: int,
+    recording_session_id: int | None = None,
+    attempt_id: int | None = None,
+    db: Session = Depends(get_db),
+):
     """
     Get transcript for a meeting
 
     Returns all transcript segments with speaker labels and timestamps
     """
+
+    try:
+        transcript_scope = validate_transcript_provenance(
+            recording_session_id,
+            attempt_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "errorCode": "INVALID_PROVENANCE",
+                "message": str(exc),
+            },
+        )
+
+    def _optional_int(value: Any) -> int | None:
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
 
     def _build_segment_id(
         *,
@@ -2614,6 +2641,16 @@ async def get_transcript(meeting_id: int, db: Session = Depends(get_db)):
                 start_time_value=start_time,
                 explicit_segment_id=row.get("segment_id"),
             ),
+            stream_id=row.get("stream_id") or row.get("streamId"),
+            recording_session_id=_optional_int(
+                row.get("recording_session_id") or row.get("recordingSessionId")
+            ),
+            attempt_id=_optional_int(row.get("attempt_id") or row.get("attemptId")),
+            seq=_optional_int(row.get("seq")),
+            version=_optional_int(row.get("version")),
+            is_final=bool(row.get("is_final") or row.get("isFinal"))
+            if row.get("is_final") is not None or row.get("isFinal") is not None
+            else None,
         )
 
     def _segment_from_model(row: Transcript) -> TranscriptSegment:
@@ -2696,23 +2733,38 @@ async def get_transcript(meeting_id: int, db: Session = Depends(get_db)):
         return None
 
     try:
-        logger.info(f"Fetching transcript for meeting {meeting_id}")
+        logger.info(
+            "STT_TRANSCRIPT_GET_STARTED meeting_id={} scope={}",
+            meeting_id,
+            "v2" if transcript_scope.is_v2 else "legacy",
+        )
 
         fragment_segments: list[dict[str, Any]] = []
         try:
             fragment_repository = TranscriptPersistenceRepository(db)
-            fragment_segments = (
-                fragment_repository.assemble_visible_transcript_segments(meeting_id)
-            )
+            if transcript_scope.is_v2:
+                fragment_segments = (
+                    fragment_repository.assemble_attempt_visible_transcript_segments(
+                        meeting_id,
+                        recording_session_id=transcript_scope.recording_session_id,
+                        attempt_id=transcript_scope.attempt_id,
+                    )
+                )
+            else:
+                fragment_segments = (
+                    fragment_repository.assemble_visible_transcript_segments(meeting_id)
+                )
         except AttributeError:
             fragment_segments = []
 
-        transcript_rows = (
-            db.query(Transcript)
-            .filter(Transcript.meeting_id == meeting_id)
-            .order_by(Transcript.start_time.asc(), Transcript.id.asc())
-            .all()
-        )
+        transcript_rows: list[Transcript] = []
+        if not transcript_scope.is_v2:
+            transcript_rows = (
+                db.query(Transcript)
+                .filter(Transcript.meeting_id == meeting_id)
+                .order_by(Transcript.start_time.asc(), Transcript.id.asc())
+                .all()
+            )
 
         if fragment_segments:
             raw_segments = [
@@ -2720,7 +2772,11 @@ async def get_transcript(meeting_id: int, db: Session = Depends(get_db)):
                 for segment in fragment_segments
                 if str(segment.get("text") or "").strip()
             ]
-            raw_source = "transcript_fragments_visible"
+            raw_source = (
+                "transcript_fragments_attempt_visible"
+                if transcript_scope.is_v2
+                else "transcript_fragments_visible"
+            )
         else:
             raw_segments = [
                 _segment_from_model(row)
@@ -2729,7 +2785,9 @@ async def get_transcript(meeting_id: int, db: Session = Depends(get_db)):
             ]
             raw_source = "transcripts"
 
-        canonical_payload = _resolve_canonical_sidecar(transcript_rows, raw_segments)
+        canonical_payload = None
+        if not transcript_scope.is_v2:
+            canonical_payload = _resolve_canonical_sidecar(transcript_rows, raw_segments)
         if canonical_payload is not None:
             (
                 canonical_segments,
@@ -2767,10 +2825,11 @@ async def get_transcript(meeting_id: int, db: Session = Depends(get_db)):
             )
 
         logger.info(
-            "STT_TRANSCRIPT_GET meeting_id={} source={} rows={}",
+            "STT_TRANSCRIPT_GET meeting_id={} source={} rows={} scope={}",
             meeting_id,
             "none",
             0,
+            "v2" if transcript_scope.is_v2 else "legacy",
         )
         raise HTTPException(
             status_code=404,
