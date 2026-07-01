@@ -824,8 +824,8 @@ class MeetingWebSocketHandlerTest {
         handler.handleBinaryMessage(session, new BinaryMessage(ByteBuffer.wrap(new byte[] {1, 2, 3, 4})));
 
         assertNull(attributes.get("lastAudioSeq"));
-        assertNull(attributes.get("recordingSessionId"));
-        assertNull(attributes.get("attemptId"));
+        assertEquals(1L, attributes.get("recordingSessionId"));
+        assertEquals(1L, attributes.get("attemptId"));
         verifyNoInteractions(aiServiceClient);
         ArgumentCaptor<Map<String, Object>> eventCaptor = ArgumentCaptor.forClass(Map.class);
         verify(realtimeEventSubscriber).dispatchMeetingEvent(eq(348L), eventCaptor.capture());
@@ -854,11 +854,96 @@ class MeetingWebSocketHandlerTest {
         handler.handleBinaryMessage(session, new BinaryMessage(ByteBuffer.wrap(new byte[] {1, 2, 3, 4})));
 
         assertNull(attributes.get("lastAudioSeq"));
+        assertEquals(1L, attributes.get("recordingSessionId"));
+        assertEquals(1L, attributes.get("attemptId"));
+        verifyNoInteractions(aiServiceClient);
+        ArgumentCaptor<Map<String, Object>> eventCaptor = ArgumentCaptor.forClass(Map.class);
+        verify(realtimeEventSubscriber).dispatchMeetingEvent(eq(349L), eventCaptor.capture());
+        assertEquals("REALTIME_INVALID_PROVENANCE", eventCaptor.getValue().get("errorCode"));
+    }
+
+    @Test
+    void handleTextMessage_shouldPreserveActiveCompleteProvenanceOnMalformedPartialMetadata() throws Exception {
+        attributes.put("meetingId", 351L);
+        attributes.put("authenticated", true);
+        attributes.put("language", "vi");
+        attributes.put("authorization", "Bearer test-token");
+        attributes.put("recordingSessionId", 6L);
+        attributes.put("attemptId", 3L);
+        attributes.put("MEETING_STATUS_CHECKED_ATTR", Boolean.TRUE);
+
+        when(objectMapper.readValue(any(String.class), eq(Map.class))).thenReturn(Map.of(
+                "type", "audio.chunk",
+                "seq", 18L,
+                "size", 4L,
+                "attempt_id", 3L
+        ));
+
+        handler.handleTextMessage(session, new TextMessage("{}"));
+        handler.handleBinaryMessage(session, new BinaryMessage(ByteBuffer.wrap(new byte[] {1, 2, 3, 4})));
+
+        assertNull(attributes.get("lastAudioSeq"));
+        assertEquals(6L, attributes.get("recordingSessionId"));
+        assertEquals(3L, attributes.get("attemptId"));
+        verifyNoInteractions(aiServiceClient);
+        ArgumentCaptor<Map<String, Object>> eventCaptor = ArgumentCaptor.forClass(Map.class);
+        verify(realtimeEventSubscriber).dispatchMeetingEvent(eq(351L), eventCaptor.capture());
+        assertEquals("REALTIME_INVALID_PROVENANCE", eventCaptor.getValue().get("errorCode"));
+        assertFalse(realtimeAudioWorkerRegistry.contains("ws-session-1"));
+    }
+
+    @Test
+    void handleTextMessage_shouldRejectPartialMetadataWithoutCreatingProvenancePair() throws Exception {
+        attributes.put("meetingId", 352L);
+        attributes.put("authenticated", true);
+        attributes.put("language", "vi");
+        attributes.put("authorization", "Bearer test-token");
+        attributes.put("MEETING_STATUS_CHECKED_ATTR", Boolean.TRUE);
+
+        when(objectMapper.readValue(any(String.class), eq(Map.class))).thenReturn(Map.of(
+                "type", "audio.chunk",
+                "seq", 19L,
+                "size", 4L,
+                "recording_session_id", 6L
+        ));
+
+        handler.handleTextMessage(session, new TextMessage("{}"));
+        handler.handleBinaryMessage(session, new BinaryMessage(ByteBuffer.wrap(new byte[] {1, 2, 3, 4})));
+
+        assertNull(attributes.get("lastAudioSeq"));
         assertNull(attributes.get("recordingSessionId"));
         assertNull(attributes.get("attemptId"));
         verifyNoInteractions(aiServiceClient);
         ArgumentCaptor<Map<String, Object>> eventCaptor = ArgumentCaptor.forClass(Map.class);
-        verify(realtimeEventSubscriber).dispatchMeetingEvent(eq(349L), eventCaptor.capture());
+        verify(realtimeEventSubscriber).dispatchMeetingEvent(eq(352L), eventCaptor.capture());
+        assertEquals("REALTIME_INVALID_PROVENANCE", eventCaptor.getValue().get("errorCode"));
+    }
+
+    @Test
+    void handleTextMessage_shouldRepairCorruptedPartialSessionProvenanceOnMalformedMetadata() throws Exception {
+        attributes.put("meetingId", 353L);
+        attributes.put("authenticated", true);
+        attributes.put("language", "vi");
+        attributes.put("authorization", "Bearer test-token");
+        attributes.put("recordingSessionId", 6L);
+        attributes.put("MEETING_STATUS_CHECKED_ATTR", Boolean.TRUE);
+
+        when(objectMapper.readValue(any(String.class), eq(Map.class))).thenReturn(Map.of(
+                "type", "audio.chunk",
+                "seq", 20L,
+                "size", 4L,
+                "attempt_id", 3L
+        ));
+
+        handler.handleTextMessage(session, new TextMessage("{}"));
+        handler.handleBinaryMessage(session, new BinaryMessage(ByteBuffer.wrap(new byte[] {1, 2, 3, 4})));
+
+        assertNull(attributes.get("lastAudioSeq"));
+        assertNull(attributes.get("recordingSessionId"));
+        assertNull(attributes.get("attemptId"));
+        verifyNoInteractions(aiServiceClient);
+        ArgumentCaptor<Map<String, Object>> eventCaptor = ArgumentCaptor.forClass(Map.class);
+        verify(realtimeEventSubscriber).dispatchMeetingEvent(eq(353L), eventCaptor.capture());
         assertEquals("REALTIME_INVALID_PROVENANCE", eventCaptor.getValue().get("errorCode"));
     }
 
@@ -2117,8 +2202,8 @@ class MeetingWebSocketHandlerTest {
         handler.handleBinaryMessage(session, new BinaryMessage(ByteBuffer.wrap(new byte[] {1, 2, 3, 4})));
 
         assertNull(attributes.get("lastAudioSeq"));
-        assertNull(attributes.get("recordingSessionId"));
-        assertNull(attributes.get("attemptId"));
+        assertEquals(1L, attributes.get("recordingSessionId"));
+        assertEquals(1L, attributes.get("attemptId"));
         verifyNoInteractions(aiServiceClient);
         ArgumentCaptor<Map<String, Object>> eventCaptor = ArgumentCaptor.forClass(Map.class);
         verify(realtimeEventSubscriber).dispatchMeetingEvent(eq(906L), eventCaptor.capture());

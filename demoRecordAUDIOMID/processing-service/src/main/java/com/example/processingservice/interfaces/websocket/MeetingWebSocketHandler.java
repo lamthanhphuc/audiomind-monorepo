@@ -1263,8 +1263,12 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
         session.getAttributes().remove(LAST_AUDIO_MIME_TYPE_ATTR);
         session.getAttributes().remove(LAST_AUDIO_ENCODING_ATTR);
         session.getAttributes().remove(RealtimeDualStreamSessionKeys.LAST_AUDIO_STREAM_ID_ATTR);
-        session.getAttributes().remove(RECORDING_SESSION_ID_ATTR);
-        session.getAttributes().remove(ATTEMPT_ID_ATTR);
+        Long activeRecordingSessionId = getLongAttribute(session, RECORDING_SESSION_ID_ATTR);
+        Long activeAttemptId = getLongAttribute(session, ATTEMPT_ID_ATTR);
+        if ((activeRecordingSessionId == null) != (activeAttemptId == null)) {
+            session.getAttributes().remove(RECORDING_SESSION_ID_ATTR);
+            session.getAttributes().remove(ATTEMPT_ID_ATTR);
+        }
         log.warn(
                 "event=REALTIME_INVALID_PROVENANCE meetingId={} seq={} recordingSessionId={} attemptId={}",
                 meetingId,
