@@ -473,6 +473,51 @@ def test_stream_stt_chunk_finalization_is_idempotent(monkeypatch):
     assert 93 not in main_module._stt_stream_sessions
 
 
+def test_stream_stt_chunk_v2_final_cache_is_attempt_scoped(monkeypatch):
+    _reset_state(monkeypatch)
+
+    async def run_attempt_one_final():
+        return await main_module.stream_stt_chunk(
+            meeting_id=706,
+            audio_chunk=_make_upload_file(b"final-one"),
+            seq=3,
+            language="vi",
+            is_final=True,
+            stream_id="tab",
+            recording_session_id=3001,
+            attempt_id=1,
+        )
+
+    async def run_attempt_two_chunk():
+        return await main_module.stream_stt_chunk(
+            meeting_id=706,
+            audio_chunk=_make_upload_file(b"attempt-two"),
+            seq=1,
+            language="vi",
+            is_final=False,
+            stream_id="tab",
+            recording_session_id=3001,
+            attempt_id=2,
+        )
+
+    first = asyncio.run(run_attempt_one_final())
+    second = asyncio.run(run_attempt_two_chunk())
+
+    assert first.is_final is True
+    assert second.is_final is False
+    assert len(FakeActor.instances) == 2
+    assert FakeActor.instances[0].attempt_id == 1
+    assert FakeActor.instances[1].attempt_id == 2
+    assert (
+        "706:tab|recording_session_id=3001|attempt_id=1"
+        in main_module._stt_finalized_responses
+    )
+    assert (
+        "706:tab|recording_session_id=3001|attempt_id=2"
+        in main_module._stt_stream_sessions
+    )
+
+
 def test_stream_stt_chunk_final_signal_uses_finalize_path_for_synthetic_empty_chunk(
     monkeypatch,
 ):
