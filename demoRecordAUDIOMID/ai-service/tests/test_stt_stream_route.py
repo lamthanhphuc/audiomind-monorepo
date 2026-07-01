@@ -1459,3 +1459,36 @@ def test_stream_stt_chunk_same_seq_different_attempts_reaches_distinct_actor_sco
         "704:mic|recording_session_id=2001|attempt_id=2",
     }.issubset(set(main_module._stt_stream_sessions))
 
+
+def test_stream_stt_chunk_attempt_cooldown_does_not_block_next_attempt(
+    monkeypatch,
+):
+    _reset_state(monkeypatch)
+
+    attempt_one_key = "705:mic|recording_session_id=2002|attempt_id=1"
+    attempt_one_guard = main_module._get_stream_retry_guard(attempt_one_key)
+    attempt_one_guard.cooldown_until = 9999999999.0
+
+    async def run_flow():
+        return await main_module.stream_stt_chunk(
+            meeting_id=705,
+            audio_chunk=_make_upload_file(b"attempt-two"),
+            seq=1,
+            language="vi",
+            is_final=False,
+            stream_id="mic",
+            recording_session_id=2002,
+            attempt_id=2,
+        )
+
+    response = asyncio.run(run_flow())
+
+    assert response.transcript == "Xin chao audiomind"
+    assert len(FakeActor.instances) == 1
+    assert FakeActor.instances[0].attempt_id == 2
+    assert attempt_one_key in main_module._stt_stream_retry_guards
+    assert (
+        "705:mic|recording_session_id=2002|attempt_id=2"
+        in main_module._stt_stream_sessions
+    )
+
