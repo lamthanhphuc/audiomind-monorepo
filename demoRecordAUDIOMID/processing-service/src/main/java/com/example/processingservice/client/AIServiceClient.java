@@ -63,6 +63,13 @@ public class AIServiceClient {
         return processAudio(meetingId, audioPath, null, null, null, "vi", null, null, null, null);
     }
 
+    @Retry(name = "ai-service")
+    @CircuitBreaker(name = "ai-service")
+    @Retryable(
+        retryFor = { RestClientException.class, IllegalStateException.class },
+        maxAttempts = 3,
+        backoff = @Backoff(delay = 1000, multiplier = 2.0)
+    )
     public Map<String, Object> streamAudioChunk(
             Long meetingId,
             byte[] audioChunk,
@@ -837,6 +844,13 @@ public class AIServiceClient {
         );
     }
 
+    @Retry(name = "ai-service")
+    @CircuitBreaker(name = "ai-service")
+    @Retryable(
+        retryFor = { RestClientException.class, IllegalStateException.class },
+        maxAttempts = 3,
+        backoff = @Backoff(delay = 1000, multiplier = 2.0)
+    )
     public Map<String, Object> streamAudioChunk(
             Long meetingId,
             byte[] audioChunk,
@@ -895,6 +909,13 @@ public class AIServiceClient {
         );
     }
 
+    @Retry(name = "ai-service")
+    @CircuitBreaker(name = "ai-service")
+    @Retryable(
+        retryFor = { RestClientException.class, IllegalStateException.class },
+        maxAttempts = 3,
+        backoff = @Backoff(delay = 1000, multiplier = 2.0)
+    )
     public Map<String, Object> streamAudioChunk(
             Long meetingId,
             String streamId,
@@ -910,6 +931,13 @@ public class AIServiceClient {
         if ((recordingSessionId == null) != (attemptId == null)) {
             throw new IllegalArgumentException("recordingSessionId and attemptId must be provided together");
         }
+        String normalizedStreamId = null;
+        if (StringUtils.hasText(streamId)) {
+            normalizedStreamId = streamId.trim().toLowerCase();
+            if ("default".equals(normalizedStreamId)) {
+                throw new IllegalArgumentException("stream_id=default is display-only and must not be sent");
+            }
+        }
 
         HttpHeaders headers = new HttpHeaders();
         String resolvedTraceId = resolveTraceId(traceId);
@@ -923,8 +951,8 @@ public class AIServiceClient {
 
         MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
         body.add("meeting_id", String.valueOf(meetingId));
-        if (StringUtils.hasText(streamId)) {
-            body.add("stream_id", streamId.trim().toLowerCase());
+        if (StringUtils.hasText(normalizedStreamId)) {
+            body.add("stream_id", normalizedStreamId);
         }
         body.add("audio_chunk", toNamedResource(audioChunk, meetingId, seq));
         body.add("seq", String.valueOf(seq == null ? 0L : seq));

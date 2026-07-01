@@ -10,6 +10,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 
@@ -28,6 +29,9 @@ import org.springframework.web.client.RestTemplate;
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
+import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
+import io.github.resilience4j.retry.annotation.Retry;
+import org.springframework.retry.annotation.Retryable;
 
 class AIServiceClientTest {
 
@@ -301,6 +305,79 @@ class AIServiceClientTest {
                 any(HttpEntity.class),
                 any(org.springframework.core.ParameterizedTypeReference.class)
         );
+    }
+
+    @Test
+    void streamAudioChunk_shouldRejectDisplayOnlyDefaultStreamIdBeforeHttpRequest() {
+        RestTemplate restTemplate = mock(RestTemplate.class);
+        AIServiceClient client = new AIServiceClient(restTemplate);
+        ReflectionTestUtils.setField(client, "aiUrl", "http://ai-service");
+
+        assertThrows(IllegalArgumentException.class, () -> client.streamAudioChunk(
+                15L,
+                "default",
+                new byte[] {0x06},
+                10L,
+                "vi",
+                "multiple",
+                false,
+                null,
+                null,
+                1001L,
+                1L
+        ));
+
+        verify(restTemplate, org.mockito.Mockito.never()).exchange(
+                any(String.class),
+                any(HttpMethod.class),
+                any(HttpEntity.class),
+                any(org.springframework.core.ParameterizedTypeReference.class)
+        );
+    }
+
+    @Test
+    void streamAudioChunk_v2PublicOverloadsShouldKeepResilienceAnnotations() throws Exception {
+        Method v2NoStream = AIServiceClient.class.getMethod(
+                "streamAudioChunk",
+                Long.class,
+                byte[].class,
+                Long.class,
+                String.class,
+                String.class,
+                boolean.class,
+                String.class,
+                String.class,
+                Long.class,
+                Long.class
+        );
+        Method v2WithStream = AIServiceClient.class.getMethod(
+                "streamAudioChunk",
+                Long.class,
+                String.class,
+                byte[].class,
+                Long.class,
+                String.class,
+                String.class,
+                boolean.class,
+                String.class,
+                String.class,
+                Long.class,
+                Long.class
+        );
+
+        assertRealtimeResilienceAnnotations(v2NoStream);
+        assertRealtimeResilienceAnnotations(v2WithStream);
+    }
+
+    private static void assertRealtimeResilienceAnnotations(Method method) {
+        Retry retry = method.getAnnotation(Retry.class);
+        CircuitBreaker circuitBreaker = method.getAnnotation(CircuitBreaker.class);
+        Retryable retryable = method.getAnnotation(Retryable.class);
+
+        assertEquals("ai-service", retry.name());
+        assertEquals("ai-service", circuitBreaker.name());
+        assertEquals(3, retryable.maxAttempts());
+        assertEquals(1000L, retryable.backoff().delay());
     }
 
     @Test

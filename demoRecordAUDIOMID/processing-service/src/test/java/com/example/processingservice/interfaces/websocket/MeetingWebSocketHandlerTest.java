@@ -796,6 +796,8 @@ class MeetingWebSocketHandlerTest {
         handler.handleBinaryMessage(session, new BinaryMessage(ByteBuffer.wrap(new byte[] {1, 2, 3, 4})));
 
         assertNull(attributes.get("lastAudioSeq"));
+        assertEquals(1L, attributes.get("recordingSessionId"));
+        assertEquals(1L, attributes.get("attemptId"));
         verifyNoInteractions(aiServiceClient);
         verifyNoInteractions(realtimeEventSubscriber);
     }
@@ -822,8 +824,12 @@ class MeetingWebSocketHandlerTest {
         handler.handleBinaryMessage(session, new BinaryMessage(ByteBuffer.wrap(new byte[] {1, 2, 3, 4})));
 
         assertNull(attributes.get("lastAudioSeq"));
+        assertNull(attributes.get("recordingSessionId"));
+        assertNull(attributes.get("attemptId"));
         verifyNoInteractions(aiServiceClient);
-        verifyNoInteractions(realtimeEventSubscriber);
+        ArgumentCaptor<Map<String, Object>> eventCaptor = ArgumentCaptor.forClass(Map.class);
+        verify(realtimeEventSubscriber).dispatchMeetingEvent(eq(348L), eventCaptor.capture());
+        assertEquals("REALTIME_INVALID_PROVENANCE", eventCaptor.getValue().get("errorCode"));
     }
 
     @Test
@@ -848,8 +854,12 @@ class MeetingWebSocketHandlerTest {
         handler.handleBinaryMessage(session, new BinaryMessage(ByteBuffer.wrap(new byte[] {1, 2, 3, 4})));
 
         assertNull(attributes.get("lastAudioSeq"));
+        assertNull(attributes.get("recordingSessionId"));
+        assertNull(attributes.get("attemptId"));
         verifyNoInteractions(aiServiceClient);
-        verifyNoInteractions(realtimeEventSubscriber);
+        ArgumentCaptor<Map<String, Object>> eventCaptor = ArgumentCaptor.forClass(Map.class);
+        verify(realtimeEventSubscriber).dispatchMeetingEvent(eq(349L), eventCaptor.capture());
+        assertEquals("REALTIME_INVALID_PROVENANCE", eventCaptor.getValue().get("errorCode"));
     }
 
     @Test
@@ -871,12 +881,16 @@ class MeetingWebSocketHandlerTest {
         ));
         when(aiServiceClient.streamAudioChunk(
                 eq(350L),
+                isNull(),
                 argThat(bytes -> bytes != null && bytes.length == 4),
                 eq(17L),
                 eq("vi"),
+                isNull(),
                 eq(false),
                 isNull(),
-                eq("Bearer test-token")
+                eq("Bearer test-token"),
+                eq(1L),
+                eq(1L)
         )).thenReturn(Map.of(
                 "transcript", "valid session chunk",
                 "is_final", false,
@@ -889,12 +903,16 @@ class MeetingWebSocketHandlerTest {
         assertEquals(17L, attributes.get("lastAudioSeq"));
         verify(aiServiceClient).streamAudioChunk(
                 eq(350L),
+                isNull(),
                 argThat(bytes -> bytes != null && bytes.length == 4),
                 eq(17L),
                 eq("vi"),
+                isNull(),
                 eq(false),
                 isNull(),
-                eq("Bearer test-token")
+                eq("Bearer test-token"),
+                eq(1L),
+                eq(1L)
         );
     }
 
@@ -1631,12 +1649,16 @@ class MeetingWebSocketHandlerTest {
         CountDownLatch allowAiComplete = new CountDownLatch(1);
         when(aiServiceClient.streamAudioChunk(
                 eq(901L),
+                isNull(),
                 any(byte[].class),
                 eq(1L),
                 eq("vi"),
+                isNull(),
                 eq(false),
                 isNull(),
-                eq("Bearer test-token")
+                eq("Bearer test-token"),
+                eq(1L),
+                eq(1L)
         )).thenAnswer(invocation -> {
             aiStarted.countDown();
             allowAiComplete.await(5, TimeUnit.SECONDS);
@@ -1660,12 +1682,16 @@ class MeetingWebSocketHandlerTest {
         allowAiComplete.countDown();
         verify(aiServiceClient, timeout(3000)).streamAudioChunk(
                 eq(901L),
+                isNull(),
                 any(byte[].class),
                 eq(1L),
                 eq("vi"),
+                isNull(),
                 eq(false),
                 isNull(),
-                eq("Bearer test-token")
+                eq("Bearer test-token"),
+                eq(1L),
+                eq(1L)
         );
     }
 
@@ -1683,16 +1709,20 @@ class MeetingWebSocketHandlerTest {
         List<Long> seqOrder = Collections.synchronizedList(new ArrayList<>());
         when(aiServiceClient.streamAudioChunk(
                 eq(902L),
+                isNull(),
                 any(byte[].class),
                 anyLong(),
                 eq("vi"),
+                isNull(),
                 eq(false),
                 isNull(),
-                eq("Bearer test-token")
+                eq("Bearer test-token"),
+                eq(1L),
+                eq(1L)
         )).thenAnswer(invocation -> {
-            seqOrder.add(invocation.getArgument(2));
+            seqOrder.add(invocation.getArgument(3));
             return Map.of(
-                    "transcript", "chunk-" + invocation.getArgument(2),
+                    "transcript", "chunk-" + invocation.getArgument(3),
                     "is_final", false,
                     "language", "vi"
             );
@@ -1712,12 +1742,16 @@ class MeetingWebSocketHandlerTest {
 
         verify(aiServiceClient, timeout(5000).times(3)).streamAudioChunk(
                 eq(902L),
+                isNull(),
                 any(byte[].class),
                 anyLong(),
                 eq("vi"),
+                isNull(),
                 eq(false),
                 isNull(),
-                eq("Bearer test-token")
+                eq("Bearer test-token"),
+                eq(1L),
+                eq(1L)
         );
         assertEquals(List.of(1L, 2L, 3L), seqOrder);
     }
@@ -1739,12 +1773,16 @@ class MeetingWebSocketHandlerTest {
         CountDownLatch allowFirstChunk = new CountDownLatch(1);
         when(aiServiceClient.streamAudioChunk(
                 eq(903L),
+                isNull(),
                 argThat(bytes -> bytes != null && bytes.length == 2),
                 anyLong(),
                 eq("vi"),
+                isNull(),
                 eq(false),
                 isNull(),
-                eq("Bearer test-token")
+                eq("Bearer test-token"),
+                eq(1L),
+                eq(1L)
         )).thenAnswer(invocation -> {
             firstChunkStarted.countDown();
             allowFirstChunk.await(5, TimeUnit.SECONDS);
@@ -1752,12 +1790,16 @@ class MeetingWebSocketHandlerTest {
         });
         when(aiServiceClient.streamAudioChunk(
                 eq(903L),
+                isNull(),
                 argThat(bytes -> bytes != null && bytes.length == 0),
                 eq(-1L),
                 eq("vi"),
+                isNull(),
                 eq(true),
                 isNull(),
-                eq("Bearer test-token")
+                eq("Bearer test-token"),
+                eq(1L),
+                eq(1L)
         )).thenReturn(Map.of("transcript", "done", "is_final", true, "language", "vi"));
         when(objectMapper.readValue(any(String.class), eq(Map.class)))
                 .thenReturn(Map.of(
@@ -1796,21 +1838,29 @@ class MeetingWebSocketHandlerTest {
 
         verify(aiServiceClient, timeout(5000).times(2)).streamAudioChunk(
                 eq(903L),
+                isNull(),
                 argThat(bytes -> bytes != null && bytes.length == 2),
                 anyLong(),
                 eq("vi"),
+                isNull(),
                 eq(false),
                 isNull(),
-                eq("Bearer test-token")
+                eq("Bearer test-token"),
+                eq(1L),
+                eq(1L)
         );
         verify(aiServiceClient, timeout(5000)).streamAudioChunk(
                 eq(903L),
+                isNull(),
                 argThat(bytes -> bytes != null && bytes.length == 0),
                 eq(-1L),
                 eq("vi"),
+                isNull(),
                 eq(true),
                 isNull(),
-                eq("Bearer test-token")
+                eq("Bearer test-token"),
+                eq(1L),
+                eq(1L)
         );
         stopThread.join(5000);
         assertFalse(realtimeAudioWorkerRegistry.contains("ws-session-1"));
@@ -1872,12 +1922,16 @@ class MeetingWebSocketHandlerTest {
 
         when(aiServiceClient.streamAudioChunk(
                 eq(908L),
+                isNull(),
                 argThat(bytes -> bytes != null && bytes.length == 2),
                 eq(1L),
                 eq("vi"),
+                isNull(),
                 eq(false),
                 isNull(),
-                eq("Bearer test-token")
+                eq("Bearer test-token"),
+                eq(1L),
+                eq(1L)
         )).thenReturn(Map.of("transcript", "chunk", "is_final", false, "language", "vi"));
 
         CountDownLatch finalizeStarted = new CountDownLatch(1);
@@ -1885,12 +1939,16 @@ class MeetingWebSocketHandlerTest {
         AtomicInteger finalizeCalls = new AtomicInteger(0);
         when(aiServiceClient.streamAudioChunk(
                 eq(908L),
+                isNull(),
                 argThat(bytes -> bytes != null && bytes.length == 0),
                 eq(-1L),
                 eq("vi"),
+                isNull(),
                 eq(true),
                 isNull(),
-                eq("Bearer test-token")
+                eq("Bearer test-token"),
+                eq(1L),
+                eq(1L)
         )).thenAnswer(invocation -> {
             finalizeCalls.incrementAndGet();
             finalizeStarted.countDown();
@@ -1946,12 +2004,16 @@ class MeetingWebSocketHandlerTest {
 
         verify(aiServiceClient, timeout(5000).times(1)).streamAudioChunk(
                 eq(908L),
+                isNull(),
                 argThat(bytes -> bytes != null && bytes.length == 0),
                 eq(-1L),
                 eq("vi"),
+                isNull(),
                 eq(true),
                 isNull(),
-                eq("Bearer test-token")
+                eq("Bearer test-token"),
+                eq(1L),
+                eq(1L)
         );
         assertEquals(1, finalizeCalls.get());
         assertFalse(realtimeAudioWorkerRegistry.contains("ws-session-1"));
@@ -1973,12 +2035,16 @@ class MeetingWebSocketHandlerTest {
         CountDownLatch allowFirstChunk = new CountDownLatch(1);
         when(aiServiceClient.streamAudioChunk(
                 eq(905L),
+                isNull(),
                 any(byte[].class),
                 anyLong(),
                 eq("vi"),
+                isNull(),
                 eq(false),
                 isNull(),
-                eq("Bearer test-token")
+                eq("Bearer test-token"),
+                eq(1L),
+                eq(1L)
         )).thenAnswer(invocation -> {
             firstChunkStarted.countDown();
             allowFirstChunk.await(5, TimeUnit.SECONDS);
@@ -2051,7 +2117,12 @@ class MeetingWebSocketHandlerTest {
         handler.handleBinaryMessage(session, new BinaryMessage(ByteBuffer.wrap(new byte[] {1, 2, 3, 4})));
 
         assertNull(attributes.get("lastAudioSeq"));
+        assertNull(attributes.get("recordingSessionId"));
+        assertNull(attributes.get("attemptId"));
         verifyNoInteractions(aiServiceClient);
+        ArgumentCaptor<Map<String, Object>> eventCaptor = ArgumentCaptor.forClass(Map.class);
+        verify(realtimeEventSubscriber).dispatchMeetingEvent(eq(906L), eventCaptor.capture());
+        assertEquals("REALTIME_INVALID_PROVENANCE", eventCaptor.getValue().get("errorCode"));
         assertFalse(realtimeAudioWorkerRegistry.contains("ws-session-1"));
     }
 
@@ -2070,12 +2141,16 @@ class MeetingWebSocketHandlerTest {
 
         lenient().when(aiServiceClient.streamAudioChunk(
                 eq(907L),
+                isNull(),
                 any(byte[].class),
                 anyLong(),
                 eq("vi"),
+                isNull(),
                 eq(false),
                 isNull(),
-                eq("Bearer test-token")
+                eq("Bearer test-token"),
+                eq(1L),
+                eq(1L)
         )).thenReturn(Map.of("transcript", "chunk", "is_final", false, "language", "vi"));
         when(objectMapper.readValue(any(String.class), eq(Map.class))).thenReturn(Map.of(
                 "type", "audio.chunk",
@@ -2091,24 +2166,32 @@ class MeetingWebSocketHandlerTest {
 
         lenient().when(aiServiceClient.streamAudioChunk(
                 eq(907L),
+                isNull(),
                 argThat(bytes -> bytes != null && bytes.length == 0),
                 eq(-1L),
                 eq("vi"),
+                isNull(),
                 eq(true),
                 isNull(),
-                eq("Bearer test-token")
+                eq("Bearer test-token"),
+                eq(1L),
+                eq(1L)
         )).thenReturn(Map.of("transcript", "done", "is_final", true, "language", "vi"));
 
         handler.afterConnectionClosed(session, CloseStatus.NORMAL);
 
         verify(aiServiceClient, timeout(5000)).streamAudioChunk(
                 eq(907L),
+                isNull(),
                 argThat(bytes -> bytes != null && bytes.length == 0),
                 eq(-1L),
                 eq("vi"),
+                isNull(),
                 eq(true),
                 isNull(),
-                eq("Bearer test-token")
+                eq("Bearer test-token"),
+                eq(1L),
+                eq(1L)
         );
         assertFalse(realtimeAudioWorkerRegistry.contains("ws-session-1"));
     }

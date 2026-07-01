@@ -351,6 +351,10 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                 session.getAttributes().remove(LAST_AUDIO_SEQ_ATTR);
                 return;
             }
+            if ((recordingSessionId == null) != (attemptId == null)) {
+                rejectPartialProvenance(session, meetingId, seq, recordingSessionId, attemptId);
+                return;
+            }
             Long activeRecordingSessionId = getLongAttribute(session, RECORDING_SESSION_ID_ATTR);
             Long activeAttemptId = getLongAttribute(session, ATTEMPT_ID_ATTR);
             boolean staleRecordingSession =
@@ -1242,6 +1246,44 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
         } catch (Exception broadcastError) {
             log.warn(
                     "event=REALTIME_ANALYSIS_FAILED meetingId={} source=invalid_stream_id errorCode={}",
+                    meetingId,
+                    safeErrorCode(broadcastError)
+            );
+        }
+    }
+
+    private void rejectPartialProvenance(
+            WebSocketSession session,
+            Long meetingId,
+            Long seq,
+            Long recordingSessionId,
+            Long attemptId) {
+        session.getAttributes().remove(LAST_AUDIO_SEQ_ATTR);
+        session.getAttributes().remove(LAST_AUDIO_DECLARED_SIZE_ATTR);
+        session.getAttributes().remove(LAST_AUDIO_MIME_TYPE_ATTR);
+        session.getAttributes().remove(LAST_AUDIO_ENCODING_ATTR);
+        session.getAttributes().remove(RealtimeDualStreamSessionKeys.LAST_AUDIO_STREAM_ID_ATTR);
+        session.getAttributes().remove(RECORDING_SESSION_ID_ATTR);
+        session.getAttributes().remove(ATTEMPT_ID_ATTR);
+        log.warn(
+                "event=REALTIME_INVALID_PROVENANCE meetingId={} seq={} recordingSessionId={} attemptId={}",
+                meetingId,
+                seq,
+                recordingSessionId,
+                attemptId
+        );
+        Map<String, Object> errorEvent = Map.of(
+                "type", "stream.error",
+                "meetingId", meetingId,
+                "message", "recording_session_id and attempt_id must be provided together",
+                "errorCode", "REALTIME_INVALID_PROVENANCE",
+                "recoverable", true
+        );
+        try {
+            realtimeEventSubscriber.dispatchMeetingEvent(meetingId, errorEvent);
+        } catch (Exception broadcastError) {
+            log.warn(
+                    "event=REALTIME_ANALYSIS_FAILED meetingId={} source=invalid_provenance errorCode={}",
                     meetingId,
                     safeErrorCode(broadcastError)
             );
@@ -3177,7 +3219,7 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
         if ((recordingSessionId == null) != (attemptId == null)) {
             throw new IllegalArgumentException("recordingSessionId and attemptId must be provided together");
         }
-        boolean provenancePresent = recordingSessionId != null && capableStreamId != null;
+        boolean provenancePresent = recordingSessionId != null && attemptId != null;
         if ("multiple".equals(normalizedSpeakerMode)) {
             if (capableStreamId != null) {
                 if (!provenancePresent) {
@@ -3317,7 +3359,7 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
         if ((recordingSessionId == null) != (attemptId == null)) {
             throw new IllegalArgumentException("recordingSessionId and attemptId must be provided together");
         }
-        boolean provenancePresent = recordingSessionId != null;
+        boolean provenancePresent = recordingSessionId != null && attemptId != null;
 
         for (String streamId : activeStreams) {
             RealtimeStreamAudioState streamState = RealtimeStreamAudioState.stateFor(session.getAttributes(), streamId);
