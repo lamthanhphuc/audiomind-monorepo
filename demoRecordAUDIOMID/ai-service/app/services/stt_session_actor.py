@@ -1351,7 +1351,9 @@ class MeetingSessionActor:
                     if response is not None and response.transcript:
                         self._final_response = response
                     else:
-                        final_text = repository.assemble_transcript_text(meeting_id_int)
+                        final_text = repository.assemble_transcript_text(
+                            self._storage_meeting_id()
+                        )
                         self._final_response = SttStreamResponse(
                             transcript=final_text,
                             is_final=True,

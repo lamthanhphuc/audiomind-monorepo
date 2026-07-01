@@ -658,6 +658,34 @@ def test_actor_duplicate_finalization_returns_cached_response(monkeypatch):
     assert actor.state == MeetingSessionState.CLOSED
 
 
+def test_actor_finalization_fallback_assembles_with_storage_meeting_id_for_stream_key(monkeypatch):
+    repo = _bind_fake_repository(monkeypatch)
+
+    async def run_flow():
+        adapter = _FakeAdapter()
+        actor = await MeetingSessionActor.create(
+            meeting_key="70:tab",
+            language="vi",
+            adapter=adapter,
+            db_session_factory=lambda: _FakeDBSession(),
+        )
+        await actor.submit_chunk(1, b"persisted", 1, False)
+        final = await actor.finalize(seq=-1, ts_ms=-1)
+        return actor, adapter, final, list(repo.fragments), list(repo.checkpoints)
+
+    actor, adapter, final, fragments, checkpoints = asyncio.run(run_flow())
+
+    assert final.transcript == "persisted"
+    assert final.is_final is True
+    assert [fragment.meeting_id for fragment in fragments] == [70]
+    assert [fragment.stream_id for fragment in fragments] == ["tab"]
+    assert checkpoints[-1]["meeting_id"] == 70
+    assert checkpoints[-1]["stream_id"] == "tab"
+    assert checkpoints[-1]["last_finalized_seq"] == 1
+    assert adapter.close_calls == 1
+    assert actor.state == MeetingSessionState.CLOSED
+
+
 def test_actor_ack_advances_only_after_push_succeeds(monkeypatch):
     _bind_fake_repository(monkeypatch)
 
