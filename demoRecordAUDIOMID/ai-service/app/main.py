@@ -120,7 +120,10 @@ from app.services.stt_ownership import (
     SttOwnershipLost,
     get_stt_ownership_manager,
 )
-from app.services.stt_persistence import TranscriptPersistenceRepository
+from app.services.stt_persistence import (
+    TranscriptPersistenceRepository,
+    validate_transcript_provenance,
+)
 from app.services.transcript_canonicalizer import build_raw_transcript_hash
 from app.services.stt_session_actor import MeetingSessionActor, MeetingSessionState
 from app.upload_validation_policy import (
@@ -392,6 +395,21 @@ def _normalize_stream_key(meeting_id: int | str, stream_id: str | None = "") -> 
     if normalized_stream in {"tab", "mic"}:
         return f"{base}:{normalized_stream}"
     return base
+
+
+def _stt_actor_registry_key(
+    meeting_key: str,
+    *,
+    recording_session_id: int | None = None,
+    attempt_id: int | None = None,
+) -> str:
+    provenance = validate_transcript_provenance(recording_session_id, attempt_id)
+    if not provenance.is_v2:
+        return meeting_key
+    return (
+        f"{meeting_key}|recording_session_id={provenance.recording_session_id}"
+        f"|attempt_id={provenance.attempt_id}"
+    )
 
 
 def _resolve_speaker_prefix(stream_id: str | None) -> str | None:
@@ -708,9 +726,17 @@ async def _get_or_create_stt_actor(
     seq: int | None = None,
     chunk_bytes: bytes | None = None,
     endpointing: int | None = None,
+    registry_key: str | None = None,
+    recording_session_id: int | None = None,
+    attempt_id: int | None = None,
 ) -> MeetingSessionActor:
     await _cleanup_stale_stt_actors()
-    guard = _get_stream_retry_guard(meeting_key)
+    actor_key = registry_key or _stt_actor_registry_key(
+        meeting_key,
+        recording_session_id=recording_session_id,
+        attempt_id=attempt_id,
+    )
+    guard = _get_stream_retry_guard(actor_key)
     now = time.time()
     stt_adapter = _get_stt_adapter(endpointing=endpointing)
     if stt_adapter is None:
@@ -720,11 +746,11 @@ async def _get_or_create_stt_actor(
     shared_cooldown_until = 0.0
     if ownership_manager is not None:
         try:
-            shared_cooldown_until = ownership_manager.get_cooldown_until(meeting_key)
+            shared_cooldown_until = ownership_manager.get_cooldown_until(actor_key)
         except Exception as exc:
             logger.warning(
                 "STT_OWNERSHIP_COOLDOWN_READ_ERROR meeting_id={} error={}",
-                meeting_key,
+                actor_key,
                 safe_error_message(exc),
             )
             raise HTTPException(
@@ -739,7 +765,7 @@ async def _get_or_create_stt_actor(
         raise HTTPException(
             status_code=429,
             detail={
-                "meeting_id": meeting_key,
+                "meeting_id": actor_key,
                 "seq": seq,
                 "reason": "reconnect cooldown active",
                 "retry_after_seconds": retry_after_seconds,
@@ -755,37 +781,37 @@ async def _get_or_create_stt_actor(
             seq == 1 and chunk_bytes is not None and _is_webm_header_chunk(chunk_bytes)
         )
         if can_restart:
-            _clear_stream_retry_guard(meeting_key)
+            _clear_stream_retry_guard(actor_key)
         else:
             raise HTTPException(
                 status_code=409,
                 detail={
-                    "meeting_id": meeting_key,
+                    "meeting_id": actor_key,
                     "seq": seq,
                     "reason": "new recording lifecycle required",
                 },
             )
 
     async with _stt_stream_registry_lock:
-        existing_actor = _stt_stream_sessions.get(meeting_key)
+        existing_actor = _stt_stream_sessions.get(actor_key)
         if existing_actor is not None and existing_actor.state not in {
             MeetingSessionState.CLOSED,
             MeetingSessionState.FAILED,
         }:
             if not existing_actor._owns_meeting():
-                _stt_stream_sessions.pop(meeting_key, None)
-                asyncio.create_task(_retire_stt_actor(meeting_key, existing_actor))
+                _stt_stream_sessions.pop(actor_key, None)
+                asyncio.create_task(_retire_stt_actor(actor_key, existing_actor))
             else:
                 return existing_actor
 
         lease: SttLease | None = None
         if ownership_manager is not None:
             try:
-                lease = ownership_manager.acquire(meeting_key)
+                lease = ownership_manager.acquire(actor_key)
             except Exception as exc:
                 logger.warning(
                     "STT_OWNERSHIP_ACQUIRE_ERROR meeting_id={} error={}",
-                    meeting_key,
+                    actor_key,
                     safe_error_message(exc),
                 )
                 raise HTTPException(
@@ -797,7 +823,7 @@ async def _get_or_create_stt_actor(
                 raise HTTPException(
                     status_code=409,
                     detail={
-                        "meeting_id": meeting_key,
+                        "meeting_id": actor_key,
                         "seq": seq,
                         "reason": "meeting STT stream is already owned by another replica",
                     },
@@ -811,6 +837,8 @@ async def _get_or_create_stt_actor(
                 adapter=stt_adapter,
                 lease=lease,
                 ownership_manager=ownership_manager,
+                recording_session_id=recording_session_id,
+                attempt_id=attempt_id,
             )
         except Exception:
             if lease is not None and ownership_manager is not None:
@@ -819,10 +847,10 @@ async def _get_or_create_stt_actor(
                 except Exception:
                     pass
             raise
-        _stt_stream_sessions[meeting_key] = actor
+        _stt_stream_sessions[actor_key] = actor
         logger.info(
             "STT_OWNERSHIP_ACQUIRED meeting_id={} owner_id={} fencing_token={}",
-            meeting_key,
+            actor_key,
             lease.owner_id if lease is not None else None,
             lease.fencing_token if lease is not None else 0,
         )
@@ -4357,6 +4385,8 @@ async def stream_stt_chunk(
     speaker_mode: str = Form(default=""),
     is_final: bool = Form(default=False),
     stream_id: str = Form(default=""),
+    recording_session_id: int | None = Form(default=None),
+    attempt_id: int | None = Form(default=None),
     request: Request = None,
 ):
     started_at = time.time()
@@ -4384,6 +4414,13 @@ async def stream_stt_chunk(
         enabled=settings.realtime_validation_enabled,
     )
     stream_id = _as_optional_text(stream_id)
+    try:
+        provenance = validate_transcript_provenance(
+            recording_session_id,
+            attempt_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     realtime_model = _resolve_realtime_model()
     endpointing_value = (
         endpointing_resolution.endpointing
@@ -4482,9 +4519,14 @@ async def stream_stt_chunk(
         raise HTTPException(status_code=400, detail="audio_chunk is empty")
 
     meeting_key = _normalize_stream_key(meeting_id, stream_id)
+    actor_key = _stt_actor_registry_key(
+        meeting_key,
+        recording_session_id=provenance.recording_session_id,
+        attempt_id=provenance.attempt_id,
+    )
     speaker_prefix = _resolve_speaker_prefix(stream_id)
     now = time.time()
-    guard = _get_stream_retry_guard(meeting_key)
+    guard = _get_stream_retry_guard(actor_key)
     previous_seq = guard.last_seq
     previous_seen_at = guard.last_seen_at
     guard.last_seq = max(guard.last_seq, int(seq))
@@ -4547,10 +4589,10 @@ async def stream_stt_chunk(
         )
 
     if seq == 1 and _is_webm_header_chunk(chunk_bytes) and guard.requires_new_stream:
-        _clear_stream_retry_guard(meeting_key)
-        guard = _get_stream_retry_guard(meeting_key)
+        _clear_stream_retry_guard(actor_key)
+        guard = _get_stream_retry_guard(actor_key)
 
-    cached_response = _get_cached_final_response(meeting_key)
+    cached_response = _get_cached_final_response(actor_key)
     if cached_response is not None:
         logger.info(
             "STT_FINALIZATION_REPLAY meeting_id={} seq={} is_final={} reason=cached_final_response",
@@ -4587,6 +4629,9 @@ async def stream_stt_chunk(
             seq=seq,
             chunk_bytes=chunk_bytes,
             endpointing=endpointing_resolution.endpointing,
+            registry_key=actor_key,
+            recording_session_id=provenance.recording_session_id,
+            attempt_id=provenance.attempt_id,
         )
     except HTTPException:
         raise
@@ -4710,7 +4755,7 @@ async def stream_stt_chunk(
                 )
                 if getattr(actor, "ownership_manager", None) is not None:
                     actor.ownership_manager.set_cooldown_until(
-                        meeting_key, guard.cooldown_until
+                        actor_key, guard.cooldown_until
                     )
                 logger.warning(
                     "STT_RECONNECT_BLOCKED_WEBM_CONTINUATION meeting_id={} seq={} last_ack_seq={} reason={}",
@@ -4721,8 +4766,8 @@ async def stream_stt_chunk(
                 )
             elif not _is_webm_header_chunk(chunk_bytes):
                 guard.requires_new_stream = True
-            _update_stream_retry_guard_from_actor(meeting_key, actor)
-            await _retire_stt_actor(meeting_key, actor)
+            _update_stream_retry_guard_from_actor(actor_key, actor)
+            await _retire_stt_actor(actor_key, actor)
             logger.warning(
                 "STT_TERMINAL_FAILURE meeting_id={} session_id={} seq={} error={}",
                 meeting_key,
@@ -4866,9 +4911,9 @@ async def stream_stt_chunk(
         realtime_diagnostics = _resolve_realtime_session_diagnostics(
             actor, fallback_transcript=response.transcript
         )
-        _store_final_response(meeting_key, response)
-        _stt_stream_sessions.pop(meeting_key, None)
-        _clear_stream_retry_guard(meeting_key)
+        _store_final_response(actor_key, response)
+        _stt_stream_sessions.pop(actor_key, None)
+        _clear_stream_retry_guard(actor_key)
         logger.info(
             "event=DEEPGRAM_STT_COMPLETED traceId={} requestId={} meetingId={} source=realtime durationMs={} transcriptLength={}",
             trace_id,

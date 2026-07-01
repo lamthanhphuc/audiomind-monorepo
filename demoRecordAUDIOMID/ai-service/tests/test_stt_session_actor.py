@@ -69,11 +69,29 @@ class _FakeRepository:
         self.checkpoints.append(state)
         return SimpleNamespace(**state)
 
+    def upsert_attempt_checkpoint(self, meeting_id, **kwargs):
+        state = {"meeting_id": meeting_id, **kwargs}
+        self.checkpoints.append(state)
+        return SimpleNamespace(**state)
+
     def assemble_transcript_text(self, meeting_id):
         texts = [
             fragment.text
             for fragment in self.fragments
             if fragment.meeting_id == meeting_id
+        ]
+        return " ".join(texts).strip()
+
+    def assemble_attempt_transcript_text(
+        self, meeting_id, *, recording_session_id, attempt_id, stream_id
+    ):
+        texts = [
+            fragment.text
+            for fragment in self.fragments
+            if fragment.meeting_id == meeting_id
+            and fragment.recording_session_id == recording_session_id
+            and fragment.attempt_id == attempt_id
+            and fragment.stream_id == stream_id
         ]
         return " ".join(texts).strip()
 
@@ -684,6 +702,77 @@ def test_actor_finalization_fallback_assembles_with_storage_meeting_id_for_strea
     assert checkpoints[-1]["last_finalized_seq"] == 1
     assert adapter.close_calls == 1
     assert actor.state == MeetingSessionState.CLOSED
+
+
+def test_actor_v2_persists_provenance_and_attempt_checkpoint(monkeypatch):
+    repo = _bind_fake_repository(monkeypatch)
+
+    async def run_flow():
+        adapter = _FakeAdapter()
+        actor = await MeetingSessionActor.create(
+            meeting_key="71:mic",
+            language="vi",
+            adapter=adapter,
+            db_session_factory=lambda: _FakeDBSession(),
+            recording_session_id=1001,
+            attempt_id=2,
+        )
+        await actor.submit_chunk(1, b"v2 persisted", 1, False)
+        final = await actor.finalize(seq=-1, ts_ms=-1)
+        return actor, final, list(repo.fragments), list(repo.checkpoints)
+
+    actor, final, fragments, checkpoints = asyncio.run(run_flow())
+
+    assert final.transcript == "v2 persisted"
+    assert fragments[0].meeting_id == 71
+    assert fragments[0].stream_id == "mic"
+    assert fragments[0].recording_session_id == 1001
+    assert fragments[0].attempt_id == 2
+    assert checkpoints[-1]["meeting_id"] == 71
+    assert checkpoints[-1]["stream_id"] == "mic"
+    assert checkpoints[-1]["recording_session_id"] == 1001
+    assert checkpoints[-1]["attempt_id"] == 2
+    assert actor.state == MeetingSessionState.CLOSED
+
+
+def test_actor_legacy_persistence_keeps_legacy_checkpoint(monkeypatch):
+    repo = _bind_fake_repository(monkeypatch)
+
+    async def run_flow():
+        adapter = _FakeAdapter()
+        actor = await MeetingSessionActor.create(
+            meeting_key="72",
+            language="vi",
+            adapter=adapter,
+            db_session_factory=lambda: _FakeDBSession(),
+        )
+        await actor.submit_chunk(1, b"legacy persisted", 1, False)
+        final = await actor.finalize(seq=-1, ts_ms=-1)
+        return final, list(repo.fragments), list(repo.checkpoints)
+
+    final, fragments, checkpoints = asyncio.run(run_flow())
+
+    assert final.transcript == "legacy persisted"
+    assert fragments[0].recording_session_id is None
+    assert fragments[0].attempt_id is None
+    assert "recording_session_id" not in checkpoints[-1]
+    assert "attempt_id" not in checkpoints[-1]
+
+
+def test_actor_rejects_partial_provenance():
+    async def run_flow():
+        adapter = _FakeAdapter()
+        await MeetingSessionActor.create(
+            meeting_key="73:tab",
+            language="vi",
+            adapter=adapter,
+            db_session_factory=lambda: _FakeDBSession(),
+            recording_session_id=1001,
+            attempt_id=None,
+        )
+
+    with pytest.raises(ValueError):
+        asyncio.run(run_flow())
 
 
 def test_actor_ack_advances_only_after_push_succeeds(monkeypatch):

@@ -30,10 +30,20 @@ class FakeActor:
     instances = []
     next_submit_exc = None
 
-    def __init__(self, meeting_key, language, adapter):
+    def __init__(
+        self,
+        meeting_key,
+        language,
+        adapter,
+        *,
+        recording_session_id=None,
+        attempt_id=None,
+    ):
         self.meeting_key = str(meeting_key)
         self.language = language
         self.adapter = adapter
+        self.recording_session_id = recording_session_id
+        self.attempt_id = attempt_id
         self.session_id = f"session-{self.meeting_key}"
         self.close_count = 0
         self.closed = False
@@ -164,8 +174,16 @@ async def _fake_actor_factory(
     seq=None,
     chunk_bytes=None,
     endpointing=None,
+    registry_key=None,
+    recording_session_id=None,
+    attempt_id=None,
 ):
-    existing = main_module._stt_stream_sessions.get(str(meeting_key))
+    actor_key = registry_key or main_module._stt_actor_registry_key(
+        str(meeting_key),
+        recording_session_id=recording_session_id,
+        attempt_id=attempt_id,
+    )
+    existing = main_module._stt_stream_sessions.get(actor_key)
     if existing is not None:
         return existing
 
@@ -173,8 +191,14 @@ async def _fake_actor_factory(
     if adapter is None:
         raise RuntimeError("Deepgram STT adapter is unavailable")
 
-    actor = FakeActor(meeting_key, language, adapter)
-    main_module._stt_stream_sessions[str(meeting_key)] = actor
+    actor = FakeActor(
+        meeting_key,
+        language,
+        adapter,
+        recording_session_id=recording_session_id,
+        attempt_id=attempt_id,
+    )
+    main_module._stt_stream_sessions[actor_key] = actor
     return actor
 
 
@@ -1339,4 +1363,99 @@ def test_stream_stt_chunk_dual_stream_creates_separate_actors(monkeypatch):
     assert "701:tab" in main_module._stt_stream_sessions
     assert "701:mic" in main_module._stt_stream_sessions
     assert FakeActor.instances[0].meeting_key != FakeActor.instances[1].meeting_key
+
+
+def test_stream_stt_chunk_accepts_complete_numeric_provenance(monkeypatch):
+    _reset_state(monkeypatch)
+
+    async def run_flow():
+        return await main_module.stream_stt_chunk(
+            meeting_id=702,
+            audio_chunk=_make_upload_file(b"tab"),
+            seq=1,
+            language="vi",
+            is_final=False,
+            stream_id="tab",
+            recording_session_id=1001,
+            attempt_id=1,
+        )
+
+    response = asyncio.run(run_flow())
+
+    assert response.transcript == "Xin chao audiomind"
+    assert len(FakeActor.instances) == 1
+    assert FakeActor.instances[0].meeting_key == "702:tab"
+    assert FakeActor.instances[0].recording_session_id == 1001
+    assert FakeActor.instances[0].attempt_id == 1
+    assert (
+        "702:tab|recording_session_id=1001|attempt_id=1"
+        in main_module._stt_stream_sessions
+    )
+
+
+@pytest.mark.parametrize(
+    ("recording_session_id", "attempt_id"),
+    [(1001, None), (None, 1)],
+)
+def test_stream_stt_chunk_rejects_partial_provenance(
+    monkeypatch, recording_session_id, attempt_id
+):
+    _reset_state(monkeypatch)
+
+    async def run_flow():
+        await main_module.stream_stt_chunk(
+            meeting_id=703,
+            audio_chunk=_make_upload_file(b"tab"),
+            seq=1,
+            language="vi",
+            is_final=False,
+            stream_id="tab",
+            recording_session_id=recording_session_id,
+            attempt_id=attempt_id,
+        )
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(run_flow())
+
+    assert exc_info.value.status_code == 422
+    assert FakeActor.instances == []
+
+
+def test_stream_stt_chunk_same_seq_different_attempts_reaches_distinct_actor_scope(
+    monkeypatch,
+):
+    _reset_state(monkeypatch)
+
+    async def run_flow():
+        first = await main_module.stream_stt_chunk(
+            meeting_id=704,
+            audio_chunk=_make_upload_file(b"first"),
+            seq=1,
+            language="vi",
+            is_final=False,
+            stream_id="mic",
+            recording_session_id=2001,
+            attempt_id=1,
+        )
+        second = await main_module.stream_stt_chunk(
+            meeting_id=704,
+            audio_chunk=_make_upload_file(b"second"),
+            seq=1,
+            language="vi",
+            is_final=False,
+            stream_id="mic",
+            recording_session_id=2001,
+            attempt_id=2,
+        )
+        return first, second
+
+    first, second = asyncio.run(run_flow())
+
+    assert first.transcript == "Xin chao audiomind"
+    assert second.transcript == "Xin chao audiomind"
+    assert len(FakeActor.instances) == 2
+    assert {
+        "704:mic|recording_session_id=2001|attempt_id=1",
+        "704:mic|recording_session_id=2001|attempt_id=2",
+    }.issubset(set(main_module._stt_stream_sessions))
 

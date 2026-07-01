@@ -28,8 +28,10 @@ from app.services.stt_ownership import (
 )
 from app.services.stt_persistence import (
     TranscriptFragmentInput,
+    TranscriptProvenance,
     TranscriptPersistenceRepository,
     build_fragment_dedupe_key,
+    validate_transcript_provenance,
 )
 
 
@@ -253,8 +255,14 @@ class MeetingSessionActor:
         db_session_factory: Callable[[], Any] = SessionLocal,
         lease: SttLease | None = None,
         ownership_manager: SttOwnershipManager | None = None,
+        recording_session_id: int | None = None,
+        attempt_id: int | None = None,
     ):
         settings = get_settings()
+        self.provenance: TranscriptProvenance = validate_transcript_provenance(
+            recording_session_id,
+            attempt_id,
+        )
         self.meeting_key = str(meeting_key)
         self.language = (language or "vi").strip() or "vi"
         self.speaker_mode = (speaker_mode or "single").strip().lower() or "single"
@@ -372,6 +380,45 @@ class MeetingSessionActor:
             return "MIC"
         return None
 
+    def _upsert_persist_checkpoint(
+        self,
+        repository: TranscriptPersistenceRepository,
+        *,
+        last_ack_seq: int | None = None,
+        last_persisted_seq: int | None = None,
+        last_finalized_seq: int | None = None,
+    ) -> None:
+        if self.provenance.is_v2:
+            repository.upsert_attempt_checkpoint(
+                self._storage_meeting_id(),
+                recording_session_id=self.provenance.recording_session_id,
+                attempt_id=self.provenance.attempt_id,
+                stream_id=self._storage_stream_id(),
+                last_ack_seq=last_ack_seq,
+                last_persisted_seq=last_persisted_seq,
+                last_finalized_seq=last_finalized_seq,
+            )
+            return
+        repository.upsert_checkpoint(
+            self._storage_meeting_id(),
+            stream_id=self._storage_stream_id(),
+            last_ack_seq=last_ack_seq,
+            last_persisted_seq=last_persisted_seq,
+            last_finalized_seq=last_finalized_seq,
+        )
+
+    def _assemble_final_transcript_text(
+        self, repository: TranscriptPersistenceRepository
+    ) -> str:
+        if self.provenance.is_v2:
+            return repository.assemble_attempt_transcript_text(
+                self._storage_meeting_id(),
+                recording_session_id=self.provenance.recording_session_id,
+                attempt_id=self.provenance.attempt_id,
+                stream_id=self._storage_stream_id(),
+            )
+        return repository.assemble_transcript_text(self._storage_meeting_id())
+
     def _log_context(self, **extra: Any) -> dict[str, Any]:
         context = {
             "meeting_id": self.meeting_key,
@@ -429,6 +476,8 @@ class MeetingSessionActor:
         speaker_mode: str = "single",
         lease: SttLease | None = None,
         ownership_manager: SttOwnershipManager | None = None,
+        recording_session_id: int | None = None,
+        attempt_id: int | None = None,
     ) -> "MeetingSessionActor":
         actor = cls(
             meeting_key,
@@ -438,6 +487,8 @@ class MeetingSessionActor:
             db_session_factory=db_session_factory,
             lease=lease,
             ownership_manager=ownership_manager,
+            recording_session_id=recording_session_id,
+            attempt_id=attempt_id,
         )
         await actor._connect_session()
         actor._send_task = asyncio.create_task(
@@ -1293,9 +1344,8 @@ class MeetingSessionActor:
                         stt_metrics.observe_ack_lag_ms(
                             max(0.0, time.time() * 1000.0 - float(persist.ts_ms))
                         )
-                        repository.upsert_checkpoint(
-                            self._storage_meeting_id(),
-                            stream_id=self._storage_stream_id(),
+                        self._upsert_persist_checkpoint(
+                            repository,
                             last_ack_seq=self._last_ack_seq,
                             last_persisted_seq=self._last_persisted_seq,
                             last_finalized_seq=self._last_finalized_seq,
@@ -1335,9 +1385,8 @@ class MeetingSessionActor:
                         self._last_persisted_seq,
                         persist.seq,
                     )
-                    repository.upsert_checkpoint(
-                        self._storage_meeting_id(),
-                        stream_id=self._storage_stream_id(),
+                    self._upsert_persist_checkpoint(
+                        repository,
                         last_ack_seq=self._last_ack_seq,
                         last_persisted_seq=self._last_persisted_seq,
                         last_finalized_seq=self._last_finalized_seq,
@@ -1351,9 +1400,7 @@ class MeetingSessionActor:
                     if response is not None and response.transcript:
                         self._final_response = response
                     else:
-                        final_text = repository.assemble_transcript_text(
-                            self._storage_meeting_id()
-                        )
+                        final_text = self._assemble_final_transcript_text(repository)
                         self._final_response = SttStreamResponse(
                             transcript=final_text,
                             is_final=True,
@@ -1451,6 +1498,8 @@ class MeetingSessionActor:
             fragment = TranscriptFragmentInput(
                 meeting_id=meeting_id_int,
                 stream_id=stream_id,
+                recording_session_id=self.provenance.recording_session_id,
+                attempt_id=self.provenance.attempt_id,
                 seq=persist.seq,
                 text=text,
                 speaker=self._canonical_speaker(event.get("speaker")),
@@ -1517,6 +1566,8 @@ class MeetingSessionActor:
             fragment = TranscriptFragmentInput(
                 meeting_id=meeting_id_int,
                 stream_id=stream_id,
+                recording_session_id=self.provenance.recording_session_id,
+                attempt_id=self.provenance.attempt_id,
                 seq=persist.seq,
                 text=text,
                 speaker=self._canonical_speaker(event.get("speaker")),
