@@ -244,6 +244,56 @@ class MeetingWebSocketHandlerTest {
     }
 
     @Test
+    void handleBinaryMessage_dualStream_shouldForwardValidatedProvenanceToAiService() throws Exception {
+        ReflectionTestUtils.setField(handler, "dualStreamTabMicEnabled", true);
+        attributes.put("meetingId", 503L);
+        attributes.put("authenticated", true);
+        attributes.put("language", "vi");
+        attributes.put("authorization", "Bearer test-token");
+        attributes.put(RealtimeDualStreamSessionKeys.DUAL_STREAM_ENABLED_ATTR, Boolean.TRUE);
+        attributes.put(RealtimeDualStreamSessionKeys.ACTIVE_STREAMS_ATTR, List.of("tab", "mic"));
+
+        when(aiServiceClient.streamAudioChunk(
+                eq(503L),
+                eq("tab"),
+                argThat(bytes -> bytes != null && bytes.length == 4),
+                eq(1L),
+                eq("vi"),
+                isNull(),
+                eq(false),
+                isNull(),
+                eq("Bearer test-token"),
+                eq(1001L),
+                eq(2L)
+        )).thenReturn(Map.of("transcript", "tab text", "is_final", false, "language", "vi"));
+        doReturn(Map.of(
+                "type", "audio.chunk",
+                "seq", 1L,
+                "size", 4L,
+                "stream_id", "tab",
+                "recording_session_id", 1001L,
+                "attempt_id", 2L
+        )).when(objectMapper).readValue(anyString(), any(Class.class));
+
+        handler.handleTextMessage(session, new TextMessage("{}"));
+        handler.handleBinaryMessage(session, new BinaryMessage(ByteBuffer.wrap(new byte[] {1, 2, 3, 4})));
+
+        verify(aiServiceClient).streamAudioChunk(
+                eq(503L),
+                eq("tab"),
+                argThat(bytes -> bytes != null && bytes.length == 4),
+                eq(1L),
+                eq("vi"),
+                isNull(),
+                eq(false),
+                isNull(),
+                eq("Bearer test-token"),
+                eq(1001L),
+                eq(2L)
+        );
+    }
+
+    @Test
     void handleTextMessage_dualStream_shouldRejectBlankOrUnknownStreamIdWithoutTerminalFailure() throws Exception {
         ReflectionTestUtils.setField(handler, "dualStreamTabMicEnabled", true);
         attributes.put("meetingId", 502L);

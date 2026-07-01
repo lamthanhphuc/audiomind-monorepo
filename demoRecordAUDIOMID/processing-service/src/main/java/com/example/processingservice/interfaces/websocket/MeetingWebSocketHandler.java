@@ -3172,11 +3172,44 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
         long seq = lastSeq != null ? lastSeq : 0L;
         String capableStreamId = dualStreamCapableStreamId(session, streamId);
         String normalizedSpeakerMode = normalizeRealtimeSpeakerMode(speakerMode);
+        Long recordingSessionId = getLongAttribute(session, RECORDING_SESSION_ID_ATTR);
+        Long attemptId = getLongAttribute(session, ATTEMPT_ID_ATTR);
+        if ((recordingSessionId == null) != (attemptId == null)) {
+            throw new IllegalArgumentException("recordingSessionId and attemptId must be provided together");
+        }
+        boolean provenancePresent = recordingSessionId != null && capableStreamId != null;
         if ("multiple".equals(normalizedSpeakerMode)) {
             if (capableStreamId != null) {
+                if (!provenancePresent) {
+                    return aiServiceClient.streamAudioChunk(
+                            meetingId,
+                            capableStreamId,
+                            audioBytes,
+                            seq,
+                            language,
+                            normalizedSpeakerMode,
+                            isFinal,
+                            null,
+                            authorization
+                    );
+                }
                 return aiServiceClient.streamAudioChunk(
                         meetingId,
                         capableStreamId,
+                        audioBytes,
+                        seq,
+                        language,
+                        normalizedSpeakerMode,
+                        isFinal,
+                        null,
+                        authorization,
+                        recordingSessionId,
+                        attemptId
+                );
+            }
+            if (!provenancePresent) {
+                return aiServiceClient.streamAudioChunk(
+                        meetingId,
                         audioBytes,
                         seq,
                         language,
@@ -3194,13 +3227,41 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                     normalizedSpeakerMode,
                     isFinal,
                     null,
-                    authorization
+                    authorization,
+                    recordingSessionId,
+                    attemptId
             );
         }
         if (capableStreamId != null) {
+            if (!provenancePresent) {
+                return aiServiceClient.streamAudioChunk(
+                        meetingId,
+                        capableStreamId,
+                        audioBytes,
+                        seq,
+                        language,
+                        isFinal,
+                        null,
+                        authorization
+                );
+            }
             return aiServiceClient.streamAudioChunk(
                     meetingId,
                     capableStreamId,
+                    audioBytes,
+                    seq,
+                    language,
+                    null,
+                    isFinal,
+                    null,
+                    authorization,
+                    recordingSessionId,
+                    attemptId
+            );
+        }
+        if (!provenancePresent) {
+            return aiServiceClient.streamAudioChunk(
+                    meetingId,
                     audioBytes,
                     seq,
                     language,
@@ -3211,12 +3272,16 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
         }
         return aiServiceClient.streamAudioChunk(
                 meetingId,
+                null,
                 audioBytes,
                 seq,
                 language,
+                null,
                 isFinal,
                 null,
-                authorization
+                authorization,
+                recordingSessionId,
+                attemptId
         );
     }
 
@@ -3247,6 +3312,12 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
         }
         String normalizedSpeakerMode = normalizeRealtimeSpeakerMode(speakerMode);
         boolean multiple = "multiple".equals(normalizedSpeakerMode);
+        Long recordingSessionId = getLongAttribute(session, RECORDING_SESSION_ID_ATTR);
+        Long attemptId = getLongAttribute(session, ATTEMPT_ID_ATTR);
+        if ((recordingSessionId == null) != (attemptId == null)) {
+            throw new IllegalArgumentException("recordingSessionId and attemptId must be provided together");
+        }
+        boolean provenancePresent = recordingSessionId != null;
 
         for (String streamId : activeStreams) {
             RealtimeStreamAudioState streamState = RealtimeStreamAudioState.stateFor(session.getAttributes(), streamId);
@@ -3254,8 +3325,23 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                 continue;
             }
             try {
-                Map<String, Object> transcript = multiple
-                        ? aiServiceClient.streamAudioChunk(
+                Map<String, Object> transcript;
+                if (multiple && provenancePresent) {
+                    transcript = aiServiceClient.streamAudioChunk(
+                                meetingId,
+                                streamId,
+                                new byte[0],
+                                -1L,
+                                language,
+                                normalizedSpeakerMode,
+                                true,
+                                null,
+                                authorization,
+                                recordingSessionId,
+                                attemptId
+                        );
+                } else if (multiple) {
+                    transcript = aiServiceClient.streamAudioChunk(
                                 meetingId,
                                 streamId,
                                 new byte[0],
@@ -3265,8 +3351,23 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                                 true,
                                 null,
                                 authorization
-                        )
-                        : aiServiceClient.streamAudioChunk(
+                        );
+                } else if (provenancePresent) {
+                    transcript = aiServiceClient.streamAudioChunk(
+                                meetingId,
+                                streamId,
+                                new byte[0],
+                                -1L,
+                                language,
+                                null,
+                                true,
+                                null,
+                                authorization,
+                                recordingSessionId,
+                                attemptId
+                        );
+                } else {
+                    transcript = aiServiceClient.streamAudioChunk(
                                 meetingId,
                                 streamId,
                                 new byte[0],
@@ -3276,6 +3377,7 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                                 null,
                                 authorization
                         );
+                }
                 streamState.setStreamFinalized(true);
                 log.info(
                         "REALTIME_DUAL_STREAM_FINALIZED meetingId={} streamId={} hasTranscript={}",

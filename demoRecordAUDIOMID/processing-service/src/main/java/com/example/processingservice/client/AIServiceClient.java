@@ -837,6 +837,32 @@ public class AIServiceClient {
         );
     }
 
+    public Map<String, Object> streamAudioChunk(
+            Long meetingId,
+            byte[] audioChunk,
+            Long seq,
+            String language,
+            String speakerMode,
+            boolean isFinal,
+            String traceId,
+            String authorization,
+            Long recordingSessionId,
+            Long attemptId) {
+        return streamAudioChunk(
+                meetingId,
+                null,
+                audioChunk,
+                seq,
+                language,
+                speakerMode,
+                isFinal,
+                traceId,
+                authorization,
+                recordingSessionId,
+                attemptId
+        );
+    }
+
     @Retry(name = "ai-service")
     @CircuitBreaker(name = "ai-service")
     @Retryable(
@@ -854,6 +880,36 @@ public class AIServiceClient {
             boolean isFinal,
             String traceId,
             String authorization) {
+        return streamAudioChunk(
+                meetingId,
+                streamId,
+                audioChunk,
+                seq,
+                language,
+                speakerMode,
+                isFinal,
+                traceId,
+                authorization,
+                null,
+                null
+        );
+    }
+
+    public Map<String, Object> streamAudioChunk(
+            Long meetingId,
+            String streamId,
+            byte[] audioChunk,
+            Long seq,
+            String language,
+            String speakerMode,
+            boolean isFinal,
+            String traceId,
+            String authorization,
+            Long recordingSessionId,
+            Long attemptId) {
+        if ((recordingSessionId == null) != (attemptId == null)) {
+            throw new IllegalArgumentException("recordingSessionId and attemptId must be provided together");
+        }
 
         HttpHeaders headers = new HttpHeaders();
         String resolvedTraceId = resolveTraceId(traceId);
@@ -875,6 +931,10 @@ public class AIServiceClient {
         body.add("language", normalizeRealtimeLanguage(language));
         body.add("speaker_mode", normalizeSpeakerMode(speakerMode));
         body.add("is_final", String.valueOf(isFinal));
+        if (recordingSessionId != null) {
+            body.add("recording_session_id", String.valueOf(recordingSessionId));
+            body.add("attempt_id", String.valueOf(attemptId));
+        }
         String requestedLanguage = normalizeFallbackLanguage(language);
         String effectiveLanguage = normalizeRealtimeLanguage(language);
         log.info(

@@ -204,6 +204,106 @@ class AIServiceClientTest {
     }
 
     @Test
+    void streamAudioChunk_shouldSendCompleteProvenanceAsDecimalMultipartFields() {
+        RestTemplate restTemplate = mock(RestTemplate.class);
+        AIServiceClient client = new AIServiceClient(restTemplate);
+        ReflectionTestUtils.setField(client, "aiUrl", "http://ai-service");
+
+        ResponseEntity<Map<String, Object>> response = new ResponseEntity<>(Map.of("transcript", "ok"), HttpStatus.OK);
+        when(restTemplate.exchange(
+                any(String.class),
+                eq(HttpMethod.POST),
+                any(HttpEntity.class),
+                any(org.springframework.core.ParameterizedTypeReference.class)
+        )).thenReturn(response);
+
+        client.streamAudioChunk(
+                12L,
+                "tab",
+                new byte[] {0x03},
+                7L,
+                "vi",
+                "multiple",
+                false,
+                null,
+                null,
+                1001L,
+                2L
+        );
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<HttpEntity<MultiValueMap<String, Object>>> captor = ArgumentCaptor.forClass(HttpEntity.class);
+        verify(restTemplate).exchange(
+                eq("http://ai-service/api/v1/stt/stream"),
+                eq(HttpMethod.POST),
+                captor.capture(),
+                any(org.springframework.core.ParameterizedTypeReference.class)
+        );
+
+        MultiValueMap<String, Object> body = captor.getValue().getBody();
+        assertEquals("1001", body.getFirst("recording_session_id"));
+        assertEquals("2", body.getFirst("attempt_id"));
+    }
+
+    @Test
+    void streamAudioChunk_shouldOmitProvenanceForLegacyRequest() {
+        RestTemplate restTemplate = mock(RestTemplate.class);
+        AIServiceClient client = new AIServiceClient(restTemplate);
+        ReflectionTestUtils.setField(client, "aiUrl", "http://ai-service");
+
+        ResponseEntity<Map<String, Object>> response = new ResponseEntity<>(Map.of("transcript", "ok"), HttpStatus.OK);
+        when(restTemplate.exchange(
+                any(String.class),
+                eq(HttpMethod.POST),
+                any(HttpEntity.class),
+                any(org.springframework.core.ParameterizedTypeReference.class)
+        )).thenReturn(response);
+
+        client.streamAudioChunk(13L, new byte[] {0x04}, 8L, "vi", null, false, null, null);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<HttpEntity<MultiValueMap<String, Object>>> captor = ArgumentCaptor.forClass(HttpEntity.class);
+        verify(restTemplate).exchange(
+                eq("http://ai-service/api/v1/stt/stream"),
+                eq(HttpMethod.POST),
+                captor.capture(),
+                any(org.springframework.core.ParameterizedTypeReference.class)
+        );
+
+        MultiValueMap<String, Object> body = captor.getValue().getBody();
+        assertNull(body.getFirst("recording_session_id"));
+        assertNull(body.getFirst("attempt_id"));
+    }
+
+    @Test
+    void streamAudioChunk_shouldRejectPartialProvenanceBeforeHttpRequest() {
+        RestTemplate restTemplate = mock(RestTemplate.class);
+        AIServiceClient client = new AIServiceClient(restTemplate);
+        ReflectionTestUtils.setField(client, "aiUrl", "http://ai-service");
+
+        assertThrows(IllegalArgumentException.class, () -> client.streamAudioChunk(
+                14L,
+                "mic",
+                new byte[] {0x05},
+                9L,
+                "vi",
+                "multiple",
+                false,
+                null,
+                null,
+                1001L,
+                null
+        ));
+
+        verify(restTemplate, org.mockito.Mockito.never()).exchange(
+                any(String.class),
+                any(HttpMethod.class),
+                any(HttpEntity.class),
+                any(org.springframework.core.ParameterizedTypeReference.class)
+        );
+    }
+
+    @Test
     void analyzeRealtimeTranscript_shouldPostTranscriptPayloadToInternalEndpoint() {
         RestTemplate restTemplate = mock(RestTemplate.class);
         AIServiceClient client = new AIServiceClient(restTemplate);
