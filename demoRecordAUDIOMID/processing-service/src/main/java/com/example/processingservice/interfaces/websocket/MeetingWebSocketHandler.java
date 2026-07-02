@@ -1780,6 +1780,15 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
         );
         String transcriptText = buildTranscriptText(transcriptRows);
         if (transcriptText.isBlank()) {
+            jobStateStore.markAnalysisSkipped(
+                    meetingId,
+                    computeTranscriptHash(""),
+                    source,
+                    "processing_ws_realtime_stop",
+                    null,
+                    "skipped_empty_transcript",
+                    0
+            );
             log.info(
                     "event=REALTIME_ANALYSIS_SKIPPED_EMPTY_TRANSCRIPT source={} meetingId={}",
                     source,

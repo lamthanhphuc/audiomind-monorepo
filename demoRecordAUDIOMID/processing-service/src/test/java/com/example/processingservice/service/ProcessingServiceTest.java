@@ -2949,6 +2949,43 @@ class ProcessingServiceTest {
     }
 
     @Test
+    void getAnalysis_shouldReturnSkippedEmptyTranscriptWhenPersistedRowsAreBlank() {
+        when(jobStateStore.getJobState(614L)).thenReturn(Optional.empty());
+        when(aiServiceClient.getAnalysis(614L, "trace-614"))
+                .thenThrow(new HttpClientErrorException(HttpStatus.NOT_FOUND));
+        when(aiServiceClient.getTranscript(614L, "trace-614")).thenReturn(Map.of(
+                "meeting_id", 614L,
+                "transcripts", List.of(
+                        Map.of("speaker", "SPEAKER_1", "text", "   ")
+                )
+        ));
+
+        Map<String, Object> response = processingService.getAnalysis(614L, "trace-614", AUTH_HEADER);
+
+        assertEquals("SKIPPED_EMPTY_TRANSCRIPT", response.get("status"));
+        verify(jobStateStore).markAnalysisSkipped(
+                eq(614L),
+                anyString(),
+                eq("get_analysis_lazy"),
+                eq("processing_service_lazy_poll"),
+                isNull(),
+                eq("skipped_empty_transcript"),
+                eq(0)
+        );
+        verify(aiServiceClient, never()).analyzeRealtimeTranscript(
+                eq(614L),
+                anyString(),
+                eq("it"),
+                eq("realtime"),
+                anyString(),
+                anyString(),
+                anyString(),
+                eq("trace-614"),
+                eq(AUTH_HEADER)
+        );
+    }
+
+    @Test
     void reanalyzeMeetingAnalysis_shouldVerifyAccessAndDelegateToAiService() {
         when(meetingServiceClient.getMeetingById(616L, "trace-616", AUTH_HEADER))
                 .thenReturn(Map.of("id", 616L));

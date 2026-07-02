@@ -3430,6 +3430,7 @@ public class ProcessingService {
             case "NOT_FOUND" -> "NOT_STARTED";
             case "COMPLETED" -> "SUCCEEDED";
             case "ANALYSIS_FAILED_RETRYABLE" -> "RETRYABLE_FAILED";
+            case "SKIPPED_EMPTY_TRANSCRIPT" -> "SKIPPED_EMPTY_TRANSCRIPT";
             default -> normalized;
         };
     }
@@ -3461,6 +3462,10 @@ public class ProcessingService {
         if (AnalysisFailureMapping.ANALYSIS_STATUS_FAILED_RETRYABLE.equals(analysisState.status())) {
             response.put("status", toFeAnalysisPollingStatus(AnalysisFailureMapping.ANALYSIS_STATUS_FAILED_RETRYABLE));
             response.put("analysisStatus", AnalysisFailureMapping.ANALYSIS_STATUS_FAILED_RETRYABLE);
+        } else if ("SKIPPED".equals(analysisState.status())
+                && "skipped_empty_transcript".equalsIgnoreCase(analysisState.errorCode())) {
+            response.put("status", "SKIPPED_EMPTY_TRANSCRIPT");
+            response.put("analysisStatus", "SKIPPED_EMPTY_TRANSCRIPT");
         } else if (analysisState.status() != null && !analysisState.status().isBlank()) {
             response.put("analysisStatus", analysisState.status());
         }
@@ -4580,7 +4585,16 @@ public class ProcessingService {
             String reason = transcriptRows.isEmpty() ? "transcript_not_ready" : "empty_transcript";
             logRealtimeAnalysisSkipThrottled(meetingId, source, reason);
             if ("empty_transcript".equals(reason)) {
-                return new AnalysisTriggerResult("FAILED", "EMPTY_TRANSCRIPT", 0);
+                jobStateStore.markAnalysisSkipped(
+                        meetingId,
+                        computeTranscriptHash(""),
+                        source,
+                        "processing_service_lazy_poll",
+                        null,
+                        "skipped_empty_transcript",
+                        0
+                );
+                return new AnalysisTriggerResult("SKIPPED_EMPTY_TRANSCRIPT", "skipped_empty_transcript", 0);
             }
             return new AnalysisTriggerResult("NOT_READY", null, 0);
         }

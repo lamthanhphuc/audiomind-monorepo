@@ -1472,6 +1472,58 @@ class MeetingWebSocketHandlerTest {
     }
 
     @Test
+    void handleTextMessage_streamStop_shouldMarkSkippedEmptyTranscriptWithoutAnalysisProviderCall() throws Exception {
+        attributes.put("meetingId", 355L);
+        attributes.put("authenticated", true);
+        attributes.put("language", "vi");
+        attributes.put("authorization", "Bearer test-token");
+        attributes.put("lastAudioSeq", 24L);
+        attributes.put("AUDIO_RECEIVED_ATTR", Boolean.TRUE);
+
+        doReturn(Map.of("type", "stream.stop")).when(objectMapper).readValue(anyString(), any(Class.class));
+        when(aiServiceClient.streamAudioChunk(
+                eq(355L),
+                argThat(bytes -> bytes != null && bytes.length == 0),
+                eq(-1L),
+                eq("vi"),
+                eq(true),
+                isNull(),
+                eq("Bearer test-token")
+        )).thenReturn(Map.of(
+                "transcript", "done",
+                "is_final", true,
+                "language", "vi"
+        ));
+        when(aiServiceClient.getTranscript(eq(355L), anyString())).thenReturn(Map.of(
+                "meeting_id", 355L,
+                "transcripts", java.util.List.of(
+                        Map.of("speaker", "SPEAKER_1", "text", "   ")
+                )
+        ));
+
+        handler.handleTextMessage(session, new TextMessage("{\"type\":\"stream.stop\"}"));
+
+        verify(jobStateStore, timeout(1000)).markAnalysisSkipped(
+                eq(355L),
+                anyString(),
+                eq("stream_stop"),
+                eq("processing_ws_realtime_stop"),
+                isNull(),
+                eq("skipped_empty_transcript"),
+                eq(0)
+        );
+        verify(aiServiceClient, after(200).never()).analyzeRealtimeTranscript(
+                eq(355L),
+                anyString(),
+                anyString(),
+                eq("realtime"),
+                anyString(),
+                anyString(),
+                anyString()
+        );
+    }
+
+    @Test
     void handleTextMessage_streamStop_shouldBroadcastNoSpeechStatusForEmptyFinalTranscript() throws Exception {
         attributes.put("meetingId", 36L);
         attributes.put("authenticated", true);
