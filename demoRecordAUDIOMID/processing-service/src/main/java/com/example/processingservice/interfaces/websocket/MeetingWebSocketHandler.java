@@ -85,6 +85,7 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
     private static final String LAST_SEGMENT_AT_ATTR = "lastSegmentAt";
     private static final String EMPTY_TRANSCRIPT_STREAK_ATTR = "emptyTranscriptStreak";
     private static final String FIRST_CHUNK_AT_ATTR = "firstChunkAt";
+    private static final String LAST_ACCEPTED_AUDIO_AT_ATTR = "lastAcceptedAudioAt";
     private static final String AUDIO_RECEIVED_ATTR = "AUDIO_RECEIVED_ATTR";
     private static final String VALID_AUDIO_RECEIVED_ATTR = "validAudioReceived";
     private static final String TOTAL_AUDIO_BYTES_ATTR = "totalAudioBytes";
@@ -494,6 +495,8 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                     getLongAttribute(session, LAST_AUDIO_SEQ_ATTR),
                     getLongAttribute(session, LAST_AUDIO_SEQ_ATTR)
             );
+            finalizeDeadlineService.clear(
+                    buildFinalizeContext(session, meetingId, true, REALTIME_ANALYSIS_SOURCE_STREAM_STOP));
             if (realtimeAsyncAudioQueueEnabled) {
                 shutdownRealtimeWorkerForStop(session, meetingId);
             } else {
@@ -631,7 +634,7 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
         }
 
         if (payloadSize > 0) {
-            recordAcceptedAudioChunk(session, meetingId, streamId, payloadSize);
+            recordAcceptedAudioChunk(session, meetingId, streamId, payloadSize, lastSeq, nowMs);
         }
 
         log.info(
@@ -1079,9 +1082,12 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
     }
 
     private void finalizeSttSessionFromDeadline(WebSocketSession session, Long meetingId) {
+        if (session == null || Boolean.TRUE.equals(session.getAttributes().get(FINALIZED_ATTR))) {
+            return;
+        }
         boolean sessionOpen = false;
         try {
-            sessionOpen = session != null && session.isOpen();
+            sessionOpen = session.isOpen();
         } catch (Exception ex) {
             log.debug(
                     "Unable to read WebSocket open state before realtime finalize deadline meetingId={} errorCode={}",
@@ -1090,17 +1096,42 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
             );
         }
 
-        if (sessionOpen && !Boolean.TRUE.equals(session.getAttributes().get(FINALIZED_ATTR))) {
+        if (sessionOpen) {
+            Long lastAcceptedAt = getLongAttribute(session, LAST_ACCEPTED_AUDIO_AT_ATTR);
+            long inactivityTimeoutMs = finalizeDeadlineService.audioInactivityTimeoutMs();
+            long now = System.currentTimeMillis();
+            long idleMs = lastAcceptedAt != null ? Math.max(0L, now - lastAcceptedAt) : inactivityTimeoutMs;
+            if (lastAcceptedAt != null && idleMs < inactivityTimeoutMs) {
+                long remainingMs = Math.max(1L, inactivityTimeoutMs - idleMs);
+                RealtimeFinalizeDeadlineService.FinalizeAttemptContext context =
+                        buildFinalizeContext(session, meetingId, true, REALTIME_ANALYSIS_SOURCE_STREAM_STOP);
+                finalizeDeadlineService.rescheduleInactivityDeadline(
+                        meetingId,
+                        context,
+                        ctx -> finalizeSttSessionFromDeadline(session, meetingId),
+                        remainingMs);
+                RealtimeAudioSessionWorker worker = realtimeAudioWorkerRegistry.get(session.getId());
+                log.info(
+                        "event=REALTIME_FINALIZE_DEADLINE_IGNORED_ACTIVE_AUDIO meetingId={} sessionId={} lastClientSeq={} idleMs={} thresholdMs={} workerState={} reason=recent_audio",
+                        meetingId,
+                        session.getId(),
+                        getLongAttribute(session, LAST_AUDIO_SEQ_ATTR),
+                        idleMs,
+                        inactivityTimeoutMs,
+                        worker != null ? worker.state() : "none"
+                );
+                return;
+            }
             RealtimeAudioSessionWorker worker = realtimeAudioWorkerRegistry.get(session.getId());
             log.info(
-                    "event=REALTIME_FINALIZE_DEADLINE_IGNORED_ACTIVE_STREAM meetingId={} sessionId={} lastClientSeq={} workerState={} reason=websocket_open",
+                    "event=REALTIME_FINALIZE_INACTIVITY_DETECTED meetingId={} sessionId={} lastClientSeq={} idleMs={} thresholdMs={} workerState={}",
                     meetingId,
                     session.getId(),
                     getLongAttribute(session, LAST_AUDIO_SEQ_ATTR),
+                    idleMs,
+                    inactivityTimeoutMs,
                     worker != null ? worker.state() : "none"
             );
-            finalizeDeadlineService.clear(meetingId);
-            return;
         }
 
         finalizeSttSession(session, meetingId, sessionOpen);
@@ -2344,11 +2375,21 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
             WebSocketSession session,
             Long meetingId,
             String streamId,
-            int payloadSize
+            int payloadSize,
+            Long lastSeq,
+            long acceptedAtMs
     ) {
         try {
             Boolean previouslyReceived = (Boolean) session.getAttributes().get(AUDIO_RECEIVED_ATTR);
             session.getAttributes().put(AUDIO_RECEIVED_ATTR, Boolean.TRUE);
+            session.getAttributes().put(LAST_ACCEPTED_AUDIO_AT_ATTR, acceptedAtMs);
+            if (lastSeq != null) {
+                session.getAttributes().put(LAST_ACCEPTED_SEQ_ATTR, lastSeq);
+                if (isDualStreamSession(session)) {
+                    RealtimeStreamAudioState.stateFor(session.getAttributes(), streamId)
+                            .setLastAcceptedSeq(lastSeq);
+                }
+            }
             if (isDualStreamSession(session)) {
                 RealtimeStreamAudioState streamState =
                         RealtimeStreamAudioState.stateFor(session.getAttributes(), streamId);
@@ -2913,6 +2954,9 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
     ) {
         return new RealtimeFinalizeDeadlineService.FinalizeAttemptContext(
                 meetingId,
+                session.getId(),
+                currentRecordingSessionId(session),
+                currentAttemptId(session),
                 getStringAttribute(session, LANGUAGE_ATTR),
                 getStringAttribute(session, SPEAKER_MODE_ATTR),
                 getStringAttribute(session, "authorization"),

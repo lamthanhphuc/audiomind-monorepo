@@ -1,18 +1,19 @@
 package com.example.processingservice.interfaces.websocket.realtime;
 
 import java.time.Duration;
-import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 /**
- * Plan B: deadline/retry finalize independent of open WebSocket session.
+ * Activity-aware inactivity finalize: arms once on first audio, then re-checks last activity
+ * when the timer fires instead of treating an open WebSocket as an active stream.
  */
 @Slf4j
 @Component
@@ -23,13 +24,18 @@ public class RealtimeFinalizeDeadlineService {
             Duration.ofSeconds(5),
             Duration.ofSeconds(12)
     };
+    private static final Duration AUDIO_INACTIVITY_TIMEOUT = Duration.ofSeconds(45);
 
     private final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(2);
-    private final ConcurrentHashMap<Long, ScheduledFuture<?>> pendingDeadlines = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<Long, AtomicInteger> retryAttempts = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<DeadlineKey, DeadlineState> pendingDeadlines = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<DeadlineKey, AtomicInteger> retryAttempts = new ConcurrentHashMap<>();
+    private final AtomicLong generations = new AtomicLong(0L);
 
     public record FinalizeAttemptContext(
             Long meetingId,
+            String webSocketSessionId,
+            Long recordingSessionId,
+            Long attemptId,
             String language,
             String speakerMode,
             String authorization,
@@ -45,65 +51,157 @@ public class RealtimeFinalizeDeadlineService {
         void run(FinalizeAttemptContext context) throws Exception;
     }
 
+    private record DeadlineKey(
+            Long meetingId,
+            String webSocketSessionId,
+            Long recordingSessionId,
+            Long attemptId
+    ) {
+        static DeadlineKey from(FinalizeAttemptContext context) {
+            return new DeadlineKey(
+                    context.meetingId(),
+                    context.webSocketSessionId(),
+                    context.recordingSessionId(),
+                    context.attemptId()
+            );
+        }
+    }
+
+    private record DeadlineState(ScheduledFuture<?> future, long generation) {
+    }
+
+    public long audioInactivityTimeoutMs() {
+        return AUDIO_INACTIVITY_TIMEOUT.toMillis();
+    }
+
+    /** Arm the inactivity deadline once (first accepted audio). */
     public void markAudioReceived(Long meetingId, FinalizeAttemptContext context, FinalizeRunner runner) {
-        cancelDeadline(meetingId);
+        scheduleDeadline(DeadlineKey.from(context), context, runner, AUDIO_INACTIVITY_TIMEOUT.toMillis(), "inactivity");
+    }
+
+    /** Reschedule after a deadline callback observes recent audio activity. */
+    public void rescheduleInactivityDeadline(
+            Long meetingId,
+            FinalizeAttemptContext context,
+            FinalizeRunner runner,
+            long delayMs
+    ) {
+        scheduleDeadline(
+                DeadlineKey.from(context),
+                context,
+                runner,
+                Math.max(1L, delayMs),
+                "inactivity"
+        );
+    }
+
+    private void scheduleDeadline(
+            DeadlineKey key,
+            FinalizeAttemptContext context,
+            FinalizeRunner runner,
+            long delayMs,
+            String source
+    ) {
+        cancelDeadline(key);
+        long generation = generations.incrementAndGet();
         ScheduledFuture<?> future = scheduler.schedule(
-                () -> attemptFinalize(meetingId, context, runner, "deadline"),
-                45,
-                TimeUnit.SECONDS);
-        pendingDeadlines.put(meetingId, future);
+                () -> attemptFinalize(key, context, runner, source, generation),
+                delayMs,
+                TimeUnit.MILLISECONDS);
+        pendingDeadlines.put(key, new DeadlineState(future, generation));
     }
 
     public void requestFinalize(Long meetingId, FinalizeAttemptContext context, FinalizeRunner runner) {
-        cancelDeadline(meetingId);
-        attemptFinalize(meetingId, context, runner, "immediate");
+        DeadlineKey key = DeadlineKey.from(context);
+        cancelDeadline(key);
+        attemptFinalize(key, context, runner, "immediate", generations.incrementAndGet());
     }
 
     public void scheduleRetry(Long meetingId, FinalizeAttemptContext context, FinalizeRunner runner) {
-        AtomicInteger attempts = retryAttempts.computeIfAbsent(meetingId, ignored -> new AtomicInteger(0));
+        DeadlineKey key = DeadlineKey.from(context);
+        AtomicInteger attempts = retryAttempts.computeIfAbsent(key, ignored -> new AtomicInteger(0));
         int attempt = attempts.incrementAndGet();
         if (attempt > RETRY_DELAYS.length) {
             log.warn("event=REALTIME_FINALIZE_RETRY_EXHAUSTED meetingId={} attempts={}", meetingId, attempt);
-            clear(meetingId);
+            clear(key);
             return;
         }
         Duration delay = RETRY_DELAYS[attempt - 1];
         log.info("event=REALTIME_FINALIZE_RETRY_SCHEDULED meetingId={} attempt={} delayMs={}",
                 meetingId, attempt, delay.toMillis());
-        cancelDeadline(meetingId);
-        ScheduledFuture<?> future = scheduler.schedule(
-                () -> attemptFinalize(meetingId, context, runner, "retry-" + attempt),
-                delay.toMillis(),
-                TimeUnit.MILLISECONDS);
-        pendingDeadlines.put(meetingId, future);
+        scheduleDeadline(key, context, runner, delay.toMillis(), "retry-" + attempt);
     }
 
     public void clear(Long meetingId) {
-        cancelDeadline(meetingId);
-        retryAttempts.remove(meetingId);
+        pendingDeadlines.keySet().stream()
+                .filter(key -> meetingId.equals(key.meetingId()))
+                .toList()
+                .forEach(this::clear);
+    }
+
+    public void clear(FinalizeAttemptContext context) {
+        clear(DeadlineKey.from(context));
+    }
+
+    private void clear(DeadlineKey key) {
+        cancelDeadline(key);
+        retryAttempts.remove(key);
     }
 
     private void attemptFinalize(
-            Long meetingId,
+            DeadlineKey key,
             FinalizeAttemptContext context,
             FinalizeRunner runner,
-            String source
+            String source,
+            long generation
     ) {
+        if (!isCurrentGeneration(key, generation)) {
+            log.info(
+                    "event=REALTIME_FINALIZE_DEADLINE_STALE_IGNORED meetingId={} webSocketSessionId={} recordingSessionId={} attemptId={} source={}",
+                    context.meetingId(),
+                    context.webSocketSessionId(),
+                    context.recordingSessionId(),
+                    context.attemptId(),
+                    source
+            );
+            return;
+        }
         try {
-            log.info("event=REALTIME_FINALIZE_ATTEMPT meetingId={} source={}", meetingId, source);
+            log.info(
+                    "event=REALTIME_FINALIZE_ATTEMPT meetingId={} webSocketSessionId={} recordingSessionId={} attemptId={} source={}",
+                    context.meetingId(),
+                    context.webSocketSessionId(),
+                    context.recordingSessionId(),
+                    context.attemptId(),
+                    source
+            );
             runner.run(context);
-            clear(meetingId);
+            clearIfCurrent(key, generation);
         } catch (Exception ex) {
             log.warn("event=REALTIME_FINALIZE_ATTEMPT_FAILED meetingId={} source={} error={}",
-                    meetingId, source, ex.getMessage());
-            scheduleRetry(meetingId, context, runner);
+                    context.meetingId(), source, ex.getMessage());
+            if (isCurrentGeneration(key, generation)) {
+                scheduleRetry(context.meetingId(), context, runner);
+            }
         }
     }
 
-    private void cancelDeadline(Long meetingId) {
-        ScheduledFuture<?> existing = pendingDeadlines.remove(meetingId);
-        if (existing != null) {
-            existing.cancel(false);
+    private boolean isCurrentGeneration(DeadlineKey key, long generation) {
+        DeadlineState existing = pendingDeadlines.get(key);
+        return existing != null && existing.generation() == generation;
+    }
+
+    private void clearIfCurrent(DeadlineKey key, long generation) {
+        DeadlineState existing = pendingDeadlines.get(key);
+        if (existing != null && existing.generation() == generation) {
+            clear(key);
+        }
+    }
+
+    private void cancelDeadline(DeadlineKey key) {
+        DeadlineState existing = pendingDeadlines.remove(key);
+        if (existing != null && existing.future() != null) {
+            existing.future().cancel(false);
         }
     }
 }

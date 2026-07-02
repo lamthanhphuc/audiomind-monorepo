@@ -118,7 +118,9 @@ class MeetingWebSocketHandlerTest {
         private FinalizeAttemptContext context;
         private FinalizeRunner runner;
         private int markAudioReceivedCalls;
-        private int clearCalls;
+        private int rescheduleInactivityCalls;
+        private int clearMeetingCalls;
+        private int clearContextCalls;
 
         @Override
         public void markAudioReceived(Long meetingId, FinalizeAttemptContext context, FinalizeRunner runner) {
@@ -128,8 +130,25 @@ class MeetingWebSocketHandlerTest {
         }
 
         @Override
+        public void rescheduleInactivityDeadline(
+                Long meetingId,
+                FinalizeAttemptContext context,
+                FinalizeRunner runner,
+                long delayMs
+        ) {
+            this.context = context;
+            this.runner = runner;
+            this.rescheduleInactivityCalls++;
+        }
+
+        @Override
         public void clear(Long meetingId) {
-            this.clearCalls++;
+            this.clearMeetingCalls++;
+        }
+
+        @Override
+        public void clear(FinalizeAttemptContext context) {
+            this.clearContextCalls++;
         }
 
         void fireDeadline() throws Exception {
@@ -1185,9 +1204,11 @@ class MeetingWebSocketHandlerTest {
         }
 
         assertEquals(1, deadlineService.markAudioReceivedCalls);
+        attributes.put("lastAcceptedAudioAt", System.currentTimeMillis());
         deadlineService.fireDeadline();
         assertFalse(Boolean.TRUE.equals(attributes.get("FINALIZED_ATTR")));
-        assertEquals(1, deadlineService.clearCalls);
+        assertEquals(1, deadlineService.rescheduleInactivityCalls);
+        assertEquals(0, deadlineService.clearMeetingCalls);
 
         for (long seq : List.of(309L, 400L)) {
             sendAudioMetadata(seq, 512);
@@ -1212,6 +1233,90 @@ class MeetingWebSocketHandlerTest {
                 isNull(),
                 eq("Bearer test-token")
         );
+    }
+
+    @Test
+    void finalizeDeadline_shouldFinalizeOnceWhenWebSocketOpenButAudioInactive() throws Exception {
+        attributes.put("meetingId", 681L);
+        attributes.put("authenticated", true);
+        attributes.put("language", "vi");
+        attributes.put("authorization", "Bearer test-token");
+        attributes.put("AUDIO_RECEIVED_ATTR", Boolean.TRUE);
+        attributes.put("validAudioReceived", Boolean.TRUE);
+        attributes.put("totalAudioBytes", 4096L);
+        attributes.put("lastAcceptedAudioAt", System.currentTimeMillis() - 60_000L);
+        attributes.put("lastAudioSeq", 120L);
+        attributes.put("MEETING_STATUS_CHECKED_ATTR", Boolean.TRUE);
+        attributes.put("lastMeetingStatusCheckAt", System.currentTimeMillis());
+        when(session.isOpen()).thenReturn(true);
+
+        handler = buildHandler(new RealtimeFinalizeDeadlineService());
+        ReflectionTestUtils.setField(handler, "realtimeAsyncAudioQueueEnabled", false);
+
+        when(aiServiceClient.streamAudioChunk(
+                eq(681L),
+                any(byte[].class),
+                eq(-1L),
+                eq("vi"),
+                eq(true),
+                isNull(),
+                eq("Bearer test-token")
+        )).thenReturn(Map.of(
+                "transcript", "done",
+                "is_final", true,
+                "language", "vi"
+        ));
+
+        ReflectionTestUtils.invokeMethod(handler, "finalizeSttSessionFromDeadline", session, 681L);
+
+        assertTrue(Boolean.TRUE.equals(attributes.get("FINALIZED_ATTR")));
+        verify(aiServiceClient, times(1)).streamAudioChunk(
+                eq(681L),
+                any(byte[].class),
+                eq(-1L),
+                eq("vi"),
+                eq(true),
+                isNull(),
+                eq("Bearer test-token")
+        );
+    }
+
+    @Test
+    void streamStop_shouldClearInactivityDeadlineBeforeFinalize() throws Exception {
+        CapturingFinalizeDeadlineService deadlineService = new CapturingFinalizeDeadlineService();
+        handler = buildHandler(deadlineService);
+        ReflectionTestUtils.setField(handler, "realtimeAsyncAudioQueueEnabled", false);
+
+        attributes.put("meetingId", 682L);
+        attributes.put("authenticated", true);
+        attributes.put("language", "vi");
+        attributes.put("authorization", "Bearer test-token");
+        attributes.put("lastAudioSeq", 7L);
+        attributes.put("AUDIO_RECEIVED_ATTR", Boolean.TRUE);
+        attributes.put("validAudioReceived", Boolean.TRUE);
+        attributes.put("totalAudioBytes", 4096L);
+        attributes.put("MEETING_STATUS_CHECKED_ATTR", Boolean.TRUE);
+        attributes.put("lastMeetingStatusCheckAt", System.currentTimeMillis());
+
+        doReturn(Map.of("type", "stream.stop")).when(objectMapper).readValue(anyString(), any(Class.class));
+        lenient().when(aiServiceClient.streamAudioChunk(
+                eq(682L),
+                any(byte[].class),
+                eq(-1L),
+                eq("vi"),
+                eq(true),
+                isNull(),
+                eq("Bearer test-token")
+        )).thenReturn(Map.of(
+                "transcript", "done",
+                "is_final", true,
+                "language", "vi"
+        ));
+
+        handler.handleTextMessage(session, new TextMessage("{\"type\":\"stream.stop\"}"));
+
+        assertEquals(1, deadlineService.clearContextCalls);
+        assertTrue(Boolean.TRUE.equals(attributes.get("FINALIZED_ATTR")));
     }
 
     @Test
