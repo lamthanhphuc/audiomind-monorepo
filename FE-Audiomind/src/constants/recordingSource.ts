@@ -75,6 +75,8 @@ export const RECORDING_SOURCE_ERRORS = {
     'Tab được chọn không có âm thanh. Hãy chọn tab đang phát tiếng và bật chia sẻ âm thanh tab.',
   tabStopSharing:
     'Bạn đã dừng chia sẻ tab. Audiomind sẽ kết thúc ghi âm an toàn.',
+  tabCaptureStalled:
+    'Âm thanh tab ngừng đi vào pipeline ghi âm. Hãy kiểm tra tab đang phát tiếng hoặc chọn lại tab.',
   tabTinyOrSilentAudio:
     'Không phát hiện âm thanh từ tab. Hãy kiểm tra tab đang phát tiếng và bật chia sẻ âm thanh tab.',
   tabPermissionDenied:

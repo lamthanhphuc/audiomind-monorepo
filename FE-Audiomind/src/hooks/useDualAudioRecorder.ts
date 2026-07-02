@@ -8,11 +8,16 @@ import {
 import {
   REALTIME_RECORDER_TIMESLICE_MS,
 } from '../services/config'
+import { RECORDING_SOURCE_ERRORS } from '../constants/recordingSource'
 import type { AudioRecorderState, GracefulStopResult, UseAudioRecorderReturn } from './useAudioRecorder'
 import {
   RECORDER_STOP_TIMEOUT_MS,
   REQUEST_DATA_GRACE_MS,
 } from './useAudioRecorder'
+import {
+  createTabAudioPipelineMonitor,
+  type TabAudioPipelineMonitor,
+} from '../utils/tabAudioPipeline'
 
 const RECORDER_MIME_TYPE = 'audio/webm; codecs=opus'
 
@@ -25,6 +30,8 @@ type StreamRecorder = {
 export type UseDualAudioRecorderOptions = {
   timesliceMs?: number
   onTrackEnded?: () => void
+  onCaptureError?: (message: string) => void
+  onPipelineStalled?: (streamId: DualTabMicStreamId) => void
   diagnosticMeetingId?: number | null
   onChunkReady?: (chunk: Blob, streamId: DualTabMicStreamId, sessionId: number) => void | Promise<void>
 }
@@ -48,6 +55,8 @@ export const useDualAudioRecorder = (
   const trackEndedDetachRef = useRef<(() => void) | null>(null)
   const durationTimerRef = useRef<number | null>(null)
   const startedAtRef = useRef<number | null>(null)
+  const tabPipelineMonitorRef = useRef<TabAudioPipelineMonitor | null>(null)
+  const tabChunkSeqRef = useRef(0)
   const timesliceMs = Math.max(100, Math.floor(options.timesliceMs ?? REALTIME_RECORDER_TIMESLICE_MS))
 
   const stopDurationTimer = useCallback(() => {
@@ -60,6 +69,9 @@ export const useDualAudioRecorder = (
   const cleanupRecordingResources = useCallback(() => {
     trackEndedDetachRef.current?.()
     trackEndedDetachRef.current = null
+    tabPipelineMonitorRef.current?.cleanup()
+    tabPipelineMonitorRef.current = null
+    tabChunkSeqRef.current = 0
     streamRecordersRef.current.forEach(({ recorder }) => {
       try {
         if (recorder.state !== 'inactive') {
@@ -107,7 +119,21 @@ export const useDualAudioRecorder = (
 
       trackEndedDetachRef.current = attachAudioTrackEndedHandler(acquired.tab.stream, () => {
         options.onTrackEnded?.()
+      }, {
+        onMuted: () => options.onCaptureError?.(RECORDING_SOURCE_ERRORS.tabTinyOrSilentAudio),
       })
+
+      tabPipelineMonitorRef.current = createTabAudioPipelineMonitor({
+        stream: acquired.tab.stream,
+        streamId: 'tab',
+        meetingId: options.diagnosticMeetingId ?? null,
+        sessionId,
+        onTrackEnded: () => options.onTrackEnded?.(),
+        onTrackMuted: () => options.onCaptureError?.(RECORDING_SOURCE_ERRORS.tabTinyOrSilentAudio),
+        onCaptureError: (message) => options.onCaptureError?.(message),
+        onPipelineStalled: () => options.onPipelineStalled?.('tab'),
+      })
+      startedAtRef.current = performance.now()
 
       const recorders: StreamRecorder[] = streams.map(({ streamId, stream }) => {
         const recorder = new MediaRecorder(stream, { mimeType: RECORDER_MIME_TYPE })
@@ -116,6 +142,17 @@ export const useDualAudioRecorder = (
           if (event.data.size > 0) {
             chunks.push(event.data)
             setAudioChunks((prev) => [...prev, event.data])
+            if (streamId === 'tab') {
+              tabChunkSeqRef.current += 1
+              const elapsedMs = startedAtRef.current === null
+                ? 0
+                : Math.max(0, Math.round(performance.now() - startedAtRef.current))
+              tabPipelineMonitorRef.current?.notifyRecorderChunk({
+                seq: tabChunkSeqRef.current,
+                bytes: event.data.size,
+                elapsedMs,
+              })
+            }
             void options.onChunkReady?.(event.data, streamId, sessionId)
           }
         }

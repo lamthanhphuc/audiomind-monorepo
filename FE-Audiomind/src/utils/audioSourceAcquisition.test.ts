@@ -171,4 +171,20 @@ describe('attachAudioTrackEndedHandler', () => {
     detach()
     expect(track.removeEventListener).toHaveBeenCalledWith('ended', expect.any(Function))
   })
+
+  it('invokes onMuted when track mute event fires', () => {
+    const listeners = new Map<string, () => void>()
+    const track = createMockTrack({
+      addEventListener: vi.fn((event: string, handler: () => void) => {
+        listeners.set(event, handler)
+      }),
+      removeEventListener: vi.fn(),
+    })
+    const stream = createMockStream([track])
+    const onMuted = vi.fn()
+
+    attachAudioTrackEndedHandler(stream, vi.fn(), { onMuted })
+    listeners.get('mute')?.()
+    expect(onMuted).toHaveBeenCalledWith(track)
+  })
 })

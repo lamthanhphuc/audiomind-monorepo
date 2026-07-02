@@ -1,19 +1,26 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
-  DEFAULT_RECORDING_SOURCE,
-  type RecordingSource,
-} from '../constants/recordingSource'
-import {
   acquireAudioSource,
   attachAudioTrackEndedHandler,
   mapAudioSourceErrorMessage,
+  type TabMicMixerHandles,
 } from '../utils/audioSourceAcquisition'
+import {
+  isBrowserTabRecordingSource,
+  RECORDING_SOURCE_ERRORS,
+  type RecordingSource,
+} from '../constants/recordingSource'
 import {
   AUDIO_DEBUG_ENABLED,
   REALTIME_RECORDER_TIMESLICE_MS,
   REALTIME_RESUME_PREROLL_MS,
   REALTIME_START_PREROLL_MS,
 } from '../services/config'
+import {
+  createTabAudioPipelineMonitor,
+  ensureAudioContextRunning,
+  type TabAudioPipelineMonitor,
+} from '../utils/tabAudioPipeline'
 
 export type AudioRecorderState = 'idle' | 'connecting' | 'recording' | 'paused' | 'stopped' | 'error'
 
@@ -28,6 +35,8 @@ export interface UseAudioRecorderOptions {
   preRollWindowMs?: number
   recordingSource?: RecordingSource
   onTrackEnded?: () => void
+  onCaptureError?: (message: string) => void
+  onPipelineStalled?: () => void
 }
 
 export interface UseAudioRecorderReturn {
@@ -111,6 +120,9 @@ export const useAudioRecorder = (
   const rollingChunksRef = useRef<RollingAudioChunk[]>([])
   const sourceCleanupRef = useRef<(() => void) | null>(null)
   const trackEndedDetachRef = useRef<(() => void) | null>(null)
+  const tabPipelineMonitorRef = useRef<TabAudioPipelineMonitor | null>(null)
+  const tabMixerHandlesRef = useRef<TabMicMixerHandles | null>(null)
+  const recordingStartedAtRef = useRef<number | null>(null)
   const gracefulStopInProgressRef = useRef(false)
   const audioChunksRef = useRef<Blob[]>([])
 
@@ -120,19 +132,30 @@ export const useAudioRecorder = (
     Math.floor(options.preRollWindowMs ?? Math.max(REALTIME_START_PREROLL_MS, REALTIME_RESUME_PREROLL_MS)),
   )
   const noiseSuppressionEnabled = options.noiseSuppressionEnabled ?? true
-  const recordingSource = options.recordingSource ?? DEFAULT_RECORDING_SOURCE
+  const recordingSource = options.recordingSource ?? 'microphone'
   const onTrackEnded = options.onTrackEnded
+  const onCaptureError = options.onCaptureError
+  const onPipelineStalled = options.onPipelineStalled
+  const isTabCaptureSource = isBrowserTabRecordingSource(recordingSource)
 
   const detachTrackEndedHandler = useCallback(() => {
     trackEndedDetachRef.current?.()
     trackEndedDetachRef.current = null
   }, [])
 
+  const stopTabPipelineMonitor = useCallback(() => {
+    tabPipelineMonitorRef.current?.cleanup()
+    tabPipelineMonitorRef.current = null
+    tabMixerHandlesRef.current = null
+    recordingStartedAtRef.current = null
+  }, [])
+
   const releaseAcquiredSource = useCallback(() => {
     detachTrackEndedHandler()
+    stopTabPipelineMonitor()
     sourceCleanupRef.current?.()
     sourceCleanupRef.current = null
-  }, [detachTrackEndedHandler])
+  }, [detachTrackEndedHandler, stopTabPipelineMonitor])
 
   const stopDurationTimer = useCallback(() => {
     if (durationTimerRef.current !== null) {
@@ -212,6 +235,33 @@ export const useAudioRecorder = (
     }
   }, [])
 
+  const startTabPipelineMonitor = useCallback((
+    stream: MediaStream,
+    sessionId: number,
+    meetingId: number | null,
+    tabMixerHandles?: TabMicMixerHandles,
+  ) => {
+    stopTabPipelineMonitor()
+    if (!isTabCaptureSource) {
+      return
+    }
+
+    tabMixerHandlesRef.current = tabMixerHandles ?? null
+    recordingStartedAtRef.current = performance.now()
+    tabPipelineMonitorRef.current = createTabAudioPipelineMonitor({
+      stream,
+      streamId: tabMixerHandles ? 'mixed' : 'tab',
+      meetingId,
+      sessionId,
+      audioContext: tabMixerHandles?.audioContext ?? audioContextRef.current,
+      postGainAnalyser: tabMixerHandles?.outputAnalyser ?? audioAnalyserRef.current,
+      onTrackEnded: () => onTrackEnded?.(),
+      onTrackMuted: () => onCaptureError?.(RECORDING_SOURCE_ERRORS.tabTinyOrSilentAudio),
+      onCaptureError: (message) => onCaptureError?.(message),
+      onPipelineStalled: () => onPipelineStalled?.(),
+    })
+  }, [isTabCaptureSource, onCaptureError, onPipelineStalled, onTrackEnded, stopTabPipelineMonitor])
+
   const readAudioMetrics = useCallback((): { rms: number; peak: number } | null => {
     const analyser = audioAnalyserRef.current
     if (!analyser) {
@@ -261,6 +311,7 @@ export const useAudioRecorder = (
       audioSourceNodeRef.current = sourceNode
       audioAnalyserRef.current = analyser
       audioAnalyserSamplesRef.current = new Uint8Array(analyser.fftSize)
+      void ensureAudioContextRunning(audioContext)
 
       const shouldLogLevel = meetingId !== null && (AUDIO_DEBUG_ENABLED || import.meta.env.DEV)
       const logLevel = () => {
@@ -396,6 +447,17 @@ export const useAudioRecorder = (
       }
     }
 
+    if (isTabCaptureSource) {
+      const elapsedMs = recordingStartedAtRef.current === null
+        ? 0
+        : Math.max(0, Math.round(performance.now() - recordingStartedAtRef.current))
+      tabPipelineMonitorRef.current?.notifyRecorderChunk({
+        seq: chunkCount,
+        bytes: blob.size,
+        elapsedMs,
+      })
+    }
+
     rollingChunksRef.current = [
       ...rollingChunksRef.current,
       { blob, capturedAtMs },
@@ -412,7 +474,7 @@ export const useAudioRecorder = (
       audioChunksRef.current = nextChunks
       setAudioChunks(nextChunks)
     }
-  }, [preRollWindowMs])
+  }, [isTabCaptureSource, preRollWindowMs])
 
   const getRollingChunks = useCallback(() => {
     return rollingChunksRef.current.map((chunk) => chunk.blob)
@@ -451,12 +513,19 @@ export const useAudioRecorder = (
       }
 
       sourceCleanupRef.current = acquired.cleanup
-      if (onTrackEnded) {
+      if (onTrackEnded || onCaptureError) {
         trackEndedDetachRef.current = attachAudioTrackEndedHandler(stream, () => {
           if (recordingSessionIdRef.current !== sessionId) {
             return
           }
-          onTrackEnded()
+          onTrackEnded?.()
+        }, {
+          onMuted: () => {
+            if (recordingSessionIdRef.current !== sessionId) {
+              return
+            }
+            onCaptureError?.(RECORDING_SOURCE_ERRORS.tabTinyOrSilentAudio)
+          },
         })
       }
 
@@ -467,6 +536,7 @@ export const useAudioRecorder = (
         logSafeMicSettings(stream)
       }
       startAudioLevelDiagnostics(stream, sessionId, diagnosticMeetingId)
+      startTabPipelineMonitor(stream, sessionId, diagnosticMeetingId, acquired.tabMixerHandles)
 
       recorder.ondataavailable = (event) => {
         if (gracefulStopInProgressRef.current) {
@@ -560,7 +630,7 @@ export const useAudioRecorder = (
       }
       return null
     }
-  }, [appendRecordedChunk, clearRecorderHandlers, cleanupStream, diagnosticMeetingId, finishRecording, markRecordingStopped, noiseSuppressionEnabled, onTrackEnded, pauseDurationTimer, preRollWindowMs, recorderTimesliceMs, recordingSource, resetSessionState, startAudioLevelDiagnostics, startDurationTimer, state, stopAudioLevelDiagnostics])
+  }, [appendRecordedChunk, clearRecorderHandlers, cleanupStream, diagnosticMeetingId, finishRecording, markRecordingStopped, noiseSuppressionEnabled, onCaptureError, onTrackEnded, pauseDurationTimer, preRollWindowMs, recorderTimesliceMs, recordingSource, resetSessionState, startAudioLevelDiagnostics, startDurationTimer, startTabPipelineMonitor, state, stopAudioLevelDiagnostics])
 
   const stopRecordingGraceful = useCallback(async (): Promise<GracefulStopResult> => {
     const sessionId = recordingSessionIdRef.current

@@ -1312,6 +1312,7 @@ export default function App() {
     : null
   const realtimeToken = getAccessToken() ?? ''
   const onTabAudioTrackEndedRef = useRef<(() => void) | undefined>(undefined)
+  const onTabCaptureFailureRef = useRef<((message: string, reason: 'track' | 'stall') => void) | undefined>(undefined)
   const recorderTimesliceMs = isBrowserTabRecordingSource(selectedRecordingSource)
     ? Math.min(REALTIME_RECORDER_TIMESLICE_MS, 120)
     : REALTIME_RECORDER_TIMESLICE_MS
@@ -1320,6 +1321,8 @@ export default function App() {
     noiseSuppressionEnabled,
     recordingSource: selectedRecordingSource,
     onTrackEnded: () => onTabAudioTrackEndedRef.current?.(),
+    onCaptureError: (message) => onTabCaptureFailureRef.current?.(message, 'track'),
+    onPipelineStalled: () => onTabCaptureFailureRef.current?.(RECORDING_SOURCE_ERRORS.tabCaptureStalled, 'stall'),
     timesliceMs: recorderTimesliceMs,
     preRollWindowMs: REALTIME_PREROLL_ENABLED
       ? Math.max(REALTIME_START_PREROLL_MS, REALTIME_RESUME_PREROLL_MS)
@@ -1330,6 +1333,8 @@ export default function App() {
     diagnosticMeetingId: liveMeetingId,
     timesliceMs: recorderTimesliceMs,
     onTrackEnded: () => onTabAudioTrackEndedRef.current?.(),
+    onCaptureError: (message) => onTabCaptureFailureRef.current?.(message, 'track'),
+    onPipelineStalled: () => onTabCaptureFailureRef.current?.(RECORDING_SOURCE_ERRORS.tabCaptureStalled, 'stall'),
     onChunkReady: (chunk, streamId, sessionId) => {
       handleDualChunkReadyRef.current(chunk, streamId, sessionId)
     },
@@ -1384,7 +1389,31 @@ export default function App() {
       })
       void gracefulStopRef.current?.()
     }
-  }, [audioRecorder])
+    onTabCaptureFailureRef.current = (message, reason) => {
+      if (!isBrowserTabRecordingSource(selectedRecordingSourceRef.current)) {
+        return
+      }
+      if (audioRecorder.state !== 'recording' && audioRecorder.state !== 'paused' && audioRecorder.state !== 'connecting') {
+        return
+      }
+      console.warn('[Realtime] TAB_AUDIO_CAPTURE_FAILURE', {
+        meetingId: liveMeetingIdRef.current,
+        source: selectedRecordingSourceRef.current,
+        reason,
+        message,
+      })
+      setLiveError(message)
+      setLiveLifecycleState('failed_audio_capture')
+      setLiveStatusMessage('Lỗi thu âm tab')
+      setLivePartialWarning(message)
+      audioRecorder.abortRecording()
+      const activeToken = activeRealtimeSessionTokenRef.current
+      realtimeStream.clearQueuedAudio?.()
+      if (activeToken) {
+        realtimeStream.disconnect(activeToken)
+      }
+    }
+  }, [audioRecorder, realtimeStream])
 
   useEffect(() => {
     console.info('[Realtime] RECORDING_SOURCE_SELECTED', {
@@ -3440,9 +3469,16 @@ export default function App() {
               })
             } else {
               const fallbackStatus = String(fallbackResponse.status ?? fallbackResponse.errorCode ?? 'NO_TRANSCRIPT')
-              if (fallbackStatus === 'FAILED_AUDIO_CAPTURE' || fallbackStatus === 'FINAL_AUDIO_FALLBACK_UNAVAILABLE') {
+              if (fallbackStatus === 'FAILED_AUDIO_CAPTURE') {
                 setLiveLifecycleState('failed_audio_capture')
                 setLiveError('Không nhận được âm thanh hợp lệ để nhận dạng.')
+              } else if (fallbackStatus === 'FINAL_AUDIO_FALLBACK_UNAVAILABLE') {
+                setLivePartialWarning('Transcript đã lưu nhưng không thể khôi phục phần đuôi từ audio fallback (WebM continuation không khả dụng).')
+                console.info('[Realtime] REALTIME_FINAL_AUDIO_TAIL_RECOVERY_UNAVAILABLE', {
+                  meetingId: activeMeetingId,
+                  sessionId,
+                  persistedTranscriptRows: mergedHydration.length,
+                })
               }
               console.info('[Realtime] REALTIME_FINAL_AUDIO_FALLBACK_EMPTY', {
                 meetingId: activeMeetingId,
