@@ -114,6 +114,30 @@ class MeetingWebSocketHandlerTest {
     private Map<String, Object> attributes;
     private RealtimeAudioWorkerRegistry realtimeAudioWorkerRegistry;
 
+    private static final class CapturingFinalizeDeadlineService extends RealtimeFinalizeDeadlineService {
+        private FinalizeAttemptContext context;
+        private FinalizeRunner runner;
+        private int markAudioReceivedCalls;
+        private int clearCalls;
+
+        @Override
+        public void markAudioReceived(Long meetingId, FinalizeAttemptContext context, FinalizeRunner runner) {
+            this.context = context;
+            this.runner = runner;
+            this.markAudioReceivedCalls++;
+        }
+
+        @Override
+        public void clear(Long meetingId) {
+            this.clearCalls++;
+        }
+
+        void fireDeadline() throws Exception {
+            assertNotNull(runner);
+            runner.run(context);
+        }
+    }
+
     private Map<String, Object> lastCapturedBroadcast(ArgumentCaptor<Map<String, Object>> eventCaptor) {
         List<Map<String, Object>> events = eventCaptor.getAllValues();
         return events.isEmpty() ? null : events.get(events.size() - 1);
@@ -159,13 +183,8 @@ class MeetingWebSocketHandlerTest {
         return payload;
     }
 
-    @BeforeEach
-    void setUp() {
-        realtimeAudioWorkerRegistry = new RealtimeAudioWorkerRegistry();
-        realtimePayloadValidator = new RealtimePayloadValidator();
-        lenient().when(epic2FeatureFlags.isRealtimeValidationEnabled()).thenReturn(false);
-        lenient().when(epic3FeatureFlags.isTranscriptQualityEnabled()).thenReturn(false);
-        handler = new MeetingWebSocketHandler(
+    private MeetingWebSocketHandler buildHandler(RealtimeFinalizeDeadlineService deadlineService) {
+        return new MeetingWebSocketHandler(
                 meetingChannelAuthorizer,
                 realtimeEventSubscriber,
                 aiServiceClient,
@@ -177,7 +196,16 @@ class MeetingWebSocketHandlerTest {
                 epic2FeatureFlags,
                 epic3FeatureFlags,
                 realtimePayloadValidator,
-                new RealtimeFinalizeDeadlineService());
+                deadlineService);
+    }
+
+    @BeforeEach
+    void setUp() {
+        realtimeAudioWorkerRegistry = new RealtimeAudioWorkerRegistry();
+        realtimePayloadValidator = new RealtimePayloadValidator();
+        lenient().when(epic2FeatureFlags.isRealtimeValidationEnabled()).thenReturn(false);
+        lenient().when(epic3FeatureFlags.isTranscriptQualityEnabled()).thenReturn(false);
+        handler = buildHandler(new RealtimeFinalizeDeadlineService());
 
         attributes = new HashMap<>();
         lenient().when(session.getAttributes()).thenReturn(attributes);
@@ -1113,6 +1141,70 @@ class MeetingWebSocketHandlerTest {
 
         verify(aiServiceClient, never()).streamAudioChunk(
                 eq(345L),
+                any(byte[].class),
+                eq(-1L),
+                eq("vi"),
+                eq(true),
+                isNull(),
+            eq("Bearer test-token")
+        );
+    }
+
+    @Test
+    void finalizeDeadline_shouldIgnoreOpenActiveStreamAndContinueForwardingAudio() throws Exception {
+        CapturingFinalizeDeadlineService deadlineService = new CapturingFinalizeDeadlineService();
+        handler = buildHandler(deadlineService);
+        ReflectionTestUtils.setField(handler, "realtimeAsyncAudioQueueEnabled", false);
+        ReflectionTestUtils.setField(handler, "realtimeMinAudioBytes", 128);
+        ReflectionTestUtils.setField(handler, "realtimeTinyChunkMaxBytes", 128);
+
+        attributes.put("meetingId", 680L);
+        attributes.put("authenticated", true);
+        attributes.put("language", "vi");
+        attributes.put("authorization", "Bearer test-token");
+        attributes.put("MEETING_STATUS_CHECKED_ATTR", Boolean.TRUE);
+        attributes.put("lastMeetingStatusCheckAt", System.currentTimeMillis());
+        when(session.isOpen()).thenReturn(true);
+        when(aiServiceClient.streamAudioChunk(
+                eq(680L),
+                any(byte[].class),
+                anyLong(),
+                eq("vi"),
+                eq(false),
+                isNull(),
+                eq("Bearer test-token")
+        )).thenReturn(Map.of(
+                "transcript", "partial",
+                "is_final", false,
+                "language", "vi"
+        ));
+
+        for (long seq : List.of(1L, 308L)) {
+            sendAudioMetadata(seq, 512);
+            sendBinary(bytes(512));
+        }
+
+        assertEquals(1, deadlineService.markAudioReceivedCalls);
+        deadlineService.fireDeadline();
+        assertFalse(Boolean.TRUE.equals(attributes.get("FINALIZED_ATTR")));
+        assertEquals(1, deadlineService.clearCalls);
+
+        for (long seq : List.of(309L, 400L)) {
+            sendAudioMetadata(seq, 512);
+            sendBinary(bytes(512));
+        }
+
+        verify(aiServiceClient, times(4)).streamAudioChunk(
+                eq(680L),
+                any(byte[].class),
+                anyLong(),
+                eq("vi"),
+                eq(false),
+                isNull(),
+                eq("Bearer test-token")
+        );
+        verify(aiServiceClient, never()).streamAudioChunk(
+                eq(680L),
                 any(byte[].class),
                 eq(-1L),
                 eq("vi"),

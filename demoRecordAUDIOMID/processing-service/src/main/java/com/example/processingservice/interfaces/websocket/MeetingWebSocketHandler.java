@@ -1078,6 +1078,34 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
         }
     }
 
+    private void finalizeSttSessionFromDeadline(WebSocketSession session, Long meetingId) {
+        boolean sessionOpen = false;
+        try {
+            sessionOpen = session != null && session.isOpen();
+        } catch (Exception ex) {
+            log.debug(
+                    "Unable to read WebSocket open state before realtime finalize deadline meetingId={} errorCode={}",
+                    meetingId,
+                    safeErrorCode(ex)
+            );
+        }
+
+        if (sessionOpen && !Boolean.TRUE.equals(session.getAttributes().get(FINALIZED_ATTR))) {
+            RealtimeAudioSessionWorker worker = realtimeAudioWorkerRegistry.get(session.getId());
+            log.info(
+                    "event=REALTIME_FINALIZE_DEADLINE_IGNORED_ACTIVE_STREAM meetingId={} sessionId={} lastClientSeq={} workerState={} reason=websocket_open",
+                    meetingId,
+                    session.getId(),
+                    getLongAttribute(session, LAST_AUDIO_SEQ_ATTR),
+                    worker != null ? worker.state() : "none"
+            );
+            finalizeDeadlineService.clear(meetingId);
+            return;
+        }
+
+        finalizeSttSession(session, meetingId, sessionOpen);
+    }
+
     private void cleanupRealtimeWorker(WebSocketSession session, String reason) {
         RealtimeAudioSessionWorker worker = realtimeAudioWorkerRegistry.get(session.getId());
         if (worker == null) {
@@ -2333,7 +2361,7 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                 finalizeDeadlineService.markAudioReceived(
                         meetingId,
                         buildFinalizeContext(session, meetingId, session.isOpen(), REALTIME_ANALYSIS_SOURCE_STREAM_STOP),
-                        ctx -> finalizeSttSession(session, meetingId, session.isOpen()));
+                        ctx -> finalizeSttSessionFromDeadline(session, meetingId));
             }
         } catch (Exception ignore) {
             log.debug("Unable to set AUDIO_RECEIVED_ATTR for sessionId={}", session.getId());
