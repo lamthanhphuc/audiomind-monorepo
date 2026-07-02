@@ -1264,6 +1264,76 @@ def test_get_transcript_scopes_legacy_and_v2_attempt_rows(monkeypatch):
     assert attempt_response.transcripts[0].attempt_id == 1
 
 
+def test_get_transcript_logs_legacy_deprecation_guard_without_v2_fallback(monkeypatch):
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    SessionLocal = sessionmaker(bind=engine)
+    db = SessionLocal()
+    repo = TranscriptPersistenceRepository(db)
+    repo.append_fragment(
+        TranscriptFragmentInput(
+            meeting_id=133,
+            seq=1,
+            text="legacy visible",
+            speaker="system",
+            start_time=1.0,
+            end_time=1.5,
+            event_id="legacy-133-1",
+            is_final=True,
+        )
+    )
+    repo.append_fragment(
+        TranscriptFragmentInput(
+            meeting_id=133,
+            stream_id="tab",
+            recording_session_id=9002,
+            attempt_id=1,
+            seq=1,
+            text="v2 visible",
+            speaker="system",
+            start_time=2.0,
+            end_time=2.5,
+            event_id="v2-133-9002-1-tab",
+            is_final=True,
+        )
+    )
+    db.commit()
+    capture_logger = _CaptureLogger()
+    monkeypatch.setattr(main_module, "logger", capture_logger)
+    monkeypatch.setattr(main_module, "pipeline", None)
+
+    async def run_legacy():
+        return await main_module.get_transcript(133, db=db)
+
+    async def run_attempt():
+        return await main_module.get_transcript(
+            133,
+            recording_session_id=9002,
+            attempt_id=1,
+            db=db,
+        )
+
+    try:
+        legacy_response = asyncio.run(run_legacy())
+        messages_after_legacy = list(capture_logger.messages)
+        capture_logger.messages.clear()
+        attempt_response = asyncio.run(run_attempt())
+    finally:
+        db.close()
+        engine.dispose()
+
+    assert [segment.text for segment in legacy_response.transcripts] == ["legacy visible"]
+    assert [segment.text for segment in attempt_response.transcripts] == ["v2 visible"]
+    assert any(
+        "event=TRANSCRIPT_LEGACY_SCOPE_DEPRECATED" in message
+        for message in messages_after_legacy
+    )
+    assert all(
+        "event=TRANSCRIPT_LEGACY_SCOPE_DEPRECATED" not in message
+        for message in capture_logger.messages
+    )
+
+
 def test_get_transcript_rejects_partial_provenance(monkeypatch):
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)

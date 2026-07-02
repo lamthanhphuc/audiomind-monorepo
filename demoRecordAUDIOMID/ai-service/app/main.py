@@ -2738,6 +2738,11 @@ async def get_transcript(
             meeting_id,
             "v2" if transcript_scope.is_v2 else "legacy",
         )
+        if not transcript_scope.is_v2:
+            logger.info(
+                "event=TRANSCRIPT_LEGACY_SCOPE_DEPRECATED meeting_id={} path=/api/meeting/{{meeting_id}}/transcript",
+                meeting_id,
+            )
 
         fragment_segments: list[dict[str, Any]] = []
         try:
