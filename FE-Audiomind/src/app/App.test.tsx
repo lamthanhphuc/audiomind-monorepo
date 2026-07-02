@@ -246,6 +246,50 @@ describe('hydrateLiveTranscriptSegments', () => {
     expect(hydratedSegments).toEqual([])
   })
 
+  it('passes v2 provenance to post-stop hydration transcript reads', async () => {
+    vi.useFakeTimers()
+
+    const sessionToken = { meetingId: 88, recordingSessionId: 9001, attemptId: 2, connectionSeq: 0 }
+    const fetchTranscript = vi.fn().mockResolvedValue({
+      meeting_id: 88,
+      transcripts: [
+        {
+          meeting_id: 88,
+          recording_session_id: 9001,
+          attempt_id: 2,
+          seq: 1,
+          stream_id: 'tab',
+          speaker: 'SPEAKER_1',
+          start_time: 1,
+          end_time: 2,
+          text: 'Attempt scoped row',
+        },
+      ],
+    })
+
+    const hydrationPromise = hydrateLiveTranscriptSegments(
+      88,
+      fetchTranscript,
+      sessionToken,
+      (token) => token === sessionToken,
+    )
+    await vi.advanceTimersByTimeAsync(1500)
+    await vi.advanceTimersByTimeAsync(800 * 3)
+    const hydratedSegments = await hydrationPromise
+
+    expect(fetchTranscript).toHaveBeenCalledWith(88, {
+      recordingSessionId: 9001,
+      attemptId: 2,
+    })
+    expect(hydratedSegments).toHaveLength(1)
+    expect(hydratedSegments[0]).toMatchObject({
+      recordingSessionId: 9001,
+      attemptId: 2,
+      streamId: 'tab',
+      seq: 1,
+    })
+  })
+
   it('does not retry old meeting transcript after 404 wait when hydration ownership changes', async () => {
     vi.useFakeTimers()
 

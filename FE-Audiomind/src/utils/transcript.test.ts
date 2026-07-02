@@ -510,6 +510,38 @@ describe('dual-stream transcript helpers', () => {
     expect(legacySegment?.mergeKey).toBe('dedupe:stable-dedupe-1')
   })
 
+  it('uses attempt-aware merge keys for v2 transcript events', () => {
+    const firstAttempt = normalizeTranscriptEvent({
+      type: 'transcript.partial',
+      meetingId: 14,
+      recordingSessionId: 9001,
+      attemptId: 1,
+      seq: 7,
+      dedupeKey: 'stable-dedupe-1',
+      streamId: 'tab',
+      speaker: 'SPEAKER_1',
+      text: 'Tab attempt one',
+      startTime: 1,
+      endTime: 2,
+    })
+    const secondAttempt = normalizeTranscriptEvent({
+      type: 'transcript.partial',
+      meetingId: 14,
+      recordingSessionId: 9001,
+      attemptId: 2,
+      seq: 7,
+      dedupeKey: 'stable-dedupe-1',
+      streamId: 'tab',
+      speaker: 'SPEAKER_1',
+      text: 'Tab attempt two',
+      startTime: 1,
+      endTime: 2,
+    })
+
+    expect(firstAttempt?.mergeKey).toBe('dedupe:stable-dedupe-1|tab|scope:v2:14:9001:1:7')
+    expect(secondAttempt?.mergeKey).toBe('dedupe:stable-dedupe-1|tab|scope:v2:14:9001:2:7')
+  })
+
   it('keeps tab, mic, and legacy explicit segment ids separate during hydration', () => {
     const segments = normalizePersistedTranscriptForView([
       {
@@ -624,6 +656,81 @@ describe('dual-stream transcript helpers', () => {
       'dedupe:dedupe-legacy-test|mic',
       'dedupe:dedupe-legacy-test',
     ])
+  })
+
+  it('does not merge v2 segments from different attempts with the same seq and segment id', () => {
+    const firstAttempt = normalizeTranscriptEvent({
+      type: 'transcript.final',
+      meetingId: 44,
+      recordingSessionId: 9001,
+      attemptId: 1,
+      seq: 4,
+      segmentId: 'shared-segment',
+      streamId: 'mic',
+      speaker: 'SPEAKER_1',
+      text: 'attempt one',
+      startTime: 1,
+      endTime: 2,
+      isFinal: true,
+    })
+    const secondAttempt = normalizeTranscriptEvent({
+      type: 'transcript.final',
+      meetingId: 44,
+      recordingSessionId: 9001,
+      attemptId: 2,
+      seq: 4,
+      segmentId: 'shared-segment',
+      streamId: 'mic',
+      speaker: 'SPEAKER_1',
+      text: 'attempt two',
+      startTime: 1,
+      endTime: 2,
+      isFinal: true,
+    })
+
+    let current: TranscriptSegment[] = []
+    current = upsertTranscriptSegment(current, firstAttempt as TranscriptSegment).segments
+    current = upsertTranscriptSegment(current, secondAttempt as TranscriptSegment).segments
+
+    expect(current).toHaveLength(2)
+    expect(current.map((segment) => segment.text)).toEqual(['attempt one', 'attempt two'])
+  })
+
+  it('merges v2 partial and final events from the same attempt scope', () => {
+    const partial = normalizeTranscriptEvent({
+      type: 'transcript.partial',
+      meetingId: 44,
+      recordingSessionId: 9001,
+      attemptId: 1,
+      seq: 4,
+      segmentId: 'attempt-partial-final',
+      streamId: 'mic',
+      speaker: 'SPEAKER_1',
+      text: 'partial',
+      startTime: 1,
+      endTime: 2,
+    })
+    const final = normalizeTranscriptEvent({
+      type: 'transcript.final',
+      meetingId: 44,
+      recordingSessionId: 9001,
+      attemptId: 1,
+      seq: 4,
+      segmentId: 'attempt-partial-final',
+      streamId: 'mic',
+      speaker: 'SPEAKER_1',
+      text: 'final',
+      startTime: 1,
+      endTime: 2,
+      isFinal: true,
+    })
+
+    let current: TranscriptSegment[] = []
+    current = upsertTranscriptSegment(current, partial as TranscriptSegment).segments
+    current = upsertTranscriptSegment(current, final as TranscriptSegment).segments
+
+    expect(current).toHaveLength(1)
+    expect(current[0]).toMatchObject({ text: 'final', recordingSessionId: 9001, attemptId: 1, seq: 4 })
   })
 
   it('still merges legacy partial and final events with the same identity', () => {

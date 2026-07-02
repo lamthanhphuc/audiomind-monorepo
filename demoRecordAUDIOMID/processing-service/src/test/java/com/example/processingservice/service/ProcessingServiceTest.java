@@ -78,7 +78,7 @@ class ProcessingServiceTest {
         lenient().doNothing().when(uploadValidator).validateIfStrict(any(), any());
         ReflectionTestUtils.setField(processingService, "uploadValidator", uploadValidator);
 
-        when(meetingServiceClient.getMeetingById(anyLong(), anyString(), anyString()))
+        lenient().when(meetingServiceClient.getMeetingById(anyLong(), anyString(), anyString()))
             .thenReturn(Map.of("id", 1L));
         lenient().when(jobStateStore.tryStartAnalysis(anyLong(), anyString(), anyString(), anyString()))
                 .thenReturn(new JobStateStore.AnalysisTriggerDecision(
@@ -227,6 +227,75 @@ class ProcessingServiceTest {
         assertEquals(3.5d, second.get("start_time"));
         assertEquals(7.2d, second.get("end_time"));
         assertEquals("seg-2", second.get("segment_id"));
+    }
+
+    @Test
+    void getTranscript_v2ShouldFetchExactAttemptScopeAndSkipLegacyStateFallback() {
+        Map<String, Object> state = new HashMap<>();
+        state.put("status", "COMPLETED");
+        state.put("result", Map.of(
+                "transcripts",
+                List.of(Map.of("speaker", "SPEAKER_00", "text", "legacy state row"))
+        ));
+        when(jobStateStore.getJobState(890L)).thenReturn(Optional.of(state));
+        when(aiServiceClient.getTranscript(890L, "trace-v2", 9001L, 2L)).thenReturn(Map.of(
+                "meeting_id", 890L,
+                "transcripts", List.of(
+                        Map.of(
+                                "speaker", "SPEAKER_01",
+                                "text", "attempt row",
+                                "recording_session_id", 9001L,
+                                "attempt_id", 2L,
+                                "stream_id", "tab",
+                                "seq", 1
+                        )
+                )
+        ));
+
+        Map<String, Object> response = processingService.getTranscript(890L, "trace-v2", AUTH_HEADER, 9001L, 2L);
+
+        List<?> transcripts = (List<?>) response.get("transcripts");
+        assertEquals(1, transcripts.size());
+        Map<?, ?> row = (Map<?, ?>) transcripts.get(0);
+        assertEquals("attempt row", row.get("text"));
+        assertEquals(9001L, row.get("recording_session_id"));
+        assertEquals(2L, row.get("attempt_id"));
+        verify(aiServiceClient).getTranscript(890L, "trace-v2", 9001L, 2L);
+        verify(aiServiceClient, never()).getTranscript(890L, "trace-v2");
+    }
+
+    @Test
+    void getTranscript_v2EmptyShouldNotFallbackToLegacyStateTranscript() {
+        Map<String, Object> state = new HashMap<>();
+        state.put("status", "COMPLETED");
+        state.put("result", Map.of(
+                "transcripts",
+                List.of(Map.of("speaker", "SPEAKER_00", "text", "legacy state row"))
+        ));
+        when(jobStateStore.getJobState(891L)).thenReturn(Optional.of(state));
+        when(aiServiceClient.getTranscript(891L, "trace-v2-empty", 9001L, 3L)).thenReturn(Map.of(
+                "meeting_id", 891L,
+                "transcripts", List.of()
+        ));
+
+        Map<String, Object> response = processingService.getTranscript(891L, "trace-v2-empty", AUTH_HEADER, 9001L, 3L);
+
+        List<?> transcripts = (List<?>) response.get("transcripts");
+        assertEquals(0, transcripts.size());
+        verify(aiServiceClient).getTranscript(891L, "trace-v2-empty", 9001L, 3L);
+        verify(aiServiceClient, never()).getTranscript(891L, "trace-v2-empty");
+    }
+
+    @Test
+    void getTranscript_shouldRejectPartialProvenanceBeforeAiFetch() {
+        ResponseStatusException ex = assertThrows(
+                ResponseStatusException.class,
+                () -> processingService.getTranscript(892L, "trace-partial", AUTH_HEADER, 9001L, null)
+        );
+
+        assertEquals(422, ex.getStatusCode().value());
+        verify(aiServiceClient, never()).getTranscript(eq(892L), anyString(), anyLong(), anyLong());
+        verify(aiServiceClient, never()).getTranscript(eq(892L), anyString());
     }
 
     @Test

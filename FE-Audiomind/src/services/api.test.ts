@@ -147,6 +147,29 @@ describe('upload language request wiring', () => {
     expect(inits[1]?.signal).toBe(controller.signal)
   })
 
+  it('adds attempt scope to transcript reads when both provenance ids are provided', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ meeting_id: 7, transcripts: [] }),
+      headers: new Headers(),
+    })
+
+    await getTranscript(7, { recordingSessionId: 9001, attemptId: 2 })
+
+    const url = fetchMock.mock.calls[0][0] as string
+    expect(url).toContain('/processing/7/transcript?')
+    expect(url).toContain('recording_session_id=9001')
+    expect(url).toContain('attempt_id=2')
+  })
+
+  it('rejects partial transcript provenance before fetch', async () => {
+    await expect(getTranscript(7, { recordingSessionId: 9001 })).rejects.toMatchObject({
+      status: 422,
+      errorCode: 'INVALID_PROVENANCE',
+    })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
   it('loads meeting detail and saved analysis from read-only endpoints', async () => {
     fetchMock.mockResolvedValueOnce({
       ok: true,

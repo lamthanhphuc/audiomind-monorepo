@@ -902,7 +902,12 @@ export const hydrateLiveTranscriptSegments = async (
 
     let transcript
     try {
-      transcript = await fetchTranscript(meetingId)
+      transcript = sessionToken
+        ? await fetchTranscript(meetingId, {
+            recordingSessionId: sessionToken.recordingSessionId,
+            attemptId: sessionToken.attemptId,
+          })
+        : await fetchTranscript(meetingId)
     } catch (error) {
       if (error instanceof ApiError && error.status === 404) {
         if (!isHydrationActive()) {
@@ -3379,7 +3384,12 @@ export default function App() {
             )
             if (fallbackRows > 0) {
               noTranscriptAfterFinalize = false
-              const fallbackTranscript = await getTranscript(activeMeetingId)
+              const fallbackTranscript = sessionToken
+                ? await getTranscript(activeMeetingId, {
+                    recordingSessionId: sessionToken.recordingSessionId,
+                    attemptId: sessionToken.attemptId,
+                  })
+                : await getTranscript(activeMeetingId)
               const fallbackSegments = mergeTranscriptSegments(
                 normalizePersistedTranscriptSegments(fallbackTranscript.transcripts || []),
               )

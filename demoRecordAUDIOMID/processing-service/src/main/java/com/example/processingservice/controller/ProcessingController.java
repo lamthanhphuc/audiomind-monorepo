@@ -139,10 +139,15 @@ public class ProcessingController {
     @GetMapping("/{meetingId}/transcript")
     public TranscriptResponse transcript(
             @PathVariable Long meetingId,
+            @RequestParam(name = "recording_session_id", required = false) Long recordingSessionId,
+            @RequestParam(name = "attempt_id", required = false) Long attemptId,
             @RequestHeader(value = "x-trace-id", required = false) String traceId,
             @RequestHeader(HttpHeaders.AUTHORIZATION) String authorization) {
         requirePrincipal();
-        return new TranscriptResponse(meetingId, processingService.getTranscript(meetingId, ensureTraceId(traceId), authorization));
+        return new TranscriptResponse(
+                meetingId,
+                processingService.getTranscript(meetingId, ensureTraceId(traceId), authorization, recordingSessionId, attemptId)
+        );
     }
 
     @GetMapping("/{meetingId}/transcript/search")

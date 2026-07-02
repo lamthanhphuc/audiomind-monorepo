@@ -440,6 +440,11 @@ export type ApiRequestOptions = {
   signal?: AbortSignal
 }
 
+export type TranscriptScopeOptions = ApiRequestOptions & {
+  recordingSessionId?: number | null
+  attemptId?: number | null
+}
+
 const normalizeTranscriptResponse = (
   response: TranscriptResponse | { data?: TranscriptResponse },
 ): TranscriptResponse => {
@@ -451,10 +456,21 @@ const normalizeTranscriptResponse = (
 
 export const getTranscript = async (
   meetingId: number,
-  options: ApiRequestOptions = {},
+  options: TranscriptScopeOptions = {},
 ): Promise<TranscriptResponse> => {
+  const hasRecordingSession = options.recordingSessionId !== undefined && options.recordingSessionId !== null
+  const hasAttempt = options.attemptId !== undefined && options.attemptId !== null
+  if (hasRecordingSession !== hasAttempt) {
+    throw new ApiError('Invalid transcript provenance scope', 422, undefined, 'INVALID_PROVENANCE')
+  }
+  const params = new URLSearchParams()
+  if (hasRecordingSession && hasAttempt) {
+    params.set('recording_session_id', String(options.recordingSessionId))
+    params.set('attempt_id', String(options.attemptId))
+  }
+  const query = params.toString()
   const response = await fetchJson<TranscriptResponse | { data?: TranscriptResponse }>(
-    `${API_BASE}/processing/${meetingId}/transcript`,
+    `${API_BASE}/processing/${meetingId}/transcript${query ? `?${query}` : ''}`,
     { signal: options.signal },
   )
   return normalizeTranscriptResponse(response)

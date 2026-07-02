@@ -62,6 +62,31 @@ export const formatDualStreamSpeakerLabel = (
 const streamKeySuffix = (streamId?: DualStreamTranscriptId): string =>
   streamId ? `|${streamId}` : ''
 
+const toScopeSuffix = (
+  meetingId?: number,
+  recordingSessionId?: number,
+  attemptId?: number,
+  seq?: number,
+): string => {
+  if (recordingSessionId === undefined && attemptId === undefined) {
+    return ''
+  }
+  if (recordingSessionId !== undefined && attemptId !== undefined) {
+    const meetingPart = meetingId === undefined ? 'meeting' : String(meetingId)
+    const seqPart = seq === undefined ? 'seq' : String(seq)
+    return `|scope:v2:${meetingPart}:${recordingSessionId}:${attemptId}:${seqPart}`
+  }
+  return '|scope:invalid'
+}
+
+const resolveScopeSuffix = (data: TranscriptSource): string =>
+  toScopeSuffix(
+    toOptionalNumber(data.meetingId, data.meeting_id),
+    toOptionalNumber(data.recordingSessionId, data.recording_session_id),
+    toOptionalNumber(data.attemptId, data.attempt_id),
+    toOptionalNumber(data.seq),
+  )
+
 const canonicalSpeakerKey = (value: string): string => {
   const normalized = normalizeText(value)
   if (!normalized || normalized === 'unknown' || normalized === 'system') {
@@ -273,22 +298,23 @@ const resolveMergeKey = (data: TranscriptSource, timing: { start: number; end: n
   const dedupeKey = toStringValue(data.dedupeKey, data.dedupe_key)
   const speaker = canonicalSpeakerKey(toStringValue(data.speaker))
   const streamSuffix = streamKeySuffix(resolveStreamId(data, toStringValue(data.speaker)))
+  const scopeSuffix = resolveScopeSuffix(data)
 
   if (explicitId && !isLikelySequenceId(explicitId)) {
-    return `segment:${canonicalizeSegmentId(explicitId)}${streamSuffix}`
+    return `segment:${canonicalizeSegmentId(explicitId)}${streamSuffix}${scopeSuffix}`
   }
 
   if (dedupeKey) {
-    return `dedupe:${dedupeKey}${streamSuffix}`
+    return `dedupe:${dedupeKey}${streamSuffix}${scopeSuffix}`
   }
 
   if (timing) {
-    return `semantic:${timing.start.toFixed(3)}|${speaker}${streamSuffix}`
+    return `semantic:${timing.start.toFixed(3)}|${speaker}${streamSuffix}${scopeSuffix}`
   }
 
   const fallbackText = normalizeText(toStringValue(data.text, data.transcript))
   if (fallbackText) {
-    return `text:${speaker}${streamSuffix}|${fallbackText}`
+    return `text:${speaker}${streamSuffix}${scopeSuffix}|${fallbackText}`
   }
 
   return resolveDisplayId(data, timing)
@@ -298,7 +324,7 @@ const getComparableText = (segment: TranscriptSegment): string => normalizeText(
 
 const getSemanticKey = (segment: TranscriptSegment): string => {
   const speaker = canonicalSpeakerKey(segment.speaker)
-  return `semantic:${segment.start.toFixed(3)}|${speaker}${streamKeySuffix(segment.streamId)}`
+  return `semantic:${segment.start.toFixed(3)}|${speaker}${streamKeySuffix(segment.streamId)}${toScopeSuffix(segment.meetingId, segment.recordingSessionId, segment.attemptId, segment.seq)}`
 }
 
 const isFallbackDisplayId = (value: string): boolean =>
@@ -323,8 +349,12 @@ type TranscriptIdentityStream = DualStreamTranscriptId | 'default'
 const getIdentityStream = (segment: Pick<TranscriptSegment, 'streamId'>): TranscriptIdentityStream =>
   segment.streamId ?? 'default'
 
+const getIdentityScope = (segment: Pick<TranscriptSegment, 'meetingId' | 'recordingSessionId' | 'attemptId' | 'seq'>): string =>
+  toScopeSuffix(segment.meetingId, segment.recordingSessionId, segment.attemptId, segment.seq)
+
 const streamsCompatible = (existing: TranscriptSegment, incoming: TranscriptSegment): boolean =>
   getIdentityStream(existing) === getIdentityStream(incoming)
+  && getIdentityScope(existing) === getIdentityScope(incoming)
 
 const findExactSegmentById = (current: TranscriptSegment[], incoming: TranscriptSegment): number => {
   if (incoming.mergeKey && isSpecificMergeKey(incoming.mergeKey)) {
@@ -555,10 +585,14 @@ export const normalizeTranscriptEvent = (
   const isFinal = messageType === 'transcript.final' || Boolean(data.isFinal || data.is_final)
   const speaker = normalizeSpeaker(toStringValue(data.speaker), options?.fallbackSpeaker)
   const streamId = resolveStreamId(data, speaker)
+  const meetingId = toOptionalNumber(data.meetingId, data.meeting_id)
+  const recordingSessionId = toOptionalNumber(data.recordingSessionId, data.recording_session_id)
+  const attemptId = toOptionalNumber(data.attemptId, data.attempt_id)
 
   return {
     id: resolveDisplayId(data, timing),
     mergeKey: resolveMergeKey(data, timing),
+    meetingId,
     speaker,
     text,
     start,
@@ -569,6 +603,9 @@ export const normalizeTranscriptEvent = (
     isFinal,
     source: options?.source ?? 'live',
     streamId,
+    recordingSessionId,
+    attemptId,
+    seq: seq > 0 ? seq : undefined,
     providerSpeaker: toStringValue(data.providerSpeaker, data.provider_speaker) || undefined,
     originalSpeaker: toStringValue(data.originalSpeaker, data.original_speaker) || undefined,
     providerSpeakers: toStringArray(data.providerSpeakers, data.provider_speakers),
@@ -599,6 +636,10 @@ export const normalizePersistedTranscriptSegments = (
         endTime: segment.end_time,
         start: segment.start_time,
         end: segment.end_time,
+        meetingId: segment.meetingId ?? segment.meeting_id,
+        recordingSessionId: segment.recordingSessionId ?? segment.recording_session_id,
+        attemptId: segment.attemptId ?? segment.attempt_id,
+        seq: segment.seq,
         streamId: segment.streamId ?? segment.stream_id,
         isFinal: segment.is_final ?? segment.isFinal ?? true,
         providerSpeaker: segment.providerSpeaker ?? segment.provider_speaker,

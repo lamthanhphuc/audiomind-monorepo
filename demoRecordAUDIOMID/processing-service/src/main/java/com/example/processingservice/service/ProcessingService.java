@@ -840,18 +840,39 @@ public class ProcessingService {
     }
 
     public Map<String, Object> getTranscript(Long meetingId, String traceId, String authorization) {
+        return getTranscript(meetingId, traceId, authorization, null, null);
+    }
+
+    public Map<String, Object> getTranscript(
+            Long meetingId,
+            String traceId,
+            String authorization,
+            Long recordingSessionId,
+            Long attemptId
+    ) {
+        if ((recordingSessionId == null) != (attemptId == null)) {
+            throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_PROVENANCE");
+        }
         assertMeetingAccess(meetingId, traceId, authorization);
         log.info(
-                "event=UPLOAD_TRANSCRIPT_STARTED traceId={} requestId={} meetingId={} source=upload",
+                "event=UPLOAD_TRANSCRIPT_STARTED traceId={} requestId={} meetingId={} source=upload scope={}",
                 traceId,
                 currentRequestId(traceId),
-                meetingId
+                meetingId,
+                recordingSessionId != null ? "v2" : "legacy"
         );
         Map<String, Object> state = jobStateStore.getJobState(meetingId).orElse(null);
 
         String stateStatus = state == null ? "NOT_FOUND" : normalizeStatus(state.get("status"));
-        TranscriptPayload stateTranscriptPayload = buildStateTranscriptPayload(state);
-        TranscriptPayload aiTranscriptPayload = fetchTranscriptPayloadFromAiService(meetingId, traceId);
+        TranscriptPayload stateTranscriptPayload = recordingSessionId == null
+                ? buildStateTranscriptPayload(state)
+                : TranscriptPayload.empty();
+        TranscriptPayload aiTranscriptPayload = fetchTranscriptPayloadFromAiService(
+                meetingId,
+                traceId,
+                recordingSessionId,
+                attemptId
+        );
         TranscriptSourceDecision transcriptDecision = selectReadableTranscriptSource(
                 stateTranscriptPayload,
                 aiTranscriptPayload,
@@ -4168,31 +4189,45 @@ public class ProcessingService {
     }
 
     private TranscriptPayload fetchTranscriptPayloadFromAiService(Long meetingId, String traceId) {
+        return fetchTranscriptPayloadFromAiService(meetingId, traceId, null, null);
+    }
+
+    private TranscriptPayload fetchTranscriptPayloadFromAiService(
+            Long meetingId,
+            String traceId,
+            Long recordingSessionId,
+            Long attemptId
+    ) {
         try {
-            Map<String, Object> aiResponse = aiServiceClient.getTranscript(meetingId, traceId);
+            Map<String, Object> aiResponse = recordingSessionId == null
+                    ? aiServiceClient.getTranscript(meetingId, traceId)
+                    : aiServiceClient.getTranscript(meetingId, traceId, recordingSessionId, attemptId);
             TranscriptPayload payload = normalizeTranscriptPayload(aiResponse);
             if (!payload.readableRows().isEmpty()) {
                 log.info(
-                        "[traceId={}] [jobId={}] ai-service transcript fallback rows={} mode={}",
+                        "[traceId={}] [jobId={}] ai-service transcript fallback rows={} mode={} scope={}",
                         traceId,
                         meetingId,
                         payload.readableRows().size(),
-                        payload.transcriptMode()
+                        payload.transcriptMode(),
+                        recordingSessionId == null ? "legacy" : "v2"
                 );
                 return payload;
             }
             log.info(
-                    "[traceId={}] [jobId={}] ai-service transcript fallback returned empty transcript list",
+                    "[traceId={}] [jobId={}] ai-service transcript fallback returned empty transcript list scope={}",
                     traceId,
-                    meetingId
+                    meetingId,
+                    recordingSessionId == null ? "legacy" : "v2"
             );
             return TranscriptPayload.empty();
         } catch (HttpStatusCodeException ex) {
             if (ex.getStatusCode().value() == HttpStatus.NOT_FOUND.value()) {
                 log.info(
-                        "[traceId={}] [jobId={}] ai-service transcript fallback returned 404/no transcript",
+                        "[traceId={}] [jobId={}] ai-service transcript fallback returned 404/no transcript scope={}",
                         traceId,
-                        meetingId
+                        meetingId,
+                        recordingSessionId == null ? "legacy" : "v2"
                 );
                 return TranscriptPayload.empty();
             }

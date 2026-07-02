@@ -6,6 +6,7 @@ import { normalizeTranscriptEvent, upsertTranscriptSegment } from '../utils/tran
 export interface TranscriptSegment {
   id: string
   mergeKey?: string
+  meetingId?: number
   speaker: string
   text: string
   start: number
@@ -16,6 +17,9 @@ export interface TranscriptSegment {
   isFinal?: boolean
   source?: 'live' | 'hydration'
   streamId?: 'tab' | 'mic'
+  recordingSessionId?: number
+  attemptId?: number
+  seq?: number
   providerSpeaker?: string
   originalSpeaker?: string
   providerSpeakers?: string[]
@@ -1280,6 +1284,4 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
     configureDualStreams,
   }
 }
-
-
 
