@@ -113,6 +113,7 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
     private static final class RecoveryControl {
         private final AtomicBoolean completed = new AtomicBoolean(false);
         private volatile ScheduledFuture<?> timeoutFuture;
+        private volatile ScheduledFuture<?> retryFuture;
         private volatile Future<?> recoveryFuture;
     }
 
@@ -178,6 +179,9 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
 
     @Value("${realtime.finalize-recovery-timeout-ms:5000}")
     private long realtimeFinalizeRecoveryTimeoutMs;
+
+    @Value("${realtime.finalize-recovery-poll-interval-ms:250}")
+    private long realtimeFinalizeRecoveryPollIntervalMs;
 
     @Autowired
     public MeetingWebSocketHandler(
@@ -2529,6 +2533,50 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                 TimeUnit.MILLISECONDS
         );
 
+        submitTranscriptRecoveryAttempt(
+                control,
+                recoveryKey,
+                session,
+                meetingId,
+                sessionStillOpen,
+                analysisSource,
+                authorization,
+                fallbackStatusCode,
+                fallbackMessage,
+                reason,
+                timeoutMs,
+                System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs),
+                recordingSessionId,
+                attemptId,
+                1
+        );
+    }
+
+    private void submitTranscriptRecoveryAttempt(
+            RecoveryControl control,
+            String recoveryKey,
+            WebSocketSession session,
+            Long meetingId,
+            boolean sessionStillOpen,
+            String analysisSource,
+            String authorization,
+            String fallbackStatusCode,
+            String fallbackMessage,
+            String reason,
+            long timeoutMs,
+            long deadlineNanos,
+            Long recordingSessionId,
+            Long attemptId,
+            int attemptNumber
+    ) {
+        if (control.completed.get()) {
+            return;
+        }
+        long remainingNanos = deadlineNanos - System.nanoTime();
+        if (remainingNanos <= 0) {
+            return;
+        }
+        long requestTimeoutMs = Math.max(1L, TimeUnit.NANOSECONDS.toMillis(remainingNanos));
         Future<?> recoveryFuture = transcriptRecoveryIoExecutor.submit(() -> {
             if (control.completed.get()) {
                 return;
@@ -2537,17 +2585,35 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
             String transcriptText = "";
             boolean fetchSucceeded = false;
             try {
-                rows = fetchPersistedTranscriptRows(meetingId, timeoutMs, recordingSessionId, attemptId);
+                rows = fetchPersistedTranscriptRows(meetingId, requestTimeoutMs, recordingSessionId, attemptId);
                 transcriptText = buildTranscriptText(rows);
                 fetchSucceeded = true;
             } catch (TranscriptNotReadyException ex) {
                 log.info(
-                        "event=REALTIME_FINALIZE_RECOVER_TRANSCRIPT_NOT_READY meetingId={} source={} reason={} recordingSessionId={} attemptId={}",
+                        "event=REALTIME_FINALIZE_RECOVER_TRANSCRIPT_NOT_READY meetingId={} source={} reason={} recordingSessionId={} attemptId={} attemptNumber={}",
                         meetingId,
                         analysisSource,
                         reason,
                         recordingSessionId,
-                        attemptId
+                        attemptId,
+                        attemptNumber
+                );
+                scheduleTranscriptRecoveryRetry(
+                        control,
+                        recoveryKey,
+                        session,
+                        meetingId,
+                        sessionStillOpen,
+                        analysisSource,
+                        authorization,
+                        fallbackStatusCode,
+                        fallbackMessage,
+                        reason,
+                        timeoutMs,
+                        deadlineNanos,
+                        recordingSessionId,
+                        attemptId,
+                        attemptNumber + 1
                 );
                 return;
             } catch (Exception ex) {
@@ -2574,6 +2640,7 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
             if (timeoutFuture != null) {
                 timeoutFuture.cancel(false);
             }
+            cancelTranscriptRecoveryRetry(control);
             transcriptRecoveryControls.remove(recoveryKey, control);
             session.getAttributes().remove(TRANSCRIPT_RECOVERY_PENDING_ATTR);
 
@@ -2613,6 +2680,69 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
             );
         });
         control.recoveryFuture = recoveryFuture;
+    }
+
+    private void scheduleTranscriptRecoveryRetry(
+            RecoveryControl control,
+            String recoveryKey,
+            WebSocketSession session,
+            Long meetingId,
+            boolean sessionStillOpen,
+            String analysisSource,
+            String authorization,
+            String fallbackStatusCode,
+            String fallbackMessage,
+            String reason,
+            long timeoutMs,
+            long deadlineNanos,
+            Long recordingSessionId,
+            Long attemptId,
+            int attemptNumber
+    ) {
+        if (control.completed.get()) {
+            return;
+        }
+        long remainingMs = TimeUnit.NANOSECONDS.toMillis(deadlineNanos - System.nanoTime());
+        if (remainingMs <= 0) {
+            return;
+        }
+        long delayMs = Math.min(resolveTranscriptRecoveryPollIntervalMs(timeoutMs), Math.max(1L, remainingMs));
+        ScheduledFuture<?> retryFuture = transcriptRecoveryTimeoutScheduler.schedule(
+                () -> submitTranscriptRecoveryAttempt(
+                        control,
+                        recoveryKey,
+                        session,
+                        meetingId,
+                        sessionStillOpen,
+                        analysisSource,
+                        authorization,
+                        fallbackStatusCode,
+                        fallbackMessage,
+                        reason,
+                        timeoutMs,
+                        deadlineNanos,
+                        recordingSessionId,
+                        attemptId,
+                        attemptNumber
+                ),
+                delayMs,
+                TimeUnit.MILLISECONDS
+        );
+        control.retryFuture = retryFuture;
+    }
+
+    private long resolveTranscriptRecoveryPollIntervalMs(long timeoutMs) {
+        long configuredIntervalMs = realtimeFinalizeRecoveryPollIntervalMs <= 0L
+                ? 250L
+                : realtimeFinalizeRecoveryPollIntervalMs;
+        return Math.max(10L, Math.min(timeoutMs, configuredIntervalMs));
+    }
+
+    private void cancelTranscriptRecoveryRetry(RecoveryControl control) {
+        ScheduledFuture<?> retryFuture = control.retryFuture;
+        if (retryFuture != null) {
+            retryFuture.cancel(false);
+        }
     }
 
     private List<Map<String, Object>> fetchPersistedTranscriptRows(
@@ -2674,6 +2804,7 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
         if (recoveryFuture != null) {
             recoveryFuture.cancel(true);
         }
+        cancelTranscriptRecoveryRetry(control);
         transcriptRecoveryControls.remove(recoveryKey, control);
         session.getAttributes().remove(TRANSCRIPT_RECOVERY_PENDING_ATTR);
         log.warn(

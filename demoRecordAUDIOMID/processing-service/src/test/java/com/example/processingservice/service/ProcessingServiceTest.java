@@ -379,7 +379,11 @@ class ProcessingServiceTest {
                 2L
         );
 
-        assertEquals("COMPLETED", response.get("status"));
+        assertEquals("NOT_READY", response.get("status"));
+        assertEquals("TRANSCRIPT_NOT_READY", response.get("errorCode"));
+        assertEquals(Boolean.TRUE, response.get("transcriptNotReady"));
+        assertEquals(9001L, response.get("recording_session_id"));
+        assertEquals(2L, response.get("attempt_id"));
         assertTrue(response.get("transcripts") instanceof List<?>);
         assertEquals(0, ((List<?>) response.get("transcripts")).size());
         verify(aiServiceClient).getTranscript(894L, "trace-v2-not-ready", 9001L, 2L);

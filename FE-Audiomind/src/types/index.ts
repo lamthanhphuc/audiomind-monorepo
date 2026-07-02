@@ -842,5 +842,8 @@ export type TranscriptSegment = {
 export type TranscriptResponse = {
   meeting_id: number
   transcripts: TranscriptSegment[]
+  status?: string
+  errorCode?: string
+  transcriptNotReady?: boolean
 }
 

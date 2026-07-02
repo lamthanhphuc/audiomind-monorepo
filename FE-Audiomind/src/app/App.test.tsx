@@ -77,6 +77,63 @@ describe('hydrateLiveTranscriptSegments', () => {
     })
   })
 
+  it('retries scoped hydration when the transcript attempt is not ready', async () => {
+    vi.useFakeTimers()
+
+    const sessionToken = { meetingId: 88, recordingSessionId: 9001, attemptId: 2, connectionSeq: 0 }
+    const fetchTranscript = vi
+      .fn()
+      .mockResolvedValueOnce({
+        meeting_id: 88,
+        status: 'NOT_READY',
+        errorCode: 'TRANSCRIPT_NOT_READY',
+        transcriptNotReady: true,
+        transcripts: [],
+      })
+      .mockResolvedValue({
+        meeting_id: 88,
+        transcripts: [
+          {
+            speaker: 'Speaker 1',
+            start_time: 1,
+            end_time: 2,
+            text: 'Attempt scoped transcript',
+            recording_session_id: 9001,
+            attempt_id: 2,
+            stream_id: 'mic',
+            seq: 1,
+          },
+        ],
+      })
+
+    const hydrationPromise = hydrateLiveTranscriptSegments(
+      88,
+      fetchTranscript,
+      sessionToken,
+      (token) => token === sessionToken,
+    )
+
+    await vi.advanceTimersByTimeAsync(1500)
+    await vi.runAllTicks()
+    expect(fetchTranscript).toHaveBeenCalledTimes(1)
+
+    await vi.advanceTimersByTimeAsync(1500 * 3)
+    const hydratedSegments = await hydrationPromise
+
+    expect(fetchTranscript).toHaveBeenCalledWith(88, {
+      recordingSessionId: 9001,
+      attemptId: 2,
+    })
+    expect(fetchTranscript).toHaveBeenCalledTimes(4)
+    expect(hydratedSegments).toHaveLength(1)
+    expect(hydratedSegments[0]).toMatchObject({
+      text: 'Attempt scoped transcript',
+      recordingSessionId: 9001,
+      attemptId: 2,
+      streamId: 'mic',
+    })
+  })
+
   it('waits for transcript content and timing to stabilize when fragment count is unchanged', async () => {
     vi.useFakeTimers()
 

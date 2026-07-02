@@ -867,12 +867,13 @@ public class ProcessingService {
         TranscriptPayload stateTranscriptPayload = recordingSessionId == null
                 ? buildStateTranscriptPayload(state)
                 : TranscriptPayload.empty();
-        TranscriptPayload aiTranscriptPayload = fetchTranscriptPayloadFromAiService(
+        TranscriptFetchResult aiTranscriptResult = fetchTranscriptResultFromAiService(
                 meetingId,
                 traceId,
                 recordingSessionId,
                 attemptId
         );
+        TranscriptPayload aiTranscriptPayload = aiTranscriptResult.payload();
         TranscriptSourceDecision transcriptDecision = selectReadableTranscriptSource(
                 stateTranscriptPayload,
                 aiTranscriptPayload,
@@ -886,9 +887,30 @@ public class ProcessingService {
                     traceId,
                     currentRequestId(traceId),
                     meetingId,
-                    transcriptDecision.source()
+                transcriptDecision.source()
             );
             return buildTranscriptResponse(meetingId, responseStatus, transcriptDecision.payload(), traceId, authorization);
+        }
+
+        if (recordingSessionId != null && aiTranscriptResult.transcriptNotReady()) {
+            log.info(
+                    "event=UPLOAD_TRANSCRIPT_NOT_READY traceId={} requestId={} meetingId={} recordingSessionId={} attemptId={}",
+                    traceId,
+                    currentRequestId(traceId),
+                    meetingId,
+                    recordingSessionId,
+                    attemptId
+            );
+            Map<String, Object> response = buildTranscriptResponse(
+                    meetingId,
+                    "NOT_READY",
+                    TranscriptPayload.empty()
+            );
+            response.put("errorCode", "TRANSCRIPT_NOT_READY");
+            response.put("transcriptNotReady", true);
+            response.put("recording_session_id", recordingSessionId);
+            response.put("attempt_id", attemptId);
+            return response;
         }
 
         log.info(
@@ -4203,10 +4225,35 @@ public class ProcessingService {
             Long recordingSessionId,
             Long attemptId
     ) {
+        return fetchTranscriptResultFromAiService(
+                meetingId,
+                traceId,
+                recordingSessionId,
+                attemptId
+        ).payload();
+    }
+
+    private TranscriptFetchResult fetchTranscriptResultFromAiService(
+            Long meetingId,
+            String traceId,
+            Long recordingSessionId,
+            Long attemptId
+    ) {
         try {
             Map<String, Object> aiResponse = recordingSessionId == null
                     ? aiServiceClient.getTranscript(meetingId, traceId)
                     : aiServiceClient.getTranscript(meetingId, traceId, recordingSessionId, attemptId);
+            if (AIServiceClient.isTranscriptNotReadyResponse(aiResponse)) {
+                log.info(
+                        "event=AI_SERVICE_TRANSCRIPT_NOT_READY traceId={} requestId={} meetingId={} recordingSessionId={} attemptId={}",
+                        traceId,
+                        currentRequestId(traceId),
+                        meetingId,
+                        recordingSessionId,
+                        attemptId
+                );
+                return new TranscriptFetchResult(TranscriptPayload.empty(), true);
+            }
             TranscriptPayload payload = normalizeTranscriptPayload(aiResponse);
             if (!payload.readableRows().isEmpty()) {
                 log.info(
@@ -4217,7 +4264,7 @@ public class ProcessingService {
                         payload.transcriptMode(),
                         recordingSessionId == null ? "legacy" : "v2"
                 );
-                return payload;
+                return new TranscriptFetchResult(payload, false);
             }
             log.info(
                     "[traceId={}] [jobId={}] ai-service transcript fallback returned empty transcript list scope={}",
@@ -4225,7 +4272,7 @@ public class ProcessingService {
                     meetingId,
                     recordingSessionId == null ? "legacy" : "v2"
             );
-            return TranscriptPayload.empty();
+            return new TranscriptFetchResult(TranscriptPayload.empty(), false);
         } catch (HttpStatusCodeException ex) {
             if (ex.getStatusCode().value() == HttpStatus.NOT_FOUND.value()) {
                 log.info(
@@ -4234,7 +4281,10 @@ public class ProcessingService {
                         meetingId,
                         recordingSessionId == null ? "legacy" : "v2"
                 );
-                return TranscriptPayload.empty();
+                if (recordingSessionId != null) {
+                    return new TranscriptFetchResult(TranscriptPayload.empty(), true);
+                }
+                return new TranscriptFetchResult(TranscriptPayload.empty(), false);
             }
             log.warn(
                     "event=AI_SERVICE_CALL_FAILED traceId={} requestId={} meetingId={} source=transcript_fallback httpStatus={} errorCode=DOWNSTREAM_HTTP_ERROR",
@@ -4243,7 +4293,7 @@ public class ProcessingService {
                     meetingId,
                     ex.getStatusCode().value()
             );
-            return TranscriptPayload.empty();
+            return new TranscriptFetchResult(TranscriptPayload.empty(), false);
         } catch (Exception ex) {
             log.warn(
                     "event=AI_SERVICE_CALL_FAILED traceId={} requestId={} meetingId={} source=transcript_fallback errorCode={}",
@@ -4252,7 +4302,7 @@ public class ProcessingService {
                     meetingId,
                     ex.getClass().getSimpleName()
             );
-            return TranscriptPayload.empty();
+            return new TranscriptFetchResult(TranscriptPayload.empty(), false);
         }
     }
 
@@ -5217,6 +5267,12 @@ public class ProcessingService {
         boolean isCanonicalMode() {
             return TRANSCRIPT_MODE_CANONICAL.equals(transcriptMode);
         }
+    }
+
+    private record TranscriptFetchResult(
+            TranscriptPayload payload,
+            boolean transcriptNotReady
+    ) {
     }
 
     private record TranscriptSourceDecision(

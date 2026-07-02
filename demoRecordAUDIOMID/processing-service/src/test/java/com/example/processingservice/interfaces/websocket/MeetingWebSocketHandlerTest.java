@@ -2537,7 +2537,8 @@ class MeetingWebSocketHandlerTest {
         attributes.put("authorization", "Bearer test-token");
         attributes.put("recordingSessionId", 9003L);
         attributes.put("attemptId", 4L);
-        ReflectionTestUtils.setField(handler, "realtimeFinalizeRecoveryTimeoutMs", 5000L);
+        ReflectionTestUtils.setField(handler, "realtimeFinalizeRecoveryTimeoutMs", 2000L);
+        ReflectionTestUtils.setField(handler, "realtimeFinalizeRecoveryPollIntervalMs", 50L);
 
         doReturn(Map.of("type", "stream.stop")).when(objectMapper).readValue(anyString(), any(Class.class));
         when(aiServiceClient.getTranscriptForRecovery(eq(503L), anyString(), anyLong(), eq(9003L), eq(4L))).thenReturn(Map.of(
@@ -2572,6 +2573,65 @@ class MeetingWebSocketHandlerTest {
                 any(),
                 eq("skipped_empty_transcript"),
                 anyInt()
+        );
+    }
+
+    @Test
+    void handleTextMessage_streamStop_v2RecoveryNotReadyThenReadyShouldPollAndAnalyzeExactAttempt() throws Exception {
+        attributes.put("meetingId", 504L);
+        attributes.put("authenticated", true);
+        attributes.put("language", "vi");
+        attributes.put("authorization", "Bearer test-token");
+        attributes.put("recordingSessionId", 9004L);
+        attributes.put("attemptId", 5L);
+        ReflectionTestUtils.setField(handler, "realtimeFinalizeRecoveryTimeoutMs", 1500L);
+        ReflectionTestUtils.setField(handler, "realtimeFinalizeRecoveryPollIntervalMs", 50L);
+
+        doReturn(Map.of("type", "stream.stop")).when(objectMapper).readValue(anyString(), any(Class.class));
+        Map<String, Object> notReadyResponse = Map.of(
+                "meeting_id", 504L,
+                "recording_session_id", 9004L,
+                "attempt_id", 5L,
+                "transcripts", List.of(),
+                "status", "NOT_READY",
+                "errorCode", "TRANSCRIPT_NOT_READY",
+                "transcriptNotReady", true
+        );
+        Map<String, Object> readyResponse = Map.of(
+                "meeting_id", 504L,
+                "recording_session_id", 9004L,
+                "attempt_id", 5L,
+                "transcripts", List.of(Map.of("speaker", "SPEAKER_1", "text", "attempt scoped line"))
+        );
+        when(aiServiceClient.getTranscriptForRecovery(eq(504L), anyString(), anyLong(), eq(9004L), eq(5L)))
+                .thenReturn(notReadyResponse)
+                .thenReturn(readyResponse);
+        when(aiServiceClient.getTranscript(eq(504L), anyString(), eq(9004L), eq(5L))).thenReturn(readyResponse);
+        when(aiServiceClient.analyzeRealtimeTranscript(
+                eq(504L),
+                anyString(),
+                eq("it"),
+                eq("realtime"),
+                anyString(),
+                anyString(),
+                eq("Bearer test-token")
+        )).thenReturn(Map.of("status", "SUCCEEDED"));
+
+        handler.handleTextMessage(session, new TextMessage("{\"type\":\"stream.stop\"}"));
+
+        verify(aiServiceClient, timeout(1200).times(2))
+                .getTranscriptForRecovery(eq(504L), anyString(), anyLong(), eq(9004L), eq(5L));
+        verify(aiServiceClient, never()).getTranscriptForRecovery(eq(504L), anyString(), anyLong());
+        verify(aiServiceClient, timeout(1200)).getTranscript(eq(504L), anyString(), eq(9004L), eq(5L));
+        verify(aiServiceClient, never()).getTranscript(eq(504L), anyString());
+        verify(aiServiceClient, timeout(1200)).analyzeRealtimeTranscript(
+                eq(504L),
+                eq("SPEAKER_1: attempt scoped line"),
+                eq("it"),
+                eq("realtime"),
+                anyString(),
+                anyString(),
+                eq("Bearer test-token")
         );
     }
 

@@ -584,6 +584,19 @@ type HydrationOptions = {
   isHydrationRunActive?: (hydrationRunId: number) => boolean
 }
 
+const isTranscriptNotReadyPayload = (value: {
+  status?: unknown
+  errorCode?: unknown
+  transcriptNotReady?: unknown
+} | null | undefined): boolean => {
+  if (!value) {
+    return false
+  }
+  return value.transcriptNotReady === true
+    || String(value.status ?? '').toUpperCase() === 'NOT_READY'
+    || String(value.errorCode ?? '').toUpperCase() === 'TRANSCRIPT_NOT_READY'
+}
+
 const buildLiveAnalysisMetadata = (
   meetingId: number,
   status: string,
@@ -955,6 +968,30 @@ export const hydrateLiveTranscriptSegments = async (
     if (!isHydrationActive()) {
       console.info('[Realtime] STALE_HYDRATION_IGNORED', { meetingId, attempt, hydrationRunId: options.hydrationRunId, phase: 'post-fetch' })
       return []
+    }
+
+    if (isTranscriptNotReadyPayload(transcript)) {
+      console.info('[Realtime] HYDRATION_NO_FRAGMENTS_RETRY', {
+        meetingId,
+        attempt,
+        reason: 'transcript_not_ready',
+      })
+
+      if (attempt < HYDRATION_MAX_ATTEMPTS) {
+        await new Promise((resolve) => setTimeout(resolve, HYDRATION_RETRY_DELAY_MS))
+
+        if (!isHydrationActive()) {
+          console.info('[Realtime] STALE_HYDRATION_IGNORED', {
+            meetingId,
+            attempt,
+            hydrationRunId: options.hydrationRunId,
+            phase: 'transcript-not-ready-retry-wait',
+          })
+          return []
+        }
+
+        continue
+      }
     }
 
     const hydratedSegments = sortTranscriptSegmentsByTimeline(
