@@ -1313,6 +1313,7 @@ export default function App() {
   const realtimeToken = getAccessToken() ?? ''
   const onTabAudioTrackEndedRef = useRef<(() => void) | undefined>(undefined)
   const onTabCaptureFailureRef = useRef<((message: string, reason: 'track' | 'stall') => void) | undefined>(undefined)
+  const onTabPipelineStalledRef = useRef<(() => void) | undefined>(undefined)
   const recorderTimesliceMs = isBrowserTabRecordingSource(selectedRecordingSource)
     ? Math.min(REALTIME_RECORDER_TIMESLICE_MS, 120)
     : REALTIME_RECORDER_TIMESLICE_MS
@@ -1322,7 +1323,7 @@ export default function App() {
     recordingSource: selectedRecordingSource,
     onTrackEnded: () => onTabAudioTrackEndedRef.current?.(),
     onCaptureError: (message) => onTabCaptureFailureRef.current?.(message, 'track'),
-    onPipelineStalled: () => onTabCaptureFailureRef.current?.(RECORDING_SOURCE_ERRORS.tabCaptureStalled, 'stall'),
+    onPipelineStalled: () => onTabPipelineStalledRef.current?.(),
     timesliceMs: recorderTimesliceMs,
     preRollWindowMs: REALTIME_PREROLL_ENABLED
       ? Math.max(REALTIME_START_PREROLL_MS, REALTIME_RESUME_PREROLL_MS)
@@ -1334,7 +1335,7 @@ export default function App() {
     timesliceMs: recorderTimesliceMs,
     onTrackEnded: () => onTabAudioTrackEndedRef.current?.(),
     onCaptureError: (message) => onTabCaptureFailureRef.current?.(message, 'track'),
-    onPipelineStalled: () => onTabCaptureFailureRef.current?.(RECORDING_SOURCE_ERRORS.tabCaptureStalled, 'stall'),
+    onPipelineStalled: () => onTabPipelineStalledRef.current?.(),
     onChunkReady: (chunk, streamId, sessionId) => {
       handleDualChunkReadyRef.current(chunk, streamId, sessionId)
     },
@@ -1412,6 +1413,21 @@ export default function App() {
       if (activeToken) {
         realtimeStream.disconnect(activeToken)
       }
+    }
+    onTabPipelineStalledRef.current = () => {
+      if (!isBrowserTabRecordingSource(selectedRecordingSourceRef.current)) {
+        return
+      }
+      if (audioRecorder.state !== 'recording' && audioRecorder.state !== 'paused' && audioRecorder.state !== 'connecting') {
+        return
+      }
+      console.warn('[Realtime] TAB_AUDIO_PIPELINE_DEGRADED', {
+        meetingId: liveMeetingIdRef.current,
+        source: selectedRecordingSourceRef.current,
+        reason: 'output_mismatch',
+      })
+      setLivePartialWarning(RECORDING_SOURCE_ERRORS.tabCaptureStalled)
+      setLiveStatusMessage(RECORDING_SOURCE_ERRORS.tabCaptureStalled)
     }
   }, [audioRecorder, realtimeStream])
 

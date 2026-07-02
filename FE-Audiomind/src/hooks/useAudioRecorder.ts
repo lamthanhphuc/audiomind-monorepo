@@ -7,7 +7,6 @@ import {
 } from '../utils/audioSourceAcquisition'
 import {
   isBrowserTabRecordingSource,
-  RECORDING_SOURCE_ERRORS,
   type RecordingSource,
 } from '../constants/recordingSource'
 import {
@@ -120,6 +119,7 @@ export const useAudioRecorder = (
   const rollingChunksRef = useRef<RollingAudioChunk[]>([])
   const sourceCleanupRef = useRef<(() => void) | null>(null)
   const trackEndedDetachRef = useRef<(() => void) | null>(null)
+  const tabTrackTerminalHandledRef = useRef(false)
   const tabPipelineMonitorRef = useRef<TabAudioPipelineMonitor | null>(null)
   const tabMixerHandlesRef = useRef<TabMicMixerHandles | null>(null)
   const recordingStartedAtRef = useRef<number | null>(null)
@@ -149,6 +149,14 @@ export const useAudioRecorder = (
     tabMixerHandlesRef.current = null
     recordingStartedAtRef.current = null
   }, [])
+
+  const notifyTabTrackEnded = useCallback(() => {
+    if (tabTrackTerminalHandledRef.current) {
+      return
+    }
+    tabTrackTerminalHandledRef.current = true
+    onTrackEnded?.()
+  }, [onTrackEnded])
 
   const releaseAcquiredSource = useCallback(() => {
     detachTrackEndedHandler()
@@ -249,18 +257,27 @@ export const useAudioRecorder = (
     tabMixerHandlesRef.current = tabMixerHandles ?? null
     recordingStartedAtRef.current = performance.now()
     tabPipelineMonitorRef.current = createTabAudioPipelineMonitor({
-      stream,
+      stream: tabMixerHandles?.sourceTabStream ?? stream,
+      sourceStream: tabMixerHandles?.sourceTabStream ?? null,
+      sourceTrack: tabMixerHandles?.sourceTabTrack ?? null,
       streamId: tabMixerHandles ? 'mixed' : 'tab',
       meetingId,
       sessionId,
       audioContext: tabMixerHandles?.audioContext ?? audioContextRef.current,
+      preGainAnalyser: tabMixerHandles?.tabAnalyser ?? null,
       postGainAnalyser: tabMixerHandles?.outputAnalyser ?? audioAnalyserRef.current,
-      onTrackEnded: () => onTrackEnded?.(),
-      onTrackMuted: () => onCaptureError?.(RECORDING_SOURCE_ERRORS.tabTinyOrSilentAudio),
-      onCaptureError: (message) => onCaptureError?.(message),
+      tabGain: tabMixerHandles?.tabGain ?? null,
+      minTabGain: tabMixerHandles?.tabDuckGain,
+      onTrackEnded: notifyTabTrackEnded,
+      onTrackMuted: () => {
+        console.warn('[Realtime] TAB_AUDIO_TRACK_MUTED_DIAGNOSTIC', {
+          meetingId,
+          sessionId,
+        })
+      },
       onPipelineStalled: () => onPipelineStalled?.(),
     })
-  }, [isTabCaptureSource, onCaptureError, onPipelineStalled, onTrackEnded, stopTabPipelineMonitor])
+  }, [isTabCaptureSource, notifyTabTrackEnded, onPipelineStalled, stopTabPipelineMonitor])
 
   const readAudioMetrics = useCallback((): { rms: number; peak: number } | null => {
     const analyser = audioAnalyserRef.current
@@ -495,6 +512,7 @@ export const useAudioRecorder = (
 
     const sessionId = nextSessionId
     recordingSessionIdRef.current = sessionId
+    tabTrackTerminalHandledRef.current = false
     resetSessionState()
     setState('connecting')
     recorderMimeLoggedRef.current = false
@@ -514,17 +532,21 @@ export const useAudioRecorder = (
 
       sourceCleanupRef.current = acquired.cleanup
       if (onTrackEnded || onCaptureError) {
-        trackEndedDetachRef.current = attachAudioTrackEndedHandler(stream, () => {
+        const trackMonitorStream = acquired.tabMixerHandles?.sourceTabStream ?? stream
+        trackEndedDetachRef.current = attachAudioTrackEndedHandler(trackMonitorStream, () => {
           if (recordingSessionIdRef.current !== sessionId) {
             return
           }
-          onTrackEnded?.()
+          notifyTabTrackEnded()
         }, {
           onMuted: () => {
             if (recordingSessionIdRef.current !== sessionId) {
               return
             }
-            onCaptureError?.(RECORDING_SOURCE_ERRORS.tabTinyOrSilentAudio)
+            console.warn('[Realtime] TAB_AUDIO_TRACK_MUTED_DIAGNOSTIC', {
+              meetingId: diagnosticMeetingId,
+              sessionId,
+            })
           },
         })
       }

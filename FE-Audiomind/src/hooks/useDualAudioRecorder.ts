@@ -8,7 +8,6 @@ import {
 import {
   REALTIME_RECORDER_TIMESLICE_MS,
 } from '../services/config'
-import { RECORDING_SOURCE_ERRORS } from '../constants/recordingSource'
 import type { AudioRecorderState, GracefulStopResult, UseAudioRecorderReturn } from './useAudioRecorder'
 import {
   RECORDER_STOP_TIMEOUT_MS,
@@ -53,6 +52,7 @@ export const useDualAudioRecorder = (
   const activeStreamIdsRef = useRef<DualTabMicStreamId[]>(['tab'])
   const dualCleanupRef = useRef<(() => void) | null>(null)
   const trackEndedDetachRef = useRef<(() => void) | null>(null)
+  const tabTrackTerminalHandledRef = useRef(false)
   const durationTimerRef = useRef<number | null>(null)
   const startedAtRef = useRef<number | null>(null)
   const tabPipelineMonitorRef = useRef<TabAudioPipelineMonitor | null>(null)
@@ -84,6 +84,7 @@ export const useDualAudioRecorder = (
     streamRecordersRef.current = []
     dualCleanupRef.current?.()
     dualCleanupRef.current = null
+    tabTrackTerminalHandledRef.current = false
     stopDurationTimer()
   }, [stopDurationTimer])
 
@@ -104,6 +105,15 @@ export const useDualAudioRecorder = (
 
     const sessionId = expectedSessionId ?? (recordingSessionIdRef.current + 1)
     recordingSessionIdRef.current = sessionId
+    tabTrackTerminalHandledRef.current = false
+
+    const notifyTabTrackEnded = () => {
+      if (tabTrackTerminalHandledRef.current) {
+        return
+      }
+      tabTrackTerminalHandledRef.current = true
+      options.onTrackEnded?.()
+    }
 
     try {
       const acquired = await acquireDualTabMicSources({ meetingId: options.diagnosticMeetingId ?? null })
@@ -118,9 +128,14 @@ export const useDualAudioRecorder = (
       activeStreamIdsRef.current = streams.map((entry) => entry.streamId)
 
       trackEndedDetachRef.current = attachAudioTrackEndedHandler(acquired.tab.stream, () => {
-        options.onTrackEnded?.()
+        notifyTabTrackEnded()
       }, {
-        onMuted: () => options.onCaptureError?.(RECORDING_SOURCE_ERRORS.tabTinyOrSilentAudio),
+        onMuted: () => {
+          console.warn('[Realtime] TAB_AUDIO_TRACK_MUTED_DIAGNOSTIC', {
+            meetingId: options.diagnosticMeetingId ?? null,
+            sessionId,
+          })
+        },
       })
 
       tabPipelineMonitorRef.current = createTabAudioPipelineMonitor({
@@ -128,9 +143,13 @@ export const useDualAudioRecorder = (
         streamId: 'tab',
         meetingId: options.diagnosticMeetingId ?? null,
         sessionId,
-        onTrackEnded: () => options.onTrackEnded?.(),
-        onTrackMuted: () => options.onCaptureError?.(RECORDING_SOURCE_ERRORS.tabTinyOrSilentAudio),
-        onCaptureError: (message) => options.onCaptureError?.(message),
+        onTrackEnded: () => notifyTabTrackEnded(),
+        onTrackMuted: () => {
+          console.warn('[Realtime] TAB_AUDIO_TRACK_MUTED_DIAGNOSTIC', {
+            meetingId: options.diagnosticMeetingId ?? null,
+            sessionId,
+          })
+        },
         onPipelineStalled: () => options.onPipelineStalled?.('tab'),
       })
       startedAtRef.current = performance.now()

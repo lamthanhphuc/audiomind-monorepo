@@ -203,8 +203,12 @@ const acquireMicrophoneStream = async (
 
 export type TabMicMixerHandles = {
   audioContext: AudioContext
+  sourceTabStream: MediaStream
+  sourceTabTrack: MediaStreamTrack | null
   tabAnalyser: AnalyserNode
   outputAnalyser: AnalyserNode
+  tabGain: GainNode
+  tabDuckGain: number
 }
 
 const acquireBrowserTabStream = async (): Promise<MediaStream> => {
@@ -459,8 +463,12 @@ const mixTabAndMicrophoneStreams = async (
     micIncluded: true,
     mixerHandles: {
       audioContext,
+      sourceTabStream: tabStream,
+      sourceTabTrack: tabStream.getAudioTracks()[0] ?? null,
       tabAnalyser,
       outputAnalyser,
+      tabGain,
+      tabDuckGain: TAB_DUCK_GAIN,
     },
   }
 }

@@ -1,11 +1,60 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
+  createTabAudioPipelineMonitor,
   ensureAudioContextRunning,
   isTabCaptureSilent,
   measureAnalyserRms,
   resolveTabMicGateGains,
   snapshotTabTrack,
+  TAB_AUDIO_PIPELINE_MARKERS,
 } from './tabAudioPipeline'
+
+type FakeTrack = MediaStreamTrack & {
+  listeners: Map<string, Set<() => void>>
+}
+
+const makeTrack = (overrides: Partial<MediaStreamTrack> = {}): FakeTrack => {
+  const listeners = new Map<string, Set<() => void>>()
+  return {
+    id: 'tab-track',
+    kind: 'audio',
+    readyState: 'live',
+    muted: false,
+    enabled: true,
+    listeners,
+    addEventListener: (event: string, handler: EventListenerOrEventListenerObject) => {
+      const callback = () => {
+        if (typeof handler === 'function') {
+          handler(new Event(event))
+          return
+        }
+        handler.handleEvent(new Event(event))
+      }
+      listeners.set(event, listeners.get(event) ?? new Set())
+      listeners.get(event)?.add(callback)
+    },
+    removeEventListener: (event: string) => {
+      listeners.get(event)?.clear()
+    },
+    ...overrides,
+  } as FakeTrack
+}
+
+const emitTrack = (track: FakeTrack, event: string) => {
+  track.listeners.get(event)?.forEach((callback) => callback())
+}
+
+const makeStream = (track: MediaStreamTrack): MediaStream => ({
+  getAudioTracks: () => [track],
+}) as unknown as MediaStream
+
+const makeAnalyser = (rms: 'silent' | 'active'): AnalyserNode => ({
+  fftSize: 4,
+  frequencyBinCount: 4,
+  getByteTimeDomainData: (buffer: Uint8Array) => {
+    buffer.fill(rms === 'silent' ? 128 : 255)
+  },
+}) as unknown as AnalyserNode
 
 describe('resolveTabMicGateGains', () => {
   it('keeps tab gain above zero during mic priority (duck, never mute)', () => {
@@ -84,5 +133,119 @@ describe('ensureAudioContextRunning', () => {
     const state = await ensureAudioContextRunning(context)
     expect(resume).toHaveBeenCalledTimes(1)
     expect(state).toBe('suspended')
+  })
+})
+
+describe('createTabAudioPipelineMonitor', () => {
+  it('diagnoses extended tab silence without reporting a capture stall or error', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const track = makeTrack()
+    const onPipelineStalled = vi.fn()
+    const onCaptureError = vi.fn()
+
+    const monitor = createTabAudioPipelineMonitor({
+      stream: makeStream(track),
+      sourceTrack: track,
+      sessionId: 1,
+      preGainAnalyser: makeAnalyser('silent'),
+      postGainAnalyser: makeAnalyser('silent'),
+      stallThresholdMs: 0,
+      onPipelineStalled,
+      onCaptureError,
+    })
+
+    monitor.notifyRecorderChunk({ seq: 3, bytes: 1024, elapsedMs: 9000 })
+
+    expect(onPipelineStalled).not.toHaveBeenCalled()
+    expect(onCaptureError).not.toHaveBeenCalled()
+    expect(warn).toHaveBeenCalledWith(
+      '[Realtime]',
+      TAB_AUDIO_PIPELINE_MARKERS.SILENCE_DETECTED,
+      expect.objectContaining({ streamId: 'tab' }),
+    )
+
+    monitor.cleanup()
+    warn.mockRestore()
+  })
+
+  it('reports output mismatch as degraded pipeline and attempts safe gain recovery', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    vi.spyOn(console, 'info').mockImplementation(() => {})
+    const track = makeTrack()
+    const onPipelineStalled = vi.fn()
+    const onCaptureError = vi.fn()
+    const tabGain = { gain: { value: 0 } } as GainNode
+    const now = vi.spyOn(performance, 'now')
+    now.mockReturnValueOnce(0)
+      .mockReturnValueOnce(0)
+      .mockReturnValue(9000)
+
+    const monitor = createTabAudioPipelineMonitor({
+      stream: makeStream(track),
+      sourceTrack: track,
+      sessionId: 1,
+      preGainAnalyser: makeAnalyser('active'),
+      postGainAnalyser: makeAnalyser('silent'),
+      tabGain,
+      minTabGain: 0.12,
+      stallThresholdMs: 8000,
+      onPipelineStalled,
+      onCaptureError,
+    })
+
+    monitor.notifyRecorderChunk({ seq: 3, bytes: 1024, elapsedMs: 9000 })
+
+    expect(onPipelineStalled).toHaveBeenCalledTimes(1)
+    expect(onCaptureError).not.toHaveBeenCalled()
+    expect(tabGain.gain.value).toBe(0.12)
+
+    monitor.cleanup()
+    vi.restoreAllMocks()
+  })
+
+  it('treats source tab mute as one warning callback without capture failure', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const track = makeTrack({ muted: true })
+    const onTrackMuted = vi.fn()
+    const onCaptureError = vi.fn()
+    const monitor = createTabAudioPipelineMonitor({
+      stream: makeStream(track),
+      sourceTrack: track,
+      sessionId: 1,
+      preGainAnalyser: makeAnalyser('silent'),
+      onTrackMuted,
+      onCaptureError,
+    })
+
+    emitTrack(track, 'mute')
+
+    expect(onTrackMuted).toHaveBeenCalledTimes(1)
+    expect(onCaptureError).not.toHaveBeenCalled()
+
+    monitor.cleanup()
+    vi.restoreAllMocks()
+  })
+
+  it('treats source tab ended as terminal once without duplicate capture error', () => {
+    vi.spyOn(console, 'info').mockImplementation(() => {})
+    const track = makeTrack({ readyState: 'ended' })
+    const onTrackEnded = vi.fn()
+    const onCaptureError = vi.fn()
+    const monitor = createTabAudioPipelineMonitor({
+      stream: makeStream(track),
+      sourceTrack: track,
+      sessionId: 1,
+      preGainAnalyser: makeAnalyser('silent'),
+      onTrackEnded,
+      onCaptureError,
+    })
+
+    emitTrack(track, 'ended')
+
+    expect(onTrackEnded).toHaveBeenCalledTimes(1)
+    expect(onCaptureError).not.toHaveBeenCalled()
+
+    monitor.cleanup()
+    vi.restoreAllMocks()
   })
 })
