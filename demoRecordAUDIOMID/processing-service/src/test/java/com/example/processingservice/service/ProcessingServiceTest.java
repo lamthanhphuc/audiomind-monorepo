@@ -354,6 +354,39 @@ class ProcessingServiceTest {
     }
 
     @Test
+    void getTranscript_v2NotReadyShouldNotFallbackToLegacyStateTranscript() {
+        Map<String, Object> state = new HashMap<>();
+        state.put("status", "COMPLETED");
+        state.put("result", Map.of(
+                "transcripts", List.of(Map.of("speaker", "SPEAKER_1", "text", "legacy row must not leak"))
+        ));
+        when(jobStateStore.getJobState(894L)).thenReturn(Optional.of(state));
+        when(aiServiceClient.getTranscript(894L, "trace-v2-not-ready", 9001L, 2L)).thenReturn(Map.of(
+                "meeting_id", 894L,
+                "recording_session_id", 9001L,
+                "attempt_id", 2L,
+                "transcripts", List.of(),
+                "status", "NOT_READY",
+                "errorCode", "TRANSCRIPT_NOT_READY",
+                "transcriptNotReady", true
+        ));
+
+        Map<String, Object> response = processingService.getTranscript(
+                894L,
+                "trace-v2-not-ready",
+                AUTH_HEADER,
+                9001L,
+                2L
+        );
+
+        assertEquals("COMPLETED", response.get("status"));
+        assertTrue(response.get("transcripts") instanceof List<?>);
+        assertEquals(0, ((List<?>) response.get("transcripts")).size());
+        verify(aiServiceClient).getTranscript(894L, "trace-v2-not-ready", 9001L, 2L);
+        verify(aiServiceClient, never()).getTranscript(894L, "trace-v2-not-ready");
+    }
+
+    @Test
     void getTranscript_shouldPreferCanonicalRowsFromAiFallbackWhenAvailable() {
         when(jobStateStore.getJobState(892L)).thenReturn(Optional.empty());
         Map<String, Object> aiPayload = new HashMap<>();

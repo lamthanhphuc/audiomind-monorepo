@@ -1775,6 +1775,17 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
             return;
         }
 
+        if (AIServiceClient.isTranscriptNotReadyResponse(transcriptResponse)) {
+            log.info(
+                    "event=REALTIME_ANALYSIS_TRANSCRIPT_NOT_READY meetingId={} source={} recordingSessionId={} attemptId={}",
+                    meetingId,
+                    source,
+                    recordingSessionId,
+                    attemptId
+            );
+            return;
+        }
+
         List<Map<String, Object>> transcriptRows = normalizeTranscriptRows(
                 transcriptResponse == null ? null : transcriptResponse.get("transcripts")
         );
@@ -2529,6 +2540,16 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                 rows = fetchPersistedTranscriptRows(meetingId, timeoutMs, recordingSessionId, attemptId);
                 transcriptText = buildTranscriptText(rows);
                 fetchSucceeded = true;
+            } catch (TranscriptNotReadyException ex) {
+                log.info(
+                        "event=REALTIME_FINALIZE_RECOVER_TRANSCRIPT_NOT_READY meetingId={} source={} reason={} recordingSessionId={} attemptId={}",
+                        meetingId,
+                        analysisSource,
+                        reason,
+                        recordingSessionId,
+                        attemptId
+                );
+                return;
             } catch (Exception ex) {
                 log.warn(
                         "event=REALTIME_FINALIZE_RECOVER_FAILED meetingId={} source={} reason={} errorCode={}",
@@ -2622,9 +2643,15 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                     timeoutMs
             );
         }
+        if (AIServiceClient.isTranscriptNotReadyResponse(transcriptResponse)) {
+            throw new TranscriptNotReadyException();
+        }
         return normalizeTranscriptRows(
                 transcriptResponse == null ? null : transcriptResponse.get("transcripts")
         );
+    }
+
+    private static final class TranscriptNotReadyException extends RuntimeException {
     }
 
     private void completeTimedOutTranscriptRecovery(

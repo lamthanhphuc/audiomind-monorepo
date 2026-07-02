@@ -49,6 +49,8 @@ public class AIServiceClient {
     private static final String TRACE_HEADER = "x-trace-id";
     private static final String REQUEST_HEADER = "x-request-id";
     private static final String DEFAULT_ANALYSIS_FEATURE_SET = "grouped-action-plan-v1";
+    private static final String TRANSCRIPT_NOT_READY_STATUS = "NOT_READY";
+    private static final String TRANSCRIPT_NOT_READY_ERROR_CODE = "TRANSCRIPT_NOT_READY";
 
     private static final Logger log = LoggerFactory.getLogger(AIServiceClient.class);
 
@@ -260,17 +262,66 @@ public class AIServiceClient {
         headers.add(TRACE_HEADER, resolvedTraceId);
         headers.add(REQUEST_HEADER, resolvedRequestId);
         String url = buildTranscriptUrl(meetingId, recordingSessionId, attemptId);
-        ResponseEntity<Map<String, Object>> response = executeAiServiceCall(
-                client,
-                operation,
-                url,
-                HttpMethod.GET,
-                new HttpEntity<>(headers),
-                resolvedTraceId,
-                resolvedRequestId,
-                meetingId
-        );
+        ResponseEntity<Map<String, Object>> response;
+        try {
+            response = executeAiServiceCall(
+                    client,
+                    operation,
+                    url,
+                    HttpMethod.GET,
+                    new HttpEntity<>(headers),
+                    resolvedTraceId,
+                    resolvedRequestId,
+                    meetingId
+            );
+        } catch (HttpClientErrorException ex) {
+            if (isScopedTranscriptNotReady(operation, recordingSessionId, attemptId, ex)) {
+                return buildTranscriptNotReadyResponse(meetingId, recordingSessionId, attemptId);
+            }
+            throw ex;
+        }
         return requireBody(response, operation, meetingId);
+    }
+
+    public static boolean isTranscriptNotReadyResponse(Map<String, Object> response) {
+        if (response == null) {
+            return false;
+        }
+        Object marker = response.get("transcriptNotReady");
+        if (Boolean.TRUE.equals(marker)) {
+            return true;
+        }
+        String status = String.valueOf(response.getOrDefault("status", "")).trim().toUpperCase(Locale.ROOT);
+        String errorCode = String.valueOf(response.getOrDefault("errorCode", "")).trim().toUpperCase(Locale.ROOT);
+        return TRANSCRIPT_NOT_READY_STATUS.equals(status)
+                || TRANSCRIPT_NOT_READY_ERROR_CODE.equals(errorCode);
+    }
+
+    private boolean isScopedTranscriptNotReady(
+            String operation,
+            Long recordingSessionId,
+            Long attemptId,
+            HttpClientErrorException ex) {
+        return operation != null
+                && operation.startsWith("getTranscript")
+                && recordingSessionId != null
+                && attemptId != null
+                && ex.getStatusCode() == HttpStatus.NOT_FOUND;
+    }
+
+    private Map<String, Object> buildTranscriptNotReadyResponse(
+            Long meetingId,
+            Long recordingSessionId,
+            Long attemptId) {
+        Map<String, Object> response = new HashMap<>();
+        response.put("meeting_id", meetingId);
+        response.put("recording_session_id", recordingSessionId);
+        response.put("attempt_id", attemptId);
+        response.put("transcripts", List.of());
+        response.put("status", TRANSCRIPT_NOT_READY_STATUS);
+        response.put("errorCode", TRANSCRIPT_NOT_READY_ERROR_CODE);
+        response.put("transcriptNotReady", true);
+        return response;
     }
 
     private String buildTranscriptUrl(Long meetingId, Long recordingSessionId, Long attemptId) {
@@ -1211,6 +1262,20 @@ public class AIServiceClient {
             );
             return response;
         } catch (RestClientException ex) {
+            if (isExpectedTranscriptNotReady(operation, url, ex)) {
+                HttpStatusCodeException statusException = (HttpStatusCodeException) ex;
+                log.info(
+                        "event=TRANSCRIPT_GET_NOT_READY traceId={} requestId={} meetingId={} path={} operation={} httpStatus={} durationMs={}",
+                        traceId,
+                        requestId,
+                        meetingId,
+                        url,
+                        operation,
+                        statusException.getStatusCode().value(),
+                        System.currentTimeMillis() - startedAt
+                );
+                throw ex;
+            }
             if (isExpectedAnalysisNotReady(operation, ex)) {
                 HttpStatusCodeException statusException = (HttpStatusCodeException) ex;
                 log.info(
@@ -1238,6 +1303,15 @@ public class AIServiceClient {
             );
             throw ex;
         }
+    }
+
+    private boolean isExpectedTranscriptNotReady(String operation, String url, RestClientException ex) {
+        return operation != null
+                && operation.startsWith("getTranscript")
+                && url != null
+                && url.contains("recording_session_id=")
+                && ex instanceof HttpStatusCodeException statusException
+                && statusException.getStatusCode() == HttpStatus.NOT_FOUND;
     }
 
     private RestTemplate createRecoveryRestTemplate(long timeoutMs) {

@@ -25,6 +25,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.util.MultiValueMap;
 import org.springframework.web.client.HttpClientErrorException;
+import org.springframework.web.client.HttpServerErrorException;
 import org.springframework.web.client.RestTemplate;
 
 import ch.qos.logback.classic.Logger;
@@ -348,6 +349,80 @@ class AIServiceClientTest {
         verify(restTemplate, never()).exchange(
                 any(String.class),
                 any(HttpMethod.class),
+                any(HttpEntity.class),
+                any(org.springframework.core.ParameterizedTypeReference.class)
+        );
+    }
+
+    @Test
+    void getTranscript_v2NotFoundShouldReturnNotReadyWithoutRetryException() {
+        RestTemplate restTemplate = mock(RestTemplate.class);
+        AIServiceClient client = new AIServiceClient(restTemplate);
+        ReflectionTestUtils.setField(client, "aiUrl", "http://ai-service");
+
+        when(restTemplate.exchange(
+                any(String.class),
+                eq(HttpMethod.GET),
+                any(HttpEntity.class),
+                any(org.springframework.core.ParameterizedTypeReference.class)
+        )).thenThrow(new HttpClientErrorException(HttpStatus.NOT_FOUND));
+
+        Map<String, Object> response = client.getTranscript(91L, "trace-not-ready", 1001L, 2L);
+
+        assertEquals("NOT_READY", response.get("status"));
+        assertEquals("TRANSCRIPT_NOT_READY", response.get("errorCode"));
+        assertTrue(AIServiceClient.isTranscriptNotReadyResponse(response));
+        verify(restTemplate).exchange(
+                any(String.class),
+                eq(HttpMethod.GET),
+                any(HttpEntity.class),
+                any(org.springframework.core.ParameterizedTypeReference.class)
+        );
+    }
+
+    @Test
+    void getTranscript_v2ServiceUnavailableShouldRemainRetryableException() {
+        RestTemplate restTemplate = mock(RestTemplate.class);
+        AIServiceClient client = new AIServiceClient(restTemplate);
+        ReflectionTestUtils.setField(client, "aiUrl", "http://ai-service");
+
+        when(restTemplate.exchange(
+                any(String.class),
+                eq(HttpMethod.GET),
+                any(HttpEntity.class),
+                any(org.springframework.core.ParameterizedTypeReference.class)
+        )).thenThrow(new HttpServerErrorException(HttpStatus.SERVICE_UNAVAILABLE));
+
+        assertThrows(HttpServerErrorException.class, () ->
+                client.getTranscript(92L, "trace-503", 1001L, 2L)
+        );
+        verify(restTemplate).exchange(
+                any(String.class),
+                eq(HttpMethod.GET),
+                any(HttpEntity.class),
+                any(org.springframework.core.ParameterizedTypeReference.class)
+        );
+    }
+
+    @Test
+    void getTranscript_v2RateLimitShouldRemainRetryableException() {
+        RestTemplate restTemplate = mock(RestTemplate.class);
+        AIServiceClient client = new AIServiceClient(restTemplate);
+        ReflectionTestUtils.setField(client, "aiUrl", "http://ai-service");
+
+        when(restTemplate.exchange(
+                any(String.class),
+                eq(HttpMethod.GET),
+                any(HttpEntity.class),
+                any(org.springframework.core.ParameterizedTypeReference.class)
+        )).thenThrow(new HttpClientErrorException(HttpStatus.TOO_MANY_REQUESTS));
+
+        assertThrows(HttpClientErrorException.class, () ->
+                client.getTranscript(93L, "trace-429", 1001L, 2L)
+        );
+        verify(restTemplate).exchange(
+                any(String.class),
+                eq(HttpMethod.GET),
                 any(HttpEntity.class),
                 any(org.springframework.core.ParameterizedTypeReference.class)
         );

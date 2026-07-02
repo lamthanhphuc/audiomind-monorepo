@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.argThat;
@@ -2452,6 +2453,125 @@ class MeetingWebSocketHandlerTest {
                 anyString(),
                 anyString(),
                 eq("Bearer test-token")
+        );
+    }
+
+    @Test
+    void handleTextMessage_streamStop_v2TranscriptNotReadyShouldNotAnalyzeOrMarkSkipped() throws Exception {
+        attributes.put("meetingId", 502L);
+        attributes.put("authenticated", true);
+        attributes.put("language", "vi");
+        attributes.put("authorization", "Bearer test-token");
+        attributes.put("lastAudioSeq", 36L);
+        attributes.put("AUDIO_RECEIVED_ATTR", Boolean.TRUE);
+        attributes.put("recordingSessionId", 9002L);
+        attributes.put("attemptId", 3L);
+
+        doReturn(Map.of("type", "stream.stop")).when(objectMapper).readValue(anyString(), any(Class.class));
+        when(aiServiceClient.streamAudioChunk(
+                eq(502L),
+                isNull(),
+                any(byte[].class),
+                eq(-1L),
+                eq("vi"),
+                isNull(),
+                eq(true),
+                isNull(),
+                eq("Bearer test-token"),
+                eq(9002L),
+                eq(3L)
+        )).thenReturn(Map.of(
+                "transcript", "pending",
+                "is_final", true,
+                "language", "vi"
+        ));
+        when(aiServiceClient.getTranscript(eq(502L), anyString(), eq(9002L), eq(3L))).thenReturn(Map.of(
+                "meeting_id", 502L,
+                "recording_session_id", 9002L,
+                "attempt_id", 3L,
+                "transcripts", List.of(),
+                "status", "NOT_READY",
+                "errorCode", "TRANSCRIPT_NOT_READY",
+                "transcriptNotReady", true
+        ));
+
+        handler.handleTextMessage(session, new TextMessage("{\"type\":\"stream.stop\"}"));
+
+        verify(aiServiceClient, timeout(1000)).getTranscript(eq(502L), anyString(), eq(9002L), eq(3L));
+        verify(aiServiceClient, never()).getTranscript(eq(502L), anyString());
+        verify(aiServiceClient, after(250).never()).analyzeRealtimeTranscript(
+                eq(502L),
+                anyString(),
+                anyString(),
+                eq("realtime"),
+                anyString(),
+                anyString(),
+                anyString()
+        );
+        verify(jobStateStore, after(250).never()).markAnalysisSkipped(
+                eq(502L),
+                anyString(),
+                anyString(),
+                anyString(),
+                any(),
+                eq("skipped_empty_transcript"),
+                anyInt()
+        );
+        verify(jobStateStore, after(250).never()).markAnalysisFailed(
+                eq(502L),
+                anyString(),
+                anyString(),
+                anyString(),
+                any(),
+                anyString(),
+                anyString(),
+                anyInt()
+        );
+    }
+
+    @Test
+    void handleTextMessage_streamStop_v2RecoveryNotReadyShouldNotFallbackLegacyOrFailImmediately() throws Exception {
+        attributes.put("meetingId", 503L);
+        attributes.put("authenticated", true);
+        attributes.put("language", "vi");
+        attributes.put("authorization", "Bearer test-token");
+        attributes.put("recordingSessionId", 9003L);
+        attributes.put("attemptId", 4L);
+        ReflectionTestUtils.setField(handler, "realtimeFinalizeRecoveryTimeoutMs", 5000L);
+
+        doReturn(Map.of("type", "stream.stop")).when(objectMapper).readValue(anyString(), any(Class.class));
+        when(aiServiceClient.getTranscriptForRecovery(eq(503L), anyString(), anyLong(), eq(9003L), eq(4L))).thenReturn(Map.of(
+                "meeting_id", 503L,
+                "recording_session_id", 9003L,
+                "attempt_id", 4L,
+                "transcripts", List.of(),
+                "status", "NOT_READY",
+                "errorCode", "TRANSCRIPT_NOT_READY",
+                "transcriptNotReady", true
+        ));
+
+        handler.handleTextMessage(session, new TextMessage("{\"type\":\"stream.stop\"}"));
+
+        verify(aiServiceClient, timeout(1000)).getTranscriptForRecovery(eq(503L), anyString(), anyLong(), eq(9003L), eq(4L));
+        verify(aiServiceClient, never()).getTranscriptForRecovery(eq(503L), anyString(), anyLong());
+        verify(aiServiceClient, after(250).never()).analyzeRealtimeTranscript(
+                eq(503L),
+                anyString(),
+                anyString(),
+                eq("realtime"),
+                anyString(),
+                anyString(),
+                anyString()
+        );
+        verify(meetingServiceClient, after(250).never()).updateMeetingStatus(eq(503L), eq("failed"), anyString(), eq("Bearer test-token"));
+        verify(jobStateStore, after(250).never()).markAnalysisSkipped(
+                eq(503L),
+                anyString(),
+                anyString(),
+                anyString(),
+                any(),
+                eq("skipped_empty_transcript"),
+                anyInt()
         );
     }
 
