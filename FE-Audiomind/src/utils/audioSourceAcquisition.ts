@@ -206,6 +206,7 @@ export type TabMicMixerHandles = {
   sourceTabStream: MediaStream
   sourceTabTrack: MediaStreamTrack | null
   tabAnalyser: AnalyserNode
+  tabPostGainAnalyser: AnalyserNode
   outputAnalyser: AnalyserNode
   tabGain: GainNode
   tabDuckGain: number
@@ -296,6 +297,8 @@ const mixTabAndMicrophoneStreams = async (
   const tabAnalyser = audioContext.createAnalyser()
   tabAnalyser.fftSize = 512
   const tabAnalyserData = new Uint8Array(tabAnalyser.frequencyBinCount)
+  const tabPostGainAnalyser = audioContext.createAnalyser()
+  tabPostGainAnalyser.fftSize = 512
   const outputAnalyser = audioContext.createAnalyser()
   outputAnalyser.fftSize = 512
 
@@ -381,6 +384,7 @@ const mixTabAndMicrophoneStreams = async (
   }
 
   tabSource.connect(tabGain)
+  tabGain.connect(tabPostGainAnalyser)
   tabGain.connect(destination)
   tabGain.connect(outputAnalyser)
   micSource.connect(micGain)
@@ -449,6 +453,11 @@ const mixTabAndMicrophoneStreams = async (
       // ignore
     }
     try {
+      tabPostGainAnalyser.disconnect()
+    } catch {
+      // ignore
+    }
+    try {
       outputAnalyser.disconnect()
     } catch {
       // ignore
@@ -466,6 +475,7 @@ const mixTabAndMicrophoneStreams = async (
       sourceTabStream: tabStream,
       sourceTabTrack: tabStream.getAudioTracks()[0] ?? null,
       tabAnalyser,
+      tabPostGainAnalyser,
       outputAnalyser,
       tabGain,
       tabDuckGain: TAB_DUCK_GAIN,

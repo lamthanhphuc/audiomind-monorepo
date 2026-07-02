@@ -168,13 +168,13 @@ describe('createTabAudioPipelineMonitor', () => {
     warn.mockRestore()
   })
 
-  it('reports output mismatch as degraded pipeline and attempts safe gain recovery', () => {
+  it('reports tab post-gain mismatch even when mixed mic output is active', () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {})
     vi.spyOn(console, 'info').mockImplementation(() => {})
     const track = makeTrack()
     const onPipelineStalled = vi.fn()
     const onCaptureError = vi.fn()
-    const tabGain = { gain: { value: 0 } } as GainNode
+    const tabGain = { gain: { value: 0.05 } } as GainNode
     const now = vi.spyOn(performance, 'now')
     now.mockReturnValueOnce(0)
       .mockReturnValueOnce(0)
@@ -186,6 +186,7 @@ describe('createTabAudioPipelineMonitor', () => {
       sessionId: 1,
       preGainAnalyser: makeAnalyser('active'),
       postGainAnalyser: makeAnalyser('silent'),
+      mixedOutputAnalyser: makeAnalyser('active'),
       tabGain,
       minTabGain: 0.12,
       stallThresholdMs: 8000,
@@ -198,6 +199,33 @@ describe('createTabAudioPipelineMonitor', () => {
     expect(onPipelineStalled).toHaveBeenCalledTimes(1)
     expect(onCaptureError).not.toHaveBeenCalled()
     expect(tabGain.gain.value).toBe(0.12)
+    expect(onPipelineStalled).toHaveBeenCalledWith(expect.objectContaining({
+      mixedOutputRms: expect.any(Number),
+      outputRms: 0,
+    }))
+
+    monitor.cleanup()
+    vi.restoreAllMocks()
+  })
+
+  it('does not stall when tab post-gain and mixed output are active', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const track = makeTrack()
+    const onPipelineStalled = vi.fn()
+    const monitor = createTabAudioPipelineMonitor({
+      stream: makeStream(track),
+      sourceTrack: track,
+      sessionId: 1,
+      preGainAnalyser: makeAnalyser('active'),
+      postGainAnalyser: makeAnalyser('active'),
+      mixedOutputAnalyser: makeAnalyser('active'),
+      stallThresholdMs: 0,
+      onPipelineStalled,
+    })
+
+    monitor.notifyRecorderChunk({ seq: 3, bytes: 1024, elapsedMs: 9000 })
+
+    expect(onPipelineStalled).not.toHaveBeenCalled()
 
     monitor.cleanup()
     vi.restoreAllMocks()

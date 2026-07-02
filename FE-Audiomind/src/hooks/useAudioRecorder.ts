@@ -265,7 +265,8 @@ export const useAudioRecorder = (
       sessionId,
       audioContext: tabMixerHandles?.audioContext ?? audioContextRef.current,
       preGainAnalyser: tabMixerHandles?.tabAnalyser ?? null,
-      postGainAnalyser: tabMixerHandles?.outputAnalyser ?? audioAnalyserRef.current,
+      postGainAnalyser: tabMixerHandles?.tabPostGainAnalyser ?? audioAnalyserRef.current,
+      mixedOutputAnalyser: tabMixerHandles?.outputAnalyser ?? null,
       tabGain: tabMixerHandles?.tabGain ?? null,
       minTabGain: tabMixerHandles?.tabDuckGain,
       onTrackEnded: notifyTabTrackEnded,
@@ -538,16 +539,6 @@ export const useAudioRecorder = (
             return
           }
           notifyTabTrackEnded()
-        }, {
-          onMuted: () => {
-            if (recordingSessionIdRef.current !== sessionId) {
-              return
-            }
-            console.warn('[Realtime] TAB_AUDIO_TRACK_MUTED_DIAGNOSTIC', {
-              meetingId: diagnosticMeetingId,
-              sessionId,
-            })
-          },
         })
       }
 

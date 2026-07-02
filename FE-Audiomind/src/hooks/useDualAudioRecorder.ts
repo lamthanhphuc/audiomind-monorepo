@@ -129,13 +129,6 @@ export const useDualAudioRecorder = (
 
       trackEndedDetachRef.current = attachAudioTrackEndedHandler(acquired.tab.stream, () => {
         notifyTabTrackEnded()
-      }, {
-        onMuted: () => {
-          console.warn('[Realtime] TAB_AUDIO_TRACK_MUTED_DIAGNOSTIC', {
-            meetingId: options.diagnosticMeetingId ?? null,
-            sessionId,
-          })
-        },
       })
 
       tabPipelineMonitorRef.current = createTabAudioPipelineMonitor({

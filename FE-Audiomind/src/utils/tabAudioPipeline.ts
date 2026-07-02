@@ -27,6 +27,7 @@ export type TabAudioStallDetails = {
   streamId: TabAudioStreamRole
   inputRms: number
   outputRms: number | null
+  mixedOutputRms?: number | null
   track: TabTrackSnapshot | null
   lastNonSilentAtMs: number | null
   elapsedSinceLastNonSilentMs: number | null
@@ -44,6 +45,7 @@ export type TabAudioPipelineMonitorOptions = {
   audioContext?: AudioContext | null
   preGainAnalyser?: AnalyserNode | null
   postGainAnalyser?: AnalyserNode | null
+  mixedOutputAnalyser?: AnalyserNode | null
   tabGain?: GainNode | null
   minTabGain?: number
   levelIntervalMs?: number
@@ -141,6 +143,7 @@ export const createTabAudioPipelineMonitor = (
     audioContext = null,
     preGainAnalyser = null,
     postGainAnalyser = null,
+    mixedOutputAnalyser = null,
     tabGain = null,
     minTabGain = 0.01,
     levelIntervalMs = DEFAULT_LEVEL_INTERVAL_MS,
@@ -159,6 +162,7 @@ export const createTabAudioPipelineMonitor = (
   let inputAnalyser: AnalyserNode | null = preGainAnalyser
   let inputBuffer: Uint8Array | null = null
   let outputBuffer: Uint8Array | null = null
+  let mixedOutputBuffer: Uint8Array | null = null
   let levelTimerId: number | null = null
   let contextWatchId: number | null = null
   let lastNonSilentAtMs: number | null = null
@@ -201,6 +205,16 @@ export const createTabAudioPipelineMonitor = (
     return measureAnalyserRms(postGainAnalyser, outputBuffer)
   }
 
+  const readMixedOutputRms = (): number | null => {
+    if (!mixedOutputAnalyser) {
+      return null
+    }
+    if (!mixedOutputBuffer || mixedOutputBuffer.length !== mixedOutputAnalyser.fftSize) {
+      mixedOutputBuffer = new Uint8Array(mixedOutputAnalyser.fftSize)
+    }
+    return measureAnalyserRms(mixedOutputAnalyser, mixedOutputBuffer)
+  }
+
   const logTrackState = (track: MediaStreamTrack, reason: string) => {
     if (!shouldLogTabAudioPipeline()) {
       return
@@ -230,9 +244,11 @@ export const createTabAudioPipelineMonitor = (
   const attemptPipelineRecovery = () => {
     void ensureAudioContextRunning(audioContext)
     void ensureAudioContextRunning(inputContext)
-    if (tabGain && Number.isFinite(tabGain.gain.value) && tabGain.gain.value <= 0) {
+    if (tabGain && Number.isFinite(tabGain.gain.value) && tabGain.gain.value < minTabGain) {
       tabGain.gain.value = Math.max(minTabGain, 0.01)
     }
+    lastNonSilentAtMs = performance.now()
+    silenceReported = false
     if (shouldLogTabAudioPipeline()) {
       console.info('[Realtime]', TAB_AUDIO_PIPELINE_MARKERS.PIPELINE_RECOVERY_ATTEMPTED, {
         meetingId,
@@ -250,6 +266,7 @@ export const createTabAudioPipelineMonitor = (
     }
     const inputRms = readInputRms()
     const outputRms = readOutputRms()
+    const mixedOutputRms = readMixedOutputRms()
     const track = getPrimaryTrack()
     const silentOutput = isTabCaptureSilent(outputRms, silenceRmsThreshold)
     const silentInput = isTabCaptureSilent(inputRms, silenceRmsThreshold)
@@ -281,6 +298,7 @@ export const createTabAudioPipelineMonitor = (
           streamId,
           inputRms: inputRms ?? 0,
           outputRms,
+          mixedOutputRms,
           elapsedSinceLastNonSilentMs,
           chunkSeq,
           chunkBytes,
@@ -305,6 +323,7 @@ export const createTabAudioPipelineMonitor = (
         streamId,
         inputRms: inputRms ?? 0,
         outputRms,
+        mixedOutputRms,
         track: track ? snapshotTabTrack(track) : null,
         lastNonSilentAtMs,
         elapsedSinceLastNonSilentMs,
@@ -324,6 +343,7 @@ export const createTabAudioPipelineMonitor = (
   const sampleLevels = () => {
     const inputRms = readInputRms()
     const outputRms = readOutputRms()
+    const mixedOutputRms = readMixedOutputRms()
     const track = getPrimaryTrack()
 
     if (!isTabCaptureSilent(outputRms, silenceRmsThreshold) || !isTabCaptureSilent(inputRms, silenceRmsThreshold)) {
@@ -342,21 +362,13 @@ export const createTabAudioPipelineMonitor = (
         streamId,
         inputRms: inputRms === null ? null : Number(inputRms.toFixed(4)),
         outputRms: outputRms === null ? null : Number(outputRms.toFixed(4)),
+        mixedOutputRms: mixedOutputRms === null ? null : Number(mixedOutputRms.toFixed(4)),
       })
     }
 
     void ensureAudioContextRunning(audioContext)
     void ensureAudioContextRunning(inputContext)
 
-    if (track?.muted && shouldLogTabAudioPipeline()) {
-      console.warn('[Realtime]', TAB_AUDIO_PIPELINE_MARKERS.TRACK_MUTED, {
-        meetingId,
-        sessionId,
-        streamId,
-        reason: 'interval',
-        ...snapshotTabTrack(track),
-      })
-    }
   }
 
   const attachTrack = (track: MediaStreamTrack) => {
@@ -478,6 +490,7 @@ export const createTabAudioPipelineMonitor = (
       inputAnalyser = null
       inputBuffer = null
       outputBuffer = null
+      mixedOutputBuffer = null
     },
   }
 }
