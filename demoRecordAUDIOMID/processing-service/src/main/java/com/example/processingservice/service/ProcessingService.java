@@ -3652,6 +3652,9 @@ public class ProcessingService {
             for (Map<String, Object> scope : scopes) {
                 String scopeKind = String.valueOf(scope.getOrDefault("scopeKind", "")).trim().toLowerCase(Locale.ROOT);
                 if ("legacy".equals(scopeKind)) {
+                    if (hasScopeIdentifierValue(scope)) {
+                        return AnalysisScopeRequirement.SCOPE_UNAVAILABLE;
+                    }
                     hasLegacyScope = true;
                     continue;
                 }
@@ -3685,6 +3688,13 @@ public class ProcessingService {
             return AnalysisScopeRequirement.V2_REQUIRED;
         }
         return AnalysisScopeRequirement.SCOPE_UNAVAILABLE;
+    }
+
+    private boolean hasScopeIdentifierValue(Map<String, Object> scope) {
+        return scope.get("recordingSessionId") != null
+                || scope.get("recording_session_id") != null
+                || scope.get("attemptId") != null
+                || scope.get("attempt_id") != null;
     }
 
     private Map<String, Object> buildScopedAnalysisUnavailableResponse(Long meetingId) {

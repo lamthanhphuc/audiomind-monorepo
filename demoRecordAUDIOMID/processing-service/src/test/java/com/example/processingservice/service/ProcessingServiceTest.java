@@ -634,6 +634,58 @@ class ProcessingServiceTest {
     }
 
     @Test
+    void getAnalysis_shouldFailClosedWhenLegacyScopeContainsRecordingSessionId() {
+        Long meetingId = 191L;
+        when(aiServiceClient.listTranscriptScopes(eq(meetingId), eq("trace-191"))).thenReturn(Map.of(
+                "scopes", List.of(Map.of(
+                        "scopeKind", "legacy",
+                        "recordingSessionId", 9001L
+                ))
+        ));
+
+        Map<String, Object> response = processingService.getAnalysis(meetingId, "trace-191", AUTH_HEADER);
+
+        assertEquals("ANALYSIS_SCOPE_RESOLUTION_UNAVAILABLE", response.get("analysisStatus"));
+        verify(aiServiceClient, never()).getTranscript(eq(meetingId), anyString());
+        verify(aiServiceClient, never()).getAnalysis(eq(meetingId), anyString());
+    }
+
+    @Test
+    void getAnalysis_shouldFailClosedWhenLegacyScopeContainsAttemptId() {
+        Long meetingId = 192L;
+        when(aiServiceClient.listTranscriptScopes(eq(meetingId), eq("trace-192"))).thenReturn(Map.of(
+                "scopes", List.of(Map.of(
+                        "scopeKind", "legacy",
+                        "attemptId", -1L
+                ))
+        ));
+
+        Map<String, Object> response = processingService.getAnalysis(meetingId, "trace-192", AUTH_HEADER);
+
+        assertEquals("ANALYSIS_SCOPE_RESOLUTION_UNAVAILABLE", response.get("analysisStatus"));
+        verify(aiServiceClient, never()).getTranscript(eq(meetingId), anyString());
+        verify(aiServiceClient, never()).getAnalysis(eq(meetingId), anyString());
+    }
+
+    @Test
+    void getAnalysis_shouldFailClosedWhenLegacyScopeContainsBothProvenanceIds() {
+        Long meetingId = 193L;
+        when(aiServiceClient.listTranscriptScopes(eq(meetingId), eq("trace-193"))).thenReturn(Map.of(
+                "scopes", List.of(Map.of(
+                        "scopeKind", "legacy",
+                        "recordingSessionId", "session-x",
+                        "attemptId", 0L
+                ))
+        ));
+
+        Map<String, Object> response = processingService.getAnalysis(meetingId, "trace-193", AUTH_HEADER);
+
+        assertEquals("ANALYSIS_SCOPE_RESOLUTION_UNAVAILABLE", response.get("analysisStatus"));
+        verify(aiServiceClient, never()).getTranscript(eq(meetingId), anyString());
+        verify(aiServiceClient, never()).getAnalysis(eq(meetingId), anyString());
+    }
+
+    @Test
     void getAnalysis_shouldKeepLegacyUnscopedFlowWhenScopeProbeReturnsLegacyOnly() {
         Long meetingId = 90L;
         when(aiServiceClient.listTranscriptScopes(eq(meetingId), eq("trace-90"))).thenReturn(Map.of(
