@@ -587,7 +587,7 @@ type RealtimeAnalysisPollOptions = {
 
 type RealtimeAnalysisPollScopeResolution = {
   scope?: Pick<AnalysisScopeOptions, 'recordingSessionId' | 'attemptId'>
-  reason?: 'missing_session_token' | 'stale_session_token' | 'partial_scope'
+  reason?: 'missing_session_token' | 'stale_session_token' | 'partial_scope' | 'scope_mismatch'
 }
 
 export const resolveRealtimeAnalysisPollScope = (
@@ -604,6 +604,12 @@ export const resolveRealtimeAnalysisPollScope = (
     options.analysisScope?.recordingSessionId != null
     && options.analysisScope?.attemptId != null
   ) {
+    if (
+      options.analysisScope.recordingSessionId !== options.sessionToken.recordingSessionId
+      || options.analysisScope.attemptId !== options.sessionToken.attemptId
+    ) {
+      return { reason: 'scope_mismatch' }
+    }
     return {
       scope: {
         recordingSessionId: options.analysisScope.recordingSessionId,

@@ -817,6 +817,28 @@ describe('pollRealtimeAnalysisAfterStop', () => {
     expect(result.metadata?.analysisStatus).toBe('ANALYSIS_SCOPE_UNAVAILABLE')
   })
 
+  it('does not fetch analysis when explicit scope does not match the realtime session token', async () => {
+    const fetchAnalysis = vi.fn()
+    const sessionToken = { meetingId: 87, recordingSessionId: 2, attemptId: 2, connectionSeq: 1 }
+
+    const result = await pollRealtimeAnalysisAfterStop(
+      87,
+      new AbortController().signal,
+      fetchAnalysis as any,
+      1,
+      {
+        sessionToken,
+        isSessionActive: () => true,
+        analysisScope: { recordingSessionId: 2, attemptId: 3 },
+      },
+    )
+
+    expect(fetchAnalysis).not.toHaveBeenCalled()
+    expect(result.status).toBe('pending')
+    expect(result.reason).toBe('analysis_scope_unavailable')
+    expect(result.metadata?.analysisStatus).toBe('ANALYSIS_SCOPE_UNAVAILABLE')
+  })
+
   it('does not fetch unscoped or stale scoped analysis when token belongs to another meeting', async () => {
     const fetchAnalysis = vi.fn()
     const sessionToken = { meetingId: 91, recordingSessionId: 2, attemptId: 2, connectionSeq: 1 }

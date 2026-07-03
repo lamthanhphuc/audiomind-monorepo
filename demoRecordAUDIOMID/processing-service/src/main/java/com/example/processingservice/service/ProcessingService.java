@@ -3643,15 +3643,35 @@ public class ProcessingService {
     private AnalysisScopeRequirement resolveUnscopedAnalysisScopeRequirement(Long meetingId, String traceId) {
         try {
             Map<String, Object> aiResponse = aiServiceClient.listTranscriptScopes(meetingId, traceId);
-            List<Map<String, Object>> scopes = normalizeResultScopeItems(extractScopeList(aiResponse));
-            if (!scopes.isEmpty()) {
-                boolean hasV2Scope = scopes.stream()
-                        .anyMatch(scope -> "v2".equals(String.valueOf(scope.get("scopeKind"))));
-                return hasV2Scope
-                        ? AnalysisScopeRequirement.V2_REQUIRED
-                        : AnalysisScopeRequirement.LEGACY_ALLOWED;
+            List<Map<String, Object>> scopes = extractScopeList(aiResponse);
+            if (scopes.isEmpty()) {
+                return AnalysisScopeRequirement.SCOPE_UNAVAILABLE;
             }
-            return AnalysisScopeRequirement.LEGACY_ALLOWED;
+            boolean hasLegacyScope = false;
+            boolean hasV2Scope = false;
+            for (Map<String, Object> scope : scopes) {
+                String scopeKind = String.valueOf(scope.getOrDefault("scopeKind", "")).trim().toLowerCase(Locale.ROOT);
+                if ("legacy".equals(scopeKind)) {
+                    hasLegacyScope = true;
+                    continue;
+                }
+                if ("v2".equals(scopeKind)) {
+                    Long recordingSessionId = parseScopeLong(scope.get("recordingSessionId"));
+                    Long attemptId = parseScopeLong(scope.get("attemptId"));
+                    if (recordingSessionId == null || attemptId == null) {
+                        return AnalysisScopeRequirement.SCOPE_UNAVAILABLE;
+                    }
+                    hasV2Scope = true;
+                    continue;
+                }
+                return AnalysisScopeRequirement.SCOPE_UNAVAILABLE;
+            }
+            if (hasV2Scope) {
+                return AnalysisScopeRequirement.V2_REQUIRED;
+            }
+            return hasLegacyScope
+                    ? AnalysisScopeRequirement.LEGACY_ALLOWED
+                    : AnalysisScopeRequirement.SCOPE_UNAVAILABLE;
         } catch (Exception ex) {
             log.warn(
                     "event=RESULT_SCOPE_PROBE_FAILED meetingId={} traceId={} error={}",

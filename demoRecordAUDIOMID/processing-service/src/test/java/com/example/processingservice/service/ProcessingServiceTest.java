@@ -80,6 +80,8 @@ class ProcessingServiceTest {
 
         lenient().when(meetingServiceClient.getMeetingById(anyLong(), anyString(), anyString()))
             .thenReturn(Map.of("id", 1L));
+        lenient().when(aiServiceClient.listTranscriptScopes(anyLong(), anyString()))
+                .thenReturn(Map.of("scopes", List.of(Map.of("scopeKind", "legacy"))));
         lenient().when(jobStateStore.tryStartAnalysis(anyLong(), anyString(), anyString(), anyString()))
                 .thenReturn(new JobStateStore.AnalysisTriggerDecision(
                         true,
@@ -586,6 +588,49 @@ class ProcessingServiceTest {
         assertEquals("ANALYSIS_UNAVAILABLE_FOR_SCOPE", response.get("analysisStatus"));
         verify(aiServiceClient, never()).getTranscript(eq(meetingId), anyString());
         verify(aiServiceClient, never()).getAnalysis(eq(meetingId), anyString());
+    }
+
+    @Test
+    void getAnalysis_shouldFailClosedWhenScopeProbeReturnsEmptyScopes() {
+        Long meetingId = 188L;
+        when(aiServiceClient.listTranscriptScopes(eq(meetingId), eq("trace-188"))).thenReturn(Map.of(
+                "scopes", List.of()
+        ));
+
+        Map<String, Object> response = processingService.getAnalysis(meetingId, "trace-188", AUTH_HEADER);
+
+        assertEquals("ANALYSIS_SCOPE_RESOLUTION_UNAVAILABLE", response.get("analysisStatus"));
+        assertEquals("ANALYSIS_SCOPE_RESOLUTION_UNAVAILABLE", response.get("errorCode"));
+        verify(aiServiceClient, never()).getTranscript(eq(meetingId), anyString());
+        verify(aiServiceClient, never()).getAnalysis(eq(meetingId), anyString());
+    }
+
+    @Test
+    void getAnalysis_shouldFailClosedWhenScopeProbeReturnsUnknownOrMalformedScope() {
+        Long unknownMeetingId = 189L;
+        when(aiServiceClient.listTranscriptScopes(eq(unknownMeetingId), eq("trace-189"))).thenReturn(Map.of(
+                "scopes", List.of(Map.of("scopeKind", "unknown"))
+        ));
+
+        Map<String, Object> unknownResponse = processingService.getAnalysis(unknownMeetingId, "trace-189", AUTH_HEADER);
+
+        assertEquals("ANALYSIS_SCOPE_RESOLUTION_UNAVAILABLE", unknownResponse.get("analysisStatus"));
+        verify(aiServiceClient, never()).getTranscript(eq(unknownMeetingId), anyString());
+        verify(aiServiceClient, never()).getAnalysis(eq(unknownMeetingId), anyString());
+
+        Long malformedMeetingId = 190L;
+        when(aiServiceClient.listTranscriptScopes(eq(malformedMeetingId), eq("trace-190"))).thenReturn(Map.of(
+                "scopes", List.of(Map.of(
+                        "scopeKind", "v2",
+                        "recordingSessionId", 9001L
+                ))
+        ));
+
+        Map<String, Object> malformedResponse = processingService.getAnalysis(malformedMeetingId, "trace-190", AUTH_HEADER);
+
+        assertEquals("ANALYSIS_SCOPE_RESOLUTION_UNAVAILABLE", malformedResponse.get("analysisStatus"));
+        verify(aiServiceClient, never()).getTranscript(eq(malformedMeetingId), anyString());
+        verify(aiServiceClient, never()).getAnalysis(eq(malformedMeetingId), anyString());
     }
 
     @Test
