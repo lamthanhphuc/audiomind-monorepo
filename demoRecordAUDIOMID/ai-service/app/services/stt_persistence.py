@@ -721,3 +721,79 @@ class TranscriptPersistenceRepository:
                 }
             )
         return segments
+
+    def list_attempt_scopes(self, meeting_id: int) -> list[dict[str, object]]:
+        scopes: list[dict[str, object]] = []
+
+        legacy_fragment_exists = (
+            self._db.query(TranscriptFragment.id)
+            .filter(
+                TranscriptFragment.meeting_id == meeting_id,
+                TranscriptFragment.recording_session_id.is_(None),
+                TranscriptFragment.attempt_id.is_(None),
+            )
+            .limit(1)
+            .first()
+            is not None
+        )
+        if legacy_fragment_exists:
+            scopes.append(
+                {
+                    "scopeKind": "legacy",
+                    "recordingSessionId": None,
+                    "attemptId": None,
+                    "finalized": True,
+                }
+            )
+
+        attempt_rows = (
+            self._db.query(
+                TranscriptFragment.recording_session_id,
+                TranscriptFragment.attempt_id,
+                func.max(TranscriptFragment.created_at),
+                func.max(TranscriptFragment.seq),
+            )
+            .filter(
+                TranscriptFragment.meeting_id == meeting_id,
+                TranscriptFragment.recording_session_id.isnot(None),
+                TranscriptFragment.attempt_id.isnot(None),
+            )
+            .group_by(
+                TranscriptFragment.recording_session_id,
+                TranscriptFragment.attempt_id,
+            )
+            .all()
+        )
+
+        for recording_session_id, attempt_id, latest_created_at, latest_seq in attempt_rows:
+            finalized = False
+            checkpoint = (
+                self._db.query(func.max(TranscriptAttemptCheckpoint.last_finalized_seq))
+                .filter(
+                    TranscriptAttemptCheckpoint.meeting_id == meeting_id,
+                    TranscriptAttemptCheckpoint.recording_session_id == recording_session_id,
+                    TranscriptAttemptCheckpoint.attempt_id == attempt_id,
+                )
+                .scalar()
+            )
+            if checkpoint is not None and int(checkpoint) > 0:
+                finalized = True
+            scopes.append(
+                {
+                    "scopeKind": "v2",
+                    "recordingSessionId": int(recording_session_id),
+                    "attemptId": int(attempt_id),
+                    "finalized": finalized,
+                    "latestSeq": int(latest_seq or 0),
+                    "updatedAt": latest_created_at.isoformat() if latest_created_at else None,
+                }
+            )
+
+        scopes.sort(
+            key=lambda item: (
+                0 if item.get("scopeKind") == "legacy" else 1,
+                int(item.get("recordingSessionId") or 0),
+                int(item.get("attemptId") or 0),
+            )
+        )
+        return scopes

@@ -62,6 +62,8 @@ import {
   resolveStudioRedirectAfter,
   type ParsedStudioRoute,
 } from '../utils/studioRouting'
+import type { MeetingResultScope } from '../utils/meetingResultScope'
+import { scopeCacheKey } from '../utils/meetingResultScope'
 import {
   appendOpenMeetingQuery,
   applyPostAuthDestination,
@@ -1267,7 +1269,13 @@ export default function App() {
   const [historyAnalysisMeetingId, setHistoryAnalysisMeetingId] = useState<number | null>(
     initialStudioRoute.scene === 'analysis' ? initialStudioRoute.meetingId : null,
   )
+  const [historyAnalysisScope, setHistoryAnalysisScope] = useState<MeetingResultScope | null>(
+    initialStudioRoute.scene === 'analysis' ? initialStudioRoute.resultScope ?? null : null,
+  )
   const [historyAnalysisTitle, setHistoryAnalysisTitle] = useState<string | null>(null)
+  const [mindmapSelectedScope, setMindmapSelectedScope] = useState<MeetingResultScope | null>(
+    initialStudioRoute.scene === 'mindmap' ? initialStudioRoute.resultScope ?? null : null,
+  )
   const [recentMeetings, setRecentMeetings] = useState<Meeting[]>([])
   const [recentMeetingsReloadTick, setRecentMeetingsReloadTick] = useState(0)
   const [joinMeetingIdInput, setJoinMeetingIdInput] = useState('')
@@ -1781,7 +1789,9 @@ export default function App() {
       applyParsedStudioRoute(route, {
         setFeatureScene,
         setHistoryAnalysisMeetingId,
+        setHistoryAnalysisScope,
         setMindmapSelectedMeetingId,
+        setMindmapSelectedScope,
       })
       setGoogleIntegrationNotice(message)
       setOauthRefreshTick((tick) => tick + 1)
@@ -1986,7 +1996,9 @@ export default function App() {
             applyParsedStudioRoute(studioRoute, {
               setFeatureScene,
               setHistoryAnalysisMeetingId,
+              setHistoryAnalysisScope,
               setMindmapSelectedMeetingId,
+              setMindmapSelectedScope,
             })
           }
         }
@@ -2018,20 +2030,30 @@ export default function App() {
 
   const navigateFeatureScene = useCallback((
     scene: DashboardScene,
-    options?: { meetingId?: number | null; replace?: boolean },
+    options?: {
+      meetingId?: number | null
+      resultScope?: MeetingResultScope | null
+      replace?: boolean
+    },
   ) => {
     setFeatureScene(scene)
     const meetingId = options?.meetingId
     if (meetingId != null && Number.isFinite(meetingId) && meetingId > 0) {
       if (scene === 'analysis') {
         setHistoryAnalysisMeetingId(meetingId)
+        setHistoryAnalysisScope(options?.resultScope ?? null)
       } else if (scene === 'mindmap') {
         setMindmapSelectedMeetingId(meetingId)
+        setMindmapSelectedScope(options?.resultScope ?? null)
       } else if (scene === 'files') {
         setHistoryFocusMeetingId(meetingId)
       }
     }
-    pushStudioRoute(scene, { meetingId, replace: options?.replace })
+    pushStudioRoute(scene, {
+      meetingId,
+      resultScope: options?.resultScope ?? null,
+      replace: options?.replace,
+    })
   }, [])
 
   const handleNavigateBilling = useCallback(() => {
@@ -2127,7 +2149,9 @@ export default function App() {
       applyParsedStudioRoute(parsed, {
         setFeatureScene,
         setHistoryAnalysisMeetingId,
+        setHistoryAnalysisScope,
         setMindmapSelectedMeetingId,
+        setMindmapSelectedScope,
       })
     }
     window.addEventListener('popstate', syncStudioRouteFromBrowser)
@@ -2140,9 +2164,15 @@ export default function App() {
         applyParsedStudioRoute(event.route, {
           setFeatureScene,
           setHistoryAnalysisMeetingId,
+          setHistoryAnalysisScope,
           setMindmapSelectedMeetingId,
+          setMindmapSelectedScope,
         })
-        pushStudioRoute(event.route.scene, { meetingId: event.route.meetingId, replace: true })
+        pushStudioRoute(event.route.scene, {
+          meetingId: event.route.meetingId,
+          resultScope: event.route.resultScope ?? null,
+          replace: true,
+        })
       }
       if (event.provider === 'google') {
         setGoogleIntegrationNotice(event.message)
@@ -2169,7 +2199,9 @@ export default function App() {
   const postAuthHandlers = {
     setFeatureScene,
     setHistoryAnalysisMeetingId,
+    setHistoryAnalysisScope,
     setMindmapSelectedMeetingId,
+    setMindmapSelectedScope,
     navigateFeatureScene,
   }
 
@@ -2423,14 +2455,20 @@ export default function App() {
     }
   }, [navigateFeatureScene])
 
-  const handleOpenMeetingAnalysisFromHistory = (meetingId: number, context?: { title?: string }) => {
+  const handleOpenMeetingAnalysisFromHistory = (
+    meetingId: number,
+    context?: { title?: string; scope?: MeetingResultScope | null },
+  ) => {
     setHistoryAnalysisTitle(context?.title?.trim() || null)
-    navigateFeatureScene('analysis', { meetingId })
+    navigateFeatureScene('analysis', { meetingId, resultScope: context?.scope ?? null })
   }
 
-  const handleOpenMindmapFromHistory = (meetingId: number, context?: { title?: string }) => {
+  const handleOpenMindmapFromHistory = (
+    meetingId: number,
+    context?: { title?: string; scope?: MeetingResultScope | null },
+  ) => {
     setMindmapSelectedTitle(context?.title?.trim() || null)
-    navigateFeatureScene('mindmap', { meetingId })
+    navigateFeatureScene('mindmap', { meetingId, resultScope: context?.scope ?? null })
   }
 
   const handleRecentFileClick = (meetingIdRaw: string) => {
@@ -2799,6 +2837,7 @@ export default function App() {
           : null
       return (
         <FeatureMindmap
+          key={mindmapSelectedScope ? scopeCacheKey(mindmapSelectedScope) : `mindmap-${resolvedMindmapMeetingId ?? 'none'}`}
           meetings={recentMeetings}
           selectedMeetingId={resolvedMindmapMeetingId}
           meetingTitle={mindmapSelectedTitle ?? selectedFile?.name ?? undefined}
@@ -2927,6 +2966,7 @@ export default function App() {
           <FeatureAnalysis
             meetingId={historyAnalysisMeetingId}
             meetingTitle={historyAnalysisTitle ?? undefined}
+            resultScope={historyAnalysisScope}
             hydrateFromApi
             onBackToHistory={handleBackToHistory}
             preferredDomainMode={selectedDomainMode}

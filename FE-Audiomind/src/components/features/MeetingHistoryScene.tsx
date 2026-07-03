@@ -9,7 +9,9 @@ import {
     getSavedAnalysis,
     getTranscript,
     listMeetingsWithParams,
+    listMeetingResultScopes,
     renameMeeting,
+    resolveMeetingResultScope,
     searchMeetingTranscriptEvidence,
     semanticSearchMeetings,
 } from '../../services/api'
@@ -32,6 +34,13 @@ import {
   prepareOAuthTab,
 } from '../../utils/openOAuthWindow'
 import { normalizePersistedTranscriptForView } from '../../utils/transcript'
+import {
+  formatResultScopeLabel,
+  scopeCacheKey,
+  scopeToTranscriptOptions,
+  selectDefaultResultScope,
+  type MeetingResultScope,
+} from '../../utils/meetingResultScope'
 import { TranscriptDisplay } from '../transcript/TranscriptDisplay'
 import GlossaryNotesPanel from './GlossaryNotesPanel'
 import SpeakerNamingPanel from './SpeakerNamingPanel'
@@ -98,7 +107,9 @@ const emptyDetailState: SelectedMeetingDetail = {
 }
 
 type MeetingDetailCacheEntry = {
+  cacheKey: string
   meetingId: number
+  resultScope: MeetingResultScope
   meeting: Meeting
   transcriptSegments: SelectedMeetingDetail['transcriptSegments']
   transcriptState: SelectedMeetingDetail['transcriptState']
@@ -112,8 +123,8 @@ type MeetingDetailCacheEntry = {
 
 type MeetingHistorySceneProps = {
   focusMeetingId?: number | null
-  onOpenAnalysis?: (meetingId: number, context?: { title?: string }) => void
-  onOpenMindmap?: (meetingId: number, context?: { title?: string }) => void
+  onOpenAnalysis?: (meetingId: number, context?: { title?: string; scope?: MeetingResultScope | null }) => void
+  onOpenMindmap?: (meetingId: number, context?: { title?: string; scope?: MeetingResultScope | null }) => void
   searchQuery?: string
   onSearchQueryChange?: (value: string) => void
   onNavigateUpload?: () => void
@@ -467,11 +478,15 @@ export default function MeetingHistoryScene({
   const [semanticResults, setSemanticResults] = useState<SemanticSearchResult[]>([])
   const [semanticState, setSemanticState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle')
   const detailAbortRef = useRef<AbortController | null>(null)
-  const detailRequestKeyRef = useRef<number | null>(null)
+  const detailRequestKeyRef = useRef<string | null>(null)
   const listAbortRef = useRef<AbortController | null>(null)
-  const detailCacheRef = useRef<Map<number, MeetingDetailCacheEntry>>(new Map())
+  const detailCacheRef = useRef<Map<string, MeetingDetailCacheEntry>>(new Map())
   const selectedMeetingIdRef = useRef<number | null>(null)
   const focusMeetingIdRef = useRef<number | null>(focusMeetingId)
+  const [availableScopes, setAvailableScopes] = useState<MeetingResultScope[]>([])
+  const [selectedScope, setSelectedScope] = useState<MeetingResultScope | null>(null)
+  const [scopeState, setScopeState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle')
+  const [scopeError, setScopeError] = useState<string | null>(null)
 
   const selectedMeetingSummary = useMemo(() => {
     return meetings.find((meeting) => meeting.id === selectedMeetingId) ?? null
@@ -514,40 +529,46 @@ export default function MeetingHistoryScene({
 
   const pruneDetailCacheForList = (items: Meeting[]) => {
     const nextIds = new Set(items.map((meeting) => meeting.id))
-    for (const meetingId of [...detailCacheRef.current.keys()]) {
+    for (const cacheKey of [...detailCacheRef.current.keys()]) {
+      const meetingId = Number(cacheKey.split(':')[0])
       if (!nextIds.has(meetingId)) {
-        detailCacheRef.current.delete(meetingId)
+        detailCacheRef.current.delete(cacheKey)
       }
     }
     for (const item of items) {
-      const cached = detailCacheRef.current.get(item.id)
-      if (cached && meetingSummaryChanged(cached.meeting, item)) {
-        detailCacheRef.current.delete(item.id)
+      for (const [cacheKey, cached] of detailCacheRef.current.entries()) {
+        if (cached.meetingId === item.id && meetingSummaryChanged(cached.meeting, item)) {
+          detailCacheRef.current.delete(cacheKey)
+        }
       }
     }
   }
 
   const writeDetailCache = (entry: Omit<MeetingDetailCacheEntry, 'fetchedAt'> & { fetchedAt?: number }) => {
-    detailCacheRef.current.set(entry.meetingId, {
+    detailCacheRef.current.set(entry.cacheKey, {
       ...entry,
       fetchedAt: entry.fetchedAt ?? Date.now(),
     })
   }
 
-  const readDetailCache = (meetingId: number): MeetingDetailCacheEntry | null => {
-    const cached = detailCacheRef.current.get(meetingId)
+  const readDetailCache = (cacheKey: string): MeetingDetailCacheEntry | null => {
+    const cached = detailCacheRef.current.get(cacheKey)
     if (!cached) {
       return null
     }
     if (Date.now() - cached.fetchedAt > DETAIL_CACHE_TTL_MS) {
-      detailCacheRef.current.delete(meetingId)
+      detailCacheRef.current.delete(cacheKey)
       return null
     }
     return cached
   }
 
-  const invalidateDetailCache = (meetingId: number) => {
-    detailCacheRef.current.delete(meetingId)
+  const invalidateDetailCacheForMeeting = (meetingId: number) => {
+    for (const cacheKey of [...detailCacheRef.current.keys()]) {
+      if (cacheKey.startsWith(`${meetingId}:`)) {
+        detailCacheRef.current.delete(cacheKey)
+      }
+    }
   }
 
   useEffect(() => {
@@ -644,6 +665,52 @@ export default function MeetingHistoryScene({
 
   useEffect(() => {
     if (selectedMeetingId === null) {
+      setAvailableScopes([])
+      setSelectedScope(null)
+      setScopeState('idle')
+      setScopeError(null)
+      return
+    }
+
+    const controller = new AbortController()
+    setAvailableScopes([])
+    setSelectedScope(null)
+    setScopeState('loading')
+    setScopeError(null)
+
+    const loadScopes = async () => {
+      try {
+        const scopeItems = await listMeetingResultScopes(selectedMeetingId, { signal: controller.signal })
+        if (controller.signal.aborted || selectedMeetingIdRef.current !== selectedMeetingId) {
+          return
+        }
+        const resolvedScope = selectDefaultResultScope(selectedMeetingId, scopeItems)
+          ?? await resolveMeetingResultScope(selectedMeetingId, undefined, { signal: controller.signal })
+        const scopes = scopeItems.length > 0
+          ? scopeItems.map((item) => selectDefaultResultScope(selectedMeetingId, [item])!).filter(Boolean)
+          : resolvedScope
+            ? [resolvedScope]
+            : []
+        setAvailableScopes(scopes)
+        setSelectedScope(resolvedScope)
+        setScopeState('ready')
+      } catch (error) {
+        if (controller.signal.aborted || isAbortError(error) || selectedMeetingIdRef.current !== selectedMeetingId) {
+          return
+        }
+        setAvailableScopes([])
+        setSelectedScope(null)
+        setScopeState('error')
+        setScopeError(error instanceof Error ? error.message : 'Không thể xác định phạm vi dữ liệu')
+      }
+    }
+
+    void loadScopes()
+    return () => controller.abort()
+  }, [selectedMeetingId])
+
+  useEffect(() => {
+    if (selectedMeetingId === null) {
       detailAbortRef.current?.abort()
       detailRequestKeyRef.current = null
       setDetail(emptyDetailState)
@@ -651,11 +718,29 @@ export default function MeetingHistoryScene({
     }
 
     const meetingSummary = meetings.find((meeting) => meeting.id === selectedMeetingId) ?? null
-    if (!meetingSummary) {
+    if (
+      !meetingSummary
+      || selectedScope == null
+      || selectedScope.meetingId !== selectedMeetingId
+      || scopeState !== 'ready'
+    ) {
+      if (scopeState === 'error') {
+        setDetail({
+          meeting: meetingSummary,
+          transcriptSegments: [],
+          transcriptState: 'error',
+          transcriptError: scopeError ?? 'Không thể xác định phạm vi dữ liệu',
+          analysis: null,
+          analysisMetadata: null,
+          analysisState: 'failed',
+          analysisError: null,
+        })
+      }
       return
     }
 
-    const cachedDetail = readDetailCache(selectedMeetingId)
+    const cacheKey = scopeCacheKey(selectedScope)
+    const cachedDetail = readDetailCache(cacheKey)
     if (cachedDetail && !meetingSummaryChanged(cachedDetail.meeting, meetingSummary)) {
       setDetail({
         meeting: meetingSummary,
@@ -673,7 +758,7 @@ export default function MeetingHistoryScene({
     detailAbortRef.current?.abort()
     const controller = new AbortController()
     detailAbortRef.current = controller
-    const requestKey = selectedMeetingId
+    const requestKey = cacheKey
     detailRequestKeyRef.current = requestKey
 
     const loadDetail = async () => {
@@ -689,9 +774,13 @@ export default function MeetingHistoryScene({
       })
 
       try {
+        const transcriptOptions = {
+          ...scopeToTranscriptOptions(selectedScope),
+          signal: controller.signal,
+        }
         const [transcriptResponse, analysisResponse] = await Promise.all([
-          getTranscript(requestKey, { signal: controller.signal }),
-          getSavedAnalysis(requestKey, { signal: controller.signal }),
+          getTranscript(selectedMeetingId, transcriptOptions),
+          getSavedAnalysis(selectedMeetingId, { signal: controller.signal }),
         ])
 
         if (controller.signal.aborted || detailRequestKeyRef.current !== requestKey) {
@@ -716,7 +805,9 @@ export default function MeetingHistoryScene({
 
         setDetail(nextDetail)
         writeDetailCache({
-          meetingId: requestKey,
+          cacheKey,
+          meetingId: selectedMeetingId,
+          resultScope: selectedScope,
           meeting: meetingSummary,
           transcriptSegments: nextDetail.transcriptSegments,
           transcriptState: nextDetail.transcriptState,
@@ -731,11 +822,17 @@ export default function MeetingHistoryScene({
           return
         }
 
+        const message = error instanceof ApiError && error.status === 404
+          ? 'Không tìm thấy transcript cho phiên ghi này'
+          : error instanceof Error
+            ? error.message
+            : 'Không thể tải chi tiết meeting'
+
         setDetail({
           meeting: meetingSummary,
           transcriptSegments: [],
           transcriptState: 'error',
-          transcriptError: error instanceof Error ? error.message : 'Không thể tải chi tiết meeting',
+          transcriptError: message,
           analysis: null,
           analysisMetadata: null,
           analysisState: 'failed',
@@ -749,7 +846,7 @@ export default function MeetingHistoryScene({
     return () => {
       controller.abort()
     }
-  }, [meetings, selectedMeetingId])
+  }, [meetings, scopeError, scopeState, selectedMeetingId, selectedScope])
 
   const handleRename = async () => {
     if (!selectedMeetingSummary) {
@@ -772,7 +869,7 @@ export default function MeetingHistoryScene({
       setDetail((current) => current.meeting && current.meeting.id === renamed.id
         ? { ...current, meeting: { ...current.meeting, ...renamed } }
         : current)
-      invalidateDetailCache(renamed.id)
+      invalidateDetailCacheForMeeting(renamed.id)
       setRenameValue(renamed.title)
     } catch (error) {
       setListError(error instanceof Error ? error.message : 'Không thể đổi tên meeting')
@@ -789,7 +886,7 @@ export default function MeetingHistoryScene({
     setListError(null)
     try {
       await deleteMeeting(selectedMeetingSummary.id)
-      invalidateDetailCache(selectedMeetingSummary.id)
+      invalidateDetailCacheForMeeting(selectedMeetingSummary.id)
       clearStoredMeetingId()
       setMeetings((current) => {
         const next = current.filter((meeting) => meeting.id !== selectedMeetingSummary.id)
@@ -1287,11 +1384,36 @@ export default function MeetingHistoryScene({
                 </div>
                 {(onOpenAnalysis || onOpenMindmap) && (
                   <div className="history-detail-ctas">
+                    {availableScopes.length > 1 && (
+                      <label className="history-scope-picker">
+                        <span>Phiên ghi</span>
+                        <select
+                          value={selectedScope ? scopeCacheKey(selectedScope) : ''}
+                          onChange={(event) => {
+                            const nextScope = availableScopes.find((scope) => scopeCacheKey(scope) === event.target.value)
+                            if (nextScope) {
+                              setSelectedScope(nextScope)
+                            }
+                          }}
+                          data-testid="meeting-scope-select"
+                        >
+                          {availableScopes.map((scope) => (
+                            <option key={scopeCacheKey(scope)} value={scopeCacheKey(scope)}>
+                              {formatResultScopeLabel(scope)}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    )}
                     {onOpenAnalysis && (
                       <button
                         type="button"
                         className="primary-cta"
-                        onClick={() => onOpenAnalysis(selectedMeetingSummary.id, { title: getMeetingLabel(selectedMeetingSummary) })}
+                        disabled={selectedScope == null || scopeState !== 'ready'}
+                        onClick={() => onOpenAnalysis(selectedMeetingSummary.id, {
+                          title: getMeetingLabel(selectedMeetingSummary),
+                          scope: selectedScope,
+                        })}
                         data-testid="meeting-open-analysis"
                       >
                         Xem kết quả phân tích
@@ -1301,7 +1423,11 @@ export default function MeetingHistoryScene({
                       <button
                         type="button"
                         className="secondary-cta"
-                        onClick={() => onOpenMindmap(selectedMeetingSummary.id, { title: getMeetingLabel(selectedMeetingSummary) })}
+                        disabled={selectedScope == null || scopeState !== 'ready'}
+                        onClick={() => onOpenMindmap(selectedMeetingSummary.id, {
+                          title: getMeetingLabel(selectedMeetingSummary),
+                          scope: selectedScope,
+                        })}
                         data-testid="meeting-open-mindmap"
                       >
                         Mở sơ đồ mindmap

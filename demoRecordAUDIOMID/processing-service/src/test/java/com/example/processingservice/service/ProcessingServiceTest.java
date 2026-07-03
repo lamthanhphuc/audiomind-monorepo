@@ -391,6 +391,66 @@ class ProcessingServiceTest {
     }
 
     @Test
+    void resolveMeetingResultScope_shouldReturnExactV2ScopeFromAiList() {
+        when(aiServiceClient.listTranscriptScopes(895L, "trace-scope-resolve")).thenReturn(Map.of(
+                "meeting_id", 895L,
+                "scopes", List.of(
+                        Map.of(
+                                "scopeKind", "v2",
+                                "recordingSessionId", 9001L,
+                                "attemptId", 2L,
+                                "finalized", true
+                        )
+                )
+        ));
+
+        Map<String, Object> response = processingService.resolveMeetingResultScope(
+                895L,
+                "trace-scope-resolve",
+                AUTH_HEADER,
+                9001L,
+                2L
+        );
+
+        assertEquals("v2", response.get("scopeKind"));
+        assertEquals(9001L, response.get("recordingSessionId"));
+        assertEquals(2L, response.get("attemptId"));
+        verify(aiServiceClient).listTranscriptScopes(895L, "trace-scope-resolve");
+    }
+
+    @Test
+    void resolveMeetingResultScope_shouldPreferLatestFinalizedAttemptWhenAmbiguous() {
+        when(aiServiceClient.listTranscriptScopes(896L, "trace-scope-ambiguous")).thenReturn(Map.of(
+                "scopes", List.of(
+                        Map.of(
+                                "scopeKind", "v2",
+                                "recordingSessionId", 9001L,
+                                "attemptId", 1L,
+                                "finalized", true
+                        ),
+                        Map.of(
+                                "scopeKind", "v2",
+                                "recordingSessionId", 9001L,
+                                "attemptId", 3L,
+                                "finalized", true
+                        )
+                )
+        ));
+
+        Map<String, Object> response = processingService.resolveMeetingResultScope(
+                896L,
+                "trace-scope-ambiguous",
+                AUTH_HEADER,
+                null,
+                null
+        );
+
+        assertEquals(9001L, response.get("recordingSessionId"));
+        assertEquals(3L, response.get("attemptId"));
+        assertEquals(Boolean.TRUE, response.get("ambiguous"));
+    }
+
+    @Test
     void getTranscript_shouldPreferCanonicalRowsFromAiFallbackWhenAvailable() {
         when(jobStateStore.getJobState(892L)).thenReturn(Optional.empty());
         Map<String, Object> aiPayload = new HashMap<>();

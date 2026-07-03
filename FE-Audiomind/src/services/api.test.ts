@@ -10,10 +10,12 @@ import {
   getSavedAnalysis,
   getTranscript,
   getUserProfile,
+  listMeetingResultScopes,
   listMeetings,
   listMeetingsWithParams,
   reanalyzeMeetingAnalysis,
   renameMeeting,
+  resolveMeetingResultScope,
   searchMeetingTranscriptEvidence,
   startProcessingByPath,
   uploadToMeetingApi,
@@ -168,6 +170,53 @@ describe('upload language request wiring', () => {
       errorCode: 'INVALID_PROVENANCE',
     })
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('loads result scopes from processing API', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        meetingId: 7,
+        scopes: [{ scopeKind: 'v2', recordingSessionId: 9001, attemptId: 2, finalized: true }],
+      }),
+      headers: new Headers(),
+    })
+
+    const scopes = await listMeetingResultScopes(7)
+    expect(scopes).toEqual([{
+      scopeKind: 'v2',
+      recordingSessionId: 9001,
+      attemptId: 2,
+      finalized: true,
+      updatedAt: null,
+      latestSeq: null,
+    }])
+    expect(fetchMock.mock.calls[0][0]).toBe('http://localhost:8082/processing/7/result-scopes')
+  })
+
+  it('resolves a scoped result from processing API', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        scopeKind: 'v2',
+        recordingSessionId: 9001,
+        attemptId: 2,
+        ambiguous: false,
+      }),
+      headers: new Headers(),
+    })
+
+    const scope = await resolveMeetingResultScope(7, { recordingSessionId: 9001, attemptId: 2 })
+    expect(scope).toMatchObject({
+      scopeKind: 'v2',
+      meetingId: 7,
+      recordingSessionId: 9001,
+      attemptId: 2,
+    })
+    const url = fetchMock.mock.calls[0][0] as string
+    expect(url).toContain('/processing/7/result-scope?')
+    expect(url).toContain('recording_session_id=9001')
+    expect(url).toContain('attempt_id=2')
   })
 
   it('loads meeting detail and saved analysis from read-only endpoints', async () => {

@@ -31,6 +31,13 @@ describe('App history analysis navigation', () => {
     localStorage.setItem('audiomind.access_token', 'dummy-token')
 
     vi.spyOn(api, 'listMeetingsWithParams').mockResolvedValue([baseMeeting])
+    vi.spyOn(api, 'listMeetingResultScopes').mockResolvedValue([{ scopeKind: 'legacy' }])
+    vi.spyOn(api, 'resolveMeetingResultScope').mockImplementation(async (meetingId) => ({
+      scopeKind: 'legacy',
+      meetingId,
+      recordingSessionId: null,
+      attemptId: null,
+    }))
     vi.spyOn(api, 'getTranscript').mockResolvedValue({
       meeting_id: 7,
       transcripts: [{ speaker: 'Speaker 1', start_time: 0, end_time: 1, text: 'History transcript line' }],

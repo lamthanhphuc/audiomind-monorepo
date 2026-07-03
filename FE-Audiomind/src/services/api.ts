@@ -1,3 +1,8 @@
+import {
+  normalizeResultScopeItem,
+  type MeetingResultScope,
+  type MeetingResultScopeItem,
+} from '../utils/meetingResultScope'
 import type { paths as MeetingPaths } from '../../../packages/api-clients/meeting'
 import type { paths as ProcessingPaths } from '../../../packages/api-clients/processing'
 import {
@@ -475,6 +480,71 @@ export const getTranscript = async (
   )
   return normalizeTranscriptResponse(response)
 }
+
+const normalizeResultScopeItems = (value: unknown): MeetingResultScopeItem[] => {
+  if (!Array.isArray(value)) {
+    return []
+  }
+  return value
+    .filter((item) => item && typeof item === 'object')
+    .map((item) => {
+      const record = item as Record<string, unknown>
+      const scopeKind = String(record.scopeKind ?? record.scope_kind ?? '').trim().toLowerCase()
+      return {
+        scopeKind: scopeKind === 'legacy' ? 'legacy' : 'v2',
+        recordingSessionId: firstNumber(record.recordingSessionId, record.recording_session_id) ?? null,
+        attemptId: firstNumber(record.attemptId, record.attempt_id) ?? null,
+        finalized: typeof record.finalized === 'boolean' ? record.finalized : undefined,
+        updatedAt: firstString(record.updatedAt, record.updated_at) ?? null,
+        latestSeq: firstNumber(record.latestSeq, record.latest_seq) ?? null,
+      } satisfies MeetingResultScopeItem
+    })
+}
+
+export const listMeetingResultScopes = async (
+  meetingId: number,
+  options: ApiRequestOptions = {},
+): Promise<MeetingResultScopeItem[]> => {
+  const response = await fetchJson<{ scopes?: unknown }>(
+    `${API_BASE}/processing/${meetingId}/result-scopes`,
+    { signal: options.signal },
+  )
+  return normalizeResultScopeItems(response.scopes)
+}
+
+export const resolveMeetingResultScope = async (
+  meetingId: number,
+  scope?: Pick<MeetingResultScope, 'recordingSessionId' | 'attemptId'>,
+  options: ApiRequestOptions = {},
+): Promise<MeetingResultScope> => {
+  const params = new URLSearchParams()
+  const recordingSessionId = scope?.recordingSessionId
+  const attemptId = scope?.attemptId
+  if (recordingSessionId != null && attemptId != null) {
+    params.set('recording_session_id', String(recordingSessionId))
+    params.set('attempt_id', String(attemptId))
+  } else if (recordingSessionId != null || attemptId != null) {
+    throw new ApiError('Invalid transcript provenance scope', 422, undefined, 'INVALID_PROVENANCE')
+  }
+  const query = params.toString()
+  const response = await fetchJson<Record<string, unknown>>(
+    `${API_BASE}/processing/${meetingId}/result-scope${query ? `?${query}` : ''}`,
+    { signal: options.signal },
+  )
+  const normalized = normalizeResultScopeItem(meetingId, {
+    scopeKind: String(response.scopeKind ?? response.scope_kind ?? 'legacy') === 'legacy' ? 'legacy' : 'v2',
+    recordingSessionId: firstNumber(response.recordingSessionId, response.recording_session_id) ?? null,
+    attemptId: firstNumber(response.attemptId, response.attempt_id) ?? null,
+    finalized: typeof response.finalized === 'boolean' ? response.finalized : undefined,
+    updatedAt: firstString(response.updatedAt, response.updated_at) ?? null,
+  })
+  return {
+    ...normalized,
+    ambiguous: typeof response.ambiguous === 'boolean' ? response.ambiguous : undefined,
+  }
+}
+
+export type { MeetingResultScope, MeetingResultScopeItem }
 
 export const searchMeetingTranscriptEvidence = async (
   meetingId: number,

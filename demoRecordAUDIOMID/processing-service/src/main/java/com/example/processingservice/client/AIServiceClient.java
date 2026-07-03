@@ -335,6 +335,29 @@ public class AIServiceClient {
         return builder.toUriString();
     }
 
+    public Map<String, Object> listTranscriptScopes(Long meetingId, String traceId) {
+        HttpHeaders headers = new HttpHeaders();
+        String resolvedTraceId = resolveTraceId(traceId);
+        String resolvedRequestId = resolveRequestId(resolvedTraceId);
+        headers.add(TRACE_HEADER, resolvedTraceId);
+        headers.add(REQUEST_HEADER, resolvedRequestId);
+        String url = UriComponentsBuilder
+                .fromUriString(aiUrl)
+                .pathSegment("api", "meeting", String.valueOf(meetingId), "transcript-scopes")
+                .toUriString();
+        ResponseEntity<Map<String, Object>> response = executeAiServiceCall(
+                restTemplate,
+                "listTranscriptScopes",
+                url,
+                HttpMethod.GET,
+                new HttpEntity<>(headers),
+                resolvedTraceId,
+                resolvedRequestId,
+                meetingId
+        );
+        return requireBody(response, "listTranscriptScopes", meetingId);
+    }
+
     @Retry(name = "ai-service")
     @CircuitBreaker(name = "ai-service")
     @Retryable(

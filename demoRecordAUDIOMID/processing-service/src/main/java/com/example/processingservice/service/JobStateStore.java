@@ -226,6 +226,28 @@ public class JobStateStore {
             }
     }
 
+    public void mergeJobResultProvenance(
+            Long jobId,
+            Long recordingSessionId,
+            Long attemptId,
+            String traceId
+    ) {
+        if (jobId == null || recordingSessionId == null || attemptId == null) {
+            return;
+        }
+        Map<String, Object> state = getJobState(jobId).orElseGet(HashMap::new);
+        Map<String, Object> result = new HashMap<>();
+        Object existingResult = state.get("result");
+        if (existingResult instanceof Map<?, ?> existingMap) {
+            existingMap.forEach((key, value) -> result.put(String.valueOf(key), value));
+        }
+        result.put("recording_session_id", recordingSessionId);
+        result.put("attempt_id", attemptId);
+        String status = normalizeStatus(state.getOrDefault("status", "COMPLETED"));
+        String fileId = String.valueOf(state.getOrDefault("fileId", "realtime-meeting:" + jobId));
+        upsertJobState(jobId, status, fileId, result, null, traceId);
+    }
+
     private boolean isTerminal(String status) {
         return "COMPLETED".equals(status) || "FAILED".equals(status);
     }

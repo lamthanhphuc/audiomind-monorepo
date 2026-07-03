@@ -1645,6 +1645,12 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                             finalSeq != null ? finalSeq : -1L,
                             transcriptRows
                     );
+                    jobStateStore.mergeJobResultProvenance(
+                            meetingId,
+                            currentRecordingSessionId(session),
+                            currentAttemptId(session),
+                            resolveSessionTraceId(session)
+                    );
                     triggerRealtimeAnalysisAsync(
                             meetingId,
                             getLongAttribute(session, "userId"),

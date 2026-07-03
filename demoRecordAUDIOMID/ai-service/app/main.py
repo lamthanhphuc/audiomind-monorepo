@@ -2858,6 +2858,30 @@ async def get_transcript(
         )
 
 
+@app.get("/api/meeting/{meeting_id}/transcript-scopes")
+async def list_transcript_scopes(meeting_id: int, db: Session = Depends(get_db)):
+    try:
+        repository = TranscriptPersistenceRepository(db)
+        scopes = repository.list_attempt_scopes(meeting_id)
+        return {
+            "meeting_id": meeting_id,
+            "scopes": scopes,
+        }
+    except Exception as e:
+        request_id = uuid4().hex
+        logger.error(
+            "event=REQUEST_FAILED requestId={} path=/api/meeting/{}/transcript-scopes errorCode={} error={}",
+            request_id,
+            meeting_id,
+            type(e).__name__,
+            safe_error_message(e),
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal server error. request_id={request_id}",
+        )
+
+
 @app.get("/api/meeting/{meeting_id}/status")
 async def get_processing_status(meeting_id: int):
     status = get_job_status(meeting_id)

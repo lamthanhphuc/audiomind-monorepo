@@ -59,6 +59,12 @@ describe('FeatureAnalysis', () => {
       status: 'NOT_FOUND',
       analysisStatus: 'NOT_FOUND',
     } as any)
+    vi.spyOn(api, 'resolveMeetingResultScope').mockImplementation(async (meetingId) => ({
+      scopeKind: 'legacy',
+      meetingId,
+      recordingSessionId: null,
+      attemptId: null,
+    }))
     container = document.createElement('div')
     document.body.appendChild(container)
     root = createRoot(container)
@@ -334,7 +340,7 @@ describe('FeatureAnalysis', () => {
     await flush()
 
     expect(container.querySelector('[data-testid="feature-analysis-hydrate-error"]')).toBeTruthy()
-    expect(container.textContent).toContain('Không tìm thấy meeting hoặc transcript.')
+    expect(container.textContent).toContain('Không tìm thấy transcript cho phiên ghi đã chọn')
   })
 
   it('calls onBackToHistory when back button is clicked in hydrate mode', async () => {

@@ -8,6 +8,7 @@ import java.time.Instant;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
@@ -931,6 +932,190 @@ public class ProcessingService {
         );
         annotateNoTranscriptAfterFinalize(response, stateStatus);
         return response;
+    }
+
+    public Map<String, Object> listMeetingResultScopes(Long meetingId, String traceId, String authorization) {
+        assertMeetingAccess(meetingId, traceId, authorization);
+        List<Map<String, Object>> scopes = loadMeetingResultScopes(meetingId, traceId);
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("meetingId", meetingId);
+        response.put("scopes", scopes);
+        return response;
+    }
+
+    public Map<String, Object> resolveMeetingResultScope(
+            Long meetingId,
+            String traceId,
+            String authorization,
+            Long recordingSessionId,
+            Long attemptId
+    ) {
+        if ((recordingSessionId == null) != (attemptId == null)) {
+            throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_PROVENANCE");
+        }
+        assertMeetingAccess(meetingId, traceId, authorization);
+        List<Map<String, Object>> scopes = loadMeetingResultScopes(meetingId, traceId);
+        if (recordingSessionId != null) {
+            Map<String, Object> matched = scopes.stream()
+                    .filter(scope -> recordingSessionId.equals(parseScopeLong(scope.get("recordingSessionId")))
+                            && attemptId.equals(parseScopeLong(scope.get("attemptId"))))
+                    .findFirst()
+                    .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "RESULT_SCOPE_NOT_FOUND"));
+            return wrapResolvedResultScope(meetingId, matched, scopes.size() > 1);
+        }
+        if (scopes.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "RESULT_SCOPE_NOT_FOUND");
+        }
+        if (scopes.size() == 1) {
+            return wrapResolvedResultScope(meetingId, scopes.get(0), false);
+        }
+        return wrapResolvedResultScope(meetingId, selectPreferredResultScope(scopes), true);
+    }
+
+    private List<Map<String, Object>> loadMeetingResultScopes(Long meetingId, String traceId) {
+        List<Map<String, Object>> scopes = new ArrayList<>();
+        try {
+            Map<String, Object> aiResponse = aiServiceClient.listTranscriptScopes(meetingId, traceId);
+            scopes.addAll(normalizeResultScopeItems(extractScopeList(aiResponse)));
+        } catch (Exception ex) {
+            log.warn(
+                    "event=RESULT_SCOPE_LIST_FAILED meetingId={} traceId={} error={}",
+                    meetingId,
+                    traceId,
+                    ex.getMessage()
+            );
+        }
+
+        if (!scopes.isEmpty()) {
+            return scopes;
+        }
+
+        Map<String, Object> jobScope = readProvenanceScopeFromJobState(meetingId);
+        if (jobScope != null) {
+            scopes.add(jobScope);
+            return scopes;
+        }
+
+        TranscriptFetchResult legacyProbe = fetchTranscriptResultFromAiService(meetingId, traceId, null, null);
+        if (!legacyProbe.payload().readableRows().isEmpty()) {
+            scopes.add(buildLegacyResultScopeItem());
+        }
+        return scopes;
+    }
+
+    private Map<String, Object> wrapResolvedResultScope(
+            Long meetingId,
+            Map<String, Object> scope,
+            boolean ambiguous
+    ) {
+        Map<String, Object> response = new LinkedHashMap<>(scope);
+        response.put("meetingId", meetingId);
+        response.put("ambiguous", ambiguous);
+        return response;
+    }
+
+    private Map<String, Object> selectPreferredResultScope(List<Map<String, Object>> scopes) {
+        return scopes.stream()
+                .max(Comparator
+                        .comparing((Map<String, Object> scope) -> Boolean.TRUE.equals(scope.get("finalized")))
+                        .thenComparing(scope -> parseScopeLong(scope.get("recordingSessionId")), Comparator.nullsFirst(Long::compareTo))
+                        .thenComparing(scope -> parseScopeLong(scope.get("attemptId")), Comparator.nullsFirst(Long::compareTo)))
+                .orElse(scopes.get(scopes.size() - 1));
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<Map<String, Object>> extractScopeList(Map<String, Object> aiResponse) {
+        if (aiResponse == null) {
+            return List.of();
+        }
+        Object rawScopes = aiResponse.get("scopes");
+        if (!(rawScopes instanceof List<?> list)) {
+            return List.of();
+        }
+        List<Map<String, Object>> scopes = new ArrayList<>();
+        for (Object item : list) {
+            if (item instanceof Map<?, ?> map) {
+                Map<String, Object> normalized = new LinkedHashMap<>();
+                map.forEach((key, value) -> normalized.put(String.valueOf(key), value));
+                scopes.add(normalized);
+            }
+        }
+        return scopes;
+    }
+
+    private List<Map<String, Object>> normalizeResultScopeItems(List<Map<String, Object>> scopes) {
+        List<Map<String, Object>> normalized = new ArrayList<>();
+        for (Map<String, Object> scope : scopes) {
+            String scopeKind = String.valueOf(scope.getOrDefault("scopeKind", "")).trim().toLowerCase(Locale.ROOT);
+            if ("legacy".equals(scopeKind)) {
+                normalized.add(buildLegacyResultScopeItem());
+                continue;
+            }
+            Long recordingSessionId = parseScopeLong(scope.get("recordingSessionId"));
+            Long attemptId = parseScopeLong(scope.get("attemptId"));
+            if (recordingSessionId == null || attemptId == null) {
+                continue;
+            }
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("scopeKind", "v2");
+            item.put("recordingSessionId", recordingSessionId);
+            item.put("attemptId", attemptId);
+            item.put("finalized", Boolean.TRUE.equals(scope.get("finalized")));
+            if (scope.get("updatedAt") != null) {
+                item.put("updatedAt", String.valueOf(scope.get("updatedAt")));
+            }
+            if (scope.get("latestSeq") != null) {
+                item.put("latestSeq", parseScopeLong(scope.get("latestSeq")));
+            }
+            normalized.add(item);
+        }
+        return normalized;
+    }
+
+    private Map<String, Object> buildLegacyResultScopeItem() {
+        Map<String, Object> item = new LinkedHashMap<>();
+        item.put("scopeKind", "legacy");
+        item.put("recordingSessionId", null);
+        item.put("attemptId", null);
+        item.put("finalized", true);
+        return item;
+    }
+
+    private Map<String, Object> readProvenanceScopeFromJobState(Long meetingId) {
+        Map<String, Object> state = jobStateStore.getJobState(meetingId).orElse(null);
+        if (state == null) {
+            return null;
+        }
+        Object result = state.get("result");
+        if (!(result instanceof Map<?, ?> resultMap)) {
+            return null;
+        }
+        Long recordingSessionId = parseScopeLong(resultMap.get("recording_session_id"));
+        Long attemptId = parseScopeLong(resultMap.get("attempt_id"));
+        if (recordingSessionId == null || attemptId == null) {
+            return null;
+        }
+        Map<String, Object> item = new LinkedHashMap<>();
+        item.put("scopeKind", "v2");
+        item.put("recordingSessionId", recordingSessionId);
+        item.put("attemptId", attemptId);
+        item.put("finalized", true);
+        item.put("source", "job_state");
+        return item;
+    }
+
+    private Long parseScopeLong(Object value) {
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof Number number) {
+            return number.longValue();
+        }
+        try {
+            return Long.parseLong(String.valueOf(value).trim());
+        } catch (NumberFormatException ex) {
+            return null;
+        }
     }
 
     public TranscriptSearchResponse searchTranscriptEvidenceForMeeting(

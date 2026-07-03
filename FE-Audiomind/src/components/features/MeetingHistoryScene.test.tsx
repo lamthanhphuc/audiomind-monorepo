@@ -79,6 +79,13 @@ describe('MeetingHistoryScene', () => {
     sessionStorage.clear()
 
     vi.spyOn(api, 'listMeetingsWithParams').mockResolvedValue([baseMeeting])
+    vi.spyOn(api, 'listMeetingResultScopes').mockResolvedValue([{ scopeKind: 'legacy' }])
+    vi.spyOn(api, 'resolveMeetingResultScope').mockImplementation(async (meetingId) => ({
+      scopeKind: 'legacy',
+      meetingId,
+      recordingSessionId: null,
+      attemptId: null,
+    }))
     vi.spyOn(meetingShare, 'listMeetingShares').mockResolvedValue([])
     vi.spyOn(api, 'getTranscript').mockResolvedValue({ meeting_id: 7, transcripts: [] } as any)
     vi.spyOn(api, 'getAnalysis').mockResolvedValue(baseAnalysis as any)
@@ -826,7 +833,17 @@ describe('MeetingHistoryScene', () => {
     await flush()
 
     expect(onOpenAnalysis).toHaveBeenCalledTimes(1)
-    expect(onOpenAnalysis).toHaveBeenCalledWith(7, { title: 'History item' })
+    expect(onOpenAnalysis).toHaveBeenCalledWith(7, {
+      title: 'History item',
+      scope: {
+        scopeKind: 'legacy',
+        meetingId: 7,
+        recordingSessionId: null,
+        attemptId: null,
+        finalized: true,
+        updatedAt: null,
+      },
+    })
   })
 
   it('shows open-mindmap CTA when a meeting is selected and calls callback with meetingId', async () => {
@@ -848,6 +865,16 @@ describe('MeetingHistoryScene', () => {
     await flush()
 
     expect(onOpenMindmap).toHaveBeenCalledTimes(1)
-    expect(onOpenMindmap).toHaveBeenCalledWith(7, { title: 'History item' })
+    expect(onOpenMindmap).toHaveBeenCalledWith(7, {
+      title: 'History item',
+      scope: {
+        scopeKind: 'legacy',
+        meetingId: 7,
+        recordingSessionId: null,
+        attemptId: null,
+        finalized: true,
+        updatedAt: null,
+      },
+    })
   })
 })

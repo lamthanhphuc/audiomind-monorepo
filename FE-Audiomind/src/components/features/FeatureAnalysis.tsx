@@ -10,6 +10,11 @@ import {
   type TranscriptHighlightRange,
 } from '../../utils/transcriptJump'
 import { normalizePersistedTranscriptForView } from '../../utils/transcript'
+import { resolveMeetingResultScope } from '../../services/api'
+import {
+  scopeToTranscriptOptions,
+  type MeetingResultScope,
+} from '../../utils/meetingResultScope'
 import AiAssistant from '../dashboard/AiAssistant'
 import AnalysisTermNotesSection from './AnalysisTermNotesSection'
 import MindmapView from '../mindmap/MindmapView'
@@ -33,6 +38,7 @@ type FeatureAnalysisProps = {
   transcriptText?: string
   statusLabel?: string
   hydrateFromApi?: boolean
+  resultScope?: MeetingResultScope | null
   onBackToHistory?: () => void
   preferredDomainMode?: string
 }
@@ -123,6 +129,7 @@ export default function FeatureAnalysis({
   transcriptText = '',
   statusLabel,
   hydrateFromApi = false,
+  resultScope = null,
   onBackToHistory,
 }: FeatureAnalysisProps) {
   const [activeTab, setActiveTab] = useState<'content' | 'model' | 'mindmap'>('content')
@@ -194,9 +201,18 @@ export default function FeatureAnalysis({
 
     const load = async () => {
       try {
+        const resolvedScope = resultScope
+          ?? await resolveMeetingResultScope(meetingId, undefined, { signal: controller.signal })
+        if (controller.signal.aborted || hydrateRequestKeyRef.current !== requestKey) {
+          return
+        }
+
         const [transcriptResponse, analysisResponse] = await Promise.all([
-          getTranscript(requestKey, { signal: controller.signal }),
-          getSavedAnalysis(requestKey, { signal: controller.signal }),
+          getTranscript(meetingId, {
+            ...scopeToTranscriptOptions(resolvedScope),
+            signal: controller.signal,
+          }),
+          getSavedAnalysis(meetingId, { signal: controller.signal }),
         ])
 
         if (controller.signal.aborted || hydrateRequestKeyRef.current !== requestKey) {
@@ -218,6 +234,11 @@ export default function FeatureAnalysis({
         if (controller.signal.aborted || isAbortError(error) || hydrateRequestKeyRef.current !== requestKey) {
           return
         }
+        if (error instanceof ApiError && error.status === 404) {
+          setHydrateState('error')
+          setHydrateError('Không tìm thấy transcript cho phiên ghi đã chọn')
+          return
+        }
         setHydrateState('error')
         setHydrateError(getFriendlyHydrateError(error))
       }
@@ -228,7 +249,7 @@ export default function FeatureAnalysis({
     return () => {
       controller.abort()
     }
-  }, [hydrateFromApi, meetingId])
+  }, [hydrateFromApi, meetingId, resultScope])
 
   const loadSavedAnalysis = useCallback(async (requestKey: number) => {
     savedAnalysisAbortRef.current?.abort()

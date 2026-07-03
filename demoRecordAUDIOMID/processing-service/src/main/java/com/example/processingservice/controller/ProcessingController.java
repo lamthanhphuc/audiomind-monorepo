@@ -150,6 +150,32 @@ public class ProcessingController {
         );
     }
 
+    @GetMapping("/{meetingId}/result-scopes")
+    public Map<String, Object> listResultScopes(
+            @PathVariable Long meetingId,
+            @RequestHeader(value = "x-trace-id", required = false) String traceId,
+            @RequestHeader(HttpHeaders.AUTHORIZATION) String authorization) {
+        requirePrincipal();
+        return processingService.listMeetingResultScopes(meetingId, ensureTraceId(traceId), authorization);
+    }
+
+    @GetMapping("/{meetingId}/result-scope")
+    public Map<String, Object> resolveResultScope(
+            @PathVariable Long meetingId,
+            @RequestParam(name = "recording_session_id", required = false) Long recordingSessionId,
+            @RequestParam(name = "attempt_id", required = false) Long attemptId,
+            @RequestHeader(value = "x-trace-id", required = false) String traceId,
+            @RequestHeader(HttpHeaders.AUTHORIZATION) String authorization) {
+        requirePrincipal();
+        return processingService.resolveMeetingResultScope(
+                meetingId,
+                ensureTraceId(traceId),
+                authorization,
+                recordingSessionId,
+                attemptId
+        );
+    }
+
     @GetMapping("/{meetingId}/transcript/search")
     public TranscriptSearchResponse searchTranscript(
             @PathVariable Long meetingId,
