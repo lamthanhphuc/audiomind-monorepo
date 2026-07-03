@@ -91,13 +91,29 @@ describe('acquireAudioSource', () => {
 
     expect(getDisplayMedia).toHaveBeenCalledWith(expect.objectContaining({
       audio: expect.objectContaining({
-        suppressLocalAudioPlayback: true,
+        suppressLocalAudioPlayback: false,
       }),
     }))
     expect(videoTrack.stop).toHaveBeenCalled()
     expect(acquired.source).toBe('browser_tab')
     acquired.cleanup()
     expect(audioTrack.stop).toHaveBeenCalled()
+  })
+
+  it('does not request local tab playback suppression', async () => {
+    const audioTrack = createMockTrack()
+    const getDisplayMedia = vi.fn().mockResolvedValue(createMockStream([audioTrack]))
+    Object.defineProperty(navigator, 'mediaDevices', {
+      value: { getDisplayMedia },
+      configurable: true,
+    })
+
+    await acquireAudioSource({ source: 'browser_tab' })
+
+    const constraints = getDisplayMedia.mock.calls[0]?.[0] as DisplayMediaStreamOptions
+    expect(constraints.audio).toEqual(expect.objectContaining({
+      suppressLocalAudioPlayback: false,
+    }))
   })
 
   it('falls back to tab-only when microphone is unavailable for tab+mic source', async () => {

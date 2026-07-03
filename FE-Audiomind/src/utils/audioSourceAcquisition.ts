@@ -39,7 +39,7 @@ type AcquireAudioSourceOptions = {
 const PREFERRED_SAMPLE_RATE = 48_000
 
 type DisplayMediaAudioConstraints = MediaTrackConstraints & {
-  /** Chrome/Edge: capture tab audio without playing through local speakers. */
+  /** Chrome/Edge-specific hint. Keep local playback audible unless the user/browser decides otherwise. */
   suppressLocalAudioPlayback?: boolean
 }
 
@@ -49,7 +49,7 @@ const buildTabCaptureConstraints = (): DisplayMediaStreamOptions => ({
     echoCancellation: false,
     noiseSuppression: false,
     autoGainControl: false,
-    suppressLocalAudioPlayback: true,
+    suppressLocalAudioPlayback: false,
   } as DisplayMediaAudioConstraints,
 })
 
@@ -270,12 +270,11 @@ const mixTabAndMicrophoneStreams = async (
   const tabSource = audioContext.createMediaStreamSource(tabStream)
   const micSource = audioContext.createMediaStreamSource(micStream)
 
-  // Alternate dominant source: tab when user is silent, mic-only while speaking.
-  // Mixing both simultaneously lets loud tab drown mic for STT.
-  const TAB_PASS_GAIN = 0.38
-  const TAB_DUCK_GAIN = 0.12
-  const MIC_PASS_GAIN = 6.0
-  const MIC_IDLE_GAIN = 0
+  // Stable mix: mic activity is diagnostic only and must never mute tab audio.
+  const TAB_PASS_GAIN = 0.5
+  const TAB_DUCK_GAIN = 0.42
+  const MIC_PASS_GAIN = 1.15
+  const MIC_IDLE_GAIN = MIC_PASS_GAIN
   const MIC_ENTER_RMS = 0.013
   const MIC_SUSTAIN_RMS = 0.01
   const MIC_VS_TAB_ENTER_RATIO = 0.28
@@ -299,6 +298,7 @@ const mixTabAndMicrophoneStreams = async (
   const tabAnalyserData = new Uint8Array(tabAnalyser.frequencyBinCount)
   const tabPostGainAnalyser = audioContext.createAnalyser()
   tabPostGainAnalyser.fftSize = 512
+  const tabPostGainAnalyserData = new Uint8Array(tabPostGainAnalyser.frequencyBinCount)
   const outputAnalyser = audioContext.createAnalyser()
   outputAnalyser.fftSize = 512
 
@@ -316,6 +316,7 @@ const mixTabAndMicrophoneStreams = async (
     try {
       const micRms = measureAnalyserRms(micAnalyser, micAnalyserData)
       const tabRms = measureAnalyserRms(tabAnalyser, tabAnalyserData)
+      const tabPostGainRms = measureAnalyserRms(tabPostGainAnalyser, tabPostGainAnalyserData)
       const now = performance.now()
       const deltaMs = now - lastTickAt
       lastTickAt = now
@@ -346,13 +347,17 @@ const mixTabAndMicrophoneStreams = async (
         micPassGain: MIC_PASS_GAIN,
         micIdleGain: MIC_IDLE_GAIN,
       })
+      tabGain.gain.value += (targetGains.tabGain - tabGain.gain.value) * GAIN_RELEASE
+      micGain.gain.value += (targetGains.micGain - micGain.gain.value) * GAIN_RELEASE
+      if (tabGain.gain.value < TAB_DUCK_GAIN) {
+        tabGain.gain.value = TAB_DUCK_GAIN
+      }
+      if (micGain.gain.value <= 0) {
+        micGain.gain.value = MIC_PASS_GAIN
+      }
       if (micPriority) {
-        tabGain.gain.value = targetGains.tabGain
-        micGain.gain.value = targetGains.micGain
         micActiveMs += deltaMs
       } else {
-        tabGain.gain.value += (targetGains.tabGain - tabGain.gain.value) * GAIN_RELEASE
-        micGain.gain.value += (targetGains.micGain - micGain.gain.value) * GAIN_RELEASE
         tabActiveMs += deltaMs
       }
 
@@ -360,12 +365,14 @@ const mixTabAndMicrophoneStreams = async (
         micPriorityActive = micPriority
         console.info('[Realtime] TAB_MIC_GATE', {
           activeSource: micPriority ? 'microphone' : 'browser_tab',
+          policy: 'stable_mix',
           micRms: Number(micRms.toFixed(4)),
-          tabRms: Number(tabRms.toFixed(4)),
+          tabInputRms: Number(tabRms.toFixed(4)),
+          tabPostGainRms: Number(tabPostGainRms.toFixed(4)),
           tabGain: Number(tabGain.gain.value.toFixed(3)),
           micGain: Number(micGain.gain.value.toFixed(3)),
           holdMs: micPriority ? SPEECH_HOLD_MS : 0,
-          reason: micPriority ? 'mic_hold' : 'tab_default',
+          reason: micPriority ? 'mic_detected_without_tab_mute' : 'tab_default',
         })
         if (!micPriority) {
           // mic hold expired — tab resumes
@@ -409,9 +416,11 @@ const mixTabAndMicrophoneStreams = async (
   const mixedStream = destination.stream
   console.info('[Realtime] TAB_MIC_MIX_READY', {
     contextState: audioContext.state,
-    mode: 'hard_gate',
+    mode: 'stable_mix',
     tabPassGain: TAB_PASS_GAIN,
+    tabMinGain: TAB_DUCK_GAIN,
     micPassGain: MIC_PASS_GAIN,
+    suppressLocalAudioPlayback: false,
     mixedTrackCount: mixedStream.getAudioTracks().length,
   })
   const cleanup = () => {

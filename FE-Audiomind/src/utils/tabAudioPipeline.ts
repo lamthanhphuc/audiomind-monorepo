@@ -102,15 +102,17 @@ export const resolveTabMicGateGains = (input: {
   micPassGain: number
   micIdleGain: number
 }): { tabGain: number; micGain: number } => {
+  // Tab+Mic recording must never use mic activity as a hard source selector.
+  // Keep both sources present in the STT mix; micPriority is diagnostic only.
   if (input.micPriority) {
     return {
-      tabGain: input.tabDuckGain,
+      tabGain: Math.max(input.tabDuckGain, input.tabPassGain * 0.75),
       micGain: input.micPassGain,
     }
   }
   return {
     tabGain: input.tabPassGain,
-    micGain: input.micIdleGain,
+    micGain: input.micPassGain,
   }
 }
 

@@ -66,10 +66,11 @@ describe('resolveTabMicGateGains', () => {
       micIdleGain: 0,
     })
     expect(gains.tabGain).toBeGreaterThan(0)
+    expect(gains.tabGain).toBeGreaterThanOrEqual(0.285)
     expect(gains.micGain).toBe(6)
   })
 
-  it('restores tab pass gain when mic is idle', () => {
+  it('keeps mic present while restoring tab pass gain when mic is idle', () => {
     const gains = resolveTabMicGateGains({
       micPriority: false,
       tabPassGain: 0.38,
@@ -78,7 +79,20 @@ describe('resolveTabMicGateGains', () => {
       micIdleGain: 0,
     })
     expect(gains.tabGain).toBe(0.38)
-    expect(gains.micGain).toBe(0)
+    expect(gains.micGain).toBe(6)
+  })
+
+  it('does not let activeSource=mic hard-mute the tab path', () => {
+    const gains = resolveTabMicGateGains({
+      micPriority: true,
+      tabPassGain: 0.5,
+      tabDuckGain: 0,
+      micPassGain: 1.15,
+      micIdleGain: 0,
+    })
+
+    expect(gains.tabGain).toBeGreaterThan(0)
+    expect(gains.micGain).toBe(1.15)
   })
 })
 
