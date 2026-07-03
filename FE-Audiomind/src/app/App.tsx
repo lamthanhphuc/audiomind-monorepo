@@ -585,25 +585,47 @@ type RealtimeAnalysisPollOptions = {
   analysisScope?: Pick<AnalysisScopeOptions, 'recordingSessionId' | 'attemptId'>
 }
 
+type RealtimeAnalysisPollScopeResolution = {
+  scope?: Pick<AnalysisScopeOptions, 'recordingSessionId' | 'attemptId'>
+  reason?: 'missing_session_token' | 'stale_session_token' | 'partial_scope'
+}
+
 export const resolveRealtimeAnalysisPollScope = (
+  meetingId: number,
   options: RealtimeAnalysisPollOptions,
-): Pick<AnalysisScopeOptions, 'recordingSessionId' | 'attemptId'> | undefined => {
+): RealtimeAnalysisPollScopeResolution => {
+  if (options.sessionToken == null) {
+    return { reason: 'missing_session_token' }
+  }
+  if (options.sessionToken.meetingId !== meetingId) {
+    return { reason: 'stale_session_token' }
+  }
   if (
     options.analysisScope?.recordingSessionId != null
     && options.analysisScope?.attemptId != null
   ) {
     return {
-      recordingSessionId: options.analysisScope.recordingSessionId,
-      attemptId: options.analysisScope.attemptId,
+      scope: {
+        recordingSessionId: options.analysisScope.recordingSessionId,
+        attemptId: options.analysisScope.attemptId,
+      },
     }
   }
-  if (options.sessionToken != null) {
+  if (options.analysisScope?.recordingSessionId != null || options.analysisScope?.attemptId != null) {
+    return { reason: 'partial_scope' }
+  }
+  if (
+    options.sessionToken.recordingSessionId != null
+    && options.sessionToken.attemptId != null
+  ) {
     return {
-      recordingSessionId: options.sessionToken.recordingSessionId,
-      attemptId: options.sessionToken.attemptId,
+      scope: {
+        recordingSessionId: options.sessionToken.recordingSessionId,
+        attemptId: options.sessionToken.attemptId,
+      },
     }
   }
-  return undefined
+  return { reason: 'partial_scope' }
 }
 
 type HydrationOptions = {
@@ -767,7 +789,23 @@ export const pollRealtimeAnalysisAfterStop = async (
     return options.isSessionActive(options.sessionToken)
   }
 
-  const pollScope = resolveRealtimeAnalysisPollScope(options)
+  const pollScopeResolution = resolveRealtimeAnalysisPollScope(meetingId, options)
+  const pollScope = pollScopeResolution.scope
+  if (!pollScope) {
+    console.warn('[Realtime] ANALYSIS_SCOPE_UNAVAILABLE', {
+      meetingId,
+      analysisPollRunId: options.analysisPollRunId,
+      reason: pollScopeResolution.reason,
+    })
+    return {
+      status: 'pending',
+      analysis: null,
+      metadata: buildLiveAnalysisMetadata(meetingId, 'ANALYSIS_SCOPE_UNAVAILABLE', {
+        errorCode: 'ANALYSIS_SCOPE_UNAVAILABLE',
+      }),
+      reason: 'analysis_scope_unavailable',
+    }
+  }
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     if (signal.aborted) {
@@ -789,9 +827,7 @@ export const pollRealtimeAnalysisAfterStop = async (
     }
 
     try {
-      const analysis = pollScope
-        ? await fetchAnalysis(meetingId, { ...pollScope, signal })
-        : await fetchAnalysis(meetingId, { signal })
+      const analysis = await fetchAnalysis(meetingId, { ...pollScope, signal })
       if (!isPollingActive()) {
         console.info('[Realtime] STALE_ANALYSIS_POLL_IGNORED', {
           meetingId,

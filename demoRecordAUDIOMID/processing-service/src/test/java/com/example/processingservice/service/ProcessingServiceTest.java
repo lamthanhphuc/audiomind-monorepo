@@ -553,6 +553,63 @@ class ProcessingServiceTest {
     }
 
     @Test
+    void getAnalysis_shouldFailClosedWhenScopeProbeFailsAndJobStateIsEmpty() {
+        Long meetingId = 88L;
+        when(aiServiceClient.listTranscriptScopes(eq(meetingId), eq("trace-88")))
+                .thenThrow(new RuntimeException("scope registry unavailable"));
+        when(jobStateStore.getJobState(meetingId)).thenReturn(Optional.empty());
+
+        Map<String, Object> response = processingService.getAnalysis(meetingId, "trace-88", AUTH_HEADER);
+
+        assertEquals("ANALYSIS_SCOPE_RESOLUTION_UNAVAILABLE", response.get("analysisStatus"));
+        assertEquals("ANALYSIS_SCOPE_RESOLUTION_UNAVAILABLE", response.get("errorCode"));
+        assertEquals(Boolean.TRUE, response.get("retryable"));
+        verify(aiServiceClient, never()).getTranscript(eq(meetingId), anyString());
+        verify(aiServiceClient, never()).getAnalysis(eq(meetingId), anyString());
+    }
+
+    @Test
+    void getAnalysis_shouldRejectUnscopedRequestWhenScopeProbeFailsButJobStateHasV2Scope() {
+        Long meetingId = 89L;
+        when(aiServiceClient.listTranscriptScopes(eq(meetingId), eq("trace-89")))
+                .thenThrow(new RuntimeException("scope registry unavailable"));
+        when(jobStateStore.getJobState(meetingId)).thenReturn(Optional.of(Map.of(
+                "status", "COMPLETED",
+                "result", Map.of(
+                        "recording_session_id", 9001L,
+                        "attempt_id", 3L
+                )
+        )));
+
+        Map<String, Object> response = processingService.getAnalysis(meetingId, "trace-89", AUTH_HEADER);
+
+        assertEquals("ANALYSIS_UNAVAILABLE_FOR_SCOPE", response.get("analysisStatus"));
+        verify(aiServiceClient, never()).getTranscript(eq(meetingId), anyString());
+        verify(aiServiceClient, never()).getAnalysis(eq(meetingId), anyString());
+    }
+
+    @Test
+    void getAnalysis_shouldKeepLegacyUnscopedFlowWhenScopeProbeReturnsLegacyOnly() {
+        Long meetingId = 90L;
+        when(aiServiceClient.listTranscriptScopes(eq(meetingId), eq("trace-90"))).thenReturn(Map.of(
+                "scopes", List.of(Map.of("scopeKind", "legacy"))
+        ));
+        when(jobStateStore.getJobState(meetingId)).thenReturn(Optional.empty());
+        when(aiServiceClient.getAnalysis(meetingId, "trace-90")).thenReturn(Map.of(
+                "meeting_id", meetingId,
+                "status", "COMPLETED",
+                "summary", "Legacy summary"
+        ));
+
+        Map<String, Object> response = processingService.getAnalysis(meetingId, "trace-90", AUTH_HEADER);
+
+        assertEquals("SUCCEEDED", response.get("status"));
+        assertEquals("Legacy summary", response.get("summary"));
+        verify(aiServiceClient).getAnalysis(meetingId, "trace-90");
+        verify(aiServiceClient, never()).getTranscript(eq(meetingId), anyString());
+    }
+
+    @Test
     void getAnalysis_shouldTriggerScopedOnDemandAnalysisWhenCacheMissesForV2Attempt() {
         Long meetingId = 962L;
         Map<String, Object> transcriptRow = Map.of(

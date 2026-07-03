@@ -81,6 +81,7 @@ public class ProcessingService {
     private static final String TRANSCRIPT_MODE_CANONICAL = "canonical";
     private static final String ANALYSIS_STATUS_NO_ANALYSIS = "NO_ANALYSIS";
     private static final String ANALYSIS_STATUS_UNAVAILABLE_FOR_SCOPE = "ANALYSIS_UNAVAILABLE_FOR_SCOPE";
+    private static final String ANALYSIS_STATUS_SCOPE_RESOLUTION_UNAVAILABLE = "ANALYSIS_SCOPE_RESOLUTION_UNAVAILABLE";
     private static final String ANALYSIS_STATUS_STALE = "STALE";
     private static final String NO_TRANSCRIPT_AFTER_FINALIZE = "NO_TRANSCRIPT_AFTER_FINALIZE";
     private static final String COMPLETED_WITH_NO_SPEECH_DETECTED = "COMPLETED_WITH_NO_SPEECH_DETECTED";
@@ -3639,14 +3640,18 @@ public class ProcessingService {
         return "NOT_FOUND".equalsIgnoreCase(status) && !hasStructuredAnalysis(response);
     }
 
-    private boolean meetingRequiresAnalysisProvenance(Long meetingId, String traceId) {
+    private AnalysisScopeRequirement resolveUnscopedAnalysisScopeRequirement(Long meetingId, String traceId) {
         try {
             Map<String, Object> aiResponse = aiServiceClient.listTranscriptScopes(meetingId, traceId);
             List<Map<String, Object>> scopes = normalizeResultScopeItems(extractScopeList(aiResponse));
             if (!scopes.isEmpty()) {
-                return scopes.stream()
+                boolean hasV2Scope = scopes.stream()
                         .anyMatch(scope -> "v2".equals(String.valueOf(scope.get("scopeKind"))));
+                return hasV2Scope
+                        ? AnalysisScopeRequirement.V2_REQUIRED
+                        : AnalysisScopeRequirement.LEGACY_ALLOWED;
             }
+            return AnalysisScopeRequirement.LEGACY_ALLOWED;
         } catch (Exception ex) {
             log.warn(
                     "event=RESULT_SCOPE_PROBE_FAILED meetingId={} traceId={} error={}",
@@ -3656,7 +3661,10 @@ public class ProcessingService {
             );
         }
         Map<String, Object> jobScope = readProvenanceScopeFromJobState(meetingId);
-        return jobScope != null && "v2".equals(String.valueOf(jobScope.get("scopeKind")));
+        if (jobScope != null && "v2".equals(String.valueOf(jobScope.get("scopeKind")))) {
+            return AnalysisScopeRequirement.V2_REQUIRED;
+        }
+        return AnalysisScopeRequirement.SCOPE_UNAVAILABLE;
     }
 
     private Map<String, Object> buildScopedAnalysisUnavailableResponse(Long meetingId) {
@@ -3664,6 +3672,16 @@ public class ProcessingService {
         response.put("meeting_id", meetingId);
         response.put("status", "NOT_FOUND");
         response.put("analysisStatus", ANALYSIS_STATUS_UNAVAILABLE_FOR_SCOPE);
+        return response;
+    }
+
+    private Map<String, Object> buildScopeResolutionUnavailableResponse(Long meetingId) {
+        Map<String, Object> response = new HashMap<>();
+        response.put("meeting_id", meetingId);
+        response.put("status", "PENDING");
+        response.put("analysisStatus", ANALYSIS_STATUS_SCOPE_RESOLUTION_UNAVAILABLE);
+        response.put("errorCode", ANALYSIS_STATUS_SCOPE_RESOLUTION_UNAVAILABLE);
+        response.put("retryable", true);
         return response;
     }
 
@@ -3729,7 +3747,8 @@ public class ProcessingService {
                     allowLazyTrigger
             );
         }
-        if (meetingRequiresAnalysisProvenance(meetingId, traceId)) {
+        AnalysisScopeRequirement scopeRequirement = resolveUnscopedAnalysisScopeRequirement(meetingId, traceId);
+        if (scopeRequirement == AnalysisScopeRequirement.V2_REQUIRED) {
             log.info(
                     "event=ANALYSIS_GET_REJECTED_UNSCOPED traceId={} requestId={} meetingId={} reason=v2_requires_provenance",
                     traceId,
@@ -3737,6 +3756,15 @@ public class ProcessingService {
                     meetingId
             );
             return buildScopedAnalysisUnavailableResponse(meetingId);
+        }
+        if (scopeRequirement == AnalysisScopeRequirement.SCOPE_UNAVAILABLE) {
+            log.info(
+                    "event=ANALYSIS_GET_REJECTED_UNSCOPED traceId={} requestId={} meetingId={} reason=scope_resolution_unavailable",
+                    traceId,
+                    currentRequestId(traceId),
+                    meetingId
+            );
+            return buildScopeResolutionUnavailableResponse(meetingId);
         }
         log.info(
                 "event=ANALYSIS_GET_REQUEST traceId={} requestId={} meetingId={} source=analysis_get",
@@ -5700,6 +5728,12 @@ public class ProcessingService {
     }
 
     private record AnalysisTriggerResult(String status, String errorCode, int retryAfterSeconds) {
+    }
+
+    private enum AnalysisScopeRequirement {
+        LEGACY_ALLOWED,
+        V2_REQUIRED,
+        SCOPE_UNAVAILABLE
     }
 
     private record AnalysisVersionSelection(String promptVersion, String schemaVersion) {
