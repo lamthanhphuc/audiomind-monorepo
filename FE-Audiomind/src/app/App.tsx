@@ -63,7 +63,13 @@ import {
   type ParsedStudioRoute,
 } from '../utils/studioRouting'
 import type { MeetingResultScope } from '../utils/meetingResultScope'
-import { scopeCacheKey, scopeToAnalysisOptions } from '../utils/meetingResultScope'
+import { scopeCacheKey } from '../utils/meetingResultScope'
+import {
+  buildMindmapAnalysisRequestKey,
+  canReuseMindmapSelectedScope,
+  loadMindmapSavedAnalysis,
+  shouldApplyMindmapLoadResult,
+} from '../utils/mindmapAnalysisScope'
 import {
   appendOpenMeetingQuery,
   applyPostAuthDestination,
@@ -74,7 +80,7 @@ import {
 } from '../utils/inviteAuth'
 import { INVITE_ACCESS_NOTICE, probeInvitedMeetingAccess } from '../utils/inviteAccess'
 import { returnToOAuthOpener, subscribeOAuthComplete } from '../utils/oauthCallbackHandoff'
-import { ApiError, createRealtimeMeeting, getAnalysis, getProcessingStatus, getSavedAnalysis, getTranscript, getUserProfile, listMeetingsWithParams, reanalyzeMeetingAnalysis, startProcessingByPath, submitRealtimeFinalAudioFallback, updateUserPreferences, uploadToMeetingApi } from '../services/api'
+import { ApiError, createRealtimeMeeting, getAnalysis, getProcessingStatus, getTranscript, getUserProfile, listMeetingsWithParams, reanalyzeMeetingAnalysis, startProcessingByPath, submitRealtimeFinalAudioFallback, updateUserPreferences, uploadToMeetingApi } from '../services/api'
 import { resolveBatchPipelineErrorCode, resolveErrorPresentation } from '../constants/errorCatalog'
 import { ERROR_UX_ENABLED } from '../services/config'
 import {
@@ -1266,6 +1272,7 @@ export default function App() {
   )
   const [mindmapSelectedTitle, setMindmapSelectedTitle] = useState<string | null>(null)
   const mindmapAbortRef = useRef<AbortController | null>(null)
+  const mindmapLoadRequestKeyRef = useRef<string | null>(null)
   const [historyAnalysisMeetingId, setHistoryAnalysisMeetingId] = useState<number | null>(
     initialStudioRoute.scene === 'analysis' ? initialStudioRoute.meetingId : null,
   )
@@ -1276,6 +1283,7 @@ export default function App() {
   const [mindmapSelectedScope, setMindmapSelectedScope] = useState<MeetingResultScope | null>(
     initialStudioRoute.scene === 'mindmap' ? initialStudioRoute.resultScope ?? null : null,
   )
+  const [mindmapDisplayScopeKey, setMindmapDisplayScopeKey] = useState<string | null>(null)
   const [recentMeetings, setRecentMeetings] = useState<Meeting[]>([])
   const [recentMeetingsReloadTick, setRecentMeetingsReloadTick] = useState(0)
   const [joinMeetingIdInput, setJoinMeetingIdInput] = useState('')
@@ -2414,6 +2422,7 @@ export default function App() {
 
     if (!mindmapMeetingId) {
       setMindmapAnalysis(null)
+      setMindmapDisplayScopeKey(null)
       return undefined
     }
 
@@ -2421,20 +2430,32 @@ export default function App() {
     const controller = new AbortController()
     mindmapAbortRef.current = controller
 
-    void getSavedAnalysis(mindmapMeetingId, {
-      ...(mindmapSelectedScope ? scopeToAnalysisOptions(mindmapSelectedScope) : {}),
-      signal: controller.signal,
-    })
-      .then((analysis) => {
-        if (!controller.signal.aborted) {
-          setMindmapAnalysis(analysis)
+    const requestKey = buildMindmapAnalysisRequestKey(mindmapMeetingId, mindmapSelectedScope)
+    mindmapLoadRequestKeyRef.current = requestKey
+    if (!canReuseMindmapSelectedScope(mindmapMeetingId, mindmapSelectedScope)) {
+      setMindmapDisplayScopeKey(null)
+    }
+
+    const load = async () => {
+      try {
+        const { scope, analysis } = await loadMindmapSavedAnalysis(
+          mindmapMeetingId,
+          mindmapSelectedScope,
+          { signal: controller.signal },
+        )
+        if (!shouldApplyMindmapLoadResult(requestKey, mindmapLoadRequestKeyRef.current, controller.signal)) {
+          return
         }
-      })
-      .catch(() => {
-        if (!controller.signal.aborted) {
+        setMindmapDisplayScopeKey(scopeCacheKey(scope))
+        setMindmapAnalysis(analysis)
+      } catch {
+        if (shouldApplyMindmapLoadResult(requestKey, mindmapLoadRequestKeyRef.current, controller.signal)) {
           setMindmapAnalysis(null)
         }
-      })
+      }
+    }
+
+    void load()
 
     return () => {
       controller.abort()
@@ -2482,6 +2503,7 @@ export default function App() {
     if (featureScene === 'mindmap') {
       const meeting = recentMeetings.find((item) => item.id === meetingId)
       setMindmapSelectedMeetingId(meetingId)
+      setMindmapSelectedScope(null)
       setMindmapSelectedTitle(meeting ? getMeetingLabel(meeting) : null)
       pushStudioRoute('mindmap', { meetingId })
       return
@@ -2492,6 +2514,7 @@ export default function App() {
   const handleMindmapMeetingSelect = (meetingId: number) => {
     const meeting = recentMeetings.find((item) => item.id === meetingId)
     setMindmapSelectedMeetingId(meetingId)
+    setMindmapSelectedScope(null)
     setMindmapSelectedTitle(meeting ? getMeetingLabel(meeting) : null)
     pushStudioRoute('mindmap', { meetingId })
   }
@@ -2840,7 +2863,11 @@ export default function App() {
           : null
       return (
         <FeatureMindmap
-          key={mindmapSelectedScope ? scopeCacheKey(mindmapSelectedScope) : `mindmap-${resolvedMindmapMeetingId ?? 'none'}`}
+          key={
+            canReuseMindmapSelectedScope(resolvedMindmapMeetingId ?? -1, mindmapSelectedScope)
+              ? scopeCacheKey(mindmapSelectedScope)
+              : mindmapDisplayScopeKey ?? `mindmap-${resolvedMindmapMeetingId ?? 'none'}`
+          }
           meetings={recentMeetings}
           selectedMeetingId={resolvedMindmapMeetingId}
           meetingTitle={mindmapSelectedTitle ?? selectedFile?.name ?? undefined}
@@ -2854,16 +2881,24 @@ export default function App() {
             mindmapAbortRef.current?.abort()
             const controller = new AbortController()
             mindmapAbortRef.current = controller
+            const requestKey = buildMindmapAnalysisRequestKey(
+              resolvedMindmapMeetingId,
+              mindmapSelectedScope,
+            )
+            mindmapLoadRequestKeyRef.current = requestKey
             try {
-              const analysis = await getSavedAnalysis(resolvedMindmapMeetingId, {
-                ...(mindmapSelectedScope ? scopeToAnalysisOptions(mindmapSelectedScope) : {}),
-                signal: controller.signal,
-              })
-              if (!controller.signal.aborted) {
-                setMindmapAnalysis(analysis)
+              const { scope, analysis } = await loadMindmapSavedAnalysis(
+                resolvedMindmapMeetingId,
+                mindmapSelectedScope,
+                { signal: controller.signal },
+              )
+              if (!shouldApplyMindmapLoadResult(requestKey, mindmapLoadRequestKeyRef.current, controller.signal)) {
+                return
               }
+              setMindmapDisplayScopeKey(scopeCacheKey(scope))
+              setMindmapAnalysis(analysis)
             } catch {
-              if (!controller.signal.aborted) {
+              if (shouldApplyMindmapLoadResult(requestKey, mindmapLoadRequestKeyRef.current, controller.signal)) {
                 setMindmapAnalysis(null)
               }
             }
