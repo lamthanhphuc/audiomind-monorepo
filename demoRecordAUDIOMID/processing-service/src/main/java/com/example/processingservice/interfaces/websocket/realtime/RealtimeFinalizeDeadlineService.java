@@ -102,19 +102,19 @@ public class RealtimeFinalizeDeadlineService {
             long delayMs,
             String source
     ) {
-        cancelDeadline(key);
-        long generation = generations.incrementAndGet();
+        long generation = beginGeneration(key);
         ScheduledFuture<?> future = scheduler.schedule(
                 () -> attemptFinalize(key, context, runner, source, generation),
                 delayMs,
                 TimeUnit.MILLISECONDS);
-        pendingDeadlines.put(key, new DeadlineState(future, generation));
+        pendingDeadlines.computeIfPresent(key, (ignored, state) ->
+                state.generation() == generation ? new DeadlineState(future, generation) : state);
     }
 
     public void requestFinalize(Long meetingId, FinalizeAttemptContext context, FinalizeRunner runner) {
         DeadlineKey key = DeadlineKey.from(context);
-        cancelDeadline(key);
-        attemptFinalize(key, context, runner, "immediate", generations.incrementAndGet());
+        long generation = beginGeneration(key);
+        attemptFinalize(key, context, runner, "immediate", generation);
     }
 
     public void scheduleRetry(Long meetingId, FinalizeAttemptContext context, FinalizeRunner runner) {
@@ -196,6 +196,13 @@ public class RealtimeFinalizeDeadlineService {
         if (existing != null && existing.generation() == generation) {
             clear(key);
         }
+    }
+
+    private long beginGeneration(DeadlineKey key) {
+        cancelDeadline(key);
+        long generation = generations.incrementAndGet();
+        pendingDeadlines.put(key, new DeadlineState(null, generation));
+        return generation;
     }
 
     private void cancelDeadline(DeadlineKey key) {

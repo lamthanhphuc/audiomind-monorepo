@@ -5,12 +5,14 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.test.util.ReflectionTestUtils;
 
 class RealtimeFinalizeDeadlineServiceTest {
 
@@ -116,5 +118,68 @@ class RealtimeFinalizeDeadlineServiceTest {
 
         assertFalse(latch.await(200, TimeUnit.MILLISECONDS));
         assertEquals(0, runs.get());
+    }
+
+    @Test
+    void requestFinalize_shouldRunRunnerImmediately() {
+        AtomicInteger runs = new AtomicInteger();
+        RealtimeFinalizeDeadlineService.FinalizeAttemptContext ctx = context(1L, "ws-immediate", 50L, 1L);
+
+        service.requestFinalize(1L, ctx, ignored -> runs.incrementAndGet());
+
+        assertEquals(1, runs.get());
+        assertTrue(pendingDeadlinesForTesting().isEmpty());
+    }
+
+    @Test
+    void requestFinalize_shouldScheduleRetryWhenRunnerFails() throws Exception {
+        AtomicInteger runs = new AtomicInteger();
+        CountDownLatch retryLatch = new CountDownLatch(1);
+        RealtimeFinalizeDeadlineService.FinalizeAttemptContext ctx = context(1L, "ws-retry", 51L, 1L);
+
+        service.requestFinalize(1L, ctx, ignored -> {
+            if (runs.incrementAndGet() == 1) {
+                throw new RuntimeException("fail first");
+            }
+            retryLatch.countDown();
+        });
+
+        assertEquals(1, runs.get());
+        assertTrue(retryLatch.await(5, TimeUnit.SECONDS));
+        assertEquals(2, runs.get());
+    }
+
+    @Test
+    void shortDelayCallback_shouldNotBecomeStaleBeforeStateRegistration() throws Exception {
+        AtomicInteger runs = new AtomicInteger();
+        CountDownLatch latch = new CountDownLatch(1);
+        RealtimeFinalizeDeadlineService.FinalizeAttemptContext ctx = context(1L, "ws-short", 52L, 1L);
+
+        service.rescheduleInactivityDeadline(1L, ctx, ignored -> {
+            runs.incrementAndGet();
+            latch.countDown();
+        }, 1L);
+
+        assertTrue(latch.await(2, TimeUnit.SECONDS));
+        assertEquals(1, runs.get());
+        Thread.sleep(50L);
+        assertEquals(1, runs.get());
+        assertTrue(pendingDeadlinesForTesting().isEmpty());
+
+        AtomicInteger secondRuns = new AtomicInteger();
+        CountDownLatch secondLatch = new CountDownLatch(1);
+        service.rescheduleInactivityDeadline(1L, ctx, ignored -> {
+            secondRuns.incrementAndGet();
+            secondLatch.countDown();
+        }, 1L);
+
+        assertTrue(secondLatch.await(2, TimeUnit.SECONDS));
+        assertEquals(1, secondRuns.get());
+        assertTrue(pendingDeadlinesForTesting().isEmpty());
+    }
+
+    @SuppressWarnings("unchecked")
+    private ConcurrentHashMap<Object, Object> pendingDeadlinesForTesting() {
+        return (ConcurrentHashMap<Object, Object>) ReflectionTestUtils.getField(service, "pendingDeadlines");
     }
 }
