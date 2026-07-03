@@ -177,6 +177,8 @@ class RealtimeTranscriptAnalysisRequest(BaseModel):
     analysis_feature_set: Optional[str] = None
     mode: Optional[str] = "auto"
     reason: Optional[str] = None
+    recording_session_id: Optional[int] = None
+    attempt_id: Optional[int] = None
 
 
 class AnalysisRerunRequest(BaseModel):

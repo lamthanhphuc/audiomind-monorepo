@@ -366,14 +366,27 @@ public class AIServiceClient {
         backoff = @Backoff(delay = 1000, multiplier = 2.0)
     )
     public Map<String, Object> getAnalysis(Long meetingId, String traceId) {
+        return getAnalysis(meetingId, traceId, null, null);
+    }
+
+    public Map<String, Object> getAnalysis(
+            Long meetingId,
+            String traceId,
+            Long recordingSessionId,
+            Long attemptId
+    ) {
         HttpHeaders headers = new HttpHeaders();
         String resolvedTraceId = resolveTraceId(traceId);
         String resolvedRequestId = resolveRequestId(resolvedTraceId);
         headers.add(TRACE_HEADER, resolvedTraceId);
         headers.add(REQUEST_HEADER, resolvedRequestId);
+        String url = aiUrl + "/api/meeting/" + meetingId + "/analysis";
+        if (recordingSessionId != null && attemptId != null) {
+            url += "?recording_session_id=" + recordingSessionId + "&attempt_id=" + attemptId;
+        }
         ResponseEntity<Map<String, Object>> response = executeAiServiceCall(
                 "getAnalysis",
-                aiUrl + "/api/meeting/" + meetingId + "/analysis",
+                url,
                 HttpMethod.GET,
                 new HttpEntity<>(headers),
                 resolvedTraceId,
@@ -652,6 +665,32 @@ public class AIServiceClient {
             String traceId,
             String authorization
     ) {
+        return getSavedAnalysisCacheOnly(
+                meetingId,
+                transcript,
+                transcriptHash,
+                promptVersion,
+                schemaVersion,
+                analysisFeatureSet,
+                null,
+                null,
+                traceId,
+                authorization
+        );
+    }
+
+    public Map<String, Object> getSavedAnalysisCacheOnly(
+            Long meetingId,
+            String transcript,
+            String transcriptHash,
+            String promptVersion,
+            String schemaVersion,
+            String analysisFeatureSet,
+            Long recordingSessionId,
+            Long attemptId,
+            String traceId,
+            String authorization
+    ) {
         HttpHeaders headers = new HttpHeaders();
         String resolvedTraceId = resolveTraceId(traceId);
         String resolvedRequestId = resolveRequestId(resolvedTraceId);
@@ -679,6 +718,10 @@ public class AIServiceClient {
         }
         if (StringUtils.hasText(analysisFeatureSet)) {
             request.put("analysis_feature_set", analysisFeatureSet);
+        }
+        if (recordingSessionId != null && attemptId != null) {
+            request.put("recording_session_id", recordingSessionId);
+            request.put("attempt_id", attemptId);
         }
 
         ResponseEntity<Map<String, Object>> response = executeAiServiceCall(
@@ -790,6 +833,34 @@ public class AIServiceClient {
         );
     }
 
+    public Map<String, Object> analyzeRealtimeTranscript(
+            Long meetingId,
+            String transcript,
+            String domainMode,
+            String source,
+            String transcriptHash,
+            String promptVersion,
+            String schemaVersion,
+            String analysisFeatureSet,
+            String traceId,
+            String authorization
+    ) {
+        return analyzeRealtimeTranscript(
+                meetingId,
+                transcript,
+                domainMode,
+                source,
+                transcriptHash,
+                promptVersion,
+                schemaVersion,
+                analysisFeatureSet,
+                null,
+                null,
+                traceId,
+                authorization
+        );
+    }
+
     @Retry(name = "ai-service")
     @CircuitBreaker(name = "ai-service")
     public Map<String, Object> analyzeRealtimeTranscript(
@@ -801,6 +872,8 @@ public class AIServiceClient {
             String promptVersion,
             String schemaVersion,
             String analysisFeatureSet,
+            Long recordingSessionId,
+            Long attemptId,
             String traceId,
             String authorization
     ) {
@@ -834,6 +907,10 @@ public class AIServiceClient {
         }
         if (StringUtils.hasText(analysisFeatureSet)) {
             request.put("analysis_feature_set", analysisFeatureSet);
+        }
+        if (recordingSessionId != null && attemptId != null) {
+            request.put("recording_session_id", recordingSessionId);
+            request.put("attempt_id", attemptId);
         }
 
         ResponseEntity<Map<String, Object>> response = executeAiServiceCall(

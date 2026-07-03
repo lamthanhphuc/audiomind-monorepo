@@ -12,7 +12,9 @@ import {
 import { normalizePersistedTranscriptForView } from '../../utils/transcript'
 import { resolveMeetingResultScope } from '../../services/api'
 import {
+  scopeToAnalysisOptions,
   scopeToTranscriptOptions,
+  scopeCacheKey,
   type MeetingResultScope,
 } from '../../utils/meetingResultScope'
 import AiAssistant from '../dashboard/AiAssistant'
@@ -84,6 +86,14 @@ const getAnalysisStateFromResponse = (
     return { state: 'processing', analysis: null, error: null }
   }
 
+  if (status === 'ANALYSIS_UNAVAILABLE_FOR_SCOPE') {
+    return {
+      state: 'missing',
+      analysis: null,
+      error: 'Kết quả phân tích chưa có cho phiên ghi này.',
+    }
+  }
+
   const hasStructuredData = hasStructuredAnalysisData(analysis)
 
   if (!hasStructuredData && (status === 'NOT_FOUND' || !status)) {
@@ -141,7 +151,7 @@ export default function FeatureAnalysis({
   const [hydrateAnalysisState, setHydrateAnalysisState] = useState<AnalysisViewState>('idle')
   const [hydrateAnalysisError, setHydrateAnalysisError] = useState<string | null>(null)
   const hydrateAbortRef = useRef<AbortController | null>(null)
-  const hydrateRequestKeyRef = useRef<number | null>(null)
+  const hydrateRequestKeyRef = useRef<string | null>(null)
   const [activeTerm, setActiveTerm] = useState<string | null>(null)
   const [speakerDisplayMap, setSpeakerDisplayMap] = useState<Record<string, string>>({})
   const [highlightRange, setHighlightRange] = useState<TranscriptHighlightRange | null>(null)
@@ -188,7 +198,9 @@ export default function FeatureAnalysis({
     hydrateAbortRef.current?.abort()
     const controller = new AbortController()
     hydrateAbortRef.current = controller
-    const requestKey = meetingId
+    const requestKey = resultScope
+      ? scopeCacheKey(resultScope)
+      : `${meetingId}:auto`
     hydrateRequestKeyRef.current = requestKey
 
     setHydrateState('loading')
@@ -207,12 +219,16 @@ export default function FeatureAnalysis({
           return
         }
 
+        const analysisOptions = {
+          ...scopeToAnalysisOptions(resolvedScope),
+          signal: controller.signal,
+        }
         const [transcriptResponse, analysisResponse] = await Promise.all([
           getTranscript(meetingId, {
             ...scopeToTranscriptOptions(resolvedScope),
             signal: controller.signal,
           }),
-          getSavedAnalysis(meetingId, { signal: controller.signal }),
+          getSavedAnalysis(meetingId, analysisOptions),
         ])
 
         if (controller.signal.aborted || hydrateRequestKeyRef.current !== requestKey) {
@@ -251,12 +267,20 @@ export default function FeatureAnalysis({
     }
   }, [hydrateFromApi, meetingId, resultScope])
 
-  const loadSavedAnalysis = useCallback(async (requestKey: number) => {
+  const loadSavedAnalysis = useCallback(async (
+    requestMeetingId: number,
+    scope: MeetingResultScope | null,
+  ) => {
     savedAnalysisAbortRef.current?.abort()
     const controller = new AbortController()
     savedAnalysisAbortRef.current = controller
     try {
-      const response = await getSavedAnalysis(requestKey, { signal: controller.signal })
+      const resolvedScope = scope
+        ?? await resolveMeetingResultScope(requestMeetingId, undefined, { signal: controller.signal })
+      const response = await getSavedAnalysis(requestMeetingId, {
+        ...scopeToAnalysisOptions(resolvedScope),
+        signal: controller.signal,
+      })
       if (!controller.signal.aborted) {
         setSavedAnalysis(response)
       }
@@ -272,17 +296,17 @@ export default function FeatureAnalysis({
       setSavedAnalysis(null)
       return undefined
     }
-    void loadSavedAnalysis(meetingId)
+    void loadSavedAnalysis(meetingId, resultScope)
     return () => {
       savedAnalysisAbortRef.current?.abort()
     }
-  }, [loadSavedAnalysis, meetingId])
+  }, [loadSavedAnalysis, meetingId, resultScope])
 
   useEffect(() => {
     if ((activeTab === 'mindmap' || activeTab === 'model') && meetingId != null) {
-      void loadSavedAnalysis(meetingId)
+      void loadSavedAnalysis(meetingId, resultScope)
     }
-  }, [activeTab, loadSavedAnalysis, meetingId])
+  }, [activeTab, loadSavedAnalysis, meetingId, resultScope])
 
   const effectiveAnalysis = hydrateFromApi ? hydratedAnalysis : (analysis ?? null)
   const effectiveSegments = hydrateFromApi ? hydratedTranscriptSegments : transcriptSegments
@@ -428,7 +452,7 @@ export default function FeatureAnalysis({
                   meetingId={meetingId}
                   meetingTitle={meetingTitle}
                   compact
-                  onRefresh={meetingId != null ? () => loadSavedAnalysis(meetingId) : undefined}
+                  onRefresh={meetingId != null ? () => loadSavedAnalysis(meetingId, resultScope) : undefined}
                 />
               </div>
             )}

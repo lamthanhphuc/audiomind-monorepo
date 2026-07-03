@@ -85,6 +85,8 @@ export const scopeToTranscriptOptions = (scope: MeetingResultScope): TranscriptS
   }
 }
 
+export const scopeToAnalysisOptions = scopeToTranscriptOptions
+
 export const scopeToSearchParams = (scope: MeetingResultScope): URLSearchParams => {
   const params = new URLSearchParams()
   params.set('meetingId', String(scope.meetingId))

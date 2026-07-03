@@ -172,6 +172,29 @@ describe('upload language request wiring', () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
+  it('adds attempt scope to saved analysis reads when both provenance ids are provided', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ meetingId: 7, status: 'NOT_FOUND', analysisStatus: 'ANALYSIS_UNAVAILABLE_FOR_SCOPE' }),
+      headers: new Headers(),
+    })
+
+    await getSavedAnalysis(7, { recordingSessionId: 9001, attemptId: 2 })
+
+    const url = fetchMock.mock.calls[0][0] as string
+    expect(url).toContain('/processing/7/analysis/saved?')
+    expect(url).toContain('recording_session_id=9001')
+    expect(url).toContain('attempt_id=2')
+  })
+
+  it('rejects partial analysis provenance before fetch', async () => {
+    await expect(getSavedAnalysis(7, { recordingSessionId: 9001 })).rejects.toMatchObject({
+      status: 422,
+      errorCode: 'INVALID_PROVENANCE',
+    })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
   it('loads result scopes from processing API', async () => {
     fetchMock.mockResolvedValueOnce({
       ok: true,

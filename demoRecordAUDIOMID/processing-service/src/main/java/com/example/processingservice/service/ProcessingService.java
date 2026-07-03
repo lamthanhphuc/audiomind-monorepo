@@ -80,6 +80,7 @@ public class ProcessingService {
     private static final String TRANSCRIPT_MODE_RAW = "raw";
     private static final String TRANSCRIPT_MODE_CANONICAL = "canonical";
     private static final String ANALYSIS_STATUS_NO_ANALYSIS = "NO_ANALYSIS";
+    private static final String ANALYSIS_STATUS_UNAVAILABLE_FOR_SCOPE = "ANALYSIS_UNAVAILABLE_FOR_SCOPE";
     private static final String ANALYSIS_STATUS_STALE = "STALE";
     private static final String NO_TRANSCRIPT_AFTER_FINALIZE = "NO_TRANSCRIPT_AFTER_FINALIZE";
     private static final String COMPLETED_WITH_NO_SPEECH_DETECTED = "COMPLETED_WITH_NO_SPEECH_DETECTED";
@@ -1178,11 +1179,31 @@ public class ProcessingService {
     }
 
     public Map<String, Object> getAnalysis(Long meetingId, String traceId, String authorization) {
-        return getAnalysisInternal(meetingId, traceId, authorization, true);
+        return getAnalysis(meetingId, traceId, authorization, null, null);
+    }
+
+    public Map<String, Object> getAnalysis(
+            Long meetingId,
+            String traceId,
+            String authorization,
+            Long recordingSessionId,
+            Long attemptId
+    ) {
+        return getAnalysisInternal(meetingId, traceId, authorization, true, recordingSessionId, attemptId);
     }
 
     public Map<String, Object> getAnalysisReadOnly(Long meetingId, String traceId, String authorization) {
-        return getAnalysisInternal(meetingId, traceId, authorization, false);
+        return getAnalysisReadOnly(meetingId, traceId, authorization, null, null);
+    }
+
+    public Map<String, Object> getAnalysisReadOnly(
+            Long meetingId,
+            String traceId,
+            String authorization,
+            Long recordingSessionId,
+            Long attemptId
+    ) {
+        return getAnalysisInternal(meetingId, traceId, authorization, false, recordingSessionId, attemptId);
     }
 
     public Map<String, Object> reanalyzeMeetingAnalysis(
@@ -3507,8 +3528,145 @@ public class ProcessingService {
         return index;
     }
 
-    private Map<String, Object> getAnalysisInternal(Long meetingId, String traceId, String authorization, boolean allowLazyTrigger) {
+    private Map<String, Object> getScopedSavedAnalysis(
+            Long meetingId,
+            String traceId,
+            String authorization,
+            Long recordingSessionId,
+            Long attemptId,
+            boolean allowLazyTrigger
+    ) {
+        log.info(
+                "event=ANALYSIS_GET_REQUEST traceId={} requestId={} meetingId={} recordingSessionId={} attemptId={} source=scoped_analysis_get allowLazyTrigger={}",
+                traceId,
+                currentRequestId(traceId),
+                meetingId,
+                recordingSessionId,
+                attemptId,
+                allowLazyTrigger
+        );
+        Map<String, Object> aiTranscriptResult;
+        try {
+            aiTranscriptResult = aiServiceClient.getTranscript(meetingId, traceId, recordingSessionId, attemptId);
+        } catch (HttpStatusCodeException ex) {
+            if (ex.getStatusCode().value() == HttpStatus.NOT_FOUND.value()) {
+                Map<String, Object> response = new HashMap<>();
+                response.put("meeting_id", meetingId);
+                response.put("status", "NOT_FOUND");
+                response.put("analysisStatus", ANALYSIS_STATUS_UNAVAILABLE_FOR_SCOPE);
+                return response;
+            }
+            throw ex;
+        }
+        if (AIServiceClient.isTranscriptNotReadyResponse(aiTranscriptResult)) {
+            Map<String, Object> response = new HashMap<>();
+            response.put("meeting_id", meetingId);
+            response.put("status", "NOT_FOUND");
+            response.put("analysisStatus", ANALYSIS_STATUS_NO_ANALYSIS);
+            return response;
+        }
+        List<Map<String, Object>> transcriptRows = normalizeTranscriptRows(
+                aiTranscriptResult == null ? null : aiTranscriptResult.get("transcripts")
+        );
+        String transcriptText = buildTranscriptText(transcriptRows);
+        String transcriptHash = computeTranscriptHash(transcriptText);
+        String promptVersion = resolvePromptVersion(null);
+        String schemaVersion = resolveSchemaVersion(null);
+        if (transcriptText.isBlank()) {
+            Map<String, Object> response = new HashMap<>();
+            response.put("meeting_id", meetingId);
+            response.put("status", "NOT_FOUND");
+            response.put("analysisStatus", ANALYSIS_STATUS_UNAVAILABLE_FOR_SCOPE);
+            return response;
+        }
+        try {
+            Map<String, Object> aiResponse = aiServiceClient.getSavedAnalysisCacheOnly(
+                    meetingId,
+                    transcriptText,
+                    transcriptHash,
+                    promptVersion,
+                    schemaVersion,
+                    GROUPED_ACTION_PLAN_FEATURE_SET,
+                    recordingSessionId,
+                    attemptId,
+                    traceId,
+                    authorization
+            );
+            return normalizeScopedAnalysisResponse(meetingId, aiResponse);
+        } catch (HttpStatusCodeException ex) {
+            if (ex.getStatusCode().value() == HttpStatus.NOT_FOUND.value()) {
+                Map<String, Object> response = new HashMap<>();
+                response.put("meeting_id", meetingId);
+                response.put("status", "NOT_FOUND");
+                response.put("analysisStatus", ANALYSIS_STATUS_UNAVAILABLE_FOR_SCOPE);
+                return response;
+            }
+            throw ex;
+        }
+    }
+
+    private Map<String, Object> normalizeScopedAnalysisResponse(Long meetingId, Map<String, Object> aiResponse) {
+        if (aiResponse == null || aiResponse.isEmpty()) {
+            Map<String, Object> response = new HashMap<>();
+            response.put("meeting_id", meetingId);
+            response.put("status", "NOT_FOUND");
+            response.put("analysisStatus", ANALYSIS_STATUS_UNAVAILABLE_FOR_SCOPE);
+            return response;
+        }
+        String analysisStatus = normalizeStatus(aiResponse.get("analysisStatus"));
+        if (ANALYSIS_STATUS_UNAVAILABLE_FOR_SCOPE.equalsIgnoreCase(analysisStatus)) {
+            Map<String, Object> response = new HashMap<>();
+            response.put("meeting_id", meetingId);
+            response.put("status", "NOT_FOUND");
+            response.put("analysisStatus", ANALYSIS_STATUS_UNAVAILABLE_FOR_SCOPE);
+            return response;
+        }
+        Map<String, Object> response = new HashMap<>();
+        response.put("meeting_id", meetingId);
+        Object nestedAnalysis = aiResponse.get("analysis");
+        if (nestedAnalysis instanceof Map<?, ?> nestedMap) {
+            for (Map.Entry<?, ?> entry : nestedMap.entrySet()) {
+                response.put(String.valueOf(entry.getKey()), entry.getValue());
+            }
+        }
+        for (Map.Entry<String, Object> entry : aiResponse.entrySet()) {
+            if ("analysis".equals(entry.getKey())) {
+                continue;
+            }
+            response.put(entry.getKey(), entry.getValue());
+        }
+        String status = normalizeStatus(aiResponse.get("status"));
+        response.put("status", toFeAnalysisPollingStatus(
+                analysisStatus.isBlank() ? status : analysisStatus
+        ));
+        if (!response.containsKey("analysisStatus")) {
+            response.put("analysisStatus", analysisStatus.isBlank() ? status : analysisStatus);
+        }
+        return response;
+    }
+
+    private Map<String, Object> getAnalysisInternal(
+            Long meetingId,
+            String traceId,
+            String authorization,
+            boolean allowLazyTrigger,
+            Long recordingSessionId,
+            Long attemptId
+    ) {
+        if ((recordingSessionId == null) != (attemptId == null)) {
+            throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY, "Invalid provenance scope");
+        }
         assertMeetingAccess(meetingId, traceId, authorization);
+        if (recordingSessionId != null) {
+            return getScopedSavedAnalysis(
+                    meetingId,
+                    traceId,
+                    authorization,
+                    recordingSessionId,
+                    attemptId,
+                    allowLazyTrigger
+            );
+        }
         log.info(
                 "event=ANALYSIS_GET_REQUEST traceId={} requestId={} meetingId={} source=analysis_get",
                 traceId,

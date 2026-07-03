@@ -451,6 +451,88 @@ class ProcessingServiceTest {
     }
 
     @Test
+    void getAnalysisReadOnly_shouldRequestScopedCacheOnlyAnalysisForV2Attempt() {
+        Long meetingId = 960L;
+        Map<String, Object> transcriptRow = Map.of(
+                "speaker", "SPEAKER_1",
+                "text", "Attempt scoped transcript",
+                "start_time", 0.0d,
+                "end_time", 1.0d
+        );
+        when(aiServiceClient.getTranscript(eq(meetingId), eq("trace-960"), eq(9001L), eq(2L)))
+                .thenReturn(Map.of("meeting_id", meetingId, "transcripts", List.of(transcriptRow)));
+        when(aiServiceClient.getSavedAnalysisCacheOnly(
+                eq(meetingId),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                eq(9001L),
+                eq(2L),
+                eq("trace-960"),
+                eq(AUTH_HEADER)
+        )).thenReturn(Map.of(
+                "status", "completed",
+                "analysisStatus", "COMPLETED",
+                "analysis", Map.of("summary", "Attempt two analysis")
+        ));
+
+        Map<String, Object> response = processingService.getAnalysisReadOnly(
+                meetingId,
+                "trace-960",
+                AUTH_HEADER,
+                9001L,
+                2L
+        );
+
+        assertEquals("COMPLETED", response.get("analysisStatus"));
+        assertEquals("Attempt two analysis", response.get("summary"));
+        verify(aiServiceClient, never()).getAnalysis(anyLong(), anyString());
+    }
+
+    @Test
+    void getAnalysisReadOnly_shouldReturnUnavailableForScopedAttemptWithoutAnalysis() {
+        Long meetingId = 961L;
+        when(aiServiceClient.getTranscript(eq(meetingId), eq("trace-961"), eq(9001L), eq(3L)))
+                .thenReturn(Map.of(
+                        "meeting_id", meetingId,
+                        "transcripts", List.of(Map.of(
+                                "speaker", "SPEAKER_1",
+                                "text", "No analysis yet",
+                                "start_time", 0.0d,
+                                "end_time", 1.0d
+                        ))
+                ));
+        when(aiServiceClient.getSavedAnalysisCacheOnly(
+                eq(meetingId),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                eq(9001L),
+                eq(3L),
+                eq("trace-961"),
+                eq(AUTH_HEADER)
+        )).thenReturn(Map.of(
+                "status", "no_analysis",
+                "analysisStatus", "ANALYSIS_UNAVAILABLE_FOR_SCOPE"
+        ));
+
+        Map<String, Object> response = processingService.getAnalysisReadOnly(
+                meetingId,
+                "trace-961",
+                AUTH_HEADER,
+                9001L,
+                3L
+        );
+
+        assertEquals("ANALYSIS_UNAVAILABLE_FOR_SCOPE", response.get("analysisStatus"));
+        assertEquals("NOT_FOUND", response.get("status"));
+    }
+
+    @Test
     void getTranscript_shouldPreferCanonicalRowsFromAiFallbackWhenAvailable() {
         when(jobStateStore.getJobState(892L)).thenReturn(Optional.empty());
         Map<String, Object> aiPayload = new HashMap<>();

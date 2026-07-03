@@ -63,7 +63,7 @@ import {
   type ParsedStudioRoute,
 } from '../utils/studioRouting'
 import type { MeetingResultScope } from '../utils/meetingResultScope'
-import { scopeCacheKey } from '../utils/meetingResultScope'
+import { scopeCacheKey, scopeToAnalysisOptions } from '../utils/meetingResultScope'
 import {
   appendOpenMeetingQuery,
   applyPostAuthDestination,
@@ -2421,7 +2421,10 @@ export default function App() {
     const controller = new AbortController()
     mindmapAbortRef.current = controller
 
-    void getSavedAnalysis(mindmapMeetingId, { signal: controller.signal })
+    void getSavedAnalysis(mindmapMeetingId, {
+      ...(mindmapSelectedScope ? scopeToAnalysisOptions(mindmapSelectedScope) : {}),
+      signal: controller.signal,
+    })
       .then((analysis) => {
         if (!controller.signal.aborted) {
           setMindmapAnalysis(analysis)
@@ -2436,7 +2439,7 @@ export default function App() {
     return () => {
       controller.abort()
     }
-  }, [featureScene, mindmapSelectedMeetingId, liveMeetingId, recentMeetings, result?.meetingId])
+  }, [featureScene, mindmapSelectedMeetingId, mindmapSelectedScope, liveMeetingId, recentMeetings, result?.meetingId])
 
   const handleNavigateRealtimeMeetCapture = useCallback((source: RecordingSource, context?: RealtimeMeetCaptureContext) => {
     setSelectedRecordingSource(source)
@@ -2852,7 +2855,10 @@ export default function App() {
             const controller = new AbortController()
             mindmapAbortRef.current = controller
             try {
-              const analysis = await getSavedAnalysis(resolvedMindmapMeetingId, { signal: controller.signal })
+              const analysis = await getSavedAnalysis(resolvedMindmapMeetingId, {
+                ...(mindmapSelectedScope ? scopeToAnalysisOptions(mindmapSelectedScope) : {}),
+                signal: controller.signal,
+              })
               if (!controller.signal.aborted) {
                 setMindmapAnalysis(analysis)
               }

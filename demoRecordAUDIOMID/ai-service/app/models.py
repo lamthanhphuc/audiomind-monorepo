@@ -157,6 +157,8 @@ class MeetingAnalysisRun(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     meeting_id = Column(BigInteger, nullable=False, index=True)
+    recording_session_id = Column(BigInteger, nullable=True)
+    attempt_id = Column(BigInteger, nullable=True)
     owner_id = Column(String(128), nullable=True, index=True)
     status = Column(String(32), nullable=False, index=True)
     provider = Column(String(32), nullable=False)

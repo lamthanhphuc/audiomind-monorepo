@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.models import MeetingAnalysisRun, Transcript
 from app.services.ai_analyzer import AIAnalyzer
+from app.services.stt_persistence import validate_transcript_provenance
 
 ANALYSIS_STATUS_ANALYZING = "ANALYZING"
 ANALYSIS_STATUS_COMPLETED = "COMPLETED"
@@ -17,6 +18,7 @@ ANALYSIS_STATUS_FAILED_RETRYABLE = "ANALYSIS_FAILED_RETRYABLE"
 ANALYSIS_STATUS_QUOTA_BLOCKED = "QUOTA_BLOCKED"
 ANALYSIS_STATUS_RATE_LIMITED = "RATE_LIMITED"
 ANALYSIS_STATUS_NO_ANALYSIS = "NO_ANALYSIS"
+ANALYSIS_STATUS_UNAVAILABLE_FOR_SCOPE = "ANALYSIS_UNAVAILABLE_FOR_SCOPE"
 ANALYSIS_STATUS_STALE = "STALE"
 ANALYSIS_INPUT_MODE_CANONICAL = "canonical"
 ANALYSIS_INPUT_MODE_READABLE_FALLBACK = "readable_fallback"
@@ -60,6 +62,8 @@ class AnalysisCacheIdentity:
     speaker_stabilization_version: str | None
     analysis_input_mode: str
     analysis_feature_set: str | None
+    recording_session_id: int | None = None
+    attempt_id: int | None = None
 
 
 def _clean_text(value: Any) -> str:
@@ -184,6 +188,8 @@ def build_analysis_run_idempotency_key(
     recognition_mode: str | None = None,
     transcript_language: str | None = None,
     analysis_feature_set: str | None = None,
+    recording_session_id: int | None = None,
+    attempt_id: int | None = None,
 ) -> str:
     parts = [
         str(meeting_id),
@@ -199,6 +205,8 @@ def build_analysis_run_idempotency_key(
         _clean_text(recognition_mode).lower(),
         _clean_text(transcript_language).lower(),
         _clean_text(analysis_feature_set).lower(),
+        "" if recording_session_id is None else str(recording_session_id),
+        "" if attempt_id is None else str(attempt_id),
     ]
     return "analysis-run:" + hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
 
@@ -220,6 +228,8 @@ def build_analysis_run_idempotency_key_for_identity(
         recognition_mode=identity.recognition_mode,
         transcript_language=identity.transcript_language,
         analysis_feature_set=identity.analysis_feature_set,
+        recording_session_id=identity.recording_session_id,
+        attempt_id=identity.attempt_id,
     )
 
 
@@ -247,7 +257,10 @@ def build_analysis_cache_identity(
     speaker_stabilization_version: str | None = None,
     recognition_mode: str | None = None,
     transcript_language: str | None = None,
+    recording_session_id: int | None = None,
+    attempt_id: int | None = None,
 ) -> AnalysisCacheIdentity:
+    provenance = validate_transcript_provenance(recording_session_id, attempt_id)
     payload = analysis_payload or {}
     provider = _analysis_provider(analyzer)
     model = _analysis_model(analyzer)
@@ -274,6 +287,8 @@ def build_analysis_cache_identity(
         or None,
         analysis_input_mode=input_mode,
         analysis_feature_set=_analysis_feature_set(payload),
+        recording_session_id=provenance.recording_session_id,
+        attempt_id=provenance.attempt_id,
     )
 
 
@@ -290,34 +305,8 @@ def find_completed_analysis_run_for_identity(
         db.query(MeetingAnalysisRun)
         .filter(
             and_(
-                MeetingAnalysisRun.meeting_id == identity.meeting_id,
                 MeetingAnalysisRun.status == ANALYSIS_STATUS_COMPLETED,
-                _nullable_match(MeetingAnalysisRun.owner_id, identity.owner_id),
-                _nullable_match(
-                    MeetingAnalysisRun.canonical_transcript_hash,
-                    identity.canonical_transcript_hash,
-                ),
-                _nullable_match(
-                    MeetingAnalysisRun.canonical_transcript_version,
-                    identity.canonical_transcript_version,
-                ),
-                MeetingAnalysisRun.provider == identity.provider,
-                MeetingAnalysisRun.model == identity.model,
-                MeetingAnalysisRun.prompt_version == identity.prompt_version,
-                MeetingAnalysisRun.schema_version == identity.schema_version,
-                _nullable_match(
-                    MeetingAnalysisRun.speaker_stabilization_version,
-                    identity.speaker_stabilization_version,
-                ),
-                _nullable_match(
-                    MeetingAnalysisRun.recognition_mode,
-                    identity.recognition_mode,
-                ),
-                _nullable_match(
-                    MeetingAnalysisRun.transcript_language,
-                    identity.transcript_language,
-                ),
-                MeetingAnalysisRun.analysis_input_mode == identity.analysis_input_mode,
+                *_identity_filters(identity),
             )
         )
         .order_by(MeetingAnalysisRun.completed_at.desc(), MeetingAnalysisRun.id.desc())
@@ -362,6 +351,11 @@ def _identity_filters(identity: AnalysisCacheIdentity) -> list[Any]:
             identity.transcript_language,
         ),
         MeetingAnalysisRun.analysis_input_mode == identity.analysis_input_mode,
+        _nullable_match(
+            MeetingAnalysisRun.recording_session_id,
+            identity.recording_session_id,
+        ),
+        _nullable_match(MeetingAnalysisRun.attempt_id, identity.attempt_id),
     ]
 
 
@@ -431,6 +425,10 @@ def stale_reason_for_identity(
     for field_name, reason in ANALYSIS_STALE_REASON_FIELDS:
         if _run_value(run, field_name) != getattr(identity, field_name):
             return reason
+    if run.recording_session_id != identity.recording_session_id:
+        return "recording_session_changed"
+    if run.attempt_id != identity.attempt_id:
+        return "attempt_changed"
     if (
         run.owner_id != identity.owner_id
         or run.recognition_mode != identity.recognition_mode
@@ -445,9 +443,19 @@ def stale_reason_for_identity(
 def analysis_miss_response_metadata(
     db: Session, identity: AnalysisCacheIdentity
 ) -> dict[str, Any]:
-    latest_run = latest_completed_analysis_run(db, identity.meeting_id)
+    latest_run = latest_completed_analysis_run(
+        db,
+        identity.meeting_id,
+        identity.recording_session_id,
+        identity.attempt_id,
+    )
     stale_reason = stale_reason_for_identity(identity, latest_run)
-    status = ANALYSIS_STATUS_STALE if stale_reason else ANALYSIS_STATUS_NO_ANALYSIS
+    if identity.recording_session_id is not None and latest_run is None:
+        status = ANALYSIS_STATUS_UNAVAILABLE_FOR_SCOPE
+    elif stale_reason:
+        status = ANALYSIS_STATUS_STALE
+    else:
+        status = ANALYSIS_STATUS_NO_ANALYSIS
     metadata = {
         "analysisStatus": status,
         "cacheHit": False,
@@ -483,6 +491,8 @@ def _apply_identity_to_run(
     run.recognition_mode = identity.recognition_mode
     run.transcript_language = identity.transcript_language
     run.analysis_input_mode = identity.analysis_input_mode
+    run.recording_session_id = identity.recording_session_id
+    run.attempt_id = identity.attempt_id
 
 
 def begin_analysis_run(
@@ -547,10 +557,16 @@ def persist_completed_analysis_run(
     speaker_stabilization_version: str | None = None,
     recognition_mode: str | None = None,
     transcript_language: str | None = None,
+    recording_session_id: int | None = None,
+    attempt_id: int | None = None,
     requested_by: str | None = None,
     rerun_reason: str | None = None,
     run: MeetingAnalysisRun | None = None,
 ) -> MeetingAnalysisRun:
+    if run is not None:
+        recording_session_id = run.recording_session_id
+        attempt_id = run.attempt_id
+
     payload = _json_safe(analysis_payload or {})
     if not isinstance(payload, dict):
         payload = {"value": payload}
@@ -566,6 +582,8 @@ def persist_completed_analysis_run(
         speaker_stabilization_version=speaker_stabilization_version,
         recognition_mode=recognition_mode,
         transcript_language=transcript_language,
+        recording_session_id=recording_session_id,
+        attempt_id=attempt_id,
     )
     if identity.analysis_feature_set and not (
         payload.get("analysisFeatureSet") or payload.get("analysis_feature_set")
@@ -658,15 +676,31 @@ def mark_analysis_run_skipped_short(
 
 
 def latest_completed_analysis_run(
-    db: Session, meeting_id: int
+    db: Session,
+    meeting_id: int,
+    recording_session_id: int | None = None,
+    attempt_id: int | None = None,
 ) -> MeetingAnalysisRun | None:
-    return (
-        db.query(MeetingAnalysisRun)
-        .filter(
-            MeetingAnalysisRun.meeting_id == meeting_id,
-            MeetingAnalysisRun.status == ANALYSIS_STATUS_COMPLETED,
+    validate_transcript_provenance(recording_session_id, attempt_id)
+    query = db.query(MeetingAnalysisRun).filter(
+        MeetingAnalysisRun.meeting_id == meeting_id,
+        MeetingAnalysisRun.status == ANALYSIS_STATUS_COMPLETED,
+    )
+    if recording_session_id is None:
+        query = query.filter(
+            MeetingAnalysisRun.recording_session_id.is_(None),
+            MeetingAnalysisRun.attempt_id.is_(None),
         )
-        .order_by(MeetingAnalysisRun.completed_at.desc(), MeetingAnalysisRun.id.desc())
+    else:
+        query = query.filter(
+            MeetingAnalysisRun.recording_session_id == recording_session_id,
+            MeetingAnalysisRun.attempt_id == attempt_id,
+        )
+    return (
+        query.order_by(
+            MeetingAnalysisRun.completed_at.desc(),
+            MeetingAnalysisRun.id.desc(),
+        )
         .first()
     )
 
@@ -711,6 +745,10 @@ def analysis_run_response_metadata(
         metadata["errorCode"] = run.error_code
     if run.error_message:
         metadata["errorMessage"] = run.error_message
+    if run.recording_session_id is not None:
+        metadata["recordingSessionId"] = int(run.recording_session_id)
+    if run.attempt_id is not None:
+        metadata["attemptId"] = int(run.attempt_id)
     if (
         run.status in ANALYSIS_RETRYABLE_FAILURE_STATUSES
         or run.status == ANALYSIS_STATUS_FAILED_RETRYABLE

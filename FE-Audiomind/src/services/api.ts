@@ -450,6 +450,26 @@ export type TranscriptScopeOptions = ApiRequestOptions & {
   attemptId?: number | null
 }
 
+export type AnalysisScopeOptions = ApiRequestOptions & {
+  recordingSessionId?: number | null
+  attemptId?: number | null
+}
+
+const appendProvenanceParams = (
+  params: URLSearchParams,
+  options: { recordingSessionId?: number | null; attemptId?: number | null },
+): void => {
+  const hasRecordingSession = options.recordingSessionId !== undefined && options.recordingSessionId !== null
+  const hasAttempt = options.attemptId !== undefined && options.attemptId !== null
+  if (hasRecordingSession !== hasAttempt) {
+    throw new ApiError('Invalid transcript provenance scope', 422, undefined, 'INVALID_PROVENANCE')
+  }
+  if (hasRecordingSession && hasAttempt) {
+    params.set('recording_session_id', String(options.recordingSessionId))
+    params.set('attempt_id', String(options.attemptId))
+  }
+}
+
 const normalizeTranscriptResponse = (
   response: TranscriptResponse | { data?: TranscriptResponse },
 ): TranscriptResponse => {
@@ -463,16 +483,8 @@ export const getTranscript = async (
   meetingId: number,
   options: TranscriptScopeOptions = {},
 ): Promise<TranscriptResponse> => {
-  const hasRecordingSession = options.recordingSessionId !== undefined && options.recordingSessionId !== null
-  const hasAttempt = options.attemptId !== undefined && options.attemptId !== null
-  if (hasRecordingSession !== hasAttempt) {
-    throw new ApiError('Invalid transcript provenance scope', 422, undefined, 'INVALID_PROVENANCE')
-  }
   const params = new URLSearchParams()
-  if (hasRecordingSession && hasAttempt) {
-    params.set('recording_session_id', String(options.recordingSessionId))
-    params.set('attempt_id', String(options.attemptId))
-  }
+  appendProvenanceParams(params, options)
   const query = params.toString()
   const response = await fetchJson<TranscriptResponse | { data?: TranscriptResponse }>(
     `${API_BASE}/processing/${meetingId}/transcript${query ? `?${query}` : ''}`,
@@ -560,9 +572,16 @@ export const searchMeetingTranscriptEvidence = async (
   )
 }
 
-export const getAnalysis = async (meetingId: number): Promise<AiAnalysis> => {
+export const getAnalysis = async (
+  meetingId: number,
+  options: AnalysisScopeOptions = {},
+): Promise<AiAnalysis> => {
+  const params = new URLSearchParams()
+  appendProvenanceParams(params, options)
+  const query = params.toString()
   const response = await fetchJson<AiAnalysis | { data?: AiAnalysis } & { status?: string }>(
-    `${API_BASE}/processing/${meetingId}/analysis`
+    `${API_BASE}/processing/${meetingId}/analysis${query ? `?${query}` : ''}`,
+    { signal: options.signal },
   )
 
   const normalized = normalizeAnalysisResponse(response)
@@ -585,10 +604,13 @@ export const getAnalysis = async (meetingId: number): Promise<AiAnalysis> => {
 
 export const getSavedAnalysis = async (
   meetingId: number,
-  options: ApiRequestOptions = {},
+  options: AnalysisScopeOptions = {},
 ): Promise<AiAnalysis> => {
+  const params = new URLSearchParams()
+  appendProvenanceParams(params, options)
+  const query = params.toString()
   const response = await fetchJson<AiAnalysis | { data?: AiAnalysis } & { status?: string }>(
-    `${API_BASE}/processing/${meetingId}/analysis/saved`,
+    `${API_BASE}/processing/${meetingId}/analysis/saved${query ? `?${query}` : ''}`,
     { signal: options.signal },
   )
 

@@ -387,6 +387,13 @@ const getAnalysisStateFromResponse = (analysis: AiAnalysis | null): { state: Det
   if (status === 'ANALYZING' || status === 'RUNNING' || status === 'QUEUED' || status === 'PENDING') {
     return { state: 'processing', analysis: null, error: null }
   }
+  if (status === 'ANALYSIS_UNAVAILABLE_FOR_SCOPE') {
+    return {
+      state: 'missing',
+      analysis: null,
+      error: 'Kết quả phân tích chưa có cho phiên ghi này.',
+    }
+  }
 
   const hasStructuredData = Boolean(
     analysis.summary?.trim()
@@ -780,7 +787,10 @@ export default function MeetingHistoryScene({
         }
         const [transcriptResponse, analysisResponse] = await Promise.all([
           getTranscript(selectedMeetingId, transcriptOptions),
-          getSavedAnalysis(selectedMeetingId, { signal: controller.signal }),
+          getSavedAnalysis(selectedMeetingId, {
+            ...scopeToTranscriptOptions(selectedScope),
+            signal: controller.signal,
+          }),
         ])
 
         if (controller.signal.aborted || detailRequestKeyRef.current !== requestKey) {

@@ -1915,15 +1915,30 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                 return;
             }
             log.info("event=REALTIME_ANALYSIS_REQUEST_SENT meetingId={} source={}", meetingId, source);
-            Map<String, Object> analysisResponse = aiServiceClient.analyzeRealtimeTranscript(
-                    meetingId,
-                    transcriptText,
-                    domainMode,
-                    "realtime",
-                    transcriptHash,
-                    traceId,
-                    authorization
-            );
+            Map<String, Object> analysisResponse = hasCompleteProvenance(recordingSessionId, attemptId)
+                    ? aiServiceClient.analyzeRealtimeTranscript(
+                            meetingId,
+                            transcriptText,
+                            domainMode,
+                            "realtime",
+                            transcriptHash,
+                            null,
+                            null,
+                            null,
+                            recordingSessionId,
+                            attemptId,
+                            traceId,
+                            authorization
+                    )
+                    : aiServiceClient.analyzeRealtimeTranscript(
+                            meetingId,
+                            transcriptText,
+                            domainMode,
+                            "realtime",
+                            transcriptHash,
+                            traceId,
+                            authorization
+                    );
 
             String analysisStatus = normalizeStatus(
                     analysisResponse == null ? null : analysisResponse.get("status")

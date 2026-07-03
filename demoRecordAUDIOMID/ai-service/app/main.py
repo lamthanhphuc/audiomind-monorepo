@@ -12,7 +12,7 @@ from typing import Any
 from uuid import uuid4
 
 import numpy as np
-from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -79,6 +79,7 @@ from app.services.analysis_runs import (
     ANALYSIS_STATUS_ANALYZING,
     ANALYSIS_STATUS_FAILED,
     ANALYSIS_STATUS_FAILED_RETRYABLE,
+    ANALYSIS_STATUS_UNAVAILABLE_FOR_SCOPE,
     analysis_payload_from_run,
     analysis_miss_response_metadata,
     analysis_run_response_metadata,
@@ -2893,14 +2894,102 @@ async def get_processing_status(meeting_id: int):
 
 
 @app.get("/api/meeting/{meeting_id}/analysis", response_model=AnalysisResponse)
-async def get_analysis(meeting_id: int, db: Session = Depends(get_db)):
+async def get_analysis(
+    meeting_id: int,
+    recording_session_id: int | None = Query(default=None),
+    attempt_id: int | None = Query(default=None),
+    db: Session = Depends(get_db),
+):
     """
     Get AI analysis for a meeting
 
     Returns summary, keywords, technical terms, and action items
     """
     try:
-        logger.info(f"Fetching analysis for meeting {meeting_id}")
+        provenance = validate_transcript_provenance(recording_session_id, attempt_id)
+        logger.info(
+            "Fetching analysis for meeting %s scope=%s",
+            meeting_id,
+            "legacy" if provenance.recording_session_id is None else "v2",
+        )
+
+        if provenance.recording_session_id is not None:
+            scoped_run = latest_completed_analysis_run(
+                db,
+                meeting_id,
+                provenance.recording_session_id,
+                provenance.attempt_id,
+            )
+            if scoped_run is None:
+                return AnalysisResponse(
+                    meeting_id=meeting_id,
+                    summary="",
+                    keywords=[],
+                    technical_terms=[],
+                    action_items=[],
+                    status="NOT_FOUND",
+                    analysisStatus=ANALYSIS_STATUS_UNAVAILABLE_FOR_SCOPE,
+                )
+            normalized = analysis_payload_from_run(scoped_run, cache_hit=True)
+            run_metadata = analysis_run_response_metadata(scoped_run, cache_hit=True)
+            action_items = [ActionItem(**item) for item in normalized["action_items"]]
+            technical_terms = [
+                AnalysisTechnicalTerm(**item) for item in normalized["technicalTerms"]
+            ]
+            pain_points = [
+                AnalysisPainPoint(**item) for item in normalized["painPoints"]
+            ]
+            return AnalysisResponse(
+                meeting_id=meeting_id,
+                summary=normalized["summary"],
+                meetingSummary=normalized["meetingSummary"],
+                keywords=normalized["keywords"],
+                technical_terms=normalized["technical_terms"],
+                action_items=action_items,
+                businessActionItems=[
+                    ActionItem(**item) for item in normalized["businessActionItems"]
+                ],
+                keyDecisions=normalized["keyDecisions"],
+                risks=normalized["risks"],
+                blockers=normalized["blockers"],
+                questions=normalized["questions"],
+                deadlines=normalized["deadlines"],
+                owners=normalized["owners"],
+                nextSteps=normalized["nextSteps"],
+                businessImpact=normalized["businessImpact"],
+                customerImpact=normalized["customerImpact"],
+                technicalImpact=normalized["technicalImpact"],
+                confidence=normalized["confidence"],
+                promptVersion=run_metadata.get("promptVersion")
+                or normalized["promptVersion"],
+                schemaVersion=run_metadata.get("schemaVersion")
+                or normalized["schemaVersion"],
+                analysisFeatureSet=run_metadata.get("analysisFeatureSet")
+                or normalized["analysisFeatureSet"],
+                groupedActionPlan=normalized.get("groupedActionPlan"),
+                created_at=scoped_run.completed_at or datetime.now(timezone.utc),
+                technicalTerms=technical_terms,
+                painPoints=pain_points,
+                actionItems=normalized["actionItems"],
+                domainMode=normalized["domainMode"],
+                status="COMPLETED",
+                source=normalized.get("source") or "analysis_run",
+                transcript_hash=normalized.get("transcript_hash"),
+                analysisStatus=run_metadata.get("analysisStatus") or "COMPLETED",
+                cacheHit=normalized.get("cacheHit"),
+                provider=run_metadata.get("provider"),
+                model=run_metadata.get("model"),
+                canonicalTranscriptHash=run_metadata.get("canonicalTranscriptHash"),
+                canonicalTranscriptVersion=run_metadata.get(
+                    "canonicalTranscriptVersion"
+                ),
+                analysisInputMode=run_metadata.get("analysisInputMode"),
+                lastAnalyzedAt=run_metadata.get("lastAnalyzedAt"),
+                stale=run_metadata.get("stale") or normalized.get("stale"),
+                staleReason=run_metadata.get("staleReason")
+                or normalized.get("staleReason"),
+                retryAfterSeconds=normalized.get("retryAfterSeconds"),
+            )
 
         job_state = get_job_status(meeting_id)
         job_analysis = _extract_analysis_from_job_state(job_state)
@@ -3283,6 +3372,10 @@ async def analyze_realtime_transcript(
 ):
     try:
         meeting_id = int(request.meeting_id)
+        provenance = validate_transcript_provenance(
+            request.recording_session_id,
+            request.attempt_id,
+        )
         source = str(request.source or "realtime").strip().lower() or "realtime"
         analysis_trace_id = uuid4().hex[:12]
         transcript_text = _normalize_transcript_text(request.transcript or "")
@@ -3371,6 +3464,8 @@ async def analyze_realtime_transcript(
                     analyzer=analyzer,
                     fallback_transcript_hash=transcript_hash,
                     fallback_text=transcript_text,
+                    recording_session_id=provenance.recording_session_id,
+                    attempt_id=provenance.attempt_id,
                 )
                 skipped_run, _ = begin_analysis_run(
                     db=db,
@@ -3437,6 +3532,8 @@ async def analyze_realtime_transcript(
                     "schemaVersion": schema_version,
                     "analysisFeatureSet": analysis_feature_set,
                 },
+                recording_session_id=provenance.recording_session_id,
+                attempt_id=provenance.attempt_id,
             )
             analysis_cache_key = build_analysis_run_idempotency_key_for_identity(
                 cache_identity

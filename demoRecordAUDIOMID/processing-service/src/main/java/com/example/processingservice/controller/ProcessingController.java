@@ -234,19 +234,41 @@ public class ProcessingController {
     @GetMapping("/{meetingId}/analysis")
     public AnalysisResponse analysis(
             @PathVariable Long meetingId,
+            @RequestParam(name = "recording_session_id", required = false) Long recordingSessionId,
+            @RequestParam(name = "attempt_id", required = false) Long attemptId,
             @RequestHeader(value = "x-trace-id", required = false) String traceId,
             @RequestHeader(HttpHeaders.AUTHORIZATION) String authorization) {
         requirePrincipal();
-        return new AnalysisResponse(meetingId, processingService.getAnalysis(meetingId, ensureTraceId(traceId), authorization));
+        return new AnalysisResponse(
+                meetingId,
+                processingService.getAnalysis(
+                        meetingId,
+                        ensureTraceId(traceId),
+                        authorization,
+                        recordingSessionId,
+                        attemptId
+                )
+        );
     }
 
     @GetMapping("/{meetingId}/analysis/saved")
     public AnalysisResponse savedAnalysis(
             @PathVariable Long meetingId,
+            @RequestParam(name = "recording_session_id", required = false) Long recordingSessionId,
+            @RequestParam(name = "attempt_id", required = false) Long attemptId,
             @RequestHeader(value = "x-trace-id", required = false) String traceId,
             @RequestHeader(HttpHeaders.AUTHORIZATION) String authorization) {
         requirePrincipal();
-        return new AnalysisResponse(meetingId, processingService.getAnalysisReadOnly(meetingId, ensureTraceId(traceId), authorization));
+        return new AnalysisResponse(
+                meetingId,
+                processingService.getAnalysisReadOnly(
+                        meetingId,
+                        ensureTraceId(traceId),
+                        authorization,
+                        recordingSessionId,
+                        attemptId
+                )
+        );
     }
 
     @GetMapping("/{meetingId}/action-plan")

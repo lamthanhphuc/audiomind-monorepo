@@ -2634,6 +2634,11 @@ class MeetingWebSocketHandlerTest {
                 eq("it"),
                 eq("realtime"),
                 anyString(),
+                isNull(),
+                isNull(),
+                isNull(),
+                eq(9001L),
+                eq(2L),
                 anyString(),
                 eq("Bearer test-token")
         )).thenReturn(Map.of("status", "SUCCEEDED"));
@@ -2648,6 +2653,11 @@ class MeetingWebSocketHandlerTest {
                 eq("it"),
                 eq("realtime"),
                 anyString(),
+                isNull(),
+                isNull(),
+                isNull(),
+                eq(9001L),
+                eq(2L),
                 anyString(),
                 eq("Bearer test-token")
         );
@@ -2810,6 +2820,11 @@ class MeetingWebSocketHandlerTest {
                 eq("it"),
                 eq("realtime"),
                 anyString(),
+                isNull(),
+                isNull(),
+                isNull(),
+                eq(9004L),
+                eq(5L),
                 anyString(),
                 eq("Bearer test-token")
         )).thenReturn(Map.of("status", "SUCCEEDED"));
@@ -2827,6 +2842,11 @@ class MeetingWebSocketHandlerTest {
                 eq("it"),
                 eq("realtime"),
                 anyString(),
+                isNull(),
+                isNull(),
+                isNull(),
+                eq(9004L),
+                eq(5L),
                 anyString(),
                 eq("Bearer test-token")
         );
