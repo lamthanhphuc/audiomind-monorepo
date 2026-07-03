@@ -49,6 +49,7 @@ services:
       SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/${POSTGRES_DB:?Set POSTGRES_DB in infra/.env}
       SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:?Set POSTGRES_USER in infra/.env}
       SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in infra/.env}
+      SPRING_FLYWAY_ENABLED: "false"
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in infra/.env}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:?Set CORS_ALLOWED_ORIGINS in infra/.env}
       GOOGLE_USER_SERVICE_URL: http://user-api:8083
@@ -58,6 +59,10 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      meeting-db-migrate:
+        condition: service_completed_successfully
+      ai-db-migrate:
+        condition: service_completed_successfully
     ports: !override
       - "${MEETING_API_BIND_ADDRESS:-127.0.0.1}:${MEETING_API_HOST_PORT:-8081}:8081"
     healthcheck:
@@ -104,6 +109,7 @@ services:
       SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/${POSTGRES_DB:?Set POSTGRES_DB in infra/.env}
       SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:?Set POSTGRES_USER in infra/.env}
       SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in infra/.env}
+      SPRING_FLYWAY_ENABLED: "false"
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in infra/.env}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:?Set CORS_ALLOWED_ORIGINS in infra/.env}
       GOOGLE_OAUTH_ENABLED: ${GOOGLE_OAUTH_ENABLED:-false}
@@ -158,6 +164,10 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      user-db-migrate:
+        condition: service_completed_successfully
+      ai-db-migrate:
+        condition: service_completed_successfully
     ports: !override
       - "${USER_API_BIND_ADDRESS:-127.0.0.1}:${USER_API_HOST_PORT:-8083}:8083"
     healthcheck:
@@ -227,6 +237,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      ai-db-migrate:
+        condition: service_completed_successfully
     ports: !reset []
     healthcheck:
       <<: *http-healthcheck-defaults
@@ -247,8 +259,12 @@ services:
       JOB_STATE_REDIS_URL: redis://redis:6379/2
       ANALYSIS_BACKGROUND_RETRY_ENABLED: ${ANALYSIS_BACKGROUND_RETRY_ENABLED:-true}
     depends_on:
+      db:
+        condition: service_healthy
       redis:
         condition: service_healthy
+      ai-db-migrate:
+        condition: service_completed_successfully
       ai-api:
         condition: service_healthy
     ports: !reset []
@@ -314,6 +330,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      ai-db-migrate:
+        condition: service_completed_successfully
       ai-api:
         condition: service_healthy
     ports: !reset []
@@ -354,6 +372,38 @@ services:
       timeout: 5s
       retries: 5
       start_period: 20s
+
+  meeting-db-migrate:
+    env_file: !reset []
+    environment:
+      FLYWAY_URL: jdbc:postgresql://db:5432/${POSTGRES_DB:?Set POSTGRES_DB in infra/.env}
+      FLYWAY_USER: ${POSTGRES_USER:?Set POSTGRES_USER in infra/.env}
+      FLYWAY_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in infra/.env}
+      FLYWAY_TABLE: flyway_schema_history_meeting
+      FLYWAY_LOCATIONS: filesystem:/flyway/sql
+    depends_on:
+      db:
+        condition: service_healthy
+
+  user-db-migrate:
+    env_file: !reset []
+    environment:
+      FLYWAY_URL: jdbc:postgresql://db:5432/${POSTGRES_DB:?Set POSTGRES_DB in infra/.env}
+      FLYWAY_USER: ${POSTGRES_USER:?Set POSTGRES_USER in infra/.env}
+      FLYWAY_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in infra/.env}
+      FLYWAY_TABLE: flyway_schema_history_user
+      FLYWAY_LOCATIONS: filesystem:/flyway/sql
+    depends_on:
+      meeting-db-migrate:
+        condition: service_completed_successfully
+
+  ai-db-migrate:
+    env_file: !reset []
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:?Set POSTGRES_USER in infra/.env}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in infra/.env}@db:5432/${POSTGRES_DB:?Set POSTGRES_DB in infra/.env}
+    depends_on:
+      user-db-migrate:
+        condition: service_completed_successfully
 
   # Optional ClamAV daemon for upload security scanning (Epic 2 Slice 7).
   # Enable UPLOAD_SECURITY_SCAN_ENABLED=true and mount the socket into meeting-api.
