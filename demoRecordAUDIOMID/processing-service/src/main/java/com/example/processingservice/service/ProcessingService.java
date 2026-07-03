@@ -3592,9 +3592,28 @@ public class ProcessingService {
                     traceId,
                     authorization
             );
-            return normalizeScopedAnalysisResponse(meetingId, aiResponse);
+            Map<String, Object> normalized = normalizeScopedAnalysisResponse(meetingId, aiResponse);
+            if (allowLazyTrigger && shouldTriggerScopedOnDemandAnalysis(normalized)) {
+                Map<String, Object> generated = aiServiceClient.getAnalysis(
+                        meetingId,
+                        traceId,
+                        recordingSessionId,
+                        attemptId
+                );
+                return normalizeScopedAnalysisResponse(meetingId, generated);
+            }
+            return normalized;
         } catch (HttpStatusCodeException ex) {
             if (ex.getStatusCode().value() == HttpStatus.NOT_FOUND.value()) {
+                if (allowLazyTrigger) {
+                    Map<String, Object> generated = aiServiceClient.getAnalysis(
+                            meetingId,
+                            traceId,
+                            recordingSessionId,
+                            attemptId
+                    );
+                    return normalizeScopedAnalysisResponse(meetingId, generated);
+                }
                 Map<String, Object> response = new HashMap<>();
                 response.put("meeting_id", meetingId);
                 response.put("status", "NOT_FOUND");
@@ -3603,6 +3622,49 @@ public class ProcessingService {
             }
             throw ex;
         }
+    }
+
+    private boolean shouldTriggerScopedOnDemandAnalysis(Map<String, Object> response) {
+        if (response == null || response.isEmpty()) {
+            return true;
+        }
+        String analysisStatus = normalizeStatus(response.get("analysisStatus"));
+        if (ANALYSIS_STATUS_UNAVAILABLE_FOR_SCOPE.equalsIgnoreCase(analysisStatus)) {
+            return true;
+        }
+        if ("NOT_FOUND".equalsIgnoreCase(analysisStatus) || ANALYSIS_STATUS_NO_ANALYSIS.equalsIgnoreCase(analysisStatus)) {
+            return true;
+        }
+        String status = normalizeStatus(response.get("status"));
+        return "NOT_FOUND".equalsIgnoreCase(status) && !hasStructuredAnalysis(response);
+    }
+
+    private boolean meetingRequiresAnalysisProvenance(Long meetingId, String traceId) {
+        try {
+            Map<String, Object> aiResponse = aiServiceClient.listTranscriptScopes(meetingId, traceId);
+            List<Map<String, Object>> scopes = normalizeResultScopeItems(extractScopeList(aiResponse));
+            if (!scopes.isEmpty()) {
+                return scopes.stream()
+                        .anyMatch(scope -> "v2".equals(String.valueOf(scope.get("scopeKind"))));
+            }
+        } catch (Exception ex) {
+            log.warn(
+                    "event=RESULT_SCOPE_PROBE_FAILED meetingId={} traceId={} error={}",
+                    meetingId,
+                    traceId,
+                    ex.getMessage()
+            );
+        }
+        Map<String, Object> jobScope = readProvenanceScopeFromJobState(meetingId);
+        return jobScope != null && "v2".equals(String.valueOf(jobScope.get("scopeKind")));
+    }
+
+    private Map<String, Object> buildScopedAnalysisUnavailableResponse(Long meetingId) {
+        Map<String, Object> response = new HashMap<>();
+        response.put("meeting_id", meetingId);
+        response.put("status", "NOT_FOUND");
+        response.put("analysisStatus", ANALYSIS_STATUS_UNAVAILABLE_FOR_SCOPE);
+        return response;
     }
 
     private Map<String, Object> normalizeScopedAnalysisResponse(Long meetingId, Map<String, Object> aiResponse) {
@@ -3666,6 +3728,15 @@ public class ProcessingService {
                     attemptId,
                     allowLazyTrigger
             );
+        }
+        if (meetingRequiresAnalysisProvenance(meetingId, traceId)) {
+            log.info(
+                    "event=ANALYSIS_GET_REJECTED_UNSCOPED traceId={} requestId={} meetingId={} reason=v2_requires_provenance",
+                    traceId,
+                    currentRequestId(traceId),
+                    meetingId
+            );
+            return buildScopedAnalysisUnavailableResponse(meetingId);
         }
         log.info(
                 "event=ANALYSIS_GET_REQUEST traceId={} requestId={} meetingId={} source=analysis_get",

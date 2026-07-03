@@ -533,6 +533,73 @@ class ProcessingServiceTest {
     }
 
     @Test
+    void getAnalysis_shouldRejectUnscopedRequestForV2Meeting() {
+        Long meetingId = 87L;
+        when(aiServiceClient.listTranscriptScopes(eq(meetingId), eq("trace-87"))).thenReturn(Map.of(
+                "scopes", List.of(Map.of(
+                        "scopeKind", "v2",
+                        "recordingSessionId", 2L,
+                        "attemptId", 2L,
+                        "finalized", true
+                ))
+        ));
+
+        Map<String, Object> response = processingService.getAnalysis(meetingId, "trace-87", AUTH_HEADER);
+
+        assertEquals("ANALYSIS_UNAVAILABLE_FOR_SCOPE", response.get("analysisStatus"));
+        verify(aiServiceClient, never()).getTranscript(eq(meetingId), anyString());
+        verify(aiServiceClient, never()).getTranscript(eq(meetingId), anyString(), anyLong(), anyLong());
+        verify(aiServiceClient, never()).getAnalysis(eq(meetingId), anyString());
+    }
+
+    @Test
+    void getAnalysis_shouldTriggerScopedOnDemandAnalysisWhenCacheMissesForV2Attempt() {
+        Long meetingId = 962L;
+        Map<String, Object> transcriptRow = Map.of(
+                "speaker", "SPEAKER_1",
+                "text", "Scoped transcript for on-demand analysis",
+                "start_time", 0.0d,
+                "end_time", 1.0d
+        );
+        when(aiServiceClient.getTranscript(eq(meetingId), eq("trace-962"), eq(9001L), eq(2L)))
+                .thenReturn(Map.of("meeting_id", meetingId, "transcripts", List.of(transcriptRow)));
+        when(aiServiceClient.getSavedAnalysisCacheOnly(
+                eq(meetingId),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                eq(9001L),
+                eq(2L),
+                eq("trace-962"),
+                eq(AUTH_HEADER)
+        )).thenReturn(Map.of(
+                "status", "no_analysis",
+                "analysisStatus", "ANALYSIS_UNAVAILABLE_FOR_SCOPE"
+        ));
+        when(aiServiceClient.getAnalysis(eq(meetingId), eq("trace-962"), eq(9001L), eq(2L)))
+                .thenReturn(Map.of(
+                        "status", "completed",
+                        "analysisStatus", "COMPLETED",
+                        "summary", "Scoped on-demand analysis"
+                ));
+
+        Map<String, Object> response = processingService.getAnalysis(
+                meetingId,
+                "trace-962",
+                AUTH_HEADER,
+                9001L,
+                2L
+        );
+
+        assertEquals("COMPLETED", response.get("analysisStatus"));
+        assertEquals("Scoped on-demand analysis", response.get("summary"));
+        verify(aiServiceClient).getAnalysis(meetingId, "trace-962", 9001L, 2L);
+        verify(aiServiceClient, never()).getTranscript(eq(meetingId), eq("trace-962"));
+    }
+
+    @Test
     void getTranscript_shouldPreferCanonicalRowsFromAiFallbackWhenAvailable() {
         when(jobStateStore.getJobState(892L)).thenReturn(Optional.empty());
         Map<String, Object> aiPayload = new HashMap<>();

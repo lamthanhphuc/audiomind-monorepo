@@ -737,6 +737,40 @@ describe('pollRealtimeAnalysisAfterStop', () => {
     expect(result.metadata?.analysisStatus).toBe('NO_ANALYSIS')
   })
 
+  it('passes recording attempt scope to analysis polling for realtime sessions', async () => {
+    const fetchAnalysis = vi.fn().mockResolvedValue({
+      status: 'PENDING',
+      analysisStatus: 'PENDING',
+      summary: '',
+      keywords: [],
+      technicalTerms: [],
+      painPoints: [],
+      actionItems: [],
+      domainMode: 'it',
+    })
+    const sessionToken = { meetingId: 87, recordingSessionId: 2, attemptId: 2, connectionSeq: 1 }
+
+    await pollRealtimeAnalysisAfterStop(
+      87,
+      new AbortController().signal,
+      fetchAnalysis as any,
+      1,
+      {
+        sessionToken,
+        isSessionActive: () => true,
+      },
+    )
+
+    expect(fetchAnalysis).toHaveBeenCalledWith(87, expect.objectContaining({
+      recordingSessionId: 2,
+      attemptId: 2,
+      signal: expect.any(AbortSignal),
+    }))
+    expect(fetchAnalysis.mock.calls.some(([, options]) =>
+      options?.recordingSessionId == null && options?.attemptId == null,
+    )).toBe(false)
+  })
+
   it('returns no-analysis metadata when backend reports no transcript after finalize', async () => {
     const fetchAnalysis = vi.fn().mockResolvedValue({
       status: 'NO_TRANSCRIPT_AFTER_FINALIZE',

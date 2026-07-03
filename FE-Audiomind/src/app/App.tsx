@@ -80,7 +80,7 @@ import {
 } from '../utils/inviteAuth'
 import { INVITE_ACCESS_NOTICE, probeInvitedMeetingAccess } from '../utils/inviteAccess'
 import { returnToOAuthOpener, subscribeOAuthComplete } from '../utils/oauthCallbackHandoff'
-import { ApiError, createRealtimeMeeting, getAnalysis, getProcessingStatus, getTranscript, getUserProfile, listMeetingsWithParams, reanalyzeMeetingAnalysis, startProcessingByPath, submitRealtimeFinalAudioFallback, updateUserPreferences, uploadToMeetingApi } from '../services/api'
+import { ApiError, createRealtimeMeeting, getAnalysis, getProcessingStatus, getTranscript, getUserProfile, listMeetingsWithParams, reanalyzeMeetingAnalysis, startProcessingByPath, submitRealtimeFinalAudioFallback, updateUserPreferences, uploadToMeetingApi, type AnalysisScopeOptions } from '../services/api'
 import { resolveBatchPipelineErrorCode, resolveErrorPresentation } from '../constants/errorCatalog'
 import { ERROR_UX_ENABLED } from '../services/config'
 import {
@@ -582,6 +582,28 @@ type RealtimeAnalysisPollOptions = {
   sessionToken?: RealtimeSessionToken | null
   isSessionActive?: (token: RealtimeSessionToken | null) => boolean
   analysisPollRunId?: number
+  analysisScope?: Pick<AnalysisScopeOptions, 'recordingSessionId' | 'attemptId'>
+}
+
+export const resolveRealtimeAnalysisPollScope = (
+  options: RealtimeAnalysisPollOptions,
+): Pick<AnalysisScopeOptions, 'recordingSessionId' | 'attemptId'> | undefined => {
+  if (
+    options.analysisScope?.recordingSessionId != null
+    && options.analysisScope?.attemptId != null
+  ) {
+    return {
+      recordingSessionId: options.analysisScope.recordingSessionId,
+      attemptId: options.analysisScope.attemptId,
+    }
+  }
+  if (options.sessionToken != null) {
+    return {
+      recordingSessionId: options.sessionToken.recordingSessionId,
+      attemptId: options.sessionToken.attemptId,
+    }
+  }
+  return undefined
 }
 
 type HydrationOptions = {
@@ -745,6 +767,8 @@ export const pollRealtimeAnalysisAfterStop = async (
     return options.isSessionActive(options.sessionToken)
   }
 
+  const pollScope = resolveRealtimeAnalysisPollScope(options)
+
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     if (signal.aborted) {
       throw new DOMException('Polling aborted', 'AbortError')
@@ -765,7 +789,9 @@ export const pollRealtimeAnalysisAfterStop = async (
     }
 
     try {
-      const analysis = await fetchAnalysis(meetingId)
+      const analysis = pollScope
+        ? await fetchAnalysis(meetingId, { ...pollScope, signal })
+        : await fetchAnalysis(meetingId, { signal })
       if (!isPollingActive()) {
         console.info('[Realtime] STALE_ANALYSIS_POLL_IGNORED', {
           meetingId,
@@ -3304,6 +3330,10 @@ export default function App() {
           sessionToken,
           isSessionActive: isCurrentRealtimeSessionToken,
           analysisPollRunId,
+          analysisScope: {
+            recordingSessionId: sessionToken.recordingSessionId,
+            attemptId: sessionToken.attemptId,
+          },
         })
         if (
           analysisPollRunId !== analysisPollRunIdRef.current

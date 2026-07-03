@@ -7,6 +7,7 @@ import {
   downloadMeetingTranscript,
   getMeetingActionPlan,
   getMeetingDetail,
+  getAnalysis,
   getSavedAnalysis,
   getTranscript,
   getUserProfile,
@@ -166,6 +167,29 @@ describe('upload language request wiring', () => {
 
   it('rejects partial transcript provenance before fetch', async () => {
     await expect(getTranscript(7, { recordingSessionId: 9001 })).rejects.toMatchObject({
+      status: 422,
+      errorCode: 'INVALID_PROVENANCE',
+    })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('adds attempt scope to on-demand analysis reads when both provenance ids are provided', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ meetingId: 7, status: 'PENDING', analysisStatus: 'PENDING' }),
+      headers: new Headers(),
+    })
+
+    await getAnalysis(7, { recordingSessionId: 9001, attemptId: 2 })
+
+    const url = fetchMock.mock.calls[0][0] as string
+    expect(url).toContain('/processing/7/analysis?')
+    expect(url).toContain('recording_session_id=9001')
+    expect(url).toContain('attempt_id=2')
+  })
+
+  it('rejects partial on-demand analysis provenance before fetch', async () => {
+    await expect(getAnalysis(7, { recordingSessionId: 9001 })).rejects.toMatchObject({
       status: 422,
       errorCode: 'INVALID_PROVENANCE',
     })
