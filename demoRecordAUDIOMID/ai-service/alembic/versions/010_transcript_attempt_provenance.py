@@ -54,9 +54,10 @@ def _table_exists(table_name: str) -> bool:
 
 
 def _column_shapes(table_name: str) -> dict[str, dict]:
-    rows = _bind().execute(
-        sa.text(
-            """
+    rows = (
+        _bind()
+        .execute(
+            sa.text("""
             SELECT column_name,
                    data_type,
                    character_maximum_length,
@@ -64,10 +65,12 @@ def _column_shapes(table_name: str) -> dict[str, dict]:
             FROM information_schema.columns
             WHERE table_schema = 'public'
               AND table_name = :table_name
-            """
-        ),
-        {"table_name": table_name},
-    ).mappings().all()
+            """),
+            {"table_name": table_name},
+        )
+        .mappings()
+        .all()
+    )
     return {row["column_name"]: dict(row) for row in rows}
 
 
@@ -100,9 +103,7 @@ def _require_shape(
 ) -> dict:
     shape = _column_shapes(table_name).get(column_name)
     if shape is None:
-        raise RuntimeError(
-            f"Required column {table_name}.{column_name} is missing."
-        )
+        raise RuntimeError(f"Required column {table_name}.{column_name} is missing.")
 
     actual_nullable = shape["is_nullable"] == "YES"
     if (
@@ -124,9 +125,7 @@ def _require_shape(
 def _require_fragment_stream_shape() -> dict:
     shape = _column_shapes("transcript_fragments").get("stream_id")
     if shape is None:
-        raise RuntimeError(
-            "Required column transcript_fragments.stream_id is missing."
-        )
+        raise RuntimeError("Required column transcript_fragments.stream_id is missing.")
 
     actual_nullable = shape["is_nullable"] == "YES"
     data_type = shape["data_type"]
@@ -176,9 +175,7 @@ def _require_matching_stream_shape(
 ) -> None:
     actual_shape = _column_shapes(table_name).get(column_name)
     if actual_shape is None:
-        raise RuntimeError(
-            f"Required column {table_name}.{column_name} is missing."
-        )
+        raise RuntimeError(f"Required column {table_name}.{column_name} is missing.")
 
     actual_nullable = actual_shape["is_nullable"] == "YES"
     if (

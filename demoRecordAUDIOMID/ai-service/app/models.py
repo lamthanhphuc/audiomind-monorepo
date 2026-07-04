@@ -76,9 +76,7 @@ class TranscriptFragment(Base):
 
 class TranscriptCheckpoint(Base):
     __tablename__ = "transcript_checkpoints"
-    __table_args__ = (
-        PrimaryKeyConstraint("meeting_id", "stream_id"),
-    )
+    __table_args__ = (PrimaryKeyConstraint("meeting_id", "stream_id"),)
 
     meeting_id = Column(BigInteger, primary_key=True, index=True)
     stream_id = Column(String(8), primary_key=True, default="", nullable=False)

@@ -55,19 +55,24 @@ def _columns(table_name: str) -> dict[str, dict]:
     return {column["name"]: column for column in inspector.get_columns(table_name)}
 
 
-def _stream_id_shape(table_name: str) -> tuple[str | None, int | None, bool, str | None]:
-    row = op.get_bind().execute(
-        text(
-            """
+def _stream_id_shape(
+    table_name: str,
+) -> tuple[str | None, int | None, bool, str | None]:
+    row = (
+        op.get_bind()
+        .execute(
+            text("""
             SELECT data_type, character_maximum_length, is_nullable, column_default
             FROM information_schema.columns
             WHERE table_schema = 'public'
               AND table_name = :table_name
               AND column_name = 'stream_id'
-            """
-        ),
-        {"table_name": table_name},
-    ).mappings().first()
+            """),
+            {"table_name": table_name},
+        )
+        .mappings()
+        .first()
+    )
     if row is None:
         return None, None, True, None
     return (
@@ -87,7 +92,11 @@ def _primary_key(table_name: str) -> tuple[str | None, list[str]]:
 def _find_index(table_name: str, index_name: str) -> dict | None:
     inspector = sa.inspect(op.get_bind())
     return next(
-        (index for index in inspector.get_indexes(table_name) if index.get("name") == index_name),
+        (
+            index
+            for index in inspector.get_indexes(table_name)
+            if index.get("name") == index_name
+        ),
         None,
     )
 
@@ -172,7 +181,9 @@ def _ensure_stream_id_column(table_name: str) -> None:
         )
 
     if nullable:
-        op.execute(text(f"UPDATE {table_name} SET stream_id = '' WHERE stream_id IS NULL"))
+        op.execute(
+            text(f"UPDATE {table_name} SET stream_id = '' WHERE stream_id IS NULL")
+        )
         op.alter_column(table_name, "stream_id", nullable=False)
 
     op.alter_column(table_name, "stream_id", server_default=sa.text("''"))

@@ -676,7 +676,9 @@ def test_actor_duplicate_finalization_returns_cached_response(monkeypatch):
     assert actor.state == MeetingSessionState.CLOSED
 
 
-def test_actor_finalization_fallback_assembles_with_storage_meeting_id_for_stream_key(monkeypatch):
+def test_actor_finalization_fallback_assembles_with_storage_meeting_id_for_stream_key(
+    monkeypatch,
+):
     repo = _bind_fake_repository(monkeypatch)
 
     async def run_flow():

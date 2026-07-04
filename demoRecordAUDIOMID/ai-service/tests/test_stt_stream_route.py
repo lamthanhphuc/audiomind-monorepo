@@ -1257,8 +1257,12 @@ def test_get_transcript_scopes_legacy_and_v2_attempt_rows(monkeypatch):
         db.close()
         engine.dispose()
 
-    assert [segment.text for segment in legacy_response.transcripts] == ["legacy visible"]
-    assert [segment.text for segment in attempt_response.transcripts] == ["attempt one tab"]
+    assert [segment.text for segment in legacy_response.transcripts] == [
+        "legacy visible"
+    ]
+    assert [segment.text for segment in attempt_response.transcripts] == [
+        "attempt one tab"
+    ]
     assert attempt_response.transcripts[0].stream_id == "tab"
     assert attempt_response.transcripts[0].recording_session_id == 9001
     assert attempt_response.transcripts[0].attempt_id == 1
@@ -1322,7 +1326,9 @@ def test_get_transcript_logs_legacy_deprecation_guard_without_v2_fallback(monkey
         db.close()
         engine.dispose()
 
-    assert [segment.text for segment in legacy_response.transcripts] == ["legacy visible"]
+    assert [segment.text for segment in legacy_response.transcripts] == [
+        "legacy visible"
+    ]
     assert [segment.text for segment in attempt_response.transcripts] == ["v2 visible"]
     assert any(
         "event=TRANSCRIPT_LEGACY_SCOPE_DEPRECATED" in message
@@ -1746,4 +1752,3 @@ def test_stream_stt_chunk_attempt_cooldown_does_not_block_next_attempt(
         "705:mic|recording_session_id=2002|attempt_id=2"
         in main_module._stt_stream_sessions
     )
-

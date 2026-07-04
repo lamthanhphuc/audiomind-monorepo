@@ -153,9 +153,13 @@ def _build_visible_segment_key(fragment: TranscriptFragment) -> str:
     start_time = float(fragment.start_time or 0.0)
     if start_time > 0:
         speaker = (fragment.speaker or "system").strip() or "system"
-        return f"{provenance}:{stream_id}:{fragment.meeting_id}:{speaker}:{start_time:.3f}"
+        return (
+            f"{provenance}:{stream_id}:{fragment.meeting_id}:{speaker}:{start_time:.3f}"
+        )
 
-    return f"{provenance}:{stream_id}:{fragment.meeting_id}:seq:{int(fragment.seq or 0)}"
+    return (
+        f"{provenance}:{stream_id}:{fragment.meeting_id}:seq:{int(fragment.seq or 0)}"
+    )
 
 
 def _fragment_preference_score(
@@ -216,7 +220,9 @@ class TranscriptPersistenceRepository:
                 return obj
         return None
 
-    def get_checkpoint(self, meeting_id: int, stream_id: str = "") -> TranscriptCheckpointState:
+    def get_checkpoint(
+        self, meeting_id: int, stream_id: str = ""
+    ) -> TranscriptCheckpointState:
         normalized_stream_id = _normalize_storage_stream_id(stream_id)
         checkpoint = (
             self._db.query(TranscriptCheckpoint)
@@ -413,13 +419,10 @@ class TranscriptPersistenceRepository:
                 _update_existing_fragment(existing, fragment)
             return existing
 
-        version_query = (
-            self._db.query(func.max(TranscriptFragment.version))
-            .filter(
-                TranscriptFragment.meeting_id == fragment.meeting_id,
-                TranscriptFragment.stream_id == fragment.stream_id,
-                TranscriptFragment.seq == fragment.seq,
-            )
+        version_query = self._db.query(func.max(TranscriptFragment.version)).filter(
+            TranscriptFragment.meeting_id == fragment.meeting_id,
+            TranscriptFragment.stream_id == fragment.stream_id,
+            TranscriptFragment.seq == fragment.seq,
         )
         if fragment.recording_session_id is None:
             version_query = version_query.filter(
@@ -562,9 +565,7 @@ class TranscriptPersistenceRepository:
         )
         return self._assemble_text_from_fragments(fragments)
 
-    def _assemble_text_from_fragments(
-        self, fragments: list[TranscriptFragment]
-    ) -> str:
+    def _assemble_text_from_fragments(self, fragments: list[TranscriptFragment]) -> str:
         if not fragments:
             return ""
 
@@ -576,7 +577,9 @@ class TranscriptPersistenceRepository:
         return " ".join(transcript_chunks).strip()
 
     def assemble_visible_fragments(self, meeting_id: int) -> list[TranscriptFragment]:
-        return self._assemble_visible_fragments_from(meeting_id, self.list_fragments(meeting_id))
+        return self._assemble_visible_fragments_from(
+            meeting_id, self.list_fragments(meeting_id)
+        )
 
     def assemble_attempt_visible_fragments(
         self,
@@ -765,13 +768,19 @@ class TranscriptPersistenceRepository:
             .all()
         )
 
-        for recording_session_id, attempt_id, latest_created_at, latest_seq in attempt_rows:
+        for (
+            recording_session_id,
+            attempt_id,
+            latest_created_at,
+            latest_seq,
+        ) in attempt_rows:
             finalized = False
             checkpoint = (
                 self._db.query(func.max(TranscriptAttemptCheckpoint.last_finalized_seq))
                 .filter(
                     TranscriptAttemptCheckpoint.meeting_id == meeting_id,
-                    TranscriptAttemptCheckpoint.recording_session_id == recording_session_id,
+                    TranscriptAttemptCheckpoint.recording_session_id
+                    == recording_session_id,
                     TranscriptAttemptCheckpoint.attempt_id == attempt_id,
                 )
                 .scalar()
@@ -785,7 +794,9 @@ class TranscriptPersistenceRepository:
                     "attemptId": int(attempt_id),
                     "finalized": finalized,
                     "latestSeq": int(latest_seq or 0),
-                    "updatedAt": latest_created_at.isoformat() if latest_created_at else None,
+                    "updatedAt": (
+                        latest_created_at.isoformat() if latest_created_at else None
+                    ),
                 }
             )
 

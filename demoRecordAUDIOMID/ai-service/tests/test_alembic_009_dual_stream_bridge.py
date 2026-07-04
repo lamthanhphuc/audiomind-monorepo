@@ -8,7 +8,6 @@ import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 
-
 ADMIN_DATABASE_URL = os.getenv("MIGRATION_TEST_ADMIN_DATABASE_URL")
 DATABASE_PREFIX = os.getenv("MIGRATION_TEST_DATABASE_PREFIX", "audiomind_phase1c_")
 AI_SERVICE_ROOT = Path(__file__).resolve().parents[1]
@@ -147,7 +146,9 @@ def _create_baseline_c_schema(
     stream_default: str | None = None,
     bridge_index: bool = False,
 ) -> None:
-    default_clause = f" DEFAULT '{stream_default}'" if stream_default is not None else ""
+    default_clause = (
+        f" DEFAULT '{stream_default}'" if stream_default is not None else ""
+    )
     _execute(
         database_url,
         f"""
@@ -328,7 +329,6 @@ def _column_default(database_url: str, table: str, column: str) -> str | None:
     )
 
 
-
 def _column_data_type(database_url: str, table: str, column: str) -> str | None:
     return _scalar(
         database_url,
@@ -399,16 +399,23 @@ def test_fresh_database_reaches_revision_010_successfully():
         _run_alembic(database_url, "upgrade", "head")
 
         assert _scalar(database_url, "SELECT version_num FROM alembic_version") == "010"
-        assert _scalar(
-            database_url,
-            "SELECT data_type FROM information_schema.columns "
-            "WHERE table_name='transcripts' AND column_name='meeting_id'",
-        ) == "bigint"
+        assert (
+            _scalar(
+                database_url,
+                "SELECT data_type FROM information_schema.columns "
+                "WHERE table_name='transcripts' AND column_name='meeting_id'",
+            )
+            == "bigint"
+        )
         assert _column_exists(database_url, "transcript_fragments", "stream_id")
         assert _column_exists(database_url, "transcript_checkpoints", "stream_id")
         assert _checkpoint_pk_columns(database_url) == ["meeting_id", "stream_id"]
-        assert _column_default(database_url, "transcript_fragments", "stream_id").startswith("''")
-        assert _column_default(database_url, "transcript_checkpoints", "stream_id").startswith("''")
+        assert _column_default(
+            database_url, "transcript_fragments", "stream_id"
+        ).startswith("''")
+        assert _column_default(
+            database_url, "transcript_checkpoints", "stream_id"
+        ).startswith("''")
         assert _index_definition(
             database_url,
             "transcript_fragments",
@@ -419,14 +426,20 @@ def test_fresh_database_reaches_revision_010_successfully():
             "transcript_fragments",
             "ix_transcript_fragments_meeting_stream_seq",
         ) == {"columns": ["meeting_id", "stream_id", "seq"], "unique": False}
-        assert _column_exists(database_url, "transcript_fragments", "recording_session_id")
-        assert _column_exists(database_url, "transcript_fragments", "attempt_id")
-        assert _column_data_type(
+        assert _column_exists(
             database_url, "transcript_fragments", "recording_session_id"
-        ) == "bigint"
-        assert _column_data_type(
-            database_url, "transcript_fragments", "attempt_id"
-        ) == "bigint"
+        )
+        assert _column_exists(database_url, "transcript_fragments", "attempt_id")
+        assert (
+            _column_data_type(
+                database_url, "transcript_fragments", "recording_session_id"
+            )
+            == "bigint"
+        )
+        assert (
+            _column_data_type(database_url, "transcript_fragments", "attempt_id")
+            == "bigint"
+        )
         assert _table_exists(database_url, "transcript_attempt_checkpoints")
         assert _primary_key_columns(database_url, "transcript_attempt_checkpoints") == [
             "meeting_id",
@@ -466,7 +479,9 @@ def test_revision_004_style_checkpoint_schema_upgrades_to_composite_pk():
 
         assert _checkpoint_pk_columns(database_url) == ["meeting_id", "stream_id"]
         assert _scalar(database_url, "SELECT stream_id FROM transcript_fragments") == ""
-        assert _scalar(database_url, "SELECT stream_id FROM transcript_checkpoints") == ""
+        assert (
+            _scalar(database_url, "SELECT stream_id FROM transcript_checkpoints") == ""
+        )
         assert _scalar(database_url, "SELECT COUNT(*) FROM transcript_fragments") == 1
         assert _scalar(database_url, "SELECT COUNT(*) FROM transcript_checkpoints") == 1
 
@@ -479,13 +494,17 @@ def test_baseline_c_adoption_preserves_composite_pk_and_legacy_rows():
 
         assert _checkpoint_pk_columns(database_url) == ["meeting_id", "stream_id"]
         assert _scalar(database_url, "SELECT stream_id FROM transcript_fragments") == ""
-        assert _scalar(database_url, "SELECT stream_id FROM transcript_checkpoints") == ""
+        assert (
+            _scalar(database_url, "SELECT stream_id FROM transcript_checkpoints") == ""
+        )
         assert _scalar(
             database_url,
             "SELECT recording_session_id IS NULL AND attempt_id IS NULL "
             "FROM transcript_fragments",
         )
-        assert _column_exists(database_url, "transcript_fragments", "recording_session_id")
+        assert _column_exists(
+            database_url, "transcript_fragments", "recording_session_id"
+        )
         assert _column_exists(database_url, "transcript_fragments", "attempt_id")
 
 
@@ -561,10 +580,16 @@ def test_incorrect_stream_id_default_is_corrected_to_empty_string():
         _run_alembic(database_url, "stamp", "008")
         _run_alembic(database_url, "upgrade", "head")
 
-        assert _column_default(database_url, "transcript_fragments", "stream_id").startswith("''")
-        assert _column_default(database_url, "transcript_checkpoints", "stream_id").startswith("''")
+        assert _column_default(
+            database_url, "transcript_fragments", "stream_id"
+        ).startswith("''")
+        assert _column_default(
+            database_url, "transcript_checkpoints", "stream_id"
+        ).startswith("''")
         assert _scalar(database_url, "SELECT stream_id FROM transcript_fragments") == ""
-        assert _scalar(database_url, "SELECT stream_id FROM transcript_checkpoints") == ""
+        assert (
+            _scalar(database_url, "SELECT stream_id FROM transcript_checkpoints") == ""
+        )
 
 
 def test_incompatible_preexisting_index_fails_safely():
@@ -606,8 +631,9 @@ def test_incompatible_preexisting_bridge_index_fails_safely():
         result = _run_alembic(database_url, "upgrade", "head", check=False)
 
         assert result.returncode != 0
-        assert "ix_transcript_fragments_meeting_stream_seq has unexpected definition" in (
-            result.stderr + result.stdout
+        assert (
+            "ix_transcript_fragments_meeting_stream_seq has unexpected definition"
+            in (result.stderr + result.stdout)
         )
         assert _index_definition(
             database_url,
@@ -643,14 +669,19 @@ def test_downgrade_to_009_preserves_v2_schema_and_data():
         assert _scalar(database_url, "SELECT COUNT(*) FROM transcript_fragments") == 2
         assert _scalar(database_url, "SELECT COUNT(*) FROM transcript_checkpoints") == 1
         assert _column_exists(database_url, "transcript_fragments", "stream_id")
-        assert _column_exists(database_url, "transcript_fragments", "recording_session_id")
+        assert _column_exists(
+            database_url, "transcript_fragments", "recording_session_id"
+        )
         assert _column_exists(database_url, "transcript_fragments", "attempt_id")
         assert _table_exists(database_url, "transcript_attempt_checkpoints")
-        assert _scalar(
-            database_url,
-            "SELECT COUNT(*) FROM transcript_attempt_checkpoints "
-            "WHERE meeting_id = 505 AND attempt_id = 1",
-        ) == 1
+        assert (
+            _scalar(
+                database_url,
+                "SELECT COUNT(*) FROM transcript_attempt_checkpoints "
+                "WHERE meeting_id = 505 AND attempt_id = 1",
+            )
+            == 1
+        )
         assert _index_definition(
             database_url,
             "transcript_fragments",
@@ -681,11 +712,15 @@ def test_downgrade_to_009_preserves_v2_schema_and_data():
 
         _run_alembic(database_url, "upgrade", "head")
         assert _scalar(database_url, "SELECT version_num FROM alembic_version") == "010"
-        assert _scalar(
-            database_url,
-            "SELECT COUNT(*) FROM transcript_attempt_checkpoints "
-            "WHERE meeting_id = 505 AND attempt_id = 1",
-        ) == 1
+        assert (
+            _scalar(
+                database_url,
+                "SELECT COUNT(*) FROM transcript_attempt_checkpoints "
+                "WHERE meeting_id = 505 AND attempt_id = 1",
+            )
+            == 1
+        )
+
 
 def test_attempt_rows_with_same_meeting_stream_seq_can_coexist():
     with _temporary_database(f"{DATABASE_PREFIX}attemptfragments") as database_url:
@@ -704,11 +739,14 @@ def test_attempt_rows_with_same_meeting_stream_seq_can_coexist():
             """,
         )
 
-        assert _scalar(
-            database_url,
-            "SELECT COUNT(*) FROM transcript_fragments "
-            "WHERE meeting_id = 303 AND stream_id = 'tab' AND seq = 1",
-        ) == 2
+        assert (
+            _scalar(
+                database_url,
+                "SELECT COUNT(*) FROM transcript_fragments "
+                "WHERE meeting_id = 303 AND stream_id = 'tab' AND seq = 1",
+            )
+            == 2
+        )
 
 
 def test_v2_checkpoint_rows_for_attempts_are_independent():
@@ -728,16 +766,22 @@ def test_v2_checkpoint_rows_for_attempts_are_independent():
             """,
         )
 
-        assert _scalar(
-            database_url,
-            "SELECT COUNT(*) FROM transcript_attempt_checkpoints "
-            "WHERE meeting_id = 404 AND recording_session_id = 9001 AND stream_id = 'mic'",
-        ) == 2
-        assert _scalar(
-            database_url,
-            "SELECT MAX(last_ack_seq) FROM transcript_attempt_checkpoints "
-            "WHERE meeting_id = 404 AND recording_session_id = 9001 AND stream_id = 'mic'",
-        ) == 7
+        assert (
+            _scalar(
+                database_url,
+                "SELECT COUNT(*) FROM transcript_attempt_checkpoints "
+                "WHERE meeting_id = 404 AND recording_session_id = 9001 AND stream_id = 'mic'",
+            )
+            == 2
+        )
+        assert (
+            _scalar(
+                database_url,
+                "SELECT MAX(last_ack_seq) FROM transcript_attempt_checkpoints "
+                "WHERE meeting_id = 404 AND recording_session_id = 9001 AND stream_id = 'mic'",
+            )
+            == 7
+        )
 
 
 def test_revision_010_does_not_alter_legacy_transcript_checkpoints():
@@ -771,8 +815,9 @@ def test_incompatible_existing_v2_fragment_index_fails_before_mutation():
         result = _run_alembic(database_url, "upgrade", "head", check=False)
 
         assert result.returncode != 0
-        assert "ix_transcript_fragments_v2_event_identity has incompatible definition" in (
-            result.stderr + result.stdout
+        assert (
+            "ix_transcript_fragments_v2_event_identity has incompatible definition"
+            in (result.stderr + result.stdout)
         )
         assert not _table_exists(database_url, "transcript_attempt_checkpoints")
 
@@ -812,11 +857,14 @@ def test_incompatible_existing_attempt_checkpoint_table_fails_before_mutation():
             database_url, "transcript_fragments", "recording_session_id"
         )
         assert not _column_exists(database_url, "transcript_fragments", "attempt_id")
-        assert _index_definition(
-            database_url,
-            "transcript_fragments",
-            "ix_transcript_fragments_v2_event_identity",
-        ) is None
+        assert (
+            _index_definition(
+                database_url,
+                "transcript_fragments",
+                "ix_transcript_fragments_v2_event_identity",
+            )
+            is None
+        )
 
 
 def test_incompatible_existing_attempt_checkpoint_pk_fails_before_mutation():
@@ -849,7 +897,6 @@ def test_incompatible_existing_attempt_checkpoint_pk_fails_before_mutation():
             database_url, "transcript_fragments", "recording_session_id"
         )
         assert not _column_exists(database_url, "transcript_fragments", "attempt_id")
-
 
 
 def test_incompatible_existing_attempt_lookup_index_fails_before_mutation():
@@ -894,6 +941,7 @@ def test_incompatible_existing_attempt_lookup_index_fails_before_mutation():
             database_url, "transcript_fragments", "recording_session_id"
         )
         assert not _column_exists(database_url, "transcript_fragments", "attempt_id")
+
 
 def test_existing_compatible_v2_objects_are_accepted():
     with _temporary_database(f"{DATABASE_PREFIX}compatiblev2") as database_url:

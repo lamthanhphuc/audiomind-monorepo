@@ -36,7 +36,8 @@ def _index_columns(table, index_name: str) -> list[str]:
 
 def test_runtime_models_match_revision_010_provenance_metadata():
     attempt_checkpoint_pk = [
-        column.name for column in TranscriptAttemptCheckpoint.__table__.primary_key.columns
+        column.name
+        for column in TranscriptAttemptCheckpoint.__table__.primary_key.columns
     ]
     assert attempt_checkpoint_pk == [
         "meeting_id",
@@ -69,7 +70,8 @@ def test_runtime_models_match_revision_010_provenance_metadata():
         individual_indexes = [
             index.name
             for index in TranscriptFragment.__table__.indexes
-            if [indexed_column.name for indexed_column in index.columns] == [column_name]
+            if [indexed_column.name for indexed_column in index.columns]
+            == [column_name]
         ]
         assert individual_indexes == []
 
@@ -473,12 +475,18 @@ def test_v2_same_meeting_stream_seq_across_attempts_creates_distinct_rows():
     assert first.id != second.id
     assert first.version == 1
     assert second.version == 1
-    assert repo.list_attempt_fragments(
-        403, recording_session_id=1001, attempt_id=1, stream_id="mic"
-    )[0].text == "attempt one"
-    assert repo.list_attempt_fragments(
-        403, recording_session_id=1001, attempt_id=2, stream_id="mic"
-    )[0].text == "attempt two"
+    assert (
+        repo.list_attempt_fragments(
+            403, recording_session_id=1001, attempt_id=1, stream_id="mic"
+        )[0].text
+        == "attempt one"
+    )
+    assert (
+        repo.list_attempt_fragments(
+            403, recording_session_id=1001, attempt_id=2, stream_id="mic"
+        )[0].text
+        == "attempt two"
+    )
     db.close()
     engine.dispose()
 
@@ -619,11 +627,17 @@ def test_legacy_checkpoint_and_v2_attempt_checkpoints_are_independent():
     assert attempt_one.last_ack_seq == 1
     assert attempt_two.last_ack_seq == 5
     assert repo.get_checkpoint(407, stream_id="mic").last_ack_seq == 2
-    assert repo.get_attempt_checkpoint(
-        407, recording_session_id=1001, attempt_id=1, stream_id="mic"
-    ).last_ack_seq == 1
-    assert repo.get_attempt_checkpoint(
-        407, recording_session_id=1001, attempt_id=2, stream_id="mic"
-    ).last_ack_seq == 5
+    assert (
+        repo.get_attempt_checkpoint(
+            407, recording_session_id=1001, attempt_id=1, stream_id="mic"
+        ).last_ack_seq
+        == 1
+    )
+    assert (
+        repo.get_attempt_checkpoint(
+            407, recording_session_id=1001, attempt_id=2, stream_id="mic"
+        ).last_ack_seq
+        == 5
+    )
     db.close()
     engine.dispose()
