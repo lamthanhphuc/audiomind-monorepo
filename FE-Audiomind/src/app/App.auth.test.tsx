@@ -169,6 +169,50 @@ describe('App auth entry', () => {
     expect(container.querySelector('[data-testid="invite-meeting-banner"]')).toBeNull()
   })
 
+  it('shows public legal footer links on the guest homepage before login', async () => {
+    window.history.pushState({}, '', '/')
+
+    await act(async () => {
+      root.render(<App />)
+    })
+    await flush()
+
+    const privacyLinks = container.querySelectorAll('[data-testid="public-footer-privacy"]')
+    const termsLinks = container.querySelectorAll('[data-testid="public-footer-terms"]')
+    expect(privacyLinks.length).toBeGreaterThan(0)
+    expect(termsLinks.length).toBeGreaterThan(0)
+    expect(privacyLinks[0]?.getAttribute('href')).toBe('/privacy')
+    expect(termsLinks[0]?.getAttribute('href')).toBe('/terms')
+    expect(container.querySelector('[data-testid="e2e-login-submit"]')).toBeTruthy()
+  })
+
+  it('renders public privacy policy without authentication', async () => {
+    window.history.pushState({}, '', '/privacy')
+
+    await act(async () => {
+      root.render(<App />)
+    })
+    await flush()
+
+    expect(container.querySelector('[data-testid="public-legal-privacy"]')).toBeTruthy()
+    expect(container.textContent).toContain('Chính sách quyền riêng tư')
+    expect(container.textContent).toContain('Không bán dữ liệu Google')
+    expect(container.querySelector('[data-testid="e2e-login-submit"]')).toBeNull()
+  })
+
+  it('renders public terms of service without authentication', async () => {
+    window.history.pushState({}, '', '/terms')
+
+    await act(async () => {
+      root.render(<App />)
+    })
+    await flush()
+
+    expect(container.querySelector('[data-testid="public-legal-terms"]')).toBeTruthy()
+    expect(container.textContent).toContain('Điều khoản dịch vụ')
+    expect(container.querySelector('[data-testid="e2e-login-submit"]')).toBeNull()
+  })
+
   it('shows invite banner when openMeeting is present on register', async () => {
     window.history.pushState({}, '', '/register?openMeeting=15')
 

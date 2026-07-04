@@ -1,5 +1,6 @@
 import { StudioAmbientBackground } from '../ui/StudioAmbientBackground'
 import { StudioWaveform } from '../ui/StudioWaveform'
+import PublicSiteFooter from '../legal/PublicSiteFooter'
 import { GoogleAuthButton } from './GoogleAuthButton'
 
 type AuthRoute = 'login' | 'register'
@@ -103,7 +104,7 @@ export default function StudioAuthPage({
           <li>E2E encrypted</li>
         </ul>
 
-        <p className="studio-auth__footer">© 2026 AudioMind · made with sound waves</p>
+        <PublicSiteFooter className="studio-auth__legal-footer" />
       </section>
 
       <section className="studio-auth__panel">
@@ -248,6 +249,7 @@ export default function StudioAuthPage({
           )}
 
           <p className="studio-auth__secure">Protected by studio-grade encryption · v1.0</p>
+          <PublicSiteFooter className="studio-auth__panel-legal-footer" />
         </div>
       </section>
     </div>

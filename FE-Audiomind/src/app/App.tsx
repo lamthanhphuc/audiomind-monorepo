@@ -1,5 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import StudioAuthPage from '../components/auth/StudioAuthPage'
+import PublicLegalPage from '../components/legal/PublicLegalPage'
+import { resolvePublicLegalKind, type PublicLegalKind } from '../utils/publicRoutes'
 import DashboardLayout, { type DashboardScene } from '../components/dashboard/DashboardLayout'
 import FeatureAnalysis from '../components/features/FeatureAnalysis'
 import FeatureUpload from '../components/features/FeatureUpload'
@@ -235,6 +237,13 @@ const resolveAuthRouteFromLocation = (): AuthRoute => {
     return 'register'
   }
   return 'login'
+}
+
+const resolvePublicLegalKindFromLocation = (): PublicLegalKind | null => {
+  if (typeof window === 'undefined') {
+    return null
+  }
+  return resolvePublicLegalKind(window.location.pathname)
 }
 
 const resolveAuthPath = (route: AuthRoute): string => {
@@ -1316,6 +1325,9 @@ export default function App() {
   const [authError, setAuthError] = useState('')
   const [authNotice, setAuthNotice] = useState('')
   const [authRoute, setAuthRoute] = useState<AuthRoute>(resolveAuthRouteFromLocation)
+  const [publicLegalKind, setPublicLegalKind] = useState<PublicLegalKind | null>(
+    resolvePublicLegalKindFromLocation,
+  )
   const [googleCallbackState, setGoogleCallbackState] = useState<GoogleCallbackState>(() =>
     window.location.pathname === '/auth/google/success' ? 'processing' : 'idle',
   )
@@ -2089,6 +2101,7 @@ export default function App() {
 
   useEffect(() => {
     const syncAuthRoute = () => {
+      setPublicLegalKind(resolvePublicLegalKindFromLocation())
       setAuthRoute(resolveAuthRouteFromLocation())
     }
 
@@ -3748,6 +3761,11 @@ export default function App() {
         </p>
       </main>
     )
+  }
+
+  // Public legal pages must render without auth (Google OAuth branding verification).
+  if (publicLegalKind) {
+    return <PublicLegalPage kind={publicLegalKind} />
   }
 
   if (!isAuthenticated) {
