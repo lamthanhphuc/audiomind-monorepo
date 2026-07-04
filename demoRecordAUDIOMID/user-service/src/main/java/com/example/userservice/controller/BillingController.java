@@ -5,7 +5,6 @@ import com.example.userservice.billing.payos.PayosModels;
 import com.example.userservice.entity.BillingInvoice;
 import com.example.userservice.quota.QuotaService;
 import com.example.userservice.security.UserPrincipal;
-import jakarta.validation.Valid;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -78,7 +77,9 @@ public class BillingController {
     }
 
     @PostMapping("/payos/webhook")
-    public Map<String, Object> payosWebhook(@Valid @RequestBody PayosModels.WebhookBody webhookBody) {
+    public Map<String, Object> payosWebhook(@RequestBody(required = false) PayosModels.WebhookBody webhookBody) {
+        // Signature/malformed checks live in PayosClient/BillingService (400).
+        // Do not reject PayOS sample payloads via bean validation before verify.
         billingService.handlePayosWebhook(webhookBody);
         return Map.of("ok", true);
     }
@@ -104,4 +105,3 @@ public class BillingController {
         return payload;
     }
 }
-
