@@ -145,10 +145,19 @@ public class BillingService {
         webhookEventRepository.save(evt);
 
         if (orderCode == null) {
+            log.warn("event=PAYOS_WEBHOOK_UNKNOWN_ORDER orderCodeMissing=true paymentLinkIdPresent={}",
+                    StringUtils.hasText(paymentLinkId));
             return;
         }
         Optional<BillingInvoice> invoiceOpt = invoiceRepository.findByOrderCode(orderCode);
         if (invoiceOpt.isEmpty()) {
+            // PayOS dashboard sample / test webhooks must ACK 2xx without mutating billing state.
+            log.warn(
+                    "event=PAYOS_WEBHOOK_UNKNOWN_ORDER orderCode={} paymentLinkIdPresent={} amountPresent={}",
+                    orderCode,
+                    StringUtils.hasText(paymentLinkId),
+                    amount != null
+            );
             return;
         }
 
@@ -158,14 +167,22 @@ public class BillingService {
             invoice.setPaymentLinkId(paymentLinkId);
         }
 
-        // PayOS success criteria (MVP):
-        // - webhookBody.success == true
-        // - data.code == "00" indicates payment success
-        if (Boolean.TRUE.equals(webhookBody.success()) && "00".equals(txCode)) {
+        // Pay only when webhook is successful and amount matches the known invoice.
+        boolean paymentSucceeded = Boolean.TRUE.equals(webhookBody.success()) && "00".equals(txCode);
+        boolean amountMatches = amount != null && amount == invoice.getAmountVnd();
+        if (paymentSucceeded && amountMatches) {
             if (!"PAID".equalsIgnoreCase(invoice.getStatus())) {
                 markInvoicePaid(invoice, "payos_webhook");
                 upgradeUserToPro(invoice.getUserId());
             }
+        } else if (paymentSucceeded) {
+            log.warn(
+                    "event=PAYOS_WEBHOOK_AMOUNT_MISMATCH orderCode={} expectedAmount={} payloadAmount={} txDescPresent={}",
+                    orderCode,
+                    invoice.getAmountVnd(),
+                    amount,
+                    StringUtils.hasText(txDesc)
+            );
         }
 
         invoiceRepository.save(invoice);

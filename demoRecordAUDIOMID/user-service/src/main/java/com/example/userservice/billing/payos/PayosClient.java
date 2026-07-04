@@ -82,8 +82,7 @@ public class PayosClient {
         if (body.data() == null || body.signature() == null) {
             throw new IllegalStateException("PayOS invalid response body");
         }
-        String expected = PayosCrypto.createSignatureFromObject(body.data(), checksumKey);
-        if (!expected.equals(body.signature())) {
+        if (!PayosCrypto.verifyPaymentResponseSignature(body.data(), body.signature(), checksumKey)) {
             throw new IllegalStateException("PayOS response signature mismatch");
         }
 
@@ -101,14 +100,16 @@ public class PayosClient {
             throw new IllegalStateException("PayOS config missing");
         }
 
-        Map<String, Object> payload = new HashMap<>();
-        payload.put("orderCode", orderCode);
-        payload.put("amount", amountVnd);
-        payload.put("description", description);
-        payload.put("cancelUrl", cancelUrl);
-        payload.put("returnUrl", appendOrderCode(returnUrl, orderCode));
+        // Sign only the five payment-request fields (raw scalars). signature is attached after.
+        Map<String, Object> signedFields = new HashMap<>();
+        signedFields.put("orderCode", orderCode);
+        signedFields.put("amount", amountVnd);
+        signedFields.put("description", description);
+        signedFields.put("cancelUrl", cancelUrl);
+        signedFields.put("returnUrl", appendOrderCode(returnUrl, orderCode));
 
-        String signature = PayosCrypto.createSignatureFromObject(payload, checksumKey);
+        String signature = PayosCrypto.createPaymentRequestSignature(signedFields, checksumKey);
+        Map<String, Object> payload = new HashMap<>(signedFields);
         payload.put("signature", signature);
 
         HttpHeaders headers = new HttpHeaders();
@@ -131,12 +132,10 @@ public class PayosClient {
             throw new IllegalStateException("PayOS error: " + body.desc());
         }
 
-        // Verify response body signature (signing the `data` object)
         if (body.data() == null || body.signature() == null) {
             throw new IllegalStateException("PayOS invalid response body");
         }
-        String expected = PayosCrypto.createSignatureFromObject(body.data(), checksumKey);
-        if (!expected.equals(body.signature())) {
+        if (!PayosCrypto.verifyPaymentResponseSignature(body.data(), body.signature(), checksumKey)) {
             throw new IllegalStateException("PayOS response signature mismatch");
         }
 
@@ -153,8 +152,7 @@ public class PayosClient {
         if (webhookBody == null || webhookBody.data() == null || !StringUtils.hasText(webhookBody.signature())) {
             throw new IllegalArgumentException("Invalid webhook payload");
         }
-        String expected = PayosCrypto.createSignatureFromObject(webhookBody.data(), checksumKey);
-        if (!expected.equals(webhookBody.signature())) {
+        if (!PayosCrypto.verifyWebhookSignature(webhookBody.data(), webhookBody.signature(), checksumKey)) {
             throw new IllegalArgumentException("Webhook signature invalid");
         }
         return webhookBody.data();
