@@ -10,7 +10,6 @@ from app.services.analysis_runs import (
     ANALYSIS_STATUS_UNAVAILABLE_FOR_SCOPE,
     AnalysisCacheIdentity,
     analysis_miss_response_metadata,
-    build_analysis_cache_identity,
     find_completed_analysis_run_for_identity,
     latest_completed_analysis_run,
     persist_completed_analysis_run,

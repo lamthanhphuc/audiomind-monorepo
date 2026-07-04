@@ -425,9 +425,9 @@ def stale_reason_for_identity(
     for field_name, reason in ANALYSIS_STALE_REASON_FIELDS:
         if _run_value(run, field_name) != getattr(identity, field_name):
             return reason
-    if run.recording_session_id != identity.recording_session_id:
+    if _run_value(run, "recording_session_id") != identity.recording_session_id:
         return "recording_session_changed"
-    if run.attempt_id != identity.attempt_id:
+    if _run_value(run, "attempt_id") != identity.attempt_id:
         return "attempt_changed"
     if (
         run.owner_id != identity.owner_id
@@ -696,13 +696,10 @@ def latest_completed_analysis_run(
             MeetingAnalysisRun.recording_session_id == recording_session_id,
             MeetingAnalysisRun.attempt_id == attempt_id,
         )
-    return (
-        query.order_by(
-            MeetingAnalysisRun.completed_at.desc(),
-            MeetingAnalysisRun.id.desc(),
-        )
-        .first()
-    )
+    return query.order_by(
+        MeetingAnalysisRun.completed_at.desc(),
+        MeetingAnalysisRun.id.desc(),
+    ).first()
 
 
 def analysis_payload_from_run(

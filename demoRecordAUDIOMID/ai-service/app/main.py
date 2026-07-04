@@ -2649,9 +2649,11 @@ async def get_transcript(
             attempt_id=_optional_int(row.get("attempt_id") or row.get("attemptId")),
             seq=_optional_int(row.get("seq")),
             version=_optional_int(row.get("version")),
-            is_final=bool(row.get("is_final") or row.get("isFinal"))
-            if row.get("is_final") is not None or row.get("isFinal") is not None
-            else None,
+            is_final=(
+                bool(row.get("is_final") or row.get("isFinal"))
+                if row.get("is_final") is not None or row.get("isFinal") is not None
+                else None
+            ),
         )
 
     def _segment_from_model(row: Transcript) -> TranscriptSegment:
@@ -2793,7 +2795,9 @@ async def get_transcript(
 
         canonical_payload = None
         if not transcript_scope.is_v2:
-            canonical_payload = _resolve_canonical_sidecar(transcript_rows, raw_segments)
+            canonical_payload = _resolve_canonical_sidecar(
+                transcript_rows, raw_segments
+            )
         if canonical_payload is not None:
             (
                 canonical_segments,
@@ -3380,7 +3384,9 @@ async def analyze_realtime_transcript(
         analysis_trace_id = uuid4().hex[:12]
         transcript_text = _normalize_transcript_text(request.transcript or "")
         if not transcript_text:
-            transcript_text = _normalize_transcript_text(_meeting_transcript_text_for_analysis(db, meeting_id))
+            transcript_text = _normalize_transcript_text(
+                _meeting_transcript_text_for_analysis(db, meeting_id)
+            )
         if not transcript_text:
             logger.warning(
                 "event=REALTIME_ANALYSIS_FAILED meetingId={} source={} errorCode=EMPTY_TRANSCRIPT",
@@ -4709,7 +4715,6 @@ async def stream_stt_chunk(
         recording_session_id=provenance.recording_session_id,
         attempt_id=provenance.attempt_id,
     )
-    speaker_prefix = _resolve_speaker_prefix(stream_id)
     now = time.time()
     guard = _get_stream_retry_guard(actor_key)
     previous_seq = guard.last_seq

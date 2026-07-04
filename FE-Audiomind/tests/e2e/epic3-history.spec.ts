@@ -17,6 +17,18 @@ async function mockGoogleStatusLinked(page: Page): Promise<void> {
 }
 
 async function mockMeetingTranscriptApis(page: Page): Promise<void> {
+  await page.route('**/processing/*/result-scope**', async (route) => {
+    const pathname = new URL(route.request().url()).pathname
+    const body = pathname.endsWith('/result-scopes')
+      ? { scopes: [{ scopeKind: 'legacy', finalized: true }] }
+      : { scopeKind: 'legacy', finalized: true }
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(body),
+    })
+  })
+
   await page.route('**/processing/*/transcript**', async (route) => {
     const url = route.request().url()
     if (url.includes('/transcript/search')) {
