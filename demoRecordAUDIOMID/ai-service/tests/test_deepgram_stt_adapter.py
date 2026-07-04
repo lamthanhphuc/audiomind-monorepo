@@ -558,7 +558,8 @@ def test_deepgram_realtime_diarization_url_and_final_speaker_parsing(monkeypatch
     assert final_event is not None
     assert final_event["speaker"] == "SPEAKER_2"
     assert interim_event is not None
-    assert interim_event["speaker"] is None
+    # Interim events keep speaker labels when diarization is enabled.
+    assert interim_event["speaker"] == "SPEAKER_1"
 
 
 def test_deepgram_raw_message_preview_is_debug_gated(monkeypatch):

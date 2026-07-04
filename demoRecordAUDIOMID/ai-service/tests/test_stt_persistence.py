@@ -5,10 +5,13 @@ from sqlalchemy.orm import sessionmaker
 import pytest
 
 from app.models import Base, TranscriptAttemptCheckpoint, TranscriptFragment
+from fastapi import Form, Query
+
 from app.services.stt_persistence import (
     TranscriptFragmentInput,
     TranscriptPersistenceRepository,
     build_fragment_dedupe_key,
+    validate_transcript_provenance,
 )
 
 
@@ -641,3 +644,27 @@ def test_legacy_checkpoint_and_v2_attempt_checkpoints_are_independent():
     )
     db.close()
     engine.dispose()
+
+
+def test_validate_transcript_provenance_treats_omitted_fastapi_defaults_as_legacy():
+    for omitted in (None, Query(default=None), Form(default=None)):
+        provenance = validate_transcript_provenance(omitted, omitted)
+        assert provenance.recording_session_id is None
+        assert provenance.attempt_id is None
+        assert provenance.is_v2 is False
+
+
+@pytest.mark.parametrize("malformed", ["", " ", "not-an-int"])
+def test_validate_transcript_provenance_rejects_malformed_recording_session_id(
+    malformed,
+):
+    with pytest.raises(ValueError, match="recording_session_id must be an integer"):
+        validate_transcript_provenance(malformed, 1)
+
+
+def test_validate_transcript_provenance_rejects_malformed_values():
+    with pytest.raises(ValueError, match="attempt_id must be an integer"):
+        validate_transcript_provenance(1, "bad")
+
+    with pytest.raises(ValueError, match="both be present or both be absent"):
+        validate_transcript_provenance(1, None)

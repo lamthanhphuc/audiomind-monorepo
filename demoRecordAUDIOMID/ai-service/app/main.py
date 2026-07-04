@@ -2900,9 +2900,9 @@ async def get_processing_status(meeting_id: int):
 @app.get("/api/meeting/{meeting_id}/analysis", response_model=AnalysisResponse)
 async def get_analysis(
     meeting_id: int,
+    db: Session = Depends(get_db),
     recording_session_id: int | None = Query(default=None),
     attempt_id: int | None = Query(default=None),
-    db: Session = Depends(get_db),
 ):
     """
     Get AI analysis for a meeting
@@ -2911,6 +2911,16 @@ async def get_analysis(
     """
     try:
         provenance = validate_transcript_provenance(recording_session_id, attempt_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "errorCode": "INVALID_PROVENANCE",
+                "message": str(exc),
+            },
+        ) from exc
+
+    try:
         logger.info(
             "Fetching analysis for meeting %s scope=%s",
             meeting_id,

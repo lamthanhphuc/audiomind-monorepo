@@ -14,10 +14,33 @@ from app.models import (
 )
 
 
-def _coerce_optional_bigint(value: int | str | None, field_name: str) -> int | None:
+def _is_omitted_optional_value(value: object) -> bool:
+    """Treat missing optional provenance as absent, including FastAPI defaults.
+
+    Blank/whitespace strings are explicit request values and must not fall back
+    to legacy/unscoped behavior.
+    """
     if value is None:
-        return None
-    if value.__class__.__name__ == "Form":
+        return True
+    module = getattr(value.__class__, "__module__", "") or ""
+    name = value.__class__.__name__
+    # Direct calls keep Query/Form/FieldInfo objects as Python defaults.
+    if module.startswith("fastapi.") or module.startswith("pydantic."):
+        return name in {
+            "Body",
+            "Cookie",
+            "FieldInfo",
+            "Form",
+            "Header",
+            "Param",
+            "Path",
+            "Query",
+        }
+    return False
+
+
+def _coerce_optional_bigint(value: int | str | None, field_name: str) -> int | None:
+    if _is_omitted_optional_value(value):
         return None
     try:
         return int(value)
