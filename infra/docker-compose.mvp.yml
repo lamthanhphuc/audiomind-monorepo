@@ -373,14 +373,14 @@ services:
       retries: 5
       start_period: 20s
 
-  meeting-db-migrate:
+  db-flyway-bootstrap:
     env_file: !reset []
     environment:
       FLYWAY_URL: jdbc:postgresql://db:5432/${POSTGRES_DB:?Set POSTGRES_DB in infra/.env}
       FLYWAY_USER: ${POSTGRES_USER:?Set POSTGRES_USER in infra/.env}
       FLYWAY_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in infra/.env}
-      FLYWAY_TABLE: flyway_schema_history_meeting
-      FLYWAY_LOCATIONS: filesystem:/flyway/sql
+      FLYWAY_USER_TABLE: flyway_schema_history_user
+      FLYWAY_MEETING_TABLE: flyway_schema_history_meeting
     depends_on:
       db:
         condition: service_healthy
@@ -394,7 +394,21 @@ services:
       FLYWAY_TABLE: flyway_schema_history_user
       FLYWAY_LOCATIONS: filesystem:/flyway/sql
     depends_on:
-      meeting-db-migrate:
+      db:
+        condition: service_healthy
+      db-flyway-bootstrap:
+        condition: service_completed_successfully
+
+  meeting-db-migrate:
+    env_file: !reset []
+    environment:
+      FLYWAY_URL: jdbc:postgresql://db:5432/${POSTGRES_DB:?Set POSTGRES_DB in infra/.env}
+      FLYWAY_USER: ${POSTGRES_USER:?Set POSTGRES_USER in infra/.env}
+      FLYWAY_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in infra/.env}
+      FLYWAY_TABLE: flyway_schema_history_meeting
+      FLYWAY_LOCATIONS: filesystem:/flyway/sql
+    depends_on:
+      user-db-migrate:
         condition: service_completed_successfully
 
   ai-db-migrate:
@@ -402,7 +416,7 @@ services:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:?Set POSTGRES_USER in infra/.env}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in infra/.env}@db:5432/${POSTGRES_DB:?Set POSTGRES_DB in infra/.env}
     depends_on:
-      user-db-migrate:
+      meeting-db-migrate:
         condition: service_completed_successfully
 
   # Optional ClamAV daemon for upload security scanning (Epic 2 Slice 7).

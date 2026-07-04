@@ -421,28 +421,25 @@ services:
       retries: 10
       start_period: 20s
 
-  meeting-db-migrate:
+  db-flyway-bootstrap:
     build:
-      context: ../demoRecordAUDIOMID/meeting-service/src/main/resources/db/migration
-      dockerfile: ../../../../../../../infra/docker/flyway/Dockerfile
-    command:
-      - -connectRetries=30
-      - migrate
+      context: ..
+      dockerfile: infra/docker/flyway/bootstrap/Dockerfile
     restart: "no"
     environment:
       - FLYWAY_URL=jdbc:postgresql://db:5432/${POSTGRES_DB:-audiomind}
       - FLYWAY_USER=${POSTGRES_USER:-audiomind}
       - FLYWAY_PASSWORD=${POSTGRES_PASSWORD:-audiomind}
-      - FLYWAY_TABLE=flyway_schema_history_meeting
-      - FLYWAY_LOCATIONS=filesystem:/flyway/sql
+      - FLYWAY_USER_TABLE=flyway_schema_history_user
+      - FLYWAY_MEETING_TABLE=flyway_schema_history_meeting
     depends_on:
       db:
         condition: service_healthy
 
   user-db-migrate:
     build:
-      context: ../demoRecordAUDIOMID/user-service/src/main/resources/db/migration
-      dockerfile: ../../../../../../../infra/docker/flyway/Dockerfile
+      context: ..
+      dockerfile: infra/docker/flyway/user/Dockerfile
     command:
       - -connectRetries=30
       - migrate
@@ -454,23 +451,38 @@ services:
       - FLYWAY_TABLE=flyway_schema_history_user
       - FLYWAY_LOCATIONS=filesystem:/flyway/sql
     depends_on:
-      meeting-db-migrate:
+      db:
+        condition: service_healthy
+      db-flyway-bootstrap:
+        condition: service_completed_successfully
+
+  meeting-db-migrate:
+    build:
+      context: ..
+      dockerfile: infra/docker/flyway/meeting/Dockerfile
+    command:
+      - -connectRetries=30
+      - migrate
+    restart: "no"
+    environment:
+      - FLYWAY_URL=jdbc:postgresql://db:5432/${POSTGRES_DB:-audiomind}
+      - FLYWAY_USER=${POSTGRES_USER:-audiomind}
+      - FLYWAY_PASSWORD=${POSTGRES_PASSWORD:-audiomind}
+      - FLYWAY_TABLE=flyway_schema_history_meeting
+      - FLYWAY_LOCATIONS=filesystem:/flyway/sql
+    depends_on:
+      user-db-migrate:
         condition: service_completed_successfully
 
   ai-db-migrate:
     build:
-      context: ../demoRecordAUDIOMID/ai-service
-      args:
-        INSTALL_OFFLINE_STT: "false"
-    command:
-      - alembic
-      - upgrade
-      - head
+      context: ..
+      dockerfile: infra/docker/flyway/ai/Dockerfile
     restart: "no"
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-audiomind}:${POSTGRES_PASSWORD:-audiomind}@db:5432/${POSTGRES_DB:-audiomind}
     depends_on:
-      user-db-migrate:
+      meeting-db-migrate:
         condition: service_completed_successfully
 
   redis:
