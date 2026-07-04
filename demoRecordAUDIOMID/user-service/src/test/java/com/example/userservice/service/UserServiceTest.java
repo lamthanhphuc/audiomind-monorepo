@@ -1,5 +1,6 @@
 package com.example.userservice.service;
 
+import com.example.userservice.client.PendingMeetingShareClient;
 import com.example.userservice.controller.dto.AuthResponse;
 import com.example.userservice.controller.dto.LoginRequest;
 import com.example.userservice.controller.dto.RegisterRequest;
@@ -26,6 +27,8 @@ import org.springframework.test.util.ReflectionTestUtils;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -43,6 +46,9 @@ class UserServiceTest {
 
     @Mock
     private TokenBlacklistStore tokenBlacklistStore;
+
+    @Mock
+    private PendingMeetingShareClient pendingMeetingShareClient;
 
     @InjectMocks
     private UserService userService;
@@ -62,11 +68,13 @@ class UserServiceTest {
 
         UserAccount saved = new UserAccount();
         saved.setId(11L);
+        saved.setEmail("alice@example.com");
         when(userAccountRepository.save(any(UserAccount.class))).thenReturn(saved);
 
         RegisterResponse response = userService.register(request);
 
         assertEquals(11L, response.userId());
+        verify(pendingMeetingShareClient).acceptPendingInvites(11L, "alice@example.com");
         ArgumentCaptor<UserAccount> captor = ArgumentCaptor.forClass(UserAccount.class);
         verify(userAccountRepository).save(captor.capture());
         assertEquals("alice", captor.getValue().getUsername());
@@ -86,6 +94,21 @@ class UserServiceTest {
         when(passwordEncoder.matches("wrong-pass", "EXPECTED-HASH")).thenReturn(false);
 
         assertThrows(BadCredentialsException.class, () -> userService.login(request));
+        verify(pendingMeetingShareClient, never()).acceptPendingInvites(any(), any());
+    }
+
+    @Test
+    void login_shouldRejectGoogleOnlyUserWithoutPassword() {
+        LoginRequest request = new LoginRequest("google_user", "any-password");
+        UserAccount user = new UserAccount();
+        user.setId(14L);
+        user.setUsername("google_user");
+        user.setPasswordHash(null);
+
+        when(userAccountRepository.findByUsername("google_user")).thenReturn(Optional.of(user));
+
+        assertThrows(BadCredentialsException.class, () -> userService.login(request));
+        verify(pendingMeetingShareClient, never()).acceptPendingInvites(any(), any());
     }
 
     @Test
@@ -94,17 +117,19 @@ class UserServiceTest {
         UserAccount user = new UserAccount();
         user.setId(13L);
         user.setUsername("charlie");
+        user.setEmail("charlie@example.com");
         user.setPasswordHash("HASH");
 
         when(userAccountRepository.findByUsername("charlie")).thenReturn(Optional.of(user));
         when(passwordEncoder.matches("good-pass", "HASH")).thenReturn(true);
-        when(jwtUtil.createAccessToken(13L, "charlie")).thenReturn("token-123");
+        when(jwtUtil.createAccessToken(13L, "charlie", "USER", "FREE")).thenReturn("token-123");
 
         AuthResponse response = userService.login(request);
 
         assertEquals(13L, response.userId());
         assertEquals("token-123", response.accessToken());
         assertEquals(3600L, response.expiresInSeconds());
+        verify(pendingMeetingShareClient).acceptPendingInvites(13L, "charlie@example.com");
     }
 
     @Test
@@ -122,8 +147,27 @@ class UserServiceTest {
     }
 
     @Test
+    void refreshAccessToken_shouldIssueTokenFromDatabasePlan() {
+        UserPrincipal principal = new UserPrincipal(31L, "erin", "USER", "FREE");
+        UserAccount user = new UserAccount();
+        user.setId(31L);
+        user.setUsername("erin");
+        user.setRole("USER");
+        user.setPlan("PRO");
+
+        when(userAccountRepository.findById(31L)).thenReturn(Optional.of(user));
+        when(jwtUtil.createAccessToken(31L, "erin", "USER", "PRO")).thenReturn("token-pro");
+
+        AuthResponse response = userService.refreshAccessToken(principal);
+
+        assertEquals(31L, response.userId());
+        assertEquals("token-pro", response.accessToken());
+        assertEquals(3600L, response.expiresInSeconds());
+    }
+
+    @Test
     void me_shouldReturnUserProfile() {
-        UserPrincipal principal = new UserPrincipal(22L, "dana");
+        UserPrincipal principal = new UserPrincipal(22L, "dana", "USER", "FREE");
         UserAccount user = new UserAccount();
         user.setId(22L);
         user.setUsername("dana");
@@ -136,5 +180,6 @@ class UserServiceTest {
         assertEquals(22L, response.userId());
         assertEquals("dana", response.username());
         assertEquals("dana@example.com", response.email());
+        assertEquals("it", response.domainMode());
     }
 }

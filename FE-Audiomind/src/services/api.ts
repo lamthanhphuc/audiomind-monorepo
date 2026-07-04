@@ -1,3 +1,8 @@
+import {
+  normalizeResultScopeItem,
+  type MeetingResultScope,
+  type MeetingResultScopeItem,
+} from '../utils/meetingResultScope'
 import type { paths as MeetingPaths } from '../../../packages/api-clients/meeting'
 import type { paths as ProcessingPaths } from '../../../packages/api-clients/processing'
 import {
@@ -9,7 +14,7 @@ import {
   type TranscriptResponse,
 } from '../types'
 import { getAccessToken } from './auth'
-import { API_BASE, MEETING_API_BASE, PROCESSING_API_BASE } from './config'
+import { API_BASE, MEETING_API_BASE, PROCESSING_API_BASE, USER_API_BASE } from './config'
 
 type CreateMeetingResponse =
   MeetingPaths['/api/v1/meetings']['post']['responses'][200]['content']['application/json']
@@ -23,6 +28,8 @@ type CreateJobRequest =
 export type AnalysisRerunRequest = {
   mode: 'force' | string
   reason: 'manual_reanalyze' | string
+  domainMode?: string
+  domain_mode?: string
 }
 
 export type TranscriptEvidenceContext = {
@@ -438,20 +445,118 @@ export type ApiRequestOptions = {
   signal?: AbortSignal
 }
 
-export const getTranscript = async (
-  meetingId: number,
-  options: ApiRequestOptions = {},
-): Promise<TranscriptResponse> => {
-  const response = await fetchJson<TranscriptResponse | { data?: TranscriptResponse }>(
-    `${API_BASE}/processing/transcript/${meetingId}`,
-    { signal: options.signal },
-  )
+export type TranscriptScopeOptions = ApiRequestOptions & {
+  recordingSessionId?: number | null
+  attemptId?: number | null
+}
 
+export type AnalysisScopeOptions = ApiRequestOptions & {
+  recordingSessionId?: number | null
+  attemptId?: number | null
+}
+
+const appendProvenanceParams = (
+  params: URLSearchParams,
+  options: { recordingSessionId?: number | null; attemptId?: number | null },
+): void => {
+  const hasRecordingSession = options.recordingSessionId !== undefined && options.recordingSessionId !== null
+  const hasAttempt = options.attemptId !== undefined && options.attemptId !== null
+  if (hasRecordingSession !== hasAttempt) {
+    throw new ApiError('Invalid transcript provenance scope', 422, undefined, 'INVALID_PROVENANCE')
+  }
+  if (hasRecordingSession && hasAttempt) {
+    params.set('recording_session_id', String(options.recordingSessionId))
+    params.set('attempt_id', String(options.attemptId))
+  }
+}
+
+const normalizeTranscriptResponse = (
+  response: TranscriptResponse | { data?: TranscriptResponse },
+): TranscriptResponse => {
   if ('data' in response && response.data) {
     return response.data
   }
   return response as TranscriptResponse
 }
+
+export const getTranscript = async (
+  meetingId: number,
+  options: TranscriptScopeOptions = {},
+): Promise<TranscriptResponse> => {
+  const params = new URLSearchParams()
+  appendProvenanceParams(params, options)
+  const query = params.toString()
+  const response = await fetchJson<TranscriptResponse | { data?: TranscriptResponse }>(
+    `${API_BASE}/processing/${meetingId}/transcript${query ? `?${query}` : ''}`,
+    { signal: options.signal },
+  )
+  return normalizeTranscriptResponse(response)
+}
+
+const normalizeResultScopeItems = (value: unknown): MeetingResultScopeItem[] => {
+  if (!Array.isArray(value)) {
+    return []
+  }
+  return value
+    .filter((item) => item && typeof item === 'object')
+    .map((item) => {
+      const record = item as Record<string, unknown>
+      const scopeKind = String(record.scopeKind ?? record.scope_kind ?? '').trim().toLowerCase()
+      return {
+        scopeKind: scopeKind === 'legacy' ? 'legacy' : 'v2',
+        recordingSessionId: firstNumber(record.recordingSessionId, record.recording_session_id) ?? null,
+        attemptId: firstNumber(record.attemptId, record.attempt_id) ?? null,
+        finalized: typeof record.finalized === 'boolean' ? record.finalized : undefined,
+        updatedAt: firstString(record.updatedAt, record.updated_at) ?? null,
+        latestSeq: firstNumber(record.latestSeq, record.latest_seq) ?? null,
+      } satisfies MeetingResultScopeItem
+    })
+}
+
+export const listMeetingResultScopes = async (
+  meetingId: number,
+  options: ApiRequestOptions = {},
+): Promise<MeetingResultScopeItem[]> => {
+  const response = await fetchJson<{ scopes?: unknown }>(
+    `${API_BASE}/processing/${meetingId}/result-scopes`,
+    { signal: options.signal },
+  )
+  return normalizeResultScopeItems(response.scopes)
+}
+
+export const resolveMeetingResultScope = async (
+  meetingId: number,
+  scope?: Pick<MeetingResultScope, 'recordingSessionId' | 'attemptId'>,
+  options: ApiRequestOptions = {},
+): Promise<MeetingResultScope> => {
+  const params = new URLSearchParams()
+  const recordingSessionId = scope?.recordingSessionId
+  const attemptId = scope?.attemptId
+  if (recordingSessionId != null && attemptId != null) {
+    params.set('recording_session_id', String(recordingSessionId))
+    params.set('attempt_id', String(attemptId))
+  } else if (recordingSessionId != null || attemptId != null) {
+    throw new ApiError('Invalid transcript provenance scope', 422, undefined, 'INVALID_PROVENANCE')
+  }
+  const query = params.toString()
+  const response = await fetchJson<Record<string, unknown>>(
+    `${API_BASE}/processing/${meetingId}/result-scope${query ? `?${query}` : ''}`,
+    { signal: options.signal },
+  )
+  const normalized = normalizeResultScopeItem(meetingId, {
+    scopeKind: String(response.scopeKind ?? response.scope_kind ?? 'legacy') === 'legacy' ? 'legacy' : 'v2',
+    recordingSessionId: firstNumber(response.recordingSessionId, response.recording_session_id) ?? null,
+    attemptId: firstNumber(response.attemptId, response.attempt_id) ?? null,
+    finalized: typeof response.finalized === 'boolean' ? response.finalized : undefined,
+    updatedAt: firstString(response.updatedAt, response.updated_at) ?? null,
+  })
+  return {
+    ...normalized,
+    ambiguous: typeof response.ambiguous === 'boolean' ? response.ambiguous : undefined,
+  }
+}
+
+export type { MeetingResultScope, MeetingResultScopeItem }
 
 export const searchMeetingTranscriptEvidence = async (
   meetingId: number,
@@ -467,9 +572,16 @@ export const searchMeetingTranscriptEvidence = async (
   )
 }
 
-export const getAnalysis = async (meetingId: number): Promise<AiAnalysis> => {
+export const getAnalysis = async (
+  meetingId: number,
+  options: AnalysisScopeOptions = {},
+): Promise<AiAnalysis> => {
+  const params = new URLSearchParams()
+  appendProvenanceParams(params, options)
+  const query = params.toString()
   const response = await fetchJson<AiAnalysis | { data?: AiAnalysis } & { status?: string }>(
-    `${API_BASE}/processing/${meetingId}/analysis`
+    `${API_BASE}/processing/${meetingId}/analysis${query ? `?${query}` : ''}`,
+    { signal: options.signal },
   )
 
   const normalized = normalizeAnalysisResponse(response)
@@ -492,10 +604,13 @@ export const getAnalysis = async (meetingId: number): Promise<AiAnalysis> => {
 
 export const getSavedAnalysis = async (
   meetingId: number,
-  options: ApiRequestOptions = {},
+  options: AnalysisScopeOptions = {},
 ): Promise<AiAnalysis> => {
+  const params = new URLSearchParams()
+  appendProvenanceParams(params, options)
+  const query = params.toString()
   const response = await fetchJson<AiAnalysis | { data?: AiAnalysis } & { status?: string }>(
-    `${API_BASE}/processing/${meetingId}/analysis/saved`,
+    `${API_BASE}/processing/${meetingId}/analysis/saved${query ? `?${query}` : ''}`,
     { signal: options.signal },
   )
 
@@ -571,11 +686,12 @@ export const downloadMeetingReport = async (
   return { blob, filename }
 }
 
-export const downloadMeetingActionPlanDocx = async (
+export const downloadMeetingActionPlan = async (
   meetingId: number,
+  format: 'docx' | 'pdf' | string = 'docx',
 ): Promise<{ blob: Blob; filename: string }> => {
   const response = await fetch(
-    `${API_BASE}/processing/${meetingId}/action-plan/export?format=docx`,
+    `${API_BASE}/processing/${meetingId}/action-plan/export?format=${encodeURIComponent(format)}`,
     {
       method: 'GET',
       headers: withTraceHeaders(),
@@ -588,8 +704,154 @@ export const downloadMeetingActionPlanDocx = async (
 
   const blob = await response.blob()
   const filename = parseFilenameFromContentDisposition(response.headers.get('content-disposition'))
-    || `meeting-${meetingId}-action-plan.docx`
+    || `meeting-${meetingId}-action-plan.${format}`
   return { blob, filename }
+}
+
+/** @deprecated Use downloadMeetingActionPlan */
+export const downloadMeetingActionPlanDocx = async (meetingId: number) =>
+  downloadMeetingActionPlan(meetingId, 'docx')
+
+export const askMeetingChat = async (
+  meetingId: number,
+  question: string,
+): Promise<{ answer: string; provider?: string; sourceSegments?: Array<{
+  speaker: string
+  startTime: number
+  endTime?: number
+  quote: string
+  segmentId?: string
+  evidenceId?: string
+}> }> => {
+  const response = await fetchJsonNoConsole<{
+    answer?: string
+    provider?: string
+    source_segments?: unknown
+    sourceSegments?: unknown
+  }>(
+    `${API_BASE}/processing/${meetingId}/chat`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question }),
+    },
+  )
+  const rawSegments = response.source_segments ?? response.sourceSegments
+  const sourceSegments = Array.isArray(rawSegments)
+    ? rawSegments
+      .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
+      .map((item) => ({
+        speaker: String(item.speaker ?? 'Speaker'),
+        startTime: Number(item.startTime ?? item.start_time ?? 0),
+        endTime: item.endTime == null && item.end_time == null
+          ? undefined
+          : Number(item.endTime ?? item.end_time),
+        quote: String(item.quote ?? item.text ?? '').trim(),
+        segmentId: item.segmentId == null && item.segment_id == null
+          ? undefined
+          : String(item.segmentId ?? item.segment_id),
+        evidenceId: item.evidenceId == null && item.evidence_id == null
+          ? undefined
+          : String(item.evidenceId ?? item.evidence_id),
+      }))
+      .filter((item) => item.quote.length > 0)
+    : []
+  return {
+    answer: String(response.answer ?? '').trim(),
+    provider: response.provider,
+    sourceSegments,
+  }
+}
+
+export type SemanticSearchResult = {
+  meetingId: number
+  score?: number
+  reason?: string
+  title?: string
+  originalFileName?: string
+}
+
+export const semanticSearchMeetings = async (
+  query: string,
+  limit = 10,
+): Promise<{ query: string; provider?: string; results: SemanticSearchResult[] }> => {
+  const response = await fetchJsonNoConsole<{
+    query?: string
+    provider?: string
+    results?: unknown[]
+  }>(
+    `${API_BASE}/processing/search/semantic?limit=${encodeURIComponent(String(limit))}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query }),
+    },
+  )
+  const results = Array.isArray(response.results)
+    ? response.results
+      .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
+      .map((item) => ({
+        meetingId: Number(item.meetingId ?? item.meeting_id),
+        score: item.score == null ? undefined : Number(item.score),
+        reason: item.reason == null ? undefined : String(item.reason),
+        title: item.title == null ? undefined : String(item.title),
+        originalFileName: item.originalFileName == null && item.original_file_name == null
+          ? undefined
+          : String(item.originalFileName ?? item.original_file_name),
+      }))
+      .filter((item) => Number.isFinite(item.meetingId))
+    : []
+  return {
+    query: String(response.query ?? query),
+    provider: response.provider,
+    results,
+  }
+}
+
+export type CrossMeetingAskResult = {
+  question: string
+  answer: string
+  provider?: string
+  meetings: SemanticSearchResult[]
+}
+
+export const askCrossMeeting = async (
+  question: string,
+  limit = 5,
+): Promise<CrossMeetingAskResult> => {
+  const response = await fetchJsonNoConsole<{
+    question?: string
+    answer?: string
+    provider?: string
+    meetings?: unknown[]
+  }>(
+    `${API_BASE}/processing/cross-meeting/ask?limit=${encodeURIComponent(String(limit))}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question }),
+    },
+  )
+  const meetings = Array.isArray(response.meetings)
+    ? response.meetings
+      .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
+      .map((item) => ({
+        meetingId: Number(item.meetingId ?? item.meeting_id),
+        score: item.score == null ? undefined : Number(item.score),
+        reason: item.reason == null ? undefined : String(item.reason),
+        title: item.title == null ? undefined : String(item.title),
+        originalFileName: item.originalFileName == null && item.original_file_name == null
+          ? undefined
+          : String(item.originalFileName ?? item.original_file_name),
+      }))
+      .filter((item) => Number.isFinite(item.meetingId))
+    : []
+  return {
+    question: String(response.question ?? question),
+    answer: String(response.answer ?? '').trim(),
+    provider: response.provider,
+    meetings,
+  }
 }
 
 export const downloadMeetingTranscript = async (
@@ -658,6 +920,7 @@ export const createMeeting = async (): Promise<CreateMeetingResponse> => {
 export const createRealtimeMeeting = async (
   title = 'Live recording session',
   language?: string,
+  domainMode?: string,
 ): Promise<{
   id: number
   audioPath: string
@@ -676,6 +939,9 @@ export const createRealtimeMeeting = async (
   const body: Record<string, string> = { title }
   if (language?.trim()) {
     body.language = language.trim()
+  }
+  if (domainMode?.trim()) {
+    body.domainMode = domainMode.trim()
   }
 
   return fetchJson(`${MEETING_API_BASE}/meetings/realtime`, {
@@ -707,6 +973,24 @@ export const getMeetingDetail = async (
   options: ApiRequestOptions = {},
 ): Promise<Meeting> => {
   return fetchJson<Meeting>(`${MEETING_API_BASE}/meetings/${meetingId}`, { signal: options.signal })
+}
+
+export const fetchMeetingAudioBlob = async (
+  meetingId: number,
+): Promise<{ blob: Blob; filename: string }> => {
+  const response = await fetch(`${MEETING_API_BASE}/meetings/${meetingId}/audio`, {
+    method: 'GET',
+    headers: withTraceHeaders(),
+  })
+
+  if (!response.ok) {
+    throw await parseApiErrorResponse(response)
+  }
+
+  const blob = await response.blob()
+  const filename = parseFilenameFromContentDisposition(response.headers.get('content-disposition'))
+    || `meeting-${meetingId}-audio`
+  return { blob, filename }
 }
 
 export type ListMeetingsParams = {
@@ -817,14 +1101,48 @@ export const uploadToMeetingApi = async (
 /**
  * Start processing for an existing meeting by its ID.
  */
-export const startProcessingByPath = async (meetingId: number, language?: string) => {
-  const query = language && language.trim()
-    ? `?language=${encodeURIComponent(language.trim())}`
-    : ''
+export const startProcessingByPath = async (
+  meetingId: number,
+  language?: string,
+  domainMode?: string,
+) => {
+  const params = new URLSearchParams()
+  if (language?.trim()) {
+    params.set('language', language.trim())
+  }
+  if (domainMode?.trim()) {
+    params.set('domain_mode', domainMode.trim())
+  }
+  const query = params.toString() ? `?${params.toString()}` : ''
   return fetchJson<Record<string, unknown>>(
     `${PROCESSING_API_BASE}/processing/start/${meetingId}${query}`,
     { method: 'POST' }
   )
+}
+
+export const updateUserPreferences = async (domainMode: string): Promise<{ domainMode?: string }> => {
+  return fetchJson<{ domainMode?: string }>(`${USER_API_BASE}/api/users/me/preferences`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ domainMode }),
+  })
+}
+
+export type UserProfile = {
+  userId: number
+  username: string
+  email: string
+  domainMode?: string | null
+}
+
+export const getUserProfile = async (): Promise<UserProfile> => {
+  const payload = await fetchJson<Record<string, unknown>>(`${USER_API_BASE}/api/users/me`)
+  return {
+    userId: Number(payload.userId ?? payload.user_id ?? 0),
+    username: String(payload.username ?? ''),
+    email: String(payload.email ?? ''),
+    domainMode: firstString(payload.domainMode, payload.domain_mode) ?? null,
+  }
 }
 
 /**

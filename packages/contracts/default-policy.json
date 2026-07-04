@@ -29,7 +29,7 @@
   },
   "lexicon": {
     "defaultDomainPack": "general",
-    "supportedDomainPacks": ["general", "legal", "finance", "healthcare", "it"],
+    "supportedDomainPacks": ["general", "legal", "finance", "healthcare", "it", "business", "education"],
     "disabledTerms": []
   }
 }

@@ -1,0 +1,70 @@
+.meeting-audio-player__error {
+  margin-top: 2px;
+  font-size: 12px;
+  color: #f87171;
+  line-height: 1.4;
+}
+
+.audio-volume-slider {
+  width: 88px;
+  accent-color: #6366f1;
+  cursor: pointer;
+}
+
+.audio-options__icon-btn {
+  padding: 6px 10px;
+  border: none;
+  border-radius: 999px;
+  background: #f1f5f9;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.audio-options__icon-btn:disabled,
+.audio-volume-slider:disabled,
+.audio-options select:disabled,
+.play-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.app--studio .audio-options__icon-btn {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--studio-text);
+}
+
+.app--studio .meeting-audio-player__error {
+  color: #fca5a5;
+}
+
+.hero-chart {
+  position: relative;
+  height: 120px;
+}
+
+.hero-chart__bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  height: 100%;
+}
+
+.hero-chart__bar {
+  flex: 1;
+  border-radius: 6px 6px 2px 2px;
+  background: linear-gradient(180deg, rgba(124, 108, 255, 0.85), rgba(99, 102, 241, 0.45));
+}
+
+.hero-chart__line {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.hero-chart__line polyline,
+.hero-chart__line circle {
+  stroke: rgba(255, 255, 255, 0.55);
+  fill: rgba(255, 255, 255, 0.85);
+}

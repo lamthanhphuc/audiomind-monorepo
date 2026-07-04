@@ -30,10 +30,20 @@ class FakeActor:
     instances = []
     next_submit_exc = None
 
-    def __init__(self, meeting_key, language, adapter):
+    def __init__(
+        self,
+        meeting_key,
+        language,
+        adapter,
+        *,
+        recording_session_id=None,
+        attempt_id=None,
+    ):
         self.meeting_key = str(meeting_key)
         self.language = language
         self.adapter = adapter
+        self.recording_session_id = recording_session_id
+        self.attempt_id = attempt_id
         self.session_id = f"session-{self.meeting_key}"
         self.close_count = 0
         self.closed = False
@@ -164,8 +174,16 @@ async def _fake_actor_factory(
     seq=None,
     chunk_bytes=None,
     endpointing=None,
+    registry_key=None,
+    recording_session_id=None,
+    attempt_id=None,
 ):
-    existing = main_module._stt_stream_sessions.get(str(meeting_key))
+    actor_key = registry_key or main_module._stt_actor_registry_key(
+        str(meeting_key),
+        recording_session_id=recording_session_id,
+        attempt_id=attempt_id,
+    )
+    existing = main_module._stt_stream_sessions.get(actor_key)
     if existing is not None:
         return existing
 
@@ -173,8 +191,14 @@ async def _fake_actor_factory(
     if adapter is None:
         raise RuntimeError("Deepgram STT adapter is unavailable")
 
-    actor = FakeActor(meeting_key, language, adapter)
-    main_module._stt_stream_sessions[str(meeting_key)] = actor
+    actor = FakeActor(
+        meeting_key,
+        language,
+        adapter,
+        recording_session_id=recording_session_id,
+        attempt_id=attempt_id,
+    )
+    main_module._stt_stream_sessions[actor_key] = actor
     return actor
 
 
@@ -447,6 +471,51 @@ def test_stream_stt_chunk_finalization_is_idempotent(monkeypatch):
     assert second_response.transcript == "Xin chao audiomind"
     assert FakeActor.instances[0].close_count == 1
     assert 93 not in main_module._stt_stream_sessions
+
+
+def test_stream_stt_chunk_v2_final_cache_is_attempt_scoped(monkeypatch):
+    _reset_state(monkeypatch)
+
+    async def run_attempt_one_final():
+        return await main_module.stream_stt_chunk(
+            meeting_id=706,
+            audio_chunk=_make_upload_file(b"final-one"),
+            seq=3,
+            language="vi",
+            is_final=True,
+            stream_id="tab",
+            recording_session_id=3001,
+            attempt_id=1,
+        )
+
+    async def run_attempt_two_chunk():
+        return await main_module.stream_stt_chunk(
+            meeting_id=706,
+            audio_chunk=_make_upload_file(b"attempt-two"),
+            seq=1,
+            language="vi",
+            is_final=False,
+            stream_id="tab",
+            recording_session_id=3001,
+            attempt_id=2,
+        )
+
+    first = asyncio.run(run_attempt_one_final())
+    second = asyncio.run(run_attempt_two_chunk())
+
+    assert first.is_final is True
+    assert second.is_final is False
+    assert len(FakeActor.instances) == 2
+    assert FakeActor.instances[0].attempt_id == 1
+    assert FakeActor.instances[1].attempt_id == 2
+    assert (
+        "706:tab|recording_session_id=3001|attempt_id=1"
+        in main_module._stt_finalized_responses
+    )
+    assert (
+        "706:tab|recording_session_id=3001|attempt_id=2"
+        in main_module._stt_stream_sessions
+    )
 
 
 def test_stream_stt_chunk_final_signal_uses_finalize_path_for_synthetic_empty_chunk(
@@ -1119,6 +1188,222 @@ def test_get_transcript_returns_200_from_fragment_persistence(monkeypatch):
     assert [segment.end_time for segment in response.transcripts] == [5.2, 15.06, 27.4]
 
 
+def test_get_transcript_scopes_legacy_and_v2_attempt_rows(monkeypatch):
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    SessionLocal = sessionmaker(bind=engine)
+    db = SessionLocal()
+    repo = TranscriptPersistenceRepository(db)
+    repo.append_fragment(
+        TranscriptFragmentInput(
+            meeting_id=130,
+            seq=1,
+            text="legacy visible",
+            speaker="system",
+            start_time=1.0,
+            end_time=1.5,
+            event_id="legacy-130-1",
+            is_final=True,
+        )
+    )
+    repo.append_fragment(
+        TranscriptFragmentInput(
+            meeting_id=130,
+            stream_id="tab",
+            recording_session_id=9001,
+            attempt_id=1,
+            seq=1,
+            text="attempt one tab",
+            speaker="system",
+            start_time=2.0,
+            end_time=2.5,
+            event_id="v2-130-9001-1-tab",
+            is_final=True,
+        )
+    )
+    repo.append_fragment(
+        TranscriptFragmentInput(
+            meeting_id=130,
+            stream_id="mic",
+            recording_session_id=9001,
+            attempt_id=2,
+            seq=1,
+            text="attempt two mic",
+            speaker="system",
+            start_time=3.0,
+            end_time=3.5,
+            event_id="v2-130-9001-2-mic",
+            is_final=True,
+        )
+    )
+    db.commit()
+    monkeypatch.setattr(main_module, "pipeline", None)
+
+    async def run_legacy():
+        return await main_module.get_transcript(130, db=db)
+
+    async def run_attempt_one():
+        return await main_module.get_transcript(
+            130,
+            recording_session_id=9001,
+            attempt_id=1,
+            db=db,
+        )
+
+    try:
+        legacy_response = asyncio.run(run_legacy())
+        attempt_response = asyncio.run(run_attempt_one())
+    finally:
+        db.close()
+        engine.dispose()
+
+    assert [segment.text for segment in legacy_response.transcripts] == [
+        "legacy visible"
+    ]
+    assert [segment.text for segment in attempt_response.transcripts] == [
+        "attempt one tab"
+    ]
+    assert attempt_response.transcripts[0].stream_id == "tab"
+    assert attempt_response.transcripts[0].recording_session_id == 9001
+    assert attempt_response.transcripts[0].attempt_id == 1
+
+
+def test_get_transcript_logs_legacy_deprecation_guard_without_v2_fallback(monkeypatch):
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    SessionLocal = sessionmaker(bind=engine)
+    db = SessionLocal()
+    repo = TranscriptPersistenceRepository(db)
+    repo.append_fragment(
+        TranscriptFragmentInput(
+            meeting_id=133,
+            seq=1,
+            text="legacy visible",
+            speaker="system",
+            start_time=1.0,
+            end_time=1.5,
+            event_id="legacy-133-1",
+            is_final=True,
+        )
+    )
+    repo.append_fragment(
+        TranscriptFragmentInput(
+            meeting_id=133,
+            stream_id="tab",
+            recording_session_id=9002,
+            attempt_id=1,
+            seq=1,
+            text="v2 visible",
+            speaker="system",
+            start_time=2.0,
+            end_time=2.5,
+            event_id="v2-133-9002-1-tab",
+            is_final=True,
+        )
+    )
+    db.commit()
+    capture_logger = _CaptureLogger()
+    monkeypatch.setattr(main_module, "logger", capture_logger)
+    monkeypatch.setattr(main_module, "pipeline", None)
+
+    async def run_legacy():
+        return await main_module.get_transcript(133, db=db)
+
+    async def run_attempt():
+        return await main_module.get_transcript(
+            133,
+            recording_session_id=9002,
+            attempt_id=1,
+            db=db,
+        )
+
+    try:
+        legacy_response = asyncio.run(run_legacy())
+        messages_after_legacy = list(capture_logger.messages)
+        capture_logger.messages.clear()
+        attempt_response = asyncio.run(run_attempt())
+    finally:
+        db.close()
+        engine.dispose()
+
+    assert [segment.text for segment in legacy_response.transcripts] == [
+        "legacy visible"
+    ]
+    assert [segment.text for segment in attempt_response.transcripts] == ["v2 visible"]
+    assert any(
+        "event=TRANSCRIPT_LEGACY_SCOPE_DEPRECATED" in message
+        for message in messages_after_legacy
+    )
+    assert all(
+        "event=TRANSCRIPT_LEGACY_SCOPE_DEPRECATED" not in message
+        for message in capture_logger.messages
+    )
+
+
+def test_get_transcript_rejects_partial_provenance(monkeypatch):
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    SessionLocal = sessionmaker(bind=engine)
+    db = SessionLocal()
+    monkeypatch.setattr(main_module, "pipeline", None)
+
+    async def run_flow():
+        return await main_module.get_transcript(
+            131,
+            recording_session_id=9001,
+            db=db,
+        )
+
+    try:
+        with pytest.raises(HTTPException) as exc_info:
+            asyncio.run(run_flow())
+    finally:
+        db.close()
+        engine.dispose()
+
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.detail["errorCode"] == "INVALID_PROVENANCE"
+
+
+def test_get_transcript_v2_empty_does_not_fallback_to_legacy(monkeypatch):
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    SessionLocal = sessionmaker(bind=engine)
+    db = SessionLocal()
+    repo = TranscriptPersistenceRepository(db)
+    repo.append_fragment(
+        TranscriptFragmentInput(
+            meeting_id=132,
+            seq=1,
+            text="legacy only",
+            speaker="system",
+            start_time=1.0,
+            end_time=1.5,
+            event_id="legacy-132-1",
+            is_final=True,
+        )
+    )
+    db.commit()
+    monkeypatch.setattr(main_module, "pipeline", None)
+
+    async def run_flow():
+        return await main_module.get_transcript(
+            132,
+            recording_session_id=9001,
+            attempt_id=1,
+            db=db,
+        )
+
+    try:
+        with pytest.raises(HTTPException) as exc_info:
+            asyncio.run(run_flow())
+    finally:
+        db.close()
+        engine.dispose()
+
+    assert exc_info.value.status_code == 404
+
+
 def test_get_transcript_empty_recording_returns_explicit_404(monkeypatch):
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
@@ -1307,3 +1592,163 @@ def test_stream_stt_chunk_rejects_oversized_chunk_when_validation_enabled(monkey
 
     assert exc_info.value.status_code == 413
     assert exc_info.value.detail == "REALTIME_CHUNK_TOO_LARGE"
+
+
+def test_stream_stt_chunk_dual_stream_creates_separate_actors(monkeypatch):
+    _reset_state(monkeypatch)
+
+    async def run_flow():
+        tab_response = await main_module.stream_stt_chunk(
+            meeting_id=701,
+            audio_chunk=_make_upload_file(b"tab"),
+            seq=1,
+            language="vi",
+            is_final=False,
+            stream_id="tab",
+        )
+        mic_response = await main_module.stream_stt_chunk(
+            meeting_id=701,
+            audio_chunk=_make_upload_file(b"mic"),
+            seq=1,
+            language="vi",
+            is_final=False,
+            stream_id="mic",
+        )
+        return tab_response, mic_response
+
+    tab_response, mic_response = asyncio.run(run_flow())
+
+    assert tab_response.transcript == "Xin chao audiomind"
+    assert mic_response.transcript == "Xin chao audiomind"
+    assert len(FakeActor.instances) == 2
+    assert "701:tab" in main_module._stt_stream_sessions
+    assert "701:mic" in main_module._stt_stream_sessions
+    assert FakeActor.instances[0].meeting_key != FakeActor.instances[1].meeting_key
+
+
+def test_stream_stt_chunk_accepts_complete_numeric_provenance(monkeypatch):
+    _reset_state(monkeypatch)
+
+    async def run_flow():
+        return await main_module.stream_stt_chunk(
+            meeting_id=702,
+            audio_chunk=_make_upload_file(b"tab"),
+            seq=1,
+            language="vi",
+            is_final=False,
+            stream_id="tab",
+            recording_session_id=1001,
+            attempt_id=1,
+        )
+
+    response = asyncio.run(run_flow())
+
+    assert response.transcript == "Xin chao audiomind"
+    assert len(FakeActor.instances) == 1
+    assert FakeActor.instances[0].meeting_key == "702:tab"
+    assert FakeActor.instances[0].recording_session_id == 1001
+    assert FakeActor.instances[0].attempt_id == 1
+    assert (
+        "702:tab|recording_session_id=1001|attempt_id=1"
+        in main_module._stt_stream_sessions
+    )
+
+
+@pytest.mark.parametrize(
+    ("recording_session_id", "attempt_id"),
+    [(1001, None), (None, 1)],
+)
+def test_stream_stt_chunk_rejects_partial_provenance(
+    monkeypatch, recording_session_id, attempt_id
+):
+    _reset_state(monkeypatch)
+
+    async def run_flow():
+        await main_module.stream_stt_chunk(
+            meeting_id=703,
+            audio_chunk=_make_upload_file(b"tab"),
+            seq=1,
+            language="vi",
+            is_final=False,
+            stream_id="tab",
+            recording_session_id=recording_session_id,
+            attempt_id=attempt_id,
+        )
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(run_flow())
+
+    assert exc_info.value.status_code == 422
+    assert FakeActor.instances == []
+
+
+def test_stream_stt_chunk_same_seq_different_attempts_reaches_distinct_actor_scope(
+    monkeypatch,
+):
+    _reset_state(monkeypatch)
+
+    async def run_flow():
+        first = await main_module.stream_stt_chunk(
+            meeting_id=704,
+            audio_chunk=_make_upload_file(b"first"),
+            seq=1,
+            language="vi",
+            is_final=False,
+            stream_id="mic",
+            recording_session_id=2001,
+            attempt_id=1,
+        )
+        second = await main_module.stream_stt_chunk(
+            meeting_id=704,
+            audio_chunk=_make_upload_file(b"second"),
+            seq=1,
+            language="vi",
+            is_final=False,
+            stream_id="mic",
+            recording_session_id=2001,
+            attempt_id=2,
+        )
+        return first, second
+
+    first, second = asyncio.run(run_flow())
+
+    assert first.transcript == "Xin chao audiomind"
+    assert second.transcript == "Xin chao audiomind"
+    assert len(FakeActor.instances) == 2
+    assert {
+        "704:mic|recording_session_id=2001|attempt_id=1",
+        "704:mic|recording_session_id=2001|attempt_id=2",
+    }.issubset(set(main_module._stt_stream_sessions))
+
+
+def test_stream_stt_chunk_attempt_cooldown_does_not_block_next_attempt(
+    monkeypatch,
+):
+    _reset_state(monkeypatch)
+
+    attempt_one_key = "705:mic|recording_session_id=2002|attempt_id=1"
+    attempt_one_guard = main_module._get_stream_retry_guard(attempt_one_key)
+    attempt_one_guard.cooldown_until = 9999999999.0
+
+    async def run_flow():
+        return await main_module.stream_stt_chunk(
+            meeting_id=705,
+            audio_chunk=_make_upload_file(b"attempt-two"),
+            seq=1,
+            language="vi",
+            is_final=False,
+            stream_id="mic",
+            recording_session_id=2002,
+            attempt_id=2,
+        )
+
+    response = asyncio.run(run_flow())
+
+    assert response.transcript == "Xin chao audiomind"
+    assert len(FakeActor.instances) == 1
+    assert FakeActor.instances[0].attempt_id == 2
+    assert attempt_one_key in main_module._stt_stream_retry_guards
+    assert (
+        "705:mic|recording_session_id=2002|attempt_id=2"
+        in main_module._stt_stream_sessions
+    )

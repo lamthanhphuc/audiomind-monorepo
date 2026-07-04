@@ -1,6 +1,9 @@
 package com.example.userservice.controller;
 
 import com.example.userservice.logging.TraceIdFilter;
+import com.example.userservice.google.GoogleOAuthException;
+import com.example.userservice.zoom.ZoomOAuthException;
+import com.example.userservice.teams.TeamsOAuthException;
 import jakarta.servlet.http.HttpServletRequest;
 import java.time.Instant;
 import java.util.Locale;
@@ -26,6 +29,25 @@ import org.springframework.web.server.ResponseStatusException;
 public class GlobalExceptionHandler {
 
     private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
+
+    @ExceptionHandler(IllegalStateException.class)
+    public ResponseEntity<ApiErrorResponse> handleIllegalState(IllegalStateException ex, HttpServletRequest request) {
+        String message = ex.getMessage();
+        if (message != null && message.startsWith("PayOS")) {
+            return buildResponse(
+                    ErrorCode.BILLING_PAYOS_ERROR,
+                    HttpStatus.BAD_GATEWAY,
+                    resolvePayosMessage(message),
+                    request,
+                    null);
+        }
+        return buildResponse(
+                ErrorCode.INTERNAL_ERROR,
+                HttpStatus.INTERNAL_SERVER_ERROR,
+                null,
+                request,
+                null);
+    }
 
     @ExceptionHandler(IllegalArgumentException.class)
     public ResponseEntity<ApiErrorResponse> handleBadRequest(IllegalArgumentException ex, HttpServletRequest request) {
@@ -118,6 +140,30 @@ public class GlobalExceptionHandler {
                 null);
     }
 
+    @ExceptionHandler(GoogleOAuthException.class)
+    public ResponseEntity<ApiErrorResponse> handleGoogleOAuth(
+            GoogleOAuthException ex,
+            HttpServletRequest request) {
+        ErrorCode code = ErrorCode.valueOf(ex.error().name());
+        return buildResponse(code, ex.error().status(), code.defaultMessage(), request, ex.details());
+    }
+
+    @ExceptionHandler(ZoomOAuthException.class)
+    public ResponseEntity<ApiErrorResponse> handleZoomOAuth(
+            ZoomOAuthException ex,
+            HttpServletRequest request) {
+        ErrorCode code = ErrorCode.valueOf(ex.error().name());
+        return buildResponse(code, ex.error().status(), code.defaultMessage(), request, ex.details());
+    }
+
+    @ExceptionHandler(TeamsOAuthException.class)
+    public ResponseEntity<ApiErrorResponse> handleTeamsOAuth(
+            TeamsOAuthException ex,
+            HttpServletRequest request) {
+        ErrorCode code = ErrorCode.valueOf(ex.error().name());
+        return buildResponse(code, ex.error().status(), code.defaultMessage(), request, null);
+    }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiErrorResponse> handleUnexpected(Exception ex, HttpServletRequest request) {
         log.warn(
@@ -189,6 +235,7 @@ public class GlobalExceptionHandler {
             case UNAUTHORIZED -> ErrorCode.UNAUTHORIZED;
             case FORBIDDEN -> ErrorCode.FORBIDDEN;
             case CONFLICT -> ErrorCode.CONFLICT;
+            case TOO_MANY_REQUESTS -> ErrorCode.RATE_LIMITED;
             case SERVICE_UNAVAILABLE -> ErrorCode.SERVICE_UNAVAILABLE;
             case BAD_GATEWAY -> normalizedReason.contains("gemini")
                     ? ErrorCode.GEMINI_ANALYSIS_FAILED
@@ -228,6 +275,13 @@ public class GlobalExceptionHandler {
                     GEMINI_UNAVAILABLE,
                     GEMINI_ANALYSIS_FAILED,
                     EMPTY_TRANSCRIPT,
+                    GOOGLE_OAUTH_STATE_INVALID,
+                    GOOGLE_OAUTH_NOT_CONFIGURED,
+                    GOOGLE_OAUTH_PROVIDER_ERROR,
+                    GOOGLE_EMAIL_CONFLICT,
+                    GOOGLE_LOGIN_TICKET_INVALID,
+                    GOOGLE_LOGIN_TICKET_USED,
+                    GOOGLE_LOGIN_TICKET_EXPIRED,
                     INTERNAL_ERROR -> true;
             default -> false;
         };
@@ -279,5 +333,18 @@ public class GlobalExceptionHandler {
             return "";
         }
         return value.trim().toLowerCase(Locale.ROOT);
+    }
+
+    private static String resolvePayosMessage(String message) {
+        if (message.contains("disabled")) {
+            return "Thanh toán PayOS chưa được bật trên server.";
+        }
+        if (message.contains("config missing")) {
+            return "Cấu hình PayOS chưa đầy đủ. Liên hệ quản trị viên.";
+        }
+        if (message.startsWith("PayOS error:")) {
+            return message.substring("PayOS error:".length()).trim();
+        }
+        return "Không thể kết nối PayOS. Vui lòng thử lại sau.";
     }
 }

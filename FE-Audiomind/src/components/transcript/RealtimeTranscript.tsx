@@ -1,7 +1,9 @@
 import React, { useEffect, useMemo, useRef } from 'react'
 import { DEFAULT_IT_TERMS } from '../../constants/itTerms'
+import { useDomainLexiconTerms } from '../../hooks/useDomainLexiconTerms'
 import type { TranscriptSegment } from '../../hooks/useRealtimeMeetingStream'
-import { formatTranscriptTimestamp, normalizeSpeaker, sortTranscriptSegmentsByTimeline } from '../../utils/transcript'
+import { cssVars } from '../../utils/cssVars'
+import { formatTranscriptTimestamp, formatDualStreamSpeakerLabel, sortTranscriptSegmentsByTimeline } from '../../utils/transcript'
 import { HighlightedTranscriptText } from './HighlightedTranscriptText'
 import './RealtimeTranscript.css'
 
@@ -12,6 +14,7 @@ interface RealtimeTranscriptProps {
   highlightKeywords?: string[]
   maxHeight?: string
   emptyMessage?: string
+  domainMode?: string | null
 }
 
 export const RealtimeTranscript: React.FC<RealtimeTranscriptProps> = ({
@@ -21,7 +24,9 @@ export const RealtimeTranscript: React.FC<RealtimeTranscriptProps> = ({
   highlightKeywords = [],
   maxHeight = '400px',
   emptyMessage = 'Waiting for transcript...',
+  domainMode = null,
 }) => {
+  const lexiconTerms = useDomainLexiconTerms(domainMode)
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const animationFrameRef = useRef<number | null>(null)
 
@@ -58,12 +63,16 @@ export const RealtimeTranscript: React.FC<RealtimeTranscriptProps> = ({
       .filter((keyword) => keyword.length > 0)
       .map((keyword) => ({ canonical: keyword }))
 
+    const baseTerms = lexiconTerms.length > 0
+      ? [...DEFAULT_IT_TERMS, ...lexiconTerms]
+      : DEFAULT_IT_TERMS
+
     if (normalizedKeywords.length === 0) {
-      return DEFAULT_IT_TERMS
+      return baseTerms
     }
 
-    return [...DEFAULT_IT_TERMS, ...normalizedKeywords]
-  }, [highlightKeywords])
+    return [...baseTerms, ...normalizedKeywords]
+  }, [highlightKeywords, lexiconTerms])
 
   if (displaySegments.length === 0) {
     return (
@@ -90,7 +99,7 @@ export const RealtimeTranscript: React.FC<RealtimeTranscriptProps> = ({
 
       <div
         className="transcript-container"
-        style={{ maxHeight }}
+        style={cssVars({ '--scroll-max-height': maxHeight })}
         ref={scrollContainerRef}
       >
         {displaySegments.map((segment) => {
@@ -105,10 +114,14 @@ export const RealtimeTranscript: React.FC<RealtimeTranscriptProps> = ({
               key={segment.mergeKey ?? segment.id}
               className="transcript-segment"
             >
-              <div className="segment-speaker">{normalizeSpeaker(segment.speaker, 'SPEAKER_1')}</div>
+              <div className="segment-speaker">{formatDualStreamSpeakerLabel(segment.speaker, segment.streamId)}</div>
               <div className="segment-text">
                 {segment.text && segment.text.trim().length > 0 ? (
-                  <HighlightedTranscriptText text={segment.text} terms={mergedHighlightTerms} />
+                  <HighlightedTranscriptText
+                    text={segment.text}
+                    terms={mergedHighlightTerms}
+                    enabled={mergedHighlightTerms.length > 0}
+                  />
                 ) : (
                   <div className="listening-placeholder">Đang lắng nghe...</div>
                 )}

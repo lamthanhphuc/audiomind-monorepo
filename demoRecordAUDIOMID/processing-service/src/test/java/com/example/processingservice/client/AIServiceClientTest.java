@@ -7,9 +7,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 
@@ -23,11 +25,15 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.util.MultiValueMap;
 import org.springframework.web.client.HttpClientErrorException;
+import org.springframework.web.client.HttpServerErrorException;
 import org.springframework.web.client.RestTemplate;
 
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
+import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
+import io.github.resilience4j.retry.annotation.Retry;
+import org.springframework.retry.annotation.Retryable;
 
 class AIServiceClientTest {
 
@@ -201,6 +207,341 @@ class AIServiceClientTest {
 
         MultiValueMap<String, Object> body = captor.getValue().getBody();
         assertEquals("vi", body.getFirst("language"));
+    }
+
+    @Test
+    void streamAudioChunk_shouldSendCompleteProvenanceAsDecimalMultipartFields() {
+        RestTemplate restTemplate = mock(RestTemplate.class);
+        AIServiceClient client = new AIServiceClient(restTemplate);
+        ReflectionTestUtils.setField(client, "aiUrl", "http://ai-service");
+
+        ResponseEntity<Map<String, Object>> response = new ResponseEntity<>(Map.of("transcript", "ok"), HttpStatus.OK);
+        when(restTemplate.exchange(
+                any(String.class),
+                eq(HttpMethod.POST),
+                any(HttpEntity.class),
+                any(org.springframework.core.ParameterizedTypeReference.class)
+        )).thenReturn(response);
+
+        client.streamAudioChunk(
+                12L,
+                "tab",
+                new byte[] {0x03},
+                7L,
+                "vi",
+                "multiple",
+                false,
+                null,
+                null,
+                1001L,
+                2L
+        );
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<HttpEntity<MultiValueMap<String, Object>>> captor = ArgumentCaptor.forClass(HttpEntity.class);
+        verify(restTemplate).exchange(
+                eq("http://ai-service/api/v1/stt/stream"),
+                eq(HttpMethod.POST),
+                captor.capture(),
+                any(org.springframework.core.ParameterizedTypeReference.class)
+        );
+
+        MultiValueMap<String, Object> body = captor.getValue().getBody();
+        assertEquals("1001", body.getFirst("recording_session_id"));
+        assertEquals("2", body.getFirst("attempt_id"));
+    }
+
+    @Test
+    void streamAudioChunk_shouldOmitProvenanceForLegacyRequest() {
+        RestTemplate restTemplate = mock(RestTemplate.class);
+        AIServiceClient client = new AIServiceClient(restTemplate);
+        ReflectionTestUtils.setField(client, "aiUrl", "http://ai-service");
+
+        ResponseEntity<Map<String, Object>> response = new ResponseEntity<>(Map.of("transcript", "ok"), HttpStatus.OK);
+        when(restTemplate.exchange(
+                any(String.class),
+                eq(HttpMethod.POST),
+                any(HttpEntity.class),
+                any(org.springframework.core.ParameterizedTypeReference.class)
+        )).thenReturn(response);
+
+        client.streamAudioChunk(13L, new byte[] {0x04}, 8L, "vi", null, false, null, null);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<HttpEntity<MultiValueMap<String, Object>>> captor = ArgumentCaptor.forClass(HttpEntity.class);
+        verify(restTemplate).exchange(
+                eq("http://ai-service/api/v1/stt/stream"),
+                eq(HttpMethod.POST),
+                captor.capture(),
+                any(org.springframework.core.ParameterizedTypeReference.class)
+        );
+
+        MultiValueMap<String, Object> body = captor.getValue().getBody();
+        assertNull(body.getFirst("recording_session_id"));
+        assertNull(body.getFirst("attempt_id"));
+    }
+
+    @Test
+    void getTranscript_shouldSendV2ScopeAsSnakeCaseQueryParams() {
+        RestTemplate restTemplate = mock(RestTemplate.class);
+        AIServiceClient client = new AIServiceClient(restTemplate);
+        ReflectionTestUtils.setField(client, "aiUrl", "http://ai-service");
+
+        ResponseEntity<Map<String, Object>> response = new ResponseEntity<>(Map.of("transcripts", java.util.List.of()), HttpStatus.OK);
+        when(restTemplate.exchange(
+                any(String.class),
+                eq(HttpMethod.GET),
+                any(HttpEntity.class),
+                any(org.springframework.core.ParameterizedTypeReference.class)
+        )).thenReturn(response);
+
+        client.getTranscript(88L, "trace-v2", 1001L, 2L);
+
+        ArgumentCaptor<String> urlCaptor = ArgumentCaptor.forClass(String.class);
+        verify(restTemplate).exchange(
+                urlCaptor.capture(),
+                eq(HttpMethod.GET),
+                any(HttpEntity.class),
+                any(org.springframework.core.ParameterizedTypeReference.class)
+        );
+        String url = urlCaptor.getValue();
+        assertTrue(url.startsWith("http://ai-service/api/meeting/88/transcript?"));
+        assertTrue(url.contains("recording_session_id=1001"));
+        assertTrue(url.contains("attempt_id=2"));
+    }
+
+    @Test
+    void getTranscript_shouldOmitProvenanceForLegacyScope() {
+        RestTemplate restTemplate = mock(RestTemplate.class);
+        AIServiceClient client = new AIServiceClient(restTemplate);
+        ReflectionTestUtils.setField(client, "aiUrl", "http://ai-service");
+
+        ResponseEntity<Map<String, Object>> response = new ResponseEntity<>(Map.of("transcripts", java.util.List.of()), HttpStatus.OK);
+        when(restTemplate.exchange(
+                any(String.class),
+                eq(HttpMethod.GET),
+                any(HttpEntity.class),
+                any(org.springframework.core.ParameterizedTypeReference.class)
+        )).thenReturn(response);
+
+        client.getTranscript(89L, "trace-legacy");
+
+        ArgumentCaptor<String> urlCaptor = ArgumentCaptor.forClass(String.class);
+        verify(restTemplate).exchange(
+                urlCaptor.capture(),
+                eq(HttpMethod.GET),
+                any(HttpEntity.class),
+                any(org.springframework.core.ParameterizedTypeReference.class)
+        );
+        assertEquals("http://ai-service/api/meeting/89/transcript", urlCaptor.getValue());
+    }
+
+    @Test
+    void getTranscript_shouldRejectPartialProvenanceBeforeHttp() {
+        RestTemplate restTemplate = mock(RestTemplate.class);
+        AIServiceClient client = new AIServiceClient(restTemplate);
+        ReflectionTestUtils.setField(client, "aiUrl", "http://ai-service");
+
+        assertThrows(IllegalArgumentException.class, () ->
+                client.getTranscript(90L, "trace-partial", 1001L, null)
+        );
+
+        verify(restTemplate, never()).exchange(
+                any(String.class),
+                any(HttpMethod.class),
+                any(HttpEntity.class),
+                any(org.springframework.core.ParameterizedTypeReference.class)
+        );
+    }
+
+    @Test
+    void getTranscript_v2NotFoundShouldReturnNotReadyWithoutRetryException() {
+        RestTemplate restTemplate = mock(RestTemplate.class);
+        AIServiceClient client = new AIServiceClient(restTemplate);
+        ReflectionTestUtils.setField(client, "aiUrl", "http://ai-service");
+
+        when(restTemplate.exchange(
+                any(String.class),
+                eq(HttpMethod.GET),
+                any(HttpEntity.class),
+                any(org.springframework.core.ParameterizedTypeReference.class)
+        )).thenThrow(new HttpClientErrorException(HttpStatus.NOT_FOUND));
+
+        Map<String, Object> response = client.getTranscript(91L, "trace-not-ready", 1001L, 2L);
+
+        assertEquals("NOT_READY", response.get("status"));
+        assertEquals("TRANSCRIPT_NOT_READY", response.get("errorCode"));
+        assertTrue(AIServiceClient.isTranscriptNotReadyResponse(response));
+        verify(restTemplate).exchange(
+                any(String.class),
+                eq(HttpMethod.GET),
+                any(HttpEntity.class),
+                any(org.springframework.core.ParameterizedTypeReference.class)
+        );
+    }
+
+    @Test
+    void getTranscript_v2ServiceUnavailableShouldRemainRetryableException() {
+        RestTemplate restTemplate = mock(RestTemplate.class);
+        AIServiceClient client = new AIServiceClient(restTemplate);
+        ReflectionTestUtils.setField(client, "aiUrl", "http://ai-service");
+
+        when(restTemplate.exchange(
+                any(String.class),
+                eq(HttpMethod.GET),
+                any(HttpEntity.class),
+                any(org.springframework.core.ParameterizedTypeReference.class)
+        )).thenThrow(new HttpServerErrorException(HttpStatus.SERVICE_UNAVAILABLE));
+
+        assertThrows(HttpServerErrorException.class, () ->
+                client.getTranscript(92L, "trace-503", 1001L, 2L)
+        );
+        verify(restTemplate).exchange(
+                any(String.class),
+                eq(HttpMethod.GET),
+                any(HttpEntity.class),
+                any(org.springframework.core.ParameterizedTypeReference.class)
+        );
+    }
+
+    @Test
+    void getTranscript_v2RateLimitShouldRemainRetryableException() {
+        RestTemplate restTemplate = mock(RestTemplate.class);
+        AIServiceClient client = new AIServiceClient(restTemplate);
+        ReflectionTestUtils.setField(client, "aiUrl", "http://ai-service");
+
+        when(restTemplate.exchange(
+                any(String.class),
+                eq(HttpMethod.GET),
+                any(HttpEntity.class),
+                any(org.springframework.core.ParameterizedTypeReference.class)
+        )).thenThrow(new HttpClientErrorException(HttpStatus.TOO_MANY_REQUESTS));
+
+        assertThrows(HttpClientErrorException.class, () ->
+                client.getTranscript(93L, "trace-429", 1001L, 2L)
+        );
+        verify(restTemplate).exchange(
+                any(String.class),
+                eq(HttpMethod.GET),
+                any(HttpEntity.class),
+                any(org.springframework.core.ParameterizedTypeReference.class)
+        );
+    }
+
+    @Test
+    void getTranscript_v2OverloadShouldKeepResilienceAnnotations() throws Exception {
+        Method v2GetTranscript = AIServiceClient.class.getMethod(
+                "getTranscript",
+                Long.class,
+                String.class,
+                Long.class,
+                Long.class
+        );
+
+        assertTrue(v2GetTranscript.isAnnotationPresent(Retry.class));
+        assertTrue(v2GetTranscript.isAnnotationPresent(CircuitBreaker.class));
+        assertTrue(v2GetTranscript.isAnnotationPresent(Retryable.class));
+    }
+
+    @Test
+    void streamAudioChunk_shouldRejectPartialProvenanceBeforeHttpRequest() {
+        RestTemplate restTemplate = mock(RestTemplate.class);
+        AIServiceClient client = new AIServiceClient(restTemplate);
+        ReflectionTestUtils.setField(client, "aiUrl", "http://ai-service");
+
+        assertThrows(IllegalArgumentException.class, () -> client.streamAudioChunk(
+                14L,
+                "mic",
+                new byte[] {0x05},
+                9L,
+                "vi",
+                "multiple",
+                false,
+                null,
+                null,
+                1001L,
+                null
+        ));
+
+        verify(restTemplate, org.mockito.Mockito.never()).exchange(
+                any(String.class),
+                any(HttpMethod.class),
+                any(HttpEntity.class),
+                any(org.springframework.core.ParameterizedTypeReference.class)
+        );
+    }
+
+    @Test
+    void streamAudioChunk_shouldRejectDisplayOnlyDefaultStreamIdBeforeHttpRequest() {
+        RestTemplate restTemplate = mock(RestTemplate.class);
+        AIServiceClient client = new AIServiceClient(restTemplate);
+        ReflectionTestUtils.setField(client, "aiUrl", "http://ai-service");
+
+        assertThrows(IllegalArgumentException.class, () -> client.streamAudioChunk(
+                15L,
+                "default",
+                new byte[] {0x06},
+                10L,
+                "vi",
+                "multiple",
+                false,
+                null,
+                null,
+                1001L,
+                1L
+        ));
+
+        verify(restTemplate, org.mockito.Mockito.never()).exchange(
+                any(String.class),
+                any(HttpMethod.class),
+                any(HttpEntity.class),
+                any(org.springframework.core.ParameterizedTypeReference.class)
+        );
+    }
+
+    @Test
+    void streamAudioChunk_v2PublicOverloadsShouldKeepResilienceAnnotations() throws Exception {
+        Method v2NoStream = AIServiceClient.class.getMethod(
+                "streamAudioChunk",
+                Long.class,
+                byte[].class,
+                Long.class,
+                String.class,
+                String.class,
+                boolean.class,
+                String.class,
+                String.class,
+                Long.class,
+                Long.class
+        );
+        Method v2WithStream = AIServiceClient.class.getMethod(
+                "streamAudioChunk",
+                Long.class,
+                String.class,
+                byte[].class,
+                Long.class,
+                String.class,
+                String.class,
+                boolean.class,
+                String.class,
+                String.class,
+                Long.class,
+                Long.class
+        );
+
+        assertRealtimeResilienceAnnotations(v2NoStream);
+        assertRealtimeResilienceAnnotations(v2WithStream);
+    }
+
+    private static void assertRealtimeResilienceAnnotations(Method method) {
+        Retry retry = method.getAnnotation(Retry.class);
+        CircuitBreaker circuitBreaker = method.getAnnotation(CircuitBreaker.class);
+        Retryable retryable = method.getAnnotation(Retryable.class);
+
+        assertEquals("ai-service", retry.name());
+        assertEquals("ai-service", circuitBreaker.name());
+        assertEquals(3, retryable.maxAttempts());
+        assertEquals(1000L, retryable.backoff().delay());
     }
 
     @Test

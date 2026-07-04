@@ -2,7 +2,7 @@ import { copyFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node
 import { join } from "node:path";
 import { execSync } from "node:child_process";
 
-const specs = ["meeting-api.yaml", "processing-api.yaml", "ai-api.yaml"];
+const specs = ["meeting-api.yaml", "processing-api.yaml", "ai-api.yaml", "user-api.yaml"];
 
 function run(cmd, options = {}) {
   return execSync(cmd, { stdio: "pipe", encoding: "utf8", ...options });

@@ -1,13 +1,23 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { clearAccessToken, getAccessToken, getCurrentUserId, login, parseJwt, register, setAccessToken } from './auth'
+import {
+  clearAccessToken,
+  exchangeGoogleLoginTicket,
+  getAccessToken,
+  getCurrentUserId,
+  getGoogleLoginUrl,
+  login,
+  parseJwt,
+  register,
+  setAccessToken,
+} from './auth'
 
-const originalFetch = global.fetch
+const originalFetch = globalThis.fetch
 
 afterEach(() => {
   localStorage.clear()
   if (originalFetch) {
-    global.fetch = originalFetch
+    globalThis.fetch = originalFetch
   }
   vi.restoreAllMocks()
 })
@@ -65,7 +75,7 @@ describe('auth service', () => {
   })
 
   it('returns auth response on successful login', async () => {
-    global.fetch = vi.fn().mockResolvedValue({
+    globalThis.fetch = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({
         userId: 1,
@@ -82,7 +92,7 @@ describe('auth service', () => {
   })
 
   it('posts register payload to the register endpoint', async () => {
-    global.fetch = vi.fn().mockResolvedValue({
+    globalThis.fetch = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({
         userId: 2,
@@ -96,7 +106,7 @@ describe('auth service', () => {
     })
 
     expect(result.userId).toBe(2)
-    expect(global.fetch).toHaveBeenCalledWith(
+    expect(globalThis.fetch).toHaveBeenCalledWith(
       expect.stringContaining('/api/users/register'),
       expect.objectContaining({
         method: 'POST',
@@ -105,13 +115,43 @@ describe('auth service', () => {
   })
 
   it('throws when login response misses access token', async () => {
-    global.fetch = vi.fn().mockResolvedValue({
+    globalThis.fetch = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({ userId: 1, expiresInSeconds: 120 }),
     })
 
     await expect(login({ username: 'demo', password: 'secret' })).rejects.toThrow(
       'Login response did not contain accessToken',
+    )
+  })
+
+  it('builds Google start URL with a validated redirect target request', () => {
+    const url = new URL(getGoogleLoginUrl('/meetings'))
+
+    expect(url.pathname).toBe('/auth/google/start')
+    expect(url.searchParams.get('redirect_after')).toBe('/meetings')
+  })
+
+  it('exchanges a one-time Google ticket for an Audiomind token', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        token: 'google-login-jwt',
+        expiresInSeconds: 120,
+        user: { id: 8, email: 'user@example.com', name: 'User' },
+        redirectAfter: '/',
+      }),
+    })
+
+    const result = await exchangeGoogleLoginTicket('one-time-ticket')
+
+    expect(result.token).toBe('google-login-jwt')
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      expect.stringContaining('/auth/google/exchange-ticket'),
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ ticket: 'one-time-ticket' }),
+      }),
     )
   })
 })

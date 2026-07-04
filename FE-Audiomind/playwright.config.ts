@@ -26,5 +26,9 @@ export default defineConfig({
     port: 5173,
     timeout: 2 * 60 * 1000,
     reuseExistingServer: !process.env.CI,
+    env: {
+      ...process.env,
+      VITE_REALTIME_DUAL_STREAM_TAB_MIC: process.env.VITE_REALTIME_DUAL_STREAM_TAB_MIC ?? 'true',
+    },
   },
 })

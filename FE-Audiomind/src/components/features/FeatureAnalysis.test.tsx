@@ -2,7 +2,17 @@ import { createRoot } from 'react-dom/client'
 import { act } from 'react-dom/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as api from '../../services/api'
+import * as knowledgeLayer from '../../services/knowledgeLayer'
 import FeatureAnalysis from './FeatureAnalysis'
+
+vi.mock('../../services/knowledgeLayer', () => ({
+  listKnowledgeNotes: vi.fn().mockResolvedValue([]),
+  createKnowledgeNote: vi.fn(),
+  updateKnowledgeNote: vi.fn(),
+  deleteKnowledgeNote: vi.fn(),
+  listSpeakerProfiles: vi.fn().mockResolvedValue([]),
+  upsertSpeakerProfiles: vi.fn(),
+}))
 
 const flush = async () => {
   await act(async () => {
@@ -11,11 +21,50 @@ const flush = async () => {
   })
 }
 
+const clickMindmapTab = async (container: HTMLElement) => {
+  const mindmapTab = container.querySelector('[data-testid="feature-analysis-mindmap-tab"]') as HTMLButtonElement
+  await act(async () => {
+    mindmapTab.click()
+  })
+  await flush()
+}
+
+const clickModelTab = async (container: HTMLElement) => {
+  const modelTab = container.querySelector('[data-testid="feature-analysis-model-tab"]') as HTMLButtonElement
+  await act(async () => {
+    modelTab.click()
+  })
+  await flush()
+}
+
 describe('FeatureAnalysis', () => {
   let container: HTMLDivElement
   let root: ReturnType<typeof createRoot>
 
   beforeEach(() => {
+    vi.stubGlobal('ResizeObserver', class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    })
+    vi.mocked(knowledgeLayer.listSpeakerProfiles).mockResolvedValue([])
+    vi.mocked(knowledgeLayer.listKnowledgeNotes).mockResolvedValue([])
+    vi.spyOn(api, 'getSavedAnalysis').mockResolvedValue({
+      summary: '',
+      keywords: [],
+      technicalTerms: [],
+      painPoints: [],
+      actionItems: [],
+      domainMode: 'it',
+      status: 'NOT_FOUND',
+      analysisStatus: 'NOT_FOUND',
+    } as any)
+    vi.spyOn(api, 'resolveMeetingResultScope').mockImplementation(async (meetingId) => ({
+      scopeKind: 'legacy',
+      meetingId,
+      recordingSessionId: null,
+      attemptId: null,
+    }))
     container = document.createElement('div')
     document.body.appendChild(container)
     root = createRoot(container)
@@ -29,7 +78,7 @@ describe('FeatureAnalysis', () => {
     vi.restoreAllMocks()
   })
 
-  it('renders structured analysis sections', () => {
+  it('renders transcript tab without topic graph or sidebar glossary panel', async () => {
     act(() => {
       root.render(
         <FeatureAnalysis
@@ -48,21 +97,26 @@ describe('FeatureAnalysis', () => {
             actionItems: ['Toi uu cache'],
             domainMode: 'it',
           } as any}
-          transcriptSegments={[]}
+          transcriptSegments={[
+            { id: 'seg-1', speaker: 'Speaker 1', text: 'Hello API', start: 0, end: 1 },
+          ]}
           transcriptText=""
         />,
       )
     })
 
-    expect(container.textContent).toContain('Tong hop')
+    expect(container.querySelector('[data-testid="e2e-transcript"]')).toBeTruthy()
+    expect(container.textContent).toContain('Hello API')
+    expect(container.querySelector('[data-testid="topic-graph"]')).toBeNull()
+    expect(container.querySelector('[data-testid="glossary-notes-panel"]')).toBeNull()
+
+    await clickModelTab(container)
+    expect(container.querySelector('[data-testid="analysis-term-notes"]')).toBeTruthy()
     expect(container.textContent).toContain('API')
     expect(container.textContent).toContain('Giao dien')
-    expect(container.textContent).toContain('Do tre')
-    expect(container.textContent).toContain('Toi uu cache')
-    expect(container.textContent).toContain('it')
   })
 
-  it('renders legacy snake_case analysis payloads', () => {
+  it('renders mindmap tab with legacy snake_case analysis payloads', async () => {
     act(() => {
       root.render(
         <FeatureAnalysis
@@ -80,7 +134,9 @@ describe('FeatureAnalysis', () => {
       )
     })
 
-    expect(container.textContent).toContain('Legacy summary')
+    await clickMindmapTab(container)
+
+    expect(container.querySelector('[data-testid="mindmap-flow"]')).toBeTruthy()
     expect(container.textContent).toContain('Webhook')
     expect(container.textContent).toContain('Retry webhook')
   })
@@ -107,10 +163,10 @@ describe('FeatureAnalysis', () => {
     expect(container.querySelector('.analysis-right-panel')).toBeTruthy()
 
     const transcriptContainer = container.querySelector('.transcript-display__container') as HTMLElement | null
-    expect(transcriptContainer?.style.maxHeight).toBe('none')
+    expect(transcriptContainer?.style.getPropertyValue('--scroll-max-height')).toBe('none')
   })
 
-  it('shows empty states for summary-only analysis', () => {
+  it('does not render audio player or right-side summary panel', async () => {
     act(() => {
       root.render(
         <FeatureAnalysis
@@ -124,8 +180,12 @@ describe('FeatureAnalysis', () => {
       )
     })
 
-    expect(container.textContent).toContain('Only summary')
-    expect(container.textContent).toContain('Không có')
+    expect(container.querySelector('[data-testid="meeting-audio-player"]')).toBeNull()
+    expect(container.querySelector('[data-testid="feature-analysis-model-tab"]')).toBeTruthy()
+    expect(container.textContent).not.toContain('Tóm tắt')
+
+    await clickModelTab(container)
+    expect(container.querySelector('[data-testid="e2e-summary"]')?.textContent).toContain('Only summary')
   })
 
   it('hydrates transcript and saved analysis when opened from history', async () => {
@@ -158,7 +218,9 @@ describe('FeatureAnalysis', () => {
     expect(api.getTranscript).toHaveBeenCalledWith(42, expect.objectContaining({ signal: expect.any(AbortSignal) }))
     expect(api.getSavedAnalysis).toHaveBeenCalledWith(42, expect.objectContaining({ signal: expect.any(AbortSignal) }))
     expect(container.textContent).toContain('Hydrated transcript')
-    expect(container.textContent).toContain('Hydrated summary')
+
+    await clickMindmapTab(container)
+    expect(container.textContent).toContain('cache')
   })
 
   it('shows transcript with missing analysis state without redirecting', async () => {
@@ -189,6 +251,7 @@ describe('FeatureAnalysis', () => {
 
     expect(container.querySelector('[data-testid="feature-analysis-hydrate-error"]')).toBeNull()
     expect(container.textContent).toContain('Only transcript')
+    await clickModelTab(container)
     expect(container.textContent).toContain('Phân tích AI chưa sẵn sàng')
   })
 
@@ -198,23 +261,8 @@ describe('FeatureAnalysis', () => {
       resolveFirstTranscript = resolve
     })
 
-    vi.spyOn(api, 'getTranscript')
-      .mockImplementationOnce(() => firstTranscriptPromise as Promise<any>)
-      .mockResolvedValue({
-        meeting_id: 9,
-        transcripts: [{ speaker: 'Speaker 2', start_time: 0, end_time: 1, text: 'Fresh transcript' }],
-      } as any)
-    vi.spyOn(api, 'getSavedAnalysis')
-      .mockResolvedValueOnce({
-        summary: 'Stale summary',
-        keywords: [],
-        technicalTerms: [],
-        painPoints: [],
-        actionItems: [],
-        domainMode: 'it',
-        status: 'COMPLETED',
-        analysisStatus: 'COMPLETED',
-      } as any)
+    vi.mocked(api.getSavedAnalysis).mockReset()
+    vi.mocked(api.getSavedAnalysis)
       .mockResolvedValue({
         summary: 'Fresh summary',
         keywords: [],
@@ -224,6 +272,13 @@ describe('FeatureAnalysis', () => {
         domainMode: 'it',
         status: 'COMPLETED',
         analysisStatus: 'COMPLETED',
+      } as any)
+
+    vi.spyOn(api, 'getTranscript')
+      .mockImplementationOnce(() => firstTranscriptPromise as Promise<any>)
+      .mockResolvedValue({
+        meeting_id: 9,
+        transcripts: [{ speaker: 'Speaker 2', start_time: 0, end_time: 1, text: 'Fresh transcript' }],
       } as any)
 
     await act(async () => {
@@ -258,9 +313,7 @@ describe('FeatureAnalysis', () => {
     await flush()
 
     expect(container.textContent).toContain('Fresh transcript')
-    expect(container.textContent).toContain('Fresh summary')
     expect(container.textContent).not.toContain('Stale transcript')
-    expect(container.textContent).not.toContain('Stale summary')
   })
 
   it('shows friendly hydrate error for not found meetings', async () => {
@@ -287,7 +340,7 @@ describe('FeatureAnalysis', () => {
     await flush()
 
     expect(container.querySelector('[data-testid="feature-analysis-hydrate-error"]')).toBeTruthy()
-    expect(container.textContent).toContain('Không tìm thấy meeting hoặc transcript.')
+    expect(container.textContent).toContain('Không tìm thấy transcript cho phiên ghi đã chọn')
   })
 
   it('calls onBackToHistory when back button is clicked in hydrate mode', async () => {
@@ -330,7 +383,7 @@ describe('FeatureAnalysis', () => {
     expect(onBackToHistory).toHaveBeenCalledTimes(1)
   })
 
-  it('shows retryable analysis failure while keeping transcript visible in hydrate mode', async () => {
+  it('keeps transcript visible when saved analysis is retryable', async () => {
     vi.spyOn(api, 'getTranscript').mockResolvedValue({
       meeting_id: 77,
       transcripts: [{ speaker: 'Speaker 1', start_time: 0, end_time: 1, text: 'Saved transcript line' }],
@@ -361,16 +414,8 @@ describe('FeatureAnalysis', () => {
     await flush()
 
     expect(container.textContent).toContain('Saved transcript line')
-
-    const modelTab = Array.from(container.querySelectorAll('button')).find(
-      (button) => button.textContent === 'Phân tích AI',
-    )
-    await act(async () => {
-      modelTab?.click()
-    })
-    await flush()
-
-    expect(container.textContent).toContain('Phân tích AI tạm thời chưa sẵn sàng')
     expect(container.querySelector('[data-testid="feature-analysis-hydrate-error"]')).toBeNull()
+    await clickModelTab(container)
+    expect(container.textContent).toContain('Phân tích AI tạm thời chưa sẵn sàng')
   })
 })

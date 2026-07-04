@@ -32,8 +32,8 @@ describe('RecordingSourceSelector', () => {
 
     expect(container.textContent).toContain('Nguồn ghi âm')
     expect(container.textContent).toContain('Microphone')
-    expect(container.textContent).toContain('Ghi âm Google Meet')
-    expect(container.textContent).toContain('Google Meet + Microphone')
+    expect(container.textContent).toContain('Ghi âm tab trình duyệt')
+    expect(container.textContent).toContain('Tab trình duyệt + Microphone')
     expect(container.textContent).toContain('Ghi âm giọng nói từ micro của bạn.')
     expect(container.querySelectorAll('.recording-source-card')).toHaveLength(3)
     expect(
@@ -42,7 +42,7 @@ describe('RecordingSourceSelector', () => {
     ).toBe(true)
   })
 
-  it('shows Google Meet guide when tab source is selected', () => {
+  it('shows tab capture guide when tab source is selected', () => {
     act(() => {
       root.render(
         <RecordingSourceSelector
@@ -52,13 +52,13 @@ describe('RecordingSourceSelector', () => {
       )
     })
 
-    expect(container.querySelector('[data-testid="recording-source-meet-guide"]')).not.toBeNull()
-    expect(container.textContent).toContain('Mở Google Meet ở tab khác.')
-    expect(container.textContent).toContain('Bật chia sẻ âm thanh tab')
+    expect(container.querySelector('[data-testid="recording-source-tab-guide"]')).not.toBeNull()
+    expect(container.textContent).toContain('Meet, Teams')
+    expect(container.textContent).toContain('Chia sẻ âm thanh tab')
     expect(container.textContent).not.toContain('Nên dùng tai nghe')
   })
 
-  it('shows headphone note for Google Meet + Microphone', () => {
+  it('shows headphone note for tab + microphone', () => {
     act(() => {
       root.render(
         <RecordingSourceSelector
@@ -69,6 +69,21 @@ describe('RecordingSourceSelector', () => {
     })
 
     expect(container.textContent).toContain('Nên dùng tai nghe để tránh vọng âm.')
+  })
+
+  it('shows dual-stream quota note when enabled for tab + microphone', () => {
+    act(() => {
+      root.render(
+        <RecordingSourceSelector
+          value="browser_tab_with_mic"
+          showDualStreamQuotaNote
+          onChange={vi.fn()}
+        />,
+      )
+    })
+
+    expect(container.querySelector('[data-testid="recording-source-quota-note"]')).not.toBeNull()
+    expect(container.textContent).toMatch(/hai luồng|gấp đôi quota STT/i)
   })
 
   it('calls onChange when another source card is clicked', () => {

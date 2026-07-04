@@ -196,6 +196,83 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/TranscriptSearchResponse"
+  /processing/{meetingId}/chat:
+    post:
+      summary: Ask meeting chatbot with citations
+      operationId: askMeetingChat
+      parameters:
+        - in: path
+          name: meetingId
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [question]
+              properties:
+                question:
+                  type: string
+      responses:
+        "200":
+          description: Chat response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeetingChatResponse"
+  /processing/search/semantic:
+    post:
+      summary: Semantic meeting search
+      operationId: semanticSearchMeetings
+      parameters:
+        - in: query
+          name: limit
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [query]
+              properties:
+                query:
+                  type: string
+      responses:
+        "200":
+          description: Semantic search results
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SemanticSearchResponse"
+  /processing/cross-meeting/ask:
+    post:
+      summary: Ask across meetings
+      operationId: askCrossMeeting
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [question]
+              properties:
+                question:
+                  type: string
+                limit:
+                  type: integer
+      responses:
+        "200":
+          description: Cross-meeting answer
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CrossMeetingAskResponse"
   /processing/{meetingId}/action-plan:
     get:
       summary: Get grouped action plan preview
@@ -230,19 +307,23 @@ paths:
           required: false
           schema:
             type: string
-            enum: [docx]
+            enum: [docx, pdf]
             default: docx
       responses:
         "200":
-          description: Action plan DOCX
+          description: Action plan export
           content:
             application/vnd.openxmlformats-officedocument.wordprocessingml.document:
               schema:
                 type: string
                 format: binary
+            application/pdf:
+              schema:
+                type: string
+                format: binary
   /processing/{meetingId}/report:
     get:
-      summary: Export meeting report as DOCX
+      summary: Export meeting report as DOCX or PDF
       operationId: exportMeetingReport
       parameters:
         - in: path
@@ -256,13 +337,17 @@ paths:
           required: false
           schema:
             type: string
-            enum: [docx]
+            enum: [docx, pdf]
             default: docx
       responses:
         "200":
-          description: Meeting report DOCX
+          description: Meeting report export
           content:
             application/vnd.openxmlformats-officedocument.wordprocessingml.document:
+              schema:
+                type: string
+                format: binary
+            application/pdf:
               schema:
                 type: string
                 format: binary
@@ -605,3 +690,43 @@ components:
         severity:
           type: string
           enum: [low, medium, high]
+    MeetingChatResponse:
+      type: object
+      properties:
+        meetingId:
+          type: integer
+          format: int64
+        answer:
+          type: string
+        provider:
+          type: string
+        source_segments:
+          type: array
+          items:
+            $ref: "#/components/schemas/TranscriptEvidenceMatch"
+    SemanticSearchResponse:
+      type: object
+      properties:
+        query:
+          type: string
+        provider:
+          type: string
+        results:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+    CrossMeetingAskResponse:
+      type: object
+      properties:
+        question:
+          type: string
+        answer:
+          type: string
+        provider:
+          type: string
+        meetings:
+          type: array
+          items:
+            type: object
+            additionalProperties: true

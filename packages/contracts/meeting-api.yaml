@@ -54,6 +54,182 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Meeting"
+  /api/v1/meetings/scheduled:
+    post:
+      summary: Create scheduled meeting for Google Calendar linking
+      operationId: createScheduledMeeting
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ScheduledMeetingCreate"
+      responses:
+        "200":
+          description: Scheduled meeting created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScheduledMeeting"
+  /api/v1/meetings/{id}/google/calendar-event:
+    post:
+      summary: Create Google Calendar event for meeting
+      operationId: createGoogleCalendarEvent
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GoogleCalendarEventCreate"
+      responses:
+        "200":
+          description: Calendar link status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleCalendarStatus"
+        "202":
+          description: Calendar event creation in progress
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleCalendarStatus"
+  /api/v1/meetings/{id}/google/status:
+    get:
+      summary: Poll Google Calendar creation status
+      operationId: getGoogleCalendarStatus
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: Current Google Calendar status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleCalendarStatus"
+        "202":
+          description: Calendar event still being created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleCalendarStatus"
+  /api/v1/meetings/google/calendars:
+    get:
+      summary: List Google calendars for linked account
+      operationId: listGoogleCalendars
+      responses:
+        "200":
+          description: Calendar list payload
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /api/v1/meetings/google/meet:
+    post:
+      summary: Create quick Google Meet
+      operationId: createQuickGoogleMeet
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                summary:
+                  type: string
+      responses:
+        "200":
+          description: Meet link created
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /meetings/{meetingId}/speakers:
+    get:
+      summary: List speaker display profiles
+      operationId: listMeetingSpeakerProfiles
+      parameters:
+        - in: path
+          name: meetingId
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: Speaker profiles
+    put:
+      summary: Upsert speaker display profiles
+      operationId: upsertMeetingSpeakerProfiles
+      parameters:
+        - in: path
+          name: meetingId
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                profiles:
+                  type: array
+                  items:
+                    type: object
+                    additionalProperties: true
+      responses:
+        "200":
+          description: Updated profiles
+  /meetings/{meetingId}/tasks:
+    get:
+      summary: List meeting tasks
+      operationId: listMeetingTasks
+      parameters:
+        - in: path
+          name: meetingId
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: Task list
+    post:
+      summary: Create meeting task
+      operationId: createMeetingTask
+      parameters:
+        - in: path
+          name: meetingId
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        "200":
+          description: Created task
   /health:
     get:
       summary: Health check
@@ -84,6 +260,96 @@ components:
           type: string
           nullable: true
         summary:
+          type: string
+          nullable: true
+    ScheduledMeetingCreate:
+      type: object
+      required:
+        - title
+        - startDateTime
+        - endDateTime
+        - timeZone
+      properties:
+        title:
+          type: string
+        startDateTime:
+          type: string
+          format: date-time
+        endDateTime:
+          type: string
+          format: date-time
+        timeZone:
+          type: string
+        language:
+          type: string
+    ScheduledMeeting:
+      type: object
+      required:
+        - id
+        - title
+        - status
+      properties:
+        id:
+          type: integer
+          format: int64
+        title:
+          type: string
+        status:
+          type: string
+        scheduledStartAt:
+          type: string
+          format: date-time
+        scheduledEndAt:
+          type: string
+          format: date-time
+        scheduledTimezone:
+          type: string
+    GoogleCalendarEventCreate:
+      type: object
+      required:
+        - startDateTime
+        - endDateTime
+        - timeZone
+      properties:
+        startDateTime:
+          type: string
+        endDateTime:
+          type: string
+        timeZone:
+          type: string
+        attendees:
+          type: array
+          items:
+            type: string
+    GoogleCalendarStatus:
+      type: object
+      required:
+        - meetingId
+        - creationStatus
+        - conferenceStatus
+      properties:
+        meetingId:
+          type: integer
+          format: int64
+        creationStatus:
+          type: string
+          enum:
+            - not_created
+            - creating
+            - success
+            - failed
+        conferenceStatus:
+          type: string
+        googleCalendarEventId:
+          type: string
+          nullable: true
+        meetUri:
+          type: string
+          nullable: true
+        hangoutLink:
+          type: string
+          nullable: true
+        errorCode:
           type: string
           nullable: true
     MeetingResultUpdate:

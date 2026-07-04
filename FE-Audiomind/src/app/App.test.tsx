@@ -77,6 +77,63 @@ describe('hydrateLiveTranscriptSegments', () => {
     })
   })
 
+  it('retries scoped hydration when the transcript attempt is not ready', async () => {
+    vi.useFakeTimers()
+
+    const sessionToken = { meetingId: 88, recordingSessionId: 9001, attemptId: 2, connectionSeq: 0 }
+    const fetchTranscript = vi
+      .fn()
+      .mockResolvedValueOnce({
+        meeting_id: 88,
+        status: 'NOT_READY',
+        errorCode: 'TRANSCRIPT_NOT_READY',
+        transcriptNotReady: true,
+        transcripts: [],
+      })
+      .mockResolvedValue({
+        meeting_id: 88,
+        transcripts: [
+          {
+            speaker: 'Speaker 1',
+            start_time: 1,
+            end_time: 2,
+            text: 'Attempt scoped transcript',
+            recording_session_id: 9001,
+            attempt_id: 2,
+            stream_id: 'mic',
+            seq: 1,
+          },
+        ],
+      })
+
+    const hydrationPromise = hydrateLiveTranscriptSegments(
+      88,
+      fetchTranscript,
+      sessionToken,
+      (token) => token === sessionToken,
+    )
+
+    await vi.advanceTimersByTimeAsync(1500)
+    await vi.runAllTicks()
+    expect(fetchTranscript).toHaveBeenCalledTimes(1)
+
+    await vi.advanceTimersByTimeAsync(1500 * 3)
+    const hydratedSegments = await hydrationPromise
+
+    expect(fetchTranscript).toHaveBeenCalledWith(88, {
+      recordingSessionId: 9001,
+      attemptId: 2,
+    })
+    expect(fetchTranscript).toHaveBeenCalledTimes(4)
+    expect(hydratedSegments).toHaveLength(1)
+    expect(hydratedSegments[0]).toMatchObject({
+      text: 'Attempt scoped transcript',
+      recordingSessionId: 9001,
+      attemptId: 2,
+      streamId: 'mic',
+    })
+  })
+
   it('waits for transcript content and timing to stabilize when fragment count is unchanged', async () => {
     vi.useFakeTimers()
 
@@ -246,6 +303,50 @@ describe('hydrateLiveTranscriptSegments', () => {
     expect(hydratedSegments).toEqual([])
   })
 
+  it('passes v2 provenance to post-stop hydration transcript reads', async () => {
+    vi.useFakeTimers()
+
+    const sessionToken = { meetingId: 88, recordingSessionId: 9001, attemptId: 2, connectionSeq: 0 }
+    const fetchTranscript = vi.fn().mockResolvedValue({
+      meeting_id: 88,
+      transcripts: [
+        {
+          meeting_id: 88,
+          recording_session_id: 9001,
+          attempt_id: 2,
+          seq: 1,
+          stream_id: 'tab',
+          speaker: 'SPEAKER_1',
+          start_time: 1,
+          end_time: 2,
+          text: 'Attempt scoped row',
+        },
+      ],
+    })
+
+    const hydrationPromise = hydrateLiveTranscriptSegments(
+      88,
+      fetchTranscript,
+      sessionToken,
+      (token) => token === sessionToken,
+    )
+    await vi.advanceTimersByTimeAsync(1500)
+    await vi.advanceTimersByTimeAsync(800 * 3)
+    const hydratedSegments = await hydrationPromise
+
+    expect(fetchTranscript).toHaveBeenCalledWith(88, {
+      recordingSessionId: 9001,
+      attemptId: 2,
+    })
+    expect(hydratedSegments).toHaveLength(1)
+    expect(hydratedSegments[0]).toMatchObject({
+      recordingSessionId: 9001,
+      attemptId: 2,
+      streamId: 'tab',
+      seq: 1,
+    })
+  })
+
   it('does not retry old meeting transcript after 404 wait when hydration ownership changes', async () => {
     vi.useFakeTimers()
 
@@ -266,7 +367,7 @@ describe('hydrateLiveTranscriptSegments', () => {
       },
     )
 
-    // Initial hydration delay -> first fetch /processing/transcript/7
+    // Initial hydration delay -> first fetch /processing/{meetingId}/transcript
     await vi.advanceTimersByTimeAsync(1500)
     await vi.runAllTicks()
 
@@ -610,6 +711,14 @@ describe('mergeTranscriptSegmentsForDisplay', () => {
 })
 
 describe('pollRealtimeAnalysisAfterStop', () => {
+  const activeRealtimePollOptions = (meetingId: number, recordingSessionId = 9001, attemptId = 2) => {
+    const sessionToken = { meetingId, recordingSessionId, attemptId, connectionSeq: 1 }
+    return {
+      sessionToken,
+      isSessionActive: (token: typeof sessionToken | null) => token === sessionToken,
+    }
+  }
+
   afterEach(() => {
     vi.useRealTimers()
   })
@@ -636,6 +745,121 @@ describe('pollRealtimeAnalysisAfterStop', () => {
     expect(result.metadata?.analysisStatus).toBe('NO_ANALYSIS')
   })
 
+  it('passes recording attempt scope to analysis polling for realtime sessions', async () => {
+    const fetchAnalysis = vi.fn().mockResolvedValue({
+      status: 'PENDING',
+      analysisStatus: 'PENDING',
+      summary: '',
+      keywords: [],
+      technicalTerms: [],
+      painPoints: [],
+      actionItems: [],
+      domainMode: 'it',
+    })
+    const sessionToken = { meetingId: 87, recordingSessionId: 2, attemptId: 2, connectionSeq: 1 }
+
+    await pollRealtimeAnalysisAfterStop(
+      87,
+      new AbortController().signal,
+      fetchAnalysis as any,
+      1,
+      {
+        sessionToken,
+        isSessionActive: () => true,
+      },
+    )
+
+    expect(fetchAnalysis).toHaveBeenCalledWith(87, expect.objectContaining({
+      recordingSessionId: 2,
+      attemptId: 2,
+      signal: expect.any(AbortSignal),
+    }))
+    expect(fetchAnalysis.mock.calls.some(([, options]) =>
+      options?.recordingSessionId == null && options?.attemptId == null,
+    )).toBe(false)
+  })
+
+  it('does not fetch unscoped analysis when realtime session token is missing', async () => {
+    const fetchAnalysis = vi.fn()
+
+    const result = await pollRealtimeAnalysisAfterStop(
+      87,
+      new AbortController().signal,
+      fetchAnalysis as any,
+      1,
+    )
+
+    expect(fetchAnalysis).not.toHaveBeenCalled()
+    expect(result.status).toBe('pending')
+    expect(result.reason).toBe('analysis_scope_unavailable')
+    expect(result.metadata?.analysisStatus).toBe('ANALYSIS_SCOPE_UNAVAILABLE')
+  })
+
+  it('does not fetch analysis when realtime scope is partial', async () => {
+    const fetchAnalysis = vi.fn()
+    const sessionToken = { meetingId: 87, recordingSessionId: 2, attemptId: 2, connectionSeq: 1 }
+
+    const result = await pollRealtimeAnalysisAfterStop(
+      87,
+      new AbortController().signal,
+      fetchAnalysis as any,
+      1,
+      {
+        sessionToken,
+        isSessionActive: () => true,
+        analysisScope: { recordingSessionId: 2 } as any,
+      },
+    )
+
+    expect(fetchAnalysis).not.toHaveBeenCalled()
+    expect(result.status).toBe('pending')
+    expect(result.reason).toBe('analysis_scope_unavailable')
+    expect(result.metadata?.analysisStatus).toBe('ANALYSIS_SCOPE_UNAVAILABLE')
+  })
+
+  it('does not fetch analysis when explicit scope does not match the realtime session token', async () => {
+    const fetchAnalysis = vi.fn()
+    const sessionToken = { meetingId: 87, recordingSessionId: 2, attemptId: 2, connectionSeq: 1 }
+
+    const result = await pollRealtimeAnalysisAfterStop(
+      87,
+      new AbortController().signal,
+      fetchAnalysis as any,
+      1,
+      {
+        sessionToken,
+        isSessionActive: () => true,
+        analysisScope: { recordingSessionId: 2, attemptId: 3 },
+      },
+    )
+
+    expect(fetchAnalysis).not.toHaveBeenCalled()
+    expect(result.status).toBe('pending')
+    expect(result.reason).toBe('analysis_scope_unavailable')
+    expect(result.metadata?.analysisStatus).toBe('ANALYSIS_SCOPE_UNAVAILABLE')
+  })
+
+  it('does not fetch unscoped or stale scoped analysis when token belongs to another meeting', async () => {
+    const fetchAnalysis = vi.fn()
+    const sessionToken = { meetingId: 91, recordingSessionId: 2, attemptId: 2, connectionSeq: 1 }
+
+    const result = await pollRealtimeAnalysisAfterStop(
+      92,
+      new AbortController().signal,
+      fetchAnalysis as any,
+      1,
+      {
+        sessionToken,
+        isSessionActive: () => true,
+      },
+    )
+
+    expect(fetchAnalysis).not.toHaveBeenCalled()
+    expect(result.status).toBe('pending')
+    expect(result.reason).toBe('analysis_scope_unavailable')
+    expect(result.metadata?.analysisStatus).toBe('ANALYSIS_SCOPE_UNAVAILABLE')
+  })
+
   it('returns no-analysis metadata when backend reports no transcript after finalize', async () => {
     const fetchAnalysis = vi.fn().mockResolvedValue({
       status: 'NO_TRANSCRIPT_AFTER_FINALIZE',
@@ -655,6 +879,7 @@ describe('pollRealtimeAnalysisAfterStop', () => {
       new AbortController().signal,
       fetchAnalysis as any,
       3,
+      activeRealtimePollOptions(81),
     )
 
     expect(fetchAnalysis).toHaveBeenCalledTimes(1)
@@ -693,6 +918,7 @@ describe('pollRealtimeAnalysisAfterStop', () => {
       new AbortController().signal,
       fetchAnalysis as any,
       4,
+      activeRealtimePollOptions(77),
     )
 
     await vi.advanceTimersByTimeAsync(2000)
@@ -737,6 +963,7 @@ describe('pollRealtimeAnalysisAfterStop', () => {
       new AbortController().signal,
       fetchAnalysis as any,
       5,
+      activeRealtimePollOptions(81),
     )
 
     await vi.advanceTimersByTimeAsync(2000)
@@ -757,6 +984,7 @@ describe('pollRealtimeAnalysisAfterStop', () => {
       new AbortController().signal,
       fetchAnalysis as any,
       3,
+      activeRealtimePollOptions(78),
     )
 
     expect(result.status).toBe('failed')
@@ -775,6 +1003,7 @@ describe('pollRealtimeAnalysisAfterStop', () => {
       new AbortController().signal,
       fetchAnalysis as any,
       2,
+      activeRealtimePollOptions(80),
     )
 
     await vi.advanceTimersByTimeAsync(2000)
@@ -807,6 +1036,7 @@ describe('pollRealtimeAnalysisAfterStop', () => {
       new AbortController().signal,
       fetchAnalysis as any,
       3,
+      activeRealtimePollOptions(79),
     )
 
     expect(fetchAnalysis).toHaveBeenCalledTimes(1)
@@ -837,6 +1067,7 @@ describe('pollRealtimeAnalysisAfterStop', () => {
       new AbortController().signal,
       fetchAnalysis as any,
       3,
+      activeRealtimePollOptions(91),
     )
 
     expect(fetchAnalysis).toHaveBeenCalledTimes(1)

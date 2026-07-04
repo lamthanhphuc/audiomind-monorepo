@@ -119,21 +119,7 @@ def build_analysis_analyzer(settings):
             timeout_seconds=gemini_timeout_seconds,
         )
 
-    if provider == "openai":
-        logger.info(
-            "Selected analysis provider=openai model={} summary_model={}",
-            settings.openai_model,
-            settings.openai_summary_model,
-        )
-        return AIAnalyzer(
-            api_key=settings.openai_api_key,
-            model=settings.openai_model,
-            provider="openai",
-            summary_model=settings.openai_summary_model
-            or settings.openai_analysis_model,
-            timeout_seconds=settings.ollama_timeout_seconds,
-        )
-
     raise AnalysisConfigError(
-        f"Unsupported analysis provider: {provider}", provider=provider
+        f"Unsupported analysis provider: {provider}. Use ANALYSIS_PROVIDER=gemini.",
+        provider=provider,
     )

@@ -1,0 +1,19 @@
+{
+  "domain": "business",
+  "version": "1.0.0",
+  "versionHash": "business-v1",
+  "terms": [
+    { "term": "KPI", "normalized": "kpi", "category": "metric" },
+    { "term": "doanh thu", "normalized": "doanh thu", "category": "finance" },
+    { "term": "chi phí", "normalized": "chi phí", "category": "finance" },
+    { "term": "khách hàng", "normalized": "khách hàng", "category": "customer" },
+    { "term": "chiến lược", "normalized": "chiến lược", "category": "strategy" },
+    { "term": "pipeline", "normalized": "pipeline", "category": "sales" },
+    { "term": "ROI", "normalized": "roi", "category": "metric" }
+  ],
+  "normalizationMap": {
+    "khach hang": "khách hàng",
+    "doanh thu": "doanh thu",
+    "chi phi": "chi phí"
+  }
+}

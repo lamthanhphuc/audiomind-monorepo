@@ -3,6 +3,7 @@ package com.example.meetingservice.service;
 import com.example.meetingservice.entity.Meeting;
 import com.example.meetingservice.repository.MeetingRepository;
 import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.Optional;
@@ -28,6 +29,46 @@ class MeetingServiceTest {
 
     @InjectMocks
     private MeetingService meetingService;
+
+    @Test
+    void saveScheduledMeetingPersistsFutureScheduleAndStatus() {
+        OffsetDateTime start = OffsetDateTime.now().plusHours(2);
+        OffsetDateTime end = start.plusHours(1);
+        when(meetingRepository.save(any(Meeting.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        Meeting result = meetingService.saveScheduledMeeting(
+                "Product planning", 9L, "vi", start, end, "Asia/Ho_Chi_Minh");
+
+        assertEquals(MeetingService.MEETING_STATUS_SCHEDULED, result.getStatus());
+        assertEquals(start, result.getScheduledStartAt());
+        assertEquals(end, result.getScheduledEndAt());
+        assertEquals("Asia/Ho_Chi_Minh", result.getScheduledTimezone());
+        assertEquals(9L, result.getOwnerUserId());
+    }
+
+    @Test
+    void saveScheduledMeetingAllowsOngoingSlotWhenEndIsStillInFuture() {
+        OffsetDateTime start = OffsetDateTime.now().minusMinutes(30);
+        OffsetDateTime end = OffsetDateTime.now().plusMinutes(30);
+        Meeting saved = new Meeting();
+        saved.setId(12L);
+        saved.setStatus(MeetingService.MEETING_STATUS_SCHEDULED);
+        when(meetingRepository.save(any(Meeting.class))).thenReturn(saved);
+
+        Meeting result = meetingService.saveScheduledMeeting(
+                "Ongoing meeting", 9L, "vi", start, end, "Asia/Ho_Chi_Minh");
+
+        assertEquals(MeetingService.MEETING_STATUS_SCHEDULED, result.getStatus());
+    }
+
+    @Test
+    void saveScheduledMeetingRejectsFullyPastSlot() {
+        OffsetDateTime start = OffsetDateTime.now().minusHours(2);
+        OffsetDateTime end = start.plusHours(1);
+
+        assertThrows(IllegalArgumentException.class, () -> meetingService.saveScheduledMeeting(
+                "Past meeting", 9L, "vi", start, end, "Asia/Ho_Chi_Minh"));
+    }
 
     @Test
     void saveMeeting_shouldPersistTitleAndAudioPath() {

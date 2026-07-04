@@ -10,6 +10,7 @@ public record ProcessStartRequest(
         @JsonAlias("fileId") String file_id,
         String topic,
         List<String> glossary_terms,
-        String language
+        String language,
+        @JsonAlias("domainMode") String domain_mode
 ) {
 }

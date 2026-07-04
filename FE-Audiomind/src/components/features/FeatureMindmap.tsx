@@ -1,91 +1,85 @@
 import { useMemo } from 'react'
-import { normalizeAnalysisResponse, type AiAnalysis } from '../../types'
+import MindmapView from '../mindmap/MindmapView'
+import type { AiAnalysis, Meeting } from '../../types'
 
 type FeatureMindmapProps = {
+  meetings: Meeting[]
+  selectedMeetingId?: number | null
+  onMeetingSelect: (meetingId: number) => void
+  getMeetingLabel: (meeting: Pick<Meeting, 'id' | 'title' | 'originalFileName'>) => string
   analysis: AiAnalysis | null
   onLoadAnalysis: () => Promise<void>
   busy?: boolean
   meetingId?: number | null
+  meetingTitle?: string
 }
 
-export default function FeatureMindmap({ analysis, onLoadAnalysis, busy, meetingId }: FeatureMindmapProps) {
-  const normalizedAnalysis = useMemo(() => normalizeAnalysisResponse(analysis), [analysis])
-  const keywords = normalizedAnalysis.keywords.slice(0, 4)
-  const actions = normalizedAnalysis.actionItems.slice(0, 3)
-  const technicalTerms = normalizedAnalysis.technicalTerms.slice(0, 4)
-  const painPoints = normalizedAnalysis.painPoints.slice(0, 3)
+export default function FeatureMindmap({
+  meetings,
+  selectedMeetingId,
+  onMeetingSelect,
+  getMeetingLabel,
+  analysis,
+  onLoadAnalysis,
+  busy,
+  meetingId,
+  meetingTitle,
+}: FeatureMindmapProps) {
+  const hasAnalysis = useMemo(() => Boolean(analysis), [analysis])
+  const hasMeetings = meetings.length > 0
 
   return (
-    <section className="feature-scene feature-mindmap-scene">
-      <section className="hero feature-hero feature-hero--mindmap">
-        <div className="hero__search">
-          <input className="search-input" type="search" placeholder="Tìm bài giảng, môn học, ghi chú..." />
-          <span className="search-icon">⌕</span>
+    <section className="feature-scene feature-mindmap-scene" data-testid="feature-mindmap">
+      <header className="feature-mindmap-scene__hero">
+        <div className="feature-mindmap-scene__intro">
+          <p className="feature-mindmap-scene__eyebrow">SƠ ĐỒ</p>
+          <h1>Mindmap cuộc họp</h1>
+          <p className="feature-mindmap-scene__subtitle">
+            Trực quan hóa từ khóa, thuật ngữ, vấn đề và hành động từ phân tích AI.
+          </p>
         </div>
-        <div className="hero__content">
-          <h1>Mindmap bài giảng</h1>
-          <p>Trực quan hóa bài học bằng sơ đồ nhánh để dễ dàng ôn tập.</p>
-        </div>
-      </section>
+        {hasMeetings ? (
+          <label className="feature-mindmap-scene__picker" data-testid="mindmap-meeting-picker">
+            <span>Meeting</span>
+            <select
+              value={selectedMeetingId ?? ''}
+              onChange={(event) => {
+                const nextId = Number(event.target.value)
+                if (Number.isFinite(nextId) && nextId > 0) {
+                  onMeetingSelect(nextId)
+                }
+              }}
+            >
+              {meetings.map((meeting) => (
+                <option key={meeting.id} value={meeting.id}>
+                  {getMeetingLabel(meeting)}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : (
+          <p className="feature-mindmap-scene__empty" data-testid="mindmap-empty-meetings">
+            Chưa có meeting — hãy phân tích file hoặc ghi âm trước.
+          </p>
+        )}
+      </header>
 
-      <section className="feature-panel feature-mindmap">
-        <header className="feature-panel__header">
-          <h2>Sơ đồ tổng hợp</h2>
-          <button type="button" className="secondary-cta" disabled={busy || !meetingId} onClick={onLoadAnalysis}>
-            Làm mới dữ liệu
-          </button>
-        </header>
+      {hasMeetings && (
+        <MindmapView
+          layout="page"
+          analysis={analysis}
+          meetingId={meetingId}
+          meetingTitle={meetingTitle}
+          onRefresh={onLoadAnalysis}
+          busy={busy}
+        />
+      )}
 
-        <div className="mindmap-status">
-          <span className="feature-chip">Meeting ID: {meetingId ?? '--'}</span>
-          <span className="mindmap-status__dot" />
-          <span>{analysis ? `Đã đồng bộ dữ liệu (${normalizedAnalysis.domainMode})` : 'Chưa có dữ liệu phân tích'}</span>
-        </div>
-
-        <div className="mindmap-canvas">
-          <div className="mindmap-graph mindmap-graph--large">
-            <div className="mindmap-graph__root">Buoi hoc</div>
-
-            <div className="mindmap-graph__col">
-              <h4>Từ khóa</h4>
-              {keywords.length ? keywords.map((item) => <span key={item} className="mind-pill">{item}</span>) : <span className="mind-pill">Chờ dữ liệu...</span>}
-            </div>
-
-            <div className="mindmap-graph__col">
-              <h4>Thuật ngữ</h4>
-              {technicalTerms.length
-                ? technicalTerms.map((item) => (
-                    <span key={item.term} className="mind-pill mind-pill--muted" title={item.meaning || ''}>
-                      {item.term}
-                    </span>
-                  ))
-                : <span className="mind-pill mind-pill--muted">Chờ dữ liệu...</span>}
-            </div>
-
-            <div className="mindmap-graph__col">
-              <h4>Pain points</h4>
-              {painPoints.length
-                ? painPoints.map((item) => (
-                    <span key={`${item.title}-${item.severity}`} className="mind-pill" style={{ background: item.severity === 'high' ? '#fee2e2' : item.severity === 'medium' ? '#fef3c7' : '#dcfce7' }}>
-                      {item.title}
-                    </span>
-                  ))
-                : <span className="mind-pill">Chờ dữ liệu...</span>}
-            </div>
-
-            <div className="mindmap-graph__col mindmap-graph__col--actions">
-              <h4>Hành động</h4>
-              {actions.length
-                ? actions.map((item) => (
-                    <span key={item} className="mind-pill mind-pill--accent">
-                      {item}
-                    </span>
-                  ))
-                : <span className="mind-pill mind-pill--accent">Chờ dữ liệu...</span>}
-            </div>
-          </div>
-        </div>
-      </section>
+      {hasMeetings && !hasAnalysis && (
+        <p className="feature-mindmap-scene__hint">
+          Chọn một cuộc họp đã phân tích hoặc bấm &quot;Làm mới dữ liệu&quot; sau khi xử lý xong.
+        </p>
+      )}
     </section>
   )
 }

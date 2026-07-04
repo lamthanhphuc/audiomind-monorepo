@@ -47,9 +47,12 @@ const resolveNumberEnv = (keys: string[], fallback: number, options: { min?: num
 
 export const PROCESSING_API_BASE = resolveEnv(['VITE_PROCESSING_API_BASE_URL', 'VITE_PROCESSING_SERVICE_URL'], 'http://localhost:8082')
 export const MEETING_API_BASE = resolveEnv(['VITE_MEETING_API_BASE_URL', 'VITE_MEETING_SERVICE_URL'], 'http://localhost:8081')
+export const USER_API_BASE = resolveEnv(['VITE_USER_API_BASE_URL', 'VITE_USER_SERVICE_URL'], 'http://localhost:8083')
 export const AI_INTERNAL_BASE = resolveEnv(['VITE_API_CPU_BASE', 'VITE_AI_SERVICE_URL'], 'http://localhost:8000')
 export const AI_GPU_BASE = resolveEnv(['VITE_API_GPU_BASE'], 'http://localhost:8001')
 export const API_BASE = resolveEnv(['VITE_API_BASE'], PROCESSING_API_BASE)
+/** Public app origin for share-invite copy links; falls back to window.location.origin at call site. */
+export const PUBLIC_FRONTEND_ORIGIN = resolveOptionalEnv(['VITE_PUBLIC_FRONTEND_ORIGIN'], '')
 export const REALTIME_WS_BASE_URL = resolveOptionalEnv(
 	['VITE_REALTIME_WS_BASE_URL', 'REACT_APP_WS_URL'],
 	'ws://localhost:8082/ws/meetings',
@@ -77,6 +80,11 @@ export const REALTIME_TINY_CHUNK_STREAK_THRESHOLD = resolveNumberEnv(['VITE_REAL
 export const REALTIME_TINY_CHUNK_MIN_RECORDING_SEC = resolveNumberEnv(['VITE_REALTIME_TINY_CHUNK_MIN_RECORDING_SEC'], 5, { min: 1, max: 120 })
 export const REALTIME_TINY_CHUNK_MAX_RMS = resolveNumberEnv(['VITE_REALTIME_TINY_CHUNK_MAX_RMS'], 0.01, { min: 0, max: 1 })
 export const REALTIME_MIN_FALLBACK_AUDIO_BYTES = resolveNumberEnv(['VITE_REALTIME_MIN_FALLBACK_AUDIO_BYTES'], 1024, { min: 128, max: 1_048_576 })
+
+export const REALTIME_DUAL_STREAM_TAB_MIC = resolveBooleanEnv(
+	['VITE_REALTIME_DUAL_STREAM_TAB_MIC'],
+	false,
+)
 
 export const ERROR_UX_ENABLED = resolveBooleanEnv(
 	['VITE_ERROR_UX_ENABLED', 'REACT_APP_ERROR_UX_ENABLED'],

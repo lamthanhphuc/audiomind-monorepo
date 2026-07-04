@@ -1,29 +1,65 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
     ApiError,
     deleteMeeting,
-    downloadMeetingActionPlanDocx,
+    downloadMeetingActionPlan,
     downloadMeetingReport,
     downloadMeetingTranscript,
     getMeetingActionPlan,
     getSavedAnalysis,
     getTranscript,
     listMeetingsWithParams,
-    reanalyzeMeetingAnalysis,
+    listMeetingResultScopes,
     renameMeeting,
+    resolveMeetingResultScope,
     searchMeetingTranscriptEvidence,
+    semanticSearchMeetings,
 } from '../../services/api'
-import type { MeetingActionPlanData, TranscriptEvidenceMatch } from '../../services/api'
-import { formatGroupedActionPlanForCopy, normalizeGroupedActionPlan } from '../../types'
+import type { MeetingActionPlanData, SemanticSearchResult, TranscriptEvidenceMatch } from '../../services/api'
+import { formatActionPlanConfidence } from '../../utils/uiLabels'
+import { type DomainMode } from '../../constants/domainMode'
 import type { AiAnalysis, GroupedActionPlan, Meeting } from '../../types'
+import { formatGroupedActionPlanForCopy, normalizeGroupedActionPlan } from '../../types'
+import { formatShareLabel, inviteMeetingShare, isPendingMeetingShare, listMeetingShares, pendingShareInviteCopyText, pendingShareInviteNotice, revokeMeetingShare, revokePendingMeetingShare, shareListKey, type MeetingShare } from '../../services/meetingShare'
+import { getUserProfile } from '../../services/api'
+import { getGoogleStatus, GOOGLE_GMAIL_SEND_SCOPE, hasGoogleGmailSendScope, missingGoogleLinkScopes, startGoogleLink, type GoogleStatus } from '../../services/googleIntegration'
+import { buildStudioPath } from '../../utils/studioRouting'
+import { buildExistingUserMeetingUrl } from '../../utils/inviteAuth'
+import { PUBLIC_FRONTEND_ORIGIN, ERROR_UX_ENABLED } from '../../services/config'
+import { getJwtPlan } from '../../services/auth'
+import { isUserQuotaExceeded, resolveQuotaPresentation, type UserPlan } from '../../utils/quotaUx'
+import {
+  closeOAuthTab,
+  completeOAuthNavigation,
+  prepareOAuthTab,
+} from '../../utils/openOAuthWindow'
 import { normalizePersistedTranscriptForView } from '../../utils/transcript'
-import { collectEvidenceMatchesFromActionPlan, collectEvidenceMatchesFromAnalysis, mapSearchEvidenceMatches } from '../../utils/evidenceMatches'
-import { AnalysisPanel } from '../analysis/AnalysisPanel'
-import { AnalysisStatusPanel, normalizeAnalysisMetadata } from '../analysis/AnalysisStatusPanel'
+import {
+  formatResultScopeLabel,
+  scopeCacheKey,
+  scopeToTranscriptOptions,
+  selectDefaultResultScope,
+  type MeetingResultScope,
+} from '../../utils/meetingResultScope'
 import { TranscriptDisplay } from '../transcript/TranscriptDisplay'
+import GlossaryNotesPanel from './GlossaryNotesPanel'
+import SpeakerNamingPanel from './SpeakerNamingPanel'
+import TermExplainPopover from './TermExplainPopover'
+import MeetingTimeline from './MeetingTimeline'
+import type { TimelineChapter } from '../../utils/timelineData'
+import {
+  highlightRangeFromTime,
+  scrollTranscriptToHighlight,
+  type TranscriptHighlightRange,
+} from '../../utils/transcriptJump'
+import MeetingTaskTracker from './MeetingTaskTracker'
+import { listSpeakerProfiles, type SpeakerProfile } from '../../services/knowledgeLayer'
+import AiAssistant from '../dashboard/AiAssistant'
+import { answerMeetingQuestion, type MeetingChatCitation } from '../../utils/meetingChatbot'
 import { EmptyState } from '../ui/EmptyState'
 import { ErrorState } from '../ui/ErrorState'
 import { LoadingState } from '../ui/LoadingState'
+import { formatDateVi, formatLanguage, formatMeetingStatus } from '../../utils/uiLabels'
 
 type DetailAnalysisState = 'idle' | 'processing' | 'completed' | 'failed' | 'failed_retryable' | 'missing'
 type ListState = 'idle' | 'loading' | 'ready' | 'empty' | 'error'
@@ -31,7 +67,6 @@ type TranscriptSearchState = 'idle' | 'loading' | 'ready' | 'empty' | 'error'
 type TranscriptExportFormat = 'txt' | 'csv'
 type TranscriptExportMode = 'readable' | 'raw'
 
-const SAVED_TRANSCRIPT_MISSING_REANALYZE_MESSAGE = 'Cannot re-analyze because saved transcript was not found.'
 const ACTION_PLAN_REQUIRED_MESSAGE = 'Cần có phân tích cuộc họp trước khi xuất action plan.'
 const HISTORY_LAST_SELECTED_KEY = 'audiomind.history.lastSelectedMeetingId'
 const DETAIL_CACHE_TTL_MS = 5 * 60 * 1000
@@ -72,7 +107,9 @@ const emptyDetailState: SelectedMeetingDetail = {
 }
 
 type MeetingDetailCacheEntry = {
+  cacheKey: string
   meetingId: number
+  resultScope: MeetingResultScope
   meeting: Meeting
   transcriptSegments: SelectedMeetingDetail['transcriptSegments']
   transcriptState: SelectedMeetingDetail['transcriptState']
@@ -86,7 +123,15 @@ type MeetingDetailCacheEntry = {
 
 type MeetingHistorySceneProps = {
   focusMeetingId?: number | null
-  onOpenAnalysis?: (meetingId: number, context?: { title?: string }) => void
+  onOpenAnalysis?: (meetingId: number, context?: { title?: string; scope?: MeetingResultScope | null }) => void
+  onOpenMindmap?: (meetingId: number, context?: { title?: string; scope?: MeetingResultScope | null }) => void
+  searchQuery?: string
+  onSearchQueryChange?: (value: string) => void
+  onNavigateUpload?: () => void
+  onNavigateRealtime?: () => void
+  onNavigateBilling?: () => void
+  preferredDomainMode?: DomainMode
+  oauthRefreshTick?: number
 }
 
 const meetingSummaryChanged = (previous: Meeting, next: Meeting): boolean => {
@@ -161,10 +206,10 @@ const getMeetingLanguage = (meeting: Meeting): string => {
 
 const getMeetingStatus = (meeting: Meeting): string => {
   const normalized = String(meeting.status ?? '').trim().toLowerCase()
-  if (normalized === 'completed' || normalized === 'processing' || normalized === 'failed') {
-    return normalized
+  if (normalized === 'completed' || normalized === 'processing' || normalized === 'failed' || normalized === 'scheduled') {
+    return formatMeetingStatus(normalized)
   }
-  return 'unknown'
+  return 'Không rõ'
 }
 
 const formatEvidenceTime = (startTime: number, endTime: number): string => {
@@ -240,9 +285,9 @@ const ActionPlanPreview = ({ preview, onCopy }: ActionPlanPreviewProps) => {
           {featureSet && <p>{featureSet}</p>}
         </div>
         <div className="action-plan-preview__actions">
-          <span className="meta-pill">{itemCount} items</span>
+          <span className="meta-pill">{itemCount} việc</span>
           <button type="button" onClick={onCopy} data-testid="meeting-action-plan-copy">
-            Copy
+            Sao chép
           </button>
         </div>
       </div>
@@ -265,15 +310,15 @@ const ActionPlanPreview = ({ preview, onCopy }: ActionPlanPreviewProps) => {
                   <li className="action-plan-preview__item" key={item.id}>
                     <div className="action-plan-preview__item-title">
                       <strong>{item.title}</strong>
-                      <span>{item.confidence ?? 'NEEDS_REVIEW'}</span>
+                      <span>{formatActionPlanConfidence(item.confidence)}</span>
                     </div>
                     {item.description && <p>{item.description}</p>}
                     {(item.owner || item.deadline || item.priority || item.status) && (
                       <div className="action-plan-preview__meta">
-                        {item.owner && <span>Owner: {item.owner}</span>}
-                        {item.deadline && <span>Due: {item.deadline}</span>}
-                        {item.priority && <span>Priority: {item.priority}</span>}
-                        {item.status && <span>Status: {item.status}</span>}
+                        {item.owner && <span>Người phụ trách: {item.owner}</span>}
+                        {item.deadline && <span>Hạn: {item.deadline}</span>}
+                        {item.priority && <span>Ưu tiên: {item.priority}</span>}
+                        {item.status && <span>Trạng thái: {item.status}</span>}
                       </div>
                     )}
                     {item.subtasks.length > 0 && (
@@ -284,7 +329,7 @@ const ActionPlanPreview = ({ preview, onCopy }: ActionPlanPreviewProps) => {
                       </ul>
                     )}
                     {item.evidenceKeywords && item.evidenceKeywords.length > 0 && (
-                      <div className="action-plan-preview__keywords" aria-label="Keyword hints">
+                      <div className="action-plan-preview__keywords" aria-label="Gợi ý từ khóa">
                         {item.evidenceKeywords.map((keyword) => (
                           <span key={keyword}>{keyword}</span>
                         ))}
@@ -319,15 +364,35 @@ const getAnalysisStateFromResponse = (analysis: AiAnalysis | null): { state: Det
   if (status === 'ANALYSIS_FAILED_RETRYABLE' || analysis.retryable === true) {
     return { state: 'failed_retryable', analysis, error: null }
   }
-  if (status === 'FAILED' || status === 'RATE_LIMITED' || status === 'QUOTA_BLOCKED') {
+  if (status === 'QUOTA_BLOCKED' || analysis.errorCode === 'QUOTA_EXCEEDED') {
+    const plan = (getJwtPlan() || 'FREE') as UserPlan
+    const presentation = resolveQuotaPresentation(
+      {
+        errorCode: analysis.errorCode,
+        analysisStatus: status,
+        fallbackMessage: analysis.errorMessage ?? undefined,
+      },
+      plan,
+      ERROR_UX_ENABLED,
+    )
+    return { state: 'failed', analysis: null, error: presentation.message }
+  }
+  if (status === 'FAILED' || status === 'RATE_LIMITED') {
     const retryAfter = analysis.retryAfterSeconds && analysis.retryAfterSeconds > 0
       ? ` Retry after ${analysis.retryAfterSeconds}s.`
       : ''
     const detail = analysis.errorCode ? ` ${analysis.errorCode}.` : ''
-    return { state: 'failed', analysis: null, error: `Analysis failed temporarily. Retry available.${detail}${retryAfter}` }
+    return { state: 'failed', analysis: null, error: `Phân tích AI tạm thời thất bại. Có thể thử lại.${detail}${retryAfter}` }
   }
   if (status === 'ANALYZING' || status === 'RUNNING' || status === 'QUEUED' || status === 'PENDING') {
     return { state: 'processing', analysis: null, error: null }
+  }
+  if (status === 'ANALYSIS_UNAVAILABLE_FOR_SCOPE') {
+    return {
+      state: 'missing',
+      analysis: null,
+      error: 'Kết quả phân tích chưa có cho phiên ghi này.',
+    }
   }
 
   const hasStructuredData = Boolean(
@@ -349,44 +414,27 @@ const getAnalysisStateFromResponse = (analysis: AiAnalysis | null): { state: Det
   return { state: 'completed', analysis, error: null }
 }
 
-const baseAnalysisMetadata = (meetingId: number): AiAnalysis => ({
-  meetingId,
-  meeting_id: meetingId,
-  status: 'NO_ANALYSIS',
-  analysisStatus: 'NO_ANALYSIS',
-  summary: '',
-  keywords: [],
-  technicalTerms: [],
-  painPoints: [],
-  actionItems: [],
-  domainMode: 'it',
-})
-
-const isTerminalAnalysisStatus = (analysis: AiAnalysis | null): boolean => {
-  const status = normalizeAnalysisMetadata(analysis).status
-  return status === 'COMPLETED'
-    || status === 'FAILED'
-    || status === 'RATE_LIMITED'
-    || status === 'QUOTA_BLOCKED'
-}
-
-const getReanalyzeErrorMessage = (error: unknown): string => {
-  if (error instanceof ApiError && error.status === 404) {
-    return SAVED_TRANSCRIPT_MISSING_REANALYZE_MESSAGE
-  }
-  if (error instanceof Error) {
-    return error.message
-  }
-  return 'Không thể re-analyze meeting'
-}
-
-export default function MeetingHistoryScene({ focusMeetingId = null, onOpenAnalysis }: MeetingHistorySceneProps) {
+export default function MeetingHistoryScene({
+  focusMeetingId = null,
+  onOpenAnalysis,
+  onOpenMindmap,
+  searchQuery: controlledSearchQuery,
+  onSearchQueryChange,
+  onNavigateUpload,
+  onNavigateRealtime,
+  onNavigateBilling,
+  preferredDomainMode: _preferredDomainMode,
+  oauthRefreshTick = 0,
+}: MeetingHistorySceneProps) {
+  const isSearchControlled = onSearchQueryChange != null
+  const [internalSearchQuery, setInternalSearchQuery] = useState('')
+  const searchQuery = isSearchControlled ? (controlledSearchQuery ?? '') : internalSearchQuery
+  const setSearchQuery = isSearchControlled ? onSearchQueryChange : setInternalSearchQuery
   const [listState, setListState] = useState<ListState>('loading')
   const [listError, setListError] = useState<string | null>(null)
   const [meetings, setMeetings] = useState<Meeting[]>([])
   const [selectedMeetingId, setSelectedMeetingId] = useState<number | null>(null)
   const [detail, setDetail] = useState<SelectedMeetingDetail>(emptyDetailState)
-  const [searchQuery, setSearchQuery] = useState('')
   const [debouncedSearchQuery, setDebouncedSearchQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
   const [languageFilter, setLanguageFilter] = useState('')
@@ -410,38 +458,70 @@ export default function MeetingHistoryScene({ focusMeetingId = null, onOpenAnaly
     error: null,
     success: null,
   })
-  const [reanalyzeBusy, setReanalyzeBusy] = useState(false)
-  const [reanalyzeError, setReanalyzeError] = useState<string | null>(null)
+  const [shareNotice, setShareNotice] = useState<string | null>(null)
+  const [shareInviteEmail, setShareInviteEmail] = useState('')
+  const [shareInviteBusy, setShareInviteBusy] = useState(false)
+  const [shareInviteError, setShareInviteError] = useState<string | null>(null)
+  const [meetingShares, setMeetingShares] = useState<MeetingShare[]>([])
+  const [shareGoogleStatus, setShareGoogleStatus] = useState<GoogleStatus | null>(null)
+  const [shareUserEmail, setShareUserEmail] = useState<string | null>(null)
+  const [gmailLinkBusy, setGmailLinkBusy] = useState(false)
   const [reloadTick, setReloadTick] = useState(0)
-  const rerunPollRef = useRef<{ meetingId: number; cancelled: boolean; timeoutId: number | null } | null>(null)
+  const [activeTerm, setActiveTerm] = useState<string | null>(null)
+  const [speakerDisplayMap, setSpeakerDisplayMap] = useState<Record<string, string>>({})
+  const [highlightRange, setHighlightRange] = useState<TranscriptHighlightRange | null>(null)
+
+  const handleTimelineJump = useCallback((chapter: TimelineChapter) => {
+    const range = { startTime: chapter.startTime, endTime: chapter.endTime }
+    setHighlightRange(range)
+    scrollTranscriptToHighlight(range)
+  }, [])
+
+  const handleCitationClick = useCallback((citation: MeetingChatCitation) => {
+    const range = highlightRangeFromTime(citation.startTime, citation.endTime)
+    setHighlightRange(range)
+    scrollTranscriptToHighlight(range)
+  }, [])
+  const [semanticResults, setSemanticResults] = useState<SemanticSearchResult[]>([])
+  const [semanticState, setSemanticState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle')
   const detailAbortRef = useRef<AbortController | null>(null)
-  const detailRequestKeyRef = useRef<number | null>(null)
+  const detailRequestKeyRef = useRef<string | null>(null)
   const listAbortRef = useRef<AbortController | null>(null)
-  const detailCacheRef = useRef<Map<number, MeetingDetailCacheEntry>>(new Map())
+  const detailCacheRef = useRef<Map<string, MeetingDetailCacheEntry>>(new Map())
   const selectedMeetingIdRef = useRef<number | null>(null)
   const focusMeetingIdRef = useRef<number | null>(focusMeetingId)
+  const [availableScopes, setAvailableScopes] = useState<MeetingResultScope[]>([])
+  const [selectedScope, setSelectedScope] = useState<MeetingResultScope | null>(null)
+  const [scopeState, setScopeState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle')
+  const [scopeError, setScopeError] = useState<string | null>(null)
 
   const selectedMeetingSummary = useMemo(() => {
     return meetings.find((meeting) => meeting.id === selectedMeetingId) ?? null
   }, [meetings, selectedMeetingId])
 
-  const analysisEvidenceMatches = useMemo(() => {
-    const fromActionPlan = collectEvidenceMatchesFromActionPlan(actionPlanState.preview)
-    if (fromActionPlan.length > 0) {
-      return fromActionPlan
-    }
-    const fromAnalysis = collectEvidenceMatchesFromAnalysis(
-      (detail.analysisMetadata ?? detail.analysis) as Record<string, unknown> | null,
-    )
-    if (fromAnalysis.length > 0) {
-      return fromAnalysis
-    }
-    return mapSearchEvidenceMatches(transcriptEvidenceResults)
-  }, [actionPlanState.preview, detail.analysis, detail.analysisMetadata, transcriptEvidenceResults])
-
   useEffect(() => {
     selectedMeetingIdRef.current = selectedMeetingId
   }, [selectedMeetingId])
+
+  const applySpeakerProfiles = useCallback((profiles: SpeakerProfile[]) => {
+    const nextMap: Record<string, string> = {}
+    for (const profile of profiles) {
+      if (profile.speakerKey && profile.displayName) {
+        nextMap[profile.speakerKey] = profile.displayName
+      }
+    }
+    setSpeakerDisplayMap(nextMap)
+  }, [])
+
+  useEffect(() => {
+    if (selectedMeetingId == null) {
+      setSpeakerDisplayMap({})
+      return
+    }
+    void listSpeakerProfiles(selectedMeetingId)
+      .then(applySpeakerProfiles)
+      .catch(() => setSpeakerDisplayMap({}))
+  }, [selectedMeetingId, applySpeakerProfiles])
 
   useEffect(() => {
     focusMeetingIdRef.current = focusMeetingId
@@ -456,40 +536,46 @@ export default function MeetingHistoryScene({ focusMeetingId = null, onOpenAnaly
 
   const pruneDetailCacheForList = (items: Meeting[]) => {
     const nextIds = new Set(items.map((meeting) => meeting.id))
-    for (const meetingId of [...detailCacheRef.current.keys()]) {
+    for (const cacheKey of [...detailCacheRef.current.keys()]) {
+      const meetingId = Number(cacheKey.split(':')[0])
       if (!nextIds.has(meetingId)) {
-        detailCacheRef.current.delete(meetingId)
+        detailCacheRef.current.delete(cacheKey)
       }
     }
     for (const item of items) {
-      const cached = detailCacheRef.current.get(item.id)
-      if (cached && meetingSummaryChanged(cached.meeting, item)) {
-        detailCacheRef.current.delete(item.id)
+      for (const [cacheKey, cached] of detailCacheRef.current.entries()) {
+        if (cached.meetingId === item.id && meetingSummaryChanged(cached.meeting, item)) {
+          detailCacheRef.current.delete(cacheKey)
+        }
       }
     }
   }
 
   const writeDetailCache = (entry: Omit<MeetingDetailCacheEntry, 'fetchedAt'> & { fetchedAt?: number }) => {
-    detailCacheRef.current.set(entry.meetingId, {
+    detailCacheRef.current.set(entry.cacheKey, {
       ...entry,
       fetchedAt: entry.fetchedAt ?? Date.now(),
     })
   }
 
-  const readDetailCache = (meetingId: number): MeetingDetailCacheEntry | null => {
-    const cached = detailCacheRef.current.get(meetingId)
+  const readDetailCache = (cacheKey: string): MeetingDetailCacheEntry | null => {
+    const cached = detailCacheRef.current.get(cacheKey)
     if (!cached) {
       return null
     }
     if (Date.now() - cached.fetchedAt > DETAIL_CACHE_TTL_MS) {
-      detailCacheRef.current.delete(meetingId)
+      detailCacheRef.current.delete(cacheKey)
       return null
     }
     return cached
   }
 
-  const invalidateDetailCache = (meetingId: number) => {
-    detailCacheRef.current.delete(meetingId)
+  const invalidateDetailCacheForMeeting = (meetingId: number) => {
+    for (const cacheKey of [...detailCacheRef.current.keys()]) {
+      if (cacheKey.startsWith(`${meetingId}:`)) {
+        detailCacheRef.current.delete(cacheKey)
+      }
+    }
   }
 
   useEffect(() => {
@@ -497,14 +583,6 @@ export default function MeetingHistoryScene({ focusMeetingId = null, onOpenAnaly
   }, [selectedMeetingSummary?.id, selectedMeetingSummary?.title])
 
   useEffect(() => {
-    if (rerunPollRef.current) {
-      rerunPollRef.current.cancelled = true
-      if (rerunPollRef.current.timeoutId !== null) {
-        window.clearTimeout(rerunPollRef.current.timeoutId)
-      }
-    }
-    setReanalyzeBusy(false)
-    setReanalyzeError(null)
     setTranscriptEvidenceQuery('')
     setTranscriptEvidenceState('idle')
     setTranscriptEvidenceResults([])
@@ -516,15 +594,6 @@ export default function MeetingHistoryScene({ focusMeetingId = null, onOpenAnaly
       error: null,
       success: null,
     })
-
-    return () => {
-      if (rerunPollRef.current) {
-        rerunPollRef.current.cancelled = true
-        if (rerunPollRef.current.timeoutId !== null) {
-          window.clearTimeout(rerunPollRef.current.timeoutId)
-        }
-      }
-    }
   }, [selectedMeetingId])
 
   useEffect(() => {
@@ -574,6 +643,80 @@ export default function MeetingHistoryScene({ focusMeetingId = null, onOpenAnaly
   }, [debouncedSearchQuery, languageFilter, reloadTick, sortValue, statusFilter])
 
   useEffect(() => {
+    if (debouncedSearchQuery.trim().length < 3) {
+      setSemanticResults([])
+      setSemanticState('idle')
+      return
+    }
+    let cancelled = false
+    const loadSemantic = async () => {
+      setSemanticState('loading')
+      try {
+        const response = await semanticSearchMeetings(debouncedSearchQuery, 8)
+        if (!cancelled) {
+          setSemanticResults(response.results)
+          setSemanticState('ready')
+        }
+      } catch {
+        if (!cancelled) {
+          setSemanticResults([])
+          setSemanticState('error')
+        }
+      }
+    }
+    void loadSemantic()
+    return () => {
+      cancelled = true
+    }
+  }, [debouncedSearchQuery])
+
+  useEffect(() => {
+    if (selectedMeetingId === null) {
+      setAvailableScopes([])
+      setSelectedScope(null)
+      setScopeState('idle')
+      setScopeError(null)
+      return
+    }
+
+    const controller = new AbortController()
+    setAvailableScopes([])
+    setSelectedScope(null)
+    setScopeState('loading')
+    setScopeError(null)
+
+    const loadScopes = async () => {
+      try {
+        const scopeItems = await listMeetingResultScopes(selectedMeetingId, { signal: controller.signal })
+        if (controller.signal.aborted || selectedMeetingIdRef.current !== selectedMeetingId) {
+          return
+        }
+        const resolvedScope = selectDefaultResultScope(selectedMeetingId, scopeItems)
+          ?? await resolveMeetingResultScope(selectedMeetingId, undefined, { signal: controller.signal })
+        const scopes = scopeItems.length > 0
+          ? scopeItems.map((item) => selectDefaultResultScope(selectedMeetingId, [item])!).filter(Boolean)
+          : resolvedScope
+            ? [resolvedScope]
+            : []
+        setAvailableScopes(scopes)
+        setSelectedScope(resolvedScope)
+        setScopeState('ready')
+      } catch (error) {
+        if (controller.signal.aborted || isAbortError(error) || selectedMeetingIdRef.current !== selectedMeetingId) {
+          return
+        }
+        setAvailableScopes([])
+        setSelectedScope(null)
+        setScopeState('error')
+        setScopeError(error instanceof Error ? error.message : 'Không thể xác định phạm vi dữ liệu')
+      }
+    }
+
+    void loadScopes()
+    return () => controller.abort()
+  }, [selectedMeetingId])
+
+  useEffect(() => {
     if (selectedMeetingId === null) {
       detailAbortRef.current?.abort()
       detailRequestKeyRef.current = null
@@ -582,11 +725,29 @@ export default function MeetingHistoryScene({ focusMeetingId = null, onOpenAnaly
     }
 
     const meetingSummary = meetings.find((meeting) => meeting.id === selectedMeetingId) ?? null
-    if (!meetingSummary) {
+    if (
+      !meetingSummary
+      || selectedScope == null
+      || selectedScope.meetingId !== selectedMeetingId
+      || scopeState !== 'ready'
+    ) {
+      if (scopeState === 'error') {
+        setDetail({
+          meeting: meetingSummary,
+          transcriptSegments: [],
+          transcriptState: 'error',
+          transcriptError: scopeError ?? 'Không thể xác định phạm vi dữ liệu',
+          analysis: null,
+          analysisMetadata: null,
+          analysisState: 'failed',
+          analysisError: null,
+        })
+      }
       return
     }
 
-    const cachedDetail = readDetailCache(selectedMeetingId)
+    const cacheKey = scopeCacheKey(selectedScope)
+    const cachedDetail = readDetailCache(cacheKey)
     if (cachedDetail && !meetingSummaryChanged(cachedDetail.meeting, meetingSummary)) {
       setDetail({
         meeting: meetingSummary,
@@ -604,7 +765,7 @@ export default function MeetingHistoryScene({ focusMeetingId = null, onOpenAnaly
     detailAbortRef.current?.abort()
     const controller = new AbortController()
     detailAbortRef.current = controller
-    const requestKey = selectedMeetingId
+    const requestKey = cacheKey
     detailRequestKeyRef.current = requestKey
 
     const loadDetail = async () => {
@@ -620,9 +781,16 @@ export default function MeetingHistoryScene({ focusMeetingId = null, onOpenAnaly
       })
 
       try {
+        const transcriptOptions = {
+          ...scopeToTranscriptOptions(selectedScope),
+          signal: controller.signal,
+        }
         const [transcriptResponse, analysisResponse] = await Promise.all([
-          getTranscript(requestKey, { signal: controller.signal }),
-          getSavedAnalysis(requestKey, { signal: controller.signal }),
+          getTranscript(selectedMeetingId, transcriptOptions),
+          getSavedAnalysis(selectedMeetingId, {
+            ...scopeToTranscriptOptions(selectedScope),
+            signal: controller.signal,
+          }),
         ])
 
         if (controller.signal.aborted || detailRequestKeyRef.current !== requestKey) {
@@ -647,7 +815,9 @@ export default function MeetingHistoryScene({ focusMeetingId = null, onOpenAnaly
 
         setDetail(nextDetail)
         writeDetailCache({
-          meetingId: requestKey,
+          cacheKey,
+          meetingId: selectedMeetingId,
+          resultScope: selectedScope,
           meeting: meetingSummary,
           transcriptSegments: nextDetail.transcriptSegments,
           transcriptState: nextDetail.transcriptState,
@@ -662,11 +832,17 @@ export default function MeetingHistoryScene({ focusMeetingId = null, onOpenAnaly
           return
         }
 
+        const message = error instanceof ApiError && error.status === 404
+          ? 'Không tìm thấy transcript cho phiên ghi này'
+          : error instanceof Error
+            ? error.message
+            : 'Không thể tải chi tiết meeting'
+
         setDetail({
           meeting: meetingSummary,
           transcriptSegments: [],
           transcriptState: 'error',
-          transcriptError: error instanceof Error ? error.message : 'Không thể tải chi tiết meeting',
+          transcriptError: message,
           analysis: null,
           analysisMetadata: null,
           analysisState: 'failed',
@@ -680,7 +856,7 @@ export default function MeetingHistoryScene({ focusMeetingId = null, onOpenAnaly
     return () => {
       controller.abort()
     }
-  }, [meetings, selectedMeetingId])
+  }, [meetings, scopeError, scopeState, selectedMeetingId, selectedScope])
 
   const handleRename = async () => {
     if (!selectedMeetingSummary) {
@@ -703,7 +879,7 @@ export default function MeetingHistoryScene({ focusMeetingId = null, onOpenAnaly
       setDetail((current) => current.meeting && current.meeting.id === renamed.id
         ? { ...current, meeting: { ...current.meeting, ...renamed } }
         : current)
-      invalidateDetailCache(renamed.id)
+      invalidateDetailCacheForMeeting(renamed.id)
       setRenameValue(renamed.title)
     } catch (error) {
       setListError(error instanceof Error ? error.message : 'Không thể đổi tên meeting')
@@ -720,7 +896,7 @@ export default function MeetingHistoryScene({ focusMeetingId = null, onOpenAnaly
     setListError(null)
     try {
       await deleteMeeting(selectedMeetingSummary.id)
-      invalidateDetailCache(selectedMeetingSummary.id)
+      invalidateDetailCacheForMeeting(selectedMeetingSummary.id)
       clearStoredMeetingId()
       setMeetings((current) => {
         const next = current.filter((meeting) => meeting.id !== selectedMeetingSummary.id)
@@ -732,6 +908,160 @@ export default function MeetingHistoryScene({ focusMeetingId = null, onOpenAnaly
       setListError(error instanceof Error ? error.message : 'Không thể xoá meeting')
     } finally {
       setDeleteBusy(false)
+    }
+  }
+
+  const handleShareMeetingLink = async () => {
+    if (!selectedMeetingSummary) {
+      return
+    }
+    const origin = PUBLIC_FRONTEND_ORIGIN.trim() || window.location.origin
+    const shareUrl = buildExistingUserMeetingUrl(origin, selectedMeetingSummary.id)
+    try {
+      await navigator.clipboard.writeText(shareUrl)
+      setShareNotice('Đã copy link chia sẻ workspace (mở meeting khi đăng nhập).')
+    } catch {
+      setShareNotice(shareUrl)
+    }
+    window.setTimeout(() => setShareNotice(null), 4000)
+  }
+
+  useEffect(() => {
+    if (!selectedMeetingId) {
+      setMeetingShares([])
+      return
+    }
+    void listMeetingShares(selectedMeetingId)
+      .then((items) => setMeetingShares(items))
+      .catch(() => setMeetingShares([]))
+  }, [selectedMeetingId])
+
+  useEffect(() => {
+    if (!selectedMeetingId) {
+      setShareGoogleStatus(null)
+      setShareUserEmail(null)
+      return
+    }
+    void getGoogleStatus()
+      .then((status) => setShareGoogleStatus(status))
+      .catch(() => setShareGoogleStatus(null))
+    void getUserProfile()
+      .then((profile) => setShareUserEmail(profile.email || null))
+      .catch(() => setShareUserEmail(null))
+  }, [selectedMeetingId])
+
+  useEffect(() => {
+    if (!oauthRefreshTick || !selectedMeetingId) {
+      return
+    }
+    void getGoogleStatus()
+      .then((status) => setShareGoogleStatus(status))
+      .catch(() => setShareGoogleStatus(null))
+    setGmailLinkBusy(false)
+    setShareNotice('Đã cập nhật quyền Gmail — bạn có thể gửi lời mời qua email.')
+  }, [oauthRefreshTick, selectedMeetingId])
+
+  const handleCopyPendingInvite = async (share: MeetingShare) => {
+    try {
+      await copyTextToClipboard(
+        pendingShareInviteCopyText(share, selectedMeetingSummary?.title, window.location.origin),
+      )
+      setShareNotice('Đã sao chép lời mời — gửi qua Zalo/Telegram nếu người nhận không thấy email.')
+    } catch {
+      setShareNotice('Không sao chép được — hãy copy thủ công.')
+    }
+  }
+
+  const handleInviteShare = async () => {
+    if (!selectedMeetingSummary) return
+    const normalizedInviteEmail = shareInviteEmail.trim().toLowerCase()
+    const wasPendingResend = meetingShares.some(
+      (share) => isPendingMeetingShare(share)
+        && share.email?.trim().toLowerCase() === normalizedInviteEmail,
+    )
+    setShareInviteBusy(true)
+    setShareInviteError(null)
+    try {
+      const created = await inviteMeetingShare(selectedMeetingSummary.id, shareInviteEmail)
+      const notice = isPendingMeetingShare(created)
+        ? pendingShareInviteNotice(created, {
+            resent: wasPendingResend,
+            senderGoogleEmail: shareGoogleStatus?.googleEmail ?? null,
+          })
+        : 'Đã gửi lời mời — người nhận sẽ thấy thông báo trong app và email (nếu đã cấu hình).'
+      setShareInviteEmail('')
+      setShareNotice(notice)
+      setMeetingShares((current) => [
+        ...current.filter((item) => shareListKey(item) !== shareListKey(created)),
+        created,
+      ])
+      window.setTimeout(() => setShareInviteBusy(false), 2000)
+      return
+    } catch (error) {
+      setShareInviteError(error instanceof Error ? error.message : 'Không mời được người dùng')
+      setShareInviteBusy(false)
+    }
+  }
+
+  const handleGrantGmailSendScope = () => {
+    setGmailLinkBusy(true)
+    const oauthTab = prepareOAuthTab()
+    void (async () => {
+      try {
+        const fresh = await getGoogleStatus().catch(() => null)
+        if (fresh && hasGoogleGmailSendScope(fresh)) {
+          closeOAuthTab(oauthTab)
+          setShareGoogleStatus(fresh)
+          setShareNotice('Đã có quyền gửi email qua Gmail.')
+          setGmailLinkBusy(false)
+          return
+        }
+        const redirectAfter = buildStudioPath('files')
+        const scopesToRequest = fresh ? missingGoogleLinkScopes(fresh) : [GOOGLE_GMAIL_SEND_SCOPE]
+        const authorizationUrl = await startGoogleLink(
+          scopesToRequest.length > 0 ? scopesToRequest : [GOOGLE_GMAIL_SEND_SCOPE],
+          redirectAfter,
+        )
+        if (completeOAuthNavigation(oauthTab, authorizationUrl) === 'new_tab') {
+          setShareNotice('Tab Google đã mở — hoàn tất cấp quyền ở tab đó, sau đó quay lại tab này.')
+        } else {
+          setShareNotice('Trình duyệt chặn tab mới — đang chuyển hướng trong tab hiện tại.')
+        }
+      } catch (error) {
+        closeOAuthTab(oauthTab)
+        setShareInviteError(error instanceof Error ? error.message : 'Không mở được liên kết Google')
+        setGmailLinkBusy(false)
+      }
+    })()
+  }
+
+  const shareGmailEmailMismatch = useMemo(() => {
+    if (!shareGoogleStatus?.googleEmail || !shareUserEmail) return false
+    return shareGoogleStatus.googleEmail.trim().toLowerCase() !== shareUserEmail.trim().toLowerCase()
+  }, [shareGoogleStatus, shareUserEmail])
+
+  const shareMissingGmailScope = useMemo(() => {
+    if (!shareGoogleStatus) return false
+    return !hasGoogleGmailSendScope(shareGoogleStatus)
+  }, [shareGoogleStatus])
+
+  const handleRevokeShare = async (share: MeetingShare) => {
+    if (!selectedMeetingSummary) return
+    try {
+      if (isPendingMeetingShare(share)) {
+        if (!share.email) {
+          throw new Error('Không xác định được email lời mời')
+        }
+        await revokePendingMeetingShare(selectedMeetingSummary.id, share.email)
+      } else if (share.sharedWithUserId != null) {
+        await revokeMeetingShare(selectedMeetingSummary.id, share.sharedWithUserId)
+      } else {
+        throw new Error('Không xác định được người được chia sẻ')
+      }
+      setShareNotice('Đã thu hồi quyền truy cập.')
+      setMeetingShares((current) => current.filter((item) => shareListKey(item) !== shareListKey(share)))
+    } catch (error) {
+      setShareInviteError(error instanceof Error ? error.message : 'Không thu hồi được quyền')
     }
   }
 
@@ -758,6 +1088,34 @@ export default function MeetingHistoryScene({ focusMeetingId = null, onOpenAnaly
       saveBlobToFile(blob, filename)
     } catch (error) {
       setExportError(error instanceof Error ? error.message : 'Không thể xuất report')
+    } finally {
+      setExportBusy(false)
+    }
+  }
+
+  const handleExportPdf = async () => {
+    if (!selectedMeetingSummary || detail.transcriptState !== 'ready') {
+      return
+    }
+
+    const analysisState = getAnalysisStateFromResponse(detail.analysis)
+    const analysisStatus = String(detail.analysis?.analysisStatus ?? detail.analysis?.status ?? '').toUpperCase()
+    const retryPending = analysisStatus === 'ANALYZING'
+      || analysisStatus === 'ANALYSIS_FAILED_RETRYABLE'
+      || analysisState.state === 'processing'
+      || analysisState.state === 'failed_retryable'
+    if (retryPending && detail.analysis?.retryExhausted !== true) {
+      setExportError('Phân tích chưa hoàn tất. Vui lòng đợi hệ thống thử lại hoặc chạy phân tích lại trước khi xuất report.')
+      return
+    }
+
+    setExportBusy(true)
+    setExportError(null)
+    try {
+      const { blob, filename } = await downloadMeetingReport(selectedMeetingSummary.id, 'pdf')
+      saveBlobToFile(blob, filename)
+    } catch (error) {
+      setExportError(error instanceof Error ? error.message : 'Không thể xuất PDF')
     } finally {
       setExportBusy(false)
     }
@@ -807,7 +1165,7 @@ export default function MeetingHistoryScene({ focusMeetingId = null, onOpenAnaly
     }
   }
 
-  const handleActionPlanExport = async () => {
+  const handleActionPlanExport = async (format: 'docx' | 'pdf' = 'docx') => {
     if (!selectedMeetingSummary) {
       return
     }
@@ -829,14 +1187,14 @@ export default function MeetingHistoryScene({ focusMeetingId = null, onOpenAnaly
         error: null,
         success: null,
       })
-      const { blob, filename } = await downloadMeetingActionPlanDocx(meetingId)
+      const { blob, filename } = await downloadMeetingActionPlan(meetingId, format)
       saveBlobToFile(blob, filename)
       setActionPlanState({
         preview,
         loading: false,
         exporting: false,
         error: null,
-        success: 'Action plan đã sẵn sàng để tải xuống.',
+        success: `Action plan (${format.toUpperCase()}) đã sẵn sàng để tải xuống.`,
       })
     } catch (error) {
       setActionPlanState((current) => ({
@@ -873,178 +1231,41 @@ export default function MeetingHistoryScene({ focusMeetingId = null, onOpenAnaly
     }
   }
 
-  const applyAnalysisResponse = (meetingId: number, analysisResponse: AiAnalysis | null, terminal = false) => {
-    const nextState = getAnalysisStateFromResponse(analysisResponse)
-    setDetail((current) => {
-      if (current.meeting?.id !== meetingId) {
-        return current
-      }
-      const shouldKeepCompletedContent = Boolean(current.analysis && nextState.state !== 'completed')
-      const nextDetail = {
-        ...current,
-        analysis: shouldKeepCompletedContent ? current.analysis : nextState.analysis,
-        analysisMetadata: analysisResponse ?? current.analysisMetadata,
-        analysisState: shouldKeepCompletedContent ? 'completed' as const : nextState.state,
-        analysisError: terminal && nextState.state === 'failed' ? nextState.error : null,
-      }
-      if (terminal && current.meeting) {
-        writeDetailCache({
-          meetingId,
-          meeting: current.meeting,
-          transcriptSegments: nextDetail.transcriptSegments,
-          transcriptState: nextDetail.transcriptState,
-          transcriptError: nextDetail.transcriptError,
-          analysis: nextDetail.analysis,
-          analysisMetadata: nextDetail.analysisMetadata,
-          analysisState: nextDetail.analysisState,
-          analysisError: nextDetail.analysisError,
-        })
-      }
-      return nextDetail
-    })
-  }
-
-  const pollSavedAnalysis = async (
-    meetingId: number,
-    pollState: { meetingId: number; cancelled: boolean; timeoutId: number | null },
-  ) => {
-    while (!pollState.cancelled) {
-      await new Promise<void>((resolve) => {
-        pollState.timeoutId = window.setTimeout(resolve, 1500)
-      })
-      pollState.timeoutId = null
-      if (pollState.cancelled) {
-        return
-      }
-
-      try {
-        const savedAnalysis = await getSavedAnalysis(meetingId)
-        if (pollState.cancelled || selectedMeetingIdRef.current !== meetingId) {
-          return
-        }
-        applyAnalysisResponse(meetingId, savedAnalysis, isTerminalAnalysisStatus(savedAnalysis))
-        if (isTerminalAnalysisStatus(savedAnalysis)) {
-          setReanalyzeBusy(false)
-          return
-        }
-      } catch (error) {
-        if (pollState.cancelled) {
-          return
-        }
-        setReanalyzeError(error instanceof Error ? error.message : 'Không thể cập nhật trạng thái analysis')
-        setReanalyzeBusy(false)
-        return
-      }
-    }
-  }
-
-  const handleReanalyze = async () => {
-    if (!selectedMeetingSummary) {
-      return
-    }
-
-    const meetingId = selectedMeetingSummary.id
-    const previousAnalysis = detail.meeting?.id === meetingId ? detail.analysis : null
-    const previousAnalysisMetadata = detail.meeting?.id === meetingId ? detail.analysisMetadata : null
-    const previousAnalysisState = detail.meeting?.id === meetingId ? detail.analysisState : 'missing'
-    const previousAnalysisError = detail.meeting?.id === meetingId ? detail.analysisError : null
-    if (rerunPollRef.current) {
-      rerunPollRef.current.cancelled = true
-      if (rerunPollRef.current.timeoutId !== null) {
-        window.clearTimeout(rerunPollRef.current.timeoutId)
-      }
-    }
-
-    invalidateDetailCache(meetingId)
-    const pollState = { meetingId, cancelled: false, timeoutId: null as number | null }
-    rerunPollRef.current = pollState
-    setReanalyzeBusy(true)
-    setReanalyzeError(null)
-    setDetail((current) => {
-      if (current.meeting?.id !== meetingId) {
-        return current
-      }
-      return {
-        ...current,
-        analysisMetadata: {
-          ...(current.analysisMetadata ?? current.analysis ?? baseAnalysisMetadata(meetingId)),
-          status: 'ANALYZING',
-          analysisStatus: 'ANALYZING',
-        },
-        analysisState: current.analysis ? 'completed' : 'processing',
-        analysisError: null,
-      }
-    })
-
-    try {
-      const response = await reanalyzeMeetingAnalysis(meetingId, { mode: 'force', reason: 'manual_reanalyze' })
-      if (pollState.cancelled || selectedMeetingIdRef.current !== meetingId) {
-        return
-      }
-      applyAnalysisResponse(meetingId, response, isTerminalAnalysisStatus(response))
-      if (isTerminalAnalysisStatus(response)) {
-        setReanalyzeBusy(false)
-        return
-      }
-      void pollSavedAnalysis(meetingId, pollState)
-    } catch (error) {
-      if (pollState.cancelled) {
-        return
-      }
-      pollState.cancelled = true
-      if (pollState.timeoutId !== null) {
-        window.clearTimeout(pollState.timeoutId)
-        pollState.timeoutId = null
-      }
-      setDetail((current) => {
-        if (current.meeting?.id !== meetingId) {
-          return current
-        }
-        return {
-          ...current,
-          analysis: previousAnalysis ?? current.analysis,
-          analysisMetadata: previousAnalysisMetadata ?? previousAnalysis ?? current.analysisMetadata,
-          analysisState: previousAnalysis ? 'completed' : previousAnalysisState,
-          analysisError: previousAnalysisError,
-        }
-      })
-      setReanalyzeError(getReanalyzeErrorMessage(error))
-      setReanalyzeBusy(false)
-    }
-  }
-
   const meetingCards = meetings.map((meeting) => ({
     id: meeting.id,
     title: getMeetingLabel(meeting),
-    createdAt: meeting.createdAt,
-    language: getMeetingLanguage(meeting),
+    createdAt: formatDateVi(meeting.createdAt),
+    language: formatLanguage(getMeetingLanguage(meeting)),
     status: getMeetingStatus(meeting),
+    sharedWithMe: Boolean(meeting.sharedWithMe),
     active: meeting.id === selectedMeetingId,
   }))
 
   return (
     <div className="dashboard-page bg-gray-light">
-      <header className="dashboard-header border-b">
-        <div className="search-bar">
-          <span className="icon">🔍</span>
-          <input
-            type="text"
-            placeholder="Tìm meeting theo tên hoặc file gốc..."
-            value={searchQuery}
-            onChange={(event) => setSearchQuery(event.target.value)}
-            data-testid="meeting-search-input"
-          />
-        </div>
-        <div className="header-actions">
-          <button type="button" className="icon-btn" aria-label="Reload list" onClick={() => setReloadTick((value) => value + 1)}>↻</button>
-        </div>
-      </header>
+      {!isSearchControlled && (
+        <header className="dashboard-header border-b">
+          <div className="search-bar">
+            <span className="icon">🔍</span>
+            <input
+              type="text"
+              placeholder="Tìm meeting theo tên hoặc file gốc..."
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+              data-testid="meeting-search-input"
+            />
+          </div>
+          <div className="header-actions">
+            <button type="button" className="icon-btn" aria-label="Tải lại danh sách" onClick={() => setReloadTick((value) => value + 1)}>↻</button>
+          </div>
+        </header>
+      )}
 
       <div className="history-scene">
         <section className="history-list-card studio-card">
-          <div className="studio-page-head" style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: '12px', marginBottom: '16px' }}>
+          <div className="history-page-head studio-page-head">
             <div>
-              <h1>Meeting history</h1>
+              <h1>Lịch sử cuộc họp</h1>
               <p>Tìm kiếm, lọc, đổi tên và xoá mềm meeting.</p>
             </div>
             <span className="meta-pill">{meetings.length}</span>
@@ -1053,6 +1274,7 @@ export default function MeetingHistoryScene({ focusMeetingId = null, onOpenAnaly
           <div className="history-toolbar">
             <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} data-testid="meeting-status-filter">
               <option value="">Tất cả trạng thái</option>
+              <option value="scheduled">Đã lên lịch</option>
               <option value="processing">Đang xử lý</option>
               <option value="completed">Hoàn tất</option>
               <option value="failed">Thất bại</option>
@@ -1071,10 +1293,58 @@ export default function MeetingHistoryScene({ focusMeetingId = null, onOpenAnaly
 
           {listState === 'loading' && <LoadingState message="Đang tải danh sách meeting..." />}
           {listState === 'error' && <ErrorState title="Không thể tải lịch sử" message={listError || 'Không thể tải lịch sử meeting'} />}
-          {listState === 'empty' && <EmptyState message="Không có meeting phù hợp bộ lọc hiện tại" />}
+          {listState === 'empty' && (
+            <div className="ui-state ui-state--empty" data-testid="meeting-history-empty">
+              <p>Chưa có meeting phù hợp. Hãy tải file âm thanh hoặc ghi âm trực tiếp để bắt đầu.</p>
+              <div className="history-empty-actions">
+                {onNavigateUpload && (
+                  <button type="button" className="secondary-cta" data-testid="history-empty-upload" onClick={onNavigateUpload}>
+                    Tải file
+                  </button>
+                )}
+                {onNavigateRealtime && (
+                  <button type="button" className="secondary-cta" data-testid="history-empty-realtime" onClick={onNavigateRealtime}>
+                    Ghi âm trực tiếp
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
+          {semanticState === 'loading' && (
+            <LoadingState message="Đang tìm kiếm semantic…" />
+          )}
+          {semanticState === 'error' && (
+            <ErrorState title="Tìm kiếm semantic" message="Không thể tìm meeting liên quan lúc này." />
+          )}
+          {semanticState === 'ready' && semanticResults.length === 0 && searchQuery.trim() && (
+            <EmptyState message="Không tìm thấy meeting phù hợp với truy vấn semantic." />
+          )}
+          {semanticState === 'ready' && semanticResults.length > 0 && (
+            <div className="semantic-search-results" data-testid="semantic-search-results">
+              <h3 className="studio-page-head">Kết quả tìm kiếm semantic</h3>
+              <ul className="semantic-search-results__list">
+                {semanticResults.map((result) => (
+                  <li key={result.meetingId}>
+                    <button
+                      type="button"
+                      className="secondary-cta"
+                      onClick={() => {
+                        setSelectedMeetingId(result.meetingId)
+                        writeStoredMeetingId(result.meetingId)
+                      }}
+                    >
+                      #{result.meetingId} {result.title || result.originalFileName || 'Meeting'}
+                    </button>
+                    {result.reason && <p>{result.reason}</p>}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
 
           {listState === 'ready' && (
-            <div style={{ display: 'grid', gap: '10px' }} data-testid="meeting-list">
+            <div className="history-list-grid" data-testid="meeting-list">
               {meetingCards.map((item) => (
                 <button
                   key={item.id}
@@ -1085,12 +1355,19 @@ export default function MeetingHistoryScene({ focusMeetingId = null, onOpenAnaly
                     writeStoredMeetingId(item.id)
                   }}
                 >
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
+                  <div className="history-list-item__row">
                     <strong>{item.title}</strong>
-                    <span className="meta-pill">#{item.id}</span>
+                    <div className="history-list-item__badges">
+                      {item.sharedWithMe && (
+                        <span className="history-share-badge" data-testid="meeting-shared-badge">
+                          Chia sẻ
+                        </span>
+                      )}
+                      <span className="meta-pill">#{item.id}</span>
+                    </div>
                   </div>
                   <div className="history-list-item__meta">
-                    <span>{item.createdAt || 'Unknown date'}</span>
+                    <span>{item.createdAt}</span>
                     <span>•</span>
                     <span>{item.language}</span>
                     <span>•</span>
@@ -1105,106 +1382,262 @@ export default function MeetingHistoryScene({ focusMeetingId = null, onOpenAnaly
         <section className="history-detail-card">
           {selectedMeetingSummary ? (
             <div className="studio-card">
-              <div style={{ display: 'grid', gap: '12px', marginBottom: '16px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px' }}>
+              <div className="history-detail-stack">
+                <div className="history-detail-header">
                   <div>
                     <h2 className="studio-page-head">{getMeetingLabel(selectedMeetingSummary)}</h2>
-                    <div style={{ marginTop: '6px', fontSize: '13px', color: 'var(--studio-muted)' }}>
-                      ID {selectedMeetingSummary.id} • {getMeetingLanguage(selectedMeetingSummary)} • {selectedMeetingSummary.createdAt || 'Unknown date'}
+                    <div className="history-detail-meta">
+                      ID {selectedMeetingSummary.id} • {formatLanguage(getMeetingLanguage(selectedMeetingSummary))} • {formatDateVi(selectedMeetingSummary.scheduledStartAt || selectedMeetingSummary.createdAt)}
                     </div>
                   </div>
                   <span className="meta-pill">{getMeetingStatus(selectedMeetingSummary)}</span>
                 </div>
-                {onOpenAnalysis && (
-                  <button
-                    type="button"
-                    className="primary-cta"
-                    onClick={() => onOpenAnalysis(selectedMeetingSummary.id, { title: getMeetingLabel(selectedMeetingSummary) })}
-                    data-testid="meeting-open-analysis"
-                  >
-                    Xem kết quả
-                  </button>
-                )}
-                <div style={{ display: 'flex', gap: '8px' }}>
-                  <input
-                    type="text"
-                    value={renameValue}
-                    onChange={(event) => setRenameValue(event.target.value)}
-                    placeholder="Đổi tên meeting"
-                    data-testid="meeting-rename-input"
-                    style={{ flex: 1 }}
-                  />
-                  <button type="button" onClick={handleRename} disabled={renameBusy} data-testid="meeting-rename-submit">
-                    {renameBusy ? 'Đang lưu...' : 'Lưu tên'}
-                  </button>
-                  <button type="button" onClick={handleDelete} disabled={deleteBusy} data-testid="meeting-delete-submit">
-                    {deleteBusy ? 'Đang xoá...' : 'Xoá mềm'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleExport}
-                    disabled={exportBusy || detail.transcriptState !== 'ready'}
-                    data-testid="meeting-export-report"
-                  >
-                    {exportBusy ? 'Đang xuất...' : 'Export report'}
-                  </button>
-                  <div style={{ position: 'relative' }}>
-                    <button
-                      type="button"
-                      onClick={() => setTranscriptExportMenuOpen((value) => !value)}
-                      disabled={transcriptExportBusy !== null || detail.transcriptState !== 'ready'}
-                      data-testid="meeting-export-transcript"
-                    >
-                      {transcriptExportBusy ? `Đang xuất ${transcriptExportBusy.mode.toUpperCase()} ${transcriptExportBusy.format.toUpperCase()}...` : 'Export transcript'}
-                    </button>
-                    {transcriptExportMenuOpen && detail.transcriptState === 'ready' && transcriptExportBusy === null && (
-                      <div
-                        data-testid="meeting-export-transcript-menu"
-                        style={{
-                          position: 'absolute',
-                          top: 'calc(100% + 8px)',
-                          right: 0,
-                          display: 'grid',
-                          gap: '8px',
-                          minWidth: '180px',
-                          padding: '10px',
-                          background: '#fff',
-                          border: '1px solid #e5e7eb',
-                          borderRadius: '12px',
-                          boxShadow: '0 12px 32px rgba(15, 23, 42, 0.12)',
-                          zIndex: 2,
-                        }}
+                {(onOpenAnalysis || onOpenMindmap) && (
+                  <div className="history-detail-ctas">
+                    {availableScopes.length > 1 && (
+                      <label className="history-scope-picker">
+                        <span>Phiên ghi</span>
+                        <select
+                          value={selectedScope ? scopeCacheKey(selectedScope) : ''}
+                          onChange={(event) => {
+                            const nextScope = availableScopes.find((scope) => scopeCacheKey(scope) === event.target.value)
+                            if (nextScope) {
+                              setSelectedScope(nextScope)
+                            }
+                          }}
+                          data-testid="meeting-scope-select"
+                        >
+                          {availableScopes.map((scope) => (
+                            <option key={scopeCacheKey(scope)} value={scopeCacheKey(scope)}>
+                              {formatResultScopeLabel(scope)}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    )}
+                    {onOpenAnalysis && (
+                      <button
+                        type="button"
+                        className="primary-cta"
+                        disabled={selectedScope == null || scopeState !== 'ready'}
+                        onClick={() => onOpenAnalysis(selectedMeetingSummary.id, {
+                          title: getMeetingLabel(selectedMeetingSummary),
+                          scope: selectedScope,
+                        })}
+                        data-testid="meeting-open-analysis"
                       >
-                        <button type="button" data-testid="meeting-export-transcript-readable-txt" onClick={() => void handleTranscriptExport('readable', 'txt')}>
-                          Readable TXT
-                        </button>
-                        <button type="button" data-testid="meeting-export-transcript-readable-csv" onClick={() => void handleTranscriptExport('readable', 'csv')}>
-                          Readable CSV
-                        </button>
-                        <button type="button" data-testid="meeting-export-transcript-raw-txt" onClick={() => void handleTranscriptExport('raw', 'txt')}>
-                          Raw TXT
-                        </button>
-                        <button type="button" data-testid="meeting-export-transcript-raw-csv" onClick={() => void handleTranscriptExport('raw', 'csv')}>
-                          Raw CSV
-                        </button>
-                      </div>
+                        Xem kết quả phân tích
+                      </button>
+                    )}
+                    {onOpenMindmap && (
+                      <button
+                        type="button"
+                        className="secondary-cta"
+                        disabled={selectedScope == null || scopeState !== 'ready'}
+                        onClick={() => onOpenMindmap(selectedMeetingSummary.id, {
+                          title: getMeetingLabel(selectedMeetingSummary),
+                          scope: selectedScope,
+                        })}
+                        data-testid="meeting-open-mindmap"
+                      >
+                        Mở sơ đồ mindmap
+                      </button>
                     )}
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => void handleActionPlanExport()}
-                    disabled={actionPlanState.loading || actionPlanState.exporting}
-                    data-testid="meeting-export-action-plan"
-                  >
-                    {actionPlanState.loading || actionPlanState.exporting ? 'Đang xuất action plan...' : 'Export action plan'}
-                  </button>
+                )}
+
+                <div className="history-actions">
+                  <div className="history-actions__group history-rename-row">
+                    <span className="history-actions__label">Quản lý</span>
+                    <input
+                      type="text"
+                      value={renameValue}
+                      onChange={(event) => setRenameValue(event.target.value)}
+                      placeholder="Đổi tên meeting"
+                      data-testid="meeting-rename-input"
+                    />
+                    <button type="button" className="history-btn" onClick={handleRename} disabled={renameBusy} data-testid="meeting-rename-submit">
+                      {renameBusy ? 'Đang lưu...' : 'Lưu tên'}
+                    </button>
+                    <button type="button" className="history-btn history-btn--danger" onClick={handleDelete} disabled={deleteBusy} data-testid="meeting-delete-submit">
+                      {deleteBusy ? 'Đang xoá...' : 'Xoá mềm'}
+                    </button>
+                    <button
+                      type="button"
+                      className="history-btn"
+                      onClick={() => void handleShareMeetingLink()}
+                      data-testid="meeting-share-link"
+                    >
+                      Sao chép link
+                    </button>
+                  </div>
+
+                  <div className="history-actions__group">
+                    <span className="history-actions__label">Xuất file</span>
+                    <button
+                      type="button"
+                      className="history-btn history-btn--primary"
+                      onClick={() => void handleExportPdf()}
+                      disabled={exportBusy || detail.transcriptState !== 'ready'}
+                      data-testid="meeting-export-report-pdf"
+                    >
+                      {exportBusy ? 'Đang xuất...' : 'PDF báo cáo'}
+                    </button>
+                    <button
+                      type="button"
+                      className="history-btn"
+                      onClick={handleExport}
+                      disabled={exportBusy || detail.transcriptState !== 'ready'}
+                      data-testid="meeting-export-report"
+                    >
+                      {exportBusy ? 'Đang xuất...' : 'DOCX báo cáo'}
+                    </button>
+                    <div className="history-export-anchor">
+                      <button
+                        type="button"
+                        className="history-btn"
+                        onClick={() => setTranscriptExportMenuOpen((value) => !value)}
+                        disabled={transcriptExportBusy !== null || detail.transcriptState !== 'ready'}
+                        data-testid="meeting-export-transcript"
+                      >
+                        {transcriptExportBusy
+                          ? `Đang xuất ${transcriptExportBusy.mode} ${transcriptExportBusy.format.toUpperCase()}...`
+                          : 'Xuất transcript'}
+                      </button>
+                      {transcriptExportMenuOpen && detail.transcriptState === 'ready' && transcriptExportBusy === null && (
+                        <div className="history-export-menu" data-testid="meeting-export-transcript-menu">
+                          <button type="button" data-testid="meeting-export-transcript-readable-txt" onClick={() => void handleTranscriptExport('readable', 'txt')}>
+                            Readable TXT
+                          </button>
+                          <button type="button" data-testid="meeting-export-transcript-readable-csv" onClick={() => void handleTranscriptExport('readable', 'csv')}>
+                            Readable CSV
+                          </button>
+                          <button type="button" data-testid="meeting-export-transcript-raw-txt" onClick={() => void handleTranscriptExport('raw', 'txt')}>
+                            Raw TXT
+                          </button>
+                          <button type="button" data-testid="meeting-export-transcript-raw-csv" onClick={() => void handleTranscriptExport('raw', 'csv')}>
+                            Raw CSV
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      className="history-btn"
+                      onClick={() => void handleActionPlanExport('docx')}
+                      disabled={actionPlanState.loading || actionPlanState.exporting}
+                      data-testid="meeting-export-action-plan"
+                    >
+                      {actionPlanState.loading || actionPlanState.exporting ? 'Đang xuất kế hoạch...' : 'DOCX kế hoạch'}
+                    </button>
+                    <button
+                      type="button"
+                      className="history-btn"
+                      onClick={() => void handleActionPlanExport('pdf')}
+                      disabled={actionPlanState.loading || actionPlanState.exporting}
+                      data-testid="meeting-export-action-plan-pdf"
+                    >
+                      {actionPlanState.loading || actionPlanState.exporting ? 'Đang xuất kế hoạch...' : 'PDF kế hoạch'}
+                    </button>
+                  </div>
                 </div>
+
                 {listError && <ErrorState title="Thao tác thất bại" message={listError} />}
+                {shareNotice && (
+                  <p className="history-notice" data-testid="meeting-share-notice">
+                    {shareNotice}
+                  </p>
+                )}
+                <div className="history-share-panel" data-testid="meeting-share-panel">
+                  <strong className="history-share-panel__title">Chia sẻ workspace</strong>
+                  {shareGmailEmailMismatch && (
+                    <p className="history-notice history-notice--warn" data-testid="meeting-share-gmail-mismatch">
+                      Gmail đã liên kết ({shareGoogleStatus?.googleEmail}) khác email đăng nhập ({shareUserEmail}).
+                      Mail mời sẽ gửi từ Gmail đã liên kết.
+                    </p>
+                  )}
+                  {shareMissingGmailScope && (
+                    <div className="history-share-row">
+                      <p className="history-notice">
+                        Chưa cấp quyền gửi email qua Gmail — lời mời vẫn được lưu nhưng mail có thể không gửi tự động.
+                      </p>
+                      <button
+                        type="button"
+                        className="history-btn"
+                        onClick={() => void handleGrantGmailSendScope()}
+                        disabled={gmailLinkBusy}
+                        data-testid="meeting-share-grant-gmail"
+                      >
+                        {gmailLinkBusy ? 'Đang mở Google...' : 'Cấp quyền gửi email qua Gmail'}
+                      </button>
+                    </div>
+                  )}
+                  <div className="history-share-row">
+                    <input
+                      type="email"
+                      value={shareInviteEmail}
+                      onChange={(event) => setShareInviteEmail(event.target.value)}
+                      placeholder="Email người nhận"
+                      data-testid="meeting-share-email"
+                    />
+                    <button
+                      type="button"
+                      className="history-btn"
+                      onClick={() => void handleInviteShare()}
+                      disabled={shareInviteBusy || !shareInviteEmail.trim()}
+                      data-testid="meeting-share-invite"
+                    >
+                      {shareInviteBusy ? 'Đang mời...' : 'Mời VIEWER'}
+                    </button>
+                  </div>
+                  {shareInviteError && <ErrorState title="Chia sẻ thất bại" message={shareInviteError} />}
+                  {meetingShares.length > 0 && (
+                    <ul className="history-share-list">
+                      {meetingShares.map((share) => (
+                        <li key={shareListKey(share)}>
+                          <span>
+                            {formatShareLabel(share)}
+                            {' '}
+                            ({share.role}
+                            {isPendingMeetingShare(share) ? ', chờ đăng ký' : ''})
+                          </span>
+                          {isPendingMeetingShare(share) && (
+                            <button
+                              type="button"
+                              className="history-btn"
+                              onClick={() => void handleCopyPendingInvite(share)}
+                            >
+                              Sao chép lời mời
+                            </button>
+                          )}
+                          <button type="button" className="history-btn" onClick={() => void handleRevokeShare(share)}>
+                            Thu hồi
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
                 {exportError && <ErrorState title="Xuất report thất bại" message={exportError} />}
+                {detail.analysisState === 'failed' && detail.analysisError && (
+                  <ErrorState
+                    title="Phân tích không khả dụng"
+                    message={detail.analysisError}
+                    errorCode={detail.analysisMetadata?.errorCode ?? undefined}
+                    onCtaClick={
+                      isUserQuotaExceeded({
+                        errorCode: detail.analysisMetadata?.errorCode,
+                        analysisStatus: String(detail.analysisMetadata?.analysisStatus ?? detail.analysisMetadata?.status ?? ''),
+                      })
+                        ? onNavigateBilling
+                        : undefined
+                    }
+                  />
+                )}
                 {transcriptExportError && <ErrorState title="Xuất transcript thất bại" message={transcriptExportError} />}
                 {actionPlanState.error && <ErrorState title="Xuất action plan thất bại" message={actionPlanState.error} />}
                 {actionPlanState.success && (
-                  <p style={{ margin: 0, color: '#166534', fontSize: '12px' }} data-testid="meeting-action-plan-success">
+                  <p className="history-notice" data-testid="meeting-action-plan-success">
                     {actionPlanState.success}
                   </p>
                 )}
@@ -1212,34 +1645,31 @@ export default function MeetingHistoryScene({ focusMeetingId = null, onOpenAnaly
                   <ActionPlanPreview preview={actionPlanState.preview} onCopy={() => void handleActionPlanCopy()} />
                 )}
                 {detail.transcriptState === 'ready' && (
-                  <p
-                    style={{ margin: 0, color: '#64748b', fontSize: '12px' }}
-                    data-testid="meeting-export-transcript-helper"
-                  >
-                    Readable is best-effort; Raw is for audit/debug.
+                  <p className="history-helper" data-testid="meeting-export-transcript-helper">
+                    Bản Readable dễ đọc; bản Raw dùng cho kiểm tra và audit.
                   </p>
                 )}
                 {detail.transcriptState !== 'ready' && (
-                  <p style={{ margin: 0, color: '#64748b', fontSize: '12px' }} data-testid="meeting-export-hint">
-                    Cần transcript đã lưu để export report.
+                  <p className="history-helper" data-testid="meeting-export-hint">
+                    Cần transcript đã lưu để xuất báo cáo.
                   </p>
                 )}
               </div>
 
-              <div style={{ display: 'grid', gap: '16px' }}>
-                <div>
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', marginBottom: '10px' }}>
-                    <h3 className="studio-page-head" style={{ fontSize: '16px' }}>Transcript</h3>
+              <div className="history-detail-section">
+                <div className="history-detail-block">
+                  <div className="history-detail-block__head">
+                    <h3 className="history-detail-block__title">Bản ghi</h3>
                     <span className="meta-pill">{detail.transcriptState}</span>
                   </div>
                   {detail.transcriptState === 'loading' && <LoadingState message="Đang tải transcript đã lưu..." />}
                   {detail.transcriptState === 'error' && <ErrorState title="Không thể tải transcript" message={detail.transcriptError || 'Không thể tải transcript'} />}
                   {detail.transcriptState === 'empty' && <EmptyState message="Không có transcript đã lưu" />}
                   {detail.transcriptState === 'ready' && (
-                    <div style={{ display: 'grid', gap: '12px' }}>
+                    <div className="history-detail-block">
                       <form
+                        className="transcript-evidence-form"
                         data-testid="transcript-evidence-search-form"
-                        style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}
                         onSubmit={(event) => {
                           event.preventDefault()
                           void handleTranscriptEvidenceSearch()
@@ -1247,14 +1677,15 @@ export default function MeetingHistoryScene({ focusMeetingId = null, onOpenAnaly
                       >
                         <input
                           type="search"
+                          className="studio-input"
                           value={transcriptEvidenceQuery}
                           onChange={(event) => setTranscriptEvidenceQuery(event.target.value)}
                           placeholder="Tìm trong transcript..."
                           data-testid="transcript-evidence-search-input"
-                          style={{ flex: '1 1 220px' }}
                         />
                         <button
                           type="submit"
+                          className="studio-btn studio-btn--primary"
                           disabled={transcriptEvidenceState === 'loading'}
                           data-testid="transcript-evidence-search-submit"
                         >
@@ -1271,22 +1702,12 @@ export default function MeetingHistoryScene({ focusMeetingId = null, onOpenAnaly
                         <EmptyState message="Không tìm thấy evidence phù hợp" />
                       )}
                       {transcriptEvidenceState === 'ready' && (
-                        <div data-testid="transcript-evidence-results" style={{ display: 'grid', gap: '10px' }}>
+                        <div className="transcript-evidence-results" data-testid="transcript-evidence-results">
                           {transcriptEvidenceResults.map((match) => (
-                            <article
-                              key={match.evidenceId}
-                              style={{
-                                display: 'grid',
-                                gap: '6px',
-                                padding: '12px',
-                                border: '1px solid #e5e7eb',
-                                borderRadius: '12px',
-                                background: '#fff',
-                              }}
-                            >
-                              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
+                            <article key={match.evidenceId} className="history-evidence-card">
+                              <div className="history-evidence-card__head">
                                 <strong>{match.speaker || 'Speaker'}</strong>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                <div className="history-evidence-card__badges">
                                   {match.verificationStatus && (
                                     <span className="meta-pill" data-testid="transcript-evidence-verification-status">
                                       {match.verificationStatus}
@@ -1296,15 +1717,15 @@ export default function MeetingHistoryScene({ focusMeetingId = null, onOpenAnaly
                                 </div>
                               </div>
                               {match.contextBefore.map((context) => (
-                                <p key={`before-${context.segmentId}-${context.index}`} style={{ margin: 0, color: '#64748b', fontSize: '12px' }}>
+                                <p key={`before-${context.segmentId}-${context.index}`} className="history-evidence-card__context">
                                   {context.speaker}: {context.text}{context.textTruncated ? ' (đã rút gọn)' : ''}
                                 </p>
                               ))}
-                              <p style={{ margin: 0, color: '#0f172a', fontSize: '13px', lineHeight: 1.55 }}>
+                              <p className="history-evidence-card__quote">
                                 {match.text}{match.textTruncated ? ' (đã rút gọn)' : ''}
                               </p>
                               {match.contextAfter.map((context) => (
-                                <p key={`after-${context.segmentId}-${context.index}`} style={{ margin: 0, color: '#64748b', fontSize: '12px' }}>
+                                <p key={`after-${context.segmentId}-${context.index}`} className="history-evidence-card__context">
                                   {context.speaker}: {context.text}{context.textTruncated ? ' (đã rút gọn)' : ''}
                                 </p>
                               ))}
@@ -1317,36 +1738,52 @@ export default function MeetingHistoryScene({ focusMeetingId = null, onOpenAnaly
                         emptyMessage="Không có transcript đã lưu"
                         maxHeight="460px"
                         enableDisplayGrouping
+                        domainMode={detail.analysis?.domainMode ?? (detail.analysisMetadata as { domainMode?: string } | null)?.domainMode}
+                        onTermClick={selectedMeetingId ? (term) => setActiveTerm(term) : undefined}
+                        speakerDisplayMap={speakerDisplayMap}
+                        highlightRange={highlightRange}
                       />
+                      <MeetingTimeline
+                        segments={detail.transcriptSegments}
+                        analysis={detail.analysis}
+                        onJumpToChapter={handleTimelineJump}
+                      />
+                      <GlossaryNotesPanel
+                        meetingId={selectedMeetingId}
+                        analysis={detail.analysis}
+                        onTermSelect={(term) => setActiveTerm(term)}
+                      />
+                      <SpeakerNamingPanel
+                        meetingId={selectedMeetingId}
+                        transcriptSegments={detail.transcriptSegments}
+                        onProfilesSaved={applySpeakerProfiles}
+                      />
+                      <MeetingTaskTracker
+                        meetingId={selectedMeetingId}
+                        groupedActionPlan={detail.analysis?.groupedActionPlan}
+                      />
+                      {selectedMeetingId != null && (
+                        <AiAssistant
+                          meetingId={selectedMeetingId}
+                          onCitationClick={handleCitationClick}
+                          onAsk={async (message) => {
+                            const result = await answerMeetingQuestion(
+                              selectedMeetingId,
+                              message,
+                              detail.analysis,
+                            )
+                            let text = result.answer
+                            if (result.provider !== 'gemini') {
+                              const suffix = result.provider === 'evidence'
+                                ? '\n\n(Lưu ý: trả lời từ transcript đã lưu.)'
+                                : '\n\n(Lưu ý: Gemini tạm không khả dụng — trả lời từ dữ liệu phân tích cục bộ.)'
+                              text = `${result.answer}${suffix}`
+                            }
+                            return { text, citations: result.sourceSegments }
+                          }}
+                        />
+                      )}
                     </div>
-                  )}
-                </div>
-
-                <div>
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', marginBottom: '10px' }}>
-                    <h3 className="studio-page-head" style={{ fontSize: '16px' }}>Analysis</h3>
-                    <span className="meta-pill">{detail.analysisState}</span>
-                  </div>
-                  <AnalysisStatusPanel
-                    metadata={detail.analysisMetadata ?? detail.analysis}
-                    evidenceMatches={analysisEvidenceMatches}
-                    busy={reanalyzeBusy}
-                    error={reanalyzeError}
-                    onReanalyze={() => void handleReanalyze()}
-                  />
-                  {detail.analysisState === 'processing' && <LoadingState message="Analysis đã lưu đang xử lý..." />}
-                  {detail.analysisState === 'failed' && <ErrorState title="Phân tích không sẵn sàng" message={detail.analysisError || 'Không thể tải phân tích đã lưu'} />}
-                  {detail.analysisState === 'missing' && <EmptyState message="Meeting này chưa có analysis đã lưu" />}
-                  {detail.analysisState === 'completed' && (
-                    <AnalysisPanel
-                      title="Saved analysis"
-                      analysis={detail.analysis}
-                      status="ready"
-                      emptyMessage="Không có analysis đã lưu"
-                      loadingMessage="Đang tải analysis đã lưu..."
-                      summaryFallback="(empty)"
-                      testId="e2e-saved-analysis"
-                    />
                   )}
                 </div>
               </div>
@@ -1362,6 +1799,14 @@ export default function MeetingHistoryScene({ focusMeetingId = null, onOpenAnaly
           )}
         </section>
       </div>
+      {selectedMeetingId != null && activeTerm && (
+        <TermExplainPopover
+          meetingId={selectedMeetingId}
+          term={activeTerm}
+          analysis={detail.analysis}
+          onClose={() => setActiveTerm(null)}
+        />
+      )}
     </div>
   )
 }

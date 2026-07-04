@@ -8,6 +8,7 @@ import java.time.Instant;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
@@ -35,6 +36,7 @@ import org.springframework.web.server.ResponseStatusException;
 
 import com.example.processingservice.client.AIServiceClient;
 import com.example.processingservice.client.MeetingServiceClient;
+import com.example.processingservice.client.UserQuotaClient;
 import com.example.processingservice.config.Epic3FeatureFlags;
 import com.example.processingservice.config.Epic3PolicyLoader;
 import com.example.processingservice.controller.dto.TranscriptEvidenceMatch;
@@ -44,8 +46,10 @@ import com.example.processingservice.controller.dto.ProcessingStatusResponse;
 import com.example.processingservice.service.report.MeetingActionPlanBuilder;
 import com.example.processingservice.service.report.MeetingActionPlanData;
 import com.example.processingservice.service.report.MeetingActionPlanDocxGenerator;
+import com.example.processingservice.service.report.MeetingActionPlanPdfGenerator;
 import com.example.processingservice.service.report.MeetingReportData;
 import com.example.processingservice.service.report.MeetingReportDocxGenerator;
+import com.example.processingservice.service.report.MeetingReportPdfGenerator;
 
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -76,6 +80,8 @@ public class ProcessingService {
     private static final String TRANSCRIPT_MODE_RAW = "raw";
     private static final String TRANSCRIPT_MODE_CANONICAL = "canonical";
     private static final String ANALYSIS_STATUS_NO_ANALYSIS = "NO_ANALYSIS";
+    private static final String ANALYSIS_STATUS_UNAVAILABLE_FOR_SCOPE = "ANALYSIS_UNAVAILABLE_FOR_SCOPE";
+    private static final String ANALYSIS_STATUS_SCOPE_RESOLUTION_UNAVAILABLE = "ANALYSIS_SCOPE_RESOLUTION_UNAVAILABLE";
     private static final String ANALYSIS_STATUS_STALE = "STALE";
     private static final String NO_TRANSCRIPT_AFTER_FINALIZE = "NO_TRANSCRIPT_AFTER_FINALIZE";
     private static final String COMPLETED_WITH_NO_SPEECH_DETECTED = "COMPLETED_WITH_NO_SPEECH_DETECTED";
@@ -92,11 +98,18 @@ public class ProcessingService {
     private final JobStateStore jobStateStore;
     private final MeterRegistry meterRegistry;
     private final MeetingReportDocxGenerator meetingReportDocxGenerator;
+    private final MeetingReportPdfGenerator meetingReportPdfGenerator;
     private final TranscriptEvidenceSearchService transcriptEvidenceSearchService;
     private final MeetingActionPlanBuilder meetingActionPlanBuilder;
     private final MeetingActionPlanDocxGenerator meetingActionPlanDocxGenerator;
+    private final MeetingActionPlanPdfGenerator meetingActionPlanPdfGenerator;
     private final Epic3FeatureFlags epic3FeatureFlags;
     private final Epic3PolicyLoader epic3PolicyLoader;
+
+    @Autowired(required = false)
+    private JobCompletionNotifier jobCompletionNotifier;
+    @Autowired(required = false)
+    private SpeakerProfileSupport speakerProfileSupport;
     @Value("${processing.analysis.prompt-version:gemini-business-v2}")
     private String analysisPromptVersion;
     @Value("${processing.analysis.schema-version:gemini-business-v2}")
@@ -136,9 +149,11 @@ public class ProcessingService {
                 jobStateStore,
                 meterRegistry,
                 meetingReportDocxGenerator,
+                new MeetingReportPdfGenerator(),
                 new TranscriptEvidenceSearchService(),
                 new MeetingActionPlanBuilder(),
                 new MeetingActionPlanDocxGenerator(),
+                new MeetingActionPlanPdfGenerator(),
                 new Epic3FeatureFlags(),
                 new Epic3PolicyLoader(new com.fasterxml.jackson.databind.ObjectMapper())
         );
@@ -151,9 +166,11 @@ public class ProcessingService {
             JobStateStore jobStateStore,
             MeterRegistry meterRegistry,
             MeetingReportDocxGenerator meetingReportDocxGenerator,
+            MeetingReportPdfGenerator meetingReportPdfGenerator,
             TranscriptEvidenceSearchService transcriptEvidenceSearchService,
             MeetingActionPlanBuilder meetingActionPlanBuilder,
             MeetingActionPlanDocxGenerator meetingActionPlanDocxGenerator,
+            MeetingActionPlanPdfGenerator meetingActionPlanPdfGenerator,
             Epic3FeatureFlags epic3FeatureFlags,
             Epic3PolicyLoader epic3PolicyLoader
     ) {
@@ -162,9 +179,11 @@ public class ProcessingService {
         this.jobStateStore = jobStateStore;
         this.meterRegistry = meterRegistry;
         this.meetingReportDocxGenerator = meetingReportDocxGenerator;
+        this.meetingReportPdfGenerator = meetingReportPdfGenerator;
         this.transcriptEvidenceSearchService = transcriptEvidenceSearchService;
         this.meetingActionPlanBuilder = meetingActionPlanBuilder;
         this.meetingActionPlanDocxGenerator = meetingActionPlanDocxGenerator;
+        this.meetingActionPlanPdfGenerator = meetingActionPlanPdfGenerator;
         this.epic3FeatureFlags = epic3FeatureFlags;
         this.epic3PolicyLoader = epic3PolicyLoader;
     }
@@ -175,7 +194,7 @@ public class ProcessingService {
     }
 
     public ProcessStartResponse startProcessing(Long meetingId) {
-        return startProcessing(meetingId, null, null, null, null, "vi", null, null);
+        return startProcessing(meetingId, null, null, null, null, "vi", null, null, null);
     }
 
     public ProcessStartResponse startProcessing(
@@ -187,7 +206,7 @@ public class ProcessingService {
             String language,
             String traceId
     ) {
-        return startProcessing(meetingId, audioPath, fileId, topic, glossaryTerms, language, traceId, null);
+        return startProcessing(meetingId, audioPath, fileId, topic, glossaryTerms, language, null, traceId, null);
     }
 
     public ProcessStartResponse startProcessing(
@@ -197,6 +216,7 @@ public class ProcessingService {
             String topic,
             List<String> glossaryTerms,
             String language,
+            String domainMode,
             String traceId,
             String authorization
     ) {
@@ -205,15 +225,28 @@ public class ProcessingService {
             JobStateStore.IdempotencyClaim claim = jobStateStore.claimIdempotency(resolvedFileId, meetingId);
             if (!claim.owner()) {
                 Long existingJobId = claim.jobId();
-                log.info(
-                        "event=ANALYSIS_TRIGGER_SKIPPED traceId={} requestId={} meetingId={} source=batch reason=idempotency_hit",
-                        traceId,
-                        currentRequestId(traceId),
-                        existingJobId
-                );
                 ProcessingStatusResponse existing = getProcessingStatus(existingJobId, traceId, authorization);
-                syncMeetingStatusSafely(existingJobId, existing.status(), traceId, authorization);
-                return new ProcessStartResponse(existing.meetingId(), existing.status(), existing.error(), existing.updatedAt());
+                String existingStatus = normalizeStatus(existing.status());
+                if ("FAILED".equals(existingStatus)) {
+                    log.info(
+                            "event=ANALYSIS_TRIGGER_RETRY traceId={} requestId={} meetingId={} source=batch reason=failed_job_idempotency_release",
+                            traceId,
+                            currentRequestId(traceId),
+                            existingJobId
+                    );
+                    jobStateStore.releaseIdempotency(resolvedFileId);
+                    claim = jobStateStore.claimIdempotency(resolvedFileId, meetingId);
+                }
+                if (!claim.owner()) {
+                    log.info(
+                            "event=ANALYSIS_TRIGGER_SKIPPED traceId={} requestId={} meetingId={} source=batch reason=idempotency_hit",
+                            traceId,
+                            currentRequestId(traceId),
+                            existingJobId
+                    );
+                    syncMeetingStatusSafely(existingJobId, existing.status(), traceId, authorization);
+                    return new ProcessStartResponse(existing.meetingId(), existing.status(), existing.error(), existing.updatedAt());
+                }
             }
 
             jobStateStore.upsertJobState(meetingId, "QUEUED", resolvedFileId, null, null, traceId);
@@ -227,11 +260,12 @@ public class ProcessingService {
             );
 
             try {
-                processMeeting(meetingId, audioPath, resolvedFileId, topic, glossaryTerms, language, traceId, authorization);
+                processMeeting(meetingId, audioPath, resolvedFileId, topic, glossaryTerms, language, domainMode, traceId, authorization);
             } catch (HttpStatusCodeException ex) {
                 jobStateStore.upsertJobState(meetingId, "FAILED", resolvedFileId, null, ex.getMessage(), traceId);
                 incrementJobsTotal("FAILED");
                 syncMeetingStatusSafely(meetingId, "FAILED", traceId, authorization);
+                maybeNotifyJobTerminal(meetingId, "FAILED", ex.getMessage(), traceId, authorization);
                 int downstreamStatus = ex.getStatusCode().value();
                 log.warn(
                         "event=AI_SERVICE_CALL_FAILED traceId={} requestId={} meetingId={} source=batch httpStatus={} errorCode=DOWNSTREAM_HTTP_ERROR",
@@ -248,6 +282,7 @@ public class ProcessingService {
                 jobStateStore.upsertJobState(meetingId, "FAILED", resolvedFileId, null, ex.getMessage(), traceId);
                 incrementJobsTotal("FAILED");
                 syncMeetingStatusSafely(meetingId, "FAILED", traceId, authorization);
+                maybeNotifyJobTerminal(meetingId, "FAILED", ex.getMessage(), traceId, authorization);
                 log.warn(
                         "event=ANALYSIS_TRIGGER_FAILED traceId={} requestId={} meetingId={} source=batch errorCode={}",
                         traceId,
@@ -273,7 +308,7 @@ public class ProcessingService {
             String language,
             String traceId
     ) {
-        return processMeeting(meetingId, audioPath, fileId, topic, glossaryTerms, language, traceId, null);
+        return processMeeting(meetingId, audioPath, fileId, topic, glossaryTerms, language, null, traceId, null);
     }
 
     public Map<String, Object> processMeeting(
@@ -283,11 +318,13 @@ public class ProcessingService {
             String topic,
             List<String> glossaryTerms,
             String language,
+            String domainMode,
             String traceId,
             String authorization
     ) {
         String resolvedAudioPath = audioPath;
         String resolvedLanguage = normalizeBatchLanguage(language);
+        Long ownerUserId = null;
         if (resolvedAudioPath == null || resolvedAudioPath.isBlank()) {
             try {
                 Map<String, Object> meeting = meetingServiceClient.getMeetingById(meetingId, traceId, authorization);
@@ -296,6 +333,7 @@ public class ProcessingService {
                     throw new IllegalArgumentException("Meeting has no audioPath: " + meetingId);
                 }
                 resolvedAudioPath = String.valueOf(audioPathObj);
+                ownerUserId = parseOwnerUserId(meeting.get("ownerUserId"));
                 if ("vi".equals(resolvedLanguage)) {
                     Object meetingLanguage = meeting.get("language");
                     resolvedLanguage = normalizeBatchLanguage(meetingLanguage == null ? null : String.valueOf(meetingLanguage));
@@ -307,6 +345,19 @@ public class ProcessingService {
                 }
                 resolvedAudioPath = audioPath;
                 log.info("[traceId={}] [jobId={}] Meeting {} not found, proceeding with provided audioPath", traceId, meetingId, meetingId);
+            }
+        }
+        if (ownerUserId == null) {
+            try {
+                Map<String, Object> meeting = meetingServiceClient.getMeetingById(meetingId, traceId, authorization);
+                ownerUserId = parseOwnerUserId(meeting.get("ownerUserId"));
+            } catch (Exception ex) {
+                log.debug(
+                        "[traceId={}] [jobId={}] Could not resolve ownerUserId for meeting {}",
+                        traceId,
+                        meetingId,
+                        meetingId
+                );
             }
         }
         log.info(
@@ -325,8 +376,10 @@ public class ProcessingService {
                 topic,
                 glossaryTerms,
                 resolvedLanguage,
+                domainMode,
                 traceId,
-                authorization
+                authorization,
+                ownerUserId
         );
         log.info(
                 "event=UPLOAD_TRANSCRIPT_STARTED traceId={} requestId={} meetingId={} source=upload",
@@ -358,6 +411,12 @@ public class ProcessingService {
     @Autowired
     private UploadValidator uploadValidator;
 
+    @Autowired
+    private UserQuotaClient userQuotaClient;
+
+    @Value("${quota.stt.bytes-per-second-estimate:4000}")
+    private long sttBytesPerSecondEstimate = 4000;
+
     public Map<String, Object> uploadAudio(MultipartFile file, String traceId, String authorization) {
         log.info(
                 "event=UPLOAD_REQUEST_RECEIVED traceId={} requestId={} source=upload path=/processing/upload",
@@ -365,7 +424,51 @@ public class ProcessingService {
                 currentRequestId(traceId)
         );
         uploadValidator.validateIfStrict(file, file == null ? null : file.getOriginalFilename());
+        enforceSttQuotaForUpload(file);
         return aiServiceClient.uploadAudio(file, traceId, authorization);
+    }
+
+    private void enforceSttQuotaForUpload(MultipartFile file) {
+        Long userId = resolveCurrentUserId();
+        if (userId == null) {
+            return;
+        }
+        long bytes = 0;
+        try {
+            bytes = file == null ? 0 : file.getSize();
+        } catch (Exception ignored) {
+        }
+        long estimatedSeconds = estimateSecondsFromBytes(bytes);
+        if (estimatedSeconds <= 0) {
+            return;
+        }
+        UserQuotaClient.QuotaConsumeResult result = userQuotaClient.consume(userId, estimatedSeconds, 0);
+        if (!result.allowed()) {
+            throw new ResponseStatusException(HttpStatus.PAYMENT_REQUIRED, "QUOTA_EXCEEDED");
+        }
+    }
+
+    private long estimateSecondsFromBytes(long bytes) {
+        long bps = sttBytesPerSecondEstimate <= 0 ? 4000 : sttBytesPerSecondEstimate;
+        if (bytes <= 0) {
+            return 0;
+        }
+        long seconds = bytes / bps;
+        if (seconds <= 0) {
+            seconds = 1;
+        }
+        return Math.min(seconds, 60L * 60L * 24L);
+    }
+
+    private Long resolveCurrentUserId() {
+        try {
+            String raw = MDC.get("userId");
+            if (raw != null && !raw.isBlank()) {
+                return Long.parseLong(raw);
+            }
+        } catch (Exception ignored) {
+        }
+        return null;
     }
 
     /**
@@ -679,10 +782,60 @@ public class ProcessingService {
 
             updateMetricsForState(meetingId, status, state);
             syncMeetingStatusSafely(meetingId, status, traceId, authorization);
+            maybeNotifyJobTerminal(meetingId, status, error, traceId, authorization);
             log.info("[traceId={}] [jobId={}] status read from redis={}", traceId, meetingId, status);
 
             return new ProcessingStatusResponse(meetingId, status, progress, stage, error, updatedAt);
         }
+    }
+
+    private static final Set<String> ACTIVE_JOB_STATUSES = Set.of(
+            "QUEUED",
+            "RUNNING",
+            "RETRYING",
+            "RECONNECTING",
+            "PARTIAL",
+            "DEGRADED",
+            "PENDING"
+    );
+
+    public Map<String, Object> listMyJobs(String traceId, String authorization) {
+        List<Map<String, Object>> meetings = meetingServiceClient.listMeetings(traceId, authorization);
+        List<Map<String, Object>> jobs = new ArrayList<>();
+        int activeCount = 0;
+        for (Map<String, Object> meeting : meetings) {
+            Long meetingId = parseOwnerUserId(meeting.get("id"));
+            if (meetingId == null) {
+                continue;
+            }
+            Map<String, Object> state = jobStateStore.getJobState(meetingId).orElse(null);
+            if (state == null) {
+                continue;
+            }
+            String status = normalizeStatus(state.get("status"));
+            if ("NOT_FOUND".equalsIgnoreCase(status)) {
+                continue;
+            }
+            boolean active = ACTIVE_JOB_STATUSES.contains(status.toUpperCase(Locale.ROOT));
+            if (active) {
+                activeCount++;
+            }
+            Map<String, Object> job = new LinkedHashMap<>();
+            job.put("meetingId", meetingId);
+            job.put("meetingTitle", meeting.get("title"));
+            job.put("status", status);
+            job.put("progress", normalizeProgress(state.get("progress")));
+            job.put("stage", state.get("stage"));
+            job.put("error", state.get("error"));
+            job.put("updatedAt", state.get("updatedAt"));
+            job.put("meetingStatus", meeting.get("status"));
+            job.put("active", active);
+            jobs.add(job);
+            if (jobs.size() >= 30) {
+                break;
+            }
+        }
+        return Map.of("jobs", jobs, "activeCount", activeCount);
     }
 
     public Map<String, Object> getTranscript(Long meetingId, String traceId) {
@@ -690,18 +843,40 @@ public class ProcessingService {
     }
 
     public Map<String, Object> getTranscript(Long meetingId, String traceId, String authorization) {
+        return getTranscript(meetingId, traceId, authorization, null, null);
+    }
+
+    public Map<String, Object> getTranscript(
+            Long meetingId,
+            String traceId,
+            String authorization,
+            Long recordingSessionId,
+            Long attemptId
+    ) {
+        if ((recordingSessionId == null) != (attemptId == null)) {
+            throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_PROVENANCE");
+        }
         assertMeetingAccess(meetingId, traceId, authorization);
         log.info(
-                "event=UPLOAD_TRANSCRIPT_STARTED traceId={} requestId={} meetingId={} source=upload",
+                "event=UPLOAD_TRANSCRIPT_STARTED traceId={} requestId={} meetingId={} source=upload scope={}",
                 traceId,
                 currentRequestId(traceId),
-                meetingId
+                meetingId,
+                recordingSessionId != null ? "v2" : "legacy"
         );
         Map<String, Object> state = jobStateStore.getJobState(meetingId).orElse(null);
 
         String stateStatus = state == null ? "NOT_FOUND" : normalizeStatus(state.get("status"));
-        TranscriptPayload stateTranscriptPayload = buildStateTranscriptPayload(state);
-        TranscriptPayload aiTranscriptPayload = fetchTranscriptPayloadFromAiService(meetingId, traceId);
+        TranscriptPayload stateTranscriptPayload = recordingSessionId == null
+                ? buildStateTranscriptPayload(state)
+                : TranscriptPayload.empty();
+        TranscriptFetchResult aiTranscriptResult = fetchTranscriptResultFromAiService(
+                meetingId,
+                traceId,
+                recordingSessionId,
+                attemptId
+        );
+        TranscriptPayload aiTranscriptPayload = aiTranscriptResult.payload();
         TranscriptSourceDecision transcriptDecision = selectReadableTranscriptSource(
                 stateTranscriptPayload,
                 aiTranscriptPayload,
@@ -715,9 +890,30 @@ public class ProcessingService {
                     traceId,
                     currentRequestId(traceId),
                     meetingId,
-                    transcriptDecision.source()
+                transcriptDecision.source()
             );
-            return buildTranscriptResponse(meetingId, responseStatus, transcriptDecision.payload());
+            return buildTranscriptResponse(meetingId, responseStatus, transcriptDecision.payload(), traceId, authorization);
+        }
+
+        if (recordingSessionId != null && aiTranscriptResult.transcriptNotReady()) {
+            log.info(
+                    "event=UPLOAD_TRANSCRIPT_NOT_READY traceId={} requestId={} meetingId={} recordingSessionId={} attemptId={}",
+                    traceId,
+                    currentRequestId(traceId),
+                    meetingId,
+                    recordingSessionId,
+                    attemptId
+            );
+            Map<String, Object> response = buildTranscriptResponse(
+                    meetingId,
+                    "NOT_READY",
+                    TranscriptPayload.empty()
+            );
+            response.put("errorCode", "TRANSCRIPT_NOT_READY");
+            response.put("transcriptNotReady", true);
+            response.put("recording_session_id", recordingSessionId);
+            response.put("attempt_id", attemptId);
+            return response;
         }
 
         log.info(
@@ -738,6 +934,190 @@ public class ProcessingService {
         );
         annotateNoTranscriptAfterFinalize(response, stateStatus);
         return response;
+    }
+
+    public Map<String, Object> listMeetingResultScopes(Long meetingId, String traceId, String authorization) {
+        assertMeetingAccess(meetingId, traceId, authorization);
+        List<Map<String, Object>> scopes = loadMeetingResultScopes(meetingId, traceId);
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("meetingId", meetingId);
+        response.put("scopes", scopes);
+        return response;
+    }
+
+    public Map<String, Object> resolveMeetingResultScope(
+            Long meetingId,
+            String traceId,
+            String authorization,
+            Long recordingSessionId,
+            Long attemptId
+    ) {
+        if ((recordingSessionId == null) != (attemptId == null)) {
+            throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_PROVENANCE");
+        }
+        assertMeetingAccess(meetingId, traceId, authorization);
+        List<Map<String, Object>> scopes = loadMeetingResultScopes(meetingId, traceId);
+        if (recordingSessionId != null) {
+            Map<String, Object> matched = scopes.stream()
+                    .filter(scope -> recordingSessionId.equals(parseScopeLong(scope.get("recordingSessionId")))
+                            && attemptId.equals(parseScopeLong(scope.get("attemptId"))))
+                    .findFirst()
+                    .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "RESULT_SCOPE_NOT_FOUND"));
+            return wrapResolvedResultScope(meetingId, matched, scopes.size() > 1);
+        }
+        if (scopes.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "RESULT_SCOPE_NOT_FOUND");
+        }
+        if (scopes.size() == 1) {
+            return wrapResolvedResultScope(meetingId, scopes.get(0), false);
+        }
+        return wrapResolvedResultScope(meetingId, selectPreferredResultScope(scopes), true);
+    }
+
+    private List<Map<String, Object>> loadMeetingResultScopes(Long meetingId, String traceId) {
+        List<Map<String, Object>> scopes = new ArrayList<>();
+        try {
+            Map<String, Object> aiResponse = aiServiceClient.listTranscriptScopes(meetingId, traceId);
+            scopes.addAll(normalizeResultScopeItems(extractScopeList(aiResponse)));
+        } catch (Exception ex) {
+            log.warn(
+                    "event=RESULT_SCOPE_LIST_FAILED meetingId={} traceId={} error={}",
+                    meetingId,
+                    traceId,
+                    ex.getMessage()
+            );
+        }
+
+        if (!scopes.isEmpty()) {
+            return scopes;
+        }
+
+        Map<String, Object> jobScope = readProvenanceScopeFromJobState(meetingId);
+        if (jobScope != null) {
+            scopes.add(jobScope);
+            return scopes;
+        }
+
+        TranscriptFetchResult legacyProbe = fetchTranscriptResultFromAiService(meetingId, traceId, null, null);
+        if (!legacyProbe.payload().readableRows().isEmpty()) {
+            scopes.add(buildLegacyResultScopeItem());
+        }
+        return scopes;
+    }
+
+    private Map<String, Object> wrapResolvedResultScope(
+            Long meetingId,
+            Map<String, Object> scope,
+            boolean ambiguous
+    ) {
+        Map<String, Object> response = new LinkedHashMap<>(scope);
+        response.put("meetingId", meetingId);
+        response.put("ambiguous", ambiguous);
+        return response;
+    }
+
+    private Map<String, Object> selectPreferredResultScope(List<Map<String, Object>> scopes) {
+        return scopes.stream()
+                .max(Comparator
+                        .comparing((Map<String, Object> scope) -> Boolean.TRUE.equals(scope.get("finalized")))
+                        .thenComparing(scope -> parseScopeLong(scope.get("recordingSessionId")), Comparator.nullsFirst(Long::compareTo))
+                        .thenComparing(scope -> parseScopeLong(scope.get("attemptId")), Comparator.nullsFirst(Long::compareTo)))
+                .orElse(scopes.get(scopes.size() - 1));
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<Map<String, Object>> extractScopeList(Map<String, Object> aiResponse) {
+        if (aiResponse == null) {
+            return List.of();
+        }
+        Object rawScopes = aiResponse.get("scopes");
+        if (!(rawScopes instanceof List<?> list)) {
+            return List.of();
+        }
+        List<Map<String, Object>> scopes = new ArrayList<>();
+        for (Object item : list) {
+            if (item instanceof Map<?, ?> map) {
+                Map<String, Object> normalized = new LinkedHashMap<>();
+                map.forEach((key, value) -> normalized.put(String.valueOf(key), value));
+                scopes.add(normalized);
+            }
+        }
+        return scopes;
+    }
+
+    private List<Map<String, Object>> normalizeResultScopeItems(List<Map<String, Object>> scopes) {
+        List<Map<String, Object>> normalized = new ArrayList<>();
+        for (Map<String, Object> scope : scopes) {
+            String scopeKind = String.valueOf(scope.getOrDefault("scopeKind", "")).trim().toLowerCase(Locale.ROOT);
+            if ("legacy".equals(scopeKind)) {
+                normalized.add(buildLegacyResultScopeItem());
+                continue;
+            }
+            Long recordingSessionId = parseScopeLong(scope.get("recordingSessionId"));
+            Long attemptId = parseScopeLong(scope.get("attemptId"));
+            if (recordingSessionId == null || attemptId == null) {
+                continue;
+            }
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("scopeKind", "v2");
+            item.put("recordingSessionId", recordingSessionId);
+            item.put("attemptId", attemptId);
+            item.put("finalized", Boolean.TRUE.equals(scope.get("finalized")));
+            if (scope.get("updatedAt") != null) {
+                item.put("updatedAt", String.valueOf(scope.get("updatedAt")));
+            }
+            if (scope.get("latestSeq") != null) {
+                item.put("latestSeq", parseScopeLong(scope.get("latestSeq")));
+            }
+            normalized.add(item);
+        }
+        return normalized;
+    }
+
+    private Map<String, Object> buildLegacyResultScopeItem() {
+        Map<String, Object> item = new LinkedHashMap<>();
+        item.put("scopeKind", "legacy");
+        item.put("recordingSessionId", null);
+        item.put("attemptId", null);
+        item.put("finalized", true);
+        return item;
+    }
+
+    private Map<String, Object> readProvenanceScopeFromJobState(Long meetingId) {
+        Map<String, Object> state = jobStateStore.getJobState(meetingId).orElse(null);
+        if (state == null) {
+            return null;
+        }
+        Object result = state.get("result");
+        if (!(result instanceof Map<?, ?> resultMap)) {
+            return null;
+        }
+        Long recordingSessionId = parseScopeLong(resultMap.get("recording_session_id"));
+        Long attemptId = parseScopeLong(resultMap.get("attempt_id"));
+        if (recordingSessionId == null || attemptId == null) {
+            return null;
+        }
+        Map<String, Object> item = new LinkedHashMap<>();
+        item.put("scopeKind", "v2");
+        item.put("recordingSessionId", recordingSessionId);
+        item.put("attemptId", attemptId);
+        item.put("finalized", true);
+        item.put("source", "job_state");
+        return item;
+    }
+
+    private Long parseScopeLong(Object value) {
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof Number number) {
+            return number.longValue();
+        }
+        try {
+            return Long.parseLong(String.valueOf(value).trim());
+        } catch (NumberFormatException ex) {
+            return null;
+        }
     }
 
     public TranscriptSearchResponse searchTranscriptEvidenceForMeeting(
@@ -800,11 +1180,31 @@ public class ProcessingService {
     }
 
     public Map<String, Object> getAnalysis(Long meetingId, String traceId, String authorization) {
-        return getAnalysisInternal(meetingId, traceId, authorization, true);
+        return getAnalysis(meetingId, traceId, authorization, null, null);
+    }
+
+    public Map<String, Object> getAnalysis(
+            Long meetingId,
+            String traceId,
+            String authorization,
+            Long recordingSessionId,
+            Long attemptId
+    ) {
+        return getAnalysisInternal(meetingId, traceId, authorization, true, recordingSessionId, attemptId);
     }
 
     public Map<String, Object> getAnalysisReadOnly(Long meetingId, String traceId, String authorization) {
-        return getAnalysisInternal(meetingId, traceId, authorization, false);
+        return getAnalysisReadOnly(meetingId, traceId, authorization, null, null);
+    }
+
+    public Map<String, Object> getAnalysisReadOnly(
+            Long meetingId,
+            String traceId,
+            String authorization,
+            Long recordingSessionId,
+            Long attemptId
+    ) {
+        return getAnalysisInternal(meetingId, traceId, authorization, false, recordingSessionId, attemptId);
     }
 
     public Map<String, Object> reanalyzeMeetingAnalysis(
@@ -819,6 +1219,7 @@ public class ProcessingService {
                 reason,
                 null,
                 null,
+                null,
                 traceId,
                 authorization
         );
@@ -830,6 +1231,7 @@ public class ProcessingService {
             String reason,
             String requestedPromptVersion,
             String requestedSchemaVersion,
+            String domainMode,
             String traceId,
             String authorization) {
         assertMeetingAccess(meetingId, traceId, authorization);
@@ -854,6 +1256,7 @@ public class ProcessingService {
                 traceId
         );
         try {
+            enforceGeminiQuotaForText(transcriptText);
             return aiServiceClient.rerunAnalysis(
                     meetingId,
                     mode,
@@ -865,6 +1268,7 @@ public class ProcessingService {
                     GROUPED_ACTION_PLAN_FEATURE_SET,
                     transcriptPayload.canonicalTranscriptHash(),
                     transcriptPayload.canonicalTranscriptVersion(),
+                    domainMode,
                     traceId,
                     authorization
             );
@@ -891,7 +1295,12 @@ public class ProcessingService {
         );
         List<Map<String, Object>> originalTranscriptRows = transcriptPayload.readableRows();
         StabilizedTranscriptResult stabilizedTranscript = stabilizeReadableTranscriptRows(originalTranscriptRows, meetingId);
-        List<Map<String, Object>> transcriptRows = stabilizedTranscript.rows();
+        List<Map<String, Object>> transcriptRows = applySpeakerDisplayNames(
+                stabilizedTranscript.rows(),
+                meetingId,
+                traceId,
+                authorization
+        );
         Map<String, Object> state = jobStateStore.getJobState(meetingId).orElse(null);
         Map<String, Object> analysisPayload = extractAnalysisFromState(state);
         boolean stateAnalysisCompatible = hasStructuredAnalysis(analysisPayload) && hasAnalysisCacheMetadata(analysisPayload);
@@ -933,6 +1342,64 @@ public class ProcessingService {
         return bytes;
     }
 
+    public byte[] generateMeetingReportPdf(Long meetingId, String traceId, String authorization) {
+        Map<String, Object> meeting = fetchAccessibleMeeting(meetingId, traceId, authorization);
+        TranscriptPayload transcriptPayload = loadSavedTranscriptPayloadForExport(
+                meetingId,
+                traceId,
+                authorization,
+                false,
+                TranscriptExportMode.READABLE
+        );
+        List<Map<String, Object>> originalTranscriptRows = transcriptPayload.readableRows();
+        StabilizedTranscriptResult stabilizedTranscript = stabilizeReadableTranscriptRows(originalTranscriptRows, meetingId);
+        List<Map<String, Object>> transcriptRows = applySpeakerDisplayNames(
+                stabilizedTranscript.rows(),
+                meetingId,
+                traceId,
+                authorization
+        );
+        Map<String, Object> state = jobStateStore.getJobState(meetingId).orElse(null);
+        Map<String, Object> analysisPayload = extractAnalysisFromState(state);
+        boolean stateAnalysisCompatible = hasStructuredAnalysis(analysisPayload) && hasAnalysisCacheMetadata(analysisPayload);
+        if (!stateAnalysisCompatible) {
+            analysisPayload = fetchSavedAnalysisCacheOnlyForReport(
+                    meetingId,
+                    traceId,
+                    authorization,
+                    transcriptPayload,
+                    transcriptRows
+            );
+        }
+        boolean analysisAvailable = hasStructuredAnalysis(analysisPayload);
+        RawTranscriptPreview readablePreview = transcriptPayload.isCanonicalMode()
+                ? buildCanonicalTranscriptPreviewRows(transcriptRows)
+                : buildReadableTranscriptPreviewRows(transcriptRows, originalTranscriptRows);
+
+        if (transcriptRows.isEmpty() && !analysisAvailable) {
+            throw new ResponseStatusException(
+                    HttpStatus.NOT_FOUND,
+                    "Transcript is not ready yet."
+            );
+        }
+
+        MeetingReportData reportData = assembleMeetingReportData(
+                meetingId,
+                meeting,
+                state,
+                transcriptPayload,
+                transcriptRows,
+                readablePreview.rows(),
+                readablePreview.previewLimited(),
+                analysisPayload,
+                analysisAvailable
+        );
+        runExportVerifyPreflight(meetingId, "pdf", "readable", transcriptRows.size());
+        byte[] bytes = meetingReportPdfGenerator.generate(reportData);
+        logExportVerifyCompleted(meetingId, "pdf", "readable", bytes.length, transcriptRows.size());
+        return bytes;
+    }
+
     public MeetingActionPlanData getMeetingActionPlan(Long meetingId, String traceId, String authorization) {
         return buildMeetingActionPlan(meetingId, traceId, authorization);
     }
@@ -964,6 +1431,432 @@ public class ProcessingService {
         return docxBytes;
     }
 
+    public byte[] generateMeetingActionPlanPdf(Long meetingId, String traceId, String authorization) {
+        MeetingActionPlanData actionPlan = buildMeetingActionPlan(meetingId, traceId, authorization);
+        runExportVerifyPreflight(meetingId, "pdf", "readable", actionPlan.actionItems().size());
+        byte[] pdfBytes = meetingActionPlanPdfGenerator.generate(actionPlan);
+        logExportVerifyCompleted(
+                meetingId,
+                "pdf",
+                "readable",
+                pdfBytes.length,
+                actionPlan.actionItems().size()
+        );
+        return pdfBytes;
+    }
+
+    public Map<String, Object> answerMeetingChat(
+            Long meetingId,
+            String question,
+            String traceId,
+            String authorization
+    ) {
+        if (question == null || question.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Question is required");
+        }
+        fetchAccessibleMeeting(meetingId, traceId, authorization);
+
+        TranscriptPayload transcriptPayload = loadSavedTranscriptPayloadForExport(
+                meetingId,
+                traceId,
+                authorization,
+                false,
+                TranscriptExportMode.READABLE
+        );
+        List<Map<String, Object>> transcriptRows = applySpeakerDisplayNames(
+                stabilizeReadableTranscriptRows(transcriptPayload.readableRows(), meetingId).rows(),
+                meetingId,
+                traceId,
+                authorization
+        );
+        String transcriptExcerpt = buildTimedTranscriptExcerpt(transcriptRows, 12000);
+
+        Map<String, Object> analysisPayload = Map.of();
+        try {
+            analysisPayload = aiServiceClient.getAnalysis(meetingId, traceId);
+        } catch (Exception ignored) {
+            Map<String, Object> state = jobStateStore.getJobState(meetingId).orElse(null);
+            analysisPayload = extractAnalysisFromState(state);
+        }
+
+        String summary = analysisPayload.get("summary") == null
+                ? ""
+                : String.valueOf(analysisPayload.get("summary"));
+
+        List<Map<String, Object>> sourceSegments = resolveChatSourceSegments(
+                meetingId,
+                question,
+                traceId,
+                authorization
+        );
+
+        String billingText = question + "\n" + summary + "\n" + transcriptExcerpt;
+        enforceGeminiQuotaForText(billingText);
+
+        Map<String, Object> aiResponse = aiServiceClient.answerMeetingChat(
+                meetingId,
+                question.trim(),
+                summary,
+                transcriptExcerpt,
+                analysisPayload,
+                sourceSegments,
+                traceId,
+                authorization
+        );
+
+        Map<String, Object> response = new LinkedHashMap<>();
+        if (aiResponse != null) {
+            response.putAll(aiResponse);
+        }
+        if (!response.containsKey("source_segments") || response.get("source_segments") == null) {
+            response.put("source_segments", sourceSegments);
+        }
+        return response;
+    }
+
+    private List<Map<String, Object>> resolveChatSourceSegments(
+            Long meetingId,
+            String question,
+            String traceId,
+            String authorization
+    ) {
+        if (question == null || question.isBlank()) {
+            return List.of();
+        }
+        try {
+            TranscriptSearchResponse searchResponse = searchTranscriptEvidenceForMeeting(
+                    meetingId,
+                    question,
+                    3,
+                    0,
+                    traceId,
+                    authorization
+            );
+            return searchResponse.matches().stream()
+                    .limit(3)
+                    .map(this::toChatSourceSegment)
+                    .toList();
+        } catch (Exception ex) {
+            log.debug("chat_source_segment_search_skipped meetingId={} reason={}", meetingId, ex.getMessage());
+            return List.of();
+        }
+    }
+
+    private Map<String, Object> toChatSourceSegment(TranscriptEvidenceMatch match) {
+        Map<String, Object> item = new LinkedHashMap<>();
+        item.put("evidenceId", match.evidenceId());
+        item.put("segmentId", match.segmentId());
+        item.put("index", match.index());
+        item.put("speaker", match.speaker());
+        item.put("startTime", match.startTime());
+        item.put("endTime", match.endTime());
+        item.put("quote", match.text());
+        item.put("text", match.text());
+        item.put("textTruncated", match.textTruncated());
+        item.put("rank", match.rank());
+        item.put("matchType", match.matchType());
+        if (match.verificationStatus() != null) {
+            item.put("verificationStatus", match.verificationStatus());
+        }
+        return item;
+    }
+
+    private String buildTimedTranscriptExcerpt(List<Map<String, Object>> rows, int maxChars) {
+        if (rows == null || rows.isEmpty() || maxChars <= 0) {
+            return "";
+        }
+        StringBuilder builder = new StringBuilder();
+        for (Map<String, Object> row : rows) {
+            if (row == null) {
+                continue;
+            }
+            String speaker = row.get("speaker") == null ? "" : String.valueOf(row.get("speaker")).trim();
+            String text = row.get("text") == null ? "" : String.valueOf(row.get("text")).trim();
+            if (text.isBlank()) {
+                continue;
+            }
+            double startTime = firstDouble(row.get("start_time"), row.get("startTime"), row.get("start"));
+            String line = "[" + formatTranscriptClock(startTime) + "] "
+                    + (speaker.isBlank() ? "Speaker" : speaker)
+                    + ": "
+                    + text;
+            if (builder.length() + line.length() + 1 > maxChars) {
+                break;
+            }
+            builder.append(line).append('\n');
+        }
+        return builder.toString().trim();
+    }
+
+    private double firstDouble(Object... values) {
+        for (Object value : values) {
+            if (value == null) {
+                continue;
+            }
+            if (value instanceof Number number) {
+                return number.doubleValue();
+            }
+            try {
+                return Double.parseDouble(String.valueOf(value));
+            } catch (NumberFormatException ignored) {
+                // continue
+            }
+        }
+        return 0D;
+    }
+
+    private String formatTranscriptClock(double secondsValue) {
+        int totalSeconds = (int) Math.max(0D, Math.floor(secondsValue));
+        int hours = totalSeconds / 3600;
+        int minutes = (totalSeconds % 3600) / 60;
+        int seconds = totalSeconds % 60;
+        if (hours > 0) {
+            return String.format(Locale.ROOT, "%02d:%02d:%02d", hours, minutes, seconds);
+        }
+        return String.format(Locale.ROOT, "%02d:%02d", minutes, seconds);
+    }
+
+    public Map<String, Object> semanticSearchMeetings(
+            String query,
+            int limit,
+            String traceId,
+            String authorization
+    ) {
+        String trimmedQuery = query == null ? "" : query.trim();
+        if (trimmedQuery.length() < 2) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "QUERY_TOO_SHORT");
+        }
+        int effectiveLimit = Math.min(Math.max(limit, 1), 20);
+
+        List<Map<String, Object>> meetings = meetingServiceClient.listMeetings(traceId, authorization);
+        List<Map<String, Object>> candidates = new ArrayList<>();
+        for (Map<String, Object> meeting : meetings) {
+            if (meeting == null) {
+                continue;
+            }
+            Long meetingId = longValue(meeting.get("id"));
+            if (meetingId == null) {
+                continue;
+            }
+            Map<String, Object> candidate = new LinkedHashMap<>();
+            candidate.put("meetingId", meetingId);
+            candidate.put("title", stringValue(meeting.get("title")));
+            candidate.put("originalFileName", stringValue(meeting.get("originalFileName"), meeting.get("original_file_name")));
+            String summary = "";
+            String groupedPlanExcerpt = "";
+            try {
+                Map<String, Object> analysis = aiServiceClient.getAnalysis(meetingId, traceId);
+                summary = stringValue(analysis.get("summary"));
+                groupedPlanExcerpt = extractGroupedPlanExcerpt(analysis);
+            } catch (Exception ignored) {
+                Map<String, Object> state = jobStateStore.getJobState(meetingId).orElse(null);
+                Map<String, Object> analysis = extractAnalysisFromState(state);
+                summary = stringValue(analysis.get("summary"));
+                groupedPlanExcerpt = extractGroupedPlanExcerpt(analysis);
+            }
+            candidate.put("summary", summary);
+            candidate.put("groupedPlanExcerpt", groupedPlanExcerpt);
+            candidates.add(candidate);
+            if (candidates.size() >= 30) {
+                break;
+            }
+        }
+
+        enforceGeminiQuotaForText(trimmedQuery + "\n" + candidates.size());
+        Map<String, Object> rerank = aiServiceClient.semanticRerankMeetings(
+                trimmedQuery,
+                candidates,
+                traceId,
+                authorization
+        );
+
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("query", trimmedQuery);
+        response.put("provider", rerank.getOrDefault("provider", "fallback"));
+        Object rawResults = rerank.get("results");
+        List<Map<String, Object>> enriched = new ArrayList<>();
+        if (rawResults instanceof List<?> list) {
+            for (Object item : list) {
+                if (!(item instanceof Map<?, ?> result)) {
+                    continue;
+                }
+                Long meetingId = longValue(result.get("meetingId"), result.get("meeting_id"));
+                if (meetingId == null) {
+                    continue;
+                }
+                Map<String, Object> meetingMeta = meetings.stream()
+                        .filter(entry -> meetingId.equals(longValue(entry.get("id"))))
+                        .findFirst()
+                        .orElse(Map.of());
+                Map<String, Object> view = new LinkedHashMap<>();
+                view.put("meetingId", meetingId);
+                view.put("score", result.get("score"));
+                view.put("reason", result.get("reason"));
+                view.put("title", stringValue(meetingMeta.get("title")));
+                view.put("originalFileName", stringValue(meetingMeta.get("originalFileName"), meetingMeta.get("original_file_name")));
+                enriched.add(view);
+                if (enriched.size() >= effectiveLimit) {
+                    break;
+                }
+            }
+        }
+        response.put("results", enriched);
+        return response;
+    }
+
+    private String extractGroupedPlanExcerpt(Map<String, Object> analysis) {
+        if (analysis == null || analysis.isEmpty()) {
+            return "";
+        }
+        Object grouped = analysis.get("groupedActionPlan");
+        if (!(grouped instanceof Map<?, ?> groupedMap)) {
+            grouped = analysis.get("grouped_action_plan");
+        }
+        if (!(grouped instanceof Map<?, ?> groupedMap)) {
+            return "";
+        }
+        Object sections = groupedMap.get("sections");
+        if (!(sections instanceof List<?> sectionList) || sectionList.isEmpty()) {
+            return stringValue(groupedMap.get("intro"));
+        }
+        StringBuilder builder = new StringBuilder(stringValue(groupedMap.get("intro")));
+        for (Object sectionObj : sectionList) {
+            if (!(sectionObj instanceof Map<?, ?> section)) {
+                continue;
+            }
+            builder.append(' ').append(stringValue(section.get("title")));
+            Object items = section.get("items");
+            if (items instanceof List<?> itemList) {
+                for (Object itemObj : itemList) {
+                    if (itemObj instanceof Map<?, ?> item) {
+                        builder.append(' ').append(stringValue(item.get("title")));
+                    }
+                }
+            }
+            if (builder.length() > 1200) {
+                break;
+            }
+        }
+        return builder.toString().trim();
+    }
+
+    private static String stringValue(Object... values) {
+        for (Object value : values) {
+            if (value != null && !String.valueOf(value).trim().isBlank()) {
+                return String.valueOf(value).trim();
+            }
+        }
+        return "";
+    }
+
+    private static Long longValue(Object... values) {
+        for (Object value : values) {
+            if (value == null) {
+                continue;
+            }
+            if (value instanceof Number number) {
+                return number.longValue();
+            }
+            try {
+                return Long.parseLong(String.valueOf(value));
+            } catch (NumberFormatException ignored) {
+                // continue
+            }
+        }
+        return null;
+    }
+
+    public Map<String, Object> askCrossMeeting(
+            String question,
+            int limit,
+            String traceId,
+            String authorization
+    ) {
+        if (question == null || question.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Question is required");
+        }
+        Map<String, Object> search = semanticSearchMeetings(question, limit, traceId, authorization);
+        Object rawResults = search.get("results");
+        List<Map<String, Object>> meetings = new ArrayList<>();
+        if (rawResults instanceof List<?> list) {
+            for (Object item : list) {
+                if (item instanceof Map<?, ?> map) {
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> cast = (Map<String, Object>) map;
+                    meetings.add(cast);
+                }
+            }
+        }
+        enforceGeminiQuotaForText(question);
+        Map<String, Object> aiResponse = aiServiceClient.askCrossMeeting(
+                question.trim(),
+                meetings,
+                traceId,
+                authorization
+        );
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("question", question.trim());
+        response.put("answer", aiResponse.getOrDefault("answer", ""));
+        response.put("provider", aiResponse.getOrDefault("provider", search.get("provider")));
+        response.put("meetings", meetings);
+        return response;
+    }
+
+    public Map<String, Object> explainMeetingTerm(
+            Long meetingId,
+            String term,
+            String traceId,
+            String authorization
+    ) {
+        if (term == null || term.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "term is required");
+        }
+        fetchAccessibleMeeting(meetingId, traceId, authorization);
+
+        TranscriptPayload transcriptPayload = loadSavedTranscriptPayloadForExport(
+                meetingId,
+                traceId,
+                authorization,
+                false,
+                TranscriptExportMode.READABLE
+        );
+        List<Map<String, Object>> transcriptRows = applySpeakerDisplayNames(
+                stabilizeReadableTranscriptRows(transcriptPayload.readableRows(), meetingId).rows(),
+                meetingId,
+                traceId,
+                authorization
+        );
+        String transcriptText = buildTranscriptText(transcriptRows);
+        String transcriptExcerpt = transcriptText.length() > 12000
+                ? transcriptText.substring(0, 12000)
+                : transcriptText;
+
+        Map<String, Object> analysisPayload = Map.of();
+        try {
+            analysisPayload = aiServiceClient.getAnalysis(meetingId, traceId);
+        } catch (Exception ignored) {
+            Map<String, Object> state = jobStateStore.getJobState(meetingId).orElse(null);
+            analysisPayload = extractAnalysisFromState(state);
+        }
+
+        String summary = analysisPayload.get("summary") == null
+                ? ""
+                : String.valueOf(analysisPayload.get("summary"));
+
+        String billingText = term + "\n" + summary + "\n" + transcriptExcerpt;
+        enforceGeminiQuotaForText(billingText);
+
+        return aiServiceClient.explainMeetingTerm(
+                meetingId,
+                term.trim(),
+                summary,
+                transcriptExcerpt,
+                analysisPayload,
+                traceId,
+                authorization
+        );
+    }
+
     public byte[] generateMeetingTranscriptTxt(Long meetingId, String traceId, String authorization) {
         return generateMeetingTranscriptTxt(meetingId, traceId, authorization, "readable");
     }
@@ -980,7 +1873,12 @@ public class ProcessingService {
         );
         List<Map<String, Object>> selectedRows = exportMode == TranscriptExportMode.RAW
                 ? savedTranscriptPayload.rawRows()
-                : stabilizeReadableTranscriptRows(savedTranscriptPayload.readableRows(), meetingId).rows();
+                : applySpeakerDisplayNames(
+                        stabilizeReadableTranscriptRows(savedTranscriptPayload.readableRows(), meetingId).rows(),
+                        meetingId,
+                        traceId,
+                        authorization
+                );
         List<MeetingReportData.RawTranscriptRow> transcriptRows = exportMode == TranscriptExportMode.RAW
                 ? buildRawTranscriptRows(selectedRows)
                 : savedTranscriptPayload.isCanonicalMode()
@@ -1009,7 +1907,12 @@ public class ProcessingService {
         );
         List<Map<String, Object>> selectedRows = exportMode == TranscriptExportMode.RAW
                 ? savedTranscriptPayload.rawRows()
-                : stabilizeReadableTranscriptRows(savedTranscriptPayload.readableRows(), meetingId).rows();
+                : applySpeakerDisplayNames(
+                        stabilizeReadableTranscriptRows(savedTranscriptPayload.readableRows(), meetingId).rows(),
+                        meetingId,
+                        traceId,
+                        authorization
+                );
         List<MeetingReportData.RawTranscriptRow> transcriptRows = exportMode == TranscriptExportMode.RAW
                 ? buildRawTranscriptRows(selectedRows)
                 : savedTranscriptPayload.isCanonicalMode()
@@ -2626,8 +3529,273 @@ public class ProcessingService {
         return index;
     }
 
-    private Map<String, Object> getAnalysisInternal(Long meetingId, String traceId, String authorization, boolean allowLazyTrigger) {
+    private Map<String, Object> getScopedSavedAnalysis(
+            Long meetingId,
+            String traceId,
+            String authorization,
+            Long recordingSessionId,
+            Long attemptId,
+            boolean allowLazyTrigger
+    ) {
+        log.info(
+                "event=ANALYSIS_GET_REQUEST traceId={} requestId={} meetingId={} recordingSessionId={} attemptId={} source=scoped_analysis_get allowLazyTrigger={}",
+                traceId,
+                currentRequestId(traceId),
+                meetingId,
+                recordingSessionId,
+                attemptId,
+                allowLazyTrigger
+        );
+        Map<String, Object> aiTranscriptResult;
+        try {
+            aiTranscriptResult = aiServiceClient.getTranscript(meetingId, traceId, recordingSessionId, attemptId);
+        } catch (HttpStatusCodeException ex) {
+            if (ex.getStatusCode().value() == HttpStatus.NOT_FOUND.value()) {
+                Map<String, Object> response = new HashMap<>();
+                response.put("meeting_id", meetingId);
+                response.put("status", "NOT_FOUND");
+                response.put("analysisStatus", ANALYSIS_STATUS_UNAVAILABLE_FOR_SCOPE);
+                return response;
+            }
+            throw ex;
+        }
+        if (AIServiceClient.isTranscriptNotReadyResponse(aiTranscriptResult)) {
+            Map<String, Object> response = new HashMap<>();
+            response.put("meeting_id", meetingId);
+            response.put("status", "NOT_FOUND");
+            response.put("analysisStatus", ANALYSIS_STATUS_NO_ANALYSIS);
+            return response;
+        }
+        List<Map<String, Object>> transcriptRows = normalizeTranscriptRows(
+                aiTranscriptResult == null ? null : aiTranscriptResult.get("transcripts")
+        );
+        String transcriptText = buildTranscriptText(transcriptRows);
+        String transcriptHash = computeTranscriptHash(transcriptText);
+        String promptVersion = resolvePromptVersion(null);
+        String schemaVersion = resolveSchemaVersion(null);
+        if (transcriptText.isBlank()) {
+            Map<String, Object> response = new HashMap<>();
+            response.put("meeting_id", meetingId);
+            response.put("status", "NOT_FOUND");
+            response.put("analysisStatus", ANALYSIS_STATUS_UNAVAILABLE_FOR_SCOPE);
+            return response;
+        }
+        try {
+            Map<String, Object> aiResponse = aiServiceClient.getSavedAnalysisCacheOnly(
+                    meetingId,
+                    transcriptText,
+                    transcriptHash,
+                    promptVersion,
+                    schemaVersion,
+                    GROUPED_ACTION_PLAN_FEATURE_SET,
+                    recordingSessionId,
+                    attemptId,
+                    traceId,
+                    authorization
+            );
+            Map<String, Object> normalized = normalizeScopedAnalysisResponse(meetingId, aiResponse);
+            if (allowLazyTrigger && shouldTriggerScopedOnDemandAnalysis(normalized)) {
+                Map<String, Object> generated = aiServiceClient.getAnalysis(
+                        meetingId,
+                        traceId,
+                        recordingSessionId,
+                        attemptId
+                );
+                return normalizeScopedAnalysisResponse(meetingId, generated);
+            }
+            return normalized;
+        } catch (HttpStatusCodeException ex) {
+            if (ex.getStatusCode().value() == HttpStatus.NOT_FOUND.value()) {
+                if (allowLazyTrigger) {
+                    Map<String, Object> generated = aiServiceClient.getAnalysis(
+                            meetingId,
+                            traceId,
+                            recordingSessionId,
+                            attemptId
+                    );
+                    return normalizeScopedAnalysisResponse(meetingId, generated);
+                }
+                Map<String, Object> response = new HashMap<>();
+                response.put("meeting_id", meetingId);
+                response.put("status", "NOT_FOUND");
+                response.put("analysisStatus", ANALYSIS_STATUS_UNAVAILABLE_FOR_SCOPE);
+                return response;
+            }
+            throw ex;
+        }
+    }
+
+    private boolean shouldTriggerScopedOnDemandAnalysis(Map<String, Object> response) {
+        if (response == null || response.isEmpty()) {
+            return true;
+        }
+        String analysisStatus = normalizeStatus(response.get("analysisStatus"));
+        if (ANALYSIS_STATUS_UNAVAILABLE_FOR_SCOPE.equalsIgnoreCase(analysisStatus)) {
+            return true;
+        }
+        if ("NOT_FOUND".equalsIgnoreCase(analysisStatus) || ANALYSIS_STATUS_NO_ANALYSIS.equalsIgnoreCase(analysisStatus)) {
+            return true;
+        }
+        String status = normalizeStatus(response.get("status"));
+        return "NOT_FOUND".equalsIgnoreCase(status) && !hasStructuredAnalysis(response);
+    }
+
+    private AnalysisScopeRequirement resolveUnscopedAnalysisScopeRequirement(Long meetingId, String traceId) {
+        try {
+            Map<String, Object> aiResponse = aiServiceClient.listTranscriptScopes(meetingId, traceId);
+            List<Map<String, Object>> scopes = extractScopeList(aiResponse);
+            if (scopes.isEmpty()) {
+                return AnalysisScopeRequirement.SCOPE_UNAVAILABLE;
+            }
+            boolean hasLegacyScope = false;
+            boolean hasV2Scope = false;
+            for (Map<String, Object> scope : scopes) {
+                String scopeKind = String.valueOf(scope.getOrDefault("scopeKind", "")).trim().toLowerCase(Locale.ROOT);
+                if ("legacy".equals(scopeKind)) {
+                    if (hasScopeIdentifierValue(scope)) {
+                        return AnalysisScopeRequirement.SCOPE_UNAVAILABLE;
+                    }
+                    hasLegacyScope = true;
+                    continue;
+                }
+                if ("v2".equals(scopeKind)) {
+                    Long recordingSessionId = parseScopeLong(scope.get("recordingSessionId"));
+                    Long attemptId = parseScopeLong(scope.get("attemptId"));
+                    if (recordingSessionId == null || attemptId == null) {
+                        return AnalysisScopeRequirement.SCOPE_UNAVAILABLE;
+                    }
+                    hasV2Scope = true;
+                    continue;
+                }
+                return AnalysisScopeRequirement.SCOPE_UNAVAILABLE;
+            }
+            if (hasV2Scope) {
+                return AnalysisScopeRequirement.V2_REQUIRED;
+            }
+            return hasLegacyScope
+                    ? AnalysisScopeRequirement.LEGACY_ALLOWED
+                    : AnalysisScopeRequirement.SCOPE_UNAVAILABLE;
+        } catch (Exception ex) {
+            log.warn(
+                    "event=RESULT_SCOPE_PROBE_FAILED meetingId={} traceId={} error={}",
+                    meetingId,
+                    traceId,
+                    ex.getMessage()
+            );
+        }
+        Map<String, Object> jobScope = readProvenanceScopeFromJobState(meetingId);
+        if (jobScope != null && "v2".equals(String.valueOf(jobScope.get("scopeKind")))) {
+            return AnalysisScopeRequirement.V2_REQUIRED;
+        }
+        return AnalysisScopeRequirement.SCOPE_UNAVAILABLE;
+    }
+
+    private boolean hasScopeIdentifierValue(Map<String, Object> scope) {
+        return scope.get("recordingSessionId") != null
+                || scope.get("recording_session_id") != null
+                || scope.get("attemptId") != null
+                || scope.get("attempt_id") != null;
+    }
+
+    private Map<String, Object> buildScopedAnalysisUnavailableResponse(Long meetingId) {
+        Map<String, Object> response = new HashMap<>();
+        response.put("meeting_id", meetingId);
+        response.put("status", "NOT_FOUND");
+        response.put("analysisStatus", ANALYSIS_STATUS_UNAVAILABLE_FOR_SCOPE);
+        return response;
+    }
+
+    private Map<String, Object> buildScopeResolutionUnavailableResponse(Long meetingId) {
+        Map<String, Object> response = new HashMap<>();
+        response.put("meeting_id", meetingId);
+        response.put("status", "PENDING");
+        response.put("analysisStatus", ANALYSIS_STATUS_SCOPE_RESOLUTION_UNAVAILABLE);
+        response.put("errorCode", ANALYSIS_STATUS_SCOPE_RESOLUTION_UNAVAILABLE);
+        response.put("retryable", true);
+        return response;
+    }
+
+    private Map<String, Object> normalizeScopedAnalysisResponse(Long meetingId, Map<String, Object> aiResponse) {
+        if (aiResponse == null || aiResponse.isEmpty()) {
+            Map<String, Object> response = new HashMap<>();
+            response.put("meeting_id", meetingId);
+            response.put("status", "NOT_FOUND");
+            response.put("analysisStatus", ANALYSIS_STATUS_UNAVAILABLE_FOR_SCOPE);
+            return response;
+        }
+        String analysisStatus = normalizeStatus(aiResponse.get("analysisStatus"));
+        if (ANALYSIS_STATUS_UNAVAILABLE_FOR_SCOPE.equalsIgnoreCase(analysisStatus)) {
+            Map<String, Object> response = new HashMap<>();
+            response.put("meeting_id", meetingId);
+            response.put("status", "NOT_FOUND");
+            response.put("analysisStatus", ANALYSIS_STATUS_UNAVAILABLE_FOR_SCOPE);
+            return response;
+        }
+        Map<String, Object> response = new HashMap<>();
+        response.put("meeting_id", meetingId);
+        Object nestedAnalysis = aiResponse.get("analysis");
+        if (nestedAnalysis instanceof Map<?, ?> nestedMap) {
+            for (Map.Entry<?, ?> entry : nestedMap.entrySet()) {
+                response.put(String.valueOf(entry.getKey()), entry.getValue());
+            }
+        }
+        for (Map.Entry<String, Object> entry : aiResponse.entrySet()) {
+            if ("analysis".equals(entry.getKey())) {
+                continue;
+            }
+            response.put(entry.getKey(), entry.getValue());
+        }
+        String status = normalizeStatus(aiResponse.get("status"));
+        response.put("status", toFeAnalysisPollingStatus(
+                analysisStatus.isBlank() ? status : analysisStatus
+        ));
+        if (!response.containsKey("analysisStatus")) {
+            response.put("analysisStatus", analysisStatus.isBlank() ? status : analysisStatus);
+        }
+        return response;
+    }
+
+    private Map<String, Object> getAnalysisInternal(
+            Long meetingId,
+            String traceId,
+            String authorization,
+            boolean allowLazyTrigger,
+            Long recordingSessionId,
+            Long attemptId
+    ) {
+        if ((recordingSessionId == null) != (attemptId == null)) {
+            throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY, "Invalid provenance scope");
+        }
         assertMeetingAccess(meetingId, traceId, authorization);
+        if (recordingSessionId != null) {
+            return getScopedSavedAnalysis(
+                    meetingId,
+                    traceId,
+                    authorization,
+                    recordingSessionId,
+                    attemptId,
+                    allowLazyTrigger
+            );
+        }
+        AnalysisScopeRequirement scopeRequirement = resolveUnscopedAnalysisScopeRequirement(meetingId, traceId);
+        if (scopeRequirement == AnalysisScopeRequirement.V2_REQUIRED) {
+            log.info(
+                    "event=ANALYSIS_GET_REJECTED_UNSCOPED traceId={} requestId={} meetingId={} reason=v2_requires_provenance",
+                    traceId,
+                    currentRequestId(traceId),
+                    meetingId
+            );
+            return buildScopedAnalysisUnavailableResponse(meetingId);
+        }
+        if (scopeRequirement == AnalysisScopeRequirement.SCOPE_UNAVAILABLE) {
+            log.info(
+                    "event=ANALYSIS_GET_REJECTED_UNSCOPED traceId={} requestId={} meetingId={} reason=scope_resolution_unavailable",
+                    traceId,
+                    currentRequestId(traceId),
+                    meetingId
+            );
+            return buildScopeResolutionUnavailableResponse(meetingId);
+        }
         log.info(
                 "event=ANALYSIS_GET_REQUEST traceId={} requestId={} meetingId={} source=analysis_get",
                 traceId,
@@ -2641,7 +3809,7 @@ public class ProcessingService {
         if (!analysis.isEmpty()) {
             Map<String, Object> response = new HashMap<>();
             response.put("meeting_id", meetingId);
-            response.put("status", stateStatus);
+            response.put("status", toFeAnalysisPollingStatus(stateStatus));
             response.putAll(analysis);
             log.info(
                     "event=ANALYSIS_GET_RESULT traceId={} requestId={} meetingId={} analysisStatus={}",
@@ -2665,7 +3833,8 @@ public class ProcessingService {
             Map<String, Object> response = new HashMap<>();
             response.put("meeting_id", meetingId);
             String aiStatus = normalizeStatus(aiAnalysis.get("status"));
-            response.put("status", "NOT_FOUND".equals(stateStatus) ? aiStatus : stateStatus);
+            String sourceStatus = "NOT_FOUND".equals(stateStatus) ? aiStatus : stateStatus;
+            response.put("status", toFeAnalysisPollingStatus(sourceStatus));
             for (Map.Entry<String, Object> entry : aiAnalysis.entrySet()) {
                 if ("meeting_id".equals(entry.getKey()) || "status".equals(entry.getKey())) {
                     continue;
@@ -2685,7 +3854,7 @@ public class ProcessingService {
         if (!allowLazyTrigger) {
             Map<String, Object> response = new HashMap<>();
             response.put("meeting_id", meetingId);
-            response.put("status", stateStatus);
+            response.put("status", toFeAnalysisPollingStatus(stateStatus));
             mergeAnalysisFailureMetadata(response, analysisState);
             return response;
         }
@@ -2732,12 +3901,32 @@ public class ProcessingService {
         );
         Map<String, Object> response = new HashMap<>();
         response.put("meeting_id", meetingId);
-        response.put("status", stateStatus);
+        response.put("status", resolveAnalysisPollingStatus(stateStatus, triggerResult));
         mergeAnalysisFailureMetadata(response, analysisState);
         if (analysisState == null && triggerResult.retryAfterSeconds() > 0) {
             response.put("retryAfterSeconds", triggerResult.retryAfterSeconds());
         }
         return response;
+    }
+
+    private String resolveAnalysisPollingStatus(String stateStatus, AnalysisTriggerResult triggerResult) {
+        String triggerStatus = triggerResult == null ? "" : normalizeStatus(triggerResult.status());
+        if (!triggerStatus.isBlank() && !"UNKNOWN".equals(triggerStatus) && !"NOT_FOUND".equals(triggerStatus)) {
+            return toFeAnalysisPollingStatus(triggerStatus);
+        }
+        return toFeAnalysisPollingStatus(stateStatus);
+    }
+
+    private String toFeAnalysisPollingStatus(Object value) {
+        String normalized = normalizeStatus(value);
+        return switch (normalized) {
+            case "QUEUED", "PENDING", "NOT_READY" -> "PENDING";
+            case "NOT_FOUND" -> "NOT_STARTED";
+            case "COMPLETED" -> "SUCCEEDED";
+            case "ANALYSIS_FAILED_RETRYABLE" -> "RETRYABLE_FAILED";
+            case "SKIPPED_EMPTY_TRANSCRIPT" -> "SKIPPED_EMPTY_TRANSCRIPT";
+            default -> normalized;
+        };
     }
 
     private Map<String, Object> buildAnalysisFailureResponse(
@@ -2750,7 +3939,7 @@ public class ProcessingService {
         String analysisStatus = analysisState != null && AnalysisFailureMapping.ANALYSIS_STATUS_FAILED_RETRYABLE.equals(analysisState.status())
                 ? AnalysisFailureMapping.ANALYSIS_STATUS_FAILED_RETRYABLE
                 : "FAILED";
-        response.put("status", analysisStatus);
+        response.put("status", toFeAnalysisPollingStatus(analysisStatus));
         response.put("analysisStatus", analysisStatus);
         mergeAnalysisFailureMetadata(response, analysisState);
         response.put("transcriptSaved", true);
@@ -2765,8 +3954,12 @@ public class ProcessingService {
             return;
         }
         if (AnalysisFailureMapping.ANALYSIS_STATUS_FAILED_RETRYABLE.equals(analysisState.status())) {
-            response.put("status", AnalysisFailureMapping.ANALYSIS_STATUS_FAILED_RETRYABLE);
+            response.put("status", toFeAnalysisPollingStatus(AnalysisFailureMapping.ANALYSIS_STATUS_FAILED_RETRYABLE));
             response.put("analysisStatus", AnalysisFailureMapping.ANALYSIS_STATUS_FAILED_RETRYABLE);
+        } else if ("SKIPPED".equals(analysisState.status())
+                && "skipped_empty_transcript".equalsIgnoreCase(analysisState.errorCode())) {
+            response.put("status", "SKIPPED_EMPTY_TRANSCRIPT");
+            response.put("analysisStatus", "SKIPPED_EMPTY_TRANSCRIPT");
         } else if (analysisState.status() != null && !analysisState.status().isBlank()) {
             response.put("analysisStatus", analysisState.status());
         }
@@ -2986,6 +4179,19 @@ public class ProcessingService {
         }
     }
 
+    private void maybeNotifyJobTerminal(
+            Long meetingId,
+            String status,
+            String error,
+            String traceId,
+            String authorization
+    ) {
+        if (jobCompletionNotifier == null) {
+            return;
+        }
+        jobCompletionNotifier.maybeNotify(meetingId, status, error, traceId, authorization);
+    }
+
     private String toMeetingStatus(String processingStatus) {
         String normalized = normalizeStatus(processingStatus);
         if ("COMPLETED".equals(normalized)) {
@@ -3150,11 +4356,27 @@ public class ProcessingService {
             String status,
             TranscriptPayload payload
     ) {
+        return buildTranscriptResponse(meetingId, status, payload, null, null);
+    }
+
+    private Map<String, Object> buildTranscriptResponse(
+            Long meetingId,
+            String status,
+            TranscriptPayload payload,
+            String traceId,
+            String authorization
+    ) {
         StabilizedTranscriptResult stabilizedTranscript = stabilizeReadableTranscriptRows(payload.readableRows(), meetingId);
+        List<Map<String, Object>> displayRows = applySpeakerDisplayNames(
+                stabilizedTranscript.rows(),
+                meetingId,
+                traceId,
+                authorization
+        );
         Map<String, Object> response = new HashMap<>();
         response.put("meeting_id", meetingId);
         response.put("status", status);
-        response.put("transcripts", stabilizedTranscript.rows());
+        response.put("transcripts", displayRows);
         response.put("transcriptMode", payload.transcriptMode());
         if (stabilizedTranscript.stabilizationVersion() != null) {
             response.put("speakerStabilizationVersion", stabilizedTranscript.stabilizationVersion());
@@ -3180,6 +4402,19 @@ public class ProcessingService {
         }
 
         return response;
+    }
+
+    private List<Map<String, Object>> applySpeakerDisplayNames(
+            List<Map<String, Object>> rows,
+            Long meetingId,
+            String traceId,
+            String authorization
+    ) {
+        if (speakerProfileSupport == null || rows == null || rows.isEmpty()) {
+            return rows;
+        }
+        Map<String, String> displayNames = speakerProfileSupport.loadDisplayNames(meetingId, traceId, authorization);
+        return speakerProfileSupport.applyDisplayNames(rows, displayNames);
     }
 
     private TranscriptSourceDecision loadReadableTranscriptSourceForSearch(Long meetingId, String traceId) {
@@ -3453,33 +4688,75 @@ public class ProcessingService {
     }
 
     private TranscriptPayload fetchTranscriptPayloadFromAiService(Long meetingId, String traceId) {
+        return fetchTranscriptPayloadFromAiService(meetingId, traceId, null, null);
+    }
+
+    private TranscriptPayload fetchTranscriptPayloadFromAiService(
+            Long meetingId,
+            String traceId,
+            Long recordingSessionId,
+            Long attemptId
+    ) {
+        return fetchTranscriptResultFromAiService(
+                meetingId,
+                traceId,
+                recordingSessionId,
+                attemptId
+        ).payload();
+    }
+
+    private TranscriptFetchResult fetchTranscriptResultFromAiService(
+            Long meetingId,
+            String traceId,
+            Long recordingSessionId,
+            Long attemptId
+    ) {
         try {
-            Map<String, Object> aiResponse = aiServiceClient.getTranscript(meetingId, traceId);
+            Map<String, Object> aiResponse = recordingSessionId == null
+                    ? aiServiceClient.getTranscript(meetingId, traceId)
+                    : aiServiceClient.getTranscript(meetingId, traceId, recordingSessionId, attemptId);
+            if (AIServiceClient.isTranscriptNotReadyResponse(aiResponse)) {
+                log.info(
+                        "event=AI_SERVICE_TRANSCRIPT_NOT_READY traceId={} requestId={} meetingId={} recordingSessionId={} attemptId={}",
+                        traceId,
+                        currentRequestId(traceId),
+                        meetingId,
+                        recordingSessionId,
+                        attemptId
+                );
+                return new TranscriptFetchResult(TranscriptPayload.empty(), true);
+            }
             TranscriptPayload payload = normalizeTranscriptPayload(aiResponse);
             if (!payload.readableRows().isEmpty()) {
                 log.info(
-                        "[traceId={}] [jobId={}] ai-service transcript fallback rows={} mode={}",
+                        "[traceId={}] [jobId={}] ai-service transcript fallback rows={} mode={} scope={}",
                         traceId,
                         meetingId,
                         payload.readableRows().size(),
-                        payload.transcriptMode()
+                        payload.transcriptMode(),
+                        recordingSessionId == null ? "legacy" : "v2"
                 );
-                return payload;
+                return new TranscriptFetchResult(payload, false);
             }
             log.info(
-                    "[traceId={}] [jobId={}] ai-service transcript fallback returned empty transcript list",
+                    "[traceId={}] [jobId={}] ai-service transcript fallback returned empty transcript list scope={}",
                     traceId,
-                    meetingId
+                    meetingId,
+                    recordingSessionId == null ? "legacy" : "v2"
             );
-            return TranscriptPayload.empty();
+            return new TranscriptFetchResult(TranscriptPayload.empty(), false);
         } catch (HttpStatusCodeException ex) {
             if (ex.getStatusCode().value() == HttpStatus.NOT_FOUND.value()) {
                 log.info(
-                        "[traceId={}] [jobId={}] ai-service transcript fallback returned 404/no transcript",
+                        "[traceId={}] [jobId={}] ai-service transcript fallback returned 404/no transcript scope={}",
                         traceId,
-                        meetingId
+                        meetingId,
+                        recordingSessionId == null ? "legacy" : "v2"
                 );
-                return TranscriptPayload.empty();
+                if (recordingSessionId != null) {
+                    return new TranscriptFetchResult(TranscriptPayload.empty(), true);
+                }
+                return new TranscriptFetchResult(TranscriptPayload.empty(), false);
             }
             log.warn(
                     "event=AI_SERVICE_CALL_FAILED traceId={} requestId={} meetingId={} source=transcript_fallback httpStatus={} errorCode=DOWNSTREAM_HTTP_ERROR",
@@ -3488,7 +4765,7 @@ public class ProcessingService {
                     meetingId,
                     ex.getStatusCode().value()
             );
-            return TranscriptPayload.empty();
+            return new TranscriptFetchResult(TranscriptPayload.empty(), false);
         } catch (Exception ex) {
             log.warn(
                     "event=AI_SERVICE_CALL_FAILED traceId={} requestId={} meetingId={} source=transcript_fallback errorCode={}",
@@ -3497,7 +4774,7 @@ public class ProcessingService {
                     meetingId,
                     ex.getClass().getSimpleName()
             );
-            return TranscriptPayload.empty();
+            return new TranscriptFetchResult(TranscriptPayload.empty(), false);
         }
     }
 
@@ -3830,7 +5107,16 @@ public class ProcessingService {
             String reason = transcriptRows.isEmpty() ? "transcript_not_ready" : "empty_transcript";
             logRealtimeAnalysisSkipThrottled(meetingId, source, reason);
             if ("empty_transcript".equals(reason)) {
-                return new AnalysisTriggerResult("FAILED", "EMPTY_TRANSCRIPT", 0);
+                jobStateStore.markAnalysisSkipped(
+                        meetingId,
+                        computeTranscriptHash(""),
+                        source,
+                        "processing_service_lazy_poll",
+                        null,
+                        "skipped_empty_transcript",
+                        0
+                );
+                return new AnalysisTriggerResult("SKIPPED_EMPTY_TRANSCRIPT", "skipped_empty_transcript", 0);
             }
             return new AnalysisTriggerResult("NOT_READY", null, 0);
         }
@@ -3914,6 +5200,7 @@ public class ProcessingService {
         try {
             String promptVersion = resolvePromptVersion(null);
             String schemaVersion = resolveSchemaVersion(null);
+            enforceGeminiQuotaForText(transcriptText);
             Map<String, Object> response = aiServiceClient.analyzeRealtimeTranscript(
                     meetingId,
                     transcriptText,
@@ -4068,6 +5355,37 @@ public class ProcessingService {
                     retryAfter,
                     AnalysisFailureMapping.isRetryableErrorCode(errorCode)
             );
+        }
+    }
+
+    private void enforceGeminiQuotaForText(String transcriptText) {
+        Long userId = resolveCurrentUserId();
+        if (userId == null) {
+            return;
+        }
+        long chars = transcriptText == null ? 0 : transcriptText.length();
+        if (chars <= 0) {
+            return;
+        }
+        UserQuotaClient.QuotaConsumeResult result = userQuotaClient.consume(userId, 0, chars);
+        if (!result.allowed()) {
+            throw new ResponseStatusException(HttpStatus.PAYMENT_REQUIRED, "QUOTA_EXCEEDED");
+        }
+    }
+
+    private static Long parseOwnerUserId(Object value) {
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof Number number) {
+            long parsed = number.longValue();
+            return parsed > 0 ? parsed : null;
+        }
+        try {
+            long parsed = Long.parseLong(String.valueOf(value));
+            return parsed > 0 ? parsed : null;
+        } catch (NumberFormatException ex) {
+            return null;
         }
     }
 
@@ -4423,6 +5741,12 @@ public class ProcessingService {
         }
     }
 
+    private record TranscriptFetchResult(
+            TranscriptPayload payload,
+            boolean transcriptNotReady
+    ) {
+    }
+
     private record TranscriptSourceDecision(
             TranscriptPayload payload,
             String source,
@@ -4434,6 +5758,12 @@ public class ProcessingService {
     }
 
     private record AnalysisTriggerResult(String status, String errorCode, int retryAfterSeconds) {
+    }
+
+    private enum AnalysisScopeRequirement {
+        LEGACY_ALLOWED,
+        V2_REQUIRED,
+        SCOPE_UNAVAILABLE
     }
 
     private record AnalysisVersionSelection(String promptVersion, String schemaVersion) {

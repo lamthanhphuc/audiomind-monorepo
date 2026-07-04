@@ -68,6 +68,8 @@ describe('RealtimeDashboardScene', () => {
       closeReasonIsError: false,
     },
     selectedRealtimeLanguage: 'vi' as const,
+    selectedDomainMode: 'it' as const,
+    onDomainModeChange: vi.fn(),
     selectedRealtimeSpeakerMode: 'single' as const,
     selectedMicSensitivity: 'normal' as const,
     selectedRecordingSource: 'microphone' as const,
@@ -142,7 +144,7 @@ describe('RealtimeDashboardScene', () => {
     expect(container.querySelector('[data-testid="e2e-live-analysis-summary"]')?.textContent)
       .toContain('Realtime analysis is ready')
     expect(container.querySelector('[data-testid="analysis-status-badge"]')?.textContent)
-      .toBe('COMPLETED')
+      .toBe('Hoàn tất')
   })
 
   it('renders finalized no-transcript state without analysis loading', () => {
@@ -191,8 +193,8 @@ describe('RealtimeDashboardScene', () => {
     expect(container.textContent).toContain('Chưa có transcript')
     expect(container.textContent).toContain('Không có nội dung để phân tích')
     expect(container.querySelector('[data-testid="analysis-status-badge"]')?.textContent)
-      .toBe('NO_ANALYSIS')
-    expect(container.textContent).not.toContain('Analysis is being generated')
+      .toBe('Chưa phân tích')
+    expect(container.textContent).not.toContain('Đang tạo phân tích')
     expect(container.textContent).not.toContain('Đã lưu transcript')
     expect(container.querySelector<HTMLButtonElement>('[data-testid="analysis-reanalyze-button"]')?.disabled)
       .toBe(true)
@@ -235,7 +237,7 @@ describe('RealtimeDashboardScene', () => {
     expect(onNoiseSuppressionChange).not.toHaveBeenCalled()
   })
 
-  it('renders recording source selector and Google Meet guidance for tab audio', () => {
+  it('renders recording source selector and tab capture guidance for tab audio', () => {
     const onRecordingSourceChange = vi.fn()
 
     act(() => {
@@ -250,9 +252,9 @@ describe('RealtimeDashboardScene', () => {
 
     expect(container.querySelector('[data-testid="recording-source-selector"]')).not.toBeNull()
     expect(container.textContent).toContain('Nguồn ghi âm')
-    expect(container.textContent).toContain('Ghi âm Google Meet')
-    expect(container.textContent).toContain('Hướng dẫn ghi âm Google Meet')
-    expect(container.textContent).toContain('Bật chia sẻ âm thanh tab')
+    expect(container.textContent).toContain('Ghi âm tab trình duyệt')
+    expect(container.textContent).toContain('Hướng dẫn ghi âm tab trình duyệt')
+    expect(container.textContent).toContain('Chia sẻ âm thanh tab')
 
     act(() => {
       container.querySelector<HTMLButtonElement>('[data-testid="recording-source-option-browser_tab_with_mic"]')?.click()
@@ -260,9 +262,24 @@ describe('RealtimeDashboardScene', () => {
     expect(onRecordingSourceChange).toHaveBeenCalledWith('browser_tab_with_mic')
   })
 
+  it('shows dual-stream quota banner when dualStreamActive is enabled', () => {
+    act(() => {
+      root.render(
+        <RealtimeDashboardScene
+          {...baseProps}
+          selectedRecordingSource="browser_tab_with_mic"
+          dualStreamActive
+        />,
+      )
+    })
+
+    expect(container.querySelector('[data-testid="dual-stream-quota-info"]')).not.toBeNull()
+    expect(container.textContent).toMatch(/hai luồng|gấp đôi quota STT/i)
+  })
+
   it('shows finalizing_recording lifecycle badge while recorder tail is flushing', () => {
     const badge = resolveRealtimeLifecycleBadge('finalizing_recording', 'idle')
-    expect(badge.label).toBe('Finalizing recording')
+    expect(badge.label).toBe('Đang hoàn tất ghi âm')
     expect(badge.tone).toBe('stopped')
   })
 
@@ -277,7 +294,7 @@ describe('RealtimeDashboardScene', () => {
       )
     })
 
-    expect(container.textContent).toContain('Finalizing recording')
+    expect(container.textContent).toContain('Đang hoàn tất ghi âm')
   })
 
   it('hides noise suppression toggle for tab-only capture', () => {

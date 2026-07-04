@@ -1,3 +1,5 @@
+import { cssVars } from '../../utils/cssVars'
+
 const bars = [0.12, 0.65, 0.48, 0.32, 0.58, 0.45, 0.26, 0.22, 0.72, 0.54]
 
 export default function HeroChart() {
@@ -8,7 +10,7 @@ export default function HeroChart() {
           <span
             key={index}
             className="hero-chart__bar"
-            style={{ height: `${value * 100}%` }}
+            style={cssVars({ '--bar-height': `${value * 100}%` })}
           />
         ))}
       </div>

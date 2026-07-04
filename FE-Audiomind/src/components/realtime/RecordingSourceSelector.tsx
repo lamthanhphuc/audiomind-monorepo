@@ -1,6 +1,7 @@
 import {
-  MEET_CAPTURE_GUIDE_STEPS,
-  MEET_WITH_MIC_HEADPHONE_NOTE,
+  TAB_CAPTURE_GUIDE_STEPS,
+  TAB_WITH_MIC_HEADPHONE_NOTE,
+  TAB_WITH_MIC_QUOTA_NOTE,
   RECORDING_SOURCE_DESCRIPTIONS,
   RECORDING_SOURCE_ICONS,
   RECORDING_SOURCE_LABELS,
@@ -14,15 +15,18 @@ type RecordingSourceSelectorProps = {
   value: RecordingSource
   disabled?: boolean
   onChange: (source: RecordingSource) => void
+  showDualStreamQuotaNote?: boolean
 }
 
 export function RecordingSourceSelector({
   value,
   disabled = false,
   onChange,
+  showDualStreamQuotaNote = false,
 }: RecordingSourceSelectorProps) {
-  const showMeetGuide = isBrowserTabRecordingSource(value)
+  const showTabGuide = isBrowserTabRecordingSource(value)
   const showHeadphoneNote = value === 'browser_tab_with_mic'
+  const showQuotaNote = showDualStreamQuotaNote && value === 'browser_tab_with_mic'
 
   return (
     <div className="recording-source-selector" data-testid="recording-source-selector">
@@ -73,16 +77,25 @@ export function RecordingSourceSelector({
         })}
       </div>
 
-      {showMeetGuide && (
-        <div className="recording-source-guide" role="note" data-testid="recording-source-meet-guide">
-          <p className="recording-source-guide__title">Hướng dẫn ghi âm Google Meet</p>
+      {showTabGuide && (
+        <div className="recording-source-guide" role="note" data-testid="recording-source-tab-guide">
+          <p className="recording-source-guide__title">Hướng dẫn ghi âm tab trình duyệt</p>
           <ol className="recording-source-guide__list">
-            {MEET_CAPTURE_GUIDE_STEPS.map((step) => (
+            {TAB_CAPTURE_GUIDE_STEPS.map((step) => (
               <li key={step}>{step}</li>
             ))}
           </ol>
+          <p className="recording-source-guide__note">
+            Hãy chọn tab đang phát âm thanh (Meet, Teams, YouTube, v.v.), bật &quot;Chia sẻ âm thanh tab&quot;,
+            và có thể tắt loa/mute mic — âm thanh tab vẫn được ghi trực tiếp.
+          </p>
           {showHeadphoneNote && (
-            <p className="recording-source-guide__note">{MEET_WITH_MIC_HEADPHONE_NOTE}</p>
+            <p className="recording-source-guide__note">{TAB_WITH_MIC_HEADPHONE_NOTE}</p>
+          )}
+          {showQuotaNote && (
+            <p className="recording-source-guide__quota" data-testid="recording-source-quota-note">
+              {TAB_WITH_MIC_QUOTA_NOTE}
+            </p>
           )}
         </div>
       )}

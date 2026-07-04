@@ -158,7 +158,7 @@ class ProcessingControllerSearchTest {
 
     private void authenticate() {
         SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(
-                new UserPrincipal(11L, "tester"),
+                new UserPrincipal(11L, "tester", "USER", "FREE"),
                 null
         ));
     }

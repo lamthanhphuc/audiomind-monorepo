@@ -16,8 +16,6 @@ ffmpeg-python==0.2.0
 numpy==1.26.4
 
 # AI/LLM
-openai==1.10.0
-
 # Utilities
 pydantic==2.5.3
 pydantic-settings==2.1.0

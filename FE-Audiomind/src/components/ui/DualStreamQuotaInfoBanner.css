@@ -1,0 +1,22 @@
+.dual-stream-quota-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  margin-bottom: 0.75rem;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--color-primary, #3b82f6) 35%, transparent);
+  background: color-mix(in srgb, var(--color-primary, #3b82f6) 8%, transparent);
+}
+
+.dual-stream-quota-info__text {
+  margin: 0;
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
+.dual-stream-quota-info__usage {
+  margin: 0;
+  font-size: 0.85rem;
+  opacity: 0.9;
+}

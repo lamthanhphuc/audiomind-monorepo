@@ -1,6 +1,7 @@
 package com.example.meetingservice.controller;
 
 import com.example.meetingservice.entity.Meeting;
+import com.example.meetingservice.controller.dto.CreateScheduledMeetingRequest;
 import com.example.meetingservice.security.UserPrincipal;
 import com.example.meetingservice.config.Epic2FeatureFlags;
 import com.example.meetingservice.config.UploadValidationPolicy;
@@ -14,10 +15,14 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.security.core.Authentication;
+import org.springframework.http.ResponseEntity;
 
 import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.nio.file.Files;
 import java.util.Map;
 import java.util.Optional;
+import java.time.OffsetDateTime;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -50,11 +55,36 @@ class MeetingControllerTest {
     }
 
     @Test
+    void createScheduledMeetingUsesAuthenticatedOwner() {
+        MeetingService meetingService = mock(MeetingService.class);
+        MeetingController controller = newController(meetingService);
+        Authentication authentication = mock(Authentication.class);
+        when(authentication.getPrincipal()).thenReturn(new UserPrincipal(9L, "user", "USER", "FREE"));
+        OffsetDateTime start = OffsetDateTime.now().plusHours(2);
+        OffsetDateTime end = start.plusHours(1);
+        Meeting saved = new Meeting();
+        saved.setId(91L);
+        saved.setStatus(MeetingService.MEETING_STATUS_SCHEDULED);
+        when(meetingService.saveScheduledMeeting(
+                "Future sync", 9L, "vi", start, end, "Asia/Ho_Chi_Minh"))
+                .thenReturn(saved);
+
+        Meeting result = controller.createScheduledMeeting(
+                new CreateScheduledMeetingRequest(
+                        "Future sync", start.toString(), end.toString(), "Asia/Ho_Chi_Minh", "vi"),
+                authentication);
+
+        assertEquals(91L, result.getId());
+        verify(meetingService).saveScheduledMeeting(
+                "Future sync", 9L, "vi", start, end, "Asia/Ho_Chi_Minh");
+    }
+
+    @Test
     void upload_shouldForwardAcceptedLanguage() {
         MeetingService meetingService = mock(MeetingService.class);
         MeetingController controller = newController(meetingService);
         Authentication authentication = mock(Authentication.class);
-        when(authentication.getPrincipal()).thenReturn(new UserPrincipal(9L, "user"));
+        when(authentication.getPrincipal()).thenReturn(new UserPrincipal(9L, "user", "USER", "FREE"));
         when(meetingService.findActiveDuplicateForOwner(eq(9L), anyString())).thenReturn(Optional.empty());
         when(meetingService.normalizeMeetingStatus(anyString())).thenAnswer((invocation) -> invocation.getArgument(0));
 
@@ -75,7 +105,7 @@ class MeetingControllerTest {
         MeetingService meetingService = mock(MeetingService.class);
         MeetingController controller = newController(meetingService);
         Authentication authentication = mock(Authentication.class);
-        when(authentication.getPrincipal()).thenReturn(new UserPrincipal(9L, "user"));
+        when(authentication.getPrincipal()).thenReturn(new UserPrincipal(9L, "user", "USER", "FREE"));
         when(meetingService.findActiveDuplicateForOwner(eq(9L), anyString())).thenReturn(Optional.empty());
         when(meetingService.normalizeMeetingStatus(anyString())).thenAnswer((invocation) -> invocation.getArgument(0));
 
@@ -96,7 +126,7 @@ class MeetingControllerTest {
         MeetingService meetingService = mock(MeetingService.class);
         MeetingController controller = newController(meetingService);
         Authentication authentication = mock(Authentication.class);
-        when(authentication.getPrincipal()).thenReturn(new UserPrincipal(9L, "user"));
+        when(authentication.getPrincipal()).thenReturn(new UserPrincipal(9L, "user", "USER", "FREE"));
         when(meetingService.normalizeMeetingStatus(anyString())).thenAnswer((invocation) -> invocation.getArgument(0));
 
         Meeting existing = new Meeting();
@@ -125,7 +155,7 @@ class MeetingControllerTest {
         MeetingService meetingService = mock(MeetingService.class);
         MeetingController controller = newController(meetingService);
         Authentication authentication = mock(Authentication.class);
-        when(authentication.getPrincipal()).thenReturn(new UserPrincipal(9L, "user"));
+        when(authentication.getPrincipal()).thenReturn(new UserPrincipal(9L, "user", "USER", "FREE"));
         when(meetingService.normalizeMeetingStatus(anyString())).thenAnswer((invocation) -> invocation.getArgument(0));
 
         Meeting meeting = new Meeting();
@@ -167,5 +197,29 @@ class MeetingControllerTest {
                 eq(0L),
                 eq(MeetingService.MEETING_STATUS_PROCESSING)
         );
+    }
+
+    @Test
+    void streamMeetingAudio_shouldReturnInlineFileWhenPresent() throws Exception {
+        MeetingService meetingService = mock(MeetingService.class);
+        MeetingController controller = newController(meetingService);
+        Authentication authentication = mock(Authentication.class);
+        when(authentication.getPrincipal()).thenReturn(new UserPrincipal(9L, "user", "USER", "FREE"));
+
+        Path uploadRoot = Paths.get(System.getProperty("user.dir"), "uploads").toAbsolutePath().normalize();
+        Files.createDirectories(uploadRoot);
+        Path audioFile = uploadRoot.resolve("controller-test-audio.wav");
+        Files.write(audioFile, new byte[] {1, 2, 3, 4});
+
+        Meeting meeting = new Meeting();
+        meeting.setId(5L);
+        meeting.setAudioPath(audioFile.toString());
+        meeting.setOriginalFileName("demo.wav");
+        when(meetingService.findByIdForUser(5L, 9L)).thenReturn(meeting);
+
+        ResponseEntity<org.springframework.core.io.Resource> response = controller.streamMeetingAudio(5L, authentication);
+
+        assertEquals(200, response.getStatusCode().value());
+        assertEquals("inline; filename=\"demo.wav\"", response.getHeaders().getFirst("Content-Disposition"));
     }
 }

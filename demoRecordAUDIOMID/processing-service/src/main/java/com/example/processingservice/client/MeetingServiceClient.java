@@ -15,6 +15,7 @@ import org.springframework.util.StringUtils;
 
 import java.util.Map;
 import java.util.UUID;
+import java.util.List;
 
 @Service
 public class MeetingServiceClient {
@@ -82,6 +83,48 @@ public class MeetingServiceClient {
         Map<String, Object> body = response.getBody();
         if (body == null) {
             throw new IllegalStateException("Meeting service returned empty body while updating status for meetingId=" + meetingId);
+        }
+        return body;
+    }
+
+    public List<Map<String, Object>> listMeetings(String traceId, String authorization) {
+        HttpHeaders headers = new HttpHeaders();
+        String resolvedTraceId = resolveTraceId(traceId);
+        headers.add("x-trace-id", resolvedTraceId);
+        headers.add("x-request-id", resolvedTraceId);
+        if (StringUtils.hasText(authorization)) {
+            headers.add(HttpHeaders.AUTHORIZATION, authorization);
+        }
+
+        ResponseEntity<List<Map<String, Object>>> response = restTemplate.exchange(
+                meetingServiceUrl + "/meetings?sort=recent",
+                HttpMethod.GET,
+                new HttpEntity<>(headers),
+                new ParameterizedTypeReference<>() {
+                }
+        );
+        return response.getBody() == null ? List.of() : response.getBody();
+    }
+
+    public Map<String, Object> getSpeakerProfiles(Long meetingId, String traceId, String authorization) {
+        HttpHeaders headers = new HttpHeaders();
+        String resolvedTraceId = resolveTraceId(traceId);
+        headers.add("x-trace-id", resolvedTraceId);
+        headers.add("x-request-id", resolvedTraceId);
+        if (StringUtils.hasText(authorization)) {
+            headers.add(HttpHeaders.AUTHORIZATION, authorization);
+        }
+
+        ResponseEntity<Map<String, Object>> response = restTemplate.exchange(
+                meetingServiceUrl + "/meetings/" + meetingId + "/speakers",
+                HttpMethod.GET,
+                new HttpEntity<>(headers),
+                new ParameterizedTypeReference<>() {
+                }
+        );
+        Map<String, Object> body = response.getBody();
+        if (body == null) {
+            return Map.of("meetingId", meetingId, "profiles", List.of());
         }
         return body;
     }

@@ -39,7 +39,9 @@ export const FALLBACK_POLICY = {
       "legal",
       "finance",
       "healthcare",
-      "it"
+      "it",
+      "business",
+      "education"
     ],
     "disabledTerms": []
   }

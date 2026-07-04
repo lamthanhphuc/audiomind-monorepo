@@ -1,11 +1,15 @@
 package com.example.userservice.service;
 
+import com.example.userservice.client.PendingMeetingShareClient;
 import com.example.userservice.controller.dto.AuthResponse;
 import com.example.userservice.controller.dto.LoginRequest;
 import com.example.userservice.controller.dto.RegisterRequest;
 import com.example.userservice.controller.dto.RegisterResponse;
+import com.example.userservice.controller.dto.UserPreferencesRequest;
 import com.example.userservice.controller.dto.UserProfileResponse;
 import com.example.userservice.entity.UserAccount;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.example.userservice.repository.UserAccountRepository;
 import com.example.userservice.security.JwtUtil;
 import com.example.userservice.security.TokenBlacklistStore;
@@ -21,6 +25,8 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.Map;
+
 @Service
 @RequiredArgsConstructor
 public class UserService {
@@ -31,6 +37,8 @@ public class UserService {
     private final PasswordEncoder passwordEncoder;
     private final JwtUtil jwtUtil;
     private final TokenBlacklistStore tokenBlacklistStore;
+    private final PendingMeetingShareClient pendingMeetingShareClient;
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
     @Value("${app.security.jwt.access-expiration-seconds}")
     private long accessExpirationSeconds;
@@ -50,6 +58,7 @@ public class UserService {
         user.setPasswordHash(passwordEncoder.encode(request.password()));
 
         UserAccount saved = userAccountRepository.save(user);
+        pendingMeetingShareClient.acceptPendingInvites(saved.getId(), saved.getEmail());
         log.info(
                 "event=REQUEST_COMPLETED traceId={} requestId={} path=/api/users/register userId={}",
                 MDC.get("traceId"),
@@ -65,11 +74,13 @@ public class UserService {
         UserAccount user = userAccountRepository.findByUsername(request.username())
                 .orElseThrow(() -> new BadCredentialsException("Invalid username or password"));
 
-        if (!passwordEncoder.matches(request.password(), user.getPasswordHash())) {
+        if (user.getPasswordHash() == null || !passwordEncoder.matches(request.password(), user.getPasswordHash())) {
             throw new BadCredentialsException("Invalid username or password");
         }
 
-        String accessToken = jwtUtil.createAccessToken(user.getId(), user.getUsername());
+        pendingMeetingShareClient.acceptPendingInvites(user.getId(), user.getEmail());
+
+        String accessToken = jwtUtil.createAccessToken(user.getId(), user.getUsername(), user.getRole(), user.getPlan());
         log.info(
                 "event=REQUEST_COMPLETED traceId={} requestId={} path=/api/users/login userId={}",
                 MDC.get("traceId"),
@@ -77,6 +88,27 @@ public class UserService {
                 user.getId()
         );
 
+        return new AuthResponse(user.getId(), accessToken, accessExpirationSeconds);
+    }
+
+    @Transactional(readOnly = true)
+    public AuthResponse refreshAccessToken(UserPrincipal principal) {
+        UserAccount user = userAccountRepository.findById(principal.userId())
+                .orElseThrow(() -> new BadCredentialsException("User not found"));
+
+        String accessToken = jwtUtil.createAccessToken(
+                user.getId(),
+                user.getUsername(),
+                user.getRole(),
+                user.getPlan()
+        );
+        log.info(
+                "event=REQUEST_COMPLETED traceId={} requestId={} path=/api/users/refresh-token userId={} plan={}",
+                MDC.get("traceId"),
+                resolveRequestId(),
+                user.getId(),
+                user.getPlan()
+        );
         return new AuthResponse(user.getId(), accessToken, accessExpirationSeconds);
     }
 
@@ -98,7 +130,55 @@ public class UserService {
         UserAccount user = userAccountRepository.findById(principal.userId())
                 .orElseThrow(() -> new IllegalArgumentException("User not found"));
 
-        return new UserProfileResponse(user.getId(), user.getUsername(), user.getEmail());
+        return new UserProfileResponse(
+                user.getId(),
+                user.getUsername(),
+                user.getEmail(),
+                readDomainModePreference(user)
+        );
+    }
+
+    @Transactional
+    public Map<String, Object> updatePreferences(UserPrincipal principal, UserPreferencesRequest request) {
+        UserAccount user = userAccountRepository.findById(principal.userId())
+                .orElseThrow(() -> new IllegalArgumentException("User not found"));
+        Map<String, Object> preferences = readPreferencesMap(user);
+        if (request.domain_mode() != null && !request.domain_mode().isBlank()) {
+            preferences.put("domainMode", normalizeDomainMode(request.domain_mode()));
+        }
+        try {
+            user.setPreferencesJson(objectMapper.writeValueAsString(preferences));
+        } catch (Exception ex) {
+            throw new IllegalStateException("Failed to persist user preferences", ex);
+        }
+        userAccountRepository.save(user);
+        return Map.of(
+                "domainMode", preferences.getOrDefault("domainMode", "it")
+        );
+    }
+
+    private Map<String, Object> readPreferencesMap(UserAccount user) {
+        if (user.getPreferencesJson() == null || user.getPreferencesJson().isBlank()) {
+            return new java.util.LinkedHashMap<>();
+        }
+        try {
+            return objectMapper.readValue(user.getPreferencesJson(), new TypeReference<>() {});
+        } catch (Exception ex) {
+            return new java.util.LinkedHashMap<>();
+        }
+    }
+
+    private String readDomainModePreference(UserAccount user) {
+        Object value = readPreferencesMap(user).get("domainMode");
+        return normalizeDomainMode(value == null ? null : String.valueOf(value));
+    }
+
+    private static String normalizeDomainMode(String value) {
+        String normalized = value == null ? "" : value.trim().toLowerCase();
+        if ("general".equals(normalized) || "it".equals(normalized) || "business".equals(normalized) || "education".equals(normalized)) {
+            return normalized;
+        }
+        return "it";
     }
 
     private String extractBearerToken(String bearerToken) {

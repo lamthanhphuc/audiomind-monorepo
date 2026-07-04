@@ -10,6 +10,12 @@ class TranscriptSegment(BaseModel):
     end_time: float
     text: str
     segment_id: Optional[str] = None
+    stream_id: Optional[str] = None
+    recording_session_id: Optional[int] = None
+    attempt_id: Optional[int] = None
+    seq: Optional[int] = None
+    version: Optional[int] = None
+    is_final: Optional[bool] = None
 
 
 class ActionItem(BaseModel):
@@ -90,6 +96,8 @@ class ProcessRequest(BaseModel):
     glossary_terms: Optional[List[str]] = None
     glossary_ref: Optional[GlossaryReference] = None
     language: Optional[str] = "vi"
+    domain_mode: Optional[str] = "it"
+    owner_user_id: Optional[int] = None
 
 
 class ProcessResponse(BaseModel):
@@ -160,7 +168,7 @@ class AnalysisResponse(BaseModel):
 
 class RealtimeTranscriptAnalysisRequest(BaseModel):
     meeting_id: int
-    transcript: str
+    transcript: Optional[str] = None
     domain_mode: Optional[str] = "it"
     source: Optional[str] = "realtime"
     transcript_hash: Optional[str] = None
@@ -169,6 +177,8 @@ class RealtimeTranscriptAnalysisRequest(BaseModel):
     analysis_feature_set: Optional[str] = None
     mode: Optional[str] = "auto"
     reason: Optional[str] = None
+    recording_session_id: Optional[int] = None
+    attempt_id: Optional[int] = None
 
 
 class AnalysisRerunRequest(BaseModel):
@@ -181,6 +191,7 @@ class AnalysisRerunRequest(BaseModel):
     analysis_feature_set: Optional[str] = None
     canonical_transcript_hash: Optional[str] = None
     canonical_transcript_version: Optional[str] = None
+    domain_mode: Optional[str] = None
 
 
 class RealtimeTranscriptAnalysisResponse(BaseModel):

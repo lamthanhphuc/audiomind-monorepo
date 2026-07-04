@@ -1,0 +1,122 @@
+.mindmap-graph-view {
+  --mm-canvas: #0c1018;
+  --mm-edge: #64748b;
+  --mm-root-bg: #4338ca;
+  --mm-root-border: #6366f1;
+  --mm-hub-bg: #1e293b;
+  --mm-hub-border: #475569;
+  --mm-leaf-bg: #334155;
+  --mm-leaf-border: #475569;
+  --mm-text: #f8fafc;
+  --mm-text-soft: #e2e8f0;
+  --mm-severity-high: #f87171;
+  --mm-severity-medium: #fbbf24;
+  --mm-severity-low: #4ade80;
+  --mm-accent: #818cf8;
+
+  width: 100%;
+  height: 100%;
+  min-height: 320px;
+  border-radius: 16px;
+  border: 1px solid rgba(71, 85, 105, 0.45);
+  background: var(--mm-canvas);
+  overflow: auto;
+}
+
+.mindmap-graph-view--empty {
+  display: grid;
+  place-items: center;
+  padding: 48px 24px;
+  color: #94a3b8;
+  font-size: 14px;
+}
+
+.mindmap-graph-view__svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  min-height: 360px;
+}
+
+.mindmap-graph-view__edge {
+  stroke: var(--mm-edge);
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  opacity: 0.75;
+}
+
+.mindmap-graph-node {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  border-radius: 10px;
+  border: 1px solid var(--mm-leaf-border);
+  background: var(--mm-leaf-bg);
+  color: var(--mm-text-soft);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.4;
+  padding: 10px 14px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.28);
+  word-break: break-word;
+}
+
+.mindmap-graph-node--root {
+  border-color: var(--mm-root-border);
+  background: var(--mm-root-bg);
+  color: var(--mm-text);
+  font-size: 14px;
+  font-weight: 700;
+  padding: 12px 16px;
+  box-shadow: 0 6px 20px rgba(67, 56, 202, 0.35);
+}
+
+.mindmap-graph-node--hub {
+  border-color: var(--mm-hub-border);
+  background: var(--mm-hub-bg);
+  color: var(--mm-text);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.mindmap-graph-node--leaf.mindmap-graph-node--muted {
+  border-color: #64748b;
+  background: #293548;
+  color: #cbd5e1;
+}
+
+.mindmap-graph-node--leaf.mindmap-graph-node--accent {
+  border-color: #64748b;
+  background: var(--mm-leaf-bg);
+  box-shadow: inset 3px 0 0 var(--mm-accent), 0 4px 14px rgba(0, 0, 0, 0.28);
+}
+
+.mindmap-graph-node--leaf.mindmap-graph-node--high {
+  border-color: #64748b;
+  background: var(--mm-leaf-bg);
+  box-shadow: inset 3px 0 0 var(--mm-severity-high), 0 4px 14px rgba(0, 0, 0, 0.28);
+}
+
+.mindmap-graph-node--leaf.mindmap-graph-node--medium {
+  border-color: #64748b;
+  background: var(--mm-leaf-bg);
+  box-shadow: inset 3px 0 0 var(--mm-severity-medium), 0 4px 14px rgba(0, 0, 0, 0.28);
+}
+
+.mindmap-graph-node--leaf.mindmap-graph-node--low {
+  border-color: #64748b;
+  background: var(--mm-leaf-bg);
+  box-shadow: inset 3px 0 0 var(--mm-severity-low), 0 4px 14px rgba(0, 0, 0, 0.28);
+}
+
+@media (max-width: 720px) {
+  .mindmap-graph-view {
+    min-height: 300px;
+  }
+
+  .mindmap-graph-view__svg {
+    min-height: 300px;
+  }
+}

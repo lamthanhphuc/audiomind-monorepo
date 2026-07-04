@@ -146,6 +146,29 @@ def test_normalize_gemini_structured_analysis_does_not_invent_owner_or_due_date(
     assert item["deadline"] is None
 
 
+def test_resolve_analysis_domain_mode_prefers_metadata_over_default():
+    analyzer = AIAnalyzer(api_key="", provider="gemini", analysis_domain_mode="it")
+
+    assert (
+        analyzer._resolve_analysis_domain_mode({"domainMode": "education"})
+        == "education"
+    )
+    assert (
+        analyzer._resolve_analysis_domain_mode({"domain_mode": "business"})
+        == "business"
+    )
+    assert analyzer._resolve_analysis_domain_mode({"domainMode": "invalid"}) == "it"
+    assert analyzer._resolve_analysis_domain_mode(None) == "it"
+
+
+def test_domain_guidance_for_mode_covers_all_supported_modes():
+    analyzer = AIAnalyzer(api_key="", provider="gemini")
+
+    for mode in ("general", "it", "business", "education"):
+        guidance = analyzer._domain_guidance_for_mode(mode)
+        assert mode in guidance.lower() or "domainmode" in guidance.lower()
+
+
 def test_default_structured_analysis_uses_concise_fallback_summary():
     analyzer = AIAnalyzer(api_key="", provider="gemini")
 

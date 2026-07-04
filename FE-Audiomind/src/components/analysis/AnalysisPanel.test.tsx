@@ -51,8 +51,8 @@ describe('AnalysisPanel', () => {
     expect(container.textContent).toContain('API')
     expect(container.textContent).toContain('Do tre')
     expect(container.textContent).toContain('Toi uu cache')
-    expect(container.textContent).toContain('Owner: Lan')
-    expect(container.textContent).toContain('Due: 2026-06-01')
+    expect(container.textContent).toContain('Người phụ trách: Lan')
+    expect(container.textContent).toContain('Hạn: 2026-06-01')
     expect(container.textContent).toContain('72%')
   })
 
@@ -137,7 +137,7 @@ describe('AnalysisPanel', () => {
     })
 
     expect(container.textContent).toContain('Cap nhat ke hoach')
-    expect(container.textContent).not.toContain('Owner:')
+    expect(container.textContent).not.toContain('Người phụ trách:')
     expect(container.textContent).not.toContain('Due:')
   })
 
@@ -161,7 +161,7 @@ describe('AnalysisPanel', () => {
 
     expect(container.textContent).toContain('Không có quyết định chính')
     expect(container.textContent).toContain('Không có rủi ro')
-    expect(container.textContent).toContain('Không có blockers')
+    expect(container.textContent).toContain('Không có điểm nghẽn')
     expect(container.textContent).toContain('Không có bước tiếp theo')
   })
 })

@@ -95,6 +95,48 @@ public enum ErrorCode {
             "retry_recording",
             "Thử ghi lại"
     ),
+    QUOTA_EXCEEDED(
+            402,
+            "Usage quota exceeded",
+            "Bạn đã vượt quota sử dụng tháng này. Nâng cấp Pro để tiếp tục.",
+            "upgrade_plan",
+            "Xem gói & thanh toán"
+    ),
+    EXPORT_ANALYSIS_REQUIRED(
+            409,
+            "Analysis is required before export",
+            "Cần có phân tích cuộc họp trước khi xuất báo cáo hoặc action plan.",
+            "run_analysis",
+            "Chạy phân tích"
+    ),
+    GROUPED_ACTION_PLAN_UNAVAILABLE(
+            409,
+            "Grouped action plan unavailable",
+            "Action plan nhóm chưa sẵn sàng cho cuộc họp này.",
+            "view_analysis",
+            "Xem phân tích"
+    ),
+    GROUPED_ACTION_PLAN_INVALID(
+            422,
+            "Grouped action plan invalid",
+            "Action plan nhóm không hợp lệ hoặc vượt giới hạn.",
+            "contact_support",
+            "Liên hệ hỗ trợ"
+    ),
+    GROUPED_ACTION_PLAN_EXPORT_FAILED(
+            500,
+            "Grouped action plan export failed",
+            "Không xuất được action plan nhóm. Vui lòng thử lại.",
+            "retry_export",
+            "Thử xuất lại"
+    ),
+    RATE_LIMITED(
+            429,
+            "Too many requests",
+            "Bạn gửi quá nhiều yêu cầu. Vui lòng thử lại sau.",
+            "retry_later",
+            "Thử lại sau"
+    ),
     INTERNAL_ERROR(500, "Unexpected server error");
 
     private final int status;

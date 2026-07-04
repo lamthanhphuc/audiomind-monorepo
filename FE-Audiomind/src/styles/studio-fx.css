@@ -199,12 +199,13 @@
 
 .app--studio .dashboard-nav-list li,
 .app--studio .dashboard-recents-list li {
-  transition: background 0.2s ease, color 0.2s ease, transform 0.2s ease;
+  transition: background 0.2s ease, color 0.2s ease;
 }
 
 .app--studio .dashboard-nav-list li:hover,
 .app--studio .dashboard-recents-list li:hover {
-  transform: translateX(3px);
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--studio-text);
 }
 
 .app--studio .btn-primary,

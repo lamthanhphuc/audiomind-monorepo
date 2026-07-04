@@ -1,20 +1,25 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+
+import { formatTranscriptTimestamp } from '../../utils/transcript'
+import type { MeetingChatCitation } from '../../utils/meetingChatbot'
 
 type Message = {
   role: 'assistant' | 'user'
   text: string
+  citations?: MeetingChatCitation[]
 }
 
 type AiAssistantProps = {
   busy?: boolean
   meetingId?: number | null
-  onAsk: (message: string) => Promise<string>
+  onAsk: (message: string) => Promise<{ text: string; citations?: MeetingChatCitation[] }>
+  onCitationClick?: (citation: MeetingChatCitation) => void
 }
 
-const initialMessages: Message[] = [
+const demoMessages: Message[] = [
   {
     role: 'user',
-    text: 'Bạn có thể tóm tắt cho tôi không?'
+    text: 'Bạn có thể tóm tắt cho tôi không?',
   },
   {
     role: 'assistant',
@@ -22,10 +27,20 @@ const initialMessages: Message[] = [
   },
 ]
 
-export default function AiAssistant({ busy, meetingId: _meetingId, onAsk }: AiAssistantProps) {
-  const [messages, setMessages] = useState<Message[]>(initialMessages)
+const meetingWelcome: Message = {
+  role: 'assistant',
+  text: 'Hỏi về tóm tắt, việc cần làm, thuật ngữ, rủi ro — hoặc tìm đoạn cụ thể trong transcript.',
+}
+
+export default function AiAssistant({ busy, meetingId, onAsk, onCitationClick }: AiAssistantProps) {
+  const [messages, setMessages] = useState<Message[]>(meetingId ? [meetingWelcome] : demoMessages)
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
+
+  useEffect(() => {
+    setMessages(meetingId ? [meetingWelcome] : demoMessages)
+    setInput('')
+  }, [meetingId])
 
   const handleSend = async () => {
     const message = input.trim()
@@ -44,10 +59,14 @@ export default function AiAssistant({ busy, meetingId: _meetingId, onAsk }: AiAs
       const response = await onAsk(message)
       setMessages((prev) => {
         const next = [...prev]
-        next[next.length - 1] = { role: 'assistant', text: response }
+        next[next.length - 1] = {
+          role: 'assistant',
+          text: response.text,
+          citations: response.citations,
+        }
         return next
       })
-    } catch (error) {
+    } catch {
       setMessages((prev) => {
         const next = [...prev]
         next[next.length - 1] = {
@@ -62,8 +81,8 @@ export default function AiAssistant({ busy, meetingId: _meetingId, onAsk }: AiAs
   }
 
   return (
-    <>
-      <div className="assistant-header">✨ AI Assistant</div>
+    <div className="ai-assistant" data-testid="ai-assistant">
+      <div className="assistant-header">✨ Trợ lý AI</div>
 
       <div className="assistant-body">
         {messages.map((msg, index) => (
@@ -74,8 +93,24 @@ export default function AiAssistant({ busy, meetingId: _meetingId, onAsk }: AiAs
             {msg.role === 'assistant' && (
               <div className="msg-avatar ai">✨</div>
             )}
-            <div className="msg-bubble" style={{ whiteSpace: 'pre-wrap' }}>
+            <div className="msg-bubble msg-bubble--pre-wrap">
               {msg.text}
+              {msg.citations && msg.citations.length > 0 && (
+                <ul className="assistant-citations" data-testid="assistant-citations">
+                  {msg.citations.map((citation, citationIndex) => (
+                    <li key={`${citation.evidenceId ?? citation.segmentId ?? citationIndex}`}>
+                      <button
+                        type="button"
+                        className="assistant-citation-link"
+                        onClick={() => onCitationClick?.(citation)}
+                      >
+                        {citation.speaker} — nguồn {formatTranscriptTimestamp(citation.startTime)}
+                      </button>
+                      <span className="assistant-citation-quote">{citation.quote}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
             </div>
           </div>
         ))}
@@ -91,19 +126,19 @@ export default function AiAssistant({ busy, meetingId: _meetingId, onAsk }: AiAs
             onKeyDown={(event) => {
               if (event.key === 'Enter') handleSend()
             }}
+            disabled={busy || sending}
           />
-          <button type="button">🎙</button>
-          <button type="button">📎</button>
           <button
             type="button"
             className="btn-send"
             onClick={handleSend}
-            disabled={busy || sending}
+            disabled={busy || sending || !input.trim()}
+            aria-label="Gửi câu hỏi"
           >
             ➤
           </button>
         </div>
       </div>
-    </>
+    </div>
   )
 }

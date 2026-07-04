@@ -1,16 +1,28 @@
 import { useRef, useState } from 'react'
 import type { RealtimeLanguage } from '../../hooks/useRealtimeMeetingStream'
 import { useUpload } from '../../hooks/useUpload'
+import type { DomainMode } from '../../constants/domainMode'
+import DomainModeSelector from '../ui/DomainModeSelector'
+import OnboardingTour from '../onboarding/OnboardingTour'
 import { ErrorState } from '../ui/ErrorState'
 import { getStatusBadgeClass } from '../../utils/statusBadge'
+import { formatUploadStatus } from '../../utils/uiLabels'
 
 type FeatureUploadProps = {
   disabled?: boolean
   userName?: string
   uploadLanguage: RealtimeLanguage
   onUploadLanguageChange: (language: RealtimeLanguage) => void
+  domainMode: DomainMode
+  onDomainModeChange: (mode: DomainMode) => void
+  showOnboarding?: boolean
+  onDismissOnboarding?: () => void
+  onNavigateRealtime?: () => void
+  onNavigateIntegrations?: () => void
   status?: string
   errorMessage?: string | null
+  errorCode?: string
+  onNavigateBilling?: () => void
   duplicateNotice?: string | null
   onUpload: (title: string, file: File) => Promise<void>
   onCancel?: () => void
@@ -21,8 +33,16 @@ export default function FeatureUpload({
   userName = 'bạn',
   uploadLanguage,
   onUploadLanguageChange,
+  domainMode,
+  onDomainModeChange,
+  showOnboarding = false,
+  onDismissOnboarding,
+  onNavigateRealtime,
+  onNavigateIntegrations,
   status = 'idle',
   errorMessage,
+  errorCode,
+  onNavigateBilling,
   duplicateNotice,
   onUpload,
   onCancel,
@@ -66,19 +86,16 @@ export default function FeatureUpload({
 
   return (
     <div className="dashboard-page bg-gray-light pb-0">
-      <header className="dashboard-header border-b">
-        <div className="search-bar">
-          <span className="icon">🔍</span>
-          <input type="text" placeholder="Tìm bài giảng, môn học, ghi chú..." />
-        </div>
-        <div className="header-actions">
-          <button type="button" className="icon-btn" aria-label="Thông báo">🔔</button>
-          <div className="user-avatar-small">{userName.trim()[0]?.toUpperCase() || 'A'}</div>
-        </div>
-      </header>
-
       <div className="upload-container">
         <div className="upload-content studio-reveal studio-reveal--delay-1">
+          {showOnboarding && onDismissOnboarding && onNavigateRealtime && onNavigateIntegrations && (
+            <OnboardingTour
+              onNavigateUpload={() => undefined}
+              onNavigateRealtime={onNavigateRealtime}
+              onNavigateIntegrations={onNavigateIntegrations}
+              onDismiss={onDismissOnboarding}
+            />
+          )}
           <h1 className="upload-welcome">Chào mừng trở lại, {userName}!</h1>
           <h2 className="upload-title">Tải lên file âm thanh của bạn</h2>
 
@@ -128,20 +145,40 @@ export default function FeatureUpload({
                 <option value="multi">Việt + Anh</option>
               </select>
             </div>
+            <DomainModeSelector
+              id="upload-domain-mode"
+              value={domainMode}
+              onChange={onDomainModeChange}
+              disabled={disabled}
+              testId="e2e-upload-domain-mode-select"
+            />
           </div>
 
           <p className="status-line upload-status-line" data-testid="e2e-status">
             <span>Trạng thái</span>
-            <span className={getStatusBadgeClass(status)}>{status}</span>
+            <span className={getStatusBadgeClass(status)}>{formatUploadStatus(status)}</span>
           </p>
 
           {duplicateNotice && (
-            <div className="ui-state ui-state--empty" data-testid="duplicate-upload-banner" style={{ marginBottom: '12px' }}>
-              <p>{duplicateNotice}</p>
+            <div className="ui-state ui-state--empty upload-selected-banner" data-testid="duplicate-upload-banner">
+              <p className="upload-duplicate-notice">{duplicateNotice}</p>
             </div>
           )}
 
-          {errorMessage && <ErrorState message={errorMessage} title="Lỗi xử lý" />}
+          {selectedFile && !disabled && (
+            <div className="upload-selected-banner" data-testid="upload-selected-banner">
+              Đã chọn: <strong>{selectedFile.name}</strong> — bấm &quot;Phân tích file&quot; để bắt đầu.
+            </div>
+          )}
+
+          {errorMessage && (
+            <ErrorState
+              message={errorMessage}
+              errorCode={errorCode}
+              title="Lỗi xử lý"
+              onCtaClick={onNavigateBilling}
+            />
+          )}
 
           <div className="upload-actions-row">
             <button

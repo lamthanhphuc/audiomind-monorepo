@@ -144,6 +144,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/processing/{meetingId}/chat": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Ask meeting chatbot with citations */
+        post: operations["askMeetingChat"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/processing/search/semantic": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Semantic meeting search */
+        post: operations["semanticSearchMeetings"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/processing/cross-meeting/ask": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Ask across meetings */
+        post: operations["askCrossMeeting"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/processing/{meetingId}/action-plan": {
         parameters: {
             query?: never;
@@ -185,7 +236,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Export meeting report as DOCX */
+        /** Export meeting report as DOCX or PDF */
         get: operations["exportMeetingReport"];
         put?: never;
         post?: never;
@@ -442,6 +493,28 @@ export interface components {
             /** @enum {string} */
             severity: "low" | "medium" | "high";
         };
+        MeetingChatResponse: {
+            /** Format: int64 */
+            meetingId?: number;
+            answer?: string;
+            provider?: string;
+            source_segments?: components["schemas"]["TranscriptEvidenceMatch"][];
+        };
+        SemanticSearchResponse: {
+            query?: string;
+            provider?: string;
+            results?: {
+                [key: string]: unknown;
+            }[];
+        };
+        CrossMeetingAskResponse: {
+            question?: string;
+            answer?: string;
+            provider?: string;
+            meetings?: {
+                [key: string]: unknown;
+            }[];
+        };
     };
     responses: never;
     parameters: never;
@@ -644,6 +717,89 @@ export interface operations {
             };
         };
     };
+    askMeetingChat: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                meetingId: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    question: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Chat response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MeetingChatResponse"];
+                };
+            };
+        };
+    };
+    semanticSearchMeetings: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    query: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Semantic search results */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SemanticSearchResponse"];
+                };
+            };
+        };
+    };
+    askCrossMeeting: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    question: string;
+                    limit?: number;
+                };
+            };
+        };
+        responses: {
+            /** @description Cross-meeting answer */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CrossMeetingAskResponse"];
+                };
+            };
+        };
+    };
     getMeetingActionPlan: {
         parameters: {
             query?: never;
@@ -669,7 +825,7 @@ export interface operations {
     exportMeetingActionPlan: {
         parameters: {
             query?: {
-                format?: "docx";
+                format?: "docx" | "pdf";
             };
             header?: never;
             path: {
@@ -679,13 +835,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Action plan DOCX */
+            /** @description Action plan export */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
                     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": string;
+                    "application/pdf": string;
                 };
             };
         };
@@ -693,7 +850,7 @@ export interface operations {
     exportMeetingReport: {
         parameters: {
             query?: {
-                format?: "docx";
+                format?: "docx" | "pdf";
             };
             header?: never;
             path: {
@@ -703,13 +860,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Meeting report DOCX */
+            /** @description Meeting report export */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
                     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": string;
+                    "application/pdf": string;
                 };
             };
         };

@@ -20,6 +20,8 @@ import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.client.BufferingClientHttpRequestFactory;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.retry.annotation.Backoff;
 import org.springframework.retry.annotation.Retryable;
 import org.springframework.stereotype.Service;
@@ -31,6 +33,7 @@ import org.springframework.web.client.HttpStatusCodeException;
 import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.multipart.MultipartFile;
+import org.springframework.web.util.UriComponentsBuilder;
 
 import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
 import io.github.resilience4j.retry.annotation.Retry;
@@ -46,6 +49,8 @@ public class AIServiceClient {
     private static final String TRACE_HEADER = "x-trace-id";
     private static final String REQUEST_HEADER = "x-request-id";
     private static final String DEFAULT_ANALYSIS_FEATURE_SET = "grouped-action-plan-v1";
+    private static final String TRANSCRIPT_NOT_READY_STATUS = "NOT_READY";
+    private static final String TRANSCRIPT_NOT_READY_ERROR_CODE = "TRANSCRIPT_NOT_READY";
 
     private static final Logger log = LoggerFactory.getLogger(AIServiceClient.class);
 
@@ -58,9 +63,16 @@ public class AIServiceClient {
     private String deepgramLanguage;
 
     public Map<String, Object> processAudio(Long meetingId, String audioPath) {
-        return processAudio(meetingId, audioPath, null, null, null, "vi", null, null);
+        return processAudio(meetingId, audioPath, null, null, null, "vi", null, null, null, null);
     }
 
+    @Retry(name = "ai-service")
+    @CircuitBreaker(name = "ai-service")
+    @Retryable(
+        retryFor = { RestClientException.class, IllegalStateException.class },
+        maxAttempts = 3,
+        backoff = @Backoff(delay = 1000, multiplier = 2.0)
+    )
     public Map<String, Object> streamAudioChunk(
             Long meetingId,
             byte[] audioChunk,
@@ -70,6 +82,18 @@ public class AIServiceClient {
             String traceId,
             String authorization) {
         return streamAudioChunk(meetingId, audioChunk, seq, language, null, isFinal, traceId, authorization);
+    }
+
+    public Map<String, Object> streamAudioChunk(
+            Long meetingId,
+            String streamId,
+            byte[] audioChunk,
+            Long seq,
+            String language,
+            boolean isFinal,
+            String traceId,
+            String authorization) {
+        return streamAudioChunk(meetingId, streamId, audioChunk, seq, language, null, isFinal, traceId, authorization);
     }
 
     @Retry(name = "ai-service")
@@ -88,6 +112,31 @@ public class AIServiceClient {
             String language,
             String traceId,
             String authorization) {
+        return processAudio(
+                meetingId,
+                audioPath,
+                fileId,
+                topic,
+                glossaryTerms,
+                language,
+                null,
+                traceId,
+                authorization,
+                null
+        );
+    }
+
+    public Map<String, Object> processAudio(
+            Long meetingId,
+            String audioPath,
+            String fileId,
+            String topic,
+            List<String> glossaryTerms,
+            String language,
+            String domainMode,
+            String traceId,
+            String authorization,
+            Long ownerUserId) {
 
         Map<String, Object> request = new HashMap<>();
 
@@ -105,6 +154,14 @@ public class AIServiceClient {
 
         if (language != null && !language.isBlank()) {
             request.put("language", language);
+        }
+
+        if (StringUtils.hasText(domainMode)) {
+            request.put("domain_mode", domainMode.trim());
+        }
+
+        if (ownerUserId != null && ownerUserId > 0) {
+            request.put("owner_user_id", ownerUserId);
         }
 
         HttpHeaders headers = new HttpHeaders();
@@ -137,21 +194,168 @@ public class AIServiceClient {
     }
 
     public Map<String, Object> getTranscript(Long meetingId, String traceId) {
+        return getTranscriptInternal(restTemplate, "getTranscript", meetingId, traceId, null, null);
+    }
+
+    @Retry(name = "ai-service")
+    @CircuitBreaker(name = "ai-service")
+    @Retryable(
+        retryFor = { RestClientException.class, IllegalStateException.class },
+        maxAttempts = 3,
+        backoff = @Backoff(delay = 1000, multiplier = 2.0)
+    )
+    public Map<String, Object> getTranscript(
+            Long meetingId,
+            String traceId,
+            Long recordingSessionId,
+            Long attemptId) {
+        return getTranscriptInternal(
+                restTemplate,
+                "getTranscript",
+                meetingId,
+                traceId,
+                recordingSessionId,
+                attemptId
+        );
+    }
+
+    public Map<String, Object> getTranscriptForRecovery(Long meetingId, String traceId, long timeoutMs) {
+        return getTranscriptInternal(
+                createRecoveryRestTemplate(timeoutMs),
+                "getTranscriptRecovery",
+                meetingId,
+                traceId,
+                null,
+                null
+        );
+    }
+
+    public Map<String, Object> getTranscriptForRecovery(
+            Long meetingId,
+            String traceId,
+            long timeoutMs,
+            Long recordingSessionId,
+            Long attemptId) {
+        return getTranscriptInternal(
+                createRecoveryRestTemplate(timeoutMs),
+                "getTranscriptRecovery",
+                meetingId,
+                traceId,
+                recordingSessionId,
+                attemptId
+        );
+    }
+
+    private Map<String, Object> getTranscriptInternal(
+            RestTemplate client,
+            String operation,
+            Long meetingId,
+            String traceId,
+            Long recordingSessionId,
+            Long attemptId) {
+        if ((recordingSessionId == null) != (attemptId == null)) {
+            throw new IllegalArgumentException("recordingSessionId and attemptId must be provided together");
+        }
         HttpHeaders headers = new HttpHeaders();
         String resolvedTraceId = resolveTraceId(traceId);
         String resolvedRequestId = resolveRequestId(resolvedTraceId);
         headers.add(TRACE_HEADER, resolvedTraceId);
         headers.add(REQUEST_HEADER, resolvedRequestId);
+        String url = buildTranscriptUrl(meetingId, recordingSessionId, attemptId);
+        ResponseEntity<Map<String, Object>> response;
+        try {
+            response = executeAiServiceCall(
+                    client,
+                    operation,
+                    url,
+                    HttpMethod.GET,
+                    new HttpEntity<>(headers),
+                    resolvedTraceId,
+                    resolvedRequestId,
+                    meetingId
+            );
+        } catch (HttpClientErrorException ex) {
+            if (isScopedTranscriptNotReady(operation, recordingSessionId, attemptId, ex)) {
+                return buildTranscriptNotReadyResponse(meetingId, recordingSessionId, attemptId);
+            }
+            throw ex;
+        }
+        return requireBody(response, operation, meetingId);
+    }
+
+    public static boolean isTranscriptNotReadyResponse(Map<String, Object> response) {
+        if (response == null) {
+            return false;
+        }
+        Object marker = response.get("transcriptNotReady");
+        if (Boolean.TRUE.equals(marker)) {
+            return true;
+        }
+        String status = String.valueOf(response.getOrDefault("status", "")).trim().toUpperCase(Locale.ROOT);
+        String errorCode = String.valueOf(response.getOrDefault("errorCode", "")).trim().toUpperCase(Locale.ROOT);
+        return TRANSCRIPT_NOT_READY_STATUS.equals(status)
+                || TRANSCRIPT_NOT_READY_ERROR_CODE.equals(errorCode);
+    }
+
+    private boolean isScopedTranscriptNotReady(
+            String operation,
+            Long recordingSessionId,
+            Long attemptId,
+            HttpClientErrorException ex) {
+        return operation != null
+                && operation.startsWith("getTranscript")
+                && recordingSessionId != null
+                && attemptId != null
+                && ex.getStatusCode() == HttpStatus.NOT_FOUND;
+    }
+
+    private Map<String, Object> buildTranscriptNotReadyResponse(
+            Long meetingId,
+            Long recordingSessionId,
+            Long attemptId) {
+        Map<String, Object> response = new HashMap<>();
+        response.put("meeting_id", meetingId);
+        response.put("recording_session_id", recordingSessionId);
+        response.put("attempt_id", attemptId);
+        response.put("transcripts", List.of());
+        response.put("status", TRANSCRIPT_NOT_READY_STATUS);
+        response.put("errorCode", TRANSCRIPT_NOT_READY_ERROR_CODE);
+        response.put("transcriptNotReady", true);
+        return response;
+    }
+
+    private String buildTranscriptUrl(Long meetingId, Long recordingSessionId, Long attemptId) {
+        UriComponentsBuilder builder = UriComponentsBuilder
+                .fromUriString(aiUrl)
+                .pathSegment("api", "meeting", String.valueOf(meetingId), "transcript");
+        if (recordingSessionId != null) {
+            builder.queryParam("recording_session_id", recordingSessionId);
+            builder.queryParam("attempt_id", attemptId);
+        }
+        return builder.toUriString();
+    }
+
+    public Map<String, Object> listTranscriptScopes(Long meetingId, String traceId) {
+        HttpHeaders headers = new HttpHeaders();
+        String resolvedTraceId = resolveTraceId(traceId);
+        String resolvedRequestId = resolveRequestId(resolvedTraceId);
+        headers.add(TRACE_HEADER, resolvedTraceId);
+        headers.add(REQUEST_HEADER, resolvedRequestId);
+        String url = UriComponentsBuilder
+                .fromUriString(aiUrl)
+                .pathSegment("api", "meeting", String.valueOf(meetingId), "transcript-scopes")
+                .toUriString();
         ResponseEntity<Map<String, Object>> response = executeAiServiceCall(
-                "getTranscript",
-                aiUrl + "/api/meeting/" + meetingId + "/transcript",
+                restTemplate,
+                "listTranscriptScopes",
+                url,
                 HttpMethod.GET,
                 new HttpEntity<>(headers),
                 resolvedTraceId,
                 resolvedRequestId,
                 meetingId
         );
-        return requireBody(response, "getTranscript", meetingId);
+        return requireBody(response, "listTranscriptScopes", meetingId);
     }
 
     @Retry(name = "ai-service")
@@ -162,14 +366,27 @@ public class AIServiceClient {
         backoff = @Backoff(delay = 1000, multiplier = 2.0)
     )
     public Map<String, Object> getAnalysis(Long meetingId, String traceId) {
+        return getAnalysis(meetingId, traceId, null, null);
+    }
+
+    public Map<String, Object> getAnalysis(
+            Long meetingId,
+            String traceId,
+            Long recordingSessionId,
+            Long attemptId
+    ) {
         HttpHeaders headers = new HttpHeaders();
         String resolvedTraceId = resolveTraceId(traceId);
         String resolvedRequestId = resolveRequestId(resolvedTraceId);
         headers.add(TRACE_HEADER, resolvedTraceId);
         headers.add(REQUEST_HEADER, resolvedRequestId);
+        String url = aiUrl + "/api/meeting/" + meetingId + "/analysis";
+        if (recordingSessionId != null && attemptId != null) {
+            url += "?recording_session_id=" + recordingSessionId + "&attempt_id=" + attemptId;
+        }
         ResponseEntity<Map<String, Object>> response = executeAiServiceCall(
                 "getAnalysis",
-                aiUrl + "/api/meeting/" + meetingId + "/analysis",
+                url,
                 HttpMethod.GET,
                 new HttpEntity<>(headers),
                 resolvedTraceId,
@@ -209,6 +426,7 @@ public class AIServiceClient {
                 DEFAULT_ANALYSIS_FEATURE_SET,
                 canonicalTranscriptHash,
                 canonicalTranscriptVersion,
+                null,
                 traceId,
                 authorization
         );
@@ -225,6 +443,7 @@ public class AIServiceClient {
             String analysisFeatureSet,
             String canonicalTranscriptHash,
             String canonicalTranscriptVersion,
+            String domainMode,
             String traceId,
             String authorization) {
         HttpHeaders headers = new HttpHeaders();
@@ -261,6 +480,9 @@ public class AIServiceClient {
         if (StringUtils.hasText(canonicalTranscriptVersion)) {
             request.put("canonical_transcript_version", canonicalTranscriptVersion);
         }
+        if (StringUtils.hasText(domainMode)) {
+            request.put("domain_mode", domainMode.trim());
+        }
 
         ResponseEntity<Map<String, Object>> response = executeAiServiceCall(
                 "rerunAnalysis",
@@ -272,6 +494,144 @@ public class AIServiceClient {
                 meetingId
         );
         return requireBody(response, "rerunAnalysis", meetingId);
+    }
+
+    public Map<String, Object> answerMeetingChat(
+            Long meetingId,
+            String question,
+            String summary,
+            String transcriptExcerpt,
+            Map<String, Object> analysis,
+            List<Map<String, Object>> sourceSegments,
+            String traceId,
+            String authorization
+    ) {
+        HttpHeaders headers = new HttpHeaders();
+        String resolvedTraceId = resolveTraceId(traceId);
+        String resolvedRequestId = resolveRequestId(resolvedTraceId);
+        headers.add(TRACE_HEADER, resolvedTraceId);
+        headers.add(REQUEST_HEADER, resolvedRequestId);
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        if (StringUtils.hasText(authorization)) {
+            headers.add(HttpHeaders.AUTHORIZATION, authorization);
+        }
+
+        Map<String, Object> request = new HashMap<>();
+        request.put("question", question);
+        request.put("summary", summary);
+        request.put("transcript_excerpt", transcriptExcerpt);
+        request.put("analysis", analysis == null ? Map.of() : analysis);
+        request.put("source_segments", sourceSegments == null ? List.of() : sourceSegments);
+
+        ResponseEntity<Map<String, Object>> response = executeAiServiceCall(
+                "answerMeetingChat",
+                aiUrl + "/api/meeting/" + meetingId + "/chat",
+                HttpMethod.POST,
+                new HttpEntity<>(request, headers),
+                resolvedTraceId,
+                resolvedRequestId,
+                meetingId
+        );
+        return requireBody(response, "answerMeetingChat", meetingId);
+    }
+
+    public Map<String, Object> semanticRerankMeetings(
+            String query,
+            List<Map<String, Object>> candidates,
+            String traceId,
+            String authorization
+    ) {
+        HttpHeaders headers = new HttpHeaders();
+        String resolvedTraceId = resolveTraceId(traceId);
+        String resolvedRequestId = resolveRequestId(resolvedTraceId);
+        headers.add(TRACE_HEADER, resolvedTraceId);
+        headers.add(REQUEST_HEADER, resolvedRequestId);
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        if (StringUtils.hasText(authorization)) {
+            headers.add(HttpHeaders.AUTHORIZATION, authorization);
+        }
+
+        Map<String, Object> request = new HashMap<>();
+        request.put("query", query);
+        request.put("candidates", candidates == null ? List.of() : candidates);
+
+        ResponseEntity<Map<String, Object>> response = executeAiServiceCall(
+                "semanticRerankMeetings",
+                aiUrl + "/api/search/semantic-rerank",
+                HttpMethod.POST,
+                new HttpEntity<>(request, headers),
+                resolvedTraceId,
+                resolvedRequestId,
+                null
+        );
+        return requireBody(response, "semanticRerankMeetings", null);
+    }
+
+    public Map<String, Object> askCrossMeeting(
+            String question,
+            List<Map<String, Object>> meetings,
+            String traceId,
+            String authorization
+    ) {
+        HttpHeaders headers = new HttpHeaders();
+        String resolvedTraceId = resolveTraceId(traceId);
+        String resolvedRequestId = resolveRequestId(resolvedTraceId);
+        headers.add(TRACE_HEADER, resolvedTraceId);
+        headers.add(REQUEST_HEADER, resolvedRequestId);
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        if (StringUtils.hasText(authorization)) {
+            headers.add(HttpHeaders.AUTHORIZATION, authorization);
+        }
+        Map<String, Object> request = new HashMap<>();
+        request.put("question", question);
+        request.put("meetings", meetings == null ? List.of() : meetings);
+        ResponseEntity<Map<String, Object>> response = executeAiServiceCall(
+                "askCrossMeeting",
+                aiUrl + "/api/search/cross-meeting/ask",
+                HttpMethod.POST,
+                new HttpEntity<>(request, headers),
+                resolvedTraceId,
+                resolvedRequestId,
+                null
+        );
+        return requireBody(response, "askCrossMeeting", null);
+    }
+
+    public Map<String, Object> explainMeetingTerm(
+            Long meetingId,
+            String term,
+            String summary,
+            String transcriptExcerpt,
+            Map<String, Object> analysis,
+            String traceId,
+            String authorization
+    ) {
+        HttpHeaders headers = new HttpHeaders();
+        String resolvedTraceId = resolveTraceId(traceId);
+        String resolvedRequestId = resolveRequestId(resolvedTraceId);
+        headers.add(TRACE_HEADER, resolvedTraceId);
+        headers.add(REQUEST_HEADER, resolvedRequestId);
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        if (StringUtils.hasText(authorization)) {
+            headers.add(HttpHeaders.AUTHORIZATION, authorization);
+        }
+
+        Map<String, Object> request = new HashMap<>();
+        request.put("term", term);
+        request.put("summary", summary);
+        request.put("transcript_excerpt", transcriptExcerpt);
+        request.put("analysis", analysis == null ? Map.of() : analysis);
+
+        ResponseEntity<Map<String, Object>> response = executeAiServiceCall(
+                "explainMeetingTerm",
+                aiUrl + "/api/meeting/" + meetingId + "/terms/explain",
+                HttpMethod.POST,
+                new HttpEntity<>(request, headers),
+                resolvedTraceId,
+                resolvedRequestId,
+                meetingId
+        );
+        return requireBody(response, "explainMeetingTerm", meetingId);
     }
 
     public Map<String, Object> getSavedAnalysisCacheOnly(
@@ -305,6 +665,32 @@ public class AIServiceClient {
             String traceId,
             String authorization
     ) {
+        return getSavedAnalysisCacheOnly(
+                meetingId,
+                transcript,
+                transcriptHash,
+                promptVersion,
+                schemaVersion,
+                analysisFeatureSet,
+                null,
+                null,
+                traceId,
+                authorization
+        );
+    }
+
+    public Map<String, Object> getSavedAnalysisCacheOnly(
+            Long meetingId,
+            String transcript,
+            String transcriptHash,
+            String promptVersion,
+            String schemaVersion,
+            String analysisFeatureSet,
+            Long recordingSessionId,
+            Long attemptId,
+            String traceId,
+            String authorization
+    ) {
         HttpHeaders headers = new HttpHeaders();
         String resolvedTraceId = resolveTraceId(traceId);
         String resolvedRequestId = resolveRequestId(resolvedTraceId);
@@ -332,6 +718,10 @@ public class AIServiceClient {
         }
         if (StringUtils.hasText(analysisFeatureSet)) {
             request.put("analysis_feature_set", analysisFeatureSet);
+        }
+        if (recordingSessionId != null && attemptId != null) {
+            request.put("recording_session_id", recordingSessionId);
+            request.put("attempt_id", attemptId);
         }
 
         ResponseEntity<Map<String, Object>> response = executeAiServiceCall(
@@ -443,6 +833,34 @@ public class AIServiceClient {
         );
     }
 
+    public Map<String, Object> analyzeRealtimeTranscript(
+            Long meetingId,
+            String transcript,
+            String domainMode,
+            String source,
+            String transcriptHash,
+            String promptVersion,
+            String schemaVersion,
+            String analysisFeatureSet,
+            String traceId,
+            String authorization
+    ) {
+        return analyzeRealtimeTranscript(
+                meetingId,
+                transcript,
+                domainMode,
+                source,
+                transcriptHash,
+                promptVersion,
+                schemaVersion,
+                analysisFeatureSet,
+                null,
+                null,
+                traceId,
+                authorization
+        );
+    }
+
     @Retry(name = "ai-service")
     @CircuitBreaker(name = "ai-service")
     public Map<String, Object> analyzeRealtimeTranscript(
@@ -454,6 +872,8 @@ public class AIServiceClient {
             String promptVersion,
             String schemaVersion,
             String analysisFeatureSet,
+            Long recordingSessionId,
+            Long attemptId,
             String traceId,
             String authorization
     ) {
@@ -487,6 +907,10 @@ public class AIServiceClient {
         }
         if (StringUtils.hasText(analysisFeatureSet)) {
             request.put("analysis_feature_set", analysisFeatureSet);
+        }
+        if (recordingSessionId != null && attemptId != null) {
+            request.put("recording_session_id", recordingSessionId);
+            request.put("attempt_id", attemptId);
         }
 
         ResponseEntity<Map<String, Object>> response = executeAiServiceCall(
@@ -615,6 +1039,113 @@ public class AIServiceClient {
             boolean isFinal,
             String traceId,
             String authorization) {
+        return streamAudioChunk(
+                meetingId,
+                null,
+                audioChunk,
+                seq,
+                language,
+                speakerMode,
+                isFinal,
+                traceId,
+                authorization
+        );
+    }
+
+    @Retry(name = "ai-service")
+    @CircuitBreaker(name = "ai-service")
+    @Retryable(
+        retryFor = { RestClientException.class, IllegalStateException.class },
+        maxAttempts = 3,
+        backoff = @Backoff(delay = 1000, multiplier = 2.0)
+    )
+    public Map<String, Object> streamAudioChunk(
+            Long meetingId,
+            byte[] audioChunk,
+            Long seq,
+            String language,
+            String speakerMode,
+            boolean isFinal,
+            String traceId,
+            String authorization,
+            Long recordingSessionId,
+            Long attemptId) {
+        return streamAudioChunk(
+                meetingId,
+                null,
+                audioChunk,
+                seq,
+                language,
+                speakerMode,
+                isFinal,
+                traceId,
+                authorization,
+                recordingSessionId,
+                attemptId
+        );
+    }
+
+    @Retry(name = "ai-service")
+    @CircuitBreaker(name = "ai-service")
+    @Retryable(
+        retryFor = { RestClientException.class, IllegalStateException.class },
+        maxAttempts = 3,
+        backoff = @Backoff(delay = 1000, multiplier = 2.0)
+    )
+    public Map<String, Object> streamAudioChunk(
+            Long meetingId,
+            String streamId,
+            byte[] audioChunk,
+            Long seq,
+            String language,
+            String speakerMode,
+            boolean isFinal,
+            String traceId,
+            String authorization) {
+        return streamAudioChunk(
+                meetingId,
+                streamId,
+                audioChunk,
+                seq,
+                language,
+                speakerMode,
+                isFinal,
+                traceId,
+                authorization,
+                null,
+                null
+        );
+    }
+
+    @Retry(name = "ai-service")
+    @CircuitBreaker(name = "ai-service")
+    @Retryable(
+        retryFor = { RestClientException.class, IllegalStateException.class },
+        maxAttempts = 3,
+        backoff = @Backoff(delay = 1000, multiplier = 2.0)
+    )
+    public Map<String, Object> streamAudioChunk(
+            Long meetingId,
+            String streamId,
+            byte[] audioChunk,
+            Long seq,
+            String language,
+            String speakerMode,
+            boolean isFinal,
+            String traceId,
+            String authorization,
+            Long recordingSessionId,
+            Long attemptId) {
+        if ((recordingSessionId == null) != (attemptId == null)) {
+            throw new IllegalArgumentException("recordingSessionId and attemptId must be provided together");
+        }
+        String normalizedStreamId = null;
+        if (StringUtils.hasText(streamId)) {
+            normalizedStreamId = streamId.trim().toLowerCase();
+            if ("default".equals(normalizedStreamId)) {
+                throw new IllegalArgumentException("stream_id=default is display-only and must not be sent");
+            }
+        }
 
         HttpHeaders headers = new HttpHeaders();
         String resolvedTraceId = resolveTraceId(traceId);
@@ -628,11 +1159,18 @@ public class AIServiceClient {
 
         MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
         body.add("meeting_id", String.valueOf(meetingId));
+        if (StringUtils.hasText(normalizedStreamId)) {
+            body.add("stream_id", normalizedStreamId);
+        }
         body.add("audio_chunk", toNamedResource(audioChunk, meetingId, seq));
         body.add("seq", String.valueOf(seq == null ? 0L : seq));
         body.add("language", normalizeRealtimeLanguage(language));
         body.add("speaker_mode", normalizeSpeakerMode(speakerMode));
         body.add("is_final", String.valueOf(isFinal));
+        if (recordingSessionId != null) {
+            body.add("recording_session_id", String.valueOf(recordingSessionId));
+            body.add("attempt_id", String.valueOf(attemptId));
+        }
         String requestedLanguage = normalizeFallbackLanguage(language);
         String effectiveLanguage = normalizeRealtimeLanguage(language);
         log.info(
@@ -781,6 +1319,19 @@ public class AIServiceClient {
             String requestId,
             Long meetingId
     ) {
+        return executeAiServiceCall(restTemplate, operation, url, method, requestEntity, traceId, requestId, meetingId);
+    }
+
+    private ResponseEntity<Map<String, Object>> executeAiServiceCall(
+            RestTemplate client,
+            String operation,
+            String url,
+            HttpMethod method,
+            HttpEntity<?> requestEntity,
+            String traceId,
+            String requestId,
+            Long meetingId
+    ) {
         long startedAt = System.currentTimeMillis();
         log.info(
                 "event=AI_SERVICE_CALL_STARTED traceId={} requestId={} meetingId={} path={} source={} operation={}",
@@ -792,7 +1343,7 @@ public class AIServiceClient {
                 operation
         );
         try {
-            ResponseEntity<Map<String, Object>> response = restTemplate.exchange(
+            ResponseEntity<Map<String, Object>> response = client.exchange(
                     url,
                     method,
                     requestEntity,
@@ -811,6 +1362,20 @@ public class AIServiceClient {
             );
             return response;
         } catch (RestClientException ex) {
+            if (isExpectedTranscriptNotReady(operation, url, ex)) {
+                HttpStatusCodeException statusException = (HttpStatusCodeException) ex;
+                log.info(
+                        "event=TRANSCRIPT_GET_NOT_READY traceId={} requestId={} meetingId={} path={} operation={} httpStatus={} durationMs={}",
+                        traceId,
+                        requestId,
+                        meetingId,
+                        url,
+                        operation,
+                        statusException.getStatusCode().value(),
+                        System.currentTimeMillis() - startedAt
+                );
+                throw ex;
+            }
             if (isExpectedAnalysisNotReady(operation, ex)) {
                 HttpStatusCodeException statusException = (HttpStatusCodeException) ex;
                 log.info(
@@ -838,6 +1403,23 @@ public class AIServiceClient {
             );
             throw ex;
         }
+    }
+
+    private boolean isExpectedTranscriptNotReady(String operation, String url, RestClientException ex) {
+        return operation != null
+                && operation.startsWith("getTranscript")
+                && url != null
+                && url.contains("recording_session_id=")
+                && ex instanceof HttpStatusCodeException statusException
+                && statusException.getStatusCode() == HttpStatus.NOT_FOUND;
+    }
+
+    private RestTemplate createRecoveryRestTemplate(long timeoutMs) {
+        int boundedTimeoutMs = (int) Math.min(Integer.MAX_VALUE, Math.max(100L, timeoutMs));
+        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
+        factory.setConnectTimeout(boundedTimeoutMs);
+        factory.setReadTimeout(boundedTimeoutMs);
+        return new RestTemplate(new BufferingClientHttpRequestFactory(factory));
     }
 
     private boolean isExpectedAnalysisNotReady(String operation, RestClientException ex) {

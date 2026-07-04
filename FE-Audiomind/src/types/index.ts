@@ -8,6 +8,10 @@ export type Meeting = {
   language?: string | null
   status?: string | null
   fileSize?: number | null
+  scheduledStartAt?: string | null
+  scheduledEndAt?: string | null
+  scheduledTimezone?: string | null
+  sharedWithMe?: boolean | null
 }
 
 export type AnalysisTechnicalTerm = {
@@ -822,10 +826,24 @@ export type TranscriptSegment = {
   start_time: number
   end_time: number
   text: string
+  meeting_id?: number
+  meetingId?: number
+  stream_id?: 'tab' | 'mic' | string
+  streamId?: 'tab' | 'mic' | string
+  recording_session_id?: number
+  recordingSessionId?: number
+  attempt_id?: number
+  attemptId?: number
+  seq?: number
+  segment_id?: string
+  segmentId?: string
 }
 
 export type TranscriptResponse = {
   meeting_id: number
   transcripts: TranscriptSegment[]
+  status?: string
+  errorCode?: string
+  transcriptNotReady?: boolean
 }
 

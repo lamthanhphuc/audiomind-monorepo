@@ -62,6 +62,18 @@ public class SecurityConfig {
                     .accessDeniedHandler(accessDeniedHandler))
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(HttpMethod.POST, "/api/users/register", "/api/users/login").permitAll()
+                        .requestMatchers(HttpMethod.POST, "/api/billing/payos/webhook").permitAll()
+                        .requestMatchers(HttpMethod.GET,
+                                "/auth/google/start",
+                                "/auth/google/callback",
+                                "/auth/google/link/callback",
+                                "/auth/zoom/callback",
+                                "/auth/teams/callback").permitAll()
+                        .requestMatchers(HttpMethod.POST, "/auth/google/exchange-ticket").permitAll()
+                        .requestMatchers("/internal/google/**").permitAll()
+                        .requestMatchers("/internal/quota/**").permitAll()
+                        .requestMatchers("/internal/users/**").permitAll()
+                        .requestMatchers("/internal/notifications/**").permitAll()
                         .requestMatchers(HttpMethod.GET, "/health", "/ready").permitAll()
                         .requestMatchers("/actuator/**").permitAll()
                         .anyRequest().authenticated())

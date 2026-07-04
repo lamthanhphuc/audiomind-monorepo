@@ -8,6 +8,8 @@ message AudioChunk {
   int64 ts_ms = 3;
   int32 sample_rate = 4;
   bytes pcm_chunk = 5;
+  // "" = legacy single-stream; "tab" | "mic" for dual-stream tab+mic mode
+  string stream_id = 6;
 }
 
 message TranscriptPartialEvent {

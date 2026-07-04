@@ -835,6 +835,8 @@ class ProcessingPipeline:
         analysis_mode: str = "auto",
         requested_by: Optional[str] = None,
         rerun_reason: Optional[str] = None,
+        owner_user_id: Optional[int] = None,
+        domain_mode: Optional[str] = None,
     ) -> Dict:
         """
         Complete processing pipeline for a meeting
@@ -1122,7 +1124,17 @@ class ProcessingPipeline:
                         "diarization_enabled": diarization_enabled,
                         "analysis": run_metadata,
                     }
-                analysis_result = self.ai_analyzer.analyze_meeting(formatted_transcript)
+                from app.services.user_quota_client import enforce_gemini_quota
+
+                enforce_gemini_quota(owner_user_id, formatted_transcript)
+                analysis_metadata = {
+                    "source": "upload",
+                    "domainMode": domain_mode or "it",
+                }
+                analysis_result = self.ai_analyzer.analyze_meeting(
+                    formatted_transcript,
+                    metadata=analysis_metadata,
+                )
 
             # Step 6: Save to database
             logger.info("Step 6: Saving to database")

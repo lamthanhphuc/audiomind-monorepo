@@ -142,7 +142,9 @@ public class Epic3PolicyLoader {
                 .add("legal")
                 .add("finance")
                 .add("healthcare")
-                .add("it");
+                .add("it")
+                .add("business")
+                .add("education");
         lexicon.putArray("disabledTerms");
 
         return root;

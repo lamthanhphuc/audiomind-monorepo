@@ -12,7 +12,7 @@ from typing import Any
 from uuid import uuid4
 
 import numpy as np
-from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -79,6 +79,7 @@ from app.services.analysis_runs import (
     ANALYSIS_STATUS_ANALYZING,
     ANALYSIS_STATUS_FAILED,
     ANALYSIS_STATUS_FAILED_RETRYABLE,
+    ANALYSIS_STATUS_UNAVAILABLE_FOR_SCOPE,
     analysis_payload_from_run,
     analysis_miss_response_metadata,
     analysis_run_response_metadata,
@@ -120,7 +121,10 @@ from app.services.stt_ownership import (
     SttOwnershipLost,
     get_stt_ownership_manager,
 )
-from app.services.stt_persistence import TranscriptPersistenceRepository
+from app.services.stt_persistence import (
+    TranscriptPersistenceRepository,
+    validate_transcript_provenance,
+)
 from app.services.transcript_canonicalizer import build_raw_transcript_hash
 from app.services.stt_session_actor import MeetingSessionActor, MeetingSessionState
 from app.upload_validation_policy import (
@@ -376,6 +380,56 @@ class MeetingStreamRetryGuard:
 
 def _normalize_meeting_key(meeting_id: int | str) -> str:
     return str(meeting_id).strip()
+
+
+def _as_optional_text(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    return ""
+
+
+def _normalize_stream_key(meeting_id: int | str, stream_id: str | None = "") -> str:
+    base = _normalize_meeting_key(meeting_id)
+    normalized_stream = _as_optional_text(stream_id).strip().lower()
+    if normalized_stream in {"tab", "mic"}:
+        return f"{base}:{normalized_stream}"
+    return base
+
+
+def _stt_actor_registry_key(
+    meeting_key: str,
+    *,
+    recording_session_id: int | None = None,
+    attempt_id: int | None = None,
+) -> str:
+    provenance = validate_transcript_provenance(recording_session_id, attempt_id)
+    if not provenance.is_v2:
+        return meeting_key
+    return (
+        f"{meeting_key}|recording_session_id={provenance.recording_session_id}"
+        f"|attempt_id={provenance.attempt_id}"
+    )
+
+
+def _resolve_speaker_prefix(stream_id: str | None) -> str | None:
+    normalized = _as_optional_text(stream_id).strip().lower()
+    if normalized == "tab":
+        return "TAB"
+    if normalized == "mic":
+        return "MIC"
+    return None
+
+
+def _parse_stream_id_from_key(meeting_key: str) -> str:
+    parts = str(meeting_key).split(":", 1)
+    return parts[1].strip().lower() if len(parts) == 2 else ""
+
+
+def _parse_meeting_id_from_key(meeting_key: str) -> int:
+    base = str(meeting_key).split(":", 1)[0].strip()
+    return int(base) if base.isdigit() else 0
 
 
 def _normalize_stt_language(language: str | None) -> str:
@@ -673,9 +727,17 @@ async def _get_or_create_stt_actor(
     seq: int | None = None,
     chunk_bytes: bytes | None = None,
     endpointing: int | None = None,
+    registry_key: str | None = None,
+    recording_session_id: int | None = None,
+    attempt_id: int | None = None,
 ) -> MeetingSessionActor:
     await _cleanup_stale_stt_actors()
-    guard = _get_stream_retry_guard(meeting_key)
+    actor_key = registry_key or _stt_actor_registry_key(
+        meeting_key,
+        recording_session_id=recording_session_id,
+        attempt_id=attempt_id,
+    )
+    guard = _get_stream_retry_guard(actor_key)
     now = time.time()
     stt_adapter = _get_stt_adapter(endpointing=endpointing)
     if stt_adapter is None:
@@ -685,11 +747,11 @@ async def _get_or_create_stt_actor(
     shared_cooldown_until = 0.0
     if ownership_manager is not None:
         try:
-            shared_cooldown_until = ownership_manager.get_cooldown_until(meeting_key)
+            shared_cooldown_until = ownership_manager.get_cooldown_until(actor_key)
         except Exception as exc:
             logger.warning(
                 "STT_OWNERSHIP_COOLDOWN_READ_ERROR meeting_id={} error={}",
-                meeting_key,
+                actor_key,
                 safe_error_message(exc),
             )
             raise HTTPException(
@@ -704,7 +766,7 @@ async def _get_or_create_stt_actor(
         raise HTTPException(
             status_code=429,
             detail={
-                "meeting_id": meeting_key,
+                "meeting_id": actor_key,
                 "seq": seq,
                 "reason": "reconnect cooldown active",
                 "retry_after_seconds": retry_after_seconds,
@@ -720,37 +782,37 @@ async def _get_or_create_stt_actor(
             seq == 1 and chunk_bytes is not None and _is_webm_header_chunk(chunk_bytes)
         )
         if can_restart:
-            _clear_stream_retry_guard(meeting_key)
+            _clear_stream_retry_guard(actor_key)
         else:
             raise HTTPException(
                 status_code=409,
                 detail={
-                    "meeting_id": meeting_key,
+                    "meeting_id": actor_key,
                     "seq": seq,
                     "reason": "new recording lifecycle required",
                 },
             )
 
     async with _stt_stream_registry_lock:
-        existing_actor = _stt_stream_sessions.get(meeting_key)
+        existing_actor = _stt_stream_sessions.get(actor_key)
         if existing_actor is not None and existing_actor.state not in {
             MeetingSessionState.CLOSED,
             MeetingSessionState.FAILED,
         }:
             if not existing_actor._owns_meeting():
-                _stt_stream_sessions.pop(meeting_key, None)
-                asyncio.create_task(_retire_stt_actor(meeting_key, existing_actor))
+                _stt_stream_sessions.pop(actor_key, None)
+                asyncio.create_task(_retire_stt_actor(actor_key, existing_actor))
             else:
                 return existing_actor
 
         lease: SttLease | None = None
         if ownership_manager is not None:
             try:
-                lease = ownership_manager.acquire(meeting_key)
+                lease = ownership_manager.acquire(actor_key)
             except Exception as exc:
                 logger.warning(
                     "STT_OWNERSHIP_ACQUIRE_ERROR meeting_id={} error={}",
-                    meeting_key,
+                    actor_key,
                     safe_error_message(exc),
                 )
                 raise HTTPException(
@@ -762,7 +824,7 @@ async def _get_or_create_stt_actor(
                 raise HTTPException(
                     status_code=409,
                     detail={
-                        "meeting_id": meeting_key,
+                        "meeting_id": actor_key,
                         "seq": seq,
                         "reason": "meeting STT stream is already owned by another replica",
                     },
@@ -776,6 +838,8 @@ async def _get_or_create_stt_actor(
                 adapter=stt_adapter,
                 lease=lease,
                 ownership_manager=ownership_manager,
+                recording_session_id=recording_session_id,
+                attempt_id=attempt_id,
             )
         except Exception:
             if lease is not None and ownership_manager is not None:
@@ -784,10 +848,10 @@ async def _get_or_create_stt_actor(
                 except Exception:
                     pass
             raise
-        _stt_stream_sessions[meeting_key] = actor
+        _stt_stream_sessions[actor_key] = actor
         logger.info(
             "STT_OWNERSHIP_ACQUIRED meeting_id={} owner_id={} fencing_token={}",
-            meeting_key,
+            actor_key,
             lease.owner_id if lease is not None else None,
             lease.fencing_token if lease is not None else 0,
         )
@@ -904,8 +968,6 @@ def _analysis_cache_metadata_analyzer():
     provider = (settings.analysis_provider or "gemini").strip().lower()
     if provider in {"ollama", "local"}:
         return _AnalysisCacheMetadataAnalyzer("ollama", settings.ollama_model)
-    if provider == "openai":
-        return _AnalysisCacheMetadataAnalyzer("openai", settings.openai_model)
     return _AnalysisCacheMetadataAnalyzer("gemini", settings.gemini_analysis_model)
 
 
@@ -2515,12 +2577,39 @@ def _fallback_grouped_action_plan(action_items: list[Any]) -> dict[str, Any]:
 
 
 @app.get("/api/meeting/{meeting_id}/transcript", response_model=TranscriptResponse)
-async def get_transcript(meeting_id: int, db: Session = Depends(get_db)):
+async def get_transcript(
+    meeting_id: int,
+    recording_session_id: int | None = None,
+    attempt_id: int | None = None,
+    db: Session = Depends(get_db),
+):
     """
     Get transcript for a meeting
 
     Returns all transcript segments with speaker labels and timestamps
     """
+
+    try:
+        transcript_scope = validate_transcript_provenance(
+            recording_session_id,
+            attempt_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "errorCode": "INVALID_PROVENANCE",
+                "message": str(exc),
+            },
+        )
+
+    def _optional_int(value: Any) -> int | None:
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
 
     def _build_segment_id(
         *,
@@ -2552,6 +2641,18 @@ async def get_transcript(meeting_id: int, db: Session = Depends(get_db)):
                 speaker_value=speaker,
                 start_time_value=start_time,
                 explicit_segment_id=row.get("segment_id"),
+            ),
+            stream_id=row.get("stream_id") or row.get("streamId"),
+            recording_session_id=_optional_int(
+                row.get("recording_session_id") or row.get("recordingSessionId")
+            ),
+            attempt_id=_optional_int(row.get("attempt_id") or row.get("attemptId")),
+            seq=_optional_int(row.get("seq")),
+            version=_optional_int(row.get("version")),
+            is_final=(
+                bool(row.get("is_final") or row.get("isFinal"))
+                if row.get("is_final") is not None or row.get("isFinal") is not None
+                else None
             ),
         )
 
@@ -2635,23 +2736,43 @@ async def get_transcript(meeting_id: int, db: Session = Depends(get_db)):
         return None
 
     try:
-        logger.info(f"Fetching transcript for meeting {meeting_id}")
+        logger.info(
+            "STT_TRANSCRIPT_GET_STARTED meeting_id={} scope={}",
+            meeting_id,
+            "v2" if transcript_scope.is_v2 else "legacy",
+        )
+        if not transcript_scope.is_v2:
+            logger.info(
+                "event=TRANSCRIPT_LEGACY_SCOPE_DEPRECATED meeting_id={} path=/api/meeting/{{meeting_id}}/transcript",
+                meeting_id,
+            )
 
         fragment_segments: list[dict[str, Any]] = []
         try:
             fragment_repository = TranscriptPersistenceRepository(db)
-            fragment_segments = (
-                fragment_repository.assemble_visible_transcript_segments(meeting_id)
-            )
+            if transcript_scope.is_v2:
+                fragment_segments = (
+                    fragment_repository.assemble_attempt_visible_transcript_segments(
+                        meeting_id,
+                        recording_session_id=transcript_scope.recording_session_id,
+                        attempt_id=transcript_scope.attempt_id,
+                    )
+                )
+            else:
+                fragment_segments = (
+                    fragment_repository.assemble_visible_transcript_segments(meeting_id)
+                )
         except AttributeError:
             fragment_segments = []
 
-        transcript_rows = (
-            db.query(Transcript)
-            .filter(Transcript.meeting_id == meeting_id)
-            .order_by(Transcript.start_time.asc(), Transcript.id.asc())
-            .all()
-        )
+        transcript_rows: list[Transcript] = []
+        if not transcript_scope.is_v2:
+            transcript_rows = (
+                db.query(Transcript)
+                .filter(Transcript.meeting_id == meeting_id)
+                .order_by(Transcript.start_time.asc(), Transcript.id.asc())
+                .all()
+            )
 
         if fragment_segments:
             raw_segments = [
@@ -2659,7 +2780,11 @@ async def get_transcript(meeting_id: int, db: Session = Depends(get_db)):
                 for segment in fragment_segments
                 if str(segment.get("text") or "").strip()
             ]
-            raw_source = "transcript_fragments_visible"
+            raw_source = (
+                "transcript_fragments_attempt_visible"
+                if transcript_scope.is_v2
+                else "transcript_fragments_visible"
+            )
         else:
             raw_segments = [
                 _segment_from_model(row)
@@ -2668,7 +2793,11 @@ async def get_transcript(meeting_id: int, db: Session = Depends(get_db)):
             ]
             raw_source = "transcripts"
 
-        canonical_payload = _resolve_canonical_sidecar(transcript_rows, raw_segments)
+        canonical_payload = None
+        if not transcript_scope.is_v2:
+            canonical_payload = _resolve_canonical_sidecar(
+                transcript_rows, raw_segments
+            )
         if canonical_payload is not None:
             (
                 canonical_segments,
@@ -2706,10 +2835,11 @@ async def get_transcript(meeting_id: int, db: Session = Depends(get_db)):
             )
 
         logger.info(
-            "STT_TRANSCRIPT_GET meeting_id={} source={} rows={}",
+            "STT_TRANSCRIPT_GET meeting_id={} source={} rows={} scope={}",
             meeting_id,
             "none",
             0,
+            "v2" if transcript_scope.is_v2 else "legacy",
         )
         raise HTTPException(
             status_code=404,
@@ -2733,6 +2863,30 @@ async def get_transcript(meeting_id: int, db: Session = Depends(get_db)):
         )
 
 
+@app.get("/api/meeting/{meeting_id}/transcript-scopes")
+async def list_transcript_scopes(meeting_id: int, db: Session = Depends(get_db)):
+    try:
+        repository = TranscriptPersistenceRepository(db)
+        scopes = repository.list_attempt_scopes(meeting_id)
+        return {
+            "meeting_id": meeting_id,
+            "scopes": scopes,
+        }
+    except Exception as e:
+        request_id = uuid4().hex
+        logger.error(
+            "event=REQUEST_FAILED requestId={} path=/api/meeting/{}/transcript-scopes errorCode={} error={}",
+            request_id,
+            meeting_id,
+            type(e).__name__,
+            safe_error_message(e),
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal server error. request_id={request_id}",
+        )
+
+
 @app.get("/api/meeting/{meeting_id}/status")
 async def get_processing_status(meeting_id: int):
     status = get_job_status(meeting_id)
@@ -2744,14 +2898,112 @@ async def get_processing_status(meeting_id: int):
 
 
 @app.get("/api/meeting/{meeting_id}/analysis", response_model=AnalysisResponse)
-async def get_analysis(meeting_id: int, db: Session = Depends(get_db)):
+async def get_analysis(
+    meeting_id: int,
+    db: Session = Depends(get_db),
+    recording_session_id: int | None = Query(default=None),
+    attempt_id: int | None = Query(default=None),
+):
     """
     Get AI analysis for a meeting
 
     Returns summary, keywords, technical terms, and action items
     """
     try:
-        logger.info(f"Fetching analysis for meeting {meeting_id}")
+        provenance = validate_transcript_provenance(recording_session_id, attempt_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "errorCode": "INVALID_PROVENANCE",
+                "message": str(exc),
+            },
+        ) from exc
+
+    try:
+        logger.info(
+            "Fetching analysis for meeting %s scope=%s",
+            meeting_id,
+            "legacy" if provenance.recording_session_id is None else "v2",
+        )
+
+        if provenance.recording_session_id is not None:
+            scoped_run = latest_completed_analysis_run(
+                db,
+                meeting_id,
+                provenance.recording_session_id,
+                provenance.attempt_id,
+            )
+            if scoped_run is None:
+                return AnalysisResponse(
+                    meeting_id=meeting_id,
+                    summary="",
+                    keywords=[],
+                    technical_terms=[],
+                    action_items=[],
+                    status="NOT_FOUND",
+                    analysisStatus=ANALYSIS_STATUS_UNAVAILABLE_FOR_SCOPE,
+                )
+            normalized = analysis_payload_from_run(scoped_run, cache_hit=True)
+            run_metadata = analysis_run_response_metadata(scoped_run, cache_hit=True)
+            action_items = [ActionItem(**item) for item in normalized["action_items"]]
+            technical_terms = [
+                AnalysisTechnicalTerm(**item) for item in normalized["technicalTerms"]
+            ]
+            pain_points = [
+                AnalysisPainPoint(**item) for item in normalized["painPoints"]
+            ]
+            return AnalysisResponse(
+                meeting_id=meeting_id,
+                summary=normalized["summary"],
+                meetingSummary=normalized["meetingSummary"],
+                keywords=normalized["keywords"],
+                technical_terms=normalized["technical_terms"],
+                action_items=action_items,
+                businessActionItems=[
+                    ActionItem(**item) for item in normalized["businessActionItems"]
+                ],
+                keyDecisions=normalized["keyDecisions"],
+                risks=normalized["risks"],
+                blockers=normalized["blockers"],
+                questions=normalized["questions"],
+                deadlines=normalized["deadlines"],
+                owners=normalized["owners"],
+                nextSteps=normalized["nextSteps"],
+                businessImpact=normalized["businessImpact"],
+                customerImpact=normalized["customerImpact"],
+                technicalImpact=normalized["technicalImpact"],
+                confidence=normalized["confidence"],
+                promptVersion=run_metadata.get("promptVersion")
+                or normalized["promptVersion"],
+                schemaVersion=run_metadata.get("schemaVersion")
+                or normalized["schemaVersion"],
+                analysisFeatureSet=run_metadata.get("analysisFeatureSet")
+                or normalized["analysisFeatureSet"],
+                groupedActionPlan=normalized.get("groupedActionPlan"),
+                created_at=scoped_run.completed_at or datetime.now(timezone.utc),
+                technicalTerms=technical_terms,
+                painPoints=pain_points,
+                actionItems=normalized["actionItems"],
+                domainMode=normalized["domainMode"],
+                status="COMPLETED",
+                source=normalized.get("source") or "analysis_run",
+                transcript_hash=normalized.get("transcript_hash"),
+                analysisStatus=run_metadata.get("analysisStatus") or "COMPLETED",
+                cacheHit=normalized.get("cacheHit"),
+                provider=run_metadata.get("provider"),
+                model=run_metadata.get("model"),
+                canonicalTranscriptHash=run_metadata.get("canonicalTranscriptHash"),
+                canonicalTranscriptVersion=run_metadata.get(
+                    "canonicalTranscriptVersion"
+                ),
+                analysisInputMode=run_metadata.get("analysisInputMode"),
+                lastAnalyzedAt=run_metadata.get("lastAnalyzedAt"),
+                stale=run_metadata.get("stale") or normalized.get("stale"),
+                staleReason=run_metadata.get("staleReason")
+                or normalized.get("staleReason"),
+                retryAfterSeconds=normalized.get("retryAfterSeconds"),
+            )
 
         job_state = get_job_status(meeting_id)
         job_analysis = _extract_analysis_from_job_state(job_state)
@@ -2998,6 +3250,7 @@ async def rerun_analysis(
             analysis_feature_set=request.analysis_feature_set,
             mode=mode,
             reason=request.reason,
+            domain_mode=request.domain_mode,
         ),
         db,
     )
@@ -3032,6 +3285,97 @@ async def rerun_analysis(
     )
 
 
+@app.post("/api/meeting/{meeting_id}/chat")
+async def meeting_chat(
+    meeting_id: int,
+    payload: dict = Body(...),
+):
+    settings = get_settings()
+    question = str(payload.get("question") or "").strip()
+    summary = str(payload.get("summary") or "")
+    transcript_excerpt = str(payload.get("transcript_excerpt") or "")
+    analysis = (
+        payload.get("analysis") if isinstance(payload.get("analysis"), dict) else {}
+    )
+    source_segments = (
+        payload.get("source_segments")
+        if isinstance(payload.get("source_segments"), list)
+        else []
+    )
+    from app.services.meeting_chat_service import answer_meeting_question
+
+    result = answer_meeting_question(
+        settings=settings,
+        question=question,
+        summary=summary,
+        transcript_excerpt=transcript_excerpt,
+        analysis=analysis,
+        source_segments=source_segments,
+    )
+    return {
+        "meetingId": meeting_id,
+        "answer": result.get("answer", ""),
+        "provider": result.get("provider", "unknown"),
+        "source_segments": result.get("source_segments", source_segments),
+    }
+
+
+@app.post("/api/search/semantic-rerank")
+async def semantic_rerank_endpoint(payload: dict = Body(...)):
+    settings = get_settings()
+    query = str(payload.get("query") or "").strip()
+    candidates = (
+        payload.get("candidates") if isinstance(payload.get("candidates"), list) else []
+    )
+    from app.services.semantic_search_service import semantic_rerank_meetings
+
+    result = semantic_rerank_meetings(
+        settings=settings, query=query, candidates=candidates
+    )
+    return result
+
+
+@app.post("/api/search/cross-meeting/ask")
+async def cross_meeting_ask_endpoint(payload: dict = Body(...)):
+    settings = get_settings()
+    question = str(payload.get("question") or "").strip()
+    meetings = (
+        payload.get("meetings") if isinstance(payload.get("meetings"), list) else []
+    )
+    from app.services.semantic_search_service import ask_cross_meeting
+
+    return ask_cross_meeting(settings=settings, question=question, meetings=meetings)
+
+
+@app.post("/api/meeting/{meeting_id}/terms/explain")
+async def explain_meeting_term_endpoint(
+    meeting_id: int,
+    payload: dict = Body(...),
+):
+    settings = get_settings()
+    term = str(payload.get("term") or "").strip()
+    summary = str(payload.get("summary") or "")
+    transcript_excerpt = str(payload.get("transcript_excerpt") or "")
+    analysis = (
+        payload.get("analysis") if isinstance(payload.get("analysis"), dict) else {}
+    )
+    from app.services.meeting_chat_service import explain_meeting_term
+
+    result = explain_meeting_term(
+        settings=settings,
+        term=term,
+        summary=summary,
+        transcript_excerpt=transcript_excerpt,
+        analysis=analysis,
+    )
+    return {
+        "meetingId": meeting_id,
+        "term": result.get("term", term),
+        "explanation": result.get("explanation", ""),
+        "provider": result.get("provider", "unknown"),
+    }
+
+
 @app.post(
     "/api/internal/realtime-analysis",
     response_model=RealtimeTranscriptAnalysisResponse,
@@ -3042,9 +3386,17 @@ async def analyze_realtime_transcript(
 ):
     try:
         meeting_id = int(request.meeting_id)
+        provenance = validate_transcript_provenance(
+            request.recording_session_id,
+            request.attempt_id,
+        )
         source = str(request.source or "realtime").strip().lower() or "realtime"
         analysis_trace_id = uuid4().hex[:12]
-        transcript_text = _normalize_transcript_text(request.transcript)
+        transcript_text = _normalize_transcript_text(request.transcript or "")
+        if not transcript_text:
+            transcript_text = _normalize_transcript_text(
+                _meeting_transcript_text_for_analysis(db, meeting_id)
+            )
         if not transcript_text:
             logger.warning(
                 "event=REALTIME_ANALYSIS_FAILED meetingId={} source={} errorCode=EMPTY_TRANSCRIPT",
@@ -3128,6 +3480,8 @@ async def analyze_realtime_transcript(
                     analyzer=analyzer,
                     fallback_transcript_hash=transcript_hash,
                     fallback_text=transcript_text,
+                    recording_session_id=provenance.recording_session_id,
+                    attempt_id=provenance.attempt_id,
                 )
                 skipped_run, _ = begin_analysis_run(
                     db=db,
@@ -3194,6 +3548,8 @@ async def analyze_realtime_transcript(
                     "schemaVersion": schema_version,
                     "analysisFeatureSet": analysis_feature_set,
                 },
+                recording_session_id=provenance.recording_session_id,
+                attempt_id=provenance.attempt_id,
             )
             analysis_cache_key = build_analysis_run_idempotency_key_for_identity(
                 cache_identity
@@ -4229,6 +4585,9 @@ async def stream_stt_chunk(
     language: str = Form(default=""),
     speaker_mode: str = Form(default=""),
     is_final: bool = Form(default=False),
+    stream_id: str = Form(default=""),
+    recording_session_id: int | None = Form(default=None),
+    attempt_id: int | None = Form(default=None),
     request: Request = None,
 ):
     started_at = time.time()
@@ -4255,6 +4614,14 @@ async def stream_stt_chunk(
         is_final=is_final,
         enabled=settings.realtime_validation_enabled,
     )
+    stream_id = _as_optional_text(stream_id)
+    try:
+        provenance = validate_transcript_provenance(
+            recording_session_id,
+            attempt_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     realtime_model = _resolve_realtime_model()
     endpointing_value = (
         endpointing_resolution.endpointing
@@ -4352,9 +4719,14 @@ async def stream_stt_chunk(
     if not chunk_bytes and not is_final:
         raise HTTPException(status_code=400, detail="audio_chunk is empty")
 
-    meeting_key = _normalize_meeting_key(meeting_id)
+    meeting_key = _normalize_stream_key(meeting_id, stream_id)
+    actor_key = _stt_actor_registry_key(
+        meeting_key,
+        recording_session_id=provenance.recording_session_id,
+        attempt_id=provenance.attempt_id,
+    )
     now = time.time()
-    guard = _get_stream_retry_guard(meeting_key)
+    guard = _get_stream_retry_guard(actor_key)
     previous_seq = guard.last_seq
     previous_seen_at = guard.last_seen_at
     guard.last_seq = max(guard.last_seq, int(seq))
@@ -4417,10 +4789,10 @@ async def stream_stt_chunk(
         )
 
     if seq == 1 and _is_webm_header_chunk(chunk_bytes) and guard.requires_new_stream:
-        _clear_stream_retry_guard(meeting_key)
-        guard = _get_stream_retry_guard(meeting_key)
+        _clear_stream_retry_guard(actor_key)
+        guard = _get_stream_retry_guard(actor_key)
 
-    cached_response = _get_cached_final_response(meeting_key)
+    cached_response = _get_cached_final_response(actor_key)
     if cached_response is not None:
         logger.info(
             "STT_FINALIZATION_REPLAY meeting_id={} seq={} is_final={} reason=cached_final_response",
@@ -4457,6 +4829,9 @@ async def stream_stt_chunk(
             seq=seq,
             chunk_bytes=chunk_bytes,
             endpointing=endpointing_resolution.endpointing,
+            registry_key=actor_key,
+            recording_session_id=provenance.recording_session_id,
+            attempt_id=provenance.attempt_id,
         )
     except HTTPException:
         raise
@@ -4482,6 +4857,14 @@ async def stream_stt_chunk(
                 bool(getattr(settings, "local_whisper_enabled", False)),
                 _legacy_local_stt_allowed(),
             )
+        logger.exception(
+            "event=DEEPGRAM_STT_FAILED_TRACE traceId={} requestId={} meetingId={} source=realtime seq={} errorCode={}",
+            trace_id,
+            request_id,
+            meeting_id,
+            seq,
+            type(exc).__name__,
+        )
         logger.warning(
             "event=DEEPGRAM_STT_FAILED traceId={} requestId={} meetingId={} source=realtime errorCode={} error={}",
             trace_id,
@@ -4572,7 +4955,7 @@ async def stream_stt_chunk(
                 )
                 if getattr(actor, "ownership_manager", None) is not None:
                     actor.ownership_manager.set_cooldown_until(
-                        meeting_key, guard.cooldown_until
+                        actor_key, guard.cooldown_until
                     )
                 logger.warning(
                     "STT_RECONNECT_BLOCKED_WEBM_CONTINUATION meeting_id={} seq={} last_ack_seq={} reason={}",
@@ -4583,8 +4966,8 @@ async def stream_stt_chunk(
                 )
             elif not _is_webm_header_chunk(chunk_bytes):
                 guard.requires_new_stream = True
-            _update_stream_retry_guard_from_actor(meeting_key, actor)
-            await _retire_stt_actor(meeting_key, actor)
+            _update_stream_retry_guard_from_actor(actor_key, actor)
+            await _retire_stt_actor(actor_key, actor)
             logger.warning(
                 "STT_TERMINAL_FAILURE meeting_id={} session_id={} seq={} error={}",
                 meeting_key,
@@ -4728,9 +5111,9 @@ async def stream_stt_chunk(
         realtime_diagnostics = _resolve_realtime_session_diagnostics(
             actor, fallback_transcript=response.transcript
         )
-        _store_final_response(meeting_key, response)
-        _stt_stream_sessions.pop(meeting_key, None)
-        _clear_stream_retry_guard(meeting_key)
+        _store_final_response(actor_key, response)
+        _stt_stream_sessions.pop(actor_key, None)
+        _clear_stream_retry_guard(actor_key)
         logger.info(
             "event=DEEPGRAM_STT_COMPLETED traceId={} requestId={} meetingId={} source=realtime durationMs={} transcriptLength={}",
             trace_id,

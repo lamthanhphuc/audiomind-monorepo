@@ -15,7 +15,8 @@ import org.springframework.web.client.RestClient;
 @TestPropertySource(properties = {
     "JWT_SECRET=test-jwt-secret-with-minimum-32-characters-long",
     "app.security.jwt.secret=test-jwt-secret-with-minimum-32-characters-long",
-    "cors.allowed-origins=http://localhost:5173"
+    "cors.allowed-origins=http://localhost:5173",
+    "app.rate-limit.enabled=false"
 })
 class ConfigControllerSecurityIntegrationTest {
 

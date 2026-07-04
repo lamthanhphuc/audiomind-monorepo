@@ -2,6 +2,7 @@ import { createRoot } from 'react-dom/client'
 import { act } from 'react-dom/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as api from '../../services/api'
+import * as meetingShare from '../../services/meetingShare'
 import MeetingHistoryScene from './MeetingHistoryScene'
 
 const HISTORY_LAST_SELECTED_KEY = 'audiomind.history.lastSelectedMeetingId'
@@ -78,6 +79,14 @@ describe('MeetingHistoryScene', () => {
     sessionStorage.clear()
 
     vi.spyOn(api, 'listMeetingsWithParams').mockResolvedValue([baseMeeting])
+    vi.spyOn(api, 'listMeetingResultScopes').mockResolvedValue([{ scopeKind: 'legacy' }])
+    vi.spyOn(api, 'resolveMeetingResultScope').mockImplementation(async (meetingId) => ({
+      scopeKind: 'legacy',
+      meetingId,
+      recordingSessionId: null,
+      attemptId: null,
+    }))
+    vi.spyOn(meetingShare, 'listMeetingShares').mockResolvedValue([])
     vi.spyOn(api, 'getTranscript').mockResolvedValue({ meeting_id: 7, transcripts: [] } as any)
     vi.spyOn(api, 'getAnalysis').mockResolvedValue(baseAnalysis as any)
     vi.spyOn(api, 'getSavedAnalysis').mockResolvedValue(baseAnalysis as any)
@@ -109,7 +118,7 @@ describe('MeetingHistoryScene', () => {
       note: null,
       analysisMetadata: { analysisSource: 'saved', cacheOnly: false, stale: false },
     } as any)
-    vi.spyOn(api, 'downloadMeetingActionPlanDocx').mockResolvedValue({
+    vi.spyOn(api, 'downloadMeetingActionPlan').mockResolvedValue({
       blob: new Blob(['action-plan'], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' }),
       filename: 'meeting-7-action-plan.docx',
     } as any)
@@ -160,6 +169,24 @@ describe('MeetingHistoryScene', () => {
     expect(api.getTranscript).toHaveBeenCalledWith(7, expect.objectContaining({ signal: expect.any(AbortSignal) }))
     expect(api.getSavedAnalysis).toHaveBeenCalledWith(7, expect.objectContaining({ signal: expect.any(AbortSignal) }))
     expect(container.textContent).toContain('History item')
+  })
+
+  it('copies existing-user invite link with openMeeting on root path', async () => {
+    await mountWithStoredSelection(7)
+
+    const shareButton = container.querySelector('[data-testid="meeting-share-link"]') as HTMLButtonElement
+    expect(shareButton).toBeTruthy()
+
+    await act(async () => {
+      shareButton.click()
+    })
+    await flush()
+
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+      expect.stringMatching(/\?openMeeting=7$/),
+    )
+    const copied = (navigator.clipboard.writeText as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0] as string
+    expect(copied).toMatch(/\/\?openMeeting=7$/)
   })
 
   it('loads detail on row click without getMeetingDetail and uses cache on second click', async () => {
@@ -292,7 +319,7 @@ describe('MeetingHistoryScene', () => {
     await flush()
 
     expect(api.deleteMeeting).toHaveBeenCalledWith(7)
-    expect(container.textContent).toContain('Không có meeting phù hợp bộ lọc hiện tại')
+    expect(container.textContent).toContain('Chưa có meeting phù hợp')
   })
 
   it('renders loading, empty, and error states', async () => {
@@ -312,10 +339,10 @@ describe('MeetingHistoryScene', () => {
       resolveList?.([])
     })
     await flush()
-    expect(container.textContent).toContain('Không có meeting phù hợp bộ lọc hiện tại')
+    expect(container.textContent).toContain('Chưa có meeting phù hợp')
 
     ;(api.listMeetingsWithParams as any).mockRejectedValueOnce(new Error('boom'))
-    const reloadButton = container.querySelector('button[aria-label="Reload list"]') as HTMLButtonElement
+    const reloadButton = container.querySelector('button[aria-label="Tải lại danh sách"]') as HTMLButtonElement
     await act(async () => {
       reloadButton.click()
     })
@@ -330,153 +357,6 @@ describe('MeetingHistoryScene', () => {
     expect(api.getSavedAnalysis).toHaveBeenCalledWith(7, expect.objectContaining({ signal: expect.any(AbortSignal) }))
     expect(api.getAnalysis).not.toHaveBeenCalled()
     expect(getMeetingDetailSpy).not.toHaveBeenCalled()
-  })
-
-  it('keeps previous completed analysis visible and stops polling when re-analyze request fails', async () => {
-    vi.useFakeTimers()
-    const completedAnalysis = {
-      ...baseAnalysis,
-      status: 'COMPLETED',
-      analysisStatus: 'COMPLETED',
-      summary: 'Previous completed content',
-      meetingSummary: 'Previous completed content',
-    }
-    ;(api.getSavedAnalysis as any).mockResolvedValueOnce(completedAnalysis)
-    ;(api.reanalyzeMeetingAnalysis as any).mockRejectedValueOnce(
-      new api.ApiError('Resource not found', 404),
-    )
-
-    await mountWithStoredSelection()
-
-    const initialSavedAnalysisCalls = (api.getSavedAnalysis as any).mock.calls.length
-    const button = container.querySelector('[data-testid="analysis-reanalyze-button"]') as HTMLButtonElement
-    await act(async () => {
-      button.click()
-    })
-    await flush()
-
-    expect(api.reanalyzeMeetingAnalysis).toHaveBeenCalledWith(7, { mode: 'force', reason: 'manual_reanalyze' })
-    expect(container.querySelector('[data-testid="analysis-status-badge"]')?.textContent).toBe('COMPLETED')
-    expect(container.textContent).toContain('Previous completed content')
-    expect(container.textContent).toContain('Cannot re-analyze because saved transcript was not found.')
-    expect(container.querySelector('[data-testid="analysis-status-badge"]')?.textContent).not.toBe('NO_ANALYSIS')
-
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(3000)
-    })
-    await flush()
-
-    expect((api.getSavedAnalysis as any).mock.calls.length).toBe(initialSavedAnalysisCalls)
-  })
-
-  it.each(['COMPLETED', 'FAILED', 'RATE_LIMITED'])('polling stops on %s after re-analyze', async (terminalStatus) => {
-    vi.useFakeTimers()
-    const completedAnalysis = {
-      ...baseAnalysis,
-      status: 'COMPLETED',
-      analysisStatus: 'COMPLETED',
-      summary: 'Previous completed content',
-      meetingSummary: 'Previous completed content',
-    }
-    ;(api.getSavedAnalysis as any)
-      .mockResolvedValueOnce(completedAnalysis)
-      .mockResolvedValueOnce({
-        ...baseAnalysis,
-        status: terminalStatus,
-        analysisStatus: terminalStatus,
-        retryAfterSeconds: terminalStatus === 'RATE_LIMITED' ? 30 : undefined,
-      })
-    ;(api.reanalyzeMeetingAnalysis as any).mockResolvedValueOnce({
-      ...baseAnalysis,
-      status: 'ANALYZING',
-      analysisStatus: 'ANALYZING',
-    })
-
-    await mountWithStoredSelection()
-
-    const button = container.querySelector('[data-testid="analysis-reanalyze-button"]') as HTMLButtonElement
-    await act(async () => {
-      button.click()
-    })
-    await flush()
-
-    expect(api.reanalyzeMeetingAnalysis).toHaveBeenCalledWith(7, { mode: 'force', reason: 'manual_reanalyze' })
-    expect(container.textContent).toContain('Previous completed content')
-
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(1500)
-    })
-    await flush()
-
-    expect(container.querySelector('[data-testid="analysis-status-badge"]')?.textContent).toBe(terminalStatus)
-    const callCountAtTerminal = (api.getSavedAnalysis as any).mock.calls.length
-
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(3000)
-    })
-    await flush()
-
-    expect((api.getSavedAnalysis as any).mock.calls.length).toBe(callCountAtTerminal)
-  })
-
-  it('does not apply stale re-analyze polling updates after switching meetings', async () => {
-    vi.useFakeTimers()
-    const firstMeeting = { ...baseMeeting, id: 7, title: 'First meeting' }
-    const secondMeeting = { ...baseMeeting, id: 8, title: 'Second meeting' }
-    ;(api.listMeetingsWithParams as any).mockResolvedValue([firstMeeting, secondMeeting])
-    ;(api.getTranscript as any).mockResolvedValue({ meeting_id: 7, transcripts: [] })
-    ;(api.getSavedAnalysis as any)
-      .mockResolvedValueOnce({
-        ...baseAnalysis,
-        status: 'COMPLETED',
-        analysisStatus: 'COMPLETED',
-        summary: 'First saved content',
-        meetingSummary: 'First saved content',
-      })
-      .mockResolvedValueOnce({
-        ...baseAnalysis,
-        meetingId: 8,
-        meeting_id: 8,
-        status: 'NOT_FOUND',
-        analysisStatus: 'NO_ANALYSIS',
-      })
-      .mockResolvedValueOnce({
-        ...baseAnalysis,
-        meetingId: 7,
-        meeting_id: 7,
-        status: 'COMPLETED',
-        analysisStatus: 'COMPLETED',
-        summary: 'Stale first update',
-        meetingSummary: 'Stale first update',
-      })
-    ;(api.reanalyzeMeetingAnalysis as any).mockResolvedValueOnce({
-      ...baseAnalysis,
-      status: 'ANALYZING',
-      analysisStatus: 'ANALYZING',
-    })
-
-    await mountWithStoredSelection()
-
-    const button = container.querySelector('[data-testid="analysis-reanalyze-button"]') as HTMLButtonElement
-    await act(async () => {
-      button.click()
-    })
-    await flush()
-
-    const secondMeetingButton = Array.from(container.querySelectorAll('[data-testid="meeting-list"] button'))
-      .find((item) => item.textContent?.includes('Second meeting')) as HTMLButtonElement
-    await act(async () => {
-      secondMeetingButton.click()
-    })
-    await flush()
-
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(1500)
-    })
-    await flush()
-
-    expect(container.textContent).toContain('Second meeting')
-    expect(container.textContent).not.toContain('Stale first update')
   })
 
   it('shows only completed meetings when completed filter is selected', async () => {
@@ -517,7 +397,7 @@ describe('MeetingHistoryScene', () => {
     await selectMeetingById(8)
 
     expect(container.textContent).toContain('Legacy row')
-    expect(container.textContent).toContain('unknown')
+    expect(container.textContent).toContain('Không rõ')
     expect(container.textContent).not.toContain('Legacy row•vi•processing')
   })
 
@@ -536,7 +416,7 @@ describe('MeetingHistoryScene', () => {
     const startProcessingSpy = vi.spyOn(api, 'startProcessingByPath')
 
     await mountWithStoredSelection()
-    expect(container.textContent).toContain('Readable is best-effort; Raw is for audit/debug.')
+    expect(container.textContent).toContain('Bản Readable dễ đọc; bản Raw dùng cho kiểm tra và audit.')
 
     const exportButton = container.querySelector('[data-testid="meeting-export-transcript"]') as HTMLButtonElement
     await act(async () => {
@@ -800,7 +680,7 @@ describe('MeetingHistoryScene', () => {
     await flush()
 
     expect(api.getMeetingActionPlan).toHaveBeenCalledWith(7)
-    expect(api.downloadMeetingActionPlanDocx).toHaveBeenCalledWith(7)
+    expect(api.downloadMeetingActionPlan).toHaveBeenCalledWith(7, 'docx')
     expect(api.reanalyzeMeetingAnalysis).not.toHaveBeenCalled()
     expect(container.textContent).toContain('Action summary')
     expect(container.textContent).toContain('Công việc chung')
@@ -892,7 +772,7 @@ describe('MeetingHistoryScene', () => {
     await flush()
 
     expect(container.textContent).toContain('Cần có phân tích cuộc họp trước khi xuất action plan.')
-    expect(api.downloadMeetingActionPlanDocx).not.toHaveBeenCalled()
+    expect(api.downloadMeetingActionPlan).not.toHaveBeenCalled()
     expect(api.reanalyzeMeetingAnalysis).not.toHaveBeenCalled()
   })
 
@@ -919,7 +799,19 @@ describe('MeetingHistoryScene', () => {
     await flush()
 
     expect(container.querySelector('[data-testid="meeting-open-analysis"]')).toBeNull()
+    expect(container.querySelector('[data-testid="meeting-open-mindmap"]')).toBeNull()
     expect(onOpenAnalysis).not.toHaveBeenCalled()
+  })
+
+  it('does not render topic graph in meeting detail', async () => {
+    await mountWithStoredSelection()
+    expect(container.querySelector('[data-testid="topic-graph"]')).toBeNull()
+  })
+
+  it('does not render inline saved analysis panel in meeting detail', async () => {
+    await mountWithStoredSelection()
+    expect(container.querySelector('[data-testid="e2e-saved-analysis"]')).toBeNull()
+    expect(container.textContent).not.toContain('Phân tích đã lưu')
   })
 
   it('shows open-analysis CTA when a meeting is selected and calls callback with meetingId', async () => {
@@ -941,6 +833,48 @@ describe('MeetingHistoryScene', () => {
     await flush()
 
     expect(onOpenAnalysis).toHaveBeenCalledTimes(1)
-    expect(onOpenAnalysis).toHaveBeenCalledWith(7, { title: 'History item' })
+    expect(onOpenAnalysis).toHaveBeenCalledWith(7, {
+      title: 'History item',
+      scope: {
+        scopeKind: 'legacy',
+        meetingId: 7,
+        recordingSessionId: null,
+        attemptId: null,
+        finalized: true,
+        updatedAt: null,
+      },
+    })
+  })
+
+  it('shows open-mindmap CTA when a meeting is selected and calls callback with meetingId', async () => {
+    const onOpenMindmap = vi.fn()
+    await act(async () => {
+      root.render(<MeetingHistoryScene onOpenMindmap={onOpenMindmap} />)
+    })
+    await flush()
+
+    await selectMeetingById(7)
+
+    const openButton = container.querySelector('[data-testid="meeting-open-mindmap"]') as HTMLButtonElement
+    expect(openButton).toBeTruthy()
+    expect(openButton.textContent).toContain('mindmap')
+
+    await act(async () => {
+      openButton.click()
+    })
+    await flush()
+
+    expect(onOpenMindmap).toHaveBeenCalledTimes(1)
+    expect(onOpenMindmap).toHaveBeenCalledWith(7, {
+      title: 'History item',
+      scope: {
+        scopeKind: 'legacy',
+        meetingId: 7,
+        recordingSessionId: null,
+        attemptId: null,
+        finalized: true,
+        updatedAt: null,
+      },
+    })
   })
 })

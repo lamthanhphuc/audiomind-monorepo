@@ -1,0 +1,388 @@
+.google-integration {
+  width: min(920px, 100%);
+  margin: 0 auto;
+  padding: 32px 24px 56px;
+  color: var(--studio-text, #edf2f7);
+}
+
+.google-integration__header,
+.google-integration__section,
+.google-integration__actions,
+.google-integration__time-grid {
+  display: flex;
+  align-items: center;
+}
+
+.google-integration__header { justify-content: space-between; gap: 24px; margin-bottom: 24px; }
+.google-integration__header h1 { margin: 4px 0 0; font-size: 28px; letter-spacing: 0; }
+.google-integration__eyebrow { margin: 0; color: var(--studio-accent, #a78bfa); font-size: 12px; font-weight: 700; letter-spacing: 0.08em; }
+.google-integration__subtitle { margin: 8px 0 0; color: var(--studio-muted, #9eabb9); font-size: 14px; max-width: 520px; }
+.google-integration__state { padding: 7px 10px; border: 1px solid var(--studio-border, #566170); border-radius: 8px; color: var(--studio-muted, #b7c0ca); font-size: 13px; }
+.google-integration__state.is-linked { border-color: rgba(74, 222, 128, 0.5); color: #86efac; }
+.google-integration__state.needs-grant { border-color: rgba(251, 191, 36, 0.55); color: #fcd34d; }
+.google-integration__message--warn { border-color: rgba(251, 191, 36, 0.45); color: #fde68a; }
+.google-btn--emphasis { box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.35); }
+.google-integration__message { margin-bottom: 16px; padding: 12px 14px; border-left: 3px solid rgba(124, 108, 255, 0.65); background: rgba(124, 108, 255, 0.1); border-radius: 0 10px 10px 0; }
+.google-integration__message.is-error { border-color: #f87171; background: rgba(248, 113, 113, 0.12); }
+.google-integration__section { justify-content: space-between; gap: 28px; padding: 22px 0; border-top: 1px solid var(--studio-border, #303944); }
+.google-integration__section h2 { margin: 0 0 6px; font-size: 18px; letter-spacing: 0; }
+.google-integration__section p { margin: 0; color: var(--studio-muted, #9eabb9); }
+.google-integration__actions { flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.google-btn { min-height: 38px; padding: 8px 13px; border: 1px solid var(--studio-border, #566170); border-radius: 8px; background: rgba(255, 255, 255, 0.04); color: var(--studio-text, #f4f7fa); cursor: pointer; font-weight: 600; }
+.google-btn--primary { border-color: rgba(124, 108, 255, 0.55); background: linear-gradient(135deg, rgba(91, 79, 214, 0.9), rgba(124, 108, 255, 0.85)); }
+.google-btn--danger { border-color: rgba(248, 113, 113, 0.45); color: #fca5a5; }
+.google-btn:disabled { cursor: not-allowed; opacity: .55; }
+.google-integration__scheduler { display: grid; align-items: start; grid-template-columns: 1fr; gap: 12px; }
+.google-integration__section-heading { margin-bottom: 4px; }
+.google-integration label { display: grid; gap: 7px; color: var(--studio-muted, #cbd3dc); font-size: 13px; font-weight: 600; }
+.google-integration input,
+.google-integration select { width: 100%; min-height: 42px; padding: 8px 10px; border: 1px solid var(--studio-border, #46515e); border-radius: 8px; background: var(--studio-panel, #151b22); color: var(--studio-text, #f4f7fa); font: inherit; }
+.google-integration__time-grid { align-items: start; gap: 12px; }
+.google-integration__time-grid label { flex: 1; }
+.google-integration__meet-link { width: fit-content; color: #a5b4fc; font-weight: 700; }
+.google-integration__mode { display: inline-flex; width: fit-content; padding: 3px; border: 1px solid var(--studio-border, #46515e); border-radius: 8px; background: var(--studio-panel, #151b22); }
+.google-integration__mode button { min-height: 34px; padding: 6px 12px; border: 0; border-radius: 6px; background: transparent; color: var(--studio-muted, #9eabb9); cursor: pointer; }
+.google-integration__mode button.is-active { background: rgba(124, 108, 255, 0.2); color: var(--studio-text, #f4f7fa); }
+.google-integration__scopes { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.google-integration__scope-chip { font-size: 11px; padding: 4px 8px; border-radius: 999px; border: 1px solid var(--studio-border, #46515e); color: var(--studio-muted, #cbd5e1); }
+.google-integration__result { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--studio-border, #46515e); background: rgba(255, 255, 255, 0.03); }
+.google-integration__result:has(.google-calendar-event-card) { display: block; padding: 0; border: 0; background: transparent; }
+
+/* Isolate card from studio dark-theme heading colors (.dashboard-page h3) */
+.app--studio .dashboard-page .google-calendar-event-card,
+.google-calendar-event-card {
+  --gcal-surface: #ffffff;
+  --gcal-surface-muted: #f8f9fa;
+  --gcal-border: #e0e3e7;
+  --gcal-text: #1f1f1f;
+  --gcal-text-secondary: #444746;
+  --gcal-text-muted: #5f6368;
+  --gcal-blue: #1a73e8;
+  --gcal-blue-hover: #1765cc;
+  display: grid;
+  gap: 0;
+  border: 1px solid var(--gcal-border);
+  border-radius: 16px;
+  background: var(--gcal-surface);
+  color: var(--gcal-text);
+  box-shadow:
+    0 1px 2px rgba(60, 64, 67, 0.12),
+    0 4px 16px rgba(60, 64, 67, 0.08);
+  overflow: hidden;
+}
+
+.google-calendar-event-card--popover {
+  max-width: 440px;
+}
+
+.google-calendar-event-card__header {
+  display: flex;
+  gap: 14px;
+  padding: 20px 20px 16px;
+  border-bottom: 1px solid var(--gcal-border);
+  background: linear-gradient(180deg, #fafbfc 0%, #fff 100%);
+}
+
+.google-calendar-event-card__accent {
+  width: 4px;
+  margin-top: 2px;
+  border-radius: 4px;
+  background: var(--gcal-blue);
+  flex-shrink: 0;
+  align-self: stretch;
+  min-height: 44px;
+}
+
+.google-calendar-event-card__header-text {
+  min-width: 0;
+  flex: 1;
+}
+
+.app--studio .dashboard-page .google-calendar-event-card__title,
+.google-calendar-event-card__title {
+  margin: 0 0 6px;
+  font-size: 1.25rem;
+  font-weight: 600;
+  line-height: 1.35;
+  letter-spacing: -0.01em;
+  color: var(--gcal-text);
+  word-break: break-word;
+}
+
+.app--studio .dashboard-page .google-calendar-event-card__time,
+.google-calendar-event-card__time {
+  margin: 0;
+  font-size: 0.875rem;
+  font-weight: 500;
+  line-height: 1.5;
+  color: var(--gcal-text-secondary);
+}
+
+.google-calendar-event-card__body {
+  display: grid;
+  gap: 12px;
+  padding: 16px 20px;
+}
+
+.google-calendar-event-card__meet-cta {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 18px;
+  border-radius: 999px;
+  background: var(--gcal-blue);
+  color: #fff;
+  font-size: 0.875rem;
+  font-weight: 600;
+  text-decoration: none;
+  transition: background 0.15s ease, box-shadow 0.15s ease;
+  box-shadow: 0 1px 2px rgba(26, 115, 232, 0.35);
+}
+
+.google-calendar-event-card__meet-cta:hover {
+  background: var(--gcal-blue-hover);
+  color: #fff;
+  box-shadow: 0 2px 6px rgba(26, 115, 232, 0.35);
+}
+
+.google-calendar-event-card__meet-icon {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+}
+
+.google-calendar-event-card__link-box {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--gcal-border);
+  border-radius: 10px;
+  background: var(--gcal-surface-muted);
+}
+
+.google-calendar-event-card__meet-link-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, 'Cascadia Code', 'Segoe UI Mono', monospace;
+  font-size: 0.8125rem;
+  color: var(--gcal-text);
+}
+
+.google-calendar-event-card__copy-btn {
+  border: 0;
+  border-radius: 8px;
+  padding: 6px 10px;
+  background: #fff;
+  color: var(--gcal-blue);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  cursor: pointer;
+  flex-shrink: 0;
+  box-shadow: 0 1px 2px rgba(60, 64, 67, 0.1);
+}
+
+.google-calendar-event-card__copy-btn:hover {
+  background: #e8f0fe;
+}
+
+.google-calendar-event-card__footer {
+  display: grid;
+  gap: 10px;
+  padding: 14px 20px 18px;
+  border-top: 1px solid var(--gcal-border);
+  background: var(--gcal-surface-muted);
+}
+
+.google-calendar-event-card__meta-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 0;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  color: var(--gcal-text-muted);
+}
+
+.google-calendar-event-card__meta-icon {
+  width: 18px;
+  height: 18px;
+  margin-top: 1px;
+  flex-shrink: 0;
+  color: #80868b;
+}
+
+.google-calendar-event-card__calendar-link {
+  width: fit-content;
+  margin-top: 2px;
+  color: var(--gcal-blue);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.google-calendar-event-card__calendar-link:hover {
+  text-decoration: underline;
+}
+
+/* Shared accent dot (table + legacy) */
+.google-calendar-event-card__color-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  background: var(--gcal-blue, #1a73e8);
+  flex-shrink: 0;
+}
+
+.google-calendar-meetings-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--studio-border, #46515e);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.google-calendar-meetings-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.google-calendar-meetings-table th,
+.google-calendar-meetings-table td {
+  padding: 14px 16px;
+  text-align: left;
+  border-bottom: 1px solid var(--studio-border, #3a4450);
+  vertical-align: middle;
+}
+
+.google-calendar-meetings-table th {
+  color: var(--studio-muted, #94a3b8);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  background: rgba(0, 0, 0, 0.15);
+}
+
+.google-calendar-meetings-table tbody tr {
+  transition: background 0.12s ease;
+}
+
+.google-calendar-meetings-table tbody tr:hover {
+  background: rgba(124, 108, 255, 0.06);
+}
+
+.google-calendar-meetings-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.google-calendar-meetings-table__title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--studio-text, #f4f7fa);
+  font-weight: 600;
+  font-size: 15px;
+}
+
+.google-calendar-meetings-table__time {
+  color: var(--studio-text, #e2e8f0);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.google-calendar-meetings-table__actions-col,
+.google-calendar-meetings-table__actions {
+  width: 120px;
+  text-align: right;
+}
+
+.google-calendar-meetings-table__join-btn {
+  min-height: 34px;
+  padding: 6px 14px;
+  border: 0;
+  border-radius: 18px;
+  background: #1a73e8;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.google-calendar-meetings-table__join-btn:hover {
+  background: #1765cc;
+}
+
+.google-integration__result-hint { font-size: 13px; color: var(--studio-muted, #94a3b8); }
+
+.google-integration__meet-capture {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(220px, 0.9fr);
+  gap: 20px;
+  margin-bottom: 8px;
+  padding: 20px;
+  border: 1px solid rgba(124, 108, 255, 0.35);
+  border-radius: 14px;
+  background: linear-gradient(135deg, rgba(124, 108, 255, 0.12), rgba(255, 255, 255, 0.02));
+}
+
+.google-integration__meet-capture-eyebrow {
+  margin: 0 0 6px;
+  color: var(--studio-accent, #a78bfa);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.google-integration__meet-capture h2 {
+  margin: 0 0 8px;
+  font-size: 20px;
+}
+
+.google-integration__meet-capture p {
+  margin: 0 0 10px;
+  color: var(--studio-muted, #9eabb9);
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.google-integration__meet-steps {
+  margin: 0 0 10px;
+  padding-left: 18px;
+  color: var(--studio-text, #e2e8f0);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.google-integration__meet-note {
+  margin: 0 0 10px !important;
+  font-size: 12px !important;
+  color: #c4b5fd !important;
+}
+
+.google-integration__meet-capture-actions {
+  display: grid;
+  gap: 10px;
+  align-content: start;
+}
+
+.google-integration__meet-source-hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--studio-muted, #94a3b8);
+  line-height: 1.45;
+}
+
+@media (max-width: 720px) {
+  .google-integration { padding: 22px 16px 40px; }
+  .google-integration__header, .google-integration__section { align-items: flex-start; flex-direction: column; }
+  .google-integration__meet-capture { grid-template-columns: 1fr; }
+  .google-integration__actions { justify-content: flex-start; }
+  .google-integration__time-grid { align-items: stretch; flex-direction: column; }
+}

@@ -1,10 +1,36 @@
+// @vitest-environment jsdom
 import { createRoot } from 'react-dom/client'
 import { act } from 'react-dom/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { normalizePersistedTranscriptSegments } from '../../utils/transcript'
+import type { TranscriptSegment } from '../../hooks/useRealtimeMeetingStream'
 import { TranscriptDisplay } from './TranscriptDisplay'
 
-describe('TranscriptDisplay', () => {
+const legalLexiconTerms = [{ canonical: 'hợp đồng', aliases: ['hop dong', 'hop_dong'] }]
+const itLexiconTerms = [{ canonical: 'microservice', aliases: ['micro-service'] }]
+
+vi.mock('../../hooks/useDomainLexiconTerms', () => ({
+  useDomainLexiconTerms: (domainMode?: string | null) => {
+    if (domainMode === 'legal') {
+      return legalLexiconTerms
+    }
+    if (domainMode === 'it') {
+      return itLexiconTerms
+    }
+    return []
+  },
+}))
+
+const segment = (text: string): TranscriptSegment => ({
+  id: 'seg-1',
+  speaker: 'SPEAKER_1',
+  text,
+  start: 0,
+  end: 5,
+  timestamp: 0,
+  isFinal: true,
+})
+
+describe('TranscriptDisplay lexicon highlighting', () => {
   let container: HTMLDivElement
   let root: ReturnType<typeof createRoot>
 
@@ -19,197 +45,48 @@ describe('TranscriptDisplay', () => {
       root.unmount()
     })
     container.remove()
-    vi.restoreAllMocks()
   })
 
-  it('renders structured upload segments as readable speaker blocks with timestamps', () => {
-    const segments = normalizePersistedTranscriptSegments([
-      {
-        speaker: 'Speaker 1',
-        start_time: 7.81,
-        end_time: 8.48,
-        text: 'Xin chào Audiomind',
-      },
-      {
-        speaker: 'Speaker 2',
-        start_time: 18.94,
-        end_time: 19.4,
-        text: 'Tom, I am so tired of learning English.',
-      },
-    ])
-
-    act(() => {
-      root.render(<TranscriptDisplay segments={segments} />)
-    })
-
-    expect(container.querySelectorAll('.transcript-display__segment')).toHaveLength(2)
-    expect(container.querySelectorAll('.transcript-display__speaker')).toHaveLength(2)
-    expect(container.textContent).toContain('SPEAKER_1')
-    expect(container.textContent).toContain('SPEAKER_2')
-    expect(container.textContent).toContain('0:07 - 0:08')
-    expect(container.textContent).toContain('0:18 - 0:19')
-    expect(container.textContent).toContain('Xin chào Audiomind')
-    expect(container.textContent).toContain('Tom, I am so tired of learning English.')
-  })
-
-  it('renders final display segments in timeline order and preserves stable speaker labels', () => {
-    const segments = normalizePersistedTranscriptSegments([
-      {
-        speaker: 'SPEAKER_3',
-        start_time: 272,
-        end_time: 273,
-        text: 'row at 4:32',
-      },
-      {
-        speaker: 'SPEAKER_4',
-        start_time: 441,
-        end_time: 442,
-        text: 'row at 7:21',
-      },
-      {
-        speaker: 'SPEAKER_1',
-        start_time: 119,
-        end_time: 120,
-        text: 'row at 1:59',
-      },
-    ])
-
-    act(() => {
-      root.render(<TranscriptDisplay segments={segments} />)
-    })
-
-    const rows = Array.from(container.querySelectorAll('.transcript-display__text')).map((node) => node.textContent)
-    const speakers = Array.from(container.querySelectorAll('.transcript-display__speaker')).map((node) => node.textContent)
-
-    expect(rows).toEqual(['row at 1:59', 'row at 4:32', 'row at 7:21'])
-    expect(speakers).toEqual(['SPEAKER_1', 'SPEAKER_3', 'SPEAKER_4'])
-  })
-
-  it('renders grouped upload blocks when enableDisplayGrouping is true', () => {
-    const segments = normalizePersistedTranscriptSegments([
-      {
-        speaker: 'Speaker 1',
-        start_time: 280,
-        end_time: 281,
-        text: 'hoặc',
-      },
-      {
-        speaker: 'Speaker 1',
-        start_time: 285,
-        end_time: 303,
-        text: 'giảng viên tại các trường...',
-      },
-    ])
-
-    act(() => {
-      root.render(<TranscriptDisplay segments={segments} enableDisplayGrouping />)
-    })
-
-    expect(container.querySelectorAll('.transcript-display__segment')).toHaveLength(1)
-    expect(container.textContent).toContain('4:40 - 5:03')
-    expect(container.textContent).toContain('hoặc giảng viên tại các trường...')
-  })
-
-  it('renders highlighted IT terms in upload transcript segments', () => {
-    const segments = normalizePersistedTranscriptSegments([
-      {
-        speaker: 'Speaker 1',
-        start_time: 12,
-        end_time: 18,
-        text: 'WebSocket latency and JWT authentication',
-      },
-    ])
-
-    act(() => {
-      root.render(<TranscriptDisplay segments={segments} />)
-    })
-
-    const highlights = Array.from(container.querySelectorAll('.it-term-highlight')).map((node) => node.textContent)
-    expect(highlights).toEqual(['WebSocket latency', 'JWT', 'authentication'])
-    expect(container.textContent).toContain('WebSocket latency and JWT authentication')
-  })
-
-  it('renders highlighted Vietnamese IT terms in upload transcript segments', () => {
-    const segments = normalizePersistedTranscriptSegments([
-      {
-        speaker: 'Speaker 1',
-        start_time: 21,
-        end_time: 30,
-        text: 'Ngành công nghệ thông tin gồm hệ thống thông tin và kỹ thuật phần mềm.',
-      },
-    ])
-
-    act(() => {
-      root.render(<TranscriptDisplay segments={segments} />)
-    })
-
-    const highlights = Array.from(container.querySelectorAll('.it-term-highlight')).map((node) => node.textContent)
-    expect(highlights).toEqual(['công nghệ thông tin', 'hệ thống thông tin', 'kỹ thuật phần mềm'])
-  })
-
-  it('keeps ungrouped behavior when enableDisplayGrouping is false', () => {
-    const segments = normalizePersistedTranscriptSegments([
-      {
-        speaker: 'Speaker 1',
-        start_time: 280,
-        end_time: 281,
-        text: 'hoặc',
-      },
-      {
-        speaker: 'Speaker 1',
-        start_time: 285,
-        end_time: 303,
-        text: 'giảng viên tại các trường...',
-      },
-    ])
-
-    act(() => {
-      root.render(<TranscriptDisplay segments={segments} enableDisplayGrouping={false} />)
-    })
-
-    expect(container.querySelectorAll('.transcript-display__segment')).toHaveLength(2)
-    expect(container.textContent).toContain('4:40 - 4:41')
-    expect(container.textContent).toContain('4:45 - 5:03')
-  })
-
-  it('splits plain transcript text into speaker blocks when speaker markers are present', () => {
+  it('highlights legal domain lexicon terms when domainMode is legal', () => {
     act(() => {
       root.render(
         <TranscriptDisplay
-          segments={[]}
-          transcriptTextFallback={'SPEAKER_1: Xin chào mọi người. SPEAKER_2: Tom, I am so tired of learning English.'}
+          segments={[segment('Bên A ký hợp đồng mới')]}
+          domainMode="legal"
         />,
       )
     })
 
-    expect(container.querySelectorAll('.transcript-display__segment')).toHaveLength(2)
-    expect(container.textContent).toContain('SPEAKER_1')
-    expect(container.textContent).toContain('SPEAKER_2')
-    expect(container.textContent).toContain('Xin chào mọi người.')
-    expect(container.textContent).toContain('Tom, I am so tired of learning English.')
+    const highlights = Array.from(container.querySelectorAll('.it-term-highlight')).map((node) => node.textContent)
+    expect(highlights).toContain('hợp đồng')
+    expect(container.textContent).toContain('Bên A ký hợp đồng mới')
   })
 
-  it('falls back to a single readable block when no speaker marker exists', () => {
+  it('highlights IT domain lexicon terms when domainMode is it', () => {
     act(() => {
       root.render(
         <TranscriptDisplay
-          segments={[]}
-          transcriptTextFallback={'Xin chào tiếng Việt và English text vẫn giữ nguyên.'}
+          segments={[segment('Kiến trúc microservice trên Kubernetes')]}
+          domainMode="it"
         />,
       )
     })
 
-    expect(container.querySelectorAll('.transcript-display__segment')).toHaveLength(1)
-    expect(container.textContent).toContain('SPEAKER_1')
-    expect(container.textContent).toContain('Xin chào tiếng Việt và English text vẫn giữ nguyên.')
+    const highlights = Array.from(container.querySelectorAll('.it-term-highlight')).map((node) => node.textContent)
+    expect(highlights).toContain('microservice')
   })
 
-  it('shows an empty state when no transcript exists', () => {
+  it('uses default IT terms only when domainMode is unset', () => {
     act(() => {
-      root.render(<TranscriptDisplay segments={[]} />)
+      root.render(
+        <TranscriptDisplay
+          segments={[segment('JWT authentication flow')]}
+        />,
+      )
     })
 
-    expect(container.textContent).toContain('Không có transcript')
-    expect(container.querySelectorAll('.transcript-display__segment')).toHaveLength(0)
+    const highlights = Array.from(container.querySelectorAll('.it-term-highlight')).map((node) => node.textContent)
+    expect(highlights).toContain('JWT')
+    expect(highlights).not.toContain('hợp đồng')
   })
 })

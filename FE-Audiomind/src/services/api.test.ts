@@ -7,12 +7,16 @@ import {
   downloadMeetingTranscript,
   getMeetingActionPlan,
   getMeetingDetail,
+  getAnalysis,
   getSavedAnalysis,
   getTranscript,
+  getUserProfile,
+  listMeetingResultScopes,
   listMeetings,
   listMeetingsWithParams,
   reanalyzeMeetingAnalysis,
   renameMeeting,
+  resolveMeetingResultScope,
   searchMeetingTranscriptEvidence,
   startProcessingByPath,
   uploadToMeetingApi,
@@ -139,9 +143,127 @@ describe('upload language request wiring', () => {
     await getTranscript(7, { signal: controller.signal })
     await getSavedAnalysis(7, { signal: controller.signal })
 
+    const urls = fetchMock.mock.calls.map((call) => call[0] as string)
+    expect(urls[0]).toContain('/processing/7/transcript')
     const inits = fetchMock.mock.calls.map((call) => call[1] as RequestInit)
     expect(inits[0]?.signal).toBe(controller.signal)
     expect(inits[1]?.signal).toBe(controller.signal)
+  })
+
+  it('adds attempt scope to transcript reads when both provenance ids are provided', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ meeting_id: 7, transcripts: [] }),
+      headers: new Headers(),
+    })
+
+    await getTranscript(7, { recordingSessionId: 9001, attemptId: 2 })
+
+    const url = fetchMock.mock.calls[0][0] as string
+    expect(url).toContain('/processing/7/transcript?')
+    expect(url).toContain('recording_session_id=9001')
+    expect(url).toContain('attempt_id=2')
+  })
+
+  it('rejects partial transcript provenance before fetch', async () => {
+    await expect(getTranscript(7, { recordingSessionId: 9001 })).rejects.toMatchObject({
+      status: 422,
+      errorCode: 'INVALID_PROVENANCE',
+    })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('adds attempt scope to on-demand analysis reads when both provenance ids are provided', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ meetingId: 7, status: 'PENDING', analysisStatus: 'PENDING' }),
+      headers: new Headers(),
+    })
+
+    await getAnalysis(7, { recordingSessionId: 9001, attemptId: 2 })
+
+    const url = fetchMock.mock.calls[0][0] as string
+    expect(url).toContain('/processing/7/analysis?')
+    expect(url).toContain('recording_session_id=9001')
+    expect(url).toContain('attempt_id=2')
+  })
+
+  it('rejects partial on-demand analysis provenance before fetch', async () => {
+    await expect(getAnalysis(7, { recordingSessionId: 9001 })).rejects.toMatchObject({
+      status: 422,
+      errorCode: 'INVALID_PROVENANCE',
+    })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('adds attempt scope to saved analysis reads when both provenance ids are provided', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ meetingId: 7, status: 'NOT_FOUND', analysisStatus: 'ANALYSIS_UNAVAILABLE_FOR_SCOPE' }),
+      headers: new Headers(),
+    })
+
+    await getSavedAnalysis(7, { recordingSessionId: 9001, attemptId: 2 })
+
+    const url = fetchMock.mock.calls[0][0] as string
+    expect(url).toContain('/processing/7/analysis/saved?')
+    expect(url).toContain('recording_session_id=9001')
+    expect(url).toContain('attempt_id=2')
+  })
+
+  it('rejects partial analysis provenance before fetch', async () => {
+    await expect(getSavedAnalysis(7, { recordingSessionId: 9001 })).rejects.toMatchObject({
+      status: 422,
+      errorCode: 'INVALID_PROVENANCE',
+    })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('loads result scopes from processing API', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        meetingId: 7,
+        scopes: [{ scopeKind: 'v2', recordingSessionId: 9001, attemptId: 2, finalized: true }],
+      }),
+      headers: new Headers(),
+    })
+
+    const scopes = await listMeetingResultScopes(7)
+    expect(scopes).toEqual([{
+      scopeKind: 'v2',
+      recordingSessionId: 9001,
+      attemptId: 2,
+      finalized: true,
+      updatedAt: null,
+      latestSeq: null,
+    }])
+    expect(fetchMock.mock.calls[0][0]).toBe('http://localhost:8082/processing/7/result-scopes')
+  })
+
+  it('resolves a scoped result from processing API', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        scopeKind: 'v2',
+        recordingSessionId: 9001,
+        attemptId: 2,
+        ambiguous: false,
+      }),
+      headers: new Headers(),
+    })
+
+    const scope = await resolveMeetingResultScope(7, { recordingSessionId: 9001, attemptId: 2 })
+    expect(scope).toMatchObject({
+      scopeKind: 'v2',
+      meetingId: 7,
+      recordingSessionId: 9001,
+      attemptId: 2,
+    })
+    const url = fetchMock.mock.calls[0][0] as string
+    expect(url).toContain('/processing/7/result-scope?')
+    expect(url).toContain('recording_session_id=9001')
+    expect(url).toContain('attempt_id=2')
   })
 
   it('loads meeting detail and saved analysis from read-only endpoints', async () => {
@@ -425,5 +547,39 @@ describe('upload language request wiring', () => {
     expect(urls.some((url) => url.includes('/processing/7/transcript/export?format=csv&mode=readable'))).toBe(true)
     expect(urls.some((url) => url.includes('/processing/7/transcript/export?format=txt&mode=raw'))).toBe(true)
     expect(urls.some((url) => url.includes('/processing/7/transcript/export?format=csv&mode=raw'))).toBe(true)
+  })
+})
+
+describe('user profile', () => {
+  const fetchMock = vi.fn()
+
+  beforeEach(() => {
+    vi.stubGlobal('fetch', fetchMock)
+    fetchMock.mockReset()
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('loads current user profile with domain mode', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        userId: 42,
+        username: 'tester',
+        email: 'tester@example.com',
+        domainMode: 'business',
+      }),
+      headers: new Headers(),
+    })
+
+    const profile = await getUserProfile()
+
+    expect(profile.userId).toBe(42)
+    expect(profile.username).toBe('tester')
+    expect(profile.domainMode).toBe('business')
+    const [url] = fetchMock.mock.calls[0] as [string]
+    expect(url).toContain('/api/users/me')
   })
 })

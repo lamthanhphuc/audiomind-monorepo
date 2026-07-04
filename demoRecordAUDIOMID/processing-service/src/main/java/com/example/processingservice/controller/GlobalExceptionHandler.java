@@ -161,7 +161,15 @@ public class GlobalExceptionHandler {
                     : ErrorCode.VALIDATION_ERROR;
             case UNAUTHORIZED -> ErrorCode.UNAUTHORIZED;
             case FORBIDDEN -> ErrorCode.FORBIDDEN;
-            case CONFLICT -> ErrorCode.CONFLICT;
+            case CONFLICT -> {
+                if (normalizedReason.contains("export_analysis_required")) {
+                    yield ErrorCode.EXPORT_ANALYSIS_REQUIRED;
+                }
+                if (normalizedReason.contains("grouped_action_plan_unavailable")) {
+                    yield ErrorCode.GROUPED_ACTION_PLAN_UNAVAILABLE;
+                }
+                yield ErrorCode.CONFLICT;
+            }
             case SERVICE_UNAVAILABLE -> normalizedReason.contains("ai service")
                     ? ErrorCode.AI_SERVICE_UNAVAILABLE
                     : normalizedReason.contains("gemini")
@@ -173,6 +181,8 @@ public class GlobalExceptionHandler {
             case UNPROCESSABLE_ENTITY -> normalizedReason.contains("empty transcript")
                     ? ErrorCode.EMPTY_TRANSCRIPT
                     : ErrorCode.VALIDATION_ERROR;
+            case PAYMENT_REQUIRED -> ErrorCode.QUOTA_EXCEEDED;
+            case TOO_MANY_REQUESTS -> ErrorCode.RATE_LIMITED;
             default -> status.is5xxServerError() ? ErrorCode.INTERNAL_ERROR : ErrorCode.SERVICE_UNAVAILABLE;
         };
     }
@@ -231,6 +241,7 @@ public class GlobalExceptionHandler {
                     REALTIME_CHUNK_TOO_LARGE,
                     REALTIME_UNSUPPORTED_ENCODING,
                     REALTIME_INVALID_PAYLOAD,
+                    QUOTA_EXCEEDED,
                     INTERNAL_ERROR -> true;
             default -> false;
         };

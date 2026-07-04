@@ -2,11 +2,10 @@ import json
 import re
 import time
 import unicodedata
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set
 
 import httpx
 from loguru import logger
-from openai import OpenAI
 from tenacity import (
     retry,
     retry_if_exception_type,
@@ -20,7 +19,6 @@ from app.services.analysis_errors import (
     AnalysisNotImplementedError,
     AnalysisParseError,
     AnalysisProviderError,
-    AnalysisRateLimitError,
     AnalysisUnavailableError,
 )
 from app.services.gemini_fault_injection import resolve_gemini_http_client_factory
@@ -110,18 +108,18 @@ class AIAnalyzer:
         gemini_fail_fast_seconds: float = 30.0,
         ollama_base_url: str = "http://127.0.0.1:11434",
         timeout_seconds: int = 300,
+        http_client_factory: Callable[..., Any] | None = None,
     ):
         requested_provider = (provider or "ollama").strip().lower()
         if requested_provider == "local":
             requested_provider = "ollama"
-        if requested_provider not in {"ollama", "gemini", "openai"}:
+        if requested_provider not in {"ollama", "gemini"}:
             logger.warning(
                 f"AI provider '{requested_provider}' requested but falling back to Ollama."
             )
             requested_provider = "ollama"
         self.provider = requested_provider
         self.api_key = (api_key or "").strip()
-        self.client = OpenAI(api_key=self.api_key) if self.api_key else None
         self.model = model
         self.summary_model = (summary_model or model).strip() or model
         self.analysis_domain_mode = self._normalize_domain_mode(
@@ -169,20 +167,51 @@ class AIAnalyzer:
             self.api_key or (gemini_api_keys or "").strip()
         ):
             try:
+                cooldown_store = None
+                if self.gemini_multi_key_enabled:
+                    from app.config import get_settings
+
+                    settings = get_settings()
+                    if settings.gemini_shared_cooldown_enabled:
+                        import redis
+
+                        from app.services.gemini_key_cooldown_store import (
+                            RedisGeminiKeyCooldownStore,
+                        )
+
+                        redis_client = redis.Redis.from_url(
+                            settings.job_state_redis_url,
+                            decode_responses=True,
+                        )
+                        cooldown_store = RedisGeminiKeyCooldownStore(redis_client)
                 self.gemini_key_manager = GeminiKeyManager.from_config(
                     gemini_api_key=self.api_key,
                     gemini_api_keys=gemini_api_keys,
                     multi_key_enabled=self.gemini_multi_key_enabled,
+                    cooldown_store=cooldown_store,
                 )
             except GeminiKeyConfigError as exc:
                 raise AnalysisConfigError(str(exc), provider="gemini") from exc
             from app.config import get_settings
+            from app.services.gemini_client import resolve_http_client_factory
 
-            test_mode = str(get_settings().gemini_client_test_mode or "").strip()
-            if test_mode:
-                http_client_factory = resolve_gemini_http_client_factory(test_mode)
+            settings = get_settings()
+            test_mode = str(settings.gemini_client_test_mode or "").strip()
+            if http_client_factory is not None:
+                resolved_http_client_factory = http_client_factory
+                gemini_http_proxy = ""
+            elif test_mode:
+                resolved_http_client_factory = resolve_gemini_http_client_factory(
+                    test_mode
+                )
+                gemini_http_proxy = ""
             else:
-                http_client_factory = httpx.Client
+                resolved_http_client_factory, gemini_http_proxy = (
+                    resolve_http_client_factory(
+                        proxy=settings.gemini_http_proxy,
+                        base_factory=httpx.Client,
+                    )
+                )
             self.gemini_client = GeminiClient(
                 self.gemini_key_manager,
                 max_attempts=self.gemini_max_attempts,
@@ -192,16 +221,13 @@ class AIAnalyzer:
                 backoff_max_ms=self.gemini_backoff_max_ms,
                 backoff_jitter=self.gemini_backoff_jitter,
                 fail_fast_seconds=self.gemini_fail_fast_seconds,
-                http_client_factory=http_client_factory,
+                http_proxy=gemini_http_proxy,
+                http_client_factory=resolved_http_client_factory,
                 sleep=time.sleep,
             )
         if self.provider == "gemini":
             logger.info(
                 f"Initialized AI Analyzer provider=gemini, analysis_model={self.model}, summary_model={self.summary_model}, domain_mode={self.analysis_domain_mode}, max_input_tokens={self.analysis_max_input_tokens}, max_output_tokens={self.analysis_max_output_tokens}, retry_max_attempts={self.analysis_retry_max_attempts}, timeout_seconds={self.timeout_seconds}, rate_limit_retry_base_seconds={self.gemini_rate_limit_retry_base_seconds}, rate_limit_retry_max_seconds={self.gemini_rate_limit_retry_max_seconds}, retry_quota_exceeded={self.gemini_retry_quota_exceeded}, max_tokens_retry_enabled={self.gemini_max_tokens_retry_enabled}"
-            )
-        elif self.provider == "openai":
-            logger.info(
-                f"Initialized AI Analyzer provider=openai, model={self.model}, timeout_seconds={self.timeout_seconds}"
             )
         else:
             logger.info(
@@ -316,6 +342,41 @@ class AIAnalyzer:
         if normalized not in self.STRUCTURED_DOMAIN_MODES:
             return default
         return normalized
+
+    def _resolve_analysis_domain_mode(
+        self, metadata: Optional[Dict[str, Any]] = None
+    ) -> str:
+        if metadata:
+            requested = metadata.get("domainMode") or metadata.get("domain_mode")
+            if requested:
+                return self._normalize_domain_mode(
+                    requested,
+                    default=self.analysis_domain_mode,
+                )
+        return self.analysis_domain_mode
+
+    def _domain_guidance_for_mode(self, domain_mode: str) -> str:
+        if domain_mode == "it":
+            return (
+                "Nếu domainMode=it, ưu tiên thuật ngữ công nghệ, API, framework, "
+                "giao thức, chuẩn, hệ thống, bảo mật và từ viết tắt kỹ thuật."
+            )
+        if domain_mode == "business":
+            return (
+                "Nếu domainMode=business, ưu tiên quyết định, rủi ro, blocker, owner, "
+                "deadline, KPI, tác động kinh doanh/khách hàng và bước tiếp theo có thể thực thi."
+            )
+        if domain_mode == "education":
+            return (
+                "Nếu domainMode=education, ưu tiên mục tiêu học tập, nội dung bài giảng, "
+                "đánh giá, bài tập, tiến độ học viên, câu hỏi cần làm rõ và việc cần chuẩn bị."
+            )
+        if domain_mode == "general":
+            return (
+                "Nếu domainMode=general, giữ ngôn ngữ trung tính, tóm tắt quyết định và "
+                "việc cần làm mà không ép thuật ngữ chuyên ngành ngoài transcript."
+            )
+        return "Chỉ suy luận trong phạm vi domainMode đã nêu và không thêm chi tiết ngoài transcript."
 
     def _normalize_severity(self, value: Any) -> str:
         normalized = str(value or "").strip().lower()
@@ -1555,6 +1616,29 @@ TEXT:
         data.setdefault("action_items", [])
         return data
 
+    def _parse_gemini_analysis_content(self, content: str) -> Dict[str, Any]:
+        return self._loads_json_strict(content)
+
+    def _repair_gemini_analysis_json(self, malformed_content: str) -> str:
+        repair_system_prompt = (
+            "Bạn là bộ sửa JSON. Chỉ được trả về đúng một object JSON hợp lệ, "
+            "không markdown, không giải thích, không thêm field ngoài schema."
+        )
+        repair_prompt = (
+            "Sửa JSON bị lỗi cú pháp sau thành JSON hợp lệ theo schema cũ. "
+            "Giữ nguyên ý nghĩa nội dung, chỉ chỉnh cú pháp thiếu dấu ngoặc/dấu phẩy/ký tự thoát."
+            f"\n\nJSON lỗi:\n{malformed_content}"
+        )
+        return self._call_gemini_text(
+            prompt=repair_prompt,
+            system_prompt=repair_system_prompt,
+            model=self.model,
+            temperature=0,
+            response_json=True,
+            response_schema=None,
+            max_output_tokens=self.analysis_max_output_tokens,
+        )
+
     def _loads_json_strict(self, text: str) -> Dict[str, Any]:
         cleaned = self._extract_json_candidate(text)
         try:
@@ -1670,11 +1754,6 @@ TEXT:
     def _summarize_chunk(self, chunk: str) -> str:
         if self.provider == "gemini":
             return self._summarize_chunk_with_gemini(chunk)
-        if self.provider == "openai":
-            raise AnalysisNotImplementedError(
-                "OpenAI analysis provider is not implemented yet",
-                provider=self.provider,
-            )
 
         prompt = f"""
 Hãy tóm tắt đoạn nội dung cuộc họp sau bằng tiếng Việt trong 2-3 câu.
@@ -1962,8 +2041,9 @@ NỘI DUNG:
         base_max_output_tokens = max_output_tokens
         if base_max_output_tokens is None:
             base_max_output_tokens = self.analysis_max_output_tokens
+        # Primary analysis defaults to 4096; retry must exceed that cap (gemini-2.5-flash allows 8192+).
         max_tokens_retry_output_budget = min(
-            4096, max(2048, int(base_max_output_tokens or 2048) * 2)
+            8192, max(2048, int(base_max_output_tokens or 2048) * 2)
         )
 
         attempt_variants: List[Dict[str, Any]] = [
@@ -2024,7 +2104,11 @@ NỘI DUNG:
                 continue
             except AnalysisUnavailableError as exc:
                 last_exc = exc
-                if "HTTP 400" in str(exc) and current_schema is not None:
+                is_http_400 = (
+                    "HTTP 400" in str(exc)
+                    or getattr(exc, "error_code", "") == "GEMINI_INVALID_REQUEST"
+                )
+                if is_http_400 and current_schema is not None:
                     if not schema_retry_enqueued:
                         schema_retry_enqueued = True
                         attempt_variants.append(
@@ -2052,7 +2136,7 @@ NỘI DUNG:
     def _analyze_with_gemini(
         self, prompt: str, metadata: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
-        domain_mode = self.analysis_domain_mode
+        domain_mode = self._resolve_analysis_domain_mode(metadata)
         metadata_source = str((metadata or {}).get("source") or "").strip().lower()
         is_realtime = metadata_source == "realtime"
         system_prompt = (
@@ -2061,16 +2145,11 @@ NỘI DUNG:
             f"domainMode hiện tại là {domain_mode}."
         )
         metadata_text = self._metadata_to_prompt_lines(metadata)
-        if domain_mode == "it":
-            it_guidance = "Nếu domainMode=it, ưu tiên thuật ngữ công nghệ, API, framework, giao thức, chuẩn, hệ thống, bảo mật và từ viết tắt kỹ thuật."
-        elif domain_mode == "business":
-            it_guidance = "Nếu domainMode=business, ưu tiên quyết định, rủi ro, blocker, owner, deadline, tác động kinh doanh và bước tiếp theo có thể thực thi."
-        else:
-            it_guidance = "Chỉ suy luận trong phạm vi domainMode đã nêu và không thêm chi tiết ngoài transcript."
+        domain_guidance = self._domain_guidance_for_mode(domain_mode)
         json_prompt = self._build_gemini_analysis_json_prompt(
             transcript=prompt,
             metadata_text=metadata_text,
-            it_guidance=it_guidance,
+            it_guidance=domain_guidance,
             is_realtime=is_realtime,
         )
 
@@ -2084,15 +2163,35 @@ NỘI DUNG:
             max_output_tokens=self.analysis_max_output_tokens,
         )
         try:
-            parsed = self._loads_json_strict(content)
+            parsed = self._parse_gemini_analysis_content(content)
         except AnalysisParseError as exc:
             logger.warning(
-                "GEMINI_ANALYSIS_PARSE_FAILED reason={} response_chars={}",
+                "GEMINI_ANALYSIS_PARSE_FAILED reason={} response_chars={} retrying_without_schema=true",
                 exc,
                 len(content),
             )
-            raise
+            retry_content = self._call_gemini_text(
+                prompt=json_prompt,
+                system_prompt=system_prompt,
+                model=self.model,
+                temperature=0.1,
+                response_json=True,
+                response_schema=None,
+                max_output_tokens=self.analysis_max_output_tokens,
+            )
+            try:
+                parsed = self._parse_gemini_analysis_content(retry_content)
+            except AnalysisParseError as retry_exc:
+                logger.warning(
+                    "GEMINI_ANALYSIS_PARSE_FAILED reason={} response_chars={} attempting_llm_json_repair=true",
+                    retry_exc,
+                    len(retry_content),
+                )
+                repaired_content = self._repair_gemini_analysis_json(retry_content)
+                parsed = self._parse_gemini_analysis_content(repaired_content)
         structured = self._normalize_gemini_structured_analysis(prompt, parsed)
+        structured["domainMode"] = domain_mode
+        structured["domain_mode"] = domain_mode
         if is_realtime:
             structured = self._compact_realtime_structured_analysis(structured)
         structured["promptVersion"] = (
@@ -2436,7 +2535,7 @@ NỘI DUNG:
             return prepared
 
         raise AnalysisNotImplementedError(
-            "OpenAI analysis provider is not implemented yet",
+            f"Unsupported analysis provider: {self.provider}",
             provider=self.provider,
         )
 
@@ -2464,79 +2563,27 @@ NỘI DUNG:
                 )
 
             source = str((metadata or {}).get("source") or "unknown").strip().lower()
+            resolved_domain_mode = self._resolve_analysis_domain_mode(metadata)
             transcript_prefix = transcript_hash_prefix(truncated_transcript)
             logger.info(
                 "GEMINI_ANALYSIS_REQUEST provider=gemini model={} source={} domainMode={} transcript_chars={} transcript_tokens={} transcriptHashPrefix={}",
                 self.model,
                 source,
-                self.analysis_domain_mode,
+                resolved_domain_mode,
                 len(truncated_transcript),
                 used_tokens,
                 transcript_prefix,
             )
 
-            try:
-                started_at = time.time()
-                result = self._analyze_with_gemini(
-                    truncated_transcript, metadata=metadata
-                )
-                logger.info(
-                    "GEMINI_ANALYSIS_RESPONSE_PARSED provider=gemini model={} source={} durationMs={}",
-                    self.model,
-                    source,
-                    int((time.time() - started_at) * 1000),
-                )
-                return result
-            except AnalysisConfigError as exc:
-                logger.warning(
-                    "GEMINI_ANALYSIS_FAILED provider=gemini model={} source={} errorCode=ANALYSIS_CONFIG_ERROR error={}",
-                    self.model,
-                    source,
-                    safe_error_message(exc),
-                )
-                logger.warning(
-                    "GEMINI_ANALYSIS_FALLBACK reason={}", safe_error_message(exc)
-                )
-                return self._default_structured_analysis(truncated_transcript, str(exc))
-            except AnalysisParseError as exc:
-                logger.warning(
-                    "GEMINI_ANALYSIS_FAILED provider=gemini model={} source={} errorCode=ANALYSIS_PARSE_ERROR error={}",
-                    self.model,
-                    source,
-                    safe_error_message(exc),
-                )
-                logger.warning(
-                    "GEMINI_ANALYSIS_FALLBACK reason={}", safe_error_message(exc)
-                )
-                return self._default_structured_analysis(truncated_transcript, str(exc))
-            except AnalysisUnavailableError as exc:
-                logger.warning(
-                    "GEMINI_ANALYSIS_FAILED provider=gemini model={} source={} errorCode=ANALYSIS_UNAVAILABLE error={}",
-                    self.model,
-                    source,
-                    safe_error_message(exc),
-                )
-                logger.warning(
-                    "GEMINI_ANALYSIS_FALLBACK reason={}", safe_error_message(exc)
-                )
-                return self._default_structured_analysis(truncated_transcript, str(exc))
-            except AnalysisRateLimitError as exc:
-                logger.warning(
-                    "GEMINI_ANALYSIS_FAILED provider=gemini model={} source={} errorCode=GEMINI_RATE_LIMITED error={}",
-                    self.model,
-                    source,
-                    safe_error_message(exc),
-                )
-                logger.warning(
-                    "GEMINI_ANALYSIS_FALLBACK reason={}", safe_error_message(exc)
-                )
-                return self._default_structured_analysis(truncated_transcript, str(exc))
-
-        if self.provider == "openai":
-            raise AnalysisNotImplementedError(
-                "OpenAI analysis provider is not implemented yet",
-                provider=self.provider,
+            started_at = time.time()
+            result = self._analyze_with_gemini(truncated_transcript, metadata=metadata)
+            logger.info(
+                "GEMINI_ANALYSIS_RESPONSE_PARSED provider=gemini model={} source={} durationMs={}",
+                self.model,
+                source,
+                int((time.time() - started_at) * 1000),
             )
+            return result
 
         try:
             logger.info("Starting AI meeting analysis (chunked)")

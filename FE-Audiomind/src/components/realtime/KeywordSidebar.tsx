@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import type { KeywordHit } from '../../hooks/useRealtimeMeetingStream';
+import { cssVars } from '../../utils/cssVars';
 import './KeywordSidebar.css';
 
 interface KeywordSidebarProps {
@@ -41,7 +42,7 @@ export const KeywordSidebar: React.FC<KeywordSidebarProps> = ({
         <span className="keyword-count">{uniqueKeywords.length}</span>
       </div>
 
-      <div className="keywords-container" style={{ maxHeight }}>
+      <div className="keywords-container" style={cssVars({ '--scroll-max-height': maxHeight })}>
         {uniqueKeywords.map((kw) => (
           <div
             key={kw.id}

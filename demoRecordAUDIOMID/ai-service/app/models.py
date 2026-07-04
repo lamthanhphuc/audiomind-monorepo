@@ -11,6 +11,7 @@ from sqlalchemy import (
     JSON,
     Index,
     UniqueConstraint,
+    PrimaryKeyConstraint,
 )
 from sqlalchemy.orm import relationship
 from datetime import datetime
@@ -44,10 +45,21 @@ class TranscriptFragment(Base):
     __tablename__ = "transcript_fragments"
     __table_args__ = (
         UniqueConstraint("dedupe_key", name="uq_transcript_fragments_dedupe_key"),
+        Index(
+            "ix_transcript_fragments_v2_event_identity",
+            "meeting_id",
+            "recording_session_id",
+            "attempt_id",
+            "stream_id",
+            "seq",
+        ),
     )
 
     id = Column(Integer, primary_key=True, index=True)
     meeting_id = Column(BigInteger, nullable=False, index=True)
+    recording_session_id = Column(BigInteger, nullable=True)
+    attempt_id = Column(BigInteger, nullable=True)
+    stream_id = Column(String(8), nullable=False, default="", index=True)
     seq = Column(Integer, nullable=False, index=True)
     version = Column(Integer, nullable=False, default=1)
     event_id = Column(String(64), nullable=True, index=True)
@@ -64,8 +76,38 @@ class TranscriptFragment(Base):
 
 class TranscriptCheckpoint(Base):
     __tablename__ = "transcript_checkpoints"
+    __table_args__ = (PrimaryKeyConstraint("meeting_id", "stream_id"),)
 
     meeting_id = Column(BigInteger, primary_key=True, index=True)
+    stream_id = Column(String(8), primary_key=True, default="", nullable=False)
+    last_ack_seq = Column(Integer, nullable=False, default=0)
+    last_persisted_seq = Column(Integer, nullable=False, default=0)
+    last_finalized_seq = Column(Integer, nullable=False, default=0)
+    updated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class TranscriptAttemptCheckpoint(Base):
+    __tablename__ = "transcript_attempt_checkpoints"
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "meeting_id",
+            "recording_session_id",
+            "attempt_id",
+            "stream_id",
+            name="transcript_attempt_checkpoints_pkey",
+        ),
+        Index(
+            "ix_transcript_attempt_checkpoints_meeting_session_stream",
+            "meeting_id",
+            "recording_session_id",
+            "stream_id",
+        ),
+    )
+
+    meeting_id = Column(BigInteger, primary_key=True)
+    recording_session_id = Column(BigInteger, primary_key=True)
+    attempt_id = Column(BigInteger, primary_key=True)
+    stream_id = Column(String(8), primary_key=True, default="", nullable=False)
     last_ack_seq = Column(Integer, nullable=False, default=0)
     last_persisted_seq = Column(Integer, nullable=False, default=0)
     last_finalized_seq = Column(Integer, nullable=False, default=0)
@@ -113,6 +155,8 @@ class MeetingAnalysisRun(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     meeting_id = Column(BigInteger, nullable=False, index=True)
+    recording_session_id = Column(BigInteger, nullable=True)
+    attempt_id = Column(BigInteger, nullable=True)
     owner_id = Column(String(128), nullable=True, index=True)
     status = Column(String(32), nullable=False, index=True)
     provider = Column(String(32), nullable=False)

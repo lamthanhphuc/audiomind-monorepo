@@ -1,5 +1,10 @@
 import type { RecordingSource } from '../constants/recordingSource'
 import { BROWSER_TAB_CAPTURE_TELEMETRY, RECORDING_SOURCE_ERRORS } from '../constants/recordingSource'
+import {
+  ensureAudioContextRunning,
+  measureAnalyserRms,
+  resolveTabMicGateGains,
+} from './tabAudioPipeline'
 
 export type AudioSourceErrorCode =
   | 'permission_denied'
@@ -22,6 +27,7 @@ export type AcquiredAudioSource = {
   stream: MediaStream
   cleanup: () => void
   source: RecordingSource
+  tabMixerHandles?: TabMicMixerHandles
 }
 
 type AcquireAudioSourceOptions = {
@@ -32,13 +38,40 @@ type AcquireAudioSourceOptions = {
 
 const PREFERRED_SAMPLE_RATE = 48_000
 
+type DisplayMediaAudioConstraints = MediaTrackConstraints & {
+  /** Chrome/Edge-specific hint. Keep local playback audible unless the user/browser decides otherwise. */
+  suppressLocalAudioPlayback?: boolean
+}
+
+const buildTabCaptureConstraints = (): DisplayMediaStreamOptions => ({
+  video: true,
+  audio: {
+    echoCancellation: false,
+    noiseSuppression: false,
+    autoGainControl: false,
+    suppressLocalAudioPlayback: false,
+  } as DisplayMediaAudioConstraints,
+})
+
+const prepareTabAudioTracks = (stream: MediaStream): void => {
+  stream.getAudioTracks().forEach((track) => {
+    track.enabled = true
+  })
+}
+
 const isNoiseSuppressionConstraintSupported = (): boolean =>
   Boolean(navigator.mediaDevices?.getSupportedConstraints?.().noiseSuppression)
 
-const buildMicrophoneConstraints = (noiseSuppressionEnabled: boolean): MediaStreamConstraints => {
+const buildMicrophoneConstraints = (
+  noiseSuppressionEnabled: boolean,
+  options?: { forTabMix?: boolean },
+): MediaStreamConstraints => {
+  const forTabMix = options?.forTabMix === true
   const audio: MediaTrackConstraints = {
-    echoCancellation: true,
-    autoGainControl: true,
+    // Tab audio is captured directly (not through speakers). AEC/AGC can
+    // suppress the mic when tab speech is loud in the mixed STT stream.
+    echoCancellation: !forTabMix,
+    autoGainControl: !forTabMix,
     channelCount: 1,
     sampleRate: { ideal: PREFERRED_SAMPLE_RATE },
   }
@@ -145,6 +178,7 @@ const validateBrowserTabAudioTracks = (stream: MediaStream): void => {
     trackCount: audioTracks.length,
     muted: liveTrack.muted,
     enabled: liveTrack.enabled,
+    label: liveTrack.label,
   })
 }
 
@@ -155,11 +189,27 @@ const discardDisplayVideoTracks = (stream: MediaStream) => {
   })
 }
 
-const acquireMicrophoneStream = async (noiseSuppressionEnabled: boolean): Promise<MediaStream> => {
+const acquireMicrophoneStream = async (
+  noiseSuppressionEnabled: boolean,
+  forTabMix = false,
+): Promise<MediaStream> => {
   if (!navigator.mediaDevices?.getUserMedia) {
     throw new AudioSourceError('Trình duyệt không hỗ trợ getUserMedia cho microphone.', 'not_supported')
   }
-  return navigator.mediaDevices.getUserMedia(buildMicrophoneConstraints(noiseSuppressionEnabled))
+  return navigator.mediaDevices.getUserMedia(
+    buildMicrophoneConstraints(noiseSuppressionEnabled, { forTabMix }),
+  )
+}
+
+export type TabMicMixerHandles = {
+  audioContext: AudioContext
+  sourceTabStream: MediaStream
+  sourceTabTrack: MediaStreamTrack | null
+  tabAnalyser: AnalyserNode
+  tabPostGainAnalyser: AnalyserNode
+  outputAnalyser: AnalyserNode
+  tabGain: GainNode
+  tabDuckGain: number
 }
 
 const acquireBrowserTabStream = async (): Promise<MediaStream> => {
@@ -171,14 +221,8 @@ const acquireBrowserTabStream = async (): Promise<MediaStream> => {
   }
 
   console.info('[Realtime]', BROWSER_TAB_CAPTURE_TELEMETRY.STARTED)
-  const stream = await navigator.mediaDevices.getDisplayMedia({
-    video: true,
-    audio: {
-      echoCancellation: false,
-      noiseSuppression: false,
-      autoGainControl: false,
-    } as MediaTrackConstraints,
-  })
+  const stream = await navigator.mediaDevices.getDisplayMedia(buildTabCaptureConstraints())
+  prepareTabAudioTracks(stream)
   discardDisplayVideoTracks(stream)
   validateBrowserTabAudioTracks(stream)
   return stream
@@ -186,26 +230,207 @@ const acquireBrowserTabStream = async (): Promise<MediaStream> => {
 
 const mixTabAndMicrophoneStreams = async (
   tabStream: MediaStream,
-  noiseSuppressionEnabled: boolean,
-): Promise<{ stream: MediaStream; cleanup: () => void }> => {
-  const micStream = await acquireMicrophoneStream(noiseSuppressionEnabled)
+  _noiseSuppressionEnabled: boolean,
+): Promise<{
+  stream: MediaStream
+  cleanup: () => void
+  micIncluded: boolean
+  mixerHandles?: TabMicMixerHandles
+}> => {
+  let micStream: MediaStream | null = null
+  try {
+    // Raw mic for tab-mix VAD: browser noise suppression lowers RMS and delays gate open.
+    micStream = await acquireMicrophoneStream(false, true)
+  } catch (error) {
+    console.warn('[Realtime]', BROWSER_TAB_CAPTURE_TELEMETRY.CAPTURE_FAILED, {
+      reason: 'optional_mic_unavailable',
+      message: error instanceof Error ? error.message : String(error),
+    })
+    return {
+      stream: tabStream,
+      cleanup: () => {},
+      micIncluded: false,
+    }
+  }
+
   const AudioContextCtor = window.AudioContext
     || (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
 
   if (!AudioContextCtor) {
     stopTracks(micStream)
-    throw new AudioSourceError('Trình duyệt không hỗ trợ trộn âm thanh tab và microphone.', 'not_supported')
+    return {
+      stream: tabStream,
+      cleanup: () => {},
+      micIncluded: false,
+    }
   }
 
   const audioContext = new AudioContextCtor()
   const destination = audioContext.createMediaStreamDestination()
   const tabSource = audioContext.createMediaStreamSource(tabStream)
   const micSource = audioContext.createMediaStreamSource(micStream)
-  tabSource.connect(destination)
-  micSource.connect(destination)
+
+  // Stable mix: mic activity is diagnostic only and must never mute tab audio.
+  const TAB_PASS_GAIN = 0.5
+  const TAB_DUCK_GAIN = 0.42
+  const MIC_PASS_GAIN = 1.15
+  const MIC_IDLE_GAIN = MIC_PASS_GAIN
+  const MIC_ENTER_RMS = 0.013
+  const MIC_SUSTAIN_RMS = 0.01
+  const MIC_VS_TAB_ENTER_RATIO = 0.28
+  const QUIET_TAB_RMS = 0.02
+  const SPEECH_HOLD_MS = 3000
+  const MIN_MIC_WINDOW_MS = 900
+  const GATE_ARM_DELAY_MS = 500
+  const GAIN_RELEASE = 0.06
+  const mixReadyAt = performance.now()
+
+  const tabGain = audioContext.createGain()
+  const micGain = audioContext.createGain()
+  tabGain.gain.value = TAB_PASS_GAIN
+  micGain.gain.value = MIC_IDLE_GAIN
+
+  const micAnalyser = audioContext.createAnalyser()
+  micAnalyser.fftSize = 512
+  const micAnalyserData = new Uint8Array(micAnalyser.frequencyBinCount)
+  const tabAnalyser = audioContext.createAnalyser()
+  tabAnalyser.fftSize = 512
+  const tabAnalyserData = new Uint8Array(tabAnalyser.frequencyBinCount)
+  const tabPostGainAnalyser = audioContext.createAnalyser()
+  tabPostGainAnalyser.fftSize = 512
+  const tabPostGainAnalyserData = new Uint8Array(tabPostGainAnalyser.frequencyBinCount)
+  const outputAnalyser = audioContext.createAnalyser()
+  outputAnalyser.fftSize = 512
+
+  let rafId = 0
+  let contextWatchId = 0
+  let micPriorityActive = false
+  let lastMicSpeechAt = 0
+  let micWindowStartedAt = 0
+  let micActiveMs = 0
+  let tabActiveMs = 0
+  let lastTickAt = performance.now()
+  let lastStatsAt = performance.now()
+
+  const tick = () => {
+    try {
+      const micRms = measureAnalyserRms(micAnalyser, micAnalyserData)
+      const tabRms = measureAnalyserRms(tabAnalyser, tabAnalyserData)
+      const tabPostGainRms = measureAnalyserRms(tabPostGainAnalyser, tabPostGainAnalyserData)
+      const now = performance.now()
+      const deltaMs = now - lastTickAt
+      lastTickAt = now
+
+      const inMicHold = now - lastMicSpeechAt < SPEECH_HOLD_MS
+      const tabQuiet = tabRms < QUIET_TAB_RMS
+      const micDominatesTab = micRms >= tabRms * MIC_VS_TAB_ENTER_RATIO
+      const gateArmed = now - mixReadyAt >= GATE_ARM_DELAY_MS
+      const canEnterMic = gateArmed && micRms >= MIC_ENTER_RMS && (tabQuiet || micDominatesTab)
+      const canSustainMic = inMicHold && micRms >= MIC_SUSTAIN_RMS
+
+      if (canEnterMic || canSustainMic) {
+        lastMicSpeechAt = now
+      }
+
+      let micPriority = now - lastMicSpeechAt < SPEECH_HOLD_MS
+      if (micPriority && !micPriorityActive) {
+        micWindowStartedAt = now
+      }
+      if (micPriorityActive && !micPriority && now - micWindowStartedAt < MIN_MIC_WINDOW_MS) {
+        micPriority = true
+      }
+
+      const targetGains = resolveTabMicGateGains({
+        micPriority,
+        tabPassGain: TAB_PASS_GAIN,
+        tabDuckGain: TAB_DUCK_GAIN,
+        micPassGain: MIC_PASS_GAIN,
+        micIdleGain: MIC_IDLE_GAIN,
+      })
+      tabGain.gain.value += (targetGains.tabGain - tabGain.gain.value) * GAIN_RELEASE
+      micGain.gain.value += (targetGains.micGain - micGain.gain.value) * GAIN_RELEASE
+      if (tabGain.gain.value < TAB_DUCK_GAIN) {
+        tabGain.gain.value = TAB_DUCK_GAIN
+      }
+      if (micGain.gain.value <= 0) {
+        micGain.gain.value = MIC_PASS_GAIN
+      }
+      if (micPriority) {
+        micActiveMs += deltaMs
+      } else {
+        tabActiveMs += deltaMs
+      }
+
+      if (micPriority !== micPriorityActive) {
+        micPriorityActive = micPriority
+        console.info('[Realtime] TAB_MIC_GATE', {
+          activeSource: micPriority ? 'microphone' : 'browser_tab',
+          policy: 'stable_mix',
+          micRms: Number(micRms.toFixed(4)),
+          tabInputRms: Number(tabRms.toFixed(4)),
+          tabPostGainRms: Number(tabPostGainRms.toFixed(4)),
+          tabGain: Number(tabGain.gain.value.toFixed(3)),
+          micGain: Number(micGain.gain.value.toFixed(3)),
+          holdMs: micPriority ? SPEECH_HOLD_MS : 0,
+          reason: micPriority ? 'mic_detected_without_tab_mute' : 'tab_default',
+        })
+        if (!micPriority) {
+          // mic hold expired — tab resumes
+        }
+      }
+
+      if (now - lastStatsAt >= 5000) {
+        micActiveMs = 0
+        tabActiveMs = 0
+        lastStatsAt = now
+      }
+    } catch {
+      // ignore sampling errors
+    }
+    rafId = window.requestAnimationFrame(tick)
+  }
+
+  tabSource.connect(tabGain)
+  tabGain.connect(tabPostGainAnalyser)
+  tabGain.connect(destination)
+  tabGain.connect(outputAnalyser)
+  micSource.connect(micGain)
+  micGain.connect(destination)
+  micGain.connect(outputAnalyser)
+  micSource.connect(micAnalyser)
+  tabSource.connect(tabAnalyser)
+  rafId = window.requestAnimationFrame(tick)
+
+  const resumeMixerContext = () => {
+    void ensureAudioContextRunning(audioContext)
+  }
+  const onVisibilityChange = () => {
+    if (document.visibilityState === 'visible') {
+      resumeMixerContext()
+    }
+  }
+  document.addEventListener('visibilitychange', onVisibilityChange)
+  contextWatchId = window.setInterval(resumeMixerContext, 1000)
+  await ensureAudioContextRunning(audioContext)
 
   const mixedStream = destination.stream
+  console.info('[Realtime] TAB_MIC_MIX_READY', {
+    contextState: audioContext.state,
+    mode: 'stable_mix',
+    tabPassGain: TAB_PASS_GAIN,
+    tabMinGain: TAB_DUCK_GAIN,
+    micPassGain: MIC_PASS_GAIN,
+    suppressLocalAudioPlayback: false,
+    mixedTrackCount: mixedStream.getAudioTracks().length,
+  })
   const cleanup = () => {
+    if (rafId) {
+      window.cancelAnimationFrame(rafId)
+    }
+    if (contextWatchId) {
+      window.clearInterval(contextWatchId)
+    }
+    document.removeEventListener('visibilitychange', onVisibilityChange)
     try {
       tabSource.disconnect()
     } catch {
@@ -216,11 +441,117 @@ const mixTabAndMicrophoneStreams = async (
     } catch {
       // ignore
     }
+    try {
+      tabGain.disconnect()
+    } catch {
+      // ignore
+    }
+    try {
+      micGain.disconnect()
+    } catch {
+      // ignore
+    }
+    try {
+      micAnalyser.disconnect()
+    } catch {
+      // ignore
+    }
+    try {
+      tabAnalyser.disconnect()
+    } catch {
+      // ignore
+    }
+    try {
+      tabPostGainAnalyser.disconnect()
+    } catch {
+      // ignore
+    }
+    try {
+      outputAnalyser.disconnect()
+    } catch {
+      // ignore
+    }
     stopTracks(micStream)
     void audioContext.close().catch(() => {})
   }
 
-  return { stream: mixedStream, cleanup }
+  return {
+    stream: mixedStream,
+    cleanup,
+    micIncluded: true,
+    mixerHandles: {
+      audioContext,
+      sourceTabStream: tabStream,
+      sourceTabTrack: tabStream.getAudioTracks()[0] ?? null,
+      tabAnalyser,
+      tabPostGainAnalyser,
+      outputAnalyser,
+      tabGain,
+      tabDuckGain: TAB_DUCK_GAIN,
+    },
+  }
+}
+
+export type DualTabMicStreamId = 'tab' | 'mic'
+
+export type AcquiredDualTabMicSources = {
+  tab: { stream: MediaStream; cleanup: () => void }
+  mic?: { stream: MediaStream; cleanup: () => void }
+  micIncluded: boolean
+  cleanup: () => void
+}
+
+export const acquireDualTabMicSources = async (
+  options: { meetingId?: number | null } = {},
+): Promise<AcquiredDualTabMicSources> => {
+  const { meetingId = null } = options
+  const tabStream = await acquireBrowserTabStream()
+  let micStream: MediaStream | null = null
+
+  try {
+    micStream = await acquireMicrophoneStream(false, true)
+  } catch (error) {
+    console.warn('[Realtime]', BROWSER_TAB_CAPTURE_TELEMETRY.CAPTURE_FAILED, {
+      meetingId,
+      reason: 'optional_mic_unavailable_dual',
+      message: error instanceof Error ? error.message : String(error),
+    })
+  }
+
+  const cleanup = () => {
+    stopTracks(tabStream)
+    if (micStream) {
+      stopTracks(micStream)
+    }
+  }
+
+  if (!micStream) {
+    console.info('[Realtime]', BROWSER_TAB_CAPTURE_TELEMETRY.REALTIME_STARTED, {
+      meetingId,
+      source: 'browser_tab_with_mic',
+      micIncluded: false,
+      dualStream: true,
+    })
+    return {
+      tab: { stream: tabStream, cleanup: () => stopTracks(tabStream) },
+      micIncluded: false,
+      cleanup,
+    }
+  }
+
+  console.info('[Realtime]', BROWSER_TAB_CAPTURE_TELEMETRY.REALTIME_STARTED, {
+    meetingId,
+    source: 'browser_tab_with_mic',
+    micIncluded: true,
+    dualStream: true,
+  })
+
+  return {
+    tab: { stream: tabStream, cleanup: () => stopTracks(tabStream) },
+    mic: { stream: micStream, cleanup: () => stopTracks(micStream) },
+    micIncluded: true,
+    cleanup,
+  }
 }
 
 export const acquireAudioSource = async (
@@ -258,10 +589,12 @@ export const acquireAudioSource = async (
     console.info('[Realtime]', BROWSER_TAB_CAPTURE_TELEMETRY.REALTIME_STARTED, {
       meetingId,
       source,
+      micIncluded: mixed.micIncluded,
     })
     return {
       stream: mixed.stream,
       source,
+      tabMixerHandles: mixed.mixerHandles,
       cleanup: () => {
         mixerCleanup?.()
         stopTracks(tabStream)
@@ -287,24 +620,42 @@ export const acquireAudioSource = async (
 export const attachAudioTrackEndedHandler = (
   stream: MediaStream,
   onEnded: (track: MediaStreamTrack) => void,
+  options?: {
+    onMuted?: (track: MediaStreamTrack) => void
+    onUnmuted?: (track: MediaStreamTrack) => void
+  },
 ): (() => void) => {
-  const handlers = new Map<MediaStreamTrack, () => void>()
+  const handlers = new Map<MediaStreamTrack, {
+    ended: () => void
+    mute: () => void
+    unmute: () => void
+  }>()
 
   stream.getAudioTracks().forEach((track) => {
-    const handler = () => {
+    const ended = () => {
       console.info('[Realtime]', BROWSER_TAB_CAPTURE_TELEMETRY.TRACK_ENDED, {
         trackId: track.id,
         readyState: track.readyState,
       })
       onEnded(track)
     }
-    handlers.set(track, handler)
-    track.addEventListener('ended', handler)
+    const mute = () => {
+      options?.onMuted?.(track)
+    }
+    const unmute = () => {
+      options?.onUnmuted?.(track)
+    }
+    handlers.set(track, { ended, mute, unmute })
+    track.addEventListener('ended', ended)
+    track.addEventListener('mute', mute)
+    track.addEventListener('unmute', unmute)
   })
 
   return () => {
     handlers.forEach((handler, track) => {
-      track.removeEventListener('ended', handler)
+      track.removeEventListener('ended', handler.ended)
+      track.removeEventListener('mute', handler.mute)
+      track.removeEventListener('unmute', handler.unmute)
     })
     handlers.clear()
   }

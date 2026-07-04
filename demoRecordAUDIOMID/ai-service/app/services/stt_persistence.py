@@ -7,7 +7,84 @@ from loguru import logger
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.models import TranscriptCheckpoint, TranscriptFragment
+from app.models import (
+    TranscriptAttemptCheckpoint,
+    TranscriptCheckpoint,
+    TranscriptFragment,
+)
+
+
+def _is_omitted_optional_value(value: object) -> bool:
+    """Treat missing optional provenance as absent, including FastAPI defaults.
+
+    Blank/whitespace strings are explicit request values and must not fall back
+    to legacy/unscoped behavior.
+    """
+    if value is None:
+        return True
+    module = getattr(value.__class__, "__module__", "") or ""
+    name = value.__class__.__name__
+    # Direct calls keep Query/Form/FieldInfo objects as Python defaults.
+    if module.startswith("fastapi.") or module.startswith("pydantic."):
+        return name in {
+            "Body",
+            "Cookie",
+            "FieldInfo",
+            "Form",
+            "Header",
+            "Param",
+            "Path",
+            "Query",
+        }
+    return False
+
+
+def _coerce_optional_bigint(value: int | str | None, field_name: str) -> int | None:
+    if _is_omitted_optional_value(value):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field_name} must be an integer") from exc
+
+
+def _normalize_storage_stream_id(stream_id: str | None) -> str:
+    normalized = (stream_id or "").strip().lower()
+    if normalized == "default":
+        raise ValueError('"default" is a display-only stream identity')
+    return normalized
+
+
+@dataclass(frozen=True)
+class TranscriptProvenance:
+    recording_session_id: int | None = None
+    attempt_id: int | None = None
+
+    def __post_init__(self) -> None:
+        recording_session_id = _coerce_optional_bigint(
+            self.recording_session_id, "recording_session_id"
+        )
+        attempt_id = _coerce_optional_bigint(self.attempt_id, "attempt_id")
+        if (recording_session_id is None) != (attempt_id is None):
+            raise ValueError(
+                "recording_session_id and attempt_id must both be present or both be absent"
+            )
+        object.__setattr__(self, "recording_session_id", recording_session_id)
+        object.__setattr__(self, "attempt_id", attempt_id)
+
+    @property
+    def is_v2(self) -> bool:
+        return self.recording_session_id is not None and self.attempt_id is not None
+
+
+def validate_transcript_provenance(
+    recording_session_id: int | str | None = None,
+    attempt_id: int | str | None = None,
+) -> TranscriptProvenance:
+    return TranscriptProvenance(
+        recording_session_id=recording_session_id,
+        attempt_id=attempt_id,
+    )
 
 
 @dataclass(frozen=True)
@@ -21,6 +98,22 @@ class TranscriptFragmentInput:
     event_id: str | None = None
     is_final: bool = False
     confidence: float | None = None
+    stream_id: str = ""
+    recording_session_id: int | None = None
+    attempt_id: int | None = None
+
+    def __post_init__(self) -> None:
+        provenance = validate_transcript_provenance(
+            self.recording_session_id,
+            self.attempt_id,
+        )
+        object.__setattr__(
+            self, "recording_session_id", provenance.recording_session_id
+        )
+        object.__setattr__(self, "attempt_id", provenance.attempt_id)
+        object.__setattr__(
+            self, "stream_id", _normalize_storage_stream_id(self.stream_id)
+        )
 
 
 @dataclass(frozen=True)
@@ -29,6 +122,9 @@ class TranscriptCheckpointState:
     last_ack_seq: int = 0
     last_persisted_seq: int = 0
     last_finalized_seq: int = 0
+    stream_id: str = ""
+    recording_session_id: int | None = None
+    attempt_id: int | None = None
 
 
 def _normalize_text(value: str | None) -> str:
@@ -37,10 +133,28 @@ def _normalize_text(value: str | None) -> str:
 
 
 def build_fragment_dedupe_key(fragment: TranscriptFragmentInput) -> str:
-    dedupe_source = "|".join(
-        [
+    provenance = validate_transcript_provenance(
+        fragment.recording_session_id,
+        fragment.attempt_id,
+    )
+    if provenance.is_v2:
+        identity_parts = [
+            "v2",
             str(fragment.meeting_id),
+            str(provenance.recording_session_id),
+            str(provenance.attempt_id),
+            fragment.stream_id,
             str(fragment.seq),
+        ]
+    else:
+        identity_parts = [
+            str(fragment.meeting_id),
+            fragment.stream_id,
+            str(fragment.seq),
+        ]
+    dedupe_source = "|".join(
+        identity_parts
+        + [
             f"{float(fragment.start_time):.3f}",
             f"{float(fragment.end_time):.3f}",
             _normalize_text(fragment.text),
@@ -51,16 +165,24 @@ def build_fragment_dedupe_key(fragment: TranscriptFragmentInput) -> str:
 
 
 def _build_visible_segment_key(fragment: TranscriptFragment) -> str:
+    provenance = "legacy"
+    if fragment.recording_session_id is not None and fragment.attempt_id is not None:
+        provenance = f"v2:{fragment.recording_session_id}:{fragment.attempt_id}"
+    stream_id = _normalize_storage_stream_id(fragment.stream_id)
     event_id = str(fragment.event_id or "").strip()
     if event_id:
-        return event_id
+        return f"{provenance}:{stream_id}:{event_id}"
 
     start_time = float(fragment.start_time or 0.0)
     if start_time > 0:
         speaker = (fragment.speaker or "system").strip() or "system"
-        return f"{fragment.meeting_id}:{speaker}:{start_time:.3f}"
+        return (
+            f"{provenance}:{stream_id}:{fragment.meeting_id}:{speaker}:{start_time:.3f}"
+        )
 
-    return f"{fragment.meeting_id}:seq:{int(fragment.seq or 0)}"
+    return (
+        f"{provenance}:{stream_id}:{fragment.meeting_id}:seq:{int(fragment.seq or 0)}"
+    )
 
 
 def _fragment_preference_score(
@@ -121,16 +243,64 @@ class TranscriptPersistenceRepository:
                 return obj
         return None
 
-    def get_checkpoint(self, meeting_id: int) -> TranscriptCheckpointState:
+    def get_checkpoint(
+        self, meeting_id: int, stream_id: str = ""
+    ) -> TranscriptCheckpointState:
+        normalized_stream_id = _normalize_storage_stream_id(stream_id)
         checkpoint = (
             self._db.query(TranscriptCheckpoint)
-            .filter(TranscriptCheckpoint.meeting_id == meeting_id)
+            .filter(
+                TranscriptCheckpoint.meeting_id == meeting_id,
+                TranscriptCheckpoint.stream_id == normalized_stream_id,
+            )
             .first()
         )
         if checkpoint is None:
-            return TranscriptCheckpointState(meeting_id=meeting_id)
+            return TranscriptCheckpointState(
+                meeting_id=meeting_id,
+                stream_id=normalized_stream_id,
+            )
         return TranscriptCheckpointState(
             meeting_id=meeting_id,
+            stream_id=normalized_stream_id,
+            last_ack_seq=int(checkpoint.last_ack_seq or 0),
+            last_persisted_seq=int(checkpoint.last_persisted_seq or 0),
+            last_finalized_seq=int(checkpoint.last_finalized_seq or 0),
+        )
+
+    def get_attempt_checkpoint(
+        self,
+        meeting_id: int,
+        *,
+        recording_session_id: int,
+        attempt_id: int,
+        stream_id: str = "",
+    ) -> TranscriptCheckpointState:
+        provenance = validate_transcript_provenance(recording_session_id, attempt_id)
+        normalized_stream_id = _normalize_storage_stream_id(stream_id)
+        checkpoint = (
+            self._db.query(TranscriptAttemptCheckpoint)
+            .filter(
+                TranscriptAttemptCheckpoint.meeting_id == meeting_id,
+                TranscriptAttemptCheckpoint.recording_session_id
+                == provenance.recording_session_id,
+                TranscriptAttemptCheckpoint.attempt_id == provenance.attempt_id,
+                TranscriptAttemptCheckpoint.stream_id == normalized_stream_id,
+            )
+            .first()
+        )
+        if checkpoint is None:
+            return TranscriptCheckpointState(
+                meeting_id=meeting_id,
+                stream_id=normalized_stream_id,
+                recording_session_id=provenance.recording_session_id,
+                attempt_id=provenance.attempt_id,
+            )
+        return TranscriptCheckpointState(
+            meeting_id=meeting_id,
+            stream_id=normalized_stream_id,
+            recording_session_id=provenance.recording_session_id,
+            attempt_id=provenance.attempt_id,
             last_ack_seq=int(checkpoint.last_ack_seq or 0),
             last_persisted_seq=int(checkpoint.last_persisted_seq or 0),
             last_finalized_seq=int(checkpoint.last_finalized_seq or 0),
@@ -140,17 +310,25 @@ class TranscriptPersistenceRepository:
         self,
         meeting_id: int,
         *,
+        stream_id: str = "",
         last_ack_seq: int | None = None,
         last_persisted_seq: int | None = None,
         last_finalized_seq: int | None = None,
     ) -> TranscriptCheckpointState:
+        normalized_stream_id = _normalize_storage_stream_id(stream_id)
         checkpoint = (
             self._db.query(TranscriptCheckpoint)
-            .filter(TranscriptCheckpoint.meeting_id == meeting_id)
+            .filter(
+                TranscriptCheckpoint.meeting_id == meeting_id,
+                TranscriptCheckpoint.stream_id == normalized_stream_id,
+            )
             .first()
         )
         if checkpoint is None:
-            checkpoint = TranscriptCheckpoint(meeting_id=meeting_id)
+            checkpoint = TranscriptCheckpoint(
+                meeting_id=meeting_id,
+                stream_id=normalized_stream_id,
+            )
             self._db.add(checkpoint)
 
         if last_ack_seq is not None:
@@ -168,6 +346,63 @@ class TranscriptPersistenceRepository:
 
         return TranscriptCheckpointState(
             meeting_id=meeting_id,
+            stream_id=normalized_stream_id,
+            last_ack_seq=int(checkpoint.last_ack_seq or 0),
+            last_persisted_seq=int(checkpoint.last_persisted_seq or 0),
+            last_finalized_seq=int(checkpoint.last_finalized_seq or 0),
+        )
+
+    def upsert_attempt_checkpoint(
+        self,
+        meeting_id: int,
+        *,
+        recording_session_id: int,
+        attempt_id: int,
+        stream_id: str = "",
+        last_ack_seq: int | None = None,
+        last_persisted_seq: int | None = None,
+        last_finalized_seq: int | None = None,
+    ) -> TranscriptCheckpointState:
+        provenance = validate_transcript_provenance(recording_session_id, attempt_id)
+        normalized_stream_id = _normalize_storage_stream_id(stream_id)
+        checkpoint = (
+            self._db.query(TranscriptAttemptCheckpoint)
+            .filter(
+                TranscriptAttemptCheckpoint.meeting_id == meeting_id,
+                TranscriptAttemptCheckpoint.recording_session_id
+                == provenance.recording_session_id,
+                TranscriptAttemptCheckpoint.attempt_id == provenance.attempt_id,
+                TranscriptAttemptCheckpoint.stream_id == normalized_stream_id,
+            )
+            .first()
+        )
+        if checkpoint is None:
+            checkpoint = TranscriptAttemptCheckpoint(
+                meeting_id=meeting_id,
+                recording_session_id=provenance.recording_session_id,
+                attempt_id=provenance.attempt_id,
+                stream_id=normalized_stream_id,
+            )
+            self._db.add(checkpoint)
+
+        if last_ack_seq is not None:
+            checkpoint.last_ack_seq = max(
+                int(last_ack_seq), int(checkpoint.last_ack_seq or 0)
+            )
+        if last_persisted_seq is not None:
+            checkpoint.last_persisted_seq = max(
+                int(last_persisted_seq), int(checkpoint.last_persisted_seq or 0)
+            )
+        if last_finalized_seq is not None:
+            checkpoint.last_finalized_seq = max(
+                int(last_finalized_seq), int(checkpoint.last_finalized_seq or 0)
+            )
+
+        return TranscriptCheckpointState(
+            meeting_id=meeting_id,
+            stream_id=normalized_stream_id,
+            recording_session_id=provenance.recording_session_id,
+            attempt_id=provenance.attempt_id,
             last_ack_seq=int(checkpoint.last_ack_seq or 0),
             last_persisted_seq=int(checkpoint.last_persisted_seq or 0),
             last_finalized_seq=int(checkpoint.last_finalized_seq or 0),
@@ -207,17 +442,29 @@ class TranscriptPersistenceRepository:
                 _update_existing_fragment(existing, fragment)
             return existing
 
-        version_query = (
-            self._db.query(func.max(TranscriptFragment.version))
-            .filter(
-                TranscriptFragment.meeting_id == fragment.meeting_id,
-                TranscriptFragment.seq == fragment.seq,
-            )
-            .scalar()
+        version_query = self._db.query(func.max(TranscriptFragment.version)).filter(
+            TranscriptFragment.meeting_id == fragment.meeting_id,
+            TranscriptFragment.stream_id == fragment.stream_id,
+            TranscriptFragment.seq == fragment.seq,
         )
+        if fragment.recording_session_id is None:
+            version_query = version_query.filter(
+                TranscriptFragment.recording_session_id.is_(None),
+                TranscriptFragment.attempt_id.is_(None),
+            )
+        else:
+            version_query = version_query.filter(
+                TranscriptFragment.recording_session_id
+                == fragment.recording_session_id,
+                TranscriptFragment.attempt_id == fragment.attempt_id,
+            )
+        version_query = version_query.scalar()
         next_version = int(version_query or 0) + 1
         row = TranscriptFragment(
             meeting_id=fragment.meeting_id,
+            recording_session_id=fragment.recording_session_id,
+            attempt_id=fragment.attempt_id,
+            stream_id=fragment.stream_id,
             seq=fragment.seq,
             version=next_version,
             event_id=(fragment.event_id or None),
@@ -249,10 +496,70 @@ class TranscriptPersistenceRepository:
         )
         return row
 
+    def _fragment_query(
+        self,
+        meeting_id: int,
+        *,
+        recording_session_id: int | None = None,
+        attempt_id: int | None = None,
+        stream_id: str | None = None,
+    ):
+        provenance = validate_transcript_provenance(
+            recording_session_id,
+            attempt_id,
+        )
+        query = self._db.query(TranscriptFragment).filter(
+            TranscriptFragment.meeting_id == meeting_id
+        )
+        if provenance.is_v2:
+            query = query.filter(
+                TranscriptFragment.recording_session_id
+                == provenance.recording_session_id,
+                TranscriptFragment.attempt_id == provenance.attempt_id,
+            )
+            if stream_id is not None:
+                query = query.filter(
+                    TranscriptFragment.stream_id
+                    == _normalize_storage_stream_id(stream_id)
+                )
+        else:
+            query = query.filter(
+                TranscriptFragment.recording_session_id.is_(None),
+                TranscriptFragment.attempt_id.is_(None),
+            )
+            if stream_id is not None:
+                query = query.filter(
+                    TranscriptFragment.stream_id
+                    == _normalize_storage_stream_id(stream_id)
+                )
+        return query
+
     def list_fragments(self, meeting_id: int) -> list[TranscriptFragment]:
         return (
-            self._db.query(TranscriptFragment)
-            .filter(TranscriptFragment.meeting_id == meeting_id)
+            self._fragment_query(meeting_id)
+            .order_by(
+                TranscriptFragment.seq.asc(),
+                TranscriptFragment.version.asc(),
+                TranscriptFragment.created_at.asc(),
+            )
+            .all()
+        )
+
+    def list_attempt_fragments(
+        self,
+        meeting_id: int,
+        *,
+        recording_session_id: int,
+        attempt_id: int,
+        stream_id: str | None = None,
+    ) -> list[TranscriptFragment]:
+        return (
+            self._fragment_query(
+                meeting_id,
+                recording_session_id=recording_session_id,
+                attempt_id=attempt_id,
+                stream_id=stream_id,
+            )
             .order_by(
                 TranscriptFragment.seq.asc(),
                 TranscriptFragment.version.asc(),
@@ -263,6 +570,25 @@ class TranscriptPersistenceRepository:
 
     def assemble_transcript_text(self, meeting_id: int) -> str:
         fragments = self.assemble_visible_fragments(meeting_id)
+        return self._assemble_text_from_fragments(fragments)
+
+    def assemble_attempt_transcript_text(
+        self,
+        meeting_id: int,
+        *,
+        recording_session_id: int,
+        attempt_id: int,
+        stream_id: str | None = None,
+    ) -> str:
+        fragments = self.assemble_attempt_visible_fragments(
+            meeting_id,
+            recording_session_id=recording_session_id,
+            attempt_id=attempt_id,
+            stream_id=stream_id,
+        )
+        return self._assemble_text_from_fragments(fragments)
+
+    def _assemble_text_from_fragments(self, fragments: list[TranscriptFragment]) -> str:
         if not fragments:
             return ""
 
@@ -274,8 +600,30 @@ class TranscriptPersistenceRepository:
         return " ".join(transcript_chunks).strip()
 
     def assemble_visible_fragments(self, meeting_id: int) -> list[TranscriptFragment]:
+        return self._assemble_visible_fragments_from(
+            meeting_id, self.list_fragments(meeting_id)
+        )
+
+    def assemble_attempt_visible_fragments(
+        self,
+        meeting_id: int,
+        *,
+        recording_session_id: int,
+        attempt_id: int,
+        stream_id: str | None = None,
+    ) -> list[TranscriptFragment]:
+        fragments = self.list_attempt_fragments(
+            meeting_id,
+            recording_session_id=recording_session_id,
+            attempt_id=attempt_id,
+            stream_id=stream_id,
+        )
+        return self._assemble_visible_fragments_from(meeting_id, fragments)
+
+    def _assemble_visible_fragments_from(
+        self, meeting_id: int, fragments: list[TranscriptFragment]
+    ) -> list[TranscriptFragment]:
         selected: dict[str, TranscriptFragment] = {}
-        fragments = self.list_fragments(meeting_id)
         min_start: float | None = None
         max_end: float | None = None
         for fragment in fragments:
@@ -336,6 +684,9 @@ class TranscriptPersistenceRepository:
                     "end_time": float(fragment.end_time or 0.0),
                     "text": fragment.text or "",
                     "segment_id": (fragment.event_id or None),
+                    "stream_id": _normalize_storage_stream_id(fragment.stream_id),
+                    "recording_session_id": fragment.recording_session_id,
+                    "attempt_id": fragment.attempt_id,
                     "seq": int(fragment.seq or 0),
                     "version": int(fragment.version or 0),
                     "is_final": bool(fragment.is_final),
@@ -354,9 +705,129 @@ class TranscriptPersistenceRepository:
                     "start_time": float(fragment.start_time or 0.0),
                     "end_time": float(fragment.end_time or 0.0),
                     "text": fragment.text or "",
+                    "segment_id": (fragment.event_id or None),
+                    "stream_id": _normalize_storage_stream_id(fragment.stream_id),
+                    "recording_session_id": fragment.recording_session_id,
+                    "attempt_id": fragment.attempt_id,
                     "seq": int(fragment.seq or 0),
                     "version": int(fragment.version or 0),
                     "is_final": bool(fragment.is_final),
                 }
             )
         return segments
+
+    def assemble_attempt_visible_transcript_segments(
+        self,
+        meeting_id: int,
+        *,
+        recording_session_id: int,
+        attempt_id: int,
+        stream_id: str | None = None,
+    ) -> list[dict[str, object]]:
+        segments: list[dict[str, object]] = []
+        for fragment in self.assemble_attempt_visible_fragments(
+            meeting_id,
+            recording_session_id=recording_session_id,
+            attempt_id=attempt_id,
+            stream_id=stream_id,
+        ):
+            segments.append(
+                {
+                    "speaker": fragment.speaker or "system",
+                    "start_time": float(fragment.start_time or 0.0),
+                    "end_time": float(fragment.end_time or 0.0),
+                    "text": fragment.text or "",
+                    "segment_id": (fragment.event_id or None),
+                    "stream_id": _normalize_storage_stream_id(fragment.stream_id),
+                    "recording_session_id": fragment.recording_session_id,
+                    "attempt_id": fragment.attempt_id,
+                    "seq": int(fragment.seq or 0),
+                    "version": int(fragment.version or 0),
+                    "is_final": bool(fragment.is_final),
+                }
+            )
+        return segments
+
+    def list_attempt_scopes(self, meeting_id: int) -> list[dict[str, object]]:
+        scopes: list[dict[str, object]] = []
+
+        legacy_fragment_exists = (
+            self._db.query(TranscriptFragment.id)
+            .filter(
+                TranscriptFragment.meeting_id == meeting_id,
+                TranscriptFragment.recording_session_id.is_(None),
+                TranscriptFragment.attempt_id.is_(None),
+            )
+            .limit(1)
+            .first()
+            is not None
+        )
+        if legacy_fragment_exists:
+            scopes.append(
+                {
+                    "scopeKind": "legacy",
+                    "recordingSessionId": None,
+                    "attemptId": None,
+                    "finalized": True,
+                }
+            )
+
+        attempt_rows = (
+            self._db.query(
+                TranscriptFragment.recording_session_id,
+                TranscriptFragment.attempt_id,
+                func.max(TranscriptFragment.created_at),
+                func.max(TranscriptFragment.seq),
+            )
+            .filter(
+                TranscriptFragment.meeting_id == meeting_id,
+                TranscriptFragment.recording_session_id.isnot(None),
+                TranscriptFragment.attempt_id.isnot(None),
+            )
+            .group_by(
+                TranscriptFragment.recording_session_id,
+                TranscriptFragment.attempt_id,
+            )
+            .all()
+        )
+
+        for (
+            recording_session_id,
+            attempt_id,
+            latest_created_at,
+            latest_seq,
+        ) in attempt_rows:
+            finalized = False
+            checkpoint = (
+                self._db.query(func.max(TranscriptAttemptCheckpoint.last_finalized_seq))
+                .filter(
+                    TranscriptAttemptCheckpoint.meeting_id == meeting_id,
+                    TranscriptAttemptCheckpoint.recording_session_id
+                    == recording_session_id,
+                    TranscriptAttemptCheckpoint.attempt_id == attempt_id,
+                )
+                .scalar()
+            )
+            if checkpoint is not None and int(checkpoint) > 0:
+                finalized = True
+            scopes.append(
+                {
+                    "scopeKind": "v2",
+                    "recordingSessionId": int(recording_session_id),
+                    "attemptId": int(attempt_id),
+                    "finalized": finalized,
+                    "latestSeq": int(latest_seq or 0),
+                    "updatedAt": (
+                        latest_created_at.isoformat() if latest_created_at else None
+                    ),
+                }
+            )
+
+        scopes.sort(
+            key=lambda item: (
+                0 if item.get("scopeKind") == "legacy" else 1,
+                int(item.get("recordingSessionId") or 0),
+                int(item.get("attemptId") or 0),
+            )
+        )
+        return scopes

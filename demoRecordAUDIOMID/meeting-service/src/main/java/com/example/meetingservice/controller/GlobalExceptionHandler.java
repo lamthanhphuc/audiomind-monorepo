@@ -2,6 +2,7 @@ package com.example.meetingservice.controller;
 
 import com.example.meetingservice.config.Epic2FeatureFlags;
 import com.example.meetingservice.config.TraceIdFilter;
+import com.example.meetingservice.google.GoogleCalendarException;
 import jakarta.servlet.http.HttpServletRequest;
 import java.time.Instant;
 import java.util.Locale;
@@ -89,6 +90,14 @@ public class GlobalExceptionHandler {
                 "Database dependency is unavailable",
                 request,
                 null);
+    }
+
+    @ExceptionHandler(GoogleCalendarException.class)
+    public ResponseEntity<ApiErrorResponse> handleGoogleCalendar(
+            GoogleCalendarException ex,
+            HttpServletRequest request) {
+        ErrorCode code = ErrorCode.valueOf(ex.error().name());
+        return buildResponse(code, ex.error().status(), code.defaultMessage(), request, ex.details());
     }
 
     @ExceptionHandler(Exception.class)
@@ -197,6 +206,13 @@ public class GlobalExceptionHandler {
                     GEMINI_UNAVAILABLE,
                     GEMINI_ANALYSIS_FAILED,
                     EMPTY_TRANSCRIPT,
+                    GOOGLE_SCOPE_MISSING,
+                    GOOGLE_REFRESH_TOKEN_REVOKED,
+                    GOOGLE_CALENDAR_CREATION_IN_PROGRESS,
+                    GOOGLE_CALENDAR_VALIDATION_ERROR,
+                    GOOGLE_CALENDAR_PERMISSION_DENIED,
+                    GOOGLE_CALENDAR_API_ERROR,
+                    GOOGLE_INTERNAL_TOKEN_UNAVAILABLE,
                     UPLOAD_EMPTY_FILE,
                     UPLOAD_TOO_LARGE,
                     UPLOAD_UNSUPPORTED_FORMAT,

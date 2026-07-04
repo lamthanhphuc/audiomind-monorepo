@@ -559,7 +559,7 @@ describe('AudioRecorderButton', () => {
     vi.restoreAllMocks()
   })
 
-  it('shows Google Meet start label for browser tab source', () => {
+  it('shows tab capture start label for browser tab source', () => {
     act(() => {
       root.render(
         <AudioRecorderButton
@@ -572,8 +572,8 @@ describe('AudioRecorderButton', () => {
       )
     })
 
-    expect(container.querySelector('button')?.getAttribute('aria-label')).toContain('Google Meet')
-    expect(container.textContent).toContain('Chọn tab Google Meet')
+    expect(container.querySelector('button')?.getAttribute('aria-label')).toContain('tab trình duyệt')
+    expect(container.textContent).toContain('Chọn tab đang phát âm thanh')
   })
 
   it('triggers start flow from idle state', async () => {

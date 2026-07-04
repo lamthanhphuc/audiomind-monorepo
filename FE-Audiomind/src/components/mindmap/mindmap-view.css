@@ -1,0 +1,107 @@
+.mindmap-view {
+  display: grid;
+  gap: 16px;
+}
+
+.mindmap-view__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.mindmap-view__header > div:first-child {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
+.mindmap-view__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  flex: 0 1 auto;
+  justify-content: flex-end;
+}
+
+.mindmap-view__header h2 {
+  margin: 0 0 6px;
+  font-size: 18px;
+}
+
+.mindmap-view__header p {
+  margin: 0;
+  color: var(--studio-muted, #94a3b8);
+  font-size: 14px;
+  max-width: 560px;
+}
+
+.mindmap-view__status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--studio-muted, #94a3b8);
+}
+
+.mindmap-status__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #34d399;
+  box-shadow: 0 0 0 3px rgba(52, 211, 153, 0.2);
+}
+
+.mindmap-view__hint {
+  margin: 0;
+  font-size: 13px;
+  color: var(--studio-muted, #94a3b8);
+}
+
+.mindmap-view--compact .mindmap-view__header,
+.mindmap-view--compact .mindmap-view__status,
+.mindmap-view--compact .mindmap-view__toolbar,
+.mindmap-view--compact .mindmap-view__footer-hint {
+  display: none;
+}
+
+.mindmap-view__toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.mindmap-view__canvas-shell {
+  width: 100%;
+  min-height: 360px;
+}
+
+.mindmap-view--page .mindmap-view__canvas-shell {
+  height: clamp(360px, 52vh, 620px);
+}
+
+.mindmap-view--compact .mindmap-view__canvas-shell {
+  height: 480px;
+}
+
+.mindmap-view__footer-hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--studio-muted, #94a3b8);
+}
+
+.mindmap-view:not(.mindmap-view--page):not(.mindmap-view--compact) .mindmap-view__canvas-shell {
+  min-height: 420px;
+}
+
+.feature-hero__eyebrow {
+  margin: 0 0 8px;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--studio-accent, #a78bfa);
+  font-weight: 700;
+}

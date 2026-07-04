@@ -1,17 +1,34 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { TranscriptSegment } from '../../hooks/useRealtimeMeetingStream'
-import { ApiError, getSavedAnalysis, getTranscript, reanalyzeMeetingAnalysis } from '../../services/api'
+import { ApiError, getSavedAnalysis, getTranscript } from '../../services/api'
 import { normalizeAnalysisResponse, type AiAnalysis } from '../../types'
+import { answerMeetingQuestion, type MeetingChatCitation } from '../../utils/meetingChatbot'
+import type { TimelineChapter } from '../../utils/timelineData'
+import {
+  highlightRangeFromTime,
+  scrollTranscriptToHighlight,
+  type TranscriptHighlightRange,
+} from '../../utils/transcriptJump'
 import { normalizePersistedTranscriptForView } from '../../utils/transcript'
-import { collectEvidenceMatchesFromAnalysis } from '../../utils/evidenceMatches'
-import { AnalysisPanel } from '../analysis/AnalysisPanel'
-import { AnalysisStatusPanel, normalizeAnalysisMetadata } from '../analysis/AnalysisStatusPanel'
+import { resolveMeetingResultScope } from '../../services/api'
+import {
+  scopeToAnalysisOptions,
+  scopeToTranscriptOptions,
+  scopeCacheKey,
+  type MeetingResultScope,
+} from '../../utils/meetingResultScope'
 import AiAssistant from '../dashboard/AiAssistant'
+import AnalysisTermNotesSection from './AnalysisTermNotesSection'
+import MindmapView from '../mindmap/MindmapView'
+import SpeakerNamingPanel from './SpeakerNamingPanel'
+import TermExplainPopover from './TermExplainPopover'
+import MeetingTimeline from './MeetingTimeline'
+import MeetingTaskTracker from './MeetingTaskTracker'
 import { TranscriptDisplay } from '../transcript/TranscriptDisplay'
-import { EmptyState } from '../ui/EmptyState'
+import { listSpeakerProfiles, type SpeakerProfile } from '../../services/knowledgeLayer'
+import { AnalysisPanel } from '../analysis/AnalysisPanel'
 import { ErrorState } from '../ui/ErrorState'
 import { LoadingState } from '../ui/LoadingState'
-import { StudioWaveform } from '../ui/StudioWaveform'
 
 type FeatureAnalysisProps = {
   meetingId?: number | null
@@ -23,7 +40,9 @@ type FeatureAnalysisProps = {
   transcriptText?: string
   statusLabel?: string
   hydrateFromApi?: boolean
+  resultScope?: MeetingResultScope | null
   onBackToHistory?: () => void
+  preferredDomainMode?: string
 }
 
 type HydrationState = 'idle' | 'loading' | 'ready' | 'error'
@@ -54,44 +73,45 @@ const getAnalysisStateFromResponse = (
   }
   if (status === 'FAILED' || status === 'RATE_LIMITED' || status === 'QUOTA_BLOCKED') {
     const retryAfter = analysis.retryAfterSeconds && analysis.retryAfterSeconds > 0
-      ? ` Retry after ${analysis.retryAfterSeconds}s.`
+      ? ` Thử lại sau ${analysis.retryAfterSeconds}s.`
       : ''
     const detail = analysis.errorCode ? ` ${analysis.errorCode}.` : ''
     return {
       state: 'failed',
       analysis: null,
-      error: `Analysis failed temporarily. Retry available.${detail}${retryAfter}`,
+      error: `Phân tích AI tạm thời thất bại. Có thể thử lại.${detail}${retryAfter}`,
     }
   }
   if (status === 'ANALYZING' || status === 'RUNNING' || status === 'QUEUED' || status === 'PENDING') {
     return { state: 'processing', analysis: null, error: null }
   }
 
-  const hasStructuredData = Boolean(
-    analysis.summary?.trim()
-    || (analysis.keywords?.length ?? 0) > 0
-    || (analysis.technicalTerms?.length ?? 0) > 0
-    || (analysis.painPoints?.length ?? 0) > 0
-    || (analysis.actionItems?.length ?? 0) > 0,
-  )
-
-  if (!hasStructuredData && status === 'NOT_FOUND') {
-    return { state: 'missing', analysis: null, error: null }
+  if (status === 'ANALYSIS_UNAVAILABLE_FOR_SCOPE') {
+    return {
+      state: 'missing',
+      analysis: null,
+      error: 'Kết quả phân tích chưa có cho phiên ghi này.',
+    }
   }
 
-  if (!hasStructuredData && !status) {
+  const hasStructuredData = hasStructuredAnalysisData(analysis)
+
+  if (!hasStructuredData && (status === 'NOT_FOUND' || !status)) {
     return { state: 'missing', analysis: null, error: null }
   }
 
   return { state: 'completed', analysis, error: null }
 }
 
-const isTerminalAnalysisStatus = (analysis: AiAnalysis | null): boolean => {
-  const status = normalizeAnalysisMetadata(analysis).status
-  return status === 'COMPLETED'
-    || status === 'FAILED'
-    || status === 'RATE_LIMITED'
-    || status === 'QUOTA_BLOCKED'
+const hasStructuredAnalysisData = (analysis: AiAnalysis | null): boolean => {
+  if (!analysis) return false
+  return Boolean(
+    analysis.summary?.trim()
+    || (analysis.keywords?.length ?? 0) > 0
+    || (analysis.technicalTerms?.length ?? 0) > 0
+    || (analysis.painPoints?.length ?? 0) > 0
+    || (analysis.actionItems?.length ?? 0) > 0,
+  )
 }
 
 const getFriendlyHydrateError = (error: unknown): string => {
@@ -109,29 +129,6 @@ const getFriendlyHydrateError = (error: unknown): string => {
   return 'Không thể tải dữ liệu meeting.'
 }
 
-const getReanalyzeErrorMessage = (error: unknown): string => {
-  if (error instanceof ApiError && error.status === 404) {
-    return 'Không tìm thấy transcript đã lưu để phân tích lại.'
-  }
-  if (error instanceof Error) {
-    return error.message
-  }
-  return 'Không thể phân tích lại meeting.'
-}
-
-const baseAnalysisMetadata = (meetingId: number): AiAnalysis => ({
-  meetingId,
-  meeting_id: meetingId,
-  status: 'NO_ANALYSIS',
-  analysisStatus: 'NO_ANALYSIS',
-  summary: '',
-  keywords: [],
-  technicalTerms: [],
-  painPoints: [],
-  actionItems: [],
-  domainMode: 'it',
-})
-
 export default function FeatureAnalysis({
   meetingId,
   meetingTitle,
@@ -142,6 +139,7 @@ export default function FeatureAnalysis({
   transcriptText = '',
   statusLabel,
   hydrateFromApi = false,
+  resultScope = null,
   onBackToHistory,
 }: FeatureAnalysisProps) {
   const [activeTab, setActiveTab] = useState<'content' | 'model' | 'mindmap'>('content')
@@ -152,23 +150,45 @@ export default function FeatureAnalysis({
   const [hydratedTranscriptText, setHydratedTranscriptText] = useState('')
   const [hydrateAnalysisState, setHydrateAnalysisState] = useState<AnalysisViewState>('idle')
   const [hydrateAnalysisError, setHydrateAnalysisError] = useState<string | null>(null)
-  const [hydrateAnalysisMetadata, setHydrateAnalysisMetadata] = useState<AiAnalysis | null>(null)
-  const [reanalyzeBusy, setReanalyzeBusy] = useState(false)
-  const [reanalyzeError, setReanalyzeError] = useState<string | null>(null)
   const hydrateAbortRef = useRef<AbortController | null>(null)
-  const hydrateRequestKeyRef = useRef<number | null>(null)
-  const rerunPollRef = useRef<{ meetingId: number; cancelled: boolean; timeoutId: number | null } | null>(null)
+  const hydrateRequestKeyRef = useRef<string | null>(null)
+  const [activeTerm, setActiveTerm] = useState<string | null>(null)
+  const [speakerDisplayMap, setSpeakerDisplayMap] = useState<Record<string, string>>({})
+  const [highlightRange, setHighlightRange] = useState<TranscriptHighlightRange | null>(null)
+  const [savedAnalysis, setSavedAnalysis] = useState<AiAnalysis | null>(null)
+  const savedAnalysisAbortRef = useRef<AbortController | null>(null)
 
-  const applyHydratedAnalysis = useCallback((requestKey: number, analysisResponse: AiAnalysis | null) => {
-    if (hydrateRequestKeyRef.current !== requestKey) {
+  const applySpeakerProfiles = useCallback((profiles: SpeakerProfile[]) => {
+    const nextMap: Record<string, string> = {}
+    for (const profile of profiles) {
+      if (profile.speakerKey && profile.displayName) {
+        nextMap[profile.speakerKey] = profile.displayName
+      }
+    }
+    setSpeakerDisplayMap(nextMap)
+  }, [])
+
+  useEffect(() => {
+    if (meetingId == null) {
+      setSpeakerDisplayMap({})
       return
     }
-    const nextState = getAnalysisStateFromResponse(analysisResponse)
-    setHydratedAnalysis(nextState.analysis)
-    setHydrateAnalysisMetadata(analysisResponse)
-    setHydrateAnalysisState(nextState.state)
-    setHydrateAnalysisError(nextState.error)
+    void listSpeakerProfiles(meetingId)
+      .then(applySpeakerProfiles)
+      .catch(() => setSpeakerDisplayMap({}))
+  }, [meetingId, applySpeakerProfiles])
+
+  const handleTimelineJump = useCallback((chapter: TimelineChapter) => {
+    const range = { startTime: chapter.startTime, endTime: chapter.endTime }
+    setHighlightRange(range)
+    scrollTranscriptToHighlight(range)
   }, [])
+
+  const handleCitationClick = (citation: MeetingChatCitation) => {
+    const range = highlightRangeFromTime(citation.startTime, citation.endTime)
+    setHighlightRange(range)
+    scrollTranscriptToHighlight(range)
+  }
 
   useEffect(() => {
     if (!hydrateFromApi || meetingId == null) {
@@ -178,7 +198,9 @@ export default function FeatureAnalysis({
     hydrateAbortRef.current?.abort()
     const controller = new AbortController()
     hydrateAbortRef.current = controller
-    const requestKey = meetingId
+    const requestKey = resultScope
+      ? scopeCacheKey(resultScope)
+      : `${meetingId}:auto`
     hydrateRequestKeyRef.current = requestKey
 
     setHydrateState('loading')
@@ -188,15 +210,25 @@ export default function FeatureAnalysis({
     setHydratedTranscriptText('')
     setHydrateAnalysisState('idle')
     setHydrateAnalysisError(null)
-    setHydrateAnalysisMetadata(null)
-    setReanalyzeBusy(false)
-    setReanalyzeError(null)
 
     const load = async () => {
       try {
+        const resolvedScope = resultScope
+          ?? await resolveMeetingResultScope(meetingId, undefined, { signal: controller.signal })
+        if (controller.signal.aborted || hydrateRequestKeyRef.current !== requestKey) {
+          return
+        }
+
+        const analysisOptions = {
+          ...scopeToAnalysisOptions(resolvedScope),
+          signal: controller.signal,
+        }
         const [transcriptResponse, analysisResponse] = await Promise.all([
-          getTranscript(requestKey, { signal: controller.signal }),
-          getSavedAnalysis(requestKey, { signal: controller.signal }),
+          getTranscript(meetingId, {
+            ...scopeToTranscriptOptions(resolvedScope),
+            signal: controller.signal,
+          }),
+          getSavedAnalysis(meetingId, analysisOptions),
         ])
 
         if (controller.signal.aborted || hydrateRequestKeyRef.current !== requestKey) {
@@ -211,12 +243,16 @@ export default function FeatureAnalysis({
           segments.map((segment) => `${segment.speaker}: ${segment.text}`).join(' ').trim(),
         )
         setHydratedAnalysis(analysisState.analysis)
-        setHydrateAnalysisMetadata(analysisResponse)
         setHydrateAnalysisState(analysisState.state)
         setHydrateAnalysisError(analysisState.error)
         setHydrateState('ready')
       } catch (error) {
         if (controller.signal.aborted || isAbortError(error) || hydrateRequestKeyRef.current !== requestKey) {
+          return
+        }
+        if (error instanceof ApiError && error.status === 404) {
+          setHydrateState('error')
+          setHydrateError('Không tìm thấy transcript cho phiên ghi đã chọn')
           return
         }
         setHydrateState('error')
@@ -229,131 +265,71 @@ export default function FeatureAnalysis({
     return () => {
       controller.abort()
     }
-  }, [hydrateFromApi, meetingId])
+  }, [hydrateFromApi, meetingId, resultScope])
 
-  useEffect(() => {
-    return () => {
-      if (rerunPollRef.current) {
-        rerunPollRef.current.cancelled = true
-        if (rerunPollRef.current.timeoutId !== null) {
-          window.clearTimeout(rerunPollRef.current.timeoutId)
-        }
+  const loadSavedAnalysis = useCallback(async (
+    requestMeetingId: number,
+    scope: MeetingResultScope | null,
+  ) => {
+    savedAnalysisAbortRef.current?.abort()
+    const controller = new AbortController()
+    savedAnalysisAbortRef.current = controller
+    try {
+      const resolvedScope = scope
+        ?? await resolveMeetingResultScope(requestMeetingId, undefined, { signal: controller.signal })
+      const response = await getSavedAnalysis(requestMeetingId, {
+        ...scopeToAnalysisOptions(resolvedScope),
+        signal: controller.signal,
+      })
+      if (!controller.signal.aborted) {
+        setSavedAnalysis(response)
+      }
+    } catch (error) {
+      if (!controller.signal.aborted && !isAbortError(error)) {
+        setSavedAnalysis(null)
       }
     }
   }, [])
 
-  const pollSavedAnalysis = async (
-    requestKey: number,
-    pollState: { meetingId: number; cancelled: boolean; timeoutId: number | null },
-  ) => {
-    while (!pollState.cancelled) {
-      await new Promise<void>((resolve) => {
-        pollState.timeoutId = window.setTimeout(resolve, 1500)
-      })
-      pollState.timeoutId = null
-      if (pollState.cancelled || hydrateRequestKeyRef.current !== requestKey) {
-        return
-      }
-
-      try {
-        const savedAnalysis = await getSavedAnalysis(requestKey)
-        if (pollState.cancelled || hydrateRequestKeyRef.current !== requestKey) {
-          return
-        }
-        applyHydratedAnalysis(requestKey, savedAnalysis)
-        if (isTerminalAnalysisStatus(savedAnalysis)) {
-          setReanalyzeBusy(false)
-          return
-        }
-      } catch (error) {
-        if (pollState.cancelled) {
-          return
-        }
-        setReanalyzeError(error instanceof Error ? error.message : 'Không thể cập nhật trạng thái analysis')
-        setReanalyzeBusy(false)
-        return
-      }
+  useEffect(() => {
+    if (meetingId == null) {
+      setSavedAnalysis(null)
+      return undefined
     }
-  }
-
-  const handleReanalyze = async () => {
-    if (!hydrateFromApi || meetingId == null) {
-      return
+    void loadSavedAnalysis(meetingId, resultScope)
+    return () => {
+      savedAnalysisAbortRef.current?.abort()
     }
+  }, [loadSavedAnalysis, meetingId, resultScope])
 
-    const requestKey = meetingId
-    const previousAnalysis = hydratedAnalysis
-    const previousAnalysisMetadata = hydrateAnalysisMetadata
-    const previousAnalysisState = hydrateAnalysisState
-    const previousAnalysisError = hydrateAnalysisError
-
-    if (rerunPollRef.current) {
-      rerunPollRef.current.cancelled = true
-      if (rerunPollRef.current.timeoutId !== null) {
-        window.clearTimeout(rerunPollRef.current.timeoutId)
-      }
+  useEffect(() => {
+    if ((activeTab === 'mindmap' || activeTab === 'model') && meetingId != null) {
+      void loadSavedAnalysis(meetingId, resultScope)
     }
-
-    const pollState = { meetingId: requestKey, cancelled: false, timeoutId: null as number | null }
-    rerunPollRef.current = pollState
-    setReanalyzeBusy(true)
-    setReanalyzeError(null)
-    setHydrateAnalysisMetadata({
-      ...(hydrateAnalysisMetadata ?? hydratedAnalysis ?? baseAnalysisMetadata(requestKey)),
-      status: 'ANALYZING',
-      analysisStatus: 'ANALYZING',
-    })
-    setHydrateAnalysisState(hydratedAnalysis ? 'completed' : 'processing')
-    setHydrateAnalysisError(null)
-
-    try {
-      const response = await reanalyzeMeetingAnalysis(requestKey, { mode: 'force', reason: 'manual_reanalyze' })
-      if (pollState.cancelled || hydrateRequestKeyRef.current !== requestKey) {
-        return
-      }
-      applyHydratedAnalysis(requestKey, response)
-      if (isTerminalAnalysisStatus(response)) {
-        setReanalyzeBusy(false)
-        return
-      }
-      void pollSavedAnalysis(requestKey, pollState)
-    } catch (error) {
-      if (pollState.cancelled || hydrateRequestKeyRef.current !== requestKey) {
-        return
-      }
-      pollState.cancelled = true
-      if (pollState.timeoutId !== null) {
-        window.clearTimeout(pollState.timeoutId)
-        pollState.timeoutId = null
-      }
-      setHydratedAnalysis(previousAnalysis)
-      setHydrateAnalysisMetadata(previousAnalysisMetadata)
-      setHydrateAnalysisState(previousAnalysis ? 'completed' : previousAnalysisState)
-      setHydrateAnalysisError(previousAnalysisError)
-      setReanalyzeError(getReanalyzeErrorMessage(error))
-      setReanalyzeBusy(false)
-    }
-  }
+  }, [activeTab, loadSavedAnalysis, meetingId, resultScope])
 
   const effectiveAnalysis = hydrateFromApi ? hydratedAnalysis : (analysis ?? null)
   const effectiveSegments = hydrateFromApi ? hydratedTranscriptSegments : transcriptSegments
   const effectiveTranscriptText = hydrateFromApi ? hydratedTranscriptText : transcriptText
   const effectiveBusy = hydrateFromApi
-    ? hydrateState === 'loading' || reanalyzeBusy || hydrateAnalysisState === 'processing'
+    ? hydrateState === 'loading' || hydrateAnalysisState === 'processing'
     : Boolean(busy)
 
   const normalizedAnalysis = useMemo(
     () => (effectiveAnalysis ? normalizeAnalysisResponse(effectiveAnalysis) : null),
     [effectiveAnalysis],
   )
-  const analysisEvidenceMatches = useMemo(
-    () => collectEvidenceMatchesFromAnalysis(
-      (hydrateAnalysisMetadata ?? effectiveAnalysis) as Record<string, unknown> | null,
-    ),
-    [hydrateAnalysisMetadata, effectiveAnalysis],
-  )
+  const displayAnalysis = useMemo(() => {
+    const fromSaved = savedAnalysis ? normalizeAnalysisResponse(savedAnalysis) : null
+    if (fromSaved && hasStructuredAnalysisData(fromSaved)) {
+      return fromSaved
+    }
+    if (normalizedAnalysis && hasStructuredAnalysisData(normalizedAnalysis)) {
+      return normalizedAnalysis
+    }
+    return fromSaved ?? normalizedAnalysis
+  }, [normalizedAnalysis, savedAnalysis])
   const title = meetingTitle || fileName || 'Kết quả phân tích'
-  const audioLabel = fileName || meetingTitle || 'audio-file.mp3'
   const hasTranscript = effectiveSegments.length > 0 || effectiveTranscriptText.trim().length > 0
 
   const statusBadge = useMemo(() => {
@@ -365,11 +341,11 @@ export default function FeatureAnalysis({
     if (effectiveBusy) {
       return 'loading' as const
     }
-    if (normalizedAnalysis) {
+    if (displayAnalysis && hasStructuredAnalysisData(displayAnalysis)) {
       return 'ready' as const
     }
     return 'empty' as const
-  }, [effectiveBusy, normalizedAnalysis])
+  }, [displayAnalysis, effectiveBusy])
 
   const analysisEmptyMessage = hydrateFromApi && hydrateAnalysisState === 'missing'
     ? 'Phân tích AI chưa sẵn sàng'
@@ -438,43 +414,23 @@ export default function FeatureAnalysis({
           {meetingId && <span className="meta-pill">ID {meetingId}</span>}
           {statusBadge}
         </div>
-        <div className="header-actions">
-          <button type="button" className="secondary-cta" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <span>⬇</span> Tải slide
-          </button>
-        </div>
       </header>
 
       <div className="analysis-main-content">
         <div className="analysis-left-panel">
-          <div className="audio-player-card studio-reveal studio-reveal--delay-1">
-            <StudioWaveform className="studio-waveform--lg" bars={36} active={!effectiveBusy} />
-            <div className="audio-controls">
-              <button type="button" className="play-btn" aria-label="Phát">▶</button>
-              <div className="time-info">
-                <span className="time-title">{audioLabel}</span>
-                <span className="time-duration">—</span>
-              </div>
-              <div className="audio-options">
-                <button type="button" aria-label="Âm lượng">🔊</button>
-                <select aria-label="Tốc độ phát"><option>1x</option></select>
-                <button type="button" aria-label="Cài đặt">⚙</button>
-              </div>
-            </div>
-          </div>
-
           <div className="analysis-tabs">
             <button
               type="button"
               className={`tab-btn ${activeTab === 'content' ? 'active' : ''}`}
               onClick={() => setActiveTab('content')}
             >
-              Transcript
+              Bản ghi
             </button>
             <button
               type="button"
               className={`tab-btn ${activeTab === 'model' ? 'active' : ''}`}
               onClick={() => setActiveTab('model')}
+              data-testid="feature-analysis-model-tab"
             >
               Phân tích AI
             </button>
@@ -482,28 +438,46 @@ export default function FeatureAnalysis({
               type="button"
               className={`tab-btn ${activeTab === 'mindmap' ? 'active' : ''}`}
               onClick={() => setActiveTab('mindmap')}
+              data-testid="feature-analysis-mindmap-tab"
             >
-              Mindmap
+              Sơ đồ
             </button>
           </div>
 
           <div className="doc-content">
             {activeTab === 'mindmap' && (
-              <div className="mindmap-placeholder">
-                <p>Sơ đồ mindmap sẽ hiển thị khi có dữ liệu từ phân tích.</p>
+              <div className="analysis-mindmap-tab" data-testid="feature-analysis-mindmap">
+                <MindmapView
+                  analysis={displayAnalysis}
+                  meetingId={meetingId}
+                  meetingTitle={meetingTitle}
+                  compact
+                  onRefresh={meetingId != null ? () => loadSavedAnalysis(meetingId, resultScope) : undefined}
+                />
               </div>
             )}
 
             {activeTab === 'content' && (
               <div data-testid="e2e-transcript">
                 {hasTranscript ? (
-                  <TranscriptDisplay
-                    segments={effectiveSegments}
-                    transcriptTextFallback={effectiveTranscriptText}
-                    emptyMessage="Không có transcript"
-                    maxHeight="none"
-                    enableDisplayGrouping
-                  />
+                  <>
+                    <TranscriptDisplay
+                      segments={effectiveSegments}
+                      transcriptTextFallback={effectiveTranscriptText}
+                      emptyMessage="Không có transcript"
+                      maxHeight="none"
+                      enableDisplayGrouping
+                      domainMode={displayAnalysis?.domainMode ?? effectiveAnalysis?.domainMode}
+                      onTermClick={meetingId ? (term) => setActiveTerm(term) : undefined}
+                      speakerDisplayMap={speakerDisplayMap}
+                      highlightRange={highlightRange}
+                    />
+                    <MeetingTimeline
+                      segments={effectiveSegments}
+                      analysis={displayAnalysis}
+                      onJumpToChapter={handleTimelineJump}
+                    />
+                  </>
                 ) : (
                   <p className="analysis-empty-hint">
                     {effectiveBusy
@@ -515,39 +489,29 @@ export default function FeatureAnalysis({
             )}
 
             {activeTab === 'model' && (
-              <div className="analysis-inline-panel">
-                {hydrateFromApi && (
-                  <div data-testid="feature-analysis-hydrated-controls">
-                    <AnalysisStatusPanel
-                      metadata={hydrateAnalysisMetadata ?? hydratedAnalysis}
-                      evidenceMatches={analysisEvidenceMatches}
-                      busy={reanalyzeBusy}
-                      error={reanalyzeError}
-                      onReanalyze={() => void handleReanalyze()}
-                    />
-                    {hydrateAnalysisState === 'processing' && (
-                      <LoadingState message="Phân tích AI đang xử lý..." />
-                    )}
-                    {hydrateAnalysisState === 'failed' && (
-                      <ErrorState
-                        title="Phân tích không sẵn sàng"
-                        message={hydrateAnalysisError || 'Không thể tải phân tích đã lưu'}
-                      />
-                    )}
-                    {hydrateAnalysisState === 'missing' && !normalizedAnalysis && (
-                      <EmptyState message="Chưa có kết quả phân tích" />
-                    )}
-                  </div>
+              <div className="analysis-inline-panel" data-testid="feature-analysis-model">
+                {hydrateFromApi && hydrateAnalysisState === 'processing' && (
+                  <LoadingState message="Phân tích AI đang xử lý..." />
+                )}
+                {hydrateFromApi && hydrateAnalysisState === 'failed' && (
+                  <ErrorState
+                    title="Phân tích không sẵn sàng"
+                    message={hydrateAnalysisError || 'Không thể tải phân tích đã lưu'}
+                  />
                 )}
                 <AnalysisPanel
                   title="Phân tích AI"
-                  analysis={normalizedAnalysis}
+                  analysis={displayAnalysis}
                   status={analysisPanelStatus}
                   testId="e2e-analysis"
                   summaryTestId="e2e-summary"
-                  summaryFallback="(empty)"
+                  summaryFallback="(trống)"
                   loadingMessage="Đang phân tích nội dung..."
                   emptyMessage={analysisEmptyMessage}
+                />
+                <AnalysisTermNotesSection
+                  meetingId={meetingId}
+                  analysis={displayAnalysis}
                 />
               </div>
             )}
@@ -555,26 +519,41 @@ export default function FeatureAnalysis({
         </div>
 
         <div className="analysis-right-panel">
-          <AnalysisPanel
-            title="Tóm tắt"
-            analysis={normalizedAnalysis}
-            status={analysisPanelStatus}
-            summaryTestId="e2e-summary"
-            summaryFallback="(empty)"
-            emptyMessage={analysisEmptyMessage}
+          <SpeakerNamingPanel
+            meetingId={meetingId}
+            transcriptSegments={effectiveSegments}
+            onProfilesSaved={applySpeakerProfiles}
+          />
+          <MeetingTaskTracker
+            meetingId={meetingId}
+            groupedActionPlan={displayAnalysis?.groupedActionPlan}
           />
           <AiAssistant
             busy={effectiveBusy}
             meetingId={meetingId}
-            onAsk={async () => {
-              await new Promise((resolve) => window.setTimeout(resolve, 600))
-              return normalizedAnalysis?.summary
-                ? `Tóm tắt: ${normalizedAnalysis.summary}`
-                : 'Chưa có dữ liệu phân tích để trả lời câu hỏi.'
+            onCitationClick={handleCitationClick}
+            onAsk={async (message) => {
+              const result = await answerMeetingQuestion(meetingId, message, displayAnalysis)
+              let text = result.answer
+              if (result.provider !== 'gemini') {
+                const suffix = result.provider === 'evidence'
+                  ? '\n\n(Lưu ý: trả lời từ transcript đã lưu.)'
+                  : '\n\n(Lưu ý: Gemini tạm không khả dụng — trả lời từ dữ liệu phân tích cục bộ.)'
+                text = `${result.answer}${suffix}`
+              }
+              return { text, citations: result.sourceSegments }
             }}
           />
         </div>
       </div>
+      {meetingId != null && activeTerm && (
+        <TermExplainPopover
+          meetingId={meetingId}
+          term={activeTerm}
+          analysis={displayAnalysis}
+          onClose={() => setActiveTerm(null)}
+        />
+      )}
     </div>
   )
 }

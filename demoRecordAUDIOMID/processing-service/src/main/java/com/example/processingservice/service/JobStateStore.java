@@ -39,6 +39,9 @@ public class JobStateStore {
                 + "  if current == 'UNKNOWN' then\n"
                 + "    return true\n"
                 + "  end\n"
+                + "  if next == 'QUEUED' and is_terminal(current) then\n"
+                + "    return true\n"
+                + "  end\n"
                 + "  if is_terminal(current) then\n"
                 + "    return false\n"
                 + "  end\n"
@@ -174,6 +177,13 @@ public class JobStateStore {
         return new IdempotencyClaim(existing, false);
     }
 
+    public void releaseIdempotency(String fileId) {
+        if (fileId == null || fileId.isBlank()) {
+            return;
+        }
+        redisTemplate.delete(idempotencyKey(fileId));
+    }
+
     public void upsertJobState(
             Long jobId,
             String status,
@@ -214,6 +224,28 @@ public class JobStateStore {
             if (!Long.valueOf(1L).equals(updated)) {
                 return;
             }
+    }
+
+    public void mergeJobResultProvenance(
+            Long jobId,
+            Long recordingSessionId,
+            Long attemptId,
+            String traceId
+    ) {
+        if (jobId == null || recordingSessionId == null || attemptId == null) {
+            return;
+        }
+        Map<String, Object> state = getJobState(jobId).orElseGet(HashMap::new);
+        Map<String, Object> result = new HashMap<>();
+        Object existingResult = state.get("result");
+        if (existingResult instanceof Map<?, ?> existingMap) {
+            existingMap.forEach((key, value) -> result.put(String.valueOf(key), value));
+        }
+        result.put("recording_session_id", recordingSessionId);
+        result.put("attempt_id", attemptId);
+        String status = normalizeStatus(state.getOrDefault("status", "COMPLETED"));
+        String fileId = String.valueOf(state.getOrDefault("fileId", "realtime-meeting:" + jobId));
+        upsertJobState(jobId, status, fileId, result, null, traceId);
     }
 
     private boolean isTerminal(String status) {
@@ -813,5 +845,14 @@ public class JobStateStore {
         public static AnalysisRetryMetadata empty() {
             return new AnalysisRetryMetadata(false, 0, null, null, null);
         }
+    }
+
+    public boolean claimJobStatusNotification(Long meetingId, String status) {
+        if (meetingId == null || status == null || status.isBlank()) {
+            return false;
+        }
+        String key = "notification:job:" + meetingId + ":" + status.trim().toUpperCase();
+        Boolean claimed = redisTemplate.opsForValue().setIfAbsent(key, "1", Duration.ofDays(30));
+        return Boolean.TRUE.equals(claimed);
     }
 }

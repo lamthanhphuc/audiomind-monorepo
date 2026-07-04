@@ -6,10 +6,12 @@ import {
   groupUploadTranscriptSegmentsForDisplay,
   mergeHydratedTranscriptWithLive,
   mergeTranscriptSegmentsForDisplay,
+  normalizeTranscriptEvent,
   normalizePersistedTranscriptForView,
   normalizeSpeakerBadge,
   parsePlainTranscriptText,
   sortTranscriptSegmentsByTimeline,
+  upsertTranscriptSegment,
 } from './transcript'
 
 describe('parsePlainTranscriptText', () => {
@@ -401,5 +403,364 @@ describe('groupUploadTranscriptSegmentsForDisplay', () => {
   it('never throws and returns best-effort output for invalid input', () => {
     expect(() => groupUploadTranscriptSegmentsForDisplay(undefined as unknown as TranscriptSegment[])).not.toThrow()
     expect(groupUploadTranscriptSegmentsForDisplay(undefined as unknown as TranscriptSegment[])).toEqual([])
+  })
+})
+
+describe('dual-stream transcript helpers', () => {
+  it('formats TAB and MIC speaker badges for display', async () => {
+    const { formatDualStreamSpeakerLabel, inferStreamIdFromSpeaker } = await import('./transcript')
+
+    expect(formatDualStreamSpeakerLabel('TAB_SPEAKER_1')).toBe('Tab 1')
+    expect(formatDualStreamSpeakerLabel('MIC_SPEAKER_2')).toBe('Mic 2')
+    expect(inferStreamIdFromSpeaker('TAB_SPEAKER_1')).toBe('tab')
+    expect(inferStreamIdFromSpeaker('MIC_SPEAKER_1')).toBe('mic')
+  })
+
+  it('does not merge display segments across tab and mic streams', () => {
+    const tabSegment: TranscriptSegment = {
+      id: 'tab-1',
+      speaker: 'TAB_SPEAKER_1',
+      streamId: 'tab',
+      text: 'Hello from tab',
+      start: 1,
+      end: 2,
+      isFinal: true,
+    }
+    const micSegment: TranscriptSegment = {
+      id: 'mic-1',
+      speaker: 'MIC_SPEAKER_1',
+      streamId: 'mic',
+      text: 'Hello from mic',
+      start: 1.2,
+      end: 2.2,
+      isFinal: true,
+    }
+
+    const merged = mergeTranscriptSegmentsForDisplay([tabSegment, micSegment], { maxGapSeconds: 5 })
+    expect(merged).toHaveLength(2)
+    expect(merged.map((segment) => segment.streamId)).toEqual(['tab', 'mic'])
+  })
+
+  it('uses stream-aware merge keys for explicit segment ids', () => {
+    const tabSegment = normalizeTranscriptEvent({
+      type: 'transcript.partial',
+      meetingId: 14,
+      segmentId: 'segment-12',
+      streamId: 'tab',
+      speaker: 'TAB_SPEAKER_1',
+      text: 'Tab partial',
+      startTime: 1,
+      endTime: 2,
+    })
+    const micSegment = normalizeTranscriptEvent({
+      type: 'transcript.partial',
+      meetingId: 14,
+      segmentId: 'segment-12',
+      stream_id: 'mic',
+      speaker: 'MIC_SPEAKER_1',
+      text: 'Mic partial',
+      startTime: 1,
+      endTime: 2,
+    })
+    const legacySegment = normalizeTranscriptEvent({
+      type: 'transcript.partial',
+      meetingId: 14,
+      segmentId: 'segment-12',
+      speaker: 'SPEAKER_1',
+      text: 'Legacy partial',
+      startTime: 1,
+      endTime: 2,
+    })
+
+    expect(tabSegment?.mergeKey).toBe('segment:segment-12|tab')
+    expect(micSegment?.mergeKey).toBe('segment:segment-12|mic')
+    expect(legacySegment?.mergeKey).toBe('segment:segment-12')
+  })
+
+  it('uses stream-aware merge keys for dedupe ids', () => {
+    const tabSegment = normalizeTranscriptEvent({
+      type: 'transcript.partial',
+      dedupeKey: 'stable-dedupe-1',
+      streamId: 'tab',
+      speaker: 'SPEAKER_1',
+      text: 'Tab dedupe',
+      startTime: 1,
+      endTime: 2,
+    })
+    const micSegment = normalizeTranscriptEvent({
+      type: 'transcript.partial',
+      dedupe_key: 'stable-dedupe-1',
+      stream_id: 'mic',
+      speaker: 'SPEAKER_1',
+      text: 'Mic dedupe',
+      startTime: 1,
+      endTime: 2,
+    })
+    const legacySegment = normalizeTranscriptEvent({
+      type: 'transcript.partial',
+      dedupeKey: 'stable-dedupe-1',
+      speaker: 'SPEAKER_1',
+      text: 'Legacy dedupe',
+      startTime: 1,
+      endTime: 2,
+    })
+
+    expect(tabSegment?.mergeKey).toBe('dedupe:stable-dedupe-1|tab')
+    expect(micSegment?.mergeKey).toBe('dedupe:stable-dedupe-1|mic')
+    expect(legacySegment?.mergeKey).toBe('dedupe:stable-dedupe-1')
+  })
+
+  it('uses attempt-aware merge keys for v2 transcript events', () => {
+    const firstAttempt = normalizeTranscriptEvent({
+      type: 'transcript.partial',
+      meetingId: 14,
+      recordingSessionId: 9001,
+      attemptId: 1,
+      seq: 7,
+      dedupeKey: 'stable-dedupe-1',
+      streamId: 'tab',
+      speaker: 'SPEAKER_1',
+      text: 'Tab attempt one',
+      startTime: 1,
+      endTime: 2,
+    })
+    const secondAttempt = normalizeTranscriptEvent({
+      type: 'transcript.partial',
+      meetingId: 14,
+      recordingSessionId: 9001,
+      attemptId: 2,
+      seq: 7,
+      dedupeKey: 'stable-dedupe-1',
+      streamId: 'tab',
+      speaker: 'SPEAKER_1',
+      text: 'Tab attempt two',
+      startTime: 1,
+      endTime: 2,
+    })
+
+    expect(firstAttempt?.mergeKey).toBe('dedupe:stable-dedupe-1|tab|scope:v2:14:9001:1:7')
+    expect(secondAttempt?.mergeKey).toBe('dedupe:stable-dedupe-1|tab|scope:v2:14:9001:2:7')
+  })
+
+  it('keeps tab, mic, and legacy explicit segment ids separate during hydration', () => {
+    const segments = normalizePersistedTranscriptForView([
+      {
+        segment_id: 'persisted-12',
+        stream_id: 'tab',
+        speaker: 'SPEAKER_1',
+        text: 'Persisted tab',
+        start_time: 1,
+        end_time: 2,
+      },
+      {
+        segment_id: 'persisted-12',
+        stream_id: 'mic',
+        speaker: 'SPEAKER_1',
+        text: 'Persisted mic',
+        start_time: 1,
+        end_time: 2,
+      },
+      {
+        segment_id: 'persisted-12',
+        speaker: 'SPEAKER_1',
+        text: 'Persisted legacy',
+        start_time: 1,
+        end_time: 2,
+      },
+    ])
+
+    expect(segments).toHaveLength(3)
+    expect(segments.map((segment) => segment.streamId)).toEqual(['tab', 'mic', undefined])
+    expect(segments.map((segment) => segment.mergeKey)).toEqual([
+      'segment:persisted-12|tab',
+      'segment:persisted-12|mic',
+      'segment:persisted-12',
+    ])
+  })
+
+  it('does not merge legacy missing stream into tab or mic segments with the same id', () => {
+    const tabSegment = normalizeTranscriptEvent({
+      type: 'transcript.partial',
+      segmentId: 'segment-legacy-test',
+      streamId: 'tab',
+      speaker: 'SPEAKER_1',
+      text: 'Tab line',
+      startTime: 1,
+      endTime: 2,
+    })
+    const micSegment = normalizeTranscriptEvent({
+      type: 'transcript.partial',
+      segmentId: 'segment-legacy-test',
+      streamId: 'mic',
+      speaker: 'SPEAKER_1',
+      text: 'Mic line',
+      startTime: 1,
+      endTime: 2,
+    })
+    const legacySegment = normalizeTranscriptEvent({
+      type: 'transcript.partial',
+      segmentId: 'segment-legacy-test',
+      speaker: 'SPEAKER_1',
+      text: 'Legacy line',
+      startTime: 1,
+      endTime: 2,
+    })
+
+    let current: TranscriptSegment[] = []
+    for (const segment of [tabSegment, micSegment, legacySegment]) {
+      expect(segment).not.toBeNull()
+      current = upsertTranscriptSegment(current, segment as TranscriptSegment).segments
+    }
+
+    expect(current).toHaveLength(3)
+    expect(current.map((segment) => segment.text)).toEqual(['Tab line', 'Mic line', 'Legacy line'])
+  })
+
+  it('does not merge legacy missing stream into tab or mic segments with the same dedupe key', () => {
+    const tabSegment = normalizeTranscriptEvent({
+      type: 'transcript.partial',
+      dedupeKey: 'dedupe-legacy-test',
+      streamId: 'tab',
+      speaker: 'SPEAKER_1',
+      text: 'Tab dedupe',
+      startTime: 1,
+      endTime: 2,
+    })
+    const micSegment = normalizeTranscriptEvent({
+      type: 'transcript.partial',
+      dedupeKey: 'dedupe-legacy-test',
+      streamId: 'mic',
+      speaker: 'SPEAKER_1',
+      text: 'Mic dedupe',
+      startTime: 1,
+      endTime: 2,
+    })
+    const legacySegment = normalizeTranscriptEvent({
+      type: 'transcript.partial',
+      dedupeKey: 'dedupe-legacy-test',
+      speaker: 'SPEAKER_1',
+      text: 'Legacy dedupe',
+      startTime: 1,
+      endTime: 2,
+    })
+
+    let current: TranscriptSegment[] = []
+    for (const segment of [tabSegment, micSegment, legacySegment]) {
+      expect(segment).not.toBeNull()
+      current = upsertTranscriptSegment(current, segment as TranscriptSegment).segments
+    }
+
+    expect(current).toHaveLength(3)
+    expect(current.map((segment) => segment.mergeKey)).toEqual([
+      'dedupe:dedupe-legacy-test|tab',
+      'dedupe:dedupe-legacy-test|mic',
+      'dedupe:dedupe-legacy-test',
+    ])
+  })
+
+  it('does not merge v2 segments from different attempts with the same seq and segment id', () => {
+    const firstAttempt = normalizeTranscriptEvent({
+      type: 'transcript.final',
+      meetingId: 44,
+      recordingSessionId: 9001,
+      attemptId: 1,
+      seq: 4,
+      segmentId: 'shared-segment',
+      streamId: 'mic',
+      speaker: 'SPEAKER_1',
+      text: 'attempt one',
+      startTime: 1,
+      endTime: 2,
+      isFinal: true,
+    })
+    const secondAttempt = normalizeTranscriptEvent({
+      type: 'transcript.final',
+      meetingId: 44,
+      recordingSessionId: 9001,
+      attemptId: 2,
+      seq: 4,
+      segmentId: 'shared-segment',
+      streamId: 'mic',
+      speaker: 'SPEAKER_1',
+      text: 'attempt two',
+      startTime: 1,
+      endTime: 2,
+      isFinal: true,
+    })
+
+    let current: TranscriptSegment[] = []
+    current = upsertTranscriptSegment(current, firstAttempt as TranscriptSegment).segments
+    current = upsertTranscriptSegment(current, secondAttempt as TranscriptSegment).segments
+
+    expect(current).toHaveLength(2)
+    expect(current.map((segment) => segment.text)).toEqual(['attempt one', 'attempt two'])
+  })
+
+  it('merges v2 partial and final events from the same attempt scope', () => {
+    const partial = normalizeTranscriptEvent({
+      type: 'transcript.partial',
+      meetingId: 44,
+      recordingSessionId: 9001,
+      attemptId: 1,
+      seq: 4,
+      segmentId: 'attempt-partial-final',
+      streamId: 'mic',
+      speaker: 'SPEAKER_1',
+      text: 'partial',
+      startTime: 1,
+      endTime: 2,
+    })
+    const final = normalizeTranscriptEvent({
+      type: 'transcript.final',
+      meetingId: 44,
+      recordingSessionId: 9001,
+      attemptId: 1,
+      seq: 4,
+      segmentId: 'attempt-partial-final',
+      streamId: 'mic',
+      speaker: 'SPEAKER_1',
+      text: 'final',
+      startTime: 1,
+      endTime: 2,
+      isFinal: true,
+    })
+
+    let current: TranscriptSegment[] = []
+    current = upsertTranscriptSegment(current, partial as TranscriptSegment).segments
+    current = upsertTranscriptSegment(current, final as TranscriptSegment).segments
+
+    expect(current).toHaveLength(1)
+    expect(current[0]).toMatchObject({ text: 'final', recordingSessionId: 9001, attemptId: 1, seq: 4 })
+  })
+
+  it('still merges legacy partial and final events with the same identity', () => {
+    const partial = normalizeTranscriptEvent({
+      type: 'transcript.partial',
+      segmentId: 'legacy-partial-final',
+      speaker: 'SPEAKER_1',
+      text: 'partial text',
+      startTime: 1,
+      endTime: 2,
+    })
+    const final = normalizeTranscriptEvent({
+      type: 'transcript.final',
+      segmentId: 'legacy-partial-final',
+      speaker: 'SPEAKER_1',
+      text: 'final text',
+      startTime: 1,
+      endTime: 2,
+      isFinal: true,
+    })
+
+    let current: TranscriptSegment[] = []
+    current = upsertTranscriptSegment(current, partial as TranscriptSegment).segments
+    current = upsertTranscriptSegment(current, final as TranscriptSegment).segments
+
+    expect(current).toHaveLength(1)
+    expect(current[0]).toMatchObject({
+      text: 'final text',
+      isFinal: true,
+      streamId: undefined,
+    })
   })
 })

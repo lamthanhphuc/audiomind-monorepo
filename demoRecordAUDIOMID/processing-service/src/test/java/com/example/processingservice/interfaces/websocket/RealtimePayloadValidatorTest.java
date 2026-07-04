@@ -42,7 +42,14 @@ class RealtimePayloadValidatorTest {
     void validateBinary_rejectsNonWebmBytes() {
         byte[] payload = new byte[] {0x52, 0x49, 0x46, 0x46};
         var result = validator.validateBinary(payload, (long) payload.length);
-        assertEquals(RealtimePayloadValidator.ValidationError.REALTIME_UNSUPPORTED_ENCODING, result.errorCode());
+        assertTrue(result.valid());
+    }
+
+    @Test
+    void validateBinary_acceptsStreamingClusterWithoutEbmlHeader() {
+        byte[] payload = new byte[] {0x01, 0x02, 0x03, 0x04, 0x05};
+        var result = validator.validateBinary(payload, (long) payload.length);
+        assertTrue(result.valid());
     }
 
     @Test

@@ -1,7 +1,9 @@
 import random
+import socket
 import time
 from math import ceil
 from typing import Any, Callable
+from urllib.parse import urlparse, urlunparse
 
 import httpx
 from loguru import logger
@@ -27,6 +29,87 @@ def _bounded_retry_after(response: Any, fallback_seconds: float) -> float:
         except ValueError:
             pass
     return max(0.0, float(fallback_seconds or 0.0))
+
+
+def _response_error_message(response: Any) -> str:
+    try:
+        body = response.json()
+    except Exception:
+        return ""
+    if isinstance(body, dict):
+        error = body.get("error")
+        if isinstance(error, dict):
+            return str(error.get("message") or "").strip()
+    return ""
+
+
+def _is_region_blocked_message(message: str) -> bool:
+    lowered = str(message or "").strip().lower()
+    return "location is not supported" in lowered
+
+
+def _normalize_gemini_proxy_url(proxy_url: str) -> str:
+    raw = str(proxy_url or "").strip()
+    if not raw:
+        return ""
+
+    parsed = urlparse(raw)
+    host = (parsed.hostname or "").strip().lower()
+    if host not in {"host.docker.internal", "host.containers.internal"}:
+        return raw
+
+    try:
+        ipv4_host = socket.gethostbyname(host)
+    except OSError:
+        return raw
+
+    port = parsed.port
+    userinfo = ""
+    if parsed.username:
+        userinfo = parsed.username
+        if parsed.password:
+            userinfo = f"{userinfo}:{parsed.password}"
+        userinfo = f"{userinfo}@"
+
+    netloc = f"{userinfo}{ipv4_host}"
+    if port:
+        netloc = f"{netloc}:{port}"
+
+    normalized = urlunparse(
+        (
+            parsed.scheme,
+            netloc,
+            parsed.path or "",
+            parsed.params,
+            parsed.query,
+            parsed.fragment,
+        )
+    )
+    if normalized != raw:
+        logger.info(
+            "GEMINI_HTTP_PROXY_NORMALIZED host={} ipv4={} port={}",
+            host,
+            ipv4_host,
+            port,
+        )
+    return normalized
+
+
+def resolve_http_client_factory(
+    *,
+    proxy: str | None = None,
+    base_factory: Callable[..., Any] = httpx.Client,
+) -> tuple[Callable[..., Any], str]:
+    proxy_url = _normalize_gemini_proxy_url(str(proxy or "").strip())
+    if not proxy_url:
+        return base_factory, ""
+
+    logger.info("GEMINI_HTTP_PROXY_ENABLED proxy={}", proxy_url)
+
+    def factory(**kwargs: Any) -> httpx.Client:
+        return base_factory(proxies=proxy_url, **kwargs)
+
+    return factory, proxy_url
 
 
 def _response_reason(response: Any) -> str:
@@ -66,6 +149,7 @@ class GeminiClient:
         backoff_max_ms: float = 10000.0,
         backoff_jitter: bool = True,
         fail_fast_seconds: float = 30.0,
+        http_proxy: str = "",
         http_client_factory: Callable[..., Any] = httpx.Client,
         sleep: Callable[[float], None] = time.sleep,
         clock: Callable[[], float] = time.monotonic,
@@ -81,6 +165,7 @@ class GeminiClient:
         self.backoff_max_ms = max(0.0, float(backoff_max_ms or 0.0))
         self.backoff_jitter = bool(backoff_jitter)
         self.fail_fast_seconds = max(0.0, float(fail_fast_seconds or 0.0))
+        self.http_proxy = _normalize_gemini_proxy_url(http_proxy)
         self.http_client_factory = http_client_factory
         self.sleep = sleep
         self.clock = clock
@@ -158,6 +243,30 @@ class GeminiClient:
                         break
                     self._sleep_before_retry(attempt, started)
                     continue
+                except httpx.ConnectError as exc:
+                    last_error = exc
+                    if self.http_proxy:
+                        logger.warning(
+                            "GEMINI_PROXY_CONNECT_FAILED alias={} proxy={} error={}",
+                            entry.alias,
+                            self.http_proxy,
+                            exc,
+                        )
+                        last_error = AnalysisUnavailableError(
+                            "Cannot reach Gemini HTTP proxy. Start Clash/V2Ray, enable "
+                            "Allow LAN, and verify GEMINI_HTTP_PROXY port in infra/.env.",
+                            provider="gemini",
+                            error_code="GEMINI_PROXY_CONNECT_FAILED",
+                        )
+                    else:
+                        logger.warning(
+                            "GEMINI_CALL_FAILED alias={} status=network reason=CONNECT_ERROR",
+                            entry.alias,
+                        )
+                    if attempt >= self.max_attempts:
+                        break
+                    self._sleep_before_retry(attempt, started)
+                    continue
                 except httpx.HTTPError as exc:
                     last_error = exc
                     logger.warning(
@@ -187,16 +296,27 @@ class GeminiClient:
                     reason,
                     status_code in {429, 500, 502, 503, 504},
                 )
+                error_message = _response_error_message(response)
                 logger.warning(
-                    "GEMINI_CALL_FAILED alias={} status={} reason={}",
+                    "GEMINI_CALL_FAILED alias={} status={} reason={} message={}",
                     entry.alias,
                     status_code,
                     reason,
+                    error_message[:240] if error_message else "",
                 )
 
                 if status_code == 400:
+                    if _is_region_blocked_message(error_message):
+                        raise AnalysisUnavailableError(
+                            "Gemini API is blocked in this region. "
+                            "Set GEMINI_HTTP_PROXY to a local HTTP proxy (e.g. Clash/V2Ray) for development.",
+                            provider="gemini",
+                            error_code="GEMINI_REGION_BLOCKED",
+                            retryable=False,
+                        )
+                    detail = error_message or "Gemini request failed with HTTP 400"
                     raise AnalysisUnavailableError(
-                        "Gemini request failed with HTTP 400",
+                        detail,
                         provider="gemini",
                         error_code="GEMINI_INVALID_REQUEST",
                         retryable=False,

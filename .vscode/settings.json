@@ -42,5 +42,13 @@
     "**/target": true,
     "**/dist": true,
     "**/coverage": true
-  }
+  },
+  "codegraph.indexOnStartup": true,          // Tự động index khi mở dự án
+  "codegraph.excludePatterns": [             // Bỏ qua các thư mục không cần thiết
+    "**/node_modules/**",
+    "**/dist/**",
+    "**/build/**",
+    "**/generated/**"
+  ],
+  "codegraph.maxFileSize": 1048576
 }
