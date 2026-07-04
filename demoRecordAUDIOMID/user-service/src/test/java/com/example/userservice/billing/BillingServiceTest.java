@@ -58,7 +58,6 @@ class BillingServiceTest {
         Map.of("orderCode", 9001L, "code", "00", "amount", 79000L),
         "sig-success-1"
     );
-    // amount must match invoice.amountVnd
     when(payosClient.verifyWebhookAndExtractData(webhook)).thenReturn(webhook.data());
     when(webhookEventRepository.existsByProviderAndSignature("PAYOS", "sig-success-1"))
         .thenReturn(false);

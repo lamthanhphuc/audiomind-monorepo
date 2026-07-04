@@ -199,4 +199,3 @@ public class PayosClient {
     public record PayosPaymentInfo(String status, long amount, long amountPaid) {
     }
 }
-
