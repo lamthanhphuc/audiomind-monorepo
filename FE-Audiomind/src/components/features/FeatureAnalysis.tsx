@@ -47,6 +47,9 @@ type FeatureAnalysisProps = {
 
 type HydrationState = 'idle' | 'loading' | 'ready' | 'error'
 type AnalysisViewState = 'idle' | 'processing' | 'completed' | 'failed' | 'missing'
+type AnalysisRightPanelKey = 'speaker' | 'tasks' | 'assistant'
+
+const ANALYSIS_RIGHT_PANEL_STORAGE_KEY = 'audiomind.analysis.rightPanels.v2'
 
 const isAbortError = (error: unknown): boolean => {
   return error instanceof DOMException && error.name === 'AbortError'
@@ -157,6 +160,34 @@ export default function FeatureAnalysis({
   const [highlightRange, setHighlightRange] = useState<TranscriptHighlightRange | null>(null)
   const [savedAnalysis, setSavedAnalysis] = useState<AiAnalysis | null>(null)
   const savedAnalysisAbortRef = useRef<AbortController | null>(null)
+  const [rightPanelsOpen, setRightPanelsOpen] = useState<Record<AnalysisRightPanelKey, boolean>>(() => {
+    try {
+      const raw = localStorage.getItem(ANALYSIS_RIGHT_PANEL_STORAGE_KEY)
+      if (!raw) {
+        return { speaker: false, tasks: true, assistant: true }
+      }
+      const parsed = JSON.parse(raw) as Partial<Record<AnalysisRightPanelKey, boolean>>
+      return {
+        speaker: parsed.speaker ?? false,
+        tasks: parsed.tasks ?? true,
+        assistant: parsed.assistant ?? true,
+      }
+    } catch {
+      return { speaker: false, tasks: true, assistant: true }
+    }
+  })
+
+  const toggleRightPanel = useCallback((panel: AnalysisRightPanelKey) => {
+    setRightPanelsOpen((current) => {
+      const next = { ...current, [panel]: !current[panel] }
+      try {
+        localStorage.setItem(ANALYSIS_RIGHT_PANEL_STORAGE_KEY, JSON.stringify(next))
+      } catch {
+        // ignore localStorage errors
+      }
+      return next
+    })
+  }, [])
 
   const applySpeakerProfiles = useCallback((profiles: SpeakerProfile[]) => {
     const nextMap: Record<string, string> = {}
@@ -519,31 +550,55 @@ export default function FeatureAnalysis({
         </div>
 
         <div className="analysis-right-panel">
-          <SpeakerNamingPanel
-            meetingId={meetingId}
-            transcriptSegments={effectiveSegments}
-            onProfilesSaved={applySpeakerProfiles}
-          />
-          <MeetingTaskTracker
-            meetingId={meetingId}
-            groupedActionPlan={displayAnalysis?.groupedActionPlan}
-          />
-          <AiAssistant
-            busy={effectiveBusy}
-            meetingId={meetingId}
-            onCitationClick={handleCitationClick}
-            onAsk={async (message) => {
-              const result = await answerMeetingQuestion(meetingId, message, displayAnalysis)
-              let text = result.answer
-              if (result.provider !== 'gemini') {
-                const suffix = result.provider === 'evidence'
-                  ? '\n\n(Lưu ý: trả lời từ transcript đã lưu.)'
-                  : '\n\n(Lưu ý: Gemini tạm không khả dụng — trả lời từ dữ liệu phân tích cục bộ.)'
-                text = `${result.answer}${suffix}`
-              }
-              return { text, citations: result.sourceSegments }
-            }}
-          />
+          <section className="analysis-collapsible-panel">
+            <button type="button" className="analysis-collapsible-panel__toggle" onClick={() => toggleRightPanel('speaker')}>
+              <span>Người nói</span>
+              <span>{rightPanelsOpen.speaker ? '−' : '+'}</span>
+            </button>
+            {rightPanelsOpen.speaker && (
+              <SpeakerNamingPanel
+                meetingId={meetingId}
+                transcriptSegments={effectiveSegments}
+                onProfilesSaved={applySpeakerProfiles}
+              />
+            )}
+          </section>
+          <section className="analysis-collapsible-panel">
+            <button type="button" className="analysis-collapsible-panel__toggle" onClick={() => toggleRightPanel('tasks')}>
+              <span>Công việc</span>
+              <span>{rightPanelsOpen.tasks ? '−' : '+'}</span>
+            </button>
+            {rightPanelsOpen.tasks && (
+              <MeetingTaskTracker
+                meetingId={meetingId}
+                groupedActionPlan={displayAnalysis?.groupedActionPlan}
+              />
+            )}
+          </section>
+          <section className="analysis-collapsible-panel">
+            <button type="button" className="analysis-collapsible-panel__toggle" onClick={() => toggleRightPanel('assistant')}>
+              <span>Trợ lý AI</span>
+              <span>{rightPanelsOpen.assistant ? '−' : '+'}</span>
+            </button>
+            {rightPanelsOpen.assistant && (
+              <AiAssistant
+                busy={effectiveBusy}
+                meetingId={meetingId}
+                onCitationClick={handleCitationClick}
+                onAsk={async (message) => {
+                  const result = await answerMeetingQuestion(meetingId, message, displayAnalysis)
+                  let text = result.answer
+                  if (result.provider !== 'gemini') {
+                    const suffix = result.provider === 'evidence'
+                      ? '\n\n(Lưu ý: trả lời từ transcript đã lưu.)'
+                      : '\n\n(Lưu ý: Gemini tạm không khả dụng — trả lời từ dữ liệu phân tích cục bộ.)'
+                    text = `${result.answer}${suffix}`
+                  }
+                  return { text, citations: result.sourceSegments }
+                }}
+              />
+            )}
+          </section>
         </div>
       </div>
       {meetingId != null && activeTerm && (

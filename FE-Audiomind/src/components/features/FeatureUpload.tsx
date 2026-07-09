@@ -52,6 +52,7 @@ export default function FeatureUpload({
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const { supportedFormatsLabel, config } = useUpload()
   const acceptExtensions = config.allowedExtensions.join(',')
+  const shouldShowStatus = status !== 'idle' || Boolean(errorMessage) || Boolean(duplicateNotice) || Boolean(disabled)
 
   const handleDrag = (e: React.DragEvent) => {
     e.preventDefault()
@@ -96,8 +97,27 @@ export default function FeatureUpload({
               onDismiss={onDismissOnboarding}
             />
           )}
-          <h1 className="upload-welcome">Chào mừng trở lại, {userName}!</h1>
-          <h2 className="upload-title">Tải lên file âm thanh của bạn</h2>
+          <div className="ui-section__header upload-head">
+            <div>
+              <p className="ui-section__eyebrow">Tạo phân tích mới</p>
+              <h1 className="upload-welcome">Chào mừng trở lại, {userName}!</h1>
+              <p className="upload-title">Chọn file âm thanh, kiểm tra tùy chọn và bắt đầu phân tích.</p>
+            </div>
+          </div>
+          <ol className="upload-steps" aria-label="Các bước xử lý file">
+            <li className={`upload-step ${selectedFile ? 'upload-step--done' : 'upload-step--active'}`}>
+              <span className="upload-step__index">1</span>
+              <span>Chọn file</span>
+            </li>
+            <li className={`upload-step ${(uploadLanguage || domainMode) ? 'upload-step--active' : ''}`}>
+              <span className="upload-step__index">2</span>
+              <span>Chọn cấu hình</span>
+            </li>
+            <li className={`upload-step ${selectedFile && !disabled ? 'upload-step--active' : ''}`}>
+              <span className="upload-step__index">3</span>
+              <span>Bấm phân tích</span>
+            </li>
+          </ol>
 
           <div
             className={`upload-dropzone ${dragActive ? 'active' : ''} ${selectedFile ? 'has-file' : ''}`}
@@ -130,34 +150,45 @@ export default function FeatureUpload({
             />
           </div>
 
-          <div className="upload-form">
-            <div className="form-group">
-              <label htmlFor="upload-language">Ngôn ngữ</label>
-              <select
-                id="upload-language"
-                value={uploadLanguage}
-                data-testid="e2e-upload-language-select"
-                onChange={(e) => onUploadLanguageChange(e.target.value as RealtimeLanguage)}
-                disabled={disabled}
-              >
-                <option value="vi">Tiếng Việt</option>
-                <option value="en">Tiếng Anh</option>
-                <option value="multi">Việt + Anh</option>
-              </select>
+          <section className="ui-section ui-section--subtle upload-options-panel">
+            <div>
+              <p className="ui-section__eyebrow">Tùy chọn</p>
+              <h2 className="ui-section__title">Cấu hình phân tích</h2>
+              <p className="ui-section__description">
+                Giữ mặc định nếu bạn chỉ cần transcript và tóm tắt nhanh.
+              </p>
             </div>
-            <DomainModeSelector
-              id="upload-domain-mode"
-              value={domainMode}
-              onChange={onDomainModeChange}
-              disabled={disabled}
-              testId="e2e-upload-domain-mode-select"
-            />
-          </div>
+            <div className="upload-form ui-field-grid">
+              <div className="form-group">
+                <label htmlFor="upload-language">Ngôn ngữ</label>
+                <select
+                  id="upload-language"
+                  value={uploadLanguage}
+                  data-testid="e2e-upload-language-select"
+                  onChange={(e) => onUploadLanguageChange(e.target.value as RealtimeLanguage)}
+                  disabled={disabled}
+                >
+                  <option value="vi">Tiếng Việt</option>
+                  <option value="en">Tiếng Anh</option>
+                  <option value="multi">Việt + Anh</option>
+                </select>
+              </div>
+              <DomainModeSelector
+                id="upload-domain-mode"
+                value={domainMode}
+                onChange={onDomainModeChange}
+                disabled={disabled}
+                testId="e2e-upload-domain-mode-select"
+              />
+            </div>
+          </section>
 
-          <p className="status-line upload-status-line" data-testid="e2e-status">
-            <span>Trạng thái</span>
-            <span className={getStatusBadgeClass(status)}>{formatUploadStatus(status)}</span>
-          </p>
+          {shouldShowStatus && (
+            <p className="ui-status-strip upload-status-line" data-testid="e2e-status">
+              <span>Trạng thái</span>
+              <span className={getStatusBadgeClass(status)}>{formatUploadStatus(status)}</span>
+            </p>
+          )}
 
           {duplicateNotice && (
             <div className="ui-state ui-state--empty upload-selected-banner" data-testid="duplicate-upload-banner">
@@ -183,7 +214,7 @@ export default function FeatureUpload({
           <div className="upload-actions-row">
             <button
               type="button"
-              className="btn-primary form-submit"
+              className="btn btn--primary btn--block form-submit"
               data-testid="e2e-process-submit"
               onClick={handleSubmit}
               disabled={disabled || !selectedFile}
@@ -191,7 +222,7 @@ export default function FeatureUpload({
               Phân tích file
             </button>
             {disabled && onCancel && (
-              <button type="button" className="btn-secondary form-submit" onClick={onCancel}>
+              <button type="button" className="btn btn--secondary btn--block form-submit" onClick={onCancel}>
                 Hủy xử lý
               </button>
             )}

@@ -41,7 +41,7 @@ export function DualStreamQuotaInfoBanner({
         </p>
       )}
       {onNavigateBilling && (
-        <button type="button" className="btn-secondary" onClick={onNavigateBilling}>
+        <button type="button" className="btn btn--secondary btn--block" onClick={onNavigateBilling}>
           {ctaLabel}
         </button>
       )}

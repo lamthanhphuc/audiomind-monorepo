@@ -1,5 +1,5 @@
 import { createRoot } from 'react-dom/client'
-import { act } from 'react-dom/test-utils'
+import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import * as knowledgeLayer from '../../services/knowledgeLayer'
@@ -154,3 +154,4 @@ describe('KnowledgeVaultScene', () => {
     expect(container.textContent).toContain('Body A')
   })
 })
+

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { createRoot } from 'react-dom/client'
-import { act } from 'react-dom/test-utils'
+import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import FeatureIntegrations from './FeatureIntegrations'
 import * as googleIntegration from '../../services/googleIntegration'
@@ -66,3 +66,4 @@ describe('FeatureIntegrations', () => {
     expect(container.querySelector('[data-testid="mock-teams-panel"]')).toBeTruthy()
   })
 })
+

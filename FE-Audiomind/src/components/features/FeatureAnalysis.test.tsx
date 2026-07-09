@@ -1,5 +1,5 @@
 import { createRoot } from 'react-dom/client'
-import { act } from 'react-dom/test-utils'
+import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as api from '../../services/api'
 import * as knowledgeLayer from '../../services/knowledgeLayer'
@@ -141,8 +141,8 @@ describe('FeatureAnalysis', () => {
     expect(container.textContent).toContain('Retry webhook')
   })
 
-  it('uses analysis scroll layout structure without nested transcript max height', () => {
-    act(() => {
+  it('uses analysis scroll layout structure without nested transcript max height', async () => {
+    await act(async () => {
       root.render(
         <FeatureAnalysis
           meetingId={42}
@@ -156,6 +156,7 @@ describe('FeatureAnalysis', () => {
         />,
       )
     })
+    await flush()
 
     expect(container.querySelector('.feature-analysis-page')).toBeTruthy()
     expect(container.querySelector('.analysis-main-content')).toBeTruthy()
@@ -419,3 +420,4 @@ describe('FeatureAnalysis', () => {
     expect(container.textContent).toContain('Phân tích AI tạm thời chưa sẵn sàng')
   })
 })
+

@@ -140,14 +140,14 @@ export default function TeamsIntegrationPanel({
         })
       }
       if (result.duplicate && result.reused) {
-        setNotice('Recording Teams đã được phân tích trước đó.')
+        setNotice('Bản ghi Teams này đã được phân tích trước đó.')
         setNoticeTone('info')
       } else {
-        setNotice('Đã import recording Teams — đang chạy phân tích tự động.')
+        setNotice('Đã nhập bản ghi Teams — đang chạy phân tích tự động.')
         setNoticeTone('success')
       }
     } catch (err) {
-      setError(err instanceof TeamsIntegrationError ? err.message : 'Import Teams recording thất bại.')
+      setError(err instanceof TeamsIntegrationError ? err.message : 'Nhập bản ghi Teams thất bại.')
     } finally {
       setImportingUuid(null)
     }
@@ -164,8 +164,8 @@ export default function TeamsIntegrationPanel({
       <header>
         <h3>Microsoft Teams</h3>
         <p>
-          Kết nối Microsoft để kéo cloud recording từ Teams. Import cloud sẽ phân tích ngay;
-          file export thủ công dùng khung bên dưới rồi bấm &quot;Phân tích file&quot;.
+          Kết nối Microsoft để lấy bản ghi Teams trên cloud. Bản ghi được nhập sẽ phân tích ngay;
+          file xuất thủ công dùng khung bên dưới rồi bấm &quot;Phân tích file&quot;.
         </p>
       </header>
 
@@ -194,15 +194,15 @@ export default function TeamsIntegrationPanel({
           <p className="studio-muted-text">Đã liên kết: {teamsEmail || 'tài khoản Microsoft'}</p>
           <div className="studio-actions-row">
             <button type="button" className="studio-btn studio-btn--secondary" disabled={busy} onClick={() => void refreshStatus()}>
-              Tải lại recordings
+              Tải lại bản ghi
             </button>
             <button type="button" className="studio-btn studio-btn--secondary" disabled={busy} onClick={() => void handleDisconnect()}>
               Ngắt kết nối
             </button>
           </div>
-          {loadingRecordings && <LoadingState message="Đang tải cloud recordings…" />}
+          {loadingRecordings && <LoadingState message="Đang tải bản ghi trên cloud…" />}
           {!loadingRecordings && recordings.length === 0 && (
-            <EmptyState message="Chưa có cloud recording trong 30 ngày gần đây. Bạn có thể upload file export thủ công bên dưới." />
+            <EmptyState message="Chưa có bản ghi cloud trong 30 ngày gần đây. Bạn có thể upload file xuất thủ công bên dưới." />
           )}
           {!loadingRecordings && recordings.length > 0 && (
             <ul className="integration-recording-list">
@@ -217,7 +217,7 @@ export default function TeamsIntegrationPanel({
                     onClick={() => void handleImport(meeting)}
                     data-testid={`teams-import-${meeting.uuid}`}
                   >
-                    {importingUuid === meeting.uuid ? 'Đang import…' : 'Import & phân tích'}
+                    {importingUuid === meeting.uuid ? 'Đang nhập…' : 'Nhập & phân tích'}
                   </button>
                 </li>
               ))}
@@ -229,7 +229,7 @@ export default function TeamsIntegrationPanel({
       {error && <ErrorState title="Teams" message={error} />}
 
       <div className="studio-stack">
-        <p className="studio-muted-text">Hoặc chọn file export từ Teams (.mp4, .m4a, .vtt…)</p>
+        <p className="studio-muted-text">Hoặc chọn file đã xuất từ Teams (.mp4, .m4a, .vtt…)</p>
         <label className="integration-import__dropzone">
           <input
             type="file"
@@ -245,7 +245,7 @@ export default function TeamsIntegrationPanel({
             }}
             data-testid="teams-import-input"
           />
-          <span>Chọn file Teams export</span>
+          <span>Chọn file Teams đã xuất</span>
         </label>
       </div>
     </section>

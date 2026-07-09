@@ -262,7 +262,7 @@ export const AnalysisStatusPanel = ({
       {isUserQuotaBlocked && onUpgradePlan && (
         <button
           type="button"
-          className="btn-primary"
+          className="btn btn--primary btn--block"
           data-testid="analysis-quota-upgrade-button"
           onClick={onUpgradePlan}
         >

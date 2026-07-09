@@ -113,7 +113,7 @@ export default function KnowledgeVaultScene({ onOpenMeeting }: Props) {
       setItems((current) => current.filter((note) => note.id !== item.id))
       notifyGlossaryNotesChanged()
     } catch (deleteError) {
-      setError(deleteError instanceof Error ? deleteError.message : 'Không xóa được note')
+      setError(deleteError instanceof Error ? deleteError.message : 'Không xóa được ghi chú')
     }
   }
 
@@ -148,7 +148,7 @@ export default function KnowledgeVaultScene({ onOpenMeeting }: Props) {
     <section className="feature-scene knowledge-vault-scene" data-testid="knowledge-vault-scene">
       <header className="knowledge-vault-scene__hero">
         <div>
-          <p className="knowledge-vault-scene__eyebrow">AI Knowledge Layer</p>
+          <p className="knowledge-vault-scene__eyebrow">Lớp tri thức AI</p>
           <h1>Kho tri thức</h1>
           <p className="knowledge-vault-scene__subtitle">
             Tìm lại ghi chú thuật ngữ và giải thích đã lưu từ mọi cuộc họp.
@@ -171,7 +171,7 @@ export default function KnowledgeVaultScene({ onOpenMeeting }: Props) {
       {info && !loading && <p className="knowledge-vault-scene__info">{info}</p>}
 
       {!loading && items.length === 0 && !error && (
-        <p className="knowledge-vault-scene__empty">Chưa có note nào. Hãy lưu từ transcript hoặc panel thuật ngữ.</p>
+        <p className="knowledge-vault-scene__empty">Chưa có ghi chú nào. Hãy lưu từ transcript hoặc bảng thuật ngữ.</p>
       )}
 
       <ul className="knowledge-vault-scene__list">
@@ -198,7 +198,7 @@ export default function KnowledgeVaultScene({ onOpenMeeting }: Props) {
                   </button>
                   <div>
                     <h2 className="knowledge-vault-scene__group-title">
-                      {group.meetingId != null ? `Meeting #${group.meetingId}` : 'Ghi chú chung'}
+                      {group.meetingId != null ? `Cuộc họp #${group.meetingId}` : 'Ghi chú chung'}
                     </h2>
                     <p className="knowledge-vault-scene__group-meta">
                       {group.notes.length} ghi chú
@@ -208,7 +208,7 @@ export default function KnowledgeVaultScene({ onOpenMeeting }: Props) {
                 <div className="knowledge-vault-scene__group-actions">
                   <button
                     type="button"
-                    className="secondary-cta"
+                    className="btn btn--secondary"
                     onClick={() => toggleGroup(group.meetingId)}
                     data-testid={`knowledge-vault-collapse-${groupKey}`}
                   >
@@ -217,11 +217,11 @@ export default function KnowledgeVaultScene({ onOpenMeeting }: Props) {
                   {group.meetingId != null && onOpenMeeting && (
                     <button
                       type="button"
-                      className="secondary-cta"
+                      className="btn btn--secondary"
                       onClick={() => onOpenMeeting(group.meetingId as number)}
                       data-testid={`knowledge-vault-open-meeting-${group.meetingId}`}
                     >
-                      Mở meeting
+                      Mở cuộc họp
                     </button>
                   )}
                 </div>
@@ -247,7 +247,7 @@ export default function KnowledgeVaultScene({ onOpenMeeting }: Props) {
                             {item.localOnly && (
                               <button
                                 type="button"
-                                className="primary-cta"
+                                className="btn btn--primary"
                                 onClick={() => void handleSyncLocal(item)}
                                 data-testid={`knowledge-vault-sync-${item.meetingId}`}
                               >
@@ -256,7 +256,7 @@ export default function KnowledgeVaultScene({ onOpenMeeting }: Props) {
                             )}
                             <button
                               type="button"
-                              className="secondary-cta"
+                              className="btn btn--secondary"
                               onClick={() => void handleDelete(item)}
                               data-testid={`knowledge-vault-delete-${item.localOnly ? `local-${item.meetingId}` : item.id}`}
                             >

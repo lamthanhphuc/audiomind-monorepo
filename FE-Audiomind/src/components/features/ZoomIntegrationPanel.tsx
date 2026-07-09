@@ -140,14 +140,14 @@ export default function ZoomIntegrationPanel({
         })
       }
       if (result.duplicate && result.reused) {
-        setNotice('Recording Zoom đã được phân tích trước đó.')
+        setNotice('Bản ghi Zoom này đã được phân tích trước đó.')
         setNoticeTone('info')
       } else {
-        setNotice('Đã import recording Zoom — đang chạy phân tích tự động.')
+        setNotice('Đã nhập bản ghi Zoom — đang chạy phân tích tự động.')
         setNoticeTone('success')
       }
     } catch (err) {
-      setError(err instanceof ZoomIntegrationError ? err.message : 'Import Zoom recording thất bại.')
+      setError(err instanceof ZoomIntegrationError ? err.message : 'Nhập bản ghi Zoom thất bại.')
     } finally {
       setImportingUuid(null)
     }
@@ -164,8 +164,8 @@ export default function ZoomIntegrationPanel({
       <header>
         <h3>Zoom Cloud</h3>
         <p>
-          Kết nối tài khoản Zoom để kéo cloud recording tự động. Import cloud sẽ phân tích ngay;
-          file export thủ công dùng khung bên dưới rồi bấm &quot;Phân tích file&quot;.
+          Kết nối tài khoản Zoom để lấy bản ghi trên cloud tự động. Bản ghi được nhập sẽ phân tích ngay;
+          file xuất thủ công dùng khung bên dưới rồi bấm &quot;Phân tích file&quot;.
         </p>
       </header>
 
@@ -194,15 +194,15 @@ export default function ZoomIntegrationPanel({
           <p className="studio-muted-text">Đã liên kết: {zoomEmail || 'tài khoản Zoom'}</p>
           <div className="studio-actions-row">
             <button type="button" className="studio-btn studio-btn--secondary" disabled={busy} onClick={() => void refreshStatus()}>
-              Tải lại recordings
+              Tải lại bản ghi
             </button>
             <button type="button" className="studio-btn studio-btn--secondary" disabled={busy} onClick={() => void handleDisconnect()}>
               Ngắt kết nối
             </button>
           </div>
-          {loadingRecordings && <LoadingState message="Đang tải cloud recordings…" />}
+          {loadingRecordings && <LoadingState message="Đang tải bản ghi trên cloud…" />}
           {!loadingRecordings && recordings.length === 0 && (
-            <EmptyState message="Chưa có cloud recording trong 30 ngày gần đây. Bạn có thể upload file export thủ công bên dưới." />
+            <EmptyState message="Chưa có bản ghi cloud trong 30 ngày gần đây. Bạn có thể upload file xuất thủ công bên dưới." />
           )}
           {!loadingRecordings && recordings.length > 0 && (
             <ul className="integration-recording-list">
@@ -217,7 +217,7 @@ export default function ZoomIntegrationPanel({
                     onClick={() => void handleImport(meeting)}
                     data-testid={`zoom-import-${meeting.uuid}`}
                   >
-                    {importingUuid === meeting.uuid ? 'Đang import…' : 'Import & phân tích'}
+                    {importingUuid === meeting.uuid ? 'Đang nhập…' : 'Nhập & phân tích'}
                   </button>
                 </li>
               ))}
@@ -229,7 +229,7 @@ export default function ZoomIntegrationPanel({
       {error && <ErrorState title="Zoom" message={error} />}
 
       <div className="studio-stack">
-        <p className="studio-muted-text">Hoặc chọn file export từ Zoom (.mp4, .m4a, .vtt…)</p>
+        <p className="studio-muted-text">Hoặc chọn file đã xuất từ Zoom (.mp4, .m4a, .vtt…)</p>
         <label className="integration-import__dropzone">
           <input
             type="file"
@@ -245,7 +245,7 @@ export default function ZoomIntegrationPanel({
             }}
             data-testid="zoom-import-input"
           />
-          <span>Chọn file Zoom export</span>
+          <span>Chọn file Zoom đã xuất</span>
         </label>
       </div>
     </section>

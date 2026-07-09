@@ -17,7 +17,7 @@ export function QuotaWarningBanner({
     warnings.push('STT gần hết quota tháng này.')
   }
   if (geminiPercent >= 90) {
-    warnings.push('Gemini analysis gần hết quota tháng này.')
+    warnings.push('Phân tích AI gần hết quota tháng này.')
   }
   if (warnings.length === 0) {
     return null
@@ -29,7 +29,7 @@ export function QuotaWarningBanner({
   return (
     <div className="quota-warning-banner" data-testid="quota-warning-banner" role="status">
       <p>{warnings.join(' ')}</p>
-      <button type="button" className="btn-secondary" onClick={onNavigateBilling}>
+      <button type="button" className="btn btn--secondary btn--block" onClick={onNavigateBilling}>
         {ctaLabel}
       </button>
     </div>

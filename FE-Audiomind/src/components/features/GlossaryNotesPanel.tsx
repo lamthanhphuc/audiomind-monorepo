@@ -180,7 +180,7 @@ export default function GlossaryNotesPanel({ meetingId, analysis, onTermSelect }
         </div>
         <button
           type="button"
-          className="secondary-cta"
+          className="btn btn--secondary"
           onClick={() => void handleSave()}
           disabled={loading}
           data-testid="glossary-notes-save"

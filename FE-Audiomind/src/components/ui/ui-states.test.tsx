@@ -1,5 +1,5 @@
 import { createRoot } from 'react-dom/client'
-import { act } from 'react-dom/test-utils'
+import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { EmptyState } from './EmptyState'
 import { ErrorState } from './ErrorState'
@@ -46,3 +46,4 @@ describe('UI state components', () => {
     expect(container.textContent).toContain('Loi mang')
   })
 })
+

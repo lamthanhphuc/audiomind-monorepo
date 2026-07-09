@@ -1,5 +1,5 @@
 import { createRoot } from 'react-dom/client'
-import { act } from 'react-dom/test-utils'
+import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import FeatureMindmap from './FeatureMindmap'
 
@@ -134,3 +134,4 @@ describe('FeatureMindmap', () => {
     expect(container.textContent).toContain('Retry webhook')
   })
 })
+

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { createRoot } from 'react-dom/client'
-import { act } from 'react-dom/test-utils'
+import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import GlossaryNotesPanel from './GlossaryNotesPanel'
 import { getGlossaryNotes, saveGlossaryNotes } from '../../utils/glossaryNotes'
@@ -197,3 +197,4 @@ describe('GlossaryNotesPanel', () => {
     expect(container.textContent).toContain('Cần đăng nhập lại')
   })
 })
+

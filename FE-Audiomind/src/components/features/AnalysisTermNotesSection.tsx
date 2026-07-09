@@ -304,7 +304,7 @@ export default function AnalysisTermNotesSection({ meetingId, analysis }: Props)
           <h4>Ghi chú chung</h4>
           <button
             type="button"
-            className="secondary-cta"
+            className="btn btn--secondary"
             onClick={() => void persistGeneralNote()}
             disabled={loading || savingAll}
             data-testid="analysis-general-note-save"
@@ -328,7 +328,7 @@ export default function AnalysisTermNotesSection({ meetingId, analysis }: Props)
             <h4>Thuật ngữ ({terms.length})</h4>
             <button
               type="button"
-              className="primary-cta"
+              className="btn btn--primary"
               onClick={() => void persistAllTermNotes()}
               disabled={loading || savingAll || Boolean(savingTerm)}
               data-testid="analysis-term-notes-save-all"
@@ -359,7 +359,7 @@ export default function AnalysisTermNotesSection({ meetingId, analysis }: Props)
                 />
                 <button
                   type="button"
-                  className="secondary-cta"
+                  className="btn btn--secondary"
                   onClick={() => void persistTermNote(draft.term)}
                   disabled={loading || savingAll || savingTerm === draft.term}
                   data-testid={`analysis-term-note-save-${draft.term}`}
