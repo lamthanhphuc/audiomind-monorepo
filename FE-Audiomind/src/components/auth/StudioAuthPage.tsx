@@ -70,7 +70,7 @@ export default function StudioAuthPage({
           </div>
           <p className="studio-auth__engine-badge">
             <span className="studio-auth__pulse" />
-            Neural pipeline · online
+            Pipeline AI · sẵn sàng
           </p>
         </div>
 
@@ -92,16 +92,16 @@ export default function StudioAuthPage({
             <span className="studio-auth__rec-dot" />
             REC · 00:42:19
           </div>
-          <p className="studio-auth__transcribe-label">ai transcribing</p>
+          <p className="studio-auth__transcribe-label">AI đang chuyển thành văn bản</p>
           <p className="studio-auth__transcript-preview">
             → &quot;Hôm nay chúng ta sẽ đi qua kiến trúc transformer và cách fine-tune mô hình cho tiếng Việt—&quot;
           </p>
         </div>
 
         <ul className="studio-auth__stats">
-          <li>Realtime STT</li>
+          <li>Ghi âm realtime</li>
           <li>Vi + En</li>
-          <li>E2E encrypted</li>
+          <li>Mã hóa đầu cuối</li>
         </ul>
 
         <PublicSiteFooter className="studio-auth__legal-footer" />
@@ -114,9 +114,9 @@ export default function StudioAuthPage({
             <span className="studio-auth__logo-mark studio-auth__logo-mark--sm" aria-hidden="true" />
             <span>AudioMind</span>
           </div>
-          <p className="studio-auth__terminal">／ access terminal</p>
+          <p className="studio-auth__terminal">／ cổng truy cập</p>
 
-          <h2>{isLogin ? 'Welcome back' : 'Create studio account'}</h2>
+          <h2>{isLogin ? 'Chào mừng trở lại' : 'Tạo tài khoản studio'}</h2>
           <p className="studio-auth__subtitle">
             {isLogin
               ? 'Đăng nhập studio và tiếp tục từ nơi giọng nói của bạn dừng lại.'
@@ -140,10 +140,10 @@ export default function StudioAuthPage({
               }}
             >
               <label className="studio-auth__field">
-                <span>Username</span>
+                <span>Tên đăng nhập</span>
                 <input
                   type="text"
-                  placeholder="username"
+                  placeholder="ten.dang.nhap"
                   autoComplete="username"
                   data-testid="e2e-login-username"
                   value={username}
@@ -151,7 +151,7 @@ export default function StudioAuthPage({
                 />
               </label>
               <label className="studio-auth__field">
-                <span>Password</span>
+                <span>Mật khẩu</span>
                 <input
                   type="password"
                   placeholder="••••••••"
@@ -162,7 +162,7 @@ export default function StudioAuthPage({
                 />
               </label>
               <button type="submit" className="studio-auth__submit" data-testid="e2e-login-submit">
-                Enter studio
+                Vào studio
               </button>
               {googleLoginEnabled && (
                 <GoogleAuthButton onClick={onGoogleLogin} />
@@ -173,7 +173,7 @@ export default function StudioAuthPage({
                 data-testid="e2e-auth-switch-register"
                 onClick={() => onNavigate('register')}
               >
-                New to AudioMind? Create a studio account
+                Mới dùng AudioMind? Tạo tài khoản studio
               </button>
               {authError && <p className="studio-auth__error" role="alert">{authError}</p>}
             </form>
@@ -186,10 +186,10 @@ export default function StudioAuthPage({
               }}
             >
               <label className="studio-auth__field">
-                <span>Username</span>
+                <span>Tên đăng nhập</span>
                 <input
                   type="text"
-                  placeholder="username"
+                  placeholder="ten.dang.nhap"
                   data-testid="e2e-register-username"
                   value={registerUsername}
                   onChange={(event) => onRegisterUsernameChange(event.target.value)}
@@ -199,14 +199,14 @@ export default function StudioAuthPage({
                 <span>Email</span>
                 <input
                   type="email"
-                  placeholder="you@studio.local"
+                  placeholder="ban@congty.com"
                   data-testid="e2e-register-email"
                   value={registerEmail}
                   onChange={(event) => onRegisterEmailChange(event.target.value)}
                 />
               </label>
               <label className="studio-auth__field">
-                <span>Password</span>
+                <span>Mật khẩu</span>
                 <input
                   type="password"
                   placeholder="••••••••"
@@ -216,7 +216,7 @@ export default function StudioAuthPage({
                 />
               </label>
               <label className="studio-auth__field">
-                <span>Confirm password</span>
+                <span>Xác nhận mật khẩu</span>
                 <input
                   type="password"
                   placeholder="••••••••"
@@ -231,7 +231,7 @@ export default function StudioAuthPage({
                 data-testid="e2e-register-submit"
                 disabled={registerBusy}
               >
-                {registerBusy ? 'Đang đăng ký...' : 'Create account'}
+                {registerBusy ? 'Đang đăng ký...' : 'Tạo tài khoản'}
               </button>
               {googleLoginEnabled && (
                 <GoogleAuthButton onClick={onGoogleLogin} testId="e2e-google-register" />
@@ -248,7 +248,7 @@ export default function StudioAuthPage({
             </form>
           )}
 
-          <p className="studio-auth__secure">Protected by studio-grade encryption · v1.0</p>
+          <p className="studio-auth__secure">Được bảo vệ bằng mã hóa cấp studio · v1.0</p>
           <PublicSiteFooter className="studio-auth__panel-legal-footer" />
         </div>
       </section>

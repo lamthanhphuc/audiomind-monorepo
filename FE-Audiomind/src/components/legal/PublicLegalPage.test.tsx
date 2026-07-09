@@ -1,5 +1,5 @@
 import { createRoot } from 'react-dom/client'
-import { act } from 'react-dom/test-utils'
+import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import PublicLegalPage from './PublicLegalPage'
 import PublicSiteFooter from './PublicSiteFooter'
@@ -71,3 +71,4 @@ describe('public legal pages', () => {
     expect(container.textContent).toContain('\u00a9 2026 AudioMind')
   })
 })
+
