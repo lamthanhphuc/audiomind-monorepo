@@ -1,5 +1,5 @@
 import { createRoot } from 'react-dom/client'
-import { act } from 'react-dom/test-utils'
+import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAudioRecorder, type GracefulStopResult } from '../../hooks/useAudioRecorder'
 import { AudioRecorderButton } from './AudioRecorderButton'
@@ -1059,3 +1059,4 @@ describe('AudioRecorderButton', () => {
     expect(completeSpy).toHaveBeenCalledOnce()
   })
 })
+

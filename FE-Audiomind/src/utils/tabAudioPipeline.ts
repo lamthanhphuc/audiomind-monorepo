@@ -1,4 +1,5 @@
-import { AUDIO_DEBUG_ENABLED } from '../services/config'
+﻿import { AUDIO_DEBUG_ENABLED } from '../services/config'
+import { realtimeInfo, realtimeWarn } from './realtimeTelemetry'
 
 export const TAB_AUDIO_PIPELINE_MARKERS = {
   TRACK_STATE: 'TAB_TRACK_STATE',
@@ -221,7 +222,7 @@ export const createTabAudioPipelineMonitor = (
     if (!shouldLogTabAudioPipeline()) {
       return
     }
-    console.info('[Realtime]', TAB_AUDIO_PIPELINE_MARKERS.TRACK_STATE, {
+    realtimeInfo('[Realtime]', TAB_AUDIO_PIPELINE_MARKERS.TRACK_STATE, {
       meetingId,
       sessionId,
       streamId,
@@ -234,7 +235,7 @@ export const createTabAudioPipelineMonitor = (
     if (!audioContext || !shouldLogTabAudioPipeline()) {
       return
     }
-    console.info('[Realtime]', TAB_AUDIO_PIPELINE_MARKERS.AUDIO_CONTEXT_STATE, {
+    realtimeInfo('[Realtime]', TAB_AUDIO_PIPELINE_MARKERS.AUDIO_CONTEXT_STATE, {
       meetingId,
       sessionId,
       streamId,
@@ -252,7 +253,7 @@ export const createTabAudioPipelineMonitor = (
     lastNonSilentAtMs = performance.now()
     silenceReported = false
     if (shouldLogTabAudioPipeline()) {
-      console.info('[Realtime]', TAB_AUDIO_PIPELINE_MARKERS.PIPELINE_RECOVERY_ATTEMPTED, {
+      realtimeInfo('[Realtime]', TAB_AUDIO_PIPELINE_MARKERS.PIPELINE_RECOVERY_ATTEMPTED, {
         meetingId,
         sessionId,
         streamId,
@@ -294,7 +295,7 @@ export const createTabAudioPipelineMonitor = (
     ) {
       if (!silenceReported && shouldLogTabAudioPipeline()) {
         silenceReported = true
-        console.warn('[Realtime]', TAB_AUDIO_PIPELINE_MARKERS.SILENCE_DETECTED, {
+        realtimeWarn('[Realtime]', TAB_AUDIO_PIPELINE_MARKERS.SILENCE_DETECTED, {
           meetingId,
           sessionId,
           streamId,
@@ -332,7 +333,7 @@ export const createTabAudioPipelineMonitor = (
         chunkSeq,
         chunkBytes,
       }
-      console.warn('[Realtime]', TAB_AUDIO_PIPELINE_MARKERS.PIPELINE_STALLED, {
+      realtimeWarn('[Realtime]', TAB_AUDIO_PIPELINE_MARKERS.PIPELINE_STALLED, {
         meetingId,
         sessionId,
         ...details,
@@ -358,7 +359,7 @@ export const createTabAudioPipelineMonitor = (
     logAudioContextState('interval')
 
     if (shouldLogTabAudioPipeline()) {
-      console.info('[Realtime]', TAB_AUDIO_PIPELINE_MARKERS.AUDIO_LEVEL, {
+      realtimeInfo('[Realtime]', TAB_AUDIO_PIPELINE_MARKERS.AUDIO_LEVEL, {
         meetingId,
         sessionId,
         streamId,
@@ -376,7 +377,7 @@ export const createTabAudioPipelineMonitor = (
   const attachTrack = (track: MediaStreamTrack) => {
     logTrackState(track, 'attach')
     const ended = () => {
-      console.info('[Realtime]', TAB_AUDIO_PIPELINE_MARKERS.TRACK_ENDED, {
+      realtimeInfo('[Realtime]', TAB_AUDIO_PIPELINE_MARKERS.TRACK_ENDED, {
         meetingId,
         sessionId,
         streamId,
@@ -385,7 +386,7 @@ export const createTabAudioPipelineMonitor = (
       onTrackEnded?.(track)
     }
     const mute = () => {
-      console.warn('[Realtime]', TAB_AUDIO_PIPELINE_MARKERS.TRACK_MUTED, {
+      realtimeWarn('[Realtime]', TAB_AUDIO_PIPELINE_MARKERS.TRACK_MUTED, {
         meetingId,
         sessionId,
         streamId,
@@ -394,7 +395,7 @@ export const createTabAudioPipelineMonitor = (
       onTrackMuted?.(track)
     }
     const unmute = () => {
-      console.info('[Realtime]', TAB_AUDIO_PIPELINE_MARKERS.TRACK_UNMUTED, {
+      realtimeInfo('[Realtime]', TAB_AUDIO_PIPELINE_MARKERS.TRACK_UNMUTED, {
         meetingId,
         sessionId,
         streamId,
@@ -455,7 +456,7 @@ export const createTabAudioPipelineMonitor = (
     getOutputRms: readOutputRms,
     notifyRecorderChunk: ({ seq, bytes, elapsedMs }) => {
       if (shouldLogTabAudioPipeline()) {
-        console.info('[Realtime]', TAB_AUDIO_PIPELINE_MARKERS.RECORDER_CHUNK, {
+        realtimeInfo('[Realtime]', TAB_AUDIO_PIPELINE_MARKERS.RECORDER_CHUNK, {
           meetingId,
           sessionId,
           streamId,

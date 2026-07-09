@@ -20,6 +20,7 @@ import {
   ensureAudioContextRunning,
   type TabAudioPipelineMonitor,
 } from '../utils/tabAudioPipeline'
+import { realtimeInfo, realtimeWarn } from '../utils/realtimeTelemetry'
 
 export type AudioRecorderState = 'idle' | 'connecting' | 'recording' | 'paused' | 'stopped' | 'error'
 
@@ -83,7 +84,7 @@ const logSafeMicSettings = (stream: MediaStream) => {
     return
   }
 
-  console.info('[Realtime] MIC_SETTINGS', {
+  realtimeInfo('[Realtime] MIC_SETTINGS', {
     noiseSuppression: settings.noiseSuppression,
     echoCancellation: settings.echoCancellation,
     autoGainControl: settings.autoGainControl,
@@ -271,7 +272,7 @@ export const useAudioRecorder = (
       minTabGain: tabMixerHandles?.tabDuckGain,
       onTrackEnded: notifyTabTrackEnded,
       onTrackMuted: () => {
-        console.warn('[Realtime] TAB_AUDIO_TRACK_MUTED_DIAGNOSTIC', {
+        realtimeWarn('[Realtime] TAB_AUDIO_TRACK_MUTED_DIAGNOSTIC', {
           meetingId,
           sessionId,
         })
@@ -342,7 +343,7 @@ export const useAudioRecorder = (
           return
         }
         // eslint-disable-next-line no-console
-        console.info('[Realtime] REALTIME_AUDIO_LEVEL', {
+        realtimeInfo('[Realtime] REALTIME_AUDIO_LEVEL', {
           meetingId,
           sessionId,
           rms: Number(metrics.rms.toFixed(4)),
@@ -453,7 +454,7 @@ export const useAudioRecorder = (
     if (AUDIO_DEBUG_ENABLED) {
       try {
         // eslint-disable-next-line no-console
-        console.info('[AudioRecorder] chunk diagnostics', {
+        realtimeInfo('[AudioRecorder] chunk diagnostics', {
           size: blob.size,
           mimeType: blob.type || recorder.mimeType || RECORDER_MIME_TYPE,
           recorderState: recorder.state,
@@ -613,7 +614,7 @@ export const useAudioRecorder = (
 
       try {
         if (!recorderMimeLoggedRef.current) {
-          console.info('[Realtime] RECORDING_START_ARMED', {
+          realtimeInfo('[Realtime] RECORDING_START_ARMED', {
             meetingId: diagnosticMeetingId,
             sessionId,
             source: recordingSource,
@@ -652,7 +653,7 @@ export const useAudioRecorder = (
     const buildResult = (chunks: Blob[], postStopChunkCount: number): GracefulStopResult => {
       const fullBlob = new Blob(chunks.length > 0 ? chunks : [], { type: RECORDER_MIME_TYPE })
       if (AUDIO_DEBUG_ENABLED || import.meta.env.DEV) {
-        console.info('[Realtime] FINAL_AUDIO_BLOB_READY', {
+        realtimeInfo('[Realtime] FINAL_AUDIO_BLOB_READY', {
           meetingId: diagnosticMeetingId,
           sessionId,
           bytes: fullBlob.size,
@@ -697,7 +698,7 @@ export const useAudioRecorder = (
         postStopChunkCount += 1
       }
       if (AUDIO_DEBUG_ENABLED || import.meta.env.DEV) {
-        console.info('[Realtime] MEDIARECORDER_DATAAVAILABLE_COLLECTED', {
+        realtimeInfo('[Realtime] MEDIARECORDER_DATAAVAILABLE_COLLECTED', {
           meetingId: diagnosticMeetingId,
           sessionId,
           size: blob.size,
@@ -725,7 +726,7 @@ export const useAudioRecorder = (
       }
       stopEventFired = true
       if (AUDIO_DEBUG_ENABLED || import.meta.env.DEV) {
-        console.info('[Realtime] MEDIARECORDER_STOP_EVENT', {
+        realtimeInfo('[Realtime] MEDIARECORDER_STOP_EVENT', {
           meetingId: diagnosticMeetingId,
           sessionId,
           timedOut: false,
@@ -748,7 +749,7 @@ export const useAudioRecorder = (
     try {
       if (recorder.state === 'recording' || recorder.state === 'paused') {
         if (AUDIO_DEBUG_ENABLED || import.meta.env.DEV) {
-          console.info('[Realtime] MEDIARECORDER_REQUEST_DATA', {
+          realtimeInfo('[Realtime] MEDIARECORDER_REQUEST_DATA', {
             meetingId: diagnosticMeetingId,
             sessionId,
             recorderState: recorder.state,
@@ -772,7 +773,7 @@ export const useAudioRecorder = (
 
       const stopObserved = stopEventFired || await waitUntil(() => stopEventFired, RECORDER_STOP_TIMEOUT_MS)
       if (!stopObserved && (AUDIO_DEBUG_ENABLED || import.meta.env.DEV)) {
-        console.info('[Realtime] MEDIARECORDER_STOP_EVENT', {
+        realtimeInfo('[Realtime] MEDIARECORDER_STOP_EVENT', {
           meetingId: diagnosticMeetingId,
           sessionId,
           timedOut: true,
@@ -787,7 +788,7 @@ export const useAudioRecorder = (
       }
 
       if (AUDIO_DEBUG_ENABLED || import.meta.env.DEV) {
-        console.info('[Realtime] MEDIARECORDER_GRACE_COMPLETE', {
+        realtimeInfo('[Realtime] MEDIARECORDER_GRACE_COMPLETE', {
           meetingId: diagnosticMeetingId,
           sessionId,
           graceMs,
@@ -799,7 +800,7 @@ export const useAudioRecorder = (
     } finally {
       timedOutOverall = Date.now() >= overallDeadline
       if (timedOutOverall && (AUDIO_DEBUG_ENABLED || import.meta.env.DEV)) {
-        console.warn('[Realtime] MEDIARECORDER_GRACEFUL_STOP_TIMEOUT', {
+        realtimeWarn('[Realtime] MEDIARECORDER_GRACEFUL_STOP_TIMEOUT', {
           meetingId: diagnosticMeetingId,
           sessionId,
         })

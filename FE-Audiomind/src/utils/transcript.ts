@@ -1,4 +1,5 @@
 import type { TranscriptSegment } from '../hooks/useRealtimeMeetingStream'
+import { realtimeInfo } from './realtimeTelemetry'
 
 type TranscriptSource = Record<string, unknown>
 const SPEAKER_MARKER_PATTERN = /(SPEAKER_\d+|Speaker\s+\d+):/gi
@@ -674,7 +675,7 @@ export const upsertTranscriptSegment = (
     existingIndex = findFinalSmoothingMatch(current, incoming)
   }
   if (existingIndex < 0) {
-    console.info('[Realtime] LIVE_SEGMENT_UPSERT', {
+    realtimeInfo('[Realtime] LIVE_SEGMENT_UPSERT', {
       action: 'insert',
       segmentId: incoming.id,
       mergeKey: incoming.mergeKey,
@@ -693,7 +694,7 @@ export const upsertTranscriptSegment = (
   const incomingText = getComparableText(incoming)
 
   if (existingFinal && !incomingFinal) {
-    console.info('[Realtime] LIVE_SEGMENT_DUPLICATE_IGNORED', {
+    realtimeInfo('[Realtime] LIVE_SEGMENT_DUPLICATE_IGNORED', {
       reason: 'stale_partial_after_final',
       segmentId: existing.id,
       mergeKey: existing.mergeKey,
@@ -706,7 +707,7 @@ export const upsertTranscriptSegment = (
 
   if (existingText.length > 0 && existingText === incomingText && existingFinal === incomingFinal) {
     if (!incomingFinal || canonicalSpeakerKey(existing.speaker) === canonicalSpeakerKey(incoming.speaker)) {
-      console.info('[Realtime] LIVE_SEGMENT_DUPLICATE_IGNORED', {
+      realtimeInfo('[Realtime] LIVE_SEGMENT_DUPLICATE_IGNORED', {
         reason: 'same_segment_same_text',
         segmentId: existing.id,
         mergeKey: existing.mergeKey,
@@ -720,7 +721,7 @@ export const upsertTranscriptSegment = (
   }
 
   if (existingFinal && incomingFinal && existingText.length > 0 && existingText === incomingText) {
-    console.info('[Realtime] LIVE_SEGMENT_DUPLICATE_IGNORED', {
+    realtimeInfo('[Realtime] LIVE_SEGMENT_DUPLICATE_IGNORED', {
       reason: 'final_text_match_requires_speaker_update',
       segmentId: existing.id,
       mergeKey: existing.mergeKey,
@@ -728,7 +729,7 @@ export const upsertTranscriptSegment = (
   }
 
   if (!existingFinal && incomingFinal) {
-    console.info('[Realtime] LIVE_SEGMENT_FINAL_UPGRADE', {
+    realtimeInfo('[Realtime] LIVE_SEGMENT_FINAL_UPGRADE', {
       segmentId: incoming.id,
       mergeKey: incoming.mergeKey,
     })
@@ -756,7 +757,7 @@ export const upsertTranscriptSegment = (
 
   const updated = [...current]
   updated[existingIndex] = mergedSegment
-  console.info('[Realtime] LIVE_SEGMENT_UPSERT', {
+  realtimeInfo('[Realtime] LIVE_SEGMENT_UPSERT', {
     action: 'update',
     segmentId: mergedSegment.id,
     mergeKey: mergedSegment.mergeKey,
@@ -897,7 +898,7 @@ export const mergeHydratedTranscriptWithLive = (
   ])
   const deduped = dedupePartialFinalTranscriptSegments(merged)
   if (hydratedSegments.length < liveSegments.length) {
-    console.info('[Realtime] HYDRATION_MERGE_KEEP_LIVE_SEGMENT', {
+    realtimeInfo('[Realtime] HYDRATION_MERGE_KEEP_LIVE_SEGMENT', {
       persistedFragments: hydratedSegments.length,
       liveFragments: liveSegments.length,
       mergedFragments: deduped.length,
