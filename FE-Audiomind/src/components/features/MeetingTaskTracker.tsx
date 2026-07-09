@@ -14,6 +14,12 @@ type Props = {
 }
 
 const STATUS_OPTIONS = ['open', 'in_progress', 'blocked', 'done'] as const
+const STATUS_LABELS: Record<(typeof STATUS_OPTIONS)[number], string> = {
+  open: 'Chưa làm',
+  in_progress: 'Đang làm',
+  blocked: 'Bị chặn',
+  done: 'Hoàn tất',
+}
 
 export default function MeetingTaskTracker({ meetingId, groupedActionPlan }: Props) {
   const [tasks, setTasks] = useState<MeetingTask[]>([])
@@ -38,7 +44,7 @@ export default function MeetingTaskTracker({ meetingId, groupedActionPlan }: Pro
         }
       } catch (loadError) {
         if (!cancelled) {
-          setError(loadError instanceof Error ? loadError.message : 'Không tải được tasks')
+          setError(loadError instanceof Error ? loadError.message : 'Không tải được công việc')
         }
       } finally {
         if (!cancelled) {
@@ -74,7 +80,7 @@ export default function MeetingTaskTracker({ meetingId, groupedActionPlan }: Pro
         setTasks(items)
       }
     } catch (seedError) {
-      setError(seedError instanceof Error ? seedError.message : 'Không seed được tasks')
+      setError(seedError instanceof Error ? seedError.message : 'Không nhập được công việc')
     } finally {
       setSeeding(false)
     }
@@ -100,17 +106,17 @@ export default function MeetingTaskTracker({ meetingId, groupedActionPlan }: Pro
     <section className="meeting-task-tracker" data-testid="meeting-task-tracker">
       <header className="meeting-task-tracker__header">
         <div>
-          <h3>Task tracker</h3>
-          <p>Theo dõi việc cần làm từ grouped action plan.</p>
+          <h3>Theo dõi công việc</h3>
+          <p>Chuyển kế hoạch hành động thành danh sách việc cần làm.</p>
         </div>
         <button
           type="button"
-          className="secondary-cta"
+          className="btn btn--secondary"
           disabled={seeding || !groupedActionPlan}
           onClick={() => void handleSeed()}
           data-testid="meeting-task-seed"
         >
-          {seeding ? 'Đang seed…' : 'Import từ action plan'}
+          {seeding ? 'Đang nhập…' : 'Nhập từ kế hoạch'}
         </button>
       </header>
 
@@ -123,15 +129,15 @@ export default function MeetingTaskTracker({ meetingId, groupedActionPlan }: Pro
         >
           <option value="all">Tất cả</option>
           {STATUS_OPTIONS.map((status) => (
-            <option key={status} value={status}>{status}</option>
+            <option key={status} value={status}>{STATUS_LABELS[status]}</option>
           ))}
         </select>
       </div>
 
-      {loading && <p>Đang tải tasks…</p>}
+      {loading && <p>Đang tải công việc…</p>}
       {error && <p role="alert">{error}</p>}
       {!loading && visibleTasks.length === 0 && (
-        <p>Chưa có task. Hãy import từ grouped action plan.</p>
+        <p>Chưa có công việc. Hãy nhập từ kế hoạch hành động.</p>
       )}
 
       <ul className="meeting-task-tracker__list">

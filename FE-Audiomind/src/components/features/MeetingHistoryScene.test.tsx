@@ -1,5 +1,5 @@
 import { createRoot } from 'react-dom/client'
-import { act } from 'react-dom/test-utils'
+import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as api from '../../services/api'
 import * as meetingShare from '../../services/meetingShare'
@@ -71,6 +71,30 @@ describe('MeetingHistoryScene', () => {
     })
     await flush()
   }
+
+  const openDetailTab = async (label: string) => {
+    const button = Array.from(container.querySelectorAll('button'))
+      .find((item) => item.textContent?.trim() === label) as HTMLButtonElement | undefined
+    if (!button) {
+      throw new Error(`Detail tab ${label} not found`)
+    }
+    await act(async () => {
+      button.click()
+    })
+    await flush()
+  }
+
+  const openExportsTab = async () => {
+    await openDetailTab('Xuất file')
+    const moreButton = container.querySelector('[data-testid="meeting-export-more"]') as HTMLButtonElement | null
+    if (moreButton && moreButton.getAttribute('aria-expanded') !== 'true') {
+      await act(async () => {
+        moreButton.click()
+      })
+      await flush()
+    }
+  }
+  const openTranscriptTab = async () => openDetailTab('Tìm trong transcript')
 
   beforeEach(() => {
     container = document.createElement('div')
@@ -403,8 +427,9 @@ describe('MeetingHistoryScene', () => {
 
   it('renders export report button in detail actions', async () => {
     await mountWithStoredSelection()
+    await openExportsTab()
 
-    const exportButton = container.querySelector('[data-testid="meeting-export-report"]') as HTMLButtonElement
+    const exportButton = container.querySelector('[data-testid="meeting-export-report-pdf"]') as HTMLButtonElement
     expect(exportButton).toBeTruthy()
   })
 
@@ -416,7 +441,8 @@ describe('MeetingHistoryScene', () => {
     const startProcessingSpy = vi.spyOn(api, 'startProcessingByPath')
 
     await mountWithStoredSelection()
-    expect(container.textContent).toContain('Bản Readable dễ đọc; bản Raw dùng cho kiểm tra và audit.')
+    await openExportsTab()
+    expect(container.textContent).toContain('Bản dễ đọc phù hợp để chia sẻ; bản dữ liệu gốc dùng cho kiểm tra và audit.')
 
     const exportButton = container.querySelector('[data-testid="meeting-export-transcript"]') as HTMLButtonElement
     await act(async () => {
@@ -484,6 +510,7 @@ describe('MeetingHistoryScene', () => {
     ;(api.downloadMeetingTranscript as any).mockRejectedValueOnce(new Error('cannot-export'))
 
     await mountWithStoredSelection()
+    await openExportsTab()
 
     const exportButton = container.querySelector('[data-testid="meeting-export-transcript"]') as HTMLButtonElement
     await act(async () => {
@@ -508,6 +535,7 @@ describe('MeetingHistoryScene', () => {
     })
 
     await mountWithStoredSelection()
+    await openExportsTab()
 
     const exportButton = container.querySelector('[data-testid="meeting-export-report"]') as HTMLButtonElement
     await act(async () => {
@@ -530,6 +558,7 @@ describe('MeetingHistoryScene', () => {
     }))
 
     await mountWithStoredSelection()
+    await openExportsTab()
 
     const exportButton = container.querySelector('[data-testid="meeting-export-report"]') as HTMLButtonElement
     await act(async () => {
@@ -555,6 +584,7 @@ describe('MeetingHistoryScene', () => {
     ;(api.downloadMeetingReport as any).mockRejectedValueOnce(new Error('cannot-export'))
 
     await mountWithStoredSelection()
+    await openExportsTab()
 
     const exportButton = container.querySelector('[data-testid="meeting-export-report"]') as HTMLButtonElement
     await act(async () => {
@@ -573,6 +603,7 @@ describe('MeetingHistoryScene', () => {
     })
 
     await mountWithStoredSelection()
+    await openTranscriptTab()
 
     const input = container.querySelector('[data-testid="transcript-evidence-search-input"]') as HTMLInputElement
     const submit = container.querySelector('[data-testid="transcript-evidence-search-submit"]') as HTMLButtonElement
@@ -620,6 +651,7 @@ describe('MeetingHistoryScene', () => {
     })
 
     await mountWithStoredSelection()
+    await openTranscriptTab()
 
     const input = container.querySelector('[data-testid="transcript-evidence-search-input"]') as HTMLInputElement
     const submit = container.querySelector('[data-testid="transcript-evidence-search-submit"]') as HTMLButtonElement
@@ -651,6 +683,7 @@ describe('MeetingHistoryScene', () => {
     ;(api.searchMeetingTranscriptEvidence as any).mockRejectedValueOnce(new Error('search failed'))
 
     await mountWithStoredSelection()
+    await openTranscriptTab()
 
     const input = container.querySelector('[data-testid="transcript-evidence-search-input"]') as HTMLInputElement
     const submit = container.querySelector('[data-testid="transcript-evidence-search-submit"]') as HTMLButtonElement
@@ -672,6 +705,7 @@ describe('MeetingHistoryScene', () => {
 
   it('exports action plan after loading preview without triggering analysis', async () => {
     await mountWithStoredSelection()
+    await openExportsTab()
 
     const button = container.querySelector('[data-testid="meeting-export-action-plan"]') as HTMLButtonElement
     await act(async () => {
@@ -735,6 +769,7 @@ describe('MeetingHistoryScene', () => {
     })
 
     await mountWithStoredSelection()
+    await openExportsTab()
 
     const button = container.querySelector('[data-testid="meeting-export-action-plan"]') as HTMLButtonElement
     await act(async () => {
@@ -764,6 +799,7 @@ describe('MeetingHistoryScene', () => {
     ;(api.getMeetingActionPlan as any).mockRejectedValueOnce(new api.ApiError('ANALYSIS_REQUIRED', 409))
 
     await mountWithStoredSelection()
+    await openExportsTab()
 
     const button = container.querySelector('[data-testid="meeting-export-action-plan"]') as HTMLButtonElement
     await act(async () => {
@@ -786,6 +822,7 @@ describe('MeetingHistoryScene', () => {
     })
 
     await mountWithStoredSelection()
+    await openTranscriptTab()
 
     expect(container.textContent).toContain('final row')
     expect(container.textContent?.match(/partial row/g)?.length ?? 0).toBe(0)
@@ -878,3 +915,4 @@ describe('MeetingHistoryScene', () => {
     })
   })
 })
+
