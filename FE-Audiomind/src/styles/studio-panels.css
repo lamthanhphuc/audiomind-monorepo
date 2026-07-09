@@ -817,16 +817,6 @@
   background: rgba(124, 108, 255, 0.06);
 }
 
-.app--studio .ui-state--error {
-  background: rgba(127, 29, 29, 0.25);
-  border-color: rgba(248, 113, 113, 0.35);
-  color: #fecaca;
-}
-
-.app--studio .ui-state--error .ui-state__title {
-  color: #fca5a5;
-}
-
 .app--studio .ui-state__trace-id {
   color: #fca5a5;
 }

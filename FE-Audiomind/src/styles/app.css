@@ -568,6 +568,15 @@
   max-width: min(100%, 52rem);
 }
 
+.realtime-advanced-settings {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-raised);
+}
+
 .realtime-panel__hint {
   margin: -4px 0 0;
   font-size: var(--text-xs);
@@ -647,6 +656,14 @@
 .status-card--live {
   border-color: rgba(99, 102, 241, 0.35);
   background: linear-gradient(180deg, var(--color-brand-50) 0%, var(--color-surface) 100%);
+}
+
+.card {
+  padding: var(--card-padding);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-card);
 }
 
 .status-card__label {
