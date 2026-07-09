@@ -23,7 +23,7 @@ export const RealtimeTranscript: React.FC<RealtimeTranscriptProps> = ({
   onPauseToggle,
   highlightKeywords = [],
   maxHeight = '400px',
-  emptyMessage = 'Waiting for transcript...',
+  emptyMessage = 'Đang chờ transcript...',
   domainMode = null,
 }) => {
   const lexiconTerms = useDomainLexiconTerms(domainMode)
@@ -89,12 +89,12 @@ export const RealtimeTranscript: React.FC<RealtimeTranscriptProps> = ({
           <button
             className="pause-button"
             onClick={() => onPauseToggle(!isPaused)}
-            title={isPaused ? 'Resume' : 'Pause'}
+            title={isPaused ? 'Tiếp tục tự cuộn' : 'Tạm dừng tự cuộn'}
           >
             {isPaused ? '▶' : '⏸'}
           </button>
         )}
-        <span className="segment-count">{displaySegments.length} segments</span>
+        <span className="segment-count">{displaySegments.length} đoạn</span>
       </div>
 
       <div

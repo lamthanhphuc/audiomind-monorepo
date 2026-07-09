@@ -1,5 +1,5 @@
 import { createRoot } from 'react-dom/client'
-import { act } from 'react-dom/test-utils'
+import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { RecordingSourceSelector } from './RecordingSourceSelector'
 
@@ -125,3 +125,4 @@ describe('RecordingSourceSelector', () => {
     expect(onChange).not.toHaveBeenCalled()
   })
 })
+

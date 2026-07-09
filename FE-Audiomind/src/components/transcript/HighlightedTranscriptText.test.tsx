@@ -1,5 +1,5 @@
 import { createRoot } from 'react-dom/client'
-import { act } from 'react-dom/test-utils'
+import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { HighlightedTranscriptText } from './HighlightedTranscriptText'
 
@@ -87,3 +87,4 @@ describe('HighlightedTranscriptText', () => {
     expect(container.textContent).toBe(text)
   })
 })
+
