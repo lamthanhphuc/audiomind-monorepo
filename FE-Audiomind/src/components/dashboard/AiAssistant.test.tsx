@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { createRoot } from 'react-dom/client'
-import { act } from 'react-dom/test-utils'
+import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import AiAssistant from './AiAssistant'
 
@@ -43,3 +43,4 @@ describe('AiAssistant', () => {
     expect(container.textContent).toContain('tóm tắt')
   })
 })
+

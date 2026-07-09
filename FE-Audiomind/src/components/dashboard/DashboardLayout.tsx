@@ -1,8 +1,24 @@
 import { useEffect, useState, type ReactNode } from 'react'
+import {
+  AudioLines,
+  BrainCircuit,
+  CreditCard,
+  History,
+  Lightbulb,
+  LogOut,
+  Network,
+  Plus,
+  Puzzle,
+  Radio,
+  Search,
+  Sparkles,
+  type LucideIcon,
+} from 'lucide-react'
 import GlobalMeetingSearch from './GlobalMeetingSearch'
 import { StudioAmbientBackground } from '../ui/StudioAmbientBackground'
 import ActiveJobsBanner from './ActiveJobsBanner'
 import NotificationCenter from './NotificationCenter'
+import type { HistoryLanguageFilter, HistoryStatusFilter } from '../../app/useHistorySearchFilters'
 
 export type DashboardScene = 'upload' | 'realtime' | 'analysis' | 'files' | 'mindmap' | 'knowledge' | 'insights' | 'integrations' | 'billing'
 
@@ -25,6 +41,22 @@ type DashboardLayoutProps = {
   globalMeetingSearch?: string
   onGlobalMeetingSearchChange?: (value: string) => void
   onGlobalMeetingSearchSubmit?: (query: string) => void
+  globalStatusFilter?: HistoryStatusFilter
+  onGlobalStatusFilterChange?: (value: HistoryStatusFilter) => void
+  globalLanguageFilter?: HistoryLanguageFilter
+  onGlobalLanguageFilterChange?: (value: HistoryLanguageFilter) => void
+}
+
+type DashboardNavItem = {
+  scene: DashboardScene
+  label: string
+  icon: LucideIcon
+  testId?: string
+}
+
+type DashboardNavGroup = {
+  title: string
+  items: DashboardNavItem[]
 }
 
 export default function DashboardLayout({
@@ -40,6 +72,10 @@ export default function DashboardLayout({
   globalMeetingSearch = '',
   onGlobalMeetingSearchChange,
   onGlobalMeetingSearchSubmit,
+  globalStatusFilter = '',
+  onGlobalStatusFilterChange,
+  globalLanguageFilter = '',
+  onGlobalLanguageFilterChange,
 }: DashboardLayoutProps) {
   const initial = user.name.trim()[0]?.toUpperCase() || 'A'
   const [sidebarOpen, setSidebarOpen] = useState(false)
@@ -48,6 +84,38 @@ export default function DashboardLayout({
     onNavigate(scene)
     setSidebarOpen(false)
   }
+
+  const navGroups: DashboardNavGroup[] = [
+    {
+      title: 'Tạo mới',
+      items: [
+        { scene: 'upload', label: 'Tải & phân tích', icon: AudioLines },
+        ...(showRealtime
+          ? [{ scene: 'realtime' as const, label: 'Ghi âm trực tiếp', icon: Radio, testId: 'dashboard-nav-realtime' }]
+          : []),
+      ],
+    },
+    {
+      title: 'Lịch sử',
+      items: [
+        { scene: 'files', label: 'Lịch sử cuộc họp', icon: History, testId: 'dashboard-nav-history' },
+        { scene: 'analysis', label: 'Kết quả phân tích', icon: BrainCircuit },
+      ],
+    },
+    {
+      title: 'Tri thức',
+      items: [
+        { scene: 'mindmap', label: 'Sơ đồ mindmap', icon: Network },
+        { scene: 'knowledge', label: 'Kho tri thức', icon: Search, testId: 'dashboard-nav-knowledge' },
+        { scene: 'insights', label: 'Insights', icon: Lightbulb, testId: 'dashboard-nav-insights' },
+      ],
+    },
+  ]
+
+  const footerItems: DashboardNavItem[] = [
+    { scene: 'billing', label: 'Gói & thanh toán', icon: CreditCard, testId: 'dashboard-nav-billing' },
+    { scene: 'integrations', label: 'Tích hợp', icon: Puzzle, testId: 'dashboard-nav-integrations' },
+  ]
 
   useEffect(() => {
     const handleShortcut = (event: KeyboardEvent) => {
@@ -100,68 +168,58 @@ export default function DashboardLayout({
             Neural pipeline · trực tuyến
           </div>
           <button type="button" className="dashboard-btn-new" onClick={() => handleNavigate('upload')}>
-            <span className="icon">＋</span> Tải file mới
+            <Plus size={16} aria-hidden /> Tải file mới
           </button>
         </div>
 
         <div className="dashboard-sidebar__body">
-        <div className="dashboard-sidebar__section">
-          <div className="dashboard-sidebar__title">STUDIO</div>
-          <ul className="dashboard-nav-list">
-            <li className={activeMenu === 'upload' ? 'active' : ''} onClick={() => handleNavigate('upload')}>
-              <span className="icon">⬆</span> Tải & phân tích
-            </li>
-            {showRealtime && (
-              <li
-                className={activeMenu === 'realtime' ? 'active' : ''}
-                onClick={() => handleNavigate('realtime')}
-                data-testid="dashboard-nav-realtime"
-              >
-                <span className="icon">🎙</span> Ghi âm trực tiếp
-              </li>
-            )}
-            <li className={activeMenu === 'analysis' ? 'active' : ''} onClick={() => handleNavigate('analysis')}>
-              <span className="icon">📊</span> Kết quả phân tích
-            </li>
-            <li
-              className={activeMenu === 'files' ? 'active' : ''}
-              onClick={() => handleNavigate('files')}
-              data-testid="dashboard-nav-history"
-            >
-              <span className="icon">⏱</span> Lịch sử meeting
-            </li>
-            <li className={activeMenu === 'mindmap' ? 'active' : ''} onClick={() => handleNavigate('mindmap')}>
-              <span className="icon">🧠</span> Sơ đồ mindmap
-            </li>
-            <li
-              className={activeMenu === 'knowledge' ? 'active' : ''}
-              onClick={() => handleNavigate('knowledge')}
-              data-testid="dashboard-nav-knowledge"
-            >
-              <span className="icon">📚</span> Kho tri thức
-            </li>
-            <li
-              className={activeMenu === 'insights' ? 'active' : ''}
-              onClick={() => handleNavigate('insights')}
-              data-testid="dashboard-nav-insights"
-            >
-              <span className="icon">🔭</span> Insights
-            </li>
-          </ul>
-        </div>
+          {navGroups.map((group) => (
+            <div className="dashboard-sidebar__section" key={group.title}>
+              <div className="dashboard-sidebar__title">{group.title}</div>
+              <ul className="dashboard-nav-list">
+                {group.items.map((item) => {
+                  const Icon = item.icon
+                  return (
+                    <li key={item.scene} className={activeMenu === item.scene ? 'active' : ''}>
+                      <button
+                        type="button"
+                        className="dashboard-nav-button"
+                        onClick={() => handleNavigate(item.scene)}
+                        data-testid={item.testId}
+                        aria-current={activeMenu === item.scene ? 'page' : undefined}
+                      >
+                        <span className="dashboard-icon-badge" aria-hidden>
+                          <Icon size={16} strokeWidth={2.2} />
+                        </span>
+                        <span>{item.label}</span>
+                      </button>
+                    </li>
+                  )
+                })}
+              </ul>
+            </div>
+          ))}
 
         <div className="dashboard-sidebar__section dashboard-sidebar__recents">
-          <div className="dashboard-sidebar__title">GẦN ĐÂY</div>
+          <div className="dashboard-sidebar__title">Gần đây</div>
           <ul className="dashboard-recents-list">
             {recentFiles.length > 0 ? (
               recentFiles.map((item) => (
                 <li
                   key={item.id}
                   className={item.active ? 'active' : ''}
-                  onClick={() => onRecentFileClick?.(item.id)}
-                  data-testid="dashboard-recent-item"
                 >
-                  <span className="icon">🎵</span> {item.label}
+                  <button
+                    type="button"
+                    className="dashboard-nav-button"
+                    onClick={() => onRecentFileClick?.(item.id)}
+                    data-testid="dashboard-recent-item"
+                  >
+                    <span className="dashboard-icon-badge" aria-hidden>
+                      <Sparkles size={16} strokeWidth={2.2} />
+                    </span>
+                    <span>{item.label}</span>
+                  </button>
                 </li>
               ))
             ) : (
@@ -173,22 +231,29 @@ export default function DashboardLayout({
 
         <div className="dashboard-sidebar__footer">
           <ul className="dashboard-nav-list">
-            <li
-              className={activeMenu === 'billing' ? 'active' : ''}
-              onClick={() => handleNavigate('billing')}
-              data-testid="dashboard-nav-billing"
-            >
-              <span className="icon">💳</span> Gói & thanh toán
-            </li>
-            <li
-              className={activeMenu === 'integrations' ? 'active' : ''}
-              onClick={() => handleNavigate('integrations')}
-              data-testid="dashboard-nav-integrations"
-            >
-              <span className="icon">🔗</span> Tích hợp
-            </li>
-            <li className="dashboard-logout" onClick={onLogout}>
-              <span className="icon">🚪</span> Đăng xuất
+            {footerItems.map((item) => (
+              <li key={item.scene} className={activeMenu === item.scene ? 'active' : ''}>
+                <button
+                  type="button"
+                  className="dashboard-nav-button"
+                  onClick={() => handleNavigate(item.scene)}
+                  data-testid={item.testId}
+                  aria-current={activeMenu === item.scene ? 'page' : undefined}
+                >
+                  <span className="dashboard-icon-badge" aria-hidden>
+                    <item.icon size={16} strokeWidth={2.2} />
+                  </span>
+                  <span>{item.label}</span>
+                </button>
+              </li>
+            ))}
+            <li className="dashboard-logout">
+              <button type="button" className="dashboard-nav-button" onClick={onLogout}>
+                <span className="dashboard-icon-badge" aria-hidden>
+                  <LogOut size={16} strokeWidth={2.2} />
+                </span>
+                <span>Đăng xuất</span>
+              </button>
             </li>
           </ul>
         </div>
@@ -202,6 +267,10 @@ export default function DashboardLayout({
               value={globalMeetingSearch}
               onValueChange={onGlobalMeetingSearchChange}
               onSubmit={onGlobalMeetingSearchSubmit}
+              statusFilter={globalStatusFilter}
+              onStatusFilterChange={onGlobalStatusFilterChange}
+              languageFilter={globalLanguageFilter}
+              onLanguageFilterChange={onGlobalLanguageFilterChange}
             />
           )}
           {onOpenMeeting && <ActiveJobsBanner onOpenMeeting={onOpenMeeting} />}

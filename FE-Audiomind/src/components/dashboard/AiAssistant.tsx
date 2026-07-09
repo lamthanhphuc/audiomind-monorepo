@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { SendHorizontal, Sparkles } from 'lucide-react'
 
 import { formatTranscriptTimestamp } from '../../utils/transcript'
 import type { MeetingChatCitation } from '../../utils/meetingChatbot'
@@ -82,7 +83,7 @@ export default function AiAssistant({ busy, meetingId, onAsk, onCitationClick }:
 
   return (
     <div className="ai-assistant" data-testid="ai-assistant">
-      <div className="assistant-header">✨ Trợ lý AI</div>
+      <div className="assistant-header"><Sparkles size={16} aria-hidden="true" /> Trợ lý AI</div>
 
       <div className="assistant-body">
         {messages.map((msg, index) => (
@@ -91,7 +92,7 @@ export default function AiAssistant({ busy, meetingId, onAsk, onCitationClick }:
             className={`msg-wrapper ${msg.role}`}
           >
             {msg.role === 'assistant' && (
-              <div className="msg-avatar ai">✨</div>
+              <div className="msg-avatar ai"><Sparkles size={14} aria-hidden="true" /></div>
             )}
             <div className="msg-bubble msg-bubble--pre-wrap">
               {msg.text}
@@ -135,7 +136,7 @@ export default function AiAssistant({ busy, meetingId, onAsk, onCitationClick }:
             disabled={busy || sending || !input.trim()}
             aria-label="Gửi câu hỏi"
           >
-            ➤
+            <SendHorizontal size={16} aria-hidden="true" />
           </button>
         </div>
       </div>
