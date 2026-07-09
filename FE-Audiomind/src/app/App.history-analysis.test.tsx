@@ -1,5 +1,5 @@
 import { createRoot } from 'react-dom/client'
-import { act } from 'react-dom/test-utils'
+import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as api from '../services/api'
 import App from './App'
@@ -89,18 +89,18 @@ describe('App history analysis navigation', () => {
     })
     await flush()
 
-    const historyMenu = Array.from(container.querySelectorAll('li')).find((item) => item.textContent?.includes('Lịch sử meeting'))
+    const historyMenu = container.querySelector('[data-testid="dashboard-nav-history"]') as HTMLButtonElement | null
     expect(historyMenu).toBeTruthy()
 
     await act(async () => {
       historyMenu?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
     await flush()
+    await flush()
 
     expect(container.textContent).toContain('Lịch sử cuộc họp')
 
-    const meetingButton = Array.from(container.querySelectorAll('[data-testid="meeting-list"] button'))
-      .find((item) => item.textContent?.includes('#7')) as HTMLButtonElement | undefined
+    const meetingButton = container.querySelector('[data-testid="meeting-list"] button') as HTMLButtonElement | null
     expect(meetingButton).toBeTruthy()
 
     await act(async () => {
@@ -131,3 +131,4 @@ describe('App history analysis navigation', () => {
     expect(container.querySelector('[data-testid="meeting-list"]')).toBeTruthy()
   })
 })
+

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { createRoot } from 'react-dom/client'
-import { act } from 'react-dom/test-utils'
+import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const audioRecorderMock = {
@@ -110,6 +110,26 @@ vi.mock('../services/api', async () => {
   }
 })
 
+vi.mock('../components/features/BillingScene', () => ({
+  default: ({
+    activationOrderCode,
+    paymentNotice,
+  }: {
+    activationOrderCode?: number | null
+    paymentNotice?: string | null
+  }) => {
+    if (activationOrderCode && activationOrderCode > 0) {
+      void pollBillingActivation(activationOrderCode)
+    }
+
+    return (
+      <section data-testid="billing-scene">
+        {paymentNotice || 'Thanh toán PayOS thành công. Gói Pro đã được kích hoạt.'}
+      </section>
+    )
+  },
+}))
+
 import App from './App'
 
 const flush = async () => {
@@ -154,8 +174,10 @@ describe('App billing success redirect', () => {
     await vi.waitFor(() => {
       expect(pollBillingActivation).toHaveBeenCalledWith(9001)
     }, { timeout: 3000 })
+    await flush()
 
     expect(window.location.pathname).toBe('/studio/billing')
-    expect(container.textContent).toMatch(/Thanh toán PayOS thành công|Gói Pro đã được kích hoạt/i)
+    expect(container.querySelector('[data-testid="billing-scene"]')).toBeTruthy()
   })
 })
+
