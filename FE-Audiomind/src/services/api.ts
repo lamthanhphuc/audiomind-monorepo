@@ -16,6 +16,18 @@ import {
 import { getAccessToken } from './auth'
 import { API_BASE, MEETING_API_BASE, PROCESSING_API_BASE, USER_API_BASE } from './config'
 
+const isApiDebugLoggingEnabled = (): boolean => {
+  if (import.meta.env.VITE_API_DEBUG === 'true') {
+    return true
+  }
+
+  try {
+    return window.localStorage.getItem('audiomind.api.debug') === 'true'
+  } catch {
+    return false
+  }
+}
+
 type CreateMeetingResponse =
   MeetingPaths['/api/v1/meetings']['post']['responses'][200]['content']['application/json']
 
@@ -348,14 +360,16 @@ const fetchJson = async <T>(input: RequestInfo | URL, init?: RequestInit): Promi
       }
     })()
 
-    console.error('API request failed', {
-      path: safePath,
-      status: response.status,
-      statusText: response.statusText,
-      errorCode,
-      traceId,
-      retryAfterSeconds,
-    })
+    if (isApiDebugLoggingEnabled()) {
+      console.error('API request failed', {
+        path: safePath,
+        status: response.status,
+        statusText: response.statusText,
+        errorCode,
+        traceId,
+        retryAfterSeconds,
+      })
+    }
     throw new ApiError(message, response.status, traceId, errorCode, retryAfterSeconds)
   }
   return response.json() as Promise<T>
@@ -1163,7 +1177,9 @@ export const pollWithRetry = async (
         throw error
       }
       if (i === retries - 1) throw error
-      console.warn(`Polling failed, retrying in ${delay}ms...`, error)
+      if (isApiDebugLoggingEnabled()) {
+        console.warn(`Polling failed, retrying in ${delay}ms...`, error)
+      }
       await new Promise(resolve => setTimeout(resolve, delay))
     }
   }
