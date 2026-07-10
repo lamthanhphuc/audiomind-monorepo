@@ -140,7 +140,7 @@ export default function BillingScene({
           <button type="button" className="btn btn--secondary" onClick={() => void load()} disabled={loading || busy}>
             Làm mới
           </button>
-          {(!isPro || trialActive) && payosCheckoutEnabled && (
+          {(!isPro || trialActive) && (
             <button
               type="button"
               className="btn btn--primary"
