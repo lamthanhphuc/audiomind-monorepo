@@ -3,12 +3,14 @@ package com.example.userservice.google;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.example.userservice.entity.UserAccount;
 import com.example.userservice.entity.UserIdentity;
+import com.example.userservice.plan.UserPlanService;
 import com.example.userservice.repository.UserAccountRepository;
 import com.example.userservice.repository.UserIdentityRepository;
 import java.util.Optional;
@@ -17,6 +19,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.test.util.ReflectionTestUtils;
 
 @ExtendWith(MockitoExtension.class)
 class GoogleUserProvisioningServiceTest {
@@ -29,9 +32,12 @@ class GoogleUserProvisioningServiceTest {
 
     @Test
     void createsGoogleOnlyUserAndIdentity() {
+        UserPlanService userPlanService = new UserPlanService(userAccountRepository);
+        ReflectionTestUtils.setField(userPlanService, "newUserTrialDays", 3);
         GoogleUserProvisioningService service = new GoogleUserProvisioningService(
                 userAccountRepository,
-                userIdentityRepository);
+                userIdentityRepository,
+                userPlanService);
         GoogleIdentity googleIdentity = new GoogleIdentity(
                 "google-sub-1",
                 "new@example.com",
@@ -52,6 +58,8 @@ class GoogleUserProvisioningServiceTest {
         assertEquals(41L, user.getId());
         assertEquals("google", user.getAuthProviderPrimary());
         assertNull(user.getPasswordHash());
+        assertEquals("PRO", user.getPlan());
+        assertTrue(user.getPlanExpiresAt() != null);
         ArgumentCaptor<UserIdentity> identityCaptor = ArgumentCaptor.forClass(UserIdentity.class);
         verify(userIdentityRepository).save(identityCaptor.capture());
         assertEquals("google-sub-1", identityCaptor.getValue().getProviderSub());
@@ -60,9 +68,11 @@ class GoogleUserProvisioningServiceTest {
 
     @Test
     void rejectsEmailCollisionWithoutAutoMerge() {
+        UserPlanService userPlanService = new UserPlanService(userAccountRepository);
         GoogleUserProvisioningService service = new GoogleUserProvisioningService(
                 userAccountRepository,
-                userIdentityRepository);
+                userIdentityRepository,
+                userPlanService);
         GoogleIdentity googleIdentity = new GoogleIdentity(
                 "google-sub-2",
                 "local@example.com",

@@ -40,6 +40,9 @@ public class UserAccount {
     @Column(name = "plan", nullable = false, length = 30)
     private String plan = "FREE";
 
+    @Column(name = "plan_expires_at")
+    private Instant planExpiresAt;
+
     @Column(name = "preferences_json")
     private String preferencesJson;
 

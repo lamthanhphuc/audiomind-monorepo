@@ -11,6 +11,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.example.userservice.billing.BillingService;
 import com.example.userservice.billing.payos.PayosCrypto;
 import com.example.userservice.billing.payos.PayosModels;
+import com.example.userservice.plan.UserPlanService;
 import com.example.userservice.quota.QuotaService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.LinkedHashMap;
@@ -36,11 +37,14 @@ class BillingControllerWebhookTest {
     @Mock
     private QuotaService quotaService;
 
+    @Mock
+    private UserPlanService userPlanService;
+
     private MockMvc mockMvc;
 
     @BeforeEach
     void setUp() {
-        BillingController controller = new BillingController(billingService, quotaService);
+        BillingController controller = new BillingController(billingService, quotaService, userPlanService);
         mockMvc = MockMvcBuilders.standaloneSetup(controller)
                 .setControllerAdvice(new GlobalExceptionHandler())
                 .build();

@@ -3,6 +3,8 @@ package com.example.userservice.controller;
 import com.example.userservice.billing.BillingService;
 import com.example.userservice.billing.payos.PayosModels;
 import com.example.userservice.entity.BillingInvoice;
+import com.example.userservice.entity.UserAccount;
+import com.example.userservice.plan.UserPlanService;
 import com.example.userservice.quota.QuotaService;
 import com.example.userservice.security.UserPrincipal;
 import java.util.LinkedHashMap;
@@ -26,21 +28,27 @@ public class BillingController {
 
     private final BillingService billingService;
     private final QuotaService quotaService;
+    private final UserPlanService userPlanService;
 
     @GetMapping("/me")
     public Map<String, Object> me(Authentication authentication) {
         UserPrincipal principal = requirePrincipal(authentication);
         List<BillingInvoice> invoices = billingService.listMyInvoices(principal.userId());
+        UserAccount user = userPlanService.requireUserWithCurrentPlan(principal.userId());
         QuotaService.QuotaSnapshot quota = quotaService.snapshot(principal.userId());
-        return Map.of(
-                "userId", principal.userId(),
-                "plan", quota.plan(),
-                "jwtPlan", principal.plan(),
-                "quota", quota,
-                "invoices", invoices,
-                "proPriceVnd", billingService.proPriceVnd(),
-                "payosEnabled", billingService.payosEnabled()
-        );
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("userId", principal.userId());
+        response.put("plan", quota.plan());
+        response.put("jwtPlan", principal.plan());
+        response.put("trialActive", userPlanService.isOnTrial(user));
+        if (user.getPlanExpiresAt() != null) {
+            response.put("planExpiresAt", user.getPlanExpiresAt());
+        }
+        response.put("quota", quota);
+        response.put("invoices", invoices);
+        response.put("proPriceVnd", billingService.proPriceVnd());
+        response.put("payosEnabled", billingService.payosEnabled());
+        return response;
     }
 
     @PostMapping("/checkout/pro")

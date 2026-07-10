@@ -7,6 +7,7 @@ import com.example.userservice.entity.BillingWebhookEvent;
 import com.example.userservice.entity.UserAccount;
 import com.example.userservice.repository.BillingInvoiceRepository;
 import com.example.userservice.repository.BillingWebhookEventRepository;
+import com.example.userservice.plan.UserPlanService;
 import com.example.userservice.repository.UserAccountRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Instant;
@@ -32,6 +33,7 @@ public class BillingService {
     private final BillingInvoiceRepository invoiceRepository;
     private final BillingWebhookEventRepository webhookEventRepository;
     private final UserAccountRepository userAccountRepository;
+    private final UserPlanService userPlanService;
 
     @Value("${billing.pro-price-vnd:79000}")
     private long proPriceVnd;
@@ -48,7 +50,8 @@ public class BillingService {
     public BillingInvoice createProCheckout(Long userId) {
         UserAccount user = userAccountRepository.findById(userId)
                 .orElseThrow(() -> new IllegalArgumentException("User not found"));
-        if ("PRO".equalsIgnoreCase(user.getPlan())) {
+        userPlanService.refreshExpiredPlan(user);
+        if (userPlanService.hasPermanentPro(user)) {
             throw new IllegalArgumentException("Tài khoản đã là gói Pro");
         }
 
@@ -210,7 +213,7 @@ public class BillingService {
     private void upgradeUserToPro(Long userId) {
         UserAccount user = userAccountRepository.findById(userId)
                 .orElseThrow(() -> new IllegalArgumentException("User not found"));
-        user.setPlan("PRO");
+        userPlanService.markPermanentPro(user);
         userAccountRepository.save(user);
     }
 

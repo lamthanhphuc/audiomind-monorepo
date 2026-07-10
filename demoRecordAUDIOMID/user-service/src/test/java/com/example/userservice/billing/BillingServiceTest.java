@@ -7,6 +7,7 @@ import com.example.userservice.entity.BillingWebhookEvent;
 import com.example.userservice.entity.UserAccount;
 import com.example.userservice.repository.BillingInvoiceRepository;
 import com.example.userservice.repository.BillingWebhookEventRepository;
+import com.example.userservice.plan.UserPlanService;
 import com.example.userservice.repository.UserAccountRepository;
 import java.util.Map;
 import java.util.Optional;
@@ -40,6 +41,9 @@ class BillingServiceTest {
 
   @Mock
   private UserAccountRepository userAccountRepository;
+
+  @Mock
+  private UserPlanService userPlanService;
 
   @InjectMocks
   private BillingService billingService;
@@ -77,7 +81,7 @@ class BillingServiceTest {
     billingService.handlePayosWebhook(webhook);
 
     assertEquals("PAID", invoice.getStatus());
-    assertEquals("PRO", user.getPlan());
+    verify(userPlanService).markPermanentPro(user);
     verify(webhookEventRepository).save(any(BillingWebhookEvent.class));
     verify(invoiceRepository).save(invoice);
     verify(userAccountRepository).save(user);
@@ -220,7 +224,7 @@ class BillingServiceTest {
     BillingInvoice result = billingService.syncProPayment(42L, 9004L);
 
     assertEquals("PAID", result.getStatus());
-    assertEquals("PRO", user.getPlan());
+    verify(userPlanService).markPermanentPro(user);
     verify(invoiceRepository).save(invoice);
     verify(userAccountRepository).save(user);
   }
