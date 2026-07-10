@@ -510,7 +510,7 @@ export default function RealtimeDashboardScene({
             <p className="ui-section__eyebrow">Bản ghi trực tiếp</p>
             <h3 className="ui-section__title">Nội dung đang ghi</h3>
           </div>
-        <div className="realtime-panel__grid">
+        <div className="realtime-panel__grid realtime-panel__grid--transcript">
           <RealtimeTranscript
             segments={liveTranscriptSegments}
             isPaused={liveLifecycleState === 'silent_paused'}

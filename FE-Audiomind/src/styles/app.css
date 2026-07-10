@@ -628,6 +628,14 @@
   gap: var(--space-4);
 }
 
+.realtime-panel__grid--transcript {
+  min-height: 0;
+}
+
+.realtime-panel__grid--transcript > :first-child {
+  min-height: 0;
+}
+
 @media (min-width: 960px) {
   .realtime-panel__grid {
     grid-template-columns: minmax(0, 1fr) 300px;

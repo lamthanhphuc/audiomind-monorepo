@@ -13,6 +13,14 @@ const baseMeeting = {
   status: 'completed',
 }
 
+const mockMeetingListPage = (items: typeof baseMeeting[]) => ({
+  items,
+  total: items.length,
+  page: 1,
+  pageSize: 10,
+  totalPages: items.length > 0 ? 1 : 0,
+})
+
 const flush = async () => {
   await act(async () => {
     await Promise.resolve()
@@ -31,6 +39,8 @@ describe('App history analysis navigation', () => {
     localStorage.setItem('audiomind.access_token', 'dummy-token')
 
     vi.spyOn(api, 'listMeetingsWithParams').mockResolvedValue([baseMeeting])
+    vi.spyOn(api, 'listMeetingsPage').mockResolvedValue(mockMeetingListPage([baseMeeting]))
+    vi.spyOn(api, 'getMeetingDetail').mockResolvedValue(baseMeeting)
     vi.spyOn(api, 'listMeetingResultScopes').mockResolvedValue([{ scopeKind: 'legacy' }])
     vi.spyOn(api, 'resolveMeetingResultScope').mockImplementation(async (meetingId) => ({
       scopeKind: 'legacy',

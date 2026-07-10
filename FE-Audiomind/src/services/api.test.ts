@@ -13,6 +13,7 @@ import {
   getUserProfile,
   listMeetingResultScopes,
   listMeetings,
+  listMeetingsPage,
   listMeetingsWithParams,
   reanalyzeMeetingAnalysis,
   renameMeeting,
@@ -102,6 +103,29 @@ describe('upload language request wiring', () => {
     expect(url).toContain('status=completed')
     expect(url).toContain('language=vi')
     expect(url).toContain('sort=created_desc')
+  })
+
+  it('loads paginated meeting history when page params are provided', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        items: [{ id: 7, title: 'History item', audioPath: '/tmp/a.wav', createdAt: '2026-05-28T00:00:00Z' }],
+        total: 12,
+        page: 2,
+        pageSize: 10,
+        totalPages: 2,
+      }),
+      headers: new Headers(),
+    })
+
+    const page = await listMeetingsPage({ page: 2, pageSize: 10, sort: 'created_desc' })
+    expect(page.items).toHaveLength(1)
+    expect(page.total).toBe(12)
+    expect(page.page).toBe(2)
+
+    const [url] = fetchMock.mock.calls[0] as [string]
+    expect(url).toContain('page=2')
+    expect(url).toContain('pageSize=10')
   })
 
   it('renames and soft deletes meeting through management endpoints', async () => {

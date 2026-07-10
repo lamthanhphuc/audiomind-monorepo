@@ -209,6 +209,11 @@ export default function MeetingHistoryScene({
     listState,
     listError,
     meetings,
+    listPage,
+    listTotal,
+    listTotalPages,
+    goToPreviousListPage,
+    goToNextListPage,
     selectedMeetingId,
     selectedMeetingSummary,
     selectMeeting,
@@ -374,7 +379,7 @@ export default function MeetingHistoryScene({
               <h1>Lịch sử cuộc họp</h1>
               <p>Tìm kiếm, lọc, đổi tên và xoá mềm meeting.</p>
             </div>
-            <span className="meta-pill">{meetings.length}</span>
+            <span className="meta-pill">{listTotal}</span>
           </div>
 
           <div className="history-toolbar ui-toolbar">
@@ -457,37 +462,67 @@ export default function MeetingHistoryScene({
           )}
 
           {listState === 'ready' && (
-            <div className="history-list-grid" data-testid="meeting-list">
-              {meetingCards.map((item) => (
-                <button
-                  key={item.id}
-                  type="button"
-                  className={`history-list-item${item.active ? ' history-list-item--active' : ''}`}
-                  onClick={() => {
-                    selectMeeting(item.id)
-                  }}
-                >
-                  <div className="history-list-item__row">
-                    <strong>{item.title}</strong>
-                    <div className="history-list-item__badges">
-                      {item.sharedWithMe && (
-                        <span className="history-share-badge" data-testid="meeting-shared-badge">
-                          Chia sẻ
-                        </span>
-                      )}
-                      <span className="meta-pill">#{item.id}</span>
-                    </div>
-                  </div>
-                  <div className="history-list-item__meta">
-                    <span>{item.createdAt}</span>
-                    <span>•</span>
-                    <span>{item.language}</span>
-                    <span>•</span>
-                    <span>{item.status}</span>
-                  </div>
-                </button>
-              ))}
-            </div>
+            <>
+              <div className="history-list-scroll" data-testid="meeting-list-scroll">
+                <div className="history-list-grid" data-testid="meeting-list">
+                  {meetingCards.map((item) => (
+                    <button
+                      key={item.id}
+                      type="button"
+                      className={`history-list-item${item.active ? ' history-list-item--active' : ''}`}
+                      onClick={() => {
+                        selectMeeting(item.id)
+                      }}
+                    >
+                      <div className="history-list-item__row">
+                        <strong>{item.title}</strong>
+                        <div className="history-list-item__badges">
+                          {item.sharedWithMe && (
+                            <span className="history-share-badge" data-testid="meeting-shared-badge">
+                              Chia sẻ
+                            </span>
+                          )}
+                          <span className="meta-pill">#{item.id}</span>
+                        </div>
+                      </div>
+                      <div className="history-list-item__meta">
+                        <span>{item.createdAt}</span>
+                        <span>•</span>
+                        <span>{item.language}</span>
+                        <span>•</span>
+                        <span>{item.status}</span>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {listTotalPages > 1 && (
+                <div className="history-list-pagination" data-testid="meeting-list-pagination">
+                  <button
+                    type="button"
+                    className="btn btn--secondary btn--compact"
+                    disabled={listPage <= 1}
+                    onClick={goToPreviousListPage}
+                    data-testid="meeting-list-prev-page"
+                  >
+                    Trang trước
+                  </button>
+                  <span className="history-list-pagination__label">
+                    Trang {listPage}/{listTotalPages}
+                  </span>
+                  <button
+                    type="button"
+                    className="btn btn--secondary btn--compact"
+                    disabled={listPage >= listTotalPages}
+                    onClick={goToNextListPage}
+                    data-testid="meeting-list-next-page"
+                  >
+                    Trang sau
+                  </button>
+                </div>
+              )}
+            </>
           )}
         </section>
 

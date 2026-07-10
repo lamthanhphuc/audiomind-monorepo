@@ -16,6 +16,21 @@ const baseMeeting = {
   status: 'processing',
 }
 
+const mockMeetingListPage = (
+  items: typeof baseMeeting[],
+  options?: { total?: number; page?: number; pageSize?: number },
+) => {
+  const total = options?.total ?? items.length
+  const pageSize = options?.pageSize ?? 10
+  return {
+    items,
+    total,
+    page: options?.page ?? 1,
+    pageSize,
+    totalPages: total === 0 ? 0 : Math.ceil(total / pageSize),
+  }
+}
+
 const baseAnalysis = {
   status: 'NOT_FOUND',
   summary: '',
@@ -102,7 +117,8 @@ describe('MeetingHistoryScene', () => {
     root = createRoot(container)
     sessionStorage.clear()
 
-    vi.spyOn(api, 'listMeetingsWithParams').mockResolvedValue([baseMeeting])
+    vi.spyOn(api, 'listMeetingsPage').mockResolvedValue(mockMeetingListPage([baseMeeting]))
+    vi.spyOn(api, 'getMeetingDetail').mockResolvedValue(baseMeeting)
     vi.spyOn(api, 'listMeetingResultScopes').mockResolvedValue([{ scopeKind: 'legacy' }])
     vi.spyOn(api, 'resolveMeetingResultScope').mockImplementation(async (meetingId) => ({
       scopeKind: 'legacy',
@@ -180,7 +196,7 @@ describe('MeetingHistoryScene', () => {
   it('cold open loads only meeting list without auto-selecting detail', async () => {
     await mountHistoryScene()
 
-    expect(api.listMeetingsWithParams).toHaveBeenCalledTimes(1)
+    expect(api.listMeetingsPage).toHaveBeenCalledTimes(1)
     expect(api.getTranscript).not.toHaveBeenCalled()
     expect(api.getSavedAnalysis).not.toHaveBeenCalled()
     expect(container.textContent).toContain('Chọn một meeting để xem transcript và analysis đã lưu')
@@ -189,7 +205,7 @@ describe('MeetingHistoryScene', () => {
   it('restores stored selection after list load and loads detail from list summary only', async () => {
     await mountWithStoredSelection(7)
 
-    expect(api.listMeetingsWithParams).toHaveBeenCalledTimes(1)
+    expect(api.listMeetingsPage).toHaveBeenCalledTimes(1)
     expect(api.getTranscript).toHaveBeenCalledWith(7, expect.objectContaining({ signal: expect.any(AbortSignal) }))
     expect(api.getSavedAnalysis).toHaveBeenCalledWith(7, expect.objectContaining({ signal: expect.any(AbortSignal) }))
     expect(container.textContent).toContain('History item')
@@ -215,7 +231,7 @@ describe('MeetingHistoryScene', () => {
 
   it('loads detail on row click without getMeetingDetail and uses cache on second click', async () => {
     const secondMeeting = { ...baseMeeting, id: 8, title: 'Second item' }
-    ;(api.listMeetingsWithParams as any).mockResolvedValue([baseMeeting, secondMeeting])
+    ;(api.listMeetingsPage as any).mockResolvedValue(mockMeetingListPage([baseMeeting, secondMeeting], { total: 2 }))
 
     await mountHistoryScene()
     expect(api.getTranscript).not.toHaveBeenCalled()
@@ -236,7 +252,7 @@ describe('MeetingHistoryScene', () => {
   it('debounces search input before reloading meetings', async () => {
     vi.useFakeTimers()
     await mountHistoryScene()
-    const initialCalls = (api.listMeetingsWithParams as any).mock.calls.length
+    const initialCalls = (api.listMeetingsPage as any).mock.calls.length
 
     const searchInput = container.querySelector('[data-testid="meeting-search-input"]') as HTMLInputElement
     for (const char of 'abcdefghij') {
@@ -249,14 +265,14 @@ describe('MeetingHistoryScene', () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(299)
     })
-    expect((api.listMeetingsWithParams as any).mock.calls.length).toBe(initialCalls)
+    expect((api.listMeetingsPage as any).mock.calls.length).toBe(initialCalls)
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1)
     })
     await flush()
 
-    expect((api.listMeetingsWithParams as any).mock.calls.length - initialCalls).toBeLessThanOrEqual(2)
+    expect((api.listMeetingsPage as any).mock.calls.length - initialCalls).toBeLessThanOrEqual(2)
   })
 
   it('restores focusMeetingId after list load when provided as prop', async () => {
@@ -301,7 +317,7 @@ describe('MeetingHistoryScene', () => {
     })
     await flush()
 
-    const calls = (api.listMeetingsWithParams as any).mock.calls
+    const calls = (api.listMeetingsPage as any).mock.calls
     const latestArgs = calls[calls.length - 1][0]
     expect(latestArgs).toMatchObject({
       query: 'retro',
@@ -334,6 +350,9 @@ describe('MeetingHistoryScene', () => {
   })
 
   it('soft deletes selected meeting and hides it from list', async () => {
+    ;(api.listMeetingsPage as any)
+      .mockResolvedValueOnce(mockMeetingListPage([baseMeeting]))
+      .mockResolvedValue(mockMeetingListPage([]))
     await mountWithStoredSelection()
 
     const deleteButton = container.querySelector('[data-testid="meeting-delete-submit"]') as HTMLButtonElement
@@ -348,7 +367,7 @@ describe('MeetingHistoryScene', () => {
 
   it('renders loading, empty, and error states', async () => {
     let resolveList: ((value: any) => void) | null = null
-    vi.spyOn(api, 'listMeetingsWithParams').mockImplementationOnce(
+    vi.spyOn(api, 'listMeetingsPage').mockImplementationOnce(
       () => new Promise((resolve) => {
         resolveList = resolve
       }),
@@ -360,12 +379,12 @@ describe('MeetingHistoryScene', () => {
     expect(container.textContent).toContain('Đang tải danh sách meeting')
 
     await act(async () => {
-      resolveList?.([])
+      resolveList?.(mockMeetingListPage([]))
     })
     await flush()
     expect(container.textContent).toContain('Chưa có meeting phù hợp')
 
-    ;(api.listMeetingsWithParams as any).mockRejectedValueOnce(new Error('boom'))
+    ;(api.listMeetingsPage as any).mockRejectedValueOnce(new Error('boom'))
     const reloadButton = container.querySelector('button[aria-label="Tải lại danh sách"]') as HTMLButtonElement
     await act(async () => {
       reloadButton.click()
@@ -389,14 +408,16 @@ describe('MeetingHistoryScene', () => {
       { ...baseMeeting, id: 2, title: 'Completed one', status: 'completed' },
       { ...baseMeeting, id: 3, title: 'Unknown one', status: undefined as any },
     ]
-    ;(api.listMeetingsWithParams as any).mockImplementation(async (params?: { status?: string }) => {
+    ;(api.listMeetingsPage as any).mockImplementation(async (params?: { status?: string }) => {
       if (params?.status === 'completed') {
-        return dataset.filter((meeting) => meeting.status === 'completed')
+        const items = dataset.filter((meeting) => meeting.status === 'completed')
+        return mockMeetingListPage(items, { total: items.length })
       }
       if (params?.status === 'processing') {
-        return dataset.filter((meeting) => meeting.status === 'processing')
+        const items = dataset.filter((meeting) => meeting.status === 'processing')
+        return mockMeetingListPage(items, { total: items.length })
       }
-      return dataset
+      return mockMeetingListPage(dataset, { total: dataset.length })
     })
 
     await mountHistoryScene()
@@ -415,7 +436,7 @@ describe('MeetingHistoryScene', () => {
 
   it('does not treat unknown or missing status as processing in history list', async () => {
     const unknownOnly = [{ ...baseMeeting, id: 8, title: 'Legacy row', status: undefined as any }]
-    ;(api.listMeetingsWithParams as any).mockResolvedValue(unknownOnly)
+    ;(api.listMeetingsPage as any).mockResolvedValue(mockMeetingListPage(unknownOnly))
 
     await mountHistoryScene()
     await selectMeetingById(8)

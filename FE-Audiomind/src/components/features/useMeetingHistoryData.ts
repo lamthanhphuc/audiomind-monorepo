@@ -3,10 +3,12 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   ApiError,
   deleteMeeting,
+  getMeetingDetail,
   getSavedAnalysis,
   getTranscript,
   listMeetingResultScopes,
-  listMeetingsWithParams,
+  listMeetingsPage,
+  MEETING_HISTORY_PAGE_SIZE,
   renameMeeting,
   resolveMeetingResultScope,
   semanticSearchMeetings,
@@ -220,6 +222,10 @@ export function useMeetingHistoryData({
   const [listState, setListState] = useState<ListState>('loading')
   const [listError, setListError] = useState<string | null>(null)
   const [meetings, setMeetings] = useState<Meeting[]>([])
+  const [listPage, setListPage] = useState(1)
+  const [listTotal, setListTotal] = useState(0)
+  const [listTotalPages, setListTotalPages] = useState(0)
+  const [pinnedMeetingSummary, setPinnedMeetingSummary] = useState<Meeting | null>(null)
   const [selectedMeetingId, setSelectedMeetingId] = useState<number | null>(null)
   const [detail, setDetail] = useState<SelectedMeetingDetail>(emptyDetailState)
   const [debouncedSearchQuery, setDebouncedSearchQuery] = useState('')
@@ -243,8 +249,10 @@ export function useMeetingHistoryData({
   const focusMeetingIdRef = useRef<number | null>(focusMeetingId)
 
   const selectedMeetingSummary = useMemo(() => {
-    return meetings.find((meeting) => meeting.id === selectedMeetingId) ?? null
-  }, [meetings, selectedMeetingId])
+    if (selectedMeetingId == null) return null
+    return meetings.find((meeting) => meeting.id === selectedMeetingId)
+      ?? (pinnedMeetingSummary?.id === selectedMeetingId ? pinnedMeetingSummary : null)
+  }, [meetings, pinnedMeetingSummary, selectedMeetingId])
 
   useEffect(() => {
     selectedMeetingIdRef.current = selectedMeetingId
@@ -308,6 +316,40 @@ export function useMeetingHistoryData({
   }, [selectedMeetingSummary?.id, selectedMeetingSummary?.title])
 
   useEffect(() => {
+    setListPage(1)
+  }, [debouncedSearchQuery, languageFilter, sortValue, statusFilter])
+
+  useEffect(() => {
+    if (selectedMeetingId == null) {
+      setPinnedMeetingSummary(null)
+      return
+    }
+
+    const fromList = meetings.find((meeting) => meeting.id === selectedMeetingId)
+    if (fromList) {
+      setPinnedMeetingSummary(fromList)
+      return
+    }
+
+    let cancelled = false
+    void getMeetingDetail(selectedMeetingId)
+      .then((meeting) => {
+        if (!cancelled) {
+          setPinnedMeetingSummary(meeting)
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setPinnedMeetingSummary(null)
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [meetings, selectedMeetingId])
+
+  useEffect(() => {
     listAbortRef.current?.abort()
     const controller = new AbortController()
     listAbortRef.current = controller
@@ -317,21 +359,34 @@ export function useMeetingHistoryData({
       setListError(null)
 
       try {
-        const items = await listMeetingsWithParams({
+        const pageResult = await listMeetingsPage({
           query: debouncedSearchQuery,
           status: statusFilter || undefined,
           language: languageFilter || undefined,
           sort: sortValue,
+          page: listPage,
+          pageSize: MEETING_HISTORY_PAGE_SIZE,
         }, { signal: controller.signal })
         if (controller.signal.aborted) return
 
+        const items = pageResult.items
         pruneDetailCacheForList(items)
         setMeetings(items)
-        setListState(items.length > 0 ? 'ready' : 'empty')
-        setSelectedMeetingId((current) => resolveRestoredMeetingId(items, current, focusMeetingIdRef.current))
+        setListTotal(pageResult.total)
+        setListTotalPages(pageResult.totalPages)
+        setListState(items.length > 0 || pageResult.total > 0 ? 'ready' : 'empty')
+        setSelectedMeetingId((current) => {
+          const restored = resolveRestoredMeetingId(items, current, focusMeetingIdRef.current)
+          if (restored != null) return restored
+          if (focusMeetingIdRef.current != null) return focusMeetingIdRef.current
+          if (current != null) return current
+          return null
+        })
       } catch (error) {
         if (controller.signal.aborted || isAbortError(error)) return
         setMeetings([])
+        setListTotal(0)
+        setListTotalPages(0)
         setListState('error')
         setListError(error instanceof Error ? error.message : 'Không thể tải lịch sử meeting')
       }
@@ -339,7 +394,7 @@ export function useMeetingHistoryData({
 
     void loadHistory()
     return () => controller.abort()
-  }, [debouncedSearchQuery, languageFilter, reloadTick, sortValue, statusFilter])
+  }, [debouncedSearchQuery, languageFilter, listPage, reloadTick, sortValue, statusFilter])
 
   useEffect(() => {
     if (debouncedSearchQuery.trim().length < 3) {
@@ -419,7 +474,7 @@ export function useMeetingHistoryData({
       return
     }
 
-    const meetingSummary = meetings.find((meeting) => meeting.id === selectedMeetingId) ?? null
+    const meetingSummary = selectedMeetingSummary
     if (!meetingSummary || selectedScope == null || selectedScope.meetingId !== selectedMeetingId || scopeState !== 'ready') {
       if (scopeState === 'error') {
         setDetail({
@@ -529,7 +584,7 @@ export function useMeetingHistoryData({
 
     void loadDetail()
     return () => controller.abort()
-  }, [meetings, scopeError, scopeState, selectedMeetingId, selectedScope])
+  }, [selectedMeetingSummary, selectedScope, scopeError, scopeState, selectedMeetingId])
 
   const handleRename = async () => {
     if (!selectedMeetingSummary) return
@@ -565,12 +620,9 @@ export function useMeetingHistoryData({
       await deleteMeeting(selectedMeetingSummary.id)
       invalidateDetailCacheForMeeting(selectedMeetingSummary.id)
       clearStoredMeetingId()
-      setMeetings((current) => {
-        const next = current.filter((meeting) => meeting.id !== selectedMeetingSummary.id)
-        setSelectedMeetingId((selectedId) => (selectedId === selectedMeetingSummary.id ? null : selectedId))
-        setListState(next.length > 0 ? 'ready' : 'empty')
-        return next
-      })
+      setPinnedMeetingSummary(null)
+      setSelectedMeetingId(null)
+      setReloadTick((value) => value + 1)
     } catch (error) {
       setListError(error instanceof Error ? error.message : 'Không thể xoá meeting')
     } finally {
@@ -581,6 +633,18 @@ export function useMeetingHistoryData({
   const selectMeeting = (meetingId: number) => {
     setSelectedMeetingId(meetingId)
     writeStoredMeetingId(meetingId)
+    const fromList = meetings.find((meeting) => meeting.id === meetingId)
+    if (fromList) {
+      setPinnedMeetingSummary(fromList)
+    }
+  }
+
+  const goToPreviousListPage = () => {
+    setListPage((current) => Math.max(1, current - 1))
+  }
+
+  const goToNextListPage = () => {
+    setListPage((current) => (listTotalPages > 0 ? Math.min(listTotalPages, current + 1) : current))
   }
 
   return {
@@ -596,6 +660,11 @@ export function useMeetingHistoryData({
     listState,
     listError,
     meetings,
+    listPage,
+    listTotal,
+    listTotalPages,
+    goToPreviousListPage,
+    goToNextListPage,
     selectedMeetingId,
     selectedMeetingSummary,
     selectMeeting,

@@ -200,6 +200,28 @@ public class MeetingService {
         return merged;
     }
 
+    public MeetingPageResult findMeetingsForUserPage(
+            Long userId,
+            String query,
+            String status,
+            String language,
+            String sort,
+            int page,
+            int pageSize
+    ) {
+        List<Meeting> all = findMeetingsForUser(userId, query, status, language, sort);
+        int safePageSize = Math.max(1, Math.min(pageSize, 50));
+        int safePage = Math.max(1, page);
+        long total = all.size();
+        int totalPages = total == 0 ? 0 : (int) Math.ceil((double) total / safePageSize);
+        int fromIndex = (safePage - 1) * safePageSize;
+        if (fromIndex >= total) {
+            return new MeetingPageResult(List.of(), total, safePage, safePageSize, totalPages);
+        }
+        int toIndex = Math.min(fromIndex + safePageSize, all.size());
+        return new MeetingPageResult(all.subList(fromIndex, toIndex), total, safePage, safePageSize, totalPages);
+    }
+
     private boolean matchesMeetingFilters(Meeting meeting, String query, String status, String language) {
         String normalizedQuery = normalizeNullable(query);
         if (normalizedQuery != null) {

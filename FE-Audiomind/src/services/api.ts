@@ -1012,7 +1012,19 @@ export type ListMeetingsParams = {
   status?: string
   language?: string
   sort?: string
+  page?: number
+  pageSize?: number
 }
+
+export type MeetingListPage = {
+  items: Meeting[]
+  total: number
+  page: number
+  pageSize: number
+  totalPages: number
+}
+
+export const MEETING_HISTORY_PAGE_SIZE = 10
 
 export const listMeetingsWithParams = async (
   params: ListMeetingsParams = {},
@@ -1033,6 +1045,37 @@ export const listMeetingsWithParams = async (
   }
   const suffix = query.toString() ? `?${query.toString()}` : ''
   return fetchJson<Meeting[]>(`${MEETING_API_BASE}/meetings${suffix}`, { signal: options.signal })
+}
+
+export const listMeetingsPage = async (
+  params: ListMeetingsParams & { page: number; pageSize?: number },
+  options: ApiRequestOptions = {},
+): Promise<MeetingListPage> => {
+  const query = new URLSearchParams()
+  if (params.query?.trim()) {
+    query.set('query', params.query.trim())
+  }
+  if (params.status?.trim()) {
+    query.set('status', params.status.trim())
+  }
+  if (params.language?.trim()) {
+    query.set('language', params.language.trim())
+  }
+  if (params.sort?.trim()) {
+    query.set('sort', params.sort.trim())
+  }
+  query.set('page', String(params.page))
+  query.set('pageSize', String(params.pageSize ?? MEETING_HISTORY_PAGE_SIZE))
+  const response = await fetchJson<MeetingListPage>(`${MEETING_API_BASE}/meetings?${query.toString()}`, {
+    signal: options.signal,
+  })
+  return {
+    items: response.items ?? [],
+    total: response.total ?? 0,
+    page: response.page ?? params.page,
+    pageSize: response.pageSize ?? (params.pageSize ?? MEETING_HISTORY_PAGE_SIZE),
+    totalPages: response.totalPages ?? 0,
+  }
 }
 
 export const renameMeeting = async (meetingId: number, title: string): Promise<Meeting> => {

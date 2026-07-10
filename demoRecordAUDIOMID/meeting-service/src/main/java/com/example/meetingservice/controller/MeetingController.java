@@ -3,6 +3,7 @@ package com.example.meetingservice.controller;
 import com.example.meetingservice.entity.Meeting;
 import com.example.meetingservice.controller.dto.CreateScheduledMeetingRequest;
 import com.example.meetingservice.security.UserPrincipal;
+import com.example.meetingservice.service.MeetingPageResult;
 import com.example.meetingservice.service.MeetingService;
 import com.example.meetingservice.service.UploadValidator;
 import lombok.RequiredArgsConstructor;
@@ -276,14 +277,43 @@ public class MeetingController {
     }
 
     @GetMapping
-    public List<Meeting> getMeetings(
+    public Object getMeetings(
             @RequestParam(required = false) String query,
             @RequestParam(required = false) String status,
             @RequestParam(required = false) String language,
             @RequestParam(required = false) String sort,
+            @RequestParam(required = false) Integer page,
+            @RequestParam(required = false) Integer pageSize,
             Authentication authentication
     ) {
         UserPrincipal principal = requirePrincipal(authentication);
+        if (page != null || pageSize != null) {
+            int resolvedPage = page != null ? page : 1;
+            int resolvedPageSize = pageSize != null ? pageSize : 10;
+            MeetingPageResult pageResult = meetingService.findMeetingsForUserPage(
+                    principal.userId(),
+                    query,
+                    status,
+                    language,
+                    sort,
+                    resolvedPage,
+                    resolvedPageSize
+            );
+            Long userId = principal.userId();
+            for (Meeting meeting : pageResult.items()) {
+                meeting.setSharedWithMe(
+                        meeting.getOwnerUserId() != null && !meeting.getOwnerUserId().equals(userId)
+                );
+            }
+            return Map.of(
+                    "items", pageResult.items(),
+                    "total", pageResult.total(),
+                    "page", pageResult.page(),
+                    "pageSize", pageResult.pageSize(),
+                    "totalPages", pageResult.totalPages()
+            );
+        }
+
         List<Meeting> meetings = meetingService.findMeetingsForUser(
                 principal.userId(),
                 query,
