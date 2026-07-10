@@ -5,6 +5,7 @@ import com.example.userservice.controller.dto.GoogleLoginUserResponse;
 import com.example.userservice.controller.dto.GoogleTicketExchangeResponse;
 import com.example.userservice.entity.UserAccount;
 import com.example.userservice.entity.UserIdentity;
+import com.example.userservice.plan.UserPlanService;
 import com.example.userservice.repository.UserAccountRepository;
 import com.example.userservice.repository.UserIdentityRepository;
 import com.example.userservice.security.JwtUtil;
@@ -16,6 +17,7 @@ import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.util.UriComponentsBuilder;
 
 @Service
@@ -31,6 +33,7 @@ public class GoogleLoginService {
     private final UserIdentityRepository userIdentityRepository;
     private final JwtUtil jwtUtil;
     private final PendingMeetingShareClient pendingMeetingShareClient;
+    private final UserPlanService userPlanService;
     private final SecureRandom secureRandom = new SecureRandom();
     private final long accessExpirationSeconds;
 
@@ -43,6 +46,7 @@ public class GoogleLoginService {
             UserIdentityRepository userIdentityRepository,
             JwtUtil jwtUtil,
             PendingMeetingShareClient pendingMeetingShareClient,
+            UserPlanService userPlanService,
             @Value("${app.security.jwt.access-expiration-seconds}") long accessExpirationSeconds) {
         this.properties = properties;
         this.redisStore = redisStore;
@@ -52,6 +56,7 @@ public class GoogleLoginService {
         this.userIdentityRepository = userIdentityRepository;
         this.jwtUtil = jwtUtil;
         this.pendingMeetingShareClient = pendingMeetingShareClient;
+        this.userPlanService = userPlanService;
         this.accessExpirationSeconds = accessExpirationSeconds;
     }
 
@@ -103,21 +108,24 @@ public class GoogleLoginService {
         }
     }
 
+    @Transactional
     public GoogleTicketExchangeResponse exchangeTicket(String rawTicket) {
         properties.requireConfigured();
         GoogleLoginTicket loginTicket = redisStore.consumeTicket(rawTicket);
         UserAccount user = userAccountRepository.findById(loginTicket.userId())
                 .orElseThrow(() -> new GoogleOAuthException(GoogleOAuthError.GOOGLE_LOGIN_TICKET_INVALID));
+        UserAccount currentUser = userPlanService.refreshExpiredPlan(user);
+        String effectivePlan = userPlanService.resolveEffectivePlan(currentUser);
         String displayName = userIdentityRepository
-                .findByUserIdAndProviderAndUnlinkedAtIsNull(user.getId(), "google")
+                .findByUserIdAndProviderAndUnlinkedAtIsNull(currentUser.getId(), "google")
                 .map(UserIdentity::getDisplayName)
                 .filter(value -> !value.isBlank())
-                .orElse(user.getUsername());
+                .orElse(currentUser.getUsername());
         String accessToken = jwtUtil.createAccessToken(
-                user.getId(),
-                user.getUsername(),
-                user.getRole(),
-                user.getPlan()
+                currentUser.getId(),
+                currentUser.getUsername(),
+                currentUser.getRole(),
+                effectivePlan
         );
         log.info(
                 "event=GOOGLE_LOGIN_TICKET_EXCHANGED traceId={} userId={}",
@@ -126,7 +134,7 @@ public class GoogleLoginService {
         return new GoogleTicketExchangeResponse(
                 accessToken,
                 accessExpirationSeconds,
-                new GoogleLoginUserResponse(user.getId(), user.getEmail(), displayName),
+                new GoogleLoginUserResponse(currentUser.getId(), currentUser.getEmail(), displayName),
                 loginTicket.redirectAfter());
     }
 

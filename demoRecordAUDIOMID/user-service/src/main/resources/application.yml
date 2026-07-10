@@ -124,6 +124,7 @@ teams:
 
 billing:
   pro-price-vnd: ${BILLING_PRO_PRICE_VND:79000}
+  new-user-trial-days: ${BILLING_NEW_USER_TRIAL_DAYS:3}
 
 payos:
   enabled: ${PAYOS_ENABLED:false}

@@ -2,6 +2,7 @@ package com.example.userservice.quota;
 
 import com.example.userservice.entity.UsageCounter;
 import com.example.userservice.entity.UserAccount;
+import com.example.userservice.plan.UserPlanService;
 import com.example.userservice.repository.UsageCounterRepository;
 import com.example.userservice.repository.UserAccountRepository;
 import java.time.Clock;
@@ -20,6 +21,7 @@ public class QuotaService {
 
     private final UsageCounterRepository usageCounterRepository;
     private final UserAccountRepository userAccountRepository;
+    private final UserPlanService userPlanService;
     private final Clock clock = Clock.systemUTC();
 
     @Transactional
@@ -33,6 +35,8 @@ public class QuotaService {
 
         UserAccount user = userAccountRepository.findById(userId)
                 .orElseThrow(() -> new IllegalArgumentException("User not found"));
+        UserAccount currentUser = userPlanService.refreshExpiredPlan(user);
+        String effectivePlan = userPlanService.resolveEffectivePlan(currentUser);
 
         String period = currentPeriod();
         UsageCounter counter = usageCounterRepository.lockByUserAndPeriod(userId, period)
@@ -45,7 +49,7 @@ public class QuotaService {
                     return created;
                 });
 
-        QuotaPolicy.PlanLimits limits = QuotaPolicy.limitsForPlan(user.getPlan());
+        QuotaPolicy.PlanLimits limits = QuotaPolicy.limitsForPlan(effectivePlan);
         long nextStt = safeAdd(counter.getSttSecondsUsed(), sttSecondsDelta);
         long nextChars = safeAdd(counter.getGeminiInputCharsUsed(), geminiCharsDelta);
 
@@ -76,16 +80,18 @@ public class QuotaService {
         );
     }
 
-    @Transactional(readOnly = true)
+    @Transactional
     public QuotaSnapshot snapshot(Long userId) {
         UserAccount user = userAccountRepository.findById(userId)
                 .orElseThrow(() -> new IllegalArgumentException("User not found"));
+        UserAccount currentUser = userPlanService.refreshExpiredPlan(user);
+        String effectivePlan = userPlanService.resolveEffectivePlan(currentUser);
         String period = currentPeriod();
         UsageCounter counter = usageCounterRepository.findByUserIdAndPeriodYyyymm(userId, period)
                 .orElse(null);
-        QuotaPolicy.PlanLimits limits = QuotaPolicy.limitsForPlan(user.getPlan());
+        QuotaPolicy.PlanLimits limits = QuotaPolicy.limitsForPlan(effectivePlan);
         return new QuotaSnapshot(
-                user.getPlan(),
+                effectivePlan,
                 period,
                 counter == null ? 0 : counter.getSttSecondsUsed(),
                 counter == null ? 0 : counter.getGeminiInputCharsUsed(),

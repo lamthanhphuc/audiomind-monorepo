@@ -10,6 +10,7 @@ import com.example.userservice.controller.dto.UserProfileResponse;
 import com.example.userservice.entity.UserAccount;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.example.userservice.plan.UserPlanService;
 import com.example.userservice.repository.UserAccountRepository;
 import com.example.userservice.security.JwtUtil;
 import com.example.userservice.security.TokenBlacklistStore;
@@ -38,6 +39,7 @@ public class UserService {
     private final JwtUtil jwtUtil;
     private final TokenBlacklistStore tokenBlacklistStore;
     private final PendingMeetingShareClient pendingMeetingShareClient;
+    private final UserPlanService userPlanService;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @Value("${app.security.jwt.access-expiration-seconds}")
@@ -56,6 +58,7 @@ public class UserService {
         user.setUsername(request.username());
         user.setEmail(request.email());
         user.setPasswordHash(passwordEncoder.encode(request.password()));
+        userPlanService.applyNewUserTrial(user);
 
         UserAccount saved = userAccountRepository.save(user);
         pendingMeetingShareClient.acceptPendingInvites(saved.getId(), saved.getEmail());
@@ -69,7 +72,7 @@ public class UserService {
         return new RegisterResponse(saved.getId());
     }
 
-    @Transactional(readOnly = true)
+    @Transactional
     public AuthResponse login(LoginRequest request) {
         UserAccount user = userAccountRepository.findByUsername(request.username())
                 .orElseThrow(() -> new BadCredentialsException("Invalid username or password"));
@@ -80,7 +83,14 @@ public class UserService {
 
         pendingMeetingShareClient.acceptPendingInvites(user.getId(), user.getEmail());
 
-        String accessToken = jwtUtil.createAccessToken(user.getId(), user.getUsername(), user.getRole(), user.getPlan());
+        UserAccount currentUser = userPlanService.refreshExpiredPlan(user);
+        String effectivePlan = userPlanService.resolveEffectivePlan(currentUser);
+        String accessToken = jwtUtil.createAccessToken(
+                currentUser.getId(),
+                currentUser.getUsername(),
+                currentUser.getRole(),
+                effectivePlan
+        );
         log.info(
                 "event=REQUEST_COMPLETED traceId={} requestId={} path=/api/users/login userId={}",
                 MDC.get("traceId"),
@@ -88,28 +98,30 @@ public class UserService {
                 user.getId()
         );
 
-        return new AuthResponse(user.getId(), accessToken, accessExpirationSeconds);
+        return new AuthResponse(currentUser.getId(), accessToken, accessExpirationSeconds);
     }
 
-    @Transactional(readOnly = true)
+    @Transactional
     public AuthResponse refreshAccessToken(UserPrincipal principal) {
         UserAccount user = userAccountRepository.findById(principal.userId())
                 .orElseThrow(() -> new BadCredentialsException("User not found"));
 
+        UserAccount currentUser = userPlanService.refreshExpiredPlan(user);
+        String effectivePlan = userPlanService.resolveEffectivePlan(currentUser);
         String accessToken = jwtUtil.createAccessToken(
-                user.getId(),
-                user.getUsername(),
-                user.getRole(),
-                user.getPlan()
+                currentUser.getId(),
+                currentUser.getUsername(),
+                currentUser.getRole(),
+                effectivePlan
         );
         log.info(
                 "event=REQUEST_COMPLETED traceId={} requestId={} path=/api/users/refresh-token userId={} plan={}",
                 MDC.get("traceId"),
                 resolveRequestId(),
-                user.getId(),
-                user.getPlan()
+                currentUser.getId(),
+                effectivePlan
         );
-        return new AuthResponse(user.getId(), accessToken, accessExpirationSeconds);
+        return new AuthResponse(currentUser.getId(), accessToken, accessExpirationSeconds);
     }
 
     public void logout(String bearerToken) {

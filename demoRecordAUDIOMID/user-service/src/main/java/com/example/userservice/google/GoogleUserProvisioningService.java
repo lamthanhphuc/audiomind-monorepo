@@ -2,6 +2,7 @@ package com.example.userservice.google;
 
 import com.example.userservice.entity.UserAccount;
 import com.example.userservice.entity.UserIdentity;
+import com.example.userservice.plan.UserPlanService;
 import com.example.userservice.repository.UserAccountRepository;
 import com.example.userservice.repository.UserIdentityRepository;
 import java.nio.charset.StandardCharsets;
@@ -19,12 +20,15 @@ public class GoogleUserProvisioningService {
 
     private final UserAccountRepository userAccountRepository;
     private final UserIdentityRepository userIdentityRepository;
+    private final UserPlanService userPlanService;
 
     public GoogleUserProvisioningService(
             UserAccountRepository userAccountRepository,
-            UserIdentityRepository userIdentityRepository) {
+            UserIdentityRepository userIdentityRepository,
+            UserPlanService userPlanService) {
         this.userAccountRepository = userAccountRepository;
         this.userIdentityRepository = userIdentityRepository;
+        this.userPlanService = userPlanService;
     }
 
     @Transactional
@@ -55,6 +59,7 @@ public class GoogleUserProvisioningService {
         user.setEmail(googleIdentity.email());
         user.setPasswordHash(null);
         user.setAuthProviderPrimary(PROVIDER);
+        userPlanService.applyNewUserTrial(user);
         UserAccount savedUser = userAccountRepository.save(user);
 
         Instant now = Instant.now();

@@ -96,6 +96,7 @@ export default function BillingScene({
   const sttPercent = formatQuotaPercent(quota?.sttSecondsUsed ?? 0, quota?.sttSecondsLimit ?? 0)
   const geminiPercent = formatQuotaPercent(quota?.geminiInputCharsUsed ?? 0, quota?.geminiInputCharsLimit ?? 0)
   const isPro = (overview?.plan || jwtPlan || 'FREE').toUpperCase() === 'PRO'
+  const trialActive = overview?.trialActive === true
   const proPriceVnd = overview?.proPriceVnd ?? 79_000
   const payosCheckoutEnabled = payosEnabled && (overview?.payosEnabled ?? true)
 
@@ -128,16 +129,18 @@ export default function BillingScene({
       <header className="billing-scene__hero">
         <div>
           <p className="billing-scene__eyebrow">Gói & thanh toán</p>
-          <h1>Gói {planLabel(overview?.plan || jwtPlan || 'FREE')}</h1>
+          <h1>Gói {planLabel(overview?.plan || jwtPlan || 'FREE')}{trialActive ? ' (dùng thử)' : ''}</h1>
           <p className="billing-scene__subtitle">
-            Theo dõi quota ghi âm và phân tích AI, nâng cấp Pro qua PayOS, hoặc liên hệ quản trị viên để thanh toán thủ công.
+            {trialActive
+              ? 'Bạn đang dùng thử gói Pro miễn phí. Sau khi hết hạn, tài khoản sẽ chuyển về Free trừ khi bạn nâng cấp qua PayOS.'
+              : 'Theo dõi quota ghi âm và phân tích AI, nâng cấp Pro qua PayOS, hoặc liên hệ quản trị viên để thanh toán thủ công.'}
           </p>
         </div>
         <div className="billing-scene__hero-actions">
           <button type="button" className="btn btn--secondary" onClick={() => void load()} disabled={loading || busy}>
             Làm mới
           </button>
-          {!isPro && (
+          {(!isPro || trialActive) && payosCheckoutEnabled && (
             <button
               type="button"
               className="btn btn--primary"
@@ -157,6 +160,11 @@ export default function BillingScene({
         </div>
       )}
 
+      {trialActive && overview?.planExpiresAt && (
+        <div className="billing-scene__notice" data-testid="billing-trial-notice">
+          Gói Pro dùng thử đến {new Date(overview.planExpiresAt).toLocaleString('vi-VN')}.
+        </div>
+      )}
       {notice && <div className="billing-scene__notice" data-testid="billing-notice">{notice}</div>}
       {error && <div className="billing-scene__error" role="alert">{error}</div>}
       {quotaWarnings.map((warning) => (

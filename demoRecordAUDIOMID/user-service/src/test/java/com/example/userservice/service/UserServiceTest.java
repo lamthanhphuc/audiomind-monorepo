@@ -7,6 +7,7 @@ import com.example.userservice.controller.dto.RegisterRequest;
 import com.example.userservice.controller.dto.RegisterResponse;
 import com.example.userservice.controller.dto.UserProfileResponse;
 import com.example.userservice.entity.UserAccount;
+import com.example.userservice.plan.UserPlanService;
 import com.example.userservice.repository.UserAccountRepository;
 import com.example.userservice.security.JwtUtil;
 import com.example.userservice.security.TokenBlacklistStore;
@@ -50,6 +51,9 @@ class UserServiceTest {
     @Mock
     private PendingMeetingShareClient pendingMeetingShareClient;
 
+    @Mock
+    private UserPlanService userPlanService;
+
     @InjectMocks
     private UserService userService;
 
@@ -80,6 +84,7 @@ class UserServiceTest {
         assertEquals("alice", captor.getValue().getUsername());
         assertEquals("alice@example.com", captor.getValue().getEmail());
         assertEquals("HASHED", captor.getValue().getPasswordHash());
+        verify(userPlanService).applyNewUserTrial(captor.getValue());
     }
 
     @Test
@@ -122,6 +127,8 @@ class UserServiceTest {
 
         when(userAccountRepository.findByUsername("charlie")).thenReturn(Optional.of(user));
         when(passwordEncoder.matches("good-pass", "HASH")).thenReturn(true);
+        when(userPlanService.refreshExpiredPlan(user)).thenReturn(user);
+        when(userPlanService.resolveEffectivePlan(user)).thenReturn("FREE");
         when(jwtUtil.createAccessToken(13L, "charlie", "USER", "FREE")).thenReturn("token-123");
 
         AuthResponse response = userService.login(request);
@@ -156,6 +163,8 @@ class UserServiceTest {
         user.setPlan("PRO");
 
         when(userAccountRepository.findById(31L)).thenReturn(Optional.of(user));
+        when(userPlanService.refreshExpiredPlan(user)).thenReturn(user);
+        when(userPlanService.resolveEffectivePlan(user)).thenReturn("PRO");
         when(jwtUtil.createAccessToken(31L, "erin", "USER", "PRO")).thenReturn("token-pro");
 
         AuthResponse response = userService.refreshAccessToken(principal);

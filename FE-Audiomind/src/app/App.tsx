@@ -1601,7 +1601,7 @@ export default function App() {
         password: registerPassword,
       })
 
-      setAuthNotice('Đăng ký thành công. Vui lòng đăng nhập.')
+      setAuthNotice('Đăng ký thành công. Bạn được dùng gói Pro miễn phí 3 ngày sau khi đăng nhập.')
       setUsername(normalizedUsername)
       setPassword('')
       navigateAuthRoute('login', true)

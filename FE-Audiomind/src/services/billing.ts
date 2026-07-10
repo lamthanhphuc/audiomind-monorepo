@@ -28,6 +28,8 @@ export type BillingOverview = {
   invoices: BillingInvoice[]
   proPriceVnd?: number
   payosEnabled?: boolean
+  trialActive?: boolean
+  planExpiresAt?: string | null
 }
 
 export type CheckoutProResult = {
@@ -96,6 +98,10 @@ export const getBillingOverview = async (): Promise<BillingOverview> => {
     invoices: invoicesRaw.map(normalizeInvoice),
     proPriceVnd: Number(data.proPriceVnd ?? data.pro_price_vnd ?? 79000),
     payosEnabled: data.payosEnabled === true || data.payos_enabled === true ? true : undefined,
+    trialActive: data.trialActive === true || data.trial_active === true ? true : undefined,
+    planExpiresAt: data.planExpiresAt == null
+      ? (data.plan_expires_at == null ? null : String(data.plan_expires_at))
+      : String(data.planExpiresAt),
   }
 }
 

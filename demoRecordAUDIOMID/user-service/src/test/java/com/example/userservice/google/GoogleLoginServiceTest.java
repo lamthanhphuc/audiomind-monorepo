@@ -12,6 +12,7 @@ import com.example.userservice.client.PendingMeetingShareClient;
 import com.example.userservice.controller.dto.GoogleTicketExchangeResponse;
 import com.example.userservice.entity.UserAccount;
 import com.example.userservice.entity.UserIdentity;
+import com.example.userservice.plan.UserPlanService;
 import com.example.userservice.repository.UserAccountRepository;
 import com.example.userservice.repository.UserIdentityRepository;
 import com.example.userservice.security.JwtUtil;
@@ -35,6 +36,7 @@ class GoogleLoginServiceTest {
     @Mock private UserIdentityRepository userIdentityRepository;
     @Mock private JwtUtil jwtUtil;
     @Mock private PendingMeetingShareClient pendingMeetingShareClient;
+    @Mock private UserPlanService userPlanService;
 
     private GoogleOAuthProperties properties;
     private GoogleLoginService service;
@@ -56,6 +58,7 @@ class GoogleLoginServiceTest {
                 userIdentityRepository,
                 jwtUtil,
                 pendingMeetingShareClient,
+                userPlanService,
                 3600L);
     }
 
@@ -110,6 +113,8 @@ class GoogleLoginServiceTest {
         UserIdentity identity = new UserIdentity();
         identity.setDisplayName("Google User");
         when(userAccountRepository.findById(61L)).thenReturn(Optional.of(user));
+        when(userPlanService.refreshExpiredPlan(user)).thenReturn(user);
+        when(userPlanService.resolveEffectivePlan(user)).thenReturn("PRO");
         when(userIdentityRepository.findByUserIdAndProviderAndUnlinkedAtIsNull(61L, "google"))
                 .thenReturn(Optional.of(identity));
         when(jwtUtil.createAccessToken(61L, "google_user", "ADMIN", "PRO")).thenReturn("audiomind-jwt");

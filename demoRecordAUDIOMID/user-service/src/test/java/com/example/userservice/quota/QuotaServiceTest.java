@@ -3,6 +3,7 @@ package com.example.userservice.quota;
 import com.example.userservice.entity.UsageCounter;
 import com.example.userservice.entity.UserAccount;
 import com.example.userservice.repository.UsageCounterRepository;
+import com.example.userservice.plan.UserPlanService;
 import com.example.userservice.repository.UserAccountRepository;
 import com.example.userservice.quota.QuotaService.QuotaConsumeResult;
 import java.time.Clock;
@@ -39,6 +40,9 @@ class QuotaServiceTest {
   @Mock
   private UserAccountRepository userAccountRepository;
 
+  @Mock
+  private UserPlanService userPlanService;
+
   @InjectMocks
   private QuotaService quotaService;
 
@@ -46,6 +50,13 @@ class QuotaServiceTest {
   void setUpClock() {
     Clock fixedClock = Clock.fixed(Instant.parse("2026-06-15T12:00:00Z"), ZoneOffset.UTC);
     ReflectionTestUtils.setField(quotaService, "clock", fixedClock);
+    when(userPlanService.refreshExpiredPlan(any(UserAccount.class)))
+        .thenAnswer(invocation -> invocation.getArgument(0));
+    when(userPlanService.resolveEffectivePlan(any(UserAccount.class)))
+        .thenAnswer(invocation -> {
+          UserAccount account = invocation.getArgument(0);
+          return account.getPlan();
+        });
   }
 
   @Test
