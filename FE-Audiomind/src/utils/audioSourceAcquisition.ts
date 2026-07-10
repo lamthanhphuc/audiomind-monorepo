@@ -1,10 +1,11 @@
-import type { RecordingSource } from '../constants/recordingSource'
+﻿import type { RecordingSource } from '../constants/recordingSource'
 import { BROWSER_TAB_CAPTURE_TELEMETRY, RECORDING_SOURCE_ERRORS } from '../constants/recordingSource'
 import {
   ensureAudioContextRunning,
   measureAnalyserRms,
   resolveTabMicGateGains,
 } from './tabAudioPipeline'
+import { realtimeInfo, realtimeWarn } from './realtimeTelemetry'
 
 export type AudioSourceErrorCode =
   | 'permission_denied'
@@ -152,7 +153,7 @@ const resolveCaptureError = (error: unknown, source: RecordingSource): AudioSour
 const validateBrowserTabAudioTracks = (stream: MediaStream): void => {
   const audioTracks = stream.getAudioTracks()
   if (audioTracks.length === 0) {
-    console.warn('[Realtime]', BROWSER_TAB_CAPTURE_TELEMETRY.MISSING, {
+    realtimeWarn('[Realtime]', BROWSER_TAB_CAPTURE_TELEMETRY.MISSING, {
       videoTracks: stream.getVideoTracks().length,
     })
     stopTracks(stream)
@@ -164,7 +165,7 @@ const validateBrowserTabAudioTracks = (stream: MediaStream): void => {
 
   const liveTrack = audioTracks.find((track) => track.readyState === 'live')
   if (!liveTrack) {
-    console.warn('[Realtime]', BROWSER_TAB_CAPTURE_TELEMETRY.MISSING, {
+    realtimeWarn('[Realtime]', BROWSER_TAB_CAPTURE_TELEMETRY.MISSING, {
       reason: 'no_live_audio_track',
     })
     stopTracks(stream)
@@ -174,7 +175,7 @@ const validateBrowserTabAudioTracks = (stream: MediaStream): void => {
     )
   }
 
-  console.info('[Realtime]', BROWSER_TAB_CAPTURE_TELEMETRY.TRACK_READY, {
+  realtimeInfo('[Realtime]', BROWSER_TAB_CAPTURE_TELEMETRY.TRACK_READY, {
     trackCount: audioTracks.length,
     muted: liveTrack.muted,
     enabled: liveTrack.enabled,
@@ -220,7 +221,7 @@ const acquireBrowserTabStream = async (): Promise<MediaStream> => {
     )
   }
 
-  console.info('[Realtime]', BROWSER_TAB_CAPTURE_TELEMETRY.STARTED)
+  realtimeInfo('[Realtime]', BROWSER_TAB_CAPTURE_TELEMETRY.STARTED)
   const stream = await navigator.mediaDevices.getDisplayMedia(buildTabCaptureConstraints())
   prepareTabAudioTracks(stream)
   discardDisplayVideoTracks(stream)
@@ -242,7 +243,7 @@ const mixTabAndMicrophoneStreams = async (
     // Raw mic for tab-mix VAD: browser noise suppression lowers RMS and delays gate open.
     micStream = await acquireMicrophoneStream(false, true)
   } catch (error) {
-    console.warn('[Realtime]', BROWSER_TAB_CAPTURE_TELEMETRY.CAPTURE_FAILED, {
+    realtimeWarn('[Realtime]', BROWSER_TAB_CAPTURE_TELEMETRY.CAPTURE_FAILED, {
       reason: 'optional_mic_unavailable',
       message: error instanceof Error ? error.message : String(error),
     })
@@ -363,7 +364,7 @@ const mixTabAndMicrophoneStreams = async (
 
       if (micPriority !== micPriorityActive) {
         micPriorityActive = micPriority
-        console.info('[Realtime] TAB_MIC_GATE', {
+        realtimeInfo('[Realtime] TAB_MIC_GATE', {
           activeSource: micPriority ? 'microphone' : 'browser_tab',
           policy: 'stable_mix',
           micRms: Number(micRms.toFixed(4)),
@@ -414,7 +415,7 @@ const mixTabAndMicrophoneStreams = async (
   await ensureAudioContextRunning(audioContext)
 
   const mixedStream = destination.stream
-  console.info('[Realtime] TAB_MIC_MIX_READY', {
+  realtimeInfo('[Realtime] TAB_MIC_MIX_READY', {
     contextState: audioContext.state,
     mode: 'stable_mix',
     tabPassGain: TAB_PASS_GAIN,
@@ -511,7 +512,7 @@ export const acquireDualTabMicSources = async (
   try {
     micStream = await acquireMicrophoneStream(false, true)
   } catch (error) {
-    console.warn('[Realtime]', BROWSER_TAB_CAPTURE_TELEMETRY.CAPTURE_FAILED, {
+    realtimeWarn('[Realtime]', BROWSER_TAB_CAPTURE_TELEMETRY.CAPTURE_FAILED, {
       meetingId,
       reason: 'optional_mic_unavailable_dual',
       message: error instanceof Error ? error.message : String(error),
@@ -526,7 +527,7 @@ export const acquireDualTabMicSources = async (
   }
 
   if (!micStream) {
-    console.info('[Realtime]', BROWSER_TAB_CAPTURE_TELEMETRY.REALTIME_STARTED, {
+    realtimeInfo('[Realtime]', BROWSER_TAB_CAPTURE_TELEMETRY.REALTIME_STARTED, {
       meetingId,
       source: 'browser_tab_with_mic',
       micIncluded: false,
@@ -539,7 +540,7 @@ export const acquireDualTabMicSources = async (
     }
   }
 
-  console.info('[Realtime]', BROWSER_TAB_CAPTURE_TELEMETRY.REALTIME_STARTED, {
+  realtimeInfo('[Realtime]', BROWSER_TAB_CAPTURE_TELEMETRY.REALTIME_STARTED, {
     meetingId,
     source: 'browser_tab_with_mic',
     micIncluded: true,
@@ -586,7 +587,7 @@ export const acquireAudioSource = async (
     const mixed = await mixTabAndMicrophoneStreams(tabStream, noiseSuppressionEnabled)
     mixerCleanup = mixed.cleanup
     ownedStreams.push(mixed.stream)
-    console.info('[Realtime]', BROWSER_TAB_CAPTURE_TELEMETRY.REALTIME_STARTED, {
+    realtimeInfo('[Realtime]', BROWSER_TAB_CAPTURE_TELEMETRY.REALTIME_STARTED, {
       meetingId,
       source,
       micIncluded: mixed.micIncluded,
@@ -606,7 +607,7 @@ export const acquireAudioSource = async (
     mixerCleanup?.()
     const mapped = resolveCaptureError(error, source)
     if (source !== 'microphone') {
-      console.warn('[Realtime]', BROWSER_TAB_CAPTURE_TELEMETRY.CAPTURE_FAILED, {
+      realtimeWarn('[Realtime]', BROWSER_TAB_CAPTURE_TELEMETRY.CAPTURE_FAILED, {
         meetingId,
         source,
         code: mapped.code,
@@ -633,7 +634,7 @@ export const attachAudioTrackEndedHandler = (
 
   stream.getAudioTracks().forEach((track) => {
     const ended = () => {
-      console.info('[Realtime]', BROWSER_TAB_CAPTURE_TELEMETRY.TRACK_ENDED, {
+      realtimeInfo('[Realtime]', BROWSER_TAB_CAPTURE_TELEMETRY.TRACK_ENDED, {
         trackId: track.id,
         readyState: track.readyState,
       })

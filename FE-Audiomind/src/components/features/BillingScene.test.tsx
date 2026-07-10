@@ -1,5 +1,5 @@
 import { createRoot } from 'react-dom/client'
-import { act } from 'react-dom/test-utils'
+import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import BillingScene from './BillingScene'
 import * as billing from '../../services/billing'
@@ -61,7 +61,7 @@ describe('BillingScene', () => {
 
   it('renders quota meters and invoice list after load', async () => {
     await act(async () => {
-      root.render(<BillingScene />)
+      root.render(<BillingScene onCheckoutRedirect={vi.fn()} />)
     })
 
     await act(async () => {
@@ -76,14 +76,14 @@ describe('BillingScene', () => {
 
   it('starts PayOS checkout when upgrade clicked', async () => {
     await act(async () => {
-      root.render(<BillingScene />)
+      root.render(<BillingScene onCheckoutRedirect={vi.fn()} />)
     })
 
     await act(async () => {
       await Promise.resolve()
     })
 
-    const upgradeButton = container.querySelector('.primary-cta') as HTMLButtonElement
+    const upgradeButton = container.querySelector('.btn--primary') as HTMLButtonElement
     expect(upgradeButton).toBeTruthy()
 
     await act(async () => {
@@ -106,7 +106,7 @@ describe('BillingScene', () => {
     expect(container.querySelector('[data-testid="billing-payos-disabled"]')).toBeTruthy()
     expect(container.textContent).toContain('Thanh toán PayOS chưa bật trên môi trường này')
 
-    const upgradeButton = container.querySelector('.primary-cta') as HTMLButtonElement
+    const upgradeButton = container.querySelector('.btn--primary') as HTMLButtonElement
     expect(upgradeButton).toBeTruthy()
     expect(upgradeButton.disabled).toBe(true)
     expect(upgradeButton.title).toContain('PayOS chưa bật')
@@ -119,3 +119,4 @@ describe('BillingScene', () => {
     expect(billing.checkoutProPlan).not.toHaveBeenCalled()
   })
 })
+

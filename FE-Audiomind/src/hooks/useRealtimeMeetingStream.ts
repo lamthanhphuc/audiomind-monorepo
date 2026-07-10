@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { getAccessToken } from '../services/auth'
 import { REALTIME_WS_BASE_URL } from '../services/config'
+import { realtimeError, realtimeInfo, realtimeWarn } from '../utils/realtimeTelemetry'
 import { normalizeTranscriptEvent, upsertTranscriptSegment } from '../utils/transcript'
 
 export interface TranscriptSegment {
@@ -278,7 +279,7 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
   const sendRaw = useCallback((message: JsonValue) => {
     const serialized = JSON.stringify(message)
     if (!wsRef.current) {
-      console.warn('[Realtime] WebSocket not initialized, queuing message')
+      realtimeWarn('[Realtime] WebSocket not initialized, queuing message')
       pendingQueueRef.current.push({ kind: 'raw', payload: serialized })
       return
     }
@@ -294,10 +295,10 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
         return
       }
 
-      console.warn('[Realtime] WebSocket not open (state=' + wsRef.current.readyState + '), queuing message')
+      realtimeWarn('[Realtime] WebSocket not open (state=' + wsRef.current.readyState + '), queuing message')
       pendingQueueRef.current.push({ kind: 'raw', payload: serialized })
     } catch (error) {
-      console.error('[Realtime] Error in sendRaw:', error)
+      realtimeError('[Realtime] Error in sendRaw:', error)
       pendingQueueRef.current.push({ kind: 'raw', payload: serialized })
     }
   }, [])
@@ -323,7 +324,7 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
         try {
           websocket.send(item.payload)
         } catch (err) {
-          console.error('[Realtime] Failed to send queued raw message:', err)
+          realtimeError('[Realtime] Failed to send queued raw message:', err)
           // push back and abort flush to avoid reordering
           pendingQueueRef.current.unshift(item)
           break
@@ -338,7 +339,7 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
 
       if (!isActiveSessionToken(item.payload.sessionToken)) {
         stats.droppedStaleAudioChunks += 1
-        console.warn('[Realtime] REALTIME_DROP_AUDIO_CHUNK', {
+        realtimeWarn('[Realtime] REALTIME_DROP_AUDIO_CHUNK', {
           meetingId: item.payload.sessionToken.meetingId,
           recordingSessionId: item.payload.sessionToken.recordingSessionId,
           attemptId: item.payload.sessionToken.attemptId,
@@ -352,7 +353,7 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
       try {
         websocket.send(JSON.stringify(item.payload.metadata))
       } catch (err) {
-        console.error('[Realtime] Failed to send queued metadata:', err)
+        realtimeError('[Realtime] Failed to send queued metadata:', err)
         pendingQueueRef.current.unshift(item)
         break
       }
@@ -361,7 +362,7 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
         websocket.send(item.payload.binary)
         stats.flushedAudioChunks += 1
         stats.flushedBytes += item.payload.binary.byteLength
-        console.info('[Realtime] AUDIO_CHUNK_SEND_FLUSHED', {
+        realtimeInfo('[Realtime] AUDIO_CHUNK_SEND_FLUSHED', {
           meetingId: item.payload.sessionToken.meetingId,
           recordingSessionId: item.payload.sessionToken.recordingSessionId,
           attemptId: item.payload.sessionToken.attemptId,
@@ -371,7 +372,7 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
           tsMs: item.payload.metadata.ts_ms,
         })
       } catch (err) {
-        console.error('[Realtime] Failed to send queued audio binary:', err)
+        realtimeError('[Realtime] Failed to send queued audio binary:', err)
         pendingQueueRef.current.unshift(item)
         break
       }
@@ -387,7 +388,7 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
     tabAudioSequenceRef.current = 0
     micAudioSequenceRef.current = 0
     sendChainRef.current = Promise.resolve()
-    console.info('[Realtime] REALTIME_QUEUE_CLEARED', {
+    realtimeInfo('[Realtime] REALTIME_QUEUE_CLEARED', {
       meetingId,
       lastSeq,
       queueDepth,
@@ -451,7 +452,7 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
       }
 
       window.clearTimeout(waiter.timeoutId)
-      console.info('[Realtime] READY_WAITER_RESOLVED', {
+      realtimeInfo('[Realtime] READY_WAITER_RESOLVED', {
         meetingId: waiter.expectedMeetingId,
         attemptId: waiter.expectedAttemptId,
         connectionSeq: actualConnectionSeq,
@@ -478,8 +479,7 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
     }
 
     // Keep disconnect logs short and session-scoped for restart debugging.
-    // eslint-disable-next-line no-console
-    console.info('[Realtime] REALTIME_WS_DISCONNECT', {
+    realtimeInfo('[Realtime] REALTIME_WS_DISCONNECT', {
       meetingId,
       connectionSeq: connectionSequenceRef.current,
     })
@@ -532,12 +532,12 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
         reconnectCountRef.current = 0
         updateStatus({ state: 'connected', activeConnections: 1 })
 
-        console.info('[Realtime] REALTIME_WS_OPEN', {
+        realtimeInfo('[Realtime] REALTIME_WS_OPEN', {
           meetingId,
           connectionSeq,
         })
 
-        console.info('[Realtime] REALTIME_AUTH_INIT_SEND', {
+        realtimeInfo('[Realtime] REALTIME_AUTH_INIT_SEND', {
           meetingId,
           connectionSeq,
           language: selectedLanguageRef.current,
@@ -574,7 +574,7 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
 
           switch (messageType) {
             case 'session.ready': {
-              console.info('[Realtime] REALTIME_SESSION_READY', {
+              realtimeInfo('[Realtime] REALTIME_SESSION_READY', {
                 meetingId,
                 connectionSeq,
               })
@@ -589,7 +589,7 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
               const authenticated = Boolean(data.authenticated || data.auth || false)
               const readyMeetingId = toNumber(data.meetingId, data.meeting_id, meetingId)
               if (authenticated && readyMeetingId !== meetingId) {
-                console.warn('[Realtime] REALTIME_DROP_STALE_READY', {
+                realtimeWarn('[Realtime] REALTIME_DROP_STALE_READY', {
                   readyMeetingId,
                   currentMeetingId: meetingId,
                   connectionSeq,
@@ -602,7 +602,7 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
                 setIsAuthenticated(true)
                 // flush queued messages and binary now that session is ready
                 const flushStats = flushPendingMessages(true)
-                console.info('[Realtime] RECORDING_WS_READY', {
+                realtimeInfo('[Realtime] RECORDING_WS_READY', {
                   meetingId,
                   recordingSessionId: sessionToken?.recordingSessionId ?? null,
                   attemptId: sessionToken?.attemptId ?? null,
@@ -705,7 +705,7 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
               break
           }
         } catch (error) {
-          console.error('[Realtime] Failed to parse message:', error, event)
+          realtimeError('[Realtime] Failed to parse message:', error, event)
         }
       }
 
@@ -714,7 +714,7 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
           return
         }
 
-        console.error('[Realtime] WebSocket error:', event)
+        realtimeError('[Realtime] WebSocket error:', event)
         updateStatus({ state: 'error', message: 'WebSocket error' })
       }
 
@@ -724,7 +724,7 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
         }
 
         const reason = closeEvent.reason?.trim() || `WebSocket closed (${closeEvent.code})`
-        console.info('[Realtime] REALTIME_WS_CLOSE', {
+        realtimeInfo('[Realtime] REALTIME_WS_CLOSE', {
           meetingId,
           connectionSeq,
           reason,
@@ -755,7 +755,7 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
         }
 
         if (isUserStop) {
-          console.info('[Realtime] NORMAL_WS_CLOSE_AFTER_STOP', {
+          realtimeInfo('[Realtime] NORMAL_WS_CLOSE_AFTER_STOP', {
             meetingId,
             connectionSeq,
             reason,
@@ -803,7 +803,7 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
 
       wsRef.current = websocket
     } catch (error) {
-      console.error('[Realtime] Failed to establish connection:', error)
+      realtimeError('[Realtime] Failed to establish connection:', error)
       updateStatus({ state: 'error', message: 'Failed to connect' })
     }
   }, [autoReconnect, canConnect, clearPendingQueue, clearSessionReadyState, flushPendingMessages, meetingId, reconnectAttempts, reconnectDelay, rejectSessionReadyWaiters, resolveSessionReadyWaiters, resolvedToken, sendRaw, sessionToken, updateStatus, userId])
@@ -837,7 +837,7 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
         reject,
         timeoutId: 0,
       }
-      console.info('[Realtime] READY_WAITER_CREATED', {
+      realtimeInfo('[Realtime] READY_WAITER_CREATED', {
         meetingId: expectedMeetingId,
         attemptId: waiter.expectedAttemptId,
         expectedConnectionSeq,
@@ -852,7 +852,7 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
           waiter.expectedAttemptId !== (activeToken?.attemptId ?? 0) ||
           waiter.expectedRecordingSessionId !== (activeToken?.recordingSessionId ?? 0)
         if (isStaleTimeout) {
-          console.info('[Realtime] STALE_READY_TIMEOUT_IGNORED', {
+          realtimeInfo('[Realtime] STALE_READY_TIMEOUT_IGNORED', {
             meetingId: expectedMeetingId,
             attemptId: waiter.expectedAttemptId,
             timeoutConnectionSeq: expectedConnectionSeq,
@@ -862,7 +862,7 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
           return
         }
 
-        console.info('[Realtime] REALTIME_READY_TIMEOUT', {
+        realtimeInfo('[Realtime] REALTIME_READY_TIMEOUT', {
           meetingId: expectedMeetingId,
           connectionSeq: expectedConnectionSeq,
         })
@@ -892,7 +892,7 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
   ) => {
     const executeSend = async () => {
     if (meetingId === null) {
-      console.error('[Realtime] STARTUP_INVARIANT_BROKEN', {
+      realtimeError('[Realtime] STARTUP_INVARIANT_BROKEN', {
         reason: 'send_audio_chunk_without_active_meeting',
         connectionSeq: connectionSequenceRef.current,
       })
@@ -905,7 +905,7 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
     }
 
     if (userStopRequestedRef.current || streamStopSentRef.current) {
-      console.warn('[Realtime] REALTIME_DROP_AUDIO_CHUNK', {
+      realtimeWarn('[Realtime] REALTIME_DROP_AUDIO_CHUNK', {
         meetingId: normalizedMeetingId,
         connectionSeq: connectionSequenceRef.current,
         reason: 'stream_stopped',
@@ -914,7 +914,7 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
     }
 
     if (audioChunk.size > REALTIME_MAX_CHUNK_BYTES) {
-      console.warn('[Realtime] REALTIME_CLIENT_CHUNK_SKIPPED', {
+      realtimeWarn('[Realtime] REALTIME_CLIENT_CHUNK_SKIPPED', {
         meetingId: normalizedMeetingId,
         size: audioChunk.size,
         maxChunkBytes: REALTIME_MAX_CHUNK_BYTES,
@@ -924,7 +924,7 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
     }
 
     if (meetingId !== null && normalizedMeetingId !== meetingId) {
-      console.warn('[Realtime] REALTIME_DROP_AUDIO_CHUNK', {
+      realtimeWarn('[Realtime] REALTIME_DROP_AUDIO_CHUNK', {
         chunkMeetingId: normalizedMeetingId,
         currentMeetingId: meetingId,
         connectionSeq: connectionSequenceRef.current,
@@ -935,7 +935,7 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
 
     const tokenAtSendStart = activeSessionTokenRef.current
     if (!isActiveSessionToken(tokenAtSendStart) || tokenAtSendStart?.meetingId !== normalizedMeetingId) {
-      console.warn('[Realtime] REALTIME_DROP_AUDIO_CHUNK', {
+      realtimeWarn('[Realtime] REALTIME_DROP_AUDIO_CHUNK', {
         meetingId: normalizedMeetingId,
         recordingSessionId: tokenAtSendStart?.recordingSessionId ?? null,
         attemptId: tokenAtSendStart?.attemptId ?? null,
@@ -975,12 +975,12 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
     try {
       buffer = await readBlobAsArrayBuffer(audioChunk)
     } catch (err) {
-      console.error('[Realtime] Failed to read audio chunk for seq=' + seq + ':', err)
+      realtimeError('[Realtime] Failed to read audio chunk for seq=' + seq + ':', err)
       return
     }
 
     if (!isActiveSessionToken(tokenAtSendStart)) {
-      console.warn('[Realtime] REALTIME_DROP_AUDIO_CHUNK', {
+      realtimeWarn('[Realtime] REALTIME_DROP_AUDIO_CHUNK', {
         meetingId: normalizedMeetingId,
         recordingSessionId: tokenAtSendStart.recordingSessionId,
         attemptId: tokenAtSendStart.attemptId,
@@ -1002,7 +1002,7 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
     const isSocketReady = websocket?.readyState === WebSocket.OPEN
     const willQueue = !isSocketReady || !isAuthenticated
 
-    console.info('[Realtime] AUDIO_CHUNK_SEND_ENQUEUED', {
+    realtimeInfo('[Realtime] AUDIO_CHUNK_SEND_ENQUEUED', {
       meetingId: normalizedMeetingId,
       recordingSessionId: tokenAtSendStart.recordingSessionId,
       attemptId: tokenAtSendStart.attemptId,
@@ -1019,7 +1019,7 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
     // same WebM buffer across reconnects or after a closed socket.
     if (willQueue) {
       if (!websocket || websocket.readyState === WebSocket.CLOSED) {
-        console.warn('[Realtime] REALTIME_DROP_AUDIO_CHUNK', {
+        realtimeWarn('[Realtime] REALTIME_DROP_AUDIO_CHUNK', {
           meetingId: normalizedMeetingId,
           connectionSeq: connectionSequenceRef.current,
           seq,
@@ -1032,7 +1032,7 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
         throw new Error('Realtime WebSocket closed while recording')
       }
 
-      console.warn('[Realtime] REALTIME_QUEUE_AUDIO_CHUNK', {
+      realtimeWarn('[Realtime] REALTIME_QUEUE_AUDIO_CHUNK', {
         meetingId: normalizedMeetingId,
         connectionSeq: connectionSequenceRef.current,
         seq,
@@ -1046,14 +1046,14 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
     try {
       websocket.send(JSON.stringify(queuedItem.metadata))
     } catch (err) {
-      console.error('[Realtime] Failed to send metadata, dropping package seq=' + seq + ':', err)
+      realtimeError('[Realtime] Failed to send metadata, dropping package seq=' + seq + ':', err)
       return
     }
 
     // Send audio as binary for efficiency (no base64 overhead)
     try {
       websocket.send(queuedItem.binary)
-      console.info('[Realtime] AUDIO_CHUNK_SEND_FLUSHED', {
+      realtimeInfo('[Realtime] AUDIO_CHUNK_SEND_FLUSHED', {
         meetingId: normalizedMeetingId,
         recordingSessionId: tokenAtSendStart.recordingSessionId,
         attemptId: tokenAtSendStart.attemptId,
@@ -1063,7 +1063,7 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
         tsMs,
       })
     } catch (error) {
-      console.error('[Realtime] REALTIME_DROP_AUDIO_CHUNK', {
+      realtimeError('[Realtime] REALTIME_DROP_AUDIO_CHUNK', {
         meetingId: normalizedMeetingId,
         connectionSeq: connectionSequenceRef.current,
         seq,
@@ -1076,7 +1076,7 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
     sendChainRef.current = sendChainRef.current
       .then(() => executeSend())
       .catch((error) => {
-        console.error('[Realtime] REALTIME_SEND_CHAIN_ERROR', {
+        realtimeError('[Realtime] REALTIME_SEND_CHAIN_ERROR', {
           meetingId,
           streamId: streamId ?? null,
           error,
@@ -1099,7 +1099,7 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
     userStopRequestedRef.current = true
 
     if (streamStopSentRef.current) {
-      console.info('[Realtime] STREAM_STOP_DUPLICATE_IGNORED', {
+      realtimeInfo('[Realtime] STREAM_STOP_DUPLICATE_IGNORED', {
         meetingId,
         lastSeq: audioSequenceRef.current,
         queueDepth: pendingQueueRef.current.length,
@@ -1114,7 +1114,7 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
     const bufferedAmount = websocket?.bufferedAmount ?? 0
 
     if (!drained && bufferedAmount > 0) {
-      console.warn('[Realtime] STREAM_STOP_BUFFER_DRAIN_TIMEOUT', {
+      realtimeWarn('[Realtime] STREAM_STOP_BUFFER_DRAIN_TIMEOUT', {
         meetingId: tokenAtStop.meetingId,
         recordingSessionId: tokenAtStop.recordingSessionId,
         attemptId: tokenAtStop.attemptId,
@@ -1125,7 +1125,7 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
     }
 
     if (!websocket || websocket.readyState !== WebSocket.OPEN) {
-      console.warn('[Realtime] STREAM_STOP_FAILED', {
+      realtimeWarn('[Realtime] STREAM_STOP_FAILED', {
         meetingId: tokenAtStop.meetingId,
         recordingSessionId: tokenAtStop.recordingSessionId,
         attemptId: tokenAtStop.attemptId,
@@ -1137,7 +1137,7 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
       return false
     }
 
-    console.info('[Realtime] REALTIME_FINALIZE_AFTER_CLIENT_DRAIN', {
+    realtimeInfo('[Realtime] REALTIME_FINALIZE_AFTER_CLIENT_DRAIN', {
       meetingId: tokenAtStop.meetingId,
       recordingSessionId: tokenAtStop.recordingSessionId,
       attemptId: tokenAtStop.attemptId,
@@ -1155,7 +1155,7 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
         attempt_id: tokenAtStop.attemptId,
       }))
     } catch (error) {
-      console.warn('[Realtime] STREAM_STOP_FAILED', {
+      realtimeWarn('[Realtime] STREAM_STOP_FAILED', {
         meetingId: tokenAtStop.meetingId,
         recordingSessionId: tokenAtStop.recordingSessionId,
         attemptId: tokenAtStop.attemptId,
@@ -1169,7 +1169,7 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
 
     streamStopSentRef.current = true
 
-    console.info('[Realtime] STREAM_STOP_AFTER_FLUSH', {
+    realtimeInfo('[Realtime] STREAM_STOP_AFTER_FLUSH', {
       meetingId: tokenAtStop.meetingId,
       recordingSessionId: tokenAtStop.recordingSessionId,
       attemptId: tokenAtStop.attemptId,
@@ -1225,7 +1225,7 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
         !stalledWarningLoggedRef.current
       ) {
         stalledWarningLoggedRef.current = true
-        console.warn('[Realtime] LIVE_SEGMENT_STALLED', {
+        realtimeWarn('[Realtime] LIVE_SEGMENT_STALLED', {
           meetingId,
           connectionSeq: connectionSequenceRef.current,
           lastTranscriptAt: lastTranscriptAtRef.current || null,

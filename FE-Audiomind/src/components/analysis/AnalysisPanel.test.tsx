@@ -1,5 +1,5 @@
 import { createRoot } from 'react-dom/client'
-import { act } from 'react-dom/test-utils'
+import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { AnalysisPanel } from './AnalysisPanel'
 
@@ -165,3 +165,4 @@ describe('AnalysisPanel', () => {
     expect(container.textContent).toContain('Không có bước tiếp theo')
   })
 })
+

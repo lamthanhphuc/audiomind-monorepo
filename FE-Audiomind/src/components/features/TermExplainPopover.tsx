@@ -58,11 +58,11 @@ export default function TermExplainPopover({ meetingId, term, onClose, onSaved }
         title: term,
         body,
       })
-      setSavedHint('Đã lưu vào Knowledge Vault.')
+      setSavedHint('Đã lưu vào Kho tri thức.')
       onSaved?.()
       window.setTimeout(() => setSavedHint(''), 2000)
     } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : 'Không lưu được note')
+      setError(saveError instanceof Error ? saveError.message : 'Không lưu được ghi chú')
     } finally {
       setSaving(false)
     }
@@ -76,7 +76,7 @@ export default function TermExplainPopover({ meetingId, term, onClose, onSaved }
             <p className="term-explain-popover__eyebrow">Thuật ngữ</p>
             <h3>{term}</h3>
           </div>
-          <button type="button" className="secondary-cta" onClick={onClose} aria-label="Đóng">
+          <button type="button" className="btn btn--secondary" onClick={onClose} aria-label="Đóng">
             Đóng
           </button>
         </header>
@@ -94,12 +94,12 @@ export default function TermExplainPopover({ meetingId, term, onClose, onSaved }
         <footer className="term-explain-popover__actions">
           <button
             type="button"
-            className="primary-cta"
+            className="btn btn--primary"
             onClick={() => void handleSaveNote()}
             disabled={saving || loading}
             data-testid="term-explain-save-note"
           >
-            {saving ? 'Đang lưu…' : 'Lưu thành Note'}
+            {saving ? 'Đang lưu…' : 'Lưu thành ghi chú'}
           </button>
         </footer>
       </div>

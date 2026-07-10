@@ -10,19 +10,19 @@ type OnboardingTourProps = {
 const STEPS = [
   {
     title: 'Upload file âm thanh',
-    body: 'Tải file ghi âm (.mp3, .wav, .m4a…) để transcribe và phân tích AI. Phù hợp khi đã có bản ghi sẵn.',
+    body: 'Tải file ghi âm (.mp3, .wav, .m4a...) để transcribe và phân tích AI. Phù hợp khi đã có bản ghi sẵn.',
     action: 'upload' as const,
     cta: 'Thử upload',
   },
   {
     title: 'Ghi âm realtime',
-    body: 'Ghi trực tiếp từ microphone hoặc tab trình duyệt. Transcript hiện live qua Deepgram.',
+    body: 'Ghi trực tiếp từ microphone hoặc tab trình duyệt. Transcript hiển thị live qua Deepgram.',
     action: 'realtime' as const,
     cta: 'Mở ghi âm',
   },
   {
     title: 'Ghi âm tab trình duyệt',
-    body: 'Chọn “Ghi âm tab trình duyệt” để capture âm thanh từ Meet, Teams, YouTube, … — transcript live qua Deepgram.',
+    body: 'Chọn "Ghi âm tab trình duyệt" để capture âm thanh từ Meet, Teams, YouTube... transcript live qua Deepgram.',
     action: 'integrations' as const,
     cta: 'Xem hướng dẫn Meet',
   },
@@ -74,7 +74,7 @@ export default function OnboardingTour({
             <p>{step.body}</p>
             <button
               type="button"
-              className="history-btn history-btn--primary"
+              className="btn btn--primary btn--compact"
               onClick={() => handleAction(step.action)}
               data-testid={`onboarding-${step.action}`}
             >

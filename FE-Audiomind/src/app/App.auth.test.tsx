@@ -1,5 +1,5 @@
 import { createRoot } from 'react-dom/client'
-import { act } from 'react-dom/test-utils'
+import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const audioRecorderMock = {
@@ -361,7 +361,6 @@ describe('App auth entry', () => {
     expect(exchangeGoogleLoginTicket).toHaveBeenCalledWith('one-time-ticket')
     expect(window.location.search).toBe('')
     expect(setAccessToken).toHaveBeenCalledWith('google-jwt', 120)
-    expect(getGoogleStatus).toHaveBeenCalled()
     expect(redirectToFullGoogleLink).not.toHaveBeenCalled()
     expect(window.location.pathname).toBe('/studio/upload')
   })
@@ -385,7 +384,7 @@ describe('App auth entry', () => {
     expect(redirectToFullGoogleLink).not.toHaveBeenCalled()
   })
 
-  it('redirects to full Google link with analysis path when invite scopes are missing', async () => {
+  it('enters the app without forcing Google link when invite scopes are missing after login', async () => {
     window.history.pushState({}, '', '/auth/google/success?ticket=grant-invite-ticket')
     vi.mocked(exchangeGoogleLoginTicket).mockResolvedValue({
       token: 'google-jwt',
@@ -399,14 +398,15 @@ describe('App auth entry', () => {
       grantedScopes: [],
       missingScopes: ['https://www.googleapis.com/auth/calendar.events', 'https://www.googleapis.com/auth/gmail.send'],
     })
-    vi.mocked(redirectToFullGoogleLink).mockResolvedValue(undefined)
 
     await act(async () => {
       root.render(<App />)
     })
     await flush()
 
-    expect(redirectToFullGoogleLink).toHaveBeenCalledWith('/studio/analysis?meetingId=15')
+    expect(redirectToFullGoogleLink).not.toHaveBeenCalled()
+    expect(window.location.pathname).toBe('/studio/analysis')
+    expect(window.location.search).toBe('?meetingId=15')
   })
 
   it('shows invite access notice when google success cannot open invited meeting', async () => {
@@ -428,7 +428,7 @@ describe('App auth entry', () => {
     expect(window.location.pathname).toBe('/studio/analysis')
   })
 
-  it('redirects to full Google link when integration scopes are missing after login', async () => {
+  it('enters the app without forcing Google link when integration scopes are missing after login', async () => {
     window.history.pushState({}, '', '/auth/google/success?ticket=grant-ticket')
     vi.mocked(exchangeGoogleLoginTicket).mockResolvedValue({
       token: 'google-jwt',
@@ -442,14 +442,14 @@ describe('App auth entry', () => {
       grantedScopes: [],
       missingScopes: ['https://www.googleapis.com/auth/calendar.events', 'https://www.googleapis.com/auth/gmail.send'],
     })
-    vi.mocked(redirectToFullGoogleLink).mockResolvedValue(undefined)
 
     await act(async () => {
       root.render(<App />)
     })
     await flush()
 
-    expect(redirectToFullGoogleLink).toHaveBeenCalledWith('/studio/upload')
+    expect(redirectToFullGoogleLink).not.toHaveBeenCalled()
+    expect(window.location.pathname).toBe('/studio/upload')
   })
 
   it('uses analysis redirect when invite query is present', async () => {
@@ -468,3 +468,4 @@ describe('App auth entry', () => {
     expect(url.searchParams.get('redirect_after')).toBe('/')
   })
 })
+

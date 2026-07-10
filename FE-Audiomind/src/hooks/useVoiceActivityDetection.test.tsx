@@ -1,6 +1,6 @@
 import { useCallback } from 'react'
 import { createRoot } from 'react-dom/client'
-import { act } from 'react-dom/test-utils'
+import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   DEFAULT_VAD_RESUMED_LABEL_MS,
@@ -204,3 +204,4 @@ describe('useVoiceActivityDetection', () => {
     expect(latest?.state).toBe('listening_resumed')
   })
 })
+

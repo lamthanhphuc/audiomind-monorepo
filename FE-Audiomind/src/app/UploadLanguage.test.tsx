@@ -1,5 +1,5 @@
 import { createRoot } from 'react-dom/client'
-import { act } from 'react-dom/test-utils'
+import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as api from '../services/api'
 import * as zoomIntegration from '../services/zoomIntegration'
@@ -30,6 +30,7 @@ describe('Upload language selector (integration)', () => {
   })
 
   it('shows upload language selector, logs selection and includes language on upload', async () => {
+    localStorage.setItem('audiomind.upload.debug', 'true')
     const uploadSpy = vi.spyOn(api, 'uploadToMeetingApi').mockResolvedValue({ id: 42, audioPath: '/tmp', title: 'f' })
     vi.spyOn(api, 'startProcessingByPath').mockResolvedValue({} as any)
     vi.spyOn(api, 'getProcessingStatus').mockResolvedValue({ meeting_id: 42, status: 'COMPLETED', error: null, updated_at: '' } as any)
@@ -152,3 +153,4 @@ describe('Upload language selector (integration)', () => {
     expect(container.textContent).toContain('File này đang được xử lý')
   })
 })
+

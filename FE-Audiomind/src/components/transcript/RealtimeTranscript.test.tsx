@@ -1,5 +1,5 @@
 import { createRoot } from 'react-dom/client'
-import { act } from 'react-dom/test-utils'
+import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as transcriptUtils from '../../utils/transcript'
 import { mergeTranscriptSegments, normalizePersistedTranscriptSegments } from '../../utils/transcript'
@@ -121,7 +121,7 @@ describe('RealtimeTranscript', () => {
       root.render(<RealtimeTranscript segments={hydratedSegments} />)
     })
 
-    expect(container.querySelector('.segment-count')?.textContent).toBe('2 segments')
+    expect(container.querySelector('.segment-count')?.textContent).toBe('2 đoạn')
     const transcriptRows = Array.from(container.querySelectorAll('.transcript-segment'))
     expect(transcriptRows).toHaveLength(2)
 
@@ -134,7 +134,7 @@ describe('RealtimeTranscript', () => {
       root.render(<RealtimeTranscript segments={[]} />)
     })
 
-    expect(container.textContent).toContain('Waiting for transcript...')
+    expect(container.textContent).toContain('Đang chờ transcript...')
     expect(container.querySelector('.segment-count')).toBeNull()
   })
 
@@ -155,7 +155,7 @@ describe('RealtimeTranscript', () => {
     })
 
     expect(hydratedSegments).toHaveLength(0)
-    expect(container.textContent).toContain('Waiting for transcript...')
+    expect(container.textContent).toContain('Đang chờ transcript...')
     expect(container.querySelector('.segment-count')).toBeNull()
     expect(container.querySelectorAll('.transcript-segment')).toHaveLength(0)
   })
@@ -290,3 +290,4 @@ describe('RealtimeTranscript', () => {
     expect(highlights).not.toContain('It')
   })
 })
+

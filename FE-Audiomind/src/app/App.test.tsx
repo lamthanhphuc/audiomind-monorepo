@@ -1356,10 +1356,12 @@ describe('getStatusBadgeClass', () => {
 
 describe('runLiveRecordingStopSequence', () => {
   afterEach(() => {
+    localStorage.removeItem('audiomind.realtime.debug')
     vi.restoreAllMocks()
   })
 
   it('logs REALTIME_STOP_REQUESTED then stopping → stopStream → finalizing_transcript in order', async () => {
+    localStorage.setItem('audiomind.realtime.debug', 'true')
     const lifecycleSteps: string[] = []
     const executionSteps: string[] = []
     const consoleSpy = vi.spyOn(console, 'info').mockImplementation(() => {})

@@ -1,5 +1,5 @@
 import { createRoot } from 'react-dom/client'
-import { act } from 'react-dom/test-utils'
+import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AnalysisStatusPanel } from './AnalysisStatusPanel'
 
@@ -187,3 +187,4 @@ describe('AnalysisStatusPanel', () => {
     expect(container.textContent).toContain('trace-7u-1')
   })
 })
+

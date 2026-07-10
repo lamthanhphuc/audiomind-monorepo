@@ -11,7 +11,6 @@ import com.example.userservice.security.JwtUtil;
 import java.net.URI;
 import java.security.SecureRandom;
 import java.util.Base64;
-import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
@@ -23,7 +22,6 @@ import org.springframework.web.util.UriComponentsBuilder;
 public class GoogleLoginService {
 
     private static final Logger log = LoggerFactory.getLogger(GoogleLoginService.class);
-    private static final List<String> LOGIN_SCOPES = List.of("openid", "email", "profile");
 
     private final GoogleOAuthProperties properties;
     private final GoogleOAuthRedisStore redisStore;
@@ -32,7 +30,6 @@ public class GoogleLoginService {
     private final UserAccountRepository userAccountRepository;
     private final UserIdentityRepository userIdentityRepository;
     private final JwtUtil jwtUtil;
-    private final GoogleGrantService googleGrantService;
     private final PendingMeetingShareClient pendingMeetingShareClient;
     private final SecureRandom secureRandom = new SecureRandom();
     private final long accessExpirationSeconds;
@@ -45,7 +42,6 @@ public class GoogleLoginService {
             UserAccountRepository userAccountRepository,
             UserIdentityRepository userIdentityRepository,
             JwtUtil jwtUtil,
-            GoogleGrantService googleGrantService,
             PendingMeetingShareClient pendingMeetingShareClient,
             @Value("${app.security.jwt.access-expiration-seconds}") long accessExpirationSeconds) {
         this.properties = properties;
@@ -55,7 +51,6 @@ public class GoogleLoginService {
         this.userAccountRepository = userAccountRepository;
         this.userIdentityRepository = userIdentityRepository;
         this.jwtUtil = jwtUtil;
-        this.googleGrantService = googleGrantService;
         this.pendingMeetingShareClient = pendingMeetingShareClient;
         this.accessExpirationSeconds = accessExpirationSeconds;
     }
@@ -68,18 +63,7 @@ public class GoogleLoginService {
         redisStore.saveState(state, nonce, safeRedirectAfter);
 
         log.info("event=GOOGLE_LOGIN_STARTED traceId={} mode=login", MDC.get("traceId"));
-        return UriComponentsBuilder.fromUriString("https://accounts.google.com/o/oauth2/v2/auth")
-                .queryParam("client_id", properties.getClientId())
-                .queryParam("redirect_uri", properties.getRedirectUri())
-                .queryParam("response_type", "code")
-                .queryParam("scope", String.join(" ", LOGIN_SCOPES))
-                .queryParam("state", state)
-                .queryParam("nonce", nonce)
-                .queryParam("access_type", "offline")
-                .queryParam("prompt", "consent")
-                .build()
-                .encode()
-                .toUri();
+        return GoogleOAuthAuthorizationUrls.buildLoginAuthorization(properties, state, nonce);
     }
 
     public URI handleCallback(String code, String state, String providerError) {
@@ -98,9 +82,6 @@ public class GoogleLoginService {
                     "event=GOOGLE_LOGIN_PENDING_SHARE_ACCEPTED userId={} email={}",
                     user.getId(),
                     user.getEmail());
-            if (tokenResponse.refreshToken() != null && !tokenResponse.refreshToken().isBlank()) {
-                googleGrantService.persistLoginGrant(user.getId(), googleIdentity, tokenResponse);
-            }
             String ticket = randomToken(32);
             redisStore.saveTicket(ticket, user.getId(), loginState.redirectAfter());
             log.info(

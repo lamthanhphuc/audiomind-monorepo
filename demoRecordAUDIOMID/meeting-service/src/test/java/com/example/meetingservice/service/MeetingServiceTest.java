@@ -2,6 +2,7 @@ package com.example.meetingservice.service;
 
 import com.example.meetingservice.entity.Meeting;
 import com.example.meetingservice.repository.MeetingRepository;
+import com.example.meetingservice.repository.MeetingShareRepository;
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
 import java.util.List;
@@ -26,6 +27,9 @@ class MeetingServiceTest {
 
     @Mock
     private MeetingRepository meetingRepository;
+
+    @Mock
+    private MeetingShareRepository meetingShareRepository;
 
     @InjectMocks
     private MeetingService meetingService;
@@ -259,8 +263,32 @@ class MeetingServiceTest {
         assertEquals(2L, filtered.getFirst().getId());
     }
 
-    @Test
-    void ownerScopedOperations_shouldRejectAnotherUser() {
+  @Test
+  void findMeetingsForUserPage_shouldReturnRequestedSlice() {
+    Meeting first = new Meeting();
+    first.setId(1L);
+    Meeting second = new Meeting();
+    second.setId(2L);
+    Meeting third = new Meeting();
+    third.setId(3L);
+
+    when(meetingRepository.findByOwnerUserIdAndDeletedAtIsNullOrderByCreatedAtDescIdDesc(8L))
+            .thenReturn(List.of(third, second, first));
+    when(meetingShareRepository.findBySharedWithUserIdOrderByCreatedAtDesc(8L))
+            .thenReturn(List.of());
+
+    MeetingPageResult pageOne = meetingService.findMeetingsForUserPage(8L, null, null, null, "created_desc", 1, 2);
+    assertEquals(3, pageOne.total());
+    assertEquals(2, pageOne.items().size());
+    assertEquals(3L, pageOne.items().getFirst().getId());
+
+    MeetingPageResult pageTwo = meetingService.findMeetingsForUserPage(8L, null, null, null, "created_desc", 2, 2);
+    assertEquals(1, pageTwo.items().size());
+    assertEquals(1L, pageTwo.items().getFirst().getId());
+  }
+
+  @Test
+  void ownerScopedOperations_shouldRejectAnotherUser() {
         when(meetingRepository.findByIdAndOwnerUserIdAndDeletedAtIsNull(40L, 1L)).thenReturn(Optional.empty());
 
         assertThrows(NoSuchElementException.class, () -> meetingService.findByIdForOwner(40L, 1L));

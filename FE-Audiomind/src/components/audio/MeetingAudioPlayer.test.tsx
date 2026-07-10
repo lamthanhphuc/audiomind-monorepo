@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { createRoot } from 'react-dom/client'
-import { act } from 'react-dom/test-utils'
+import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import MeetingAudioPlayer from './MeetingAudioPlayer'
 
@@ -26,8 +26,8 @@ describe('MeetingAudioPlayer', () => {
 
   it('plays a local audio file', async () => {
     const file = new File([new Uint8Array([1, 2, 3])], 'demo.mp3', { type: 'audio/mpeg' })
-    global.URL.createObjectURL = vi.fn(() => 'blob:demo')
-    global.URL.revokeObjectURL = vi.fn()
+    globalThis.URL.createObjectURL = vi.fn(() => 'blob:demo')
+    globalThis.URL.revokeObjectURL = vi.fn()
 
     await act(async () => {
       root.render(<MeetingAudioPlayer label="demo.mp3" audioFile={file} />)
@@ -52,3 +52,4 @@ describe('MeetingAudioPlayer', () => {
     expect((container.querySelector('[data-testid="meeting-audio-play"]') as HTMLButtonElement).disabled).toBe(true)
   })
 })
+

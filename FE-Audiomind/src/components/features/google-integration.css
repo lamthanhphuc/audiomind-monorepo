@@ -44,6 +44,12 @@
 .google-integration__mode button { min-height: 34px; padding: 6px 12px; border: 0; border-radius: 6px; background: transparent; color: var(--studio-muted, #9eabb9); cursor: pointer; }
 .google-integration__mode button.is-active { background: rgba(124, 108, 255, 0.2); color: var(--studio-text, #f4f7fa); }
 .google-integration__scopes { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.google-integration__connection-rows { display: grid; gap: 12px; width: 100%; max-width: 520px; }
+.google-integration__connection-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 16px; border: 1px solid var(--studio-border, #46515e); border-radius: 10px; background: rgba(255, 255, 255, 0.03); }
+.google-integration__connection-row strong { display: block; margin-bottom: 4px; font-size: 14px; }
+.google-integration__connection-row p { margin: 0; color: var(--studio-muted, #9eabb9); font-size: 13px; }
+.google-integration__connection-state { font-size: 13px; font-weight: 600; color: var(--studio-muted, #94a3b8); white-space: nowrap; }
+.google-integration__connection-state.is-connected { color: #86efac; }
 .google-integration__scope-chip { font-size: 11px; padding: 4px 8px; border-radius: 999px; border: 1px solid var(--studio-border, #46515e); color: var(--studio-muted, #cbd5e1); }
 .google-integration__result { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--studio-border, #46515e); background: rgba(255, 255, 255, 0.03); }
 .google-integration__result:has(.google-calendar-event-card) { display: block; padding: 0; border: 0; background: transparent; }

@@ -20,6 +20,7 @@ type Props = {
   onActivationHandled?: () => void
   onRefreshTokenHint?: () => void
   payosEnabled?: boolean
+  onCheckoutRedirect?: (checkoutUrl: string) => void
 }
 
 const planLabel = (plan: string): string => (plan.toUpperCase() === 'PRO' ? 'Pro' : 'Free')
@@ -30,6 +31,7 @@ export default function BillingScene({
   onActivationHandled,
   onRefreshTokenHint,
   payosEnabled = true,
+  onCheckoutRedirect = (checkoutUrl) => window.location.assign(checkoutUrl),
 }: Props) {
   const [overview, setOverview] = useState<BillingOverview | null>(null)
   const [loading, setLoading] = useState(true)
@@ -100,7 +102,7 @@ export default function BillingScene({
   const quotaWarnings = useMemo(() => {
     const warnings: string[] = []
     if (sttPercent >= 90) warnings.push('STT gần hết quota tháng này.')
-    if (geminiPercent >= 90) warnings.push('Gemini analysis gần hết quota tháng này.')
+    if (geminiPercent >= 90) warnings.push('Phân tích AI gần hết quota tháng này.')
     return warnings
   }, [sttPercent, geminiPercent])
 
@@ -113,7 +115,7 @@ export default function BillingScene({
       if (!checkout.checkoutUrl) {
         throw new Error('PayOS chưa trả về link thanh toán')
       }
-      window.location.assign(checkout.checkoutUrl)
+      onCheckoutRedirect(checkout.checkoutUrl)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Không tạo được link thanh toán')
     } finally {
@@ -128,17 +130,17 @@ export default function BillingScene({
           <p className="billing-scene__eyebrow">Gói & thanh toán</p>
           <h1>Gói {planLabel(overview?.plan || jwtPlan || 'FREE')}</h1>
           <p className="billing-scene__subtitle">
-            Theo dõi quota STT/Gemini, nâng cấp Pro qua PayOS, hoặc liên hệ admin để thanh toán thủ công.
+            Theo dõi quota ghi âm và phân tích AI, nâng cấp Pro qua PayOS, hoặc liên hệ quản trị viên để thanh toán thủ công.
           </p>
         </div>
         <div className="billing-scene__hero-actions">
-          <button type="button" className="secondary-cta" onClick={() => void load()} disabled={loading || busy}>
+          <button type="button" className="btn btn--secondary" onClick={() => void load()} disabled={loading || busy}>
             Làm mới
           </button>
           {!isPro && (
             <button
               type="button"
-              className="primary-cta"
+              className="btn btn--primary"
               onClick={() => void handleUpgrade()}
               disabled={busy || !payosCheckoutEnabled}
               title={!payosCheckoutEnabled ? 'Thanh toán PayOS chưa bật trên môi trường này' : undefined}
@@ -183,7 +185,7 @@ export default function BillingScene({
           </article>
 
           <article className="billing-card">
-            <h2>Quota Gemini analysis</h2>
+            <h2>Quota phân tích AI</h2>
             <div className="billing-meter">
               <div
                 className="billing-meter__bar"
@@ -205,12 +207,12 @@ export default function BillingScene({
               <div className={`billing-plan ${!isPro ? 'billing-plan--active' : ''}`}>
                 <strong>Free</strong>
                 <span>~10 phút STT/tháng</span>
-                <span>~50K ký tự Gemini/tháng</span>
+                <span>~50K ký tự phân tích/tháng</span>
               </div>
               <div className={`billing-plan ${isPro ? 'billing-plan--active' : ''}`}>
                 <strong>Pro</strong>
                 <span>~10 giờ STT/tháng</span>
-                <span>~2M ký tự Gemini/tháng</span>
+                <span>~2M ký tự phân tích/tháng</span>
                 <span>{proPriceVnd.toLocaleString('vi-VN')}đ/tháng qua PayOS</span>
               </div>
             </div>
@@ -251,7 +253,7 @@ export default function BillingScene({
 
           {role === 'ADMIN' && (
             <article className="billing-card billing-card--wide billing-card--admin">
-              <h2>Admin MVP</h2>
+              <h2>Công cụ quản trị</h2>
               <p>
                 Dùng API admin để đổi plan/role hoặc mark paid thủ công:
                 {' '}

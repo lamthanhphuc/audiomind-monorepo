@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "sync-policy": "bash ../scripts/sync-default-policy.sh",
+    "sync-policy": "node ../scripts/sync-default-policy.mjs",
     "prebuild": "npm run sync-policy",
     "build": "tsc && vite build",
     "build-only": "vite build",
@@ -20,6 +20,7 @@
   },
   "dependencies": {
     "@xyflow/react": "^12.6.0",
+    "lucide-react": "^1.23.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },

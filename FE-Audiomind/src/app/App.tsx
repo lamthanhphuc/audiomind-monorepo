@@ -1,8 +1,23 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import StudioAuthPage from '../components/auth/StudioAuthPage'
 import PublicLegalPage from '../components/legal/PublicLegalPage'
-import { resolvePublicLegalKind, type PublicLegalKind } from '../utils/publicRoutes'
 import DashboardLayout, { type DashboardScene } from '../components/dashboard/DashboardLayout'
+import { useAuthRouting } from './useAuthRouting'
+import { useHistorySearchFilters } from './useHistorySearchFilters'
+import { useRealtimeControls } from './useRealtimeControls'
+import { useRealtimeLifecycleEffects } from './useRealtimeLifecycleEffects'
+import { useRealtimeSession } from './useRealtimeSession'
+import { useRecentMeetingsSidebar } from './useRecentMeetingsSidebar'
+import { useStudioRouteSync } from './useStudioRouteSync'
+import { useInitialRedirectHandling } from './useInitialRedirectHandling'
+import { buildLiveAnalysisMetadata } from './liveAnalysisMetadata'
+import {
+  isNoTranscriptTerminalLifecycle,
+  isRealtimeLanguageSelectorDisabled,
+  isRealtimeSpeakerModeSelectorDisabled,
+  isRecordingSourceSelectorDisabled,
+  type LiveLifecycleState,
+} from './liveLifecycle'
 import FeatureAnalysis from '../components/features/FeatureAnalysis'
 import FeatureUpload from '../components/features/FeatureUpload'
 import MeetingHistoryScene from '../components/features/MeetingHistoryScene'
@@ -15,11 +30,9 @@ import { QuotaWarningBanner } from '../components/ui/QuotaWarningBanner'
 const BillingScene = lazy(() => import('../components/features/BillingScene'))
 const FeatureMindmap = lazy(() => import('../components/features/FeatureMindmap'))
 const KnowledgeVaultScene = lazy(() => import('../components/features/KnowledgeVaultScene'))
-import { useAudioRecorder, type AudioRecorderState } from '../hooks/useAudioRecorder'
+import { useAudioRecorder } from '../hooks/useAudioRecorder'
 import { useDualAudioRecorder, type DualTabMicStreamId } from '../hooks/useDualAudioRecorder'
 import {
-    DEFAULT_REALTIME_LANGUAGE,
-    DEFAULT_REALTIME_SPEAKER_MODE,
     normalizeRealtimeLanguage,
     normalizeRealtimeSpeakerMode,
     useRealtimeMeetingStream,
@@ -28,7 +41,6 @@ import {
     type RealtimeSpeakerMode,
     type RealtimeStatusEvent,
     type TranscriptSegment,
-    type RealtimeAudioStreamId,
 } from '../hooks/useRealtimeMeetingStream'
 import {
     DEFAULT_VAD_RESUMED_LABEL_MS,
@@ -39,29 +51,21 @@ import {
     DEFAULT_VAD_SPEECH_THRESHOLD,
     normalizeMicSensitivityMode,
     useVoiceActivityDetection,
-    type MicSensitivityMode,
     type VoiceActivityState,
 } from '../hooks/useVoiceActivityDetection'
 import { useQuotaOverview } from '../hooks/useQuotaOverview'
 import {
-    BROWSER_TAB_CAPTURE_TELEMETRY,
-    DEFAULT_RECORDING_SOURCE,
     isBrowserTabRecordingSource,
     REALTIME_FOCUS_MEET_CAPTURE_KEY,
     REALTIME_MEET_CAPTURE_TITLE_KEY,
-    RECORDING_SOURCE_ERRORS,
-    getRecordingSourceTinyChunkError,
     type RealtimeMeetCaptureContext,
     type RecordingSource,
 } from '../constants/recordingSource'
 import { normalizeDomainMode, type DomainMode } from '../constants/domainMode'
 import { isOnboardingDismissed, loadUserPreferences, saveUserPreferences, applyServerDomainMode } from '../utils/userPreferences'
 import {
-  applyParsedStudioRoute,
-  buildStudioPath,
   parseStudioRouteFromLocation,
   pushStudioRoute,
-  resolveStudioRedirectAfter,
   type ParsedStudioRoute,
 } from '../utils/studioRouting'
 import type { MeetingResultScope } from '../utils/meetingResultScope'
@@ -73,16 +77,13 @@ import {
   shouldApplyMindmapLoadResult,
 } from '../utils/mindmapAnalysisScope'
 import {
-  appendOpenMeetingQuery,
   applyPostAuthDestination,
   buildInviteGoogleRedirectAfter,
   readOpenMeetingId,
   resolvePostAuthDestination,
-  resolveDestinationFromRedirectAfter,
 } from '../utils/inviteAuth'
-import { INVITE_ACCESS_NOTICE, probeInvitedMeetingAccess } from '../utils/inviteAccess'
-import { returnToOAuthOpener, subscribeOAuthComplete } from '../utils/oauthCallbackHandoff'
-import { ApiError, createRealtimeMeeting, getAnalysis, getProcessingStatus, getTranscript, getUserProfile, listMeetingsWithParams, reanalyzeMeetingAnalysis, startProcessingByPath, submitRealtimeFinalAudioFallback, updateUserPreferences, uploadToMeetingApi, type AnalysisScopeOptions } from '../services/api'
+import { realtimeInfo, realtimeWarn } from '../utils/realtimeTelemetry'
+import { ApiError, getAnalysis, getProcessingStatus, getTranscript, getUserProfile, startProcessingByPath, updateUserPreferences, uploadToMeetingApi, type AnalysisScopeOptions } from '../services/api'
 import { resolveBatchPipelineErrorCode, resolveErrorPresentation } from '../constants/errorCatalog'
 import { ERROR_UX_ENABLED } from '../services/config'
 import {
@@ -96,7 +97,6 @@ import { getBundledUploadConfig } from '../services/configService'
 import type { Meeting } from '../types'
 import {
   clearAccessToken,
-  exchangeGoogleLoginTicket,
   getAccessToken,
   getCurrentUserId,
   getGoogleLoginUrl,
@@ -107,24 +107,12 @@ import {
   setAccessToken,
 } from '../services/auth'
 import {
-  getGoogleStatus,
-  needsGoogleIntegrationGrant,
-  redirectToFullGoogleLink,
-} from '../services/googleIntegration'
-import {
     REALTIME_DUAL_STREAM_TAB_MIC,
-    REALTIME_MIC_SENSITIVITY,
-    REALTIME_MIN_FALLBACK_AUDIO_BYTES,
-    REALTIME_NOISE_SUPPRESSION_DEFAULT,
     REALTIME_NOISE_SUPPRESSION_TOGGLE_ENABLED,
     REALTIME_PREROLL_ENABLED,
     REALTIME_RECORDER_TIMESLICE_MS,
     REALTIME_RESUME_PREROLL_MS,
     REALTIME_START_PREROLL_MS,
-    REALTIME_TINY_CHUNK_MAX_BYTES,
-    REALTIME_TINY_CHUNK_MAX_RMS,
-    REALTIME_TINY_CHUNK_MIN_RECORDING_SEC,
-    REALTIME_TINY_CHUNK_STREAK_THRESHOLD,
     REALTIME_VAD_DYNAMIC_ENABLED,
     REALTIME_WS_ENABLED,
 } from '../services/config'
@@ -133,43 +121,9 @@ import {
     buildTranscriptEquivalenceSignature,
     mergeTranscriptSegments,
     mergeTranscriptSegmentsForDisplay,
-    mergeHydratedTranscriptWithLive,
     normalizePersistedTranscriptSegments,
     sortTranscriptSegmentsByTimeline,
 } from '../utils/transcript'
-
-const resolveZoomCallbackMessage = (reason: string | null): string => {
-  switch ((reason || '').toLowerCase()) {
-    case 'provider_error':
-      return 'Zoom từ chối yêu cầu. Hãy thử lại hoặc kiểm tra app OAuth trên Zoom Marketplace.'
-    case 'missing_code':
-      return 'Không nhận được mã xác thực từ Zoom. Hãy thử kết nối lại.'
-    case 'zoom_account_already_linked':
-      return 'Tài khoản Zoom này đã được liên kết với người dùng khác.'
-    case 'zoom_oauth_not_configured':
-      return 'Zoom chưa được cấu hình trên server. Liên hệ quản trị viên.'
-    default:
-      return 'Kết nối Zoom thất bại. Hãy thử lại.'
-  }
-}
-
-const resolveTeamsCallbackMessage = (reason: string | null, kind: 'linked' | 'error'): string => {
-  if (kind === 'linked') {
-    return 'Đã kết nối Microsoft Teams thành công. Chọn cloud recording để import.'
-  }
-  switch ((reason || '').toLowerCase()) {
-    case 'provider_error':
-      return 'Microsoft từ chối yêu cầu. Hãy thử lại hoặc kiểm tra app Azure AD.'
-    case 'missing_code':
-      return 'Không nhận được mã xác thực từ Microsoft. Hãy thử kết nối lại.'
-    case 'teams_account_already_linked':
-      return 'Tài khoản Microsoft này đã được liên kết với người dùng khác.'
-    case 'teams_oauth_not_configured':
-      return 'Teams chưa được cấu hình trên server. Liên hệ quản trị viên.'
-    default:
-      return 'Kết nối Teams thất bại. Hãy thử lại.'
-  }
-}
 
 export { DEFAULT_REALTIME_LANGUAGE } from '../hooks/useRealtimeMeetingStream'
 export { getStatusBadgeClass } from '../utils/statusBadge'
@@ -177,6 +131,16 @@ export {
     buildTranscriptEquivalenceSignature,
     mergeHydratedTranscriptWithLive,
 } from '../utils/transcript'
+export type { LiveLifecycleState } from './liveLifecycle'
+export {
+  isFailedAudioCaptureLifecycle,
+  isNoTranscriptTerminalLifecycle,
+  isRealtimeTerminalLifecycle,
+  isRealtimeLanguageSelectorDisabled,
+  isRealtimeSpeakerModeSelectorDisabled,
+  isRecordingSourceSelectorDisabled,
+  resolveVoiceActivityLifecycleUpdate,
+} from './liveLifecycle'
 
 type ResultView = {
   meetingId: number
@@ -186,38 +150,6 @@ type ResultView = {
   analysis: AiAnalysis
 }
 
-export type LiveLifecycleState =
-  | 'idle'
-  | 'connecting'
-  | 'recording'
-  | 'silent_paused'
-  | 'listening_resumed'
-  | 'stopping'
-  | 'finalizing_recording'
-  | 'finalizing_transcript'
-  | 'transcript_ready'
-  | 'analysis_pending'
-  | 'analyzing'
-  | 'analysis_completed'
-  | 'analysis_failed'
-  | 'no_transcript_after_finalize'
-  | 'failed_audio_capture'
-  | 'stopped_no_analysis'
-  | 'stopped'
-  | 'error'
-
-export const isNoTranscriptTerminalLifecycle = (state: LiveLifecycleState): boolean => {
-  return state === 'no_transcript_after_finalize' || state === 'stopped_no_analysis'
-}
-
-export const isFailedAudioCaptureLifecycle = (state: LiveLifecycleState): boolean => {
-  return state === 'failed_audio_capture'
-}
-
-export const isRealtimeTerminalLifecycle = (state: LiveLifecycleState): boolean => {
-  return isNoTranscriptTerminalLifecycle(state) || isFailedAudioCaptureLifecycle(state) || state === 'error'
-}
-
 type RealtimeConnectionView = {
   title: string
   detail: string
@@ -225,29 +157,20 @@ type RealtimeConnectionView = {
   closeReasonIsError: boolean
 }
 
-type AuthRoute = 'login' | 'register'
-
 type GoogleCallbackState = 'idle' | 'processing' | 'linking'
 
 const GOOGLE_LOGIN_ENABLED = import.meta.env.VITE_GOOGLE_LOGIN_ENABLED === 'true'
 const PAYOS_ENABLED = import.meta.env.VITE_PAYOS_ENABLED === 'true'
 
-const resolveAuthRouteFromLocation = (): AuthRoute => {
-  if (typeof window !== 'undefined' && window.location.pathname === '/register') {
-    return 'register'
+const isUploadDebugLoggingEnabled = (): boolean => {
+  if (import.meta.env.VITE_UPLOAD_DEBUG === 'true') {
+    return true
   }
-  return 'login'
-}
-
-const resolvePublicLegalKindFromLocation = (): PublicLegalKind | null => {
-  if (typeof window === 'undefined') {
-    return null
+  try {
+    return window.localStorage.getItem('audiomind.upload.debug') === 'true'
+  } catch {
+    return false
   }
-  return resolvePublicLegalKind(window.location.pathname)
-}
-
-const resolveAuthPath = (route: AuthRoute): string => {
-  return route === 'register' ? '/register' : '/'
 }
 
 const readInitialStudioRoute = (): ParsedStudioRoute => {
@@ -255,17 +178,6 @@ const readInitialStudioRoute = (): ParsedStudioRoute => {
     return { scene: 'upload', meetingId: null }
   }
   return parseStudioRouteFromLocation() ?? { scene: 'upload', meetingId: null }
-}
-
-const resolveGoogleLoginError = (errorCode: string | null): string => {
-  switch (errorCode) {
-    case 'GOOGLE_EMAIL_CONFLICT':
-      return 'Email này đã tồn tại. Hãy đăng nhập bằng mật khẩu rồi kết nối Google.'
-    case 'GOOGLE_OAUTH_STATE_INVALID':
-      return 'Phiên xác thực Google không hợp lệ. Vui lòng thử lại.'
-    default:
-      return 'Đăng nhập Google thất bại. Vui lòng thử lại.'
-  }
 }
 
 export const REALTIME_LANGUAGE_OPTIONS: Array<{ value: RealtimeLanguage; label: string }> = [
@@ -283,26 +195,6 @@ export const REALTIME_SPEAKER_MODE_OPTIONS: Array<{ value: RealtimeSpeakerMode; 
   { value: 'single', label: 'Một người nói' },
   { value: 'multiple', label: 'Nhiều người nói' },
 ]
-
-export const isRealtimeLanguageSelectorDisabled = (lifecycleState: LiveLifecycleState): boolean => {
-  return (
-    lifecycleState === 'connecting'
-    || lifecycleState === 'recording'
-    || lifecycleState === 'silent_paused'
-    || lifecycleState === 'listening_resumed'
-    || lifecycleState === 'stopping'
-    || lifecycleState === 'finalizing_recording'
-    || lifecycleState === 'finalizing_transcript'
-  )
-}
-
-export const isRealtimeSpeakerModeSelectorDisabled = (lifecycleState: LiveLifecycleState): boolean => {
-  return isRealtimeLanguageSelectorDisabled(lifecycleState)
-}
-
-export const isRecordingSourceSelectorDisabled = (lifecycleState: LiveLifecycleState): boolean => {
-  return isRealtimeLanguageSelectorDisabled(lifecycleState)
-}
 
 export const getRealtimeConnectionView = (
   lifecycleState: LiveLifecycleState,
@@ -358,7 +250,7 @@ export const getRealtimeConnectionView = (
 
   if (lifecycleState === 'recording') {
     return {
-      title: 'Listening',
+      title: 'Đang nghe',
       detail: 'Đang lắng nghe...',
       closeReason: null,
       closeReasonIsError: false,
@@ -396,11 +288,6 @@ const HYDRATION_RETRY_DELAY_MS = 800
 const HYDRATION_MAX_ATTEMPTS = 10
 const HYDRATION_STABLE_COUNT_REQUIRED = 2
 const HYDRATION_MIN_ATTEMPTS_AFTER_FIRST_FRAGMENTS = 2
-const STREAM_STOP_DISCONNECT_FALLBACK_DELAY_MS = 500
-const LIVE_STATUS_LISTENING = 'Đang lắng nghe...'
-const LIVE_STATUS_PAUSED = 'Paused while silent — speak to continue'
-const LIVE_STATUS_RESUMED = 'Resumed — continuing to listen...'
-
 const buildHydrationStabilitySignature = buildTranscriptEquivalenceSignature
 
 export const resolveTranscriptPartialState = (input: {
@@ -413,81 +300,6 @@ export const resolveTranscriptPartialState = (input: {
     || input.resetRequired
     || input.statusMessage?.includes('chưa đầy đủ'),
   )
-}
-
-type ResolveVoiceActivityLifecycleInput = {
-  recorderState: AudioRecorderState
-  liveLifecycleState: LiveLifecycleState
-  previousVoiceActivityState: VoiceActivityState | null
-  voiceActivityState: VoiceActivityState
-}
-
-type ResolveVoiceActivityLifecycleResult = {
-  nextTrackedVoiceActivityState: VoiceActivityState | null
-  nextLifecycleState: LiveLifecycleState | null
-  nextStatusMessage: string | null
-}
-
-export const resolveVoiceActivityLifecycleUpdate = ({
-  recorderState,
-  liveLifecycleState,
-  previousVoiceActivityState,
-  voiceActivityState,
-}: ResolveVoiceActivityLifecycleInput): ResolveVoiceActivityLifecycleResult => {
-  if (recorderState !== 'recording') {
-    return {
-      nextTrackedVoiceActivityState: null,
-      nextLifecycleState: null,
-      nextStatusMessage: null,
-    }
-  }
-
-  if (
-    liveLifecycleState === 'stopping'
-    || liveLifecycleState === 'stopped'
-    || liveLifecycleState === 'no_transcript_after_finalize'
-    || liveLifecycleState === 'stopped_no_analysis'
-    || liveLifecycleState === 'error'
-  ) {
-    return {
-      nextTrackedVoiceActivityState: previousVoiceActivityState,
-      nextLifecycleState: null,
-      nextStatusMessage: null,
-    }
-  }
-
-  if (previousVoiceActivityState === voiceActivityState) {
-    return {
-      nextTrackedVoiceActivityState: previousVoiceActivityState,
-      nextLifecycleState: null,
-      nextStatusMessage: null,
-    }
-  }
-
-  if (voiceActivityState === 'silent_paused') {
-    return {
-      nextTrackedVoiceActivityState: voiceActivityState,
-      nextLifecycleState: 'silent_paused',
-      nextStatusMessage: LIVE_STATUS_PAUSED,
-    }
-  }
-
-  if (voiceActivityState === 'listening_resumed') {
-    return {
-      nextTrackedVoiceActivityState: voiceActivityState,
-      nextLifecycleState: 'listening_resumed',
-      nextStatusMessage: LIVE_STATUS_RESUMED,
-    }
-  }
-
-  return {
-    nextTrackedVoiceActivityState: voiceActivityState,
-    nextLifecycleState:
-      liveLifecycleState === 'silent_paused' || liveLifecycleState === 'listening_resumed'
-        ? 'recording'
-        : null,
-    nextStatusMessage: LIVE_STATUS_LISTENING,
-  }
 }
 
 export const isCurrentLiveRecordingSession = (
@@ -527,7 +339,9 @@ const pollWithRetry = async (meetingId: number, retries = 3, delay = 2000) => {
       // Không retry lỗi 4xx (client error)
       if (error.status >= 400 && error.status < 500) throw error
       if (i === retries - 1) throw error
-      console.warn(`Polling failed, retrying in ${delay}ms...`, error)
+      if (isUploadDebugLoggingEnabled()) {
+        console.warn(`Polling failed, retrying in ${delay}ms...`, error)
+      }
       await new Promise(resolve => setTimeout(resolve, delay))
     }
   }
@@ -664,24 +478,6 @@ const isTranscriptNotReadyPayload = (value: {
     || String(value.errorCode ?? '').toUpperCase() === 'TRANSCRIPT_NOT_READY'
 }
 
-const buildLiveAnalysisMetadata = (
-  meetingId: number,
-  status: string,
-  overrides: Partial<AiAnalysis> = {},
-): AiAnalysis => ({
-  meetingId,
-  meeting_id: meetingId,
-  status,
-  analysisStatus: status,
-  summary: '',
-  keywords: [],
-  technicalTerms: [],
-  painPoints: [],
-  actionItems: [],
-  domainMode: 'it',
-  ...overrides,
-})
-
 const hasStructuredAnalysisData = (analysis: AiAnalysis | null): boolean => {
   if (!analysis) {
     return false
@@ -807,7 +603,7 @@ export const pollRealtimeAnalysisAfterStop = async (
   const pollScopeResolution = resolveRealtimeAnalysisPollScope(meetingId, options)
   const pollScope = pollScopeResolution.scope
   if (!pollScope) {
-    console.warn('[Realtime] ANALYSIS_SCOPE_UNAVAILABLE', {
+    realtimeWarn('[Realtime] ANALYSIS_SCOPE_UNAVAILABLE', {
       meetingId,
       analysisPollRunId: options.analysisPollRunId,
       reason: pollScopeResolution.reason,
@@ -827,7 +623,7 @@ export const pollRealtimeAnalysisAfterStop = async (
       throw new DOMException('Polling aborted', 'AbortError')
     }
     if (!isPollingActive()) {
-      console.info('[Realtime] STALE_ANALYSIS_POLL_IGNORED', {
+      realtimeInfo('[Realtime] STALE_ANALYSIS_POLL_IGNORED', {
         meetingId,
         attempt,
         analysisPollRunId: options.analysisPollRunId,
@@ -844,7 +640,7 @@ export const pollRealtimeAnalysisAfterStop = async (
     try {
       const analysis = await fetchAnalysis(meetingId, { ...pollScope, signal })
       if (!isPollingActive()) {
-        console.info('[Realtime] STALE_ANALYSIS_POLL_IGNORED', {
+        realtimeInfo('[Realtime] STALE_ANALYSIS_POLL_IGNORED', {
           meetingId,
           attempt,
           analysisPollRunId: options.analysisPollRunId,
@@ -912,7 +708,7 @@ export const pollRealtimeAnalysisAfterStop = async (
     if (attempt < maxAttempts) {
       await waitWithSignal(REALTIME_ANALYSIS_POLL_INTERVAL_MS, signal)
       if (!isPollingActive()) {
-        console.info('[Realtime] STALE_ANALYSIS_POLL_IGNORED', {
+        realtimeInfo('[Realtime] STALE_ANALYSIS_POLL_IGNORED', {
           meetingId,
           attempt,
           analysisPollRunId: options.analysisPollRunId,
@@ -953,7 +749,7 @@ export const hydrateLiveTranscriptSegments = async (
   isSessionActive: ((token: RealtimeSessionToken | null) => boolean) | null = null,
   options: HydrationOptions = {},
 ): Promise<TranscriptSegment[]> => {
-  console.info('[Realtime] Post-stop transcript hydration started', { meetingId, hydrationRunId: options.hydrationRunId })
+  realtimeInfo('[Realtime] Post-stop transcript hydration started', { meetingId, hydrationRunId: options.hydrationRunId })
 
   const isHydrationActive = () => {
     if (sessionToken === null || isSessionActive === null) {
@@ -970,14 +766,14 @@ export const hydrateLiveTranscriptSegments = async (
   }
 
   if (!isHydrationActive()) {
-    console.info('[Realtime] STALE_HYDRATION_IGNORED', { meetingId, hydrationRunId: options.hydrationRunId, phase: 'before-wait' })
+    realtimeInfo('[Realtime] STALE_HYDRATION_IGNORED', { meetingId, hydrationRunId: options.hydrationRunId, phase: 'before-wait' })
     return []
   }
 
   await new Promise((resolve) => setTimeout(resolve, HYDRATION_INITIAL_DELAY_MS))
 
   if (!isHydrationActive()) {
-    console.info('[Realtime] STALE_HYDRATION_IGNORED', { meetingId, hydrationRunId: options.hydrationRunId, phase: 'after-initial-wait' })
+    realtimeInfo('[Realtime] STALE_HYDRATION_IGNORED', { meetingId, hydrationRunId: options.hydrationRunId, phase: 'after-initial-wait' })
     return []
   }
 
@@ -989,7 +785,7 @@ export const hydrateLiveTranscriptSegments = async (
 
   for (let attempt = 1; attempt <= HYDRATION_MAX_ATTEMPTS; attempt += 1) {
     if (!isHydrationActive()) {
-      console.info('[Realtime] STALE_HYDRATION_IGNORED', {
+      realtimeInfo('[Realtime] STALE_HYDRATION_IGNORED', {
         meetingId,
         attempt,
         hydrationRunId: options.hydrationRunId,
@@ -1009,7 +805,7 @@ export const hydrateLiveTranscriptSegments = async (
     } catch (error) {
       if (error instanceof ApiError && error.status === 404) {
         if (!isHydrationActive()) {
-          console.info('[Realtime] STALE_HYDRATION_IGNORED', {
+          realtimeInfo('[Realtime] STALE_HYDRATION_IGNORED', {
             meetingId,
             attempt,
             hydrationRunId: options.hydrationRunId,
@@ -1018,7 +814,7 @@ export const hydrateLiveTranscriptSegments = async (
           return []
         }
 
-        console.info('[Realtime] HYDRATION_NO_FRAGMENTS_RETRY', {
+        realtimeInfo('[Realtime] HYDRATION_NO_FRAGMENTS_RETRY', {
           meetingId,
           attempt,
           reason: 'transcript_404',
@@ -1028,7 +824,7 @@ export const hydrateLiveTranscriptSegments = async (
           await new Promise((resolve) => setTimeout(resolve, HYDRATION_RETRY_DELAY_MS))
 
           if (!isHydrationActive()) {
-            console.info('[Realtime] STALE_HYDRATION_IGNORED', {
+            realtimeInfo('[Realtime] STALE_HYDRATION_IGNORED', {
               meetingId,
               attempt,
               hydrationRunId: options.hydrationRunId,
@@ -1043,7 +839,7 @@ export const hydrateLiveTranscriptSegments = async (
         break
       }
       if (!isHydrationActive()) {
-        console.info('[Realtime] STALE_HYDRATION_IGNORED', { meetingId, attempt, hydrationRunId: options.hydrationRunId, phase: 'fetch-error' })
+        realtimeInfo('[Realtime] STALE_HYDRATION_IGNORED', { meetingId, attempt, hydrationRunId: options.hydrationRunId, phase: 'fetch-error' })
         return []
       }
 
@@ -1051,12 +847,12 @@ export const hydrateLiveTranscriptSegments = async (
     }
 
     if (!isHydrationActive()) {
-      console.info('[Realtime] STALE_HYDRATION_IGNORED', { meetingId, attempt, hydrationRunId: options.hydrationRunId, phase: 'post-fetch' })
+      realtimeInfo('[Realtime] STALE_HYDRATION_IGNORED', { meetingId, attempt, hydrationRunId: options.hydrationRunId, phase: 'post-fetch' })
       return []
     }
 
     if (isTranscriptNotReadyPayload(transcript)) {
-      console.info('[Realtime] HYDRATION_NO_FRAGMENTS_RETRY', {
+      realtimeInfo('[Realtime] HYDRATION_NO_FRAGMENTS_RETRY', {
         meetingId,
         attempt,
         reason: 'transcript_not_ready',
@@ -1066,7 +862,7 @@ export const hydrateLiveTranscriptSegments = async (
         await new Promise((resolve) => setTimeout(resolve, HYDRATION_RETRY_DELAY_MS))
 
         if (!isHydrationActive()) {
-          console.info('[Realtime] STALE_HYDRATION_IGNORED', {
+          realtimeInfo('[Realtime] STALE_HYDRATION_IGNORED', {
             meetingId,
             attempt,
             hydrationRunId: options.hydrationRunId,
@@ -1085,7 +881,7 @@ export const hydrateLiveTranscriptSegments = async (
       ),
     )
 
-    console.info('[Realtime] Post-stop transcript hydration attempt', {
+    realtimeInfo('[Realtime] Post-stop transcript hydration attempt', {
       meetingId,
       attempt,
       fragments: hydratedSegments.length,
@@ -1110,7 +906,7 @@ export const hydrateLiveTranscriptSegments = async (
     const liveSegmentsCount = options.currentLiveSegments?.length ?? 0
     const persistedBehindLive = liveSegmentsCount > 0 && hydratedSegments.length < liveSegmentsCount
     if (persistedBehindLive) {
-      console.info('[Realtime] HYDRATION_PERSISTED_BEHIND_LIVE', {
+      realtimeInfo('[Realtime] HYDRATION_PERSISTED_BEHIND_LIVE', {
         meetingId,
         attempt,
         persistedFragments: hydratedSegments.length,
@@ -1118,7 +914,7 @@ export const hydrateLiveTranscriptSegments = async (
       })
     }
 
-    console.info('[Realtime] HYDRATION_WAITING_FOR_STABLE_TRANSCRIPT', {
+    realtimeInfo('[Realtime] HYDRATION_WAITING_FOR_STABLE_TRANSCRIPT', {
       meetingId,
       attempt,
       fragments: hydratedSegments.length,
@@ -1132,7 +928,7 @@ export const hydrateLiveTranscriptSegments = async (
       && attemptsSinceFirstFragments >= HYDRATION_MIN_ATTEMPTS_AFTER_FIRST_FRAGMENTS
 
     if (hydratedSegments.length > 0 && stableEnough && !persistedBehindLive) {
-      console.info('[Realtime] HYDRATION_STABLE_COMPLETED', {
+      realtimeInfo('[Realtime] HYDRATION_STABLE_COMPLETED', {
         meetingId,
         attempts: attempt,
         persistedFragments: hydratedSegments.length,
@@ -1141,7 +937,7 @@ export const hydrateLiveTranscriptSegments = async (
     }
 
     if (forceStableHydration && hydratedSegments.length > 0 && stableEnough) {
-      console.info('[Realtime] HYDRATION_STABLE_COMPLETED', {
+      realtimeInfo('[Realtime] HYDRATION_STABLE_COMPLETED', {
         meetingId,
         attempts: attempt,
         persistedFragments: hydratedSegments.length,
@@ -1151,7 +947,7 @@ export const hydrateLiveTranscriptSegments = async (
     }
 
     if (hydratedSegments.length === 0) {
-      console.info('[Realtime] HYDRATION_NO_FRAGMENTS_RETRY', {
+      realtimeInfo('[Realtime] HYDRATION_NO_FRAGMENTS_RETRY', {
         meetingId,
         attempt,
       })
@@ -1161,22 +957,22 @@ export const hydrateLiveTranscriptSegments = async (
       await new Promise((resolve) => setTimeout(resolve, HYDRATION_RETRY_DELAY_MS))
 
       if (!isHydrationActive()) {
-        console.info('[Realtime] STALE_HYDRATION_IGNORED', { meetingId, attempt, hydrationRunId: options.hydrationRunId, phase: 'retry-wait' })
+        realtimeInfo('[Realtime] STALE_HYDRATION_IGNORED', { meetingId, attempt, hydrationRunId: options.hydrationRunId, phase: 'retry-wait' })
         return []
       }
     }
   }
 
-  console.info('[Realtime] Post-stop transcript hydration exhausted', {
+  realtimeInfo('[Realtime] Post-stop transcript hydration exhausted', {
     meetingId,
     attempts: HYDRATION_MAX_ATTEMPTS,
   })
-  console.info('[Realtime] HYDRATION_NO_FRAGMENTS_COMPLETED', {
+  realtimeInfo('[Realtime] HYDRATION_NO_FRAGMENTS_COMPLETED', {
     meetingId,
     attempts: HYDRATION_MAX_ATTEMPTS,
   })
   if (!hasObservedFragments) {
-    console.info('[Realtime] HYDRATION_TIMEOUT_NO_TRANSCRIPT', {
+    realtimeInfo('[Realtime] HYDRATION_TIMEOUT_NO_TRANSCRIPT', {
       meetingId,
     })
   }
@@ -1210,7 +1006,7 @@ export type LiveRecordingStopSequenceInput = {
 export async function runLiveRecordingStopSequence(
   input: LiveRecordingStopSequenceInput,
 ): Promise<LiveRecordingStopSequenceResult> {
-  console.info('[Realtime] REALTIME_STOP_REQUESTED', {
+  realtimeInfo('[Realtime] REALTIME_STOP_REQUESTED', {
     meetingId: input.meetingId,
     sessionId: input.sessionId,
     ...(input.source ? { source: input.source } : {}),
@@ -1324,10 +1120,7 @@ export default function App() {
   const [password, setPassword] = useState('')
   const [authError, setAuthError] = useState('')
   const [authNotice, setAuthNotice] = useState('')
-  const [authRoute, setAuthRoute] = useState<AuthRoute>(resolveAuthRouteFromLocation)
-  const [publicLegalKind, setPublicLegalKind] = useState<PublicLegalKind | null>(
-    resolvePublicLegalKindFromLocation,
-  )
+  const { authRoute, publicLegalKind, navigateAuthRoute } = useAuthRouting()
   const [googleCallbackState, setGoogleCallbackState] = useState<GoogleCallbackState>(() =>
     window.location.pathname === '/auth/google/success' ? 'processing' : 'idle',
   )
@@ -1341,7 +1134,14 @@ export default function App() {
   const [sessionPlanSyncTick, setSessionPlanSyncTick] = useState(0)
   const initialStudioRoute = readInitialStudioRoute()
   const [featureScene, setFeatureScene] = useState<DashboardScene>(initialStudioRoute.scene)
-  const [globalMeetingSearch, setGlobalMeetingSearch] = useState('')
+  const {
+    globalMeetingSearch,
+    setGlobalMeetingSearch,
+    historyStatusFilter,
+    setHistoryStatusFilter,
+    historyLanguageFilter,
+    setHistoryLanguageFilter,
+  } = useHistorySearchFilters()
   const [googleIntegrationNotice, setGoogleIntegrationNotice] = useState<string | null>(null)
   const [oauthRefreshTick, setOauthRefreshTick] = useState(0)
   const [billingPaymentNotice, setBillingPaymentNotice] = useState<string | null>(null)
@@ -1364,20 +1164,26 @@ export default function App() {
     initialStudioRoute.scene === 'mindmap' ? initialStudioRoute.resultScope ?? null : null,
   )
   const [mindmapDisplayScopeKey, setMindmapDisplayScopeKey] = useState<string | null>(null)
-  const [recentMeetings, setRecentMeetings] = useState<Meeting[]>([])
-  const [recentMeetingsReloadTick, setRecentMeetingsReloadTick] = useState(0)
+  const { recentMeetings, refreshRecentMeetings } = useRecentMeetingsSidebar(isAuthenticated)
   const [joinMeetingIdInput, setJoinMeetingIdInput] = useState('')
   const [showJoinOtherMeeting, setShowJoinOtherMeeting] = useState(false)
   const [hydratedLiveTranscriptSegments, setHydratedLiveTranscriptSegments] = useState<TranscriptSegment[] | null>(null)
   const [liveLifecycleState, setLiveLifecycleState] = useState<LiveLifecycleState>('idle')
   const [activeRealtimeSessionToken, setActiveRealtimeSessionToken] = useState<RealtimeSessionToken | null>(null)
-  const [selectedRealtimeLanguage, setSelectedRealtimeLanguage] = useState<RealtimeLanguage>(DEFAULT_REALTIME_LANGUAGE)
-  const [selectedRealtimeSpeakerMode, setSelectedRealtimeSpeakerMode] = useState<RealtimeSpeakerMode>(DEFAULT_REALTIME_SPEAKER_MODE)
-  const [selectedMicSensitivity, setSelectedMicSensitivity] = useState<MicSensitivityMode>(
-    normalizeMicSensitivityMode(REALTIME_MIC_SENSITIVITY),
-  )
-  const [selectedRecordingSource, setSelectedRecordingSource] = useState<RecordingSource>(DEFAULT_RECORDING_SOURCE)
-  const [noiseSuppressionEnabled, setNoiseSuppressionEnabled] = useState(REALTIME_NOISE_SUPPRESSION_DEFAULT)
+  const {
+    selectedRealtimeLanguage,
+    setSelectedRealtimeLanguage,
+    selectedRealtimeSpeakerMode,
+    setSelectedRealtimeSpeakerMode,
+    selectedMicSensitivity,
+    setSelectedMicSensitivity,
+    selectedRecordingSource,
+    selectedRecordingSourceRef,
+    noiseSuppressionEnabled,
+    setNoiseSuppressionEnabled,
+    handleRecordingSourceChange,
+    selectMeetCaptureSource,
+  } = useRealtimeControls()
   const [noiseSuppressionSupported] = useState(() => {
     return Boolean(navigator.mediaDevices?.getSupportedConstraints?.().noiseSuppression)
   })
@@ -1392,12 +1198,9 @@ export default function App() {
   const resetRecoveryInProgressRef = useRef(false)
   const restartAfterReconnectRef = useRef(false)
   const liveTinyChunkStreakRef = useRef(0)
-  const selectedRecordingSourceRef = useRef<RecordingSource>(DEFAULT_RECORDING_SOURCE)
   const tabTrackEndedFinalizeRef = useRef(false)
   const gracefulStopRef = useRef<(() => Promise<void>) | null>(null)
   const quotaBillingRedirectRef = useRef(false)
-  const lastLoggedRealtimeLanguageRef = useRef<RealtimeLanguage | null>(null)
-  const lastLoggedRealtimeSpeakerModeRef = useRef<RealtimeSpeakerMode | null>(null)
   const lastVoiceActivityStateRef = useRef<VoiceActivityState | null>(null)
 
   const isRealtimeEnabled = REALTIME_WS_ENABLED
@@ -1465,653 +1268,66 @@ export default function App() {
       : undefined,
   })
 
-  useEffect(() => {
-    selectedRecordingSourceRef.current = selectedRecordingSource
-  }, [selectedRecordingSource])
+  useRealtimeLifecycleEffects({
+    audioRecorder,
+    realtimeStream,
+    voiceActivity,
+    dualStreamActive,
+    selectedRecordingSource,
+    selectedRecordingSourceRef,
+    selectedRealtimeLanguage,
+    selectedRealtimeSpeakerMode,
+    selectedMicSensitivity,
+    noiseSuppressionEnabled,
+    noiseSuppressionSupported,
+    activeRealtimeSessionToken,
+    activeRealtimeSessionTokenRef,
+    liveLifecycleState,
+    liveMeetingIdRef,
+    liveAnalysisAbortControllerRef,
+    analysisPollRunIdRef,
+    resetRecoveryInProgressRef,
+    restartAfterReconnectRef,
+    tabTrackEndedFinalizeRef,
+    gracefulStopRef,
+    lastVoiceActivityStateRef,
+    onTabAudioTrackEndedRef,
+    onTabCaptureFailureRef,
+    onTabPipelineStalledRef,
+    setLiveLifecycleState,
+    setLiveError,
+    setLiveStatusMessage,
+    setLivePartialWarning,
+    setLiveAnalysis,
+    setLiveAnalysisMetadata,
+    setLiveAnalysisStatus,
+    setLiveAnalysisError,
+  })
 
-  useEffect(() => {
-    onTabAudioTrackEndedRef.current = () => {
-      if (!isBrowserTabRecordingSource(selectedRecordingSourceRef.current)) {
-        return
-      }
-      if (tabTrackEndedFinalizeRef.current) {
-        return
-      }
-      tabTrackEndedFinalizeRef.current = true
-      setLiveStatusMessage(RECORDING_SOURCE_ERRORS.tabStopSharing)
-      console.info('[Realtime] REALTIME_STOP_REQUESTED', {
-        meetingId: liveMeetingIdRef.current,
-        source: selectedRecordingSourceRef.current,
-        reason: 'tab_track_ended',
-      })
-      void gracefulStopRef.current?.()
-    }
-    onTabCaptureFailureRef.current = (message, reason) => {
-      if (!isBrowserTabRecordingSource(selectedRecordingSourceRef.current)) {
-        return
-      }
-      if (audioRecorder.state !== 'recording' && audioRecorder.state !== 'paused' && audioRecorder.state !== 'connecting') {
-        return
-      }
-      console.warn('[Realtime] TAB_AUDIO_CAPTURE_FAILURE', {
-        meetingId: liveMeetingIdRef.current,
-        source: selectedRecordingSourceRef.current,
-        reason,
-        message,
-      })
-      setLiveError(message)
-      setLiveLifecycleState('failed_audio_capture')
-      setLiveStatusMessage('Lỗi thu âm tab')
-      setLivePartialWarning(message)
-      audioRecorder.abortRecording()
-      const activeToken = activeRealtimeSessionTokenRef.current
-      realtimeStream.clearQueuedAudio?.()
-      if (activeToken) {
-        realtimeStream.disconnect(activeToken)
-      }
-    }
-    onTabPipelineStalledRef.current = () => {
-      if (!isBrowserTabRecordingSource(selectedRecordingSourceRef.current)) {
-        return
-      }
-      if (audioRecorder.state !== 'recording' && audioRecorder.state !== 'paused' && audioRecorder.state !== 'connecting') {
-        return
-      }
-      console.warn('[Realtime] TAB_AUDIO_PIPELINE_DEGRADED', {
-        meetingId: liveMeetingIdRef.current,
-        source: selectedRecordingSourceRef.current,
-        reason: 'output_mismatch',
-      })
-      setLivePartialWarning(RECORDING_SOURCE_ERRORS.tabCaptureStalled)
-      setLiveStatusMessage(RECORDING_SOURCE_ERRORS.tabCaptureStalled)
-    }
-  }, [audioRecorder, realtimeStream])
 
-  useEffect(() => {
-    console.info('[Realtime] RECORDING_SOURCE_SELECTED', {
-      source: selectedRecordingSource,
-      lifecycleState: liveLifecycleState,
-    })
-
-  }, [liveLifecycleState, selectedRecordingSource])
-
-  const handleRecordingSourceChange = useCallback((source: RecordingSource) => {
-    const previous = selectedRecordingSourceRef.current
-    setSelectedRecordingSource(source)
-    if (isBrowserTabRecordingSource(source) && !isBrowserTabRecordingSource(previous)) {
-      setSelectedRealtimeSpeakerMode('multiple')
-    }
-  }, [liveLifecycleState])
-
-  useEffect(() => {
-    const normalizedLanguage = normalizeRealtimeLanguage(selectedRealtimeLanguage)
-    if (lastLoggedRealtimeLanguageRef.current === normalizedLanguage) {
-      return
-    }
-
-    lastLoggedRealtimeLanguageRef.current = normalizedLanguage
-    console.info('[Realtime] REALTIME_LANGUAGE_SELECTED', {
-      language: normalizedLanguage,
-      lifecycleState: liveLifecycleState,
-    })
-  }, [liveLifecycleState, selectedRealtimeLanguage])
-
-  useEffect(() => {
-    const normalizedSpeakerMode = normalizeRealtimeSpeakerMode(selectedRealtimeSpeakerMode)
-    if (lastLoggedRealtimeSpeakerModeRef.current === normalizedSpeakerMode) {
-      return
-    }
-
-    lastLoggedRealtimeSpeakerModeRef.current = normalizedSpeakerMode
-    console.info('[Realtime] FE_REALTIME_SPEAKER_MODE_SELECTED', {
-      speakerMode: normalizedSpeakerMode,
-      lifecycleState: liveLifecycleState,
-    })
-  }, [liveLifecycleState, selectedRealtimeSpeakerMode])
-
-  useEffect(() => {
-    activeRealtimeSessionTokenRef.current = activeRealtimeSessionToken
-  }, [activeRealtimeSessionToken])
-
-  useEffect(() => {
-    console.info('[Realtime] MIC_SENSITIVITY_CHANGED', {
-      mode: selectedMicSensitivity,
-    })
-  }, [selectedMicSensitivity])
-
-  useEffect(() => {
-    console.info('[Realtime] MIC_NOISE_SUPPRESSION_SELECTED', {
-      mode: noiseSuppressionEnabled ? 'on' : 'off',
-    })
-  }, [noiseSuppressionEnabled])
-
-  useEffect(() => {
-    if (REALTIME_NOISE_SUPPRESSION_TOGGLE_ENABLED && !noiseSuppressionSupported) {
-      console.info('[Realtime] MIC_CONSTRAINT_UNSUPPORTED', {
-        constraint: 'noiseSuppression',
-      })
-    }
-  }, [noiseSuppressionSupported])
-
-  const isCurrentRealtimeSessionToken = (candidate: RealtimeSessionToken | null): boolean => {
-    const active = activeRealtimeSessionTokenRef.current
-    if (!candidate || !active) {
-      return false
-    }
-
-    return (
-      candidate.meetingId === active.meetingId
-      && candidate.recordingSessionId === active.recordingSessionId
-      && candidate.attemptId === active.attemptId
-      && candidate.connectionSeq === active.connectionSeq
-    )
-  }
-
-  const activateRealtimeSessionToken = (token: RealtimeSessionToken | null) => {
-    hydrationRunIdRef.current += 1
-    analysisPollRunIdRef.current += 1
-    activeRealtimeSessionTokenRef.current = token
-    setActiveRealtimeSessionToken(token)
-  }
-
-  const isCurrentHydrationRun = (hydrationRunId: number): boolean => {
-    return hydrationRunId === hydrationRunIdRef.current
-  }
-
-  useEffect(() => {
-    if (!realtimeStream.status.resetRequired) {
-      resetRecoveryInProgressRef.current = false
-      return
-    }
-
-    if (resetRecoveryInProgressRef.current) {
-      return
-    }
-
-    if (audioRecorder.state !== 'recording' && audioRecorder.state !== 'paused') {
-      return
-    }
-
-    resetRecoveryInProgressRef.current = true
-    console.info('[Realtime] FRONTEND_RESET_RECORDER_AFTER_RESET_REQUIRED', {
-      meetingId: liveMeetingIdRef.current,
-      recorderState: audioRecorder.state,
-      dualStream: dualStreamActive,
-    })
-    realtimeStream.clearQueuedAudio?.()
-    audioRecorder.abortRecording()
-    setLivePartialWarning('Transcript có thể chưa đầy đủ')
-
-    void audioRecorder.startRecording()
-      .then(() => {
-        if (dualStreamActive && audioRecorder.getActiveStreamIds) {
-          realtimeStream.configureDualStreams(audioRecorder.getActiveStreamIds())
-        }
-      })
-      .catch((error) => {
-      setLiveError(error instanceof Error ? error.message : 'Không thể khởi động lại ghi âm')
-    })
-  }, [audioRecorder, realtimeStream, realtimeStream.status.resetRequired])
-
-  useEffect(() => {
-    const noTranscriptStatus =
-      realtimeStream.status.state === 'NO_TRANSCRIPT_AFTER_FINALIZE'
-      || realtimeStream.status.errorCode === 'NO_TRANSCRIPT_AFTER_FINALIZE'
-      || realtimeStream.status.errorCode === 'NO_TRANSCRIPT'
-      || realtimeStream.status.status === 'NO_TRANSCRIPT'
-    if (!noTranscriptStatus) {
-      return
-    }
-
-    const meetingId = liveMeetingIdRef.current
-    if (meetingId === null) {
-      return
-    }
-
-    liveAnalysisAbortControllerRef.current?.abort()
-    liveAnalysisAbortControllerRef.current = null
-    analysisPollRunIdRef.current += 1
-    setLiveLifecycleState('no_transcript_after_finalize')
-    setLiveAnalysis(null)
-    setLiveAnalysisMetadata(buildLiveAnalysisMetadata(meetingId, 'NO_ANALYSIS', {
-      errorCode: 'NO_TRANSCRIPT_AFTER_FINALIZE',
-      transcriptRows: 0,
-      finalized: true,
-    }))
-    setLiveAnalysisStatus('pending')
-    setLiveAnalysisError(null)
-    setLivePartialWarning('Chưa có transcript. Có thể do im lặng, mic tắt hoặc âm lượng quá thấp.')
-    setLiveStatusMessage('Đã dừng ghi âm (chưa có transcript)')
-  }, [realtimeStream.status.errorCode, realtimeStream.status.state, realtimeStream.status.status])
-
-  useEffect(() => {
-    const failedAudioCapture =
-      realtimeStream.status.state === 'FAILED_AUDIO_CAPTURE'
-      || realtimeStream.status.errorCode === 'FAILED_AUDIO_CAPTURE'
-      || realtimeStream.status.status === 'FAILED_AUDIO_CAPTURE'
-    if (!failedAudioCapture) {
-      return
-    }
-
-    const meetingId = liveMeetingIdRef.current
-    if (meetingId === null) {
-      return
-    }
-
-    liveAnalysisAbortControllerRef.current?.abort()
-    liveAnalysisAbortControllerRef.current = null
-    analysisPollRunIdRef.current += 1
-    setLiveLifecycleState('failed_audio_capture')
-    setLiveAnalysis(null)
-    setLiveAnalysisMetadata(buildLiveAnalysisMetadata(meetingId, 'NO_ANALYSIS', {
-      errorCode: 'FAILED_AUDIO_CAPTURE',
-      transcriptRows: 0,
-      finalized: true,
-    }))
-    setLiveAnalysisStatus('pending')
-    setLiveAnalysisError(null)
-    setLivePartialWarning('Không thu được audio hợp lệ. Kiểm tra quyền mic và thử ghi lại.')
-    setLiveStatusMessage('Lỗi thu âm')
-  }, [realtimeStream.status.errorCode, realtimeStream.status.state, realtimeStream.status.status])
-
-  useEffect(() => {
-    const isRealtimeRecordingActive = audioRecorder.state === 'recording' || audioRecorder.state === 'paused'
-    if (!isRealtimeRecordingActive) {
-      return
-    }
-
-    if (realtimeStream.status.state !== 'reconnecting') {
-      return
-    }
-
-    restartAfterReconnectRef.current = true
-    realtimeStream.clearQueuedAudio?.()
-    audioRecorder.abortRecording()
-    setLiveStatusMessage('WebSocket bị ngắt, đang khôi phục kết nối...')
-  }, [audioRecorder, realtimeStream, realtimeStream.status.state])
-
-  useEffect(() => {
-    if (!restartAfterReconnectRef.current) {
-      return
-    }
-
-    if (!realtimeStream.isAuthenticated) {
-      return
-    }
-
-    if (audioRecorder.state !== 'idle' || liveMeetingIdRef.current === null) {
-      return
-    }
-
-    if (isBrowserTabRecordingSource(selectedRecordingSourceRef.current)) {
-      restartAfterReconnectRef.current = false
-      setLiveError('Mất kết nối realtime trong khi ghi âm tab. Hãy dừng và bắt đầu lại để chọn lại tab trình duyệt.')
-      setLiveLifecycleState('error')
-      return
-    }
-
-    restartAfterReconnectRef.current = false
-    setLiveStatusMessage('Đang ghi âm...')
-    setLiveError(null)
-    setLiveLifecycleState('recording')
-    void audioRecorder.startRecording().catch((error) => {
-      setLiveError(error instanceof Error ? error.message : 'Không thể khôi phục ghi âm sau khi reconnect')
-    })
-  }, [audioRecorder, realtimeStream.isAuthenticated, audioRecorder.state])
-
-  useEffect(() => {
-    if (!realtimeStream.isAuthenticated) {
-      return
-    }
-
-    if (liveLifecycleState === 'connecting') {
-      setLiveStatusMessage(LIVE_STATUS_LISTENING)
-      setLiveLifecycleState('recording')
-    }
-  }, [liveLifecycleState, realtimeStream.isAuthenticated])
-
-  useEffect(() => {
-    if (audioRecorder.state === 'connecting') {
-      setLiveLifecycleState('connecting')
-      return
-    }
-
-    if (audioRecorder.state === 'recording') {
-      if (
-        liveLifecycleState === 'stopping'
-        || liveLifecycleState === 'finalizing_transcript'
-        || isNoTranscriptTerminalLifecycle(liveLifecycleState)
-      ) {
-        return
-      }
-      if (liveLifecycleState === 'connecting' && !realtimeStream.isAuthenticated) {
-        return
-      }
-      setLiveLifecycleState('recording')
-      return
-    }
-
-    if (audioRecorder.state === 'stopped') {
-      if (
-        liveLifecycleState === 'stopping'
-        || liveLifecycleState === 'finalizing_transcript'
-        || liveLifecycleState === 'transcript_ready'
-        || liveLifecycleState === 'analysis_pending'
-        || liveLifecycleState === 'analyzing'
-        || liveLifecycleState === 'analysis_completed'
-        || liveLifecycleState === 'analysis_failed'
-        || isNoTranscriptTerminalLifecycle(liveLifecycleState)
-      ) {
-        return
-      }
-      setLiveLifecycleState('stopped')
-      return
-    }
-
-    if (audioRecorder.state === 'error') {
-      setLiveLifecycleState('error')
-      return
-    }
-  }, [audioRecorder.state, liveLifecycleState, realtimeStream.isAuthenticated])
-
-  useEffect(() => {
-    const voiceActivityUpdate = resolveVoiceActivityLifecycleUpdate({
-      recorderState: audioRecorder.state,
-      liveLifecycleState,
-      previousVoiceActivityState: lastVoiceActivityStateRef.current,
-      voiceActivityState: voiceActivity.state,
-    })
-
-    lastVoiceActivityStateRef.current = voiceActivityUpdate.nextTrackedVoiceActivityState
-
-    if (voiceActivityUpdate.nextLifecycleState !== null) {
-      setLiveLifecycleState(voiceActivityUpdate.nextLifecycleState)
-    }
-
-    if (voiceActivityUpdate.nextStatusMessage !== null) {
-      setLiveStatusMessage(voiceActivityUpdate.nextStatusMessage)
-    }
-  }, [audioRecorder.state, liveLifecycleState, voiceActivity.state])
-
-  useEffect(() => {
-    let active = true
-    const path = window.location.pathname
-
-    if (path === '/billing/success') {
-      const orderCode = Number(new URLSearchParams(window.location.search).get('orderCode') || 0)
-      window.history.replaceState({}, '', buildStudioPath('billing'))
-      setIsAuthenticated(Boolean(getAccessToken()))
-      setFeatureScene('billing')
-      setBillingActivationOrderCode(orderCode > 0 ? orderCode : null)
-      if (orderCode <= 0) {
-        setBillingPaymentNotice('Thanh toán PayOS thành công. Đang đồng bộ gói Pro…')
-      }
-      void refreshAccessToken().catch(() => {
-        if (!active) return
-        setBillingPaymentNotice('Thanh toán thành công. Gói đã cập nhật trên server — bấm "Đồng bộ JWT" nếu badge vẫn hiện Free.')
-      })
-    } else if (path === '/billing/cancel') {
-      window.history.replaceState({}, '', buildStudioPath('billing'))
-      setIsAuthenticated(Boolean(getAccessToken()))
-      setFeatureScene('billing')
-      setBillingPaymentNotice('Bạn đã hủy thanh toán. Bạn có thể thử lại bất cứ lúc nào.')
-    } else if (path === '/settings/integrations/google/success') {
-      const redirectAfter = new URLSearchParams(window.location.search).get('redirectAfter')
-      const route = resolveStudioRedirectAfter(redirectAfter)
-      const message = 'Đã kết nối Google và cập nhật quyền truy cập.'
-      if (returnToOAuthOpener({
-        provider: 'google',
-        status: 'success',
-        message,
-        route,
-        tone: 'success',
-      })) {
-        return () => {
-          active = false
-          abortControllerRef.current?.abort()
-          liveAnalysisAbortControllerRef.current?.abort()
-        }
-      }
-      window.history.replaceState({}, '', buildStudioPath(route.scene, { meetingId: route.meetingId }))
-      setIsAuthenticated(Boolean(getAccessToken()))
-      applyParsedStudioRoute(route, {
-        setFeatureScene,
-        setHistoryAnalysisMeetingId,
-        setHistoryAnalysisScope,
-        setMindmapSelectedMeetingId,
-        setMindmapSelectedScope,
-      })
-      setGoogleIntegrationNotice(message)
-      setOauthRefreshTick((tick) => tick + 1)
-    } else if (path === '/settings/integrations/google/error') {
-      const errorCode = new URLSearchParams(window.location.search).get('errorCode')
-      const message = errorCode === 'GOOGLE_ACCOUNT_ALREADY_LINKED'
-        ? 'Tài khoản Google này đã được liên kết với người dùng khác.'
-        : 'Không thể kết nối Google. Vui lòng thử lại.'
-      const route: ParsedStudioRoute = { scene: 'integrations', meetingId: null }
-      if (returnToOAuthOpener({
-        provider: 'google',
-        status: 'error',
-        message,
-        route,
-        tone: 'error',
-      })) {
-        return () => {
-          active = false
-          abortControllerRef.current?.abort()
-          liveAnalysisAbortControllerRef.current?.abort()
-        }
-      }
-      window.history.replaceState({}, '', buildStudioPath('integrations'))
-      setIsAuthenticated(Boolean(getAccessToken()))
-      setFeatureScene('integrations')
-      setGoogleIntegrationNotice(message)
-      setOauthRefreshTick((tick) => tick + 1)
-    } else if (path === '/auth/google/success') {
-      const ticket = new URLSearchParams(window.location.search).get('ticket')
-      window.history.replaceState({}, '', '/auth/google/success')
-      if (!ticket) {
-        setGoogleCallbackState('idle')
-        setAuthError('Phiên đăng nhập Google không hợp lệ. Vui lòng thử lại.')
-        window.history.replaceState({}, '', '/')
-      } else {
-        void exchangeGoogleLoginTicket(ticket)
-          .then(async (response) => {
-            if (!active) return
-            setAccessToken(response.token, response.expiresInSeconds)
-            setIsAuthenticated(true)
-            void syncUserPreferencesFromServer()
-            const redirectAfter = response.redirectAfter?.startsWith('/') ? response.redirectAfter : '/studio/upload'
-            const destination = resolveDestinationFromRedirectAfter(redirectAfter)
-            const studioPath = destination.scene === 'analysis'
-              ? buildStudioPath('analysis', { meetingId: destination.meetingId })
-              : buildStudioPath('upload')
-
-            if (destination.scene === 'analysis') {
-              const accessController = new AbortController()
-              const accessTimeout = window.setTimeout(() => accessController.abort(), 3000)
-              try {
-                const access = await probeInvitedMeetingAccess(destination.meetingId, {
-                  signal: accessController.signal,
-                })
-                if (access === 'forbidden') {
-                  setAuthNotice(INVITE_ACCESS_NOTICE)
-                }
-              } finally {
-                window.clearTimeout(accessTimeout)
-              }
-            }
-
-            try {
-              const googleStatus = await getGoogleStatus()
-              if (needsGoogleIntegrationGrant(googleStatus)) {
-                setGoogleCallbackState('linking')
-                await redirectToFullGoogleLink(studioPath)
-                return
-              }
-            } catch {
-              setGoogleIntegrationNotice('Không kiểm tra được quyền Google. Vào Tích hợp và bấm「Kết nối Calendar」trước khi tạo Meet.')
-            }
-
-            window.history.replaceState({}, '', studioPath)
-            applyPostAuthDestination(destination, {
-              setFeatureScene,
-              setHistoryAnalysisMeetingId,
-              setMindmapSelectedMeetingId,
-            })
-            setOauthRefreshTick((tick) => tick + 1)
-            setGoogleCallbackState('idle')
-          })
-          .catch((error) => {
-            if (!active) return
-            setAuthError(error instanceof Error ? error.message : 'Đăng nhập Google thất bại')
-            setGoogleCallbackState('idle')
-            window.history.replaceState({}, '', '/')
-          })
-      }
-    } else if (path === '/auth/google/error') {
-      const errorCode = new URLSearchParams(window.location.search).get('errorCode')
-      window.history.replaceState({}, '', '/')
-      setAuthError(resolveGoogleLoginError(errorCode))
-      setIsAuthenticated(false)
-    } else {
-      const hasToken = Boolean(getAccessToken())
-      setIsAuthenticated(hasToken)
-      if (hasToken) {
-        void refreshAccessToken()
-          .then(() => {
-            if (active) setSessionPlanSyncTick((tick) => tick + 1)
-          })
-          .catch(() => {})
-        void syncUserPreferencesFromServer()
-      }
-      const params = new URLSearchParams(window.location.search)
-      const zoom = params.get('zoom')
-      const teams = params.get('teams')
-      if (zoom || teams) {
-        const redirectAfter = params.get('redirectAfter')
-        const route = resolveStudioRedirectAfter(redirectAfter)
-        if (zoom === 'linked') {
-          const message = 'Đã kết nối Zoom thành công. Chọn cloud recording để import.'
-          if (returnToOAuthOpener({
-            provider: 'zoom',
-            status: 'success',
-            message,
-            route,
-            tone: 'success',
-          })) {
-            return () => {
-              active = false
-              abortControllerRef.current?.abort()
-              liveAnalysisAbortControllerRef.current?.abort()
-            }
-          }
-        } else if (zoom === 'error') {
-          const message = resolveZoomCallbackMessage(params.get('reason'))
-          if (returnToOAuthOpener({
-            provider: 'zoom',
-            status: 'error',
-            message,
-            route,
-            tone: 'error',
-          })) {
-            return () => {
-              active = false
-              abortControllerRef.current?.abort()
-              liveAnalysisAbortControllerRef.current?.abort()
-            }
-          }
-        }
-        if (teams === 'linked') {
-          const message = resolveTeamsCallbackMessage(null, 'linked')
-          if (returnToOAuthOpener({
-            provider: 'teams',
-            status: 'success',
-            message,
-            route,
-            tone: 'success',
-          })) {
-            return () => {
-              active = false
-              abortControllerRef.current?.abort()
-              liveAnalysisAbortControllerRef.current?.abort()
-            }
-          }
-        } else if (teams === 'error') {
-          const message = resolveTeamsCallbackMessage(params.get('reason'), 'error')
-          if (returnToOAuthOpener({
-            provider: 'teams',
-            status: 'error',
-            message,
-            route,
-            tone: 'error',
-          })) {
-            return () => {
-              active = false
-              abortControllerRef.current?.abort()
-              liveAnalysisAbortControllerRef.current?.abort()
-            }
-          }
-        }
-        window.history.replaceState({}, '', buildStudioPath('integrations'))
-        setFeatureScene('integrations')
-        if (zoom === 'linked') {
-          setZoomIntegrationNotice('Đã kết nối Zoom thành công. Chọn cloud recording để import.')
-          setZoomIntegrationNoticeTone('success')
-        } else if (zoom === 'error') {
-          setZoomIntegrationNotice(resolveZoomCallbackMessage(params.get('reason')))
-          setZoomIntegrationNoticeTone('error')
-        }
-        if (teams === 'linked') {
-          setTeamsIntegrationNotice(resolveTeamsCallbackMessage(null, 'linked'))
-          setTeamsIntegrationNoticeTone('success')
-        } else if (teams === 'error') {
-          setTeamsIntegrationNotice(resolveTeamsCallbackMessage(params.get('reason'), 'error'))
-          setTeamsIntegrationNoticeTone('error')
-        }
-      }
-      if (hasToken) {
-        const inviteDestination = resolvePostAuthDestination(params.toString())
-        if (inviteDestination.scene === 'analysis') {
-          applyPostAuthDestination(inviteDestination, {
-            setFeatureScene,
-            setHistoryAnalysisMeetingId,
-            setMindmapSelectedMeetingId,
-          })
-        } else {
-          const studioRoute = parseStudioRouteFromLocation()
-          if (studioRoute) {
-            applyParsedStudioRoute(studioRoute, {
-              setFeatureScene,
-              setHistoryAnalysisMeetingId,
-              setHistoryAnalysisScope,
-              setMindmapSelectedMeetingId,
-              setMindmapSelectedScope,
-            })
-          }
-        }
-      }
-    }
-    return () => {
-      active = false
-      abortControllerRef.current?.abort()
-      liveAnalysisAbortControllerRef.current?.abort()
-    }
-  }, [])
-
-  useEffect(() => {
-    const syncAuthRoute = () => {
-      setPublicLegalKind(resolvePublicLegalKindFromLocation())
-      setAuthRoute(resolveAuthRouteFromLocation())
-    }
-
-    window.addEventListener('popstate', syncAuthRoute)
-    syncAuthRoute()
-
-    return () => {
-      window.removeEventListener('popstate', syncAuthRoute)
-    }
-  }, [])
+  useInitialRedirectHandling({
+    abortControllerRef,
+    liveAnalysisAbortControllerRef,
+    setIsAuthenticated,
+    setFeatureScene,
+    setHistoryAnalysisMeetingId,
+    setHistoryAnalysisScope,
+    setMindmapSelectedMeetingId,
+    setMindmapSelectedScope,
+    setBillingActivationOrderCode,
+    setBillingPaymentNotice,
+    setGoogleIntegrationNotice,
+    setZoomIntegrationNotice,
+    setZoomIntegrationNoticeTone,
+    setTeamsIntegrationNotice,
+    setTeamsIntegrationNoticeTone,
+    setOauthRefreshTick,
+    setSessionPlanSyncTick,
+    setGoogleCallbackState,
+    setAuthError,
+    setAuthNotice,
+    syncUserPreferencesFromServer,
+  })
 
   useEffect(() => {
     liveMeetingIdRef.current = liveMeetingId
@@ -2148,6 +1364,69 @@ export default function App() {
   const handleNavigateBilling = useCallback(() => {
     navigateFeatureScene('billing')
   }, [navigateFeatureScene])
+
+
+  const {
+    activateRealtimeSessionToken,
+    handlePrepareLiveMeeting,
+    handleLiveChunkReady,
+    handleLiveRecordingComplete,
+    handleLiveAnalysisRetry,
+    handleJoinMeeting,
+    handleStopRequested,
+  } = useRealtimeSession({
+    audioRecorder,
+    realtimeStream,
+    dualStreamActive,
+    selectedDomainMode,
+    selectedRealtimeLanguage,
+    selectedRecordingSource,
+    selectedRecordingSourceRef,
+    joinMeetingIdInput,
+    liveLifecycleState,
+    liveAnalysisMetadata,
+    activeRealtimeSessionTokenRef,
+    liveMeetingIdRef,
+    liveRecordingSessionIdRef,
+    realtimeAttemptIdRef,
+    hydrationRunIdRef,
+    analysisPollRunIdRef,
+    liveTinyChunkStreakRef,
+    liveAnalysisAbortControllerRef,
+    handleDualChunkReadyRef,
+    navigateFeatureScene,
+    setActiveRealtimeSessionToken,
+    setLiveMeetingId,
+    setLiveError,
+    setLiveErrorCode,
+    setLivePartialWarning,
+    setLiveStatusMessage,
+    setLiveAnalysis,
+    setLiveAnalysisMetadata,
+    setLiveAnalysisStatus,
+    setLiveAnalysisError,
+    setHydratedLiveTranscriptSegments,
+    setLiveLifecycleState,
+    setShowJoinOtherMeeting,
+    sessionHelpers: {
+      pollRealtimeAnalysisAfterStop,
+      hydrateLiveTranscriptSegments,
+      runLiveRecordingStopSequence,
+      beginGracefulStopLifecycle,
+      resolveFreshRealtimeMeetingId,
+      shouldAttemptRealtimeFinalAudioFallback,
+      buildFinalAudioBlobReadyLogPayload,
+      resolveTranscriptPartialState,
+      isCurrentLiveRecordingSession,
+    },
+    analysisHelpers: {
+      getRealtimeAnalysisFailureMessage,
+      metadataFromAnalysisError,
+      hasStructuredAnalysisData,
+      getAnalysisStatusValue,
+      isFailedAnalysisStatus,
+    },
+  })
 
   const handleQuotaExceeded = useCallback((signal: QuotaSignal) => {
     const plan = (getJwtPlan() || 'FREE') as UserPlan
@@ -2231,59 +1510,23 @@ export default function App() {
     )
   }
 
-  useEffect(() => {
-    const syncStudioRouteFromBrowser = () => {
-      const parsed = parseStudioRouteFromLocation()
-      if (!parsed) return
-      applyParsedStudioRoute(parsed, {
-        setFeatureScene,
-        setHistoryAnalysisMeetingId,
-        setHistoryAnalysisScope,
-        setMindmapSelectedMeetingId,
-        setMindmapSelectedScope,
-      })
-    }
-    window.addEventListener('popstate', syncStudioRouteFromBrowser)
-    return () => window.removeEventListener('popstate', syncStudioRouteFromBrowser)
-  }, [])
-
-  useEffect(() => {
-    return subscribeOAuthComplete((event) => {
-      if (event.route) {
-        applyParsedStudioRoute(event.route, {
-          setFeatureScene,
-          setHistoryAnalysisMeetingId,
-          setHistoryAnalysisScope,
-          setMindmapSelectedMeetingId,
-          setMindmapSelectedScope,
-        })
-        pushStudioRoute(event.route.scene, {
-          meetingId: event.route.meetingId,
-          resultScope: event.route.resultScope ?? null,
-          replace: true,
-        })
-      }
-      if (event.provider === 'google') {
-        setGoogleIntegrationNotice(event.message)
-      } else if (event.provider === 'zoom') {
-        setZoomIntegrationNotice(event.message)
-        setZoomIntegrationNoticeTone(event.tone ?? (event.status === 'success' ? 'success' : 'error'))
-      } else if (event.provider === 'teams') {
-        setTeamsIntegrationNotice(event.message)
-        setTeamsIntegrationNoticeTone(event.tone ?? (event.status === 'success' ? 'success' : 'error'))
-      }
-      setOauthRefreshTick((tick) => tick + 1)
-    })
-  }, [])
-
-  const navigateAuthRoute = (route: AuthRoute, replace = false) => {
-    const nextPath = appendOpenMeetingQuery(resolveAuthPath(route), window.location.search)
-    if (typeof window !== 'undefined') {
-      const historyMethod = replace ? 'replaceState' : 'pushState'
-      window.history[historyMethod]({}, '', nextPath)
-    }
-    setAuthRoute(route)
-  }
+  useStudioRouteSync(
+    {
+      setFeatureScene,
+      setHistoryAnalysisMeetingId,
+      setHistoryAnalysisScope,
+      setMindmapSelectedMeetingId,
+      setMindmapSelectedScope,
+    },
+    {
+      setGoogleIntegrationNotice,
+      setZoomIntegrationNotice,
+      setZoomIntegrationNoticeTone,
+      setTeamsIntegrationNotice,
+      setTeamsIntegrationNoticeTone,
+      bumpOauthRefreshTick: () => setOauthRefreshTick((tick) => tick + 1),
+    },
+  )
 
   const postAuthHandlers = {
     setFeatureScene,
@@ -2407,36 +1650,6 @@ export default function App() {
     navigateAuthRoute('login', true)
   }
 
-  const refreshRecentMeetings = useCallback(() => {
-    setRecentMeetingsReloadTick((value) => value + 1)
-  }, [])
-
-  useEffect(() => {
-    if (!isAuthenticated) {
-      setRecentMeetings([])
-      return
-    }
-
-    let cancelled = false
-    const loadRecentMeetings = async () => {
-      try {
-        const meetings = await listMeetingsWithParams({ sort: 'created_desc' })
-        if (!cancelled) {
-          setRecentMeetings(meetings)
-        }
-      } catch (error) {
-        if (!cancelled) {
-          console.warn('Failed to load recent meetings for sidebar', error)
-        }
-      }
-    }
-
-    void loadRecentMeetings()
-    return () => {
-      cancelled = true
-    }
-  }, [isAuthenticated, recentMeetingsReloadTick])
-
   useEffect(() => {
     if (featureScene === 'integrations' && isAuthenticated) {
       refreshRecentMeetings()
@@ -2544,8 +1757,7 @@ export default function App() {
   }, [featureScene, mindmapSelectedMeetingId, mindmapSelectedScope, liveMeetingId, recentMeetings, result?.meetingId])
 
   const handleNavigateRealtimeMeetCapture = useCallback((source: RecordingSource, context?: RealtimeMeetCaptureContext) => {
-    setSelectedRecordingSource(source)
-    setSelectedRealtimeSpeakerMode('multiple')
+    selectMeetCaptureSource(source)
     setLiveError(null)
     setLivePartialWarning(null)
     navigateFeatureScene('realtime')
@@ -2558,7 +1770,7 @@ export default function App() {
     } catch {
       // ignore storage errors
     }
-  }, [navigateFeatureScene])
+  }, [navigateFeatureScene, selectMeetCaptureSource])
 
   const handleOpenMeetingAnalysisFromHistory = (
     meetingId: number,
@@ -2683,7 +1895,9 @@ export default function App() {
       const effectiveUploadLanguage = normalizeRealtimeLanguage(selectedUploadLanguage)
       setStatus('uploading')
       navigateFeatureScene('upload')
-      console.info('UPLOAD_REQUEST_SEND language=' + effectiveUploadLanguage)
+      if (isUploadDebugLoggingEnabled()) {
+        console.info('UPLOAD_REQUEST_SEND language=' + effectiveUploadLanguage)
+      }
       const meeting = await uploadToMeetingApi(file.name, file, effectiveUploadLanguage)
       meetingId = Number(meeting.existingMeetingId ?? meeting.id)
       if (!Number.isFinite(meetingId) || meetingId <= 0) {
@@ -2708,7 +1922,7 @@ export default function App() {
           return
         }
 
-        setUploadNotice('File này đang được xử lý. Vui lòng đợi hoặc mở Lịch sử meeting.')
+        setUploadNotice('File này đang được xử lý. Vui lòng đợi hoặc mở Lịch sử cuộc họp.')
         setStatus('processing')
         return
       }
@@ -2763,7 +1977,9 @@ export default function App() {
           setUploadErrorCode(null)
         }
       }
-      console.error('handleProcess error:', error)
+      if (isUploadDebugLoggingEnabled()) {
+        console.error('handleProcess error:', error)
+      }
     } finally {
       abortControllerRef.current = null
       setBusy(false)
@@ -2774,32 +1990,6 @@ export default function App() {
     abortControllerRef.current?.abort()
   }
 
-  const handleJoinMeeting = () => {
-    const parsedMeetingId = Number(joinMeetingIdInput)
-    if (!Number.isFinite(parsedMeetingId) || parsedMeetingId <= 0) {
-      setLiveError('Vui lòng nhập Meeting ID hợp lệ')
-      return
-    }
-
-    setLiveError(null)
-    setLivePartialWarning(null)
-    liveAnalysisAbortControllerRef.current?.abort()
-    liveAnalysisAbortControllerRef.current = null
-    setLiveAnalysis(null)
-    setLiveAnalysisMetadata(null)
-    setLiveAnalysisStatus('idle')
-    setLiveAnalysisError(null)
-    setHydratedLiveTranscriptSegments(null)
-    realtimeStream.clearQueuedAudio?.()
-    realtimeStream.disconnect(activeRealtimeSessionTokenRef.current)
-    activateRealtimeSessionToken(null)
-    setLiveMeetingId(parsedMeetingId)
-    liveMeetingIdRef.current = parsedMeetingId
-    liveRecordingSessionIdRef.current = 0
-    setLiveLifecycleState('idle')
-    setShowJoinOtherMeeting(false)
-    navigateFeatureScene('realtime')
-  }
 
   const handleDashboardUpload = async (_title: string, file: File) => {
     setSelectedFile(file)
@@ -2827,7 +2017,7 @@ export default function App() {
         return
       }
       if (!meta.processingStarted) {
-        setUploadNotice('Đã import meeting. Kiểm tra Lịch sử meeting nếu phân tích chưa chạy.')
+        setUploadNotice('Đã nhập cuộc họp. Kiểm tra Lịch sử cuộc họp nếu phân tích chưa chạy.')
         setStatus('processing')
         return
       }
@@ -3040,14 +2230,7 @@ export default function App() {
           onBeforeStartRecording={handlePrepareLiveMeeting}
           onChunkReady={dualStreamActive ? undefined : handleLiveChunkReady}
           onRecordingComplete={handleLiveRecordingComplete}
-          onStopRequested={() => {
-            console.info('[Realtime] REALTIME_STOP_REQUESTED', {
-              meetingId: liveMeetingIdRef.current,
-              source: selectedRecordingSource,
-              phase: 'recorder_stop',
-            })
-            beginGracefulStopLifecycle(setLiveLifecycleState)
-          }}
+          onStopRequested={handleStopRequested}
           gracefulStopRef={gracefulStopRef}
           liveError={liveError}
           liveErrorCode={liveErrorCode}
@@ -3119,6 +2302,10 @@ export default function App() {
           onOpenMindmap={handleOpenMindmapFromHistory}
           searchQuery={globalMeetingSearch}
           onSearchQueryChange={setGlobalMeetingSearch}
+          statusFilter={historyStatusFilter}
+          onStatusFilterChange={setHistoryStatusFilter}
+          languageFilter={historyLanguageFilter}
+          onLanguageFilterChange={setHistoryLanguageFilter}
           onNavigateUpload={() => navigateFeatureScene('upload')}
           onNavigateRealtime={() => navigateFeatureScene('realtime')}
           onNavigateBilling={handleNavigateBilling}
@@ -3152,603 +2339,6 @@ export default function App() {
       />
       </>
     )
-  }
-
-  const handlePrepareLiveMeeting = async (recordingSessionId?: number): Promise<void> => {
-    setLiveError(null)
-    setLiveErrorCode(null)
-    setLivePartialWarning(null)
-    liveAnalysisAbortControllerRef.current?.abort()
-    liveAnalysisAbortControllerRef.current = null
-    setLiveAnalysis(null)
-    setLiveAnalysisMetadata(null)
-    setLiveAnalysisStatus('idle')
-    setLiveAnalysisError(null)
-    setLiveStatusMessage('Đang tạo meeting mới...')
-    setHydratedLiveTranscriptSegments(null)
-    setLiveLifecycleState('connecting')
-    liveTinyChunkStreakRef.current = 0
-    realtimeStream.clearQueuedAudio?.()
-    realtimeStream.disconnect(activeRealtimeSessionTokenRef.current)
-    realtimeStream.clearTranscripts?.()
-    realtimeStream.clearKeywords?.()
-    setLiveMeetingId(null)
-    liveMeetingIdRef.current = null
-    const sessionId = recordingSessionId ?? audioRecorder.recordingSessionId + 1
-    const attemptId = realtimeAttemptIdRef.current + 1
-    realtimeAttemptIdRef.current = attemptId
-    let meetingCreated = false
-    let sessionToken: RealtimeSessionToken | null = null
-
-    try {
-      const resolveRealtimeMeetingTitle = (): string => {
-        try {
-          const stored = sessionStorage.getItem(REALTIME_MEET_CAPTURE_TITLE_KEY)?.trim()
-          if (stored) {
-            sessionStorage.removeItem(REALTIME_MEET_CAPTURE_TITLE_KEY)
-            return stored
-          }
-        } catch {
-          // ignore storage errors
-        }
-        return 'Live recording session'
-      }
-      const meeting = await createRealtimeMeeting(resolveRealtimeMeetingTitle(), selectedRealtimeLanguage, selectedDomainMode)
-      const normalizedMeetingId = resolveFreshRealtimeMeetingId(meeting)
-      if (!Number.isFinite(normalizedMeetingId)) {
-        throw new Error('Meeting ID trả về không hợp lệ')
-      }
-
-      if (realtimeAttemptIdRef.current !== attemptId) {
-        console.info('[Realtime] STALE_SESSION_PREPARE_IGNORED', {
-          meetingId: normalizedMeetingId,
-          attemptId,
-          recordingSessionId: sessionId,
-        })
-        throw new Error('Stale realtime session prepare ignored')
-      }
-
-      sessionToken = {
-        meetingId: normalizedMeetingId,
-        recordingSessionId: sessionId,
-        attemptId,
-        connectionSeq: 0,
-      }
-      liveRecordingSessionIdRef.current = sessionId
-      setLiveMeetingId(normalizedMeetingId)
-      liveMeetingIdRef.current = normalizedMeetingId
-      activateRealtimeSessionToken(sessionToken)
-      meetingCreated = true
-      // Minimal audit log for session lifecycle.
-      // eslint-disable-next-line no-console
-      console.info('[Realtime] REALTIME_START', {
-        meetingId: normalizedMeetingId,
-        sessionId,
-        language: selectedRealtimeLanguage,
-        source: selectedRecordingSourceRef.current,
-      })
-      if (isBrowserTabRecordingSource(selectedRecordingSourceRef.current)) {
-        console.info('[Realtime]', BROWSER_TAB_CAPTURE_TELEMETRY.REALTIME_STARTED, {
-          meetingId: normalizedMeetingId,
-          source: selectedRecordingSourceRef.current,
-        })
-      }
-      setLiveStatusMessage(`Meeting ${normalizedMeetingId} đang kết nối realtime...`)
-
-      await realtimeStream.waitForSessionReady(undefined, normalizedMeetingId, sessionToken)
-
-      if (
-        !isCurrentRealtimeSessionToken(sessionToken)
-        || liveRecordingSessionIdRef.current !== sessionId
-        || liveMeetingIdRef.current !== normalizedMeetingId
-      ) {
-        throw new Error('Stale realtime session prepare ignored')
-      }
-
-      setLiveStatusMessage(`Meeting ${normalizedMeetingId} sẵn sàng ghi âm`)
-      if (dualStreamActive && audioRecorder.getActiveStreamIds) {
-        realtimeStream.configureDualStreams(audioRecorder.getActiveStreamIds())
-      }
-      return
-    } catch (error) {
-      if (sessionToken !== null && !isCurrentRealtimeSessionToken(sessionToken)) {
-        console.info('[Realtime] STALE_SESSION_PREPARE_IGNORED', {
-          meetingId: liveMeetingIdRef.current,
-          attemptId,
-          recordingSessionId: sessionId,
-        })
-        throw error instanceof Error ? error : new Error('Stale realtime session prepare ignored')
-      }
-
-      const message = error instanceof Error ? error.message : 'Không thể tạo meeting mới'
-      setLiveError(message)
-      setLiveStatusMessage(null)
-      setLiveLifecycleState('error')
-      audioRecorder.abortRecording()
-      if (meetingCreated) {
-        realtimeStream.clearQueuedAudio?.()
-        realtimeStream.disconnect(sessionToken)
-        setLiveMeetingId(null)
-        liveMeetingIdRef.current = null
-      }
-      liveRecordingSessionIdRef.current = 0
-      throw error
-    }
-  }
-
-  const handleLiveChunkReady = async (
-    chunk: Blob,
-    sessionId: number,
-    streamId?: RealtimeAudioStreamId,
-  ) => {
-    const activeToken = activeRealtimeSessionTokenRef.current
-    const activeMeetingId = liveMeetingIdRef.current
-    if (!activeMeetingId || sessionId !== liveRecordingSessionIdRef.current || !activeToken) {
-      if (!activeMeetingId) {
-        // eslint-disable-next-line no-console
-        console.error('[Realtime] STARTUP_INVARIANT_BROKEN', {
-          reason: 'chunk_received_without_active_meeting',
-          sessionId,
-          activeSessionId: liveRecordingSessionIdRef.current,
-        })
-      }
-      // eslint-disable-next-line no-console
-      console.warn('[Realtime] REALTIME_DROP_STALE_CHUNK', {
-        currentMeetingId: activeMeetingId,
-        sessionId,
-        activeSessionId: liveRecordingSessionIdRef.current,
-      })
-      return
-    }
-
-    if (!isCurrentRealtimeSessionToken(activeToken)) {
-      // eslint-disable-next-line no-console
-      console.warn('[Realtime] REALTIME_DROP_STALE_CHUNK', {
-        currentMeetingId: activeMeetingId,
-        sessionId,
-        activeSessionId: liveRecordingSessionIdRef.current,
-        reason: 'stale_session_token',
-      })
-      return
-    }
-
-    const chunkBytes = chunk.size
-    const recordingDurationSec = audioRecorder.duration
-    const isTabCaptureSource = isBrowserTabRecordingSource(selectedRecordingSourceRef.current)
-    const validateMicTinyChunks = streamId === 'mic' || (!streamId && !isTabCaptureSource)
-    const currentRms = audioRecorder.getCurrentRms()
-    const isTinyChunk = chunkBytes > 0 && chunkBytes < REALTIME_TINY_CHUNK_MAX_BYTES
-    const isSilentCapture = currentRms === null || currentRms <= REALTIME_TINY_CHUNK_MAX_RMS
-    if (validateMicTinyChunks && isTinyChunk && isSilentCapture) {
-      liveTinyChunkStreakRef.current += 1
-    } else if (chunkBytes >= REALTIME_TINY_CHUNK_MAX_BYTES) {
-      liveTinyChunkStreakRef.current = 0
-    }
-
-    if (
-      validateMicTinyChunks
-      && recordingDurationSec >= REALTIME_TINY_CHUNK_MIN_RECORDING_SEC
-      && liveTinyChunkStreakRef.current >= REALTIME_TINY_CHUNK_STREAK_THRESHOLD
-    ) {
-      const captureError = getRecordingSourceTinyChunkError(selectedRecordingSourceRef.current)
-      console.warn('[Realtime] REALTIME_TINY_CHUNK_STREAK_CLIENT', {
-        meetingId: activeMeetingId,
-        sessionId,
-        streak: liveTinyChunkStreakRef.current,
-        chunkBytes,
-        rms: currentRms,
-        recordingDurationSec,
-      })
-      liveTinyChunkStreakRef.current = 0
-      setLiveError(captureError)
-      setLiveLifecycleState('failed_audio_capture')
-      setLiveStatusMessage('Không nhận được âm thanh hợp lệ')
-      audioRecorder.abortRecording()
-      realtimeStream.clearQueuedAudio?.()
-      realtimeStream.disconnect(activeToken)
-      return
-    }
-
-    try {
-      await realtimeStream.sendAudioChunk(chunk, String(activeMeetingId), streamId)
-    } catch (error) {
-      console.error('Failed to send audio chunk:', error)
-      setLiveError(error instanceof Error ? error.message : 'Không thể gửi audio chunk')
-      setLiveLifecycleState('error')
-    }
-  }
-
-  useEffect(() => {
-    handleDualChunkReadyRef.current = (chunk, streamId, sessionId) => {
-      void handleLiveChunkReady(chunk, sessionId, streamId)
-    }
-  })
-
-  const startRealtimeAnalysisPolling = (
-    meetingId: number,
-    sessionId: number,
-    sessionToken: RealtimeSessionToken,
-  ) => {
-    liveAnalysisAbortControllerRef.current?.abort()
-    const controller = new AbortController()
-    const analysisPollRunId = analysisPollRunIdRef.current + 1
-    analysisPollRunIdRef.current = analysisPollRunId
-    liveAnalysisAbortControllerRef.current = controller
-    setLiveAnalysis(null)
-    setLiveAnalysisMetadata(buildLiveAnalysisMetadata(meetingId, 'ANALYZING'))
-    setLiveAnalysisStatus('polling')
-    setLiveAnalysisError(null)
-
-    void (async () => {
-      try {
-        const pollResult = await pollRealtimeAnalysisAfterStop(meetingId, controller.signal, getAnalysis, REALTIME_ANALYSIS_POLL_MAX_ATTEMPTS, {
-          sessionToken,
-          isSessionActive: isCurrentRealtimeSessionToken,
-          analysisPollRunId,
-          analysisScope: {
-            recordingSessionId: sessionToken.recordingSessionId,
-            attemptId: sessionToken.attemptId,
-          },
-        })
-        if (
-          analysisPollRunId !== analysisPollRunIdRef.current
-          || pollResult.reason === 'stale_session'
-          || !isCurrentRealtimeSessionToken(sessionToken)
-          || !isCurrentLiveRecordingSession(sessionId, meetingId, liveRecordingSessionIdRef.current, liveMeetingIdRef.current)
-        ) {
-          return
-        }
-
-        if (pollResult.reason === 'no_transcript_after_finalize') {
-          setLiveLifecycleState('stopped_no_analysis')
-          setLiveAnalysis(null)
-          setLiveAnalysisMetadata(pollResult.metadata ?? buildLiveAnalysisMetadata(meetingId, 'NO_ANALYSIS', {
-            errorCode: 'NO_TRANSCRIPT_AFTER_FINALIZE',
-            transcriptRows: 0,
-            finalized: true,
-          }))
-          setLiveAnalysisStatus('pending')
-          setLiveAnalysisError(null)
-          return
-        }
-
-        if (pollResult.status === 'completed' && pollResult.analysis) {
-          setLiveAnalysis(pollResult.analysis)
-          setLiveAnalysisMetadata(pollResult.metadata ?? pollResult.analysis)
-          setLiveAnalysisStatus('completed')
-          setLiveAnalysisError(null)
-          return
-        }
-
-        if (pollResult.status === 'failed') {
-          setLiveAnalysis(null)
-          setLiveAnalysisMetadata(pollResult.metadata ?? buildLiveAnalysisMetadata(meetingId, 'FAILED'))
-          setLiveAnalysisStatus('failed')
-          setLiveAnalysisError(pollResult.reason || 'Analysis failed temporarily. Retry available.')
-          return
-        }
-
-        setLiveAnalysis(null)
-        setLiveAnalysisMetadata(pollResult.metadata ?? buildLiveAnalysisMetadata(meetingId, 'NO_ANALYSIS'))
-        setLiveAnalysisStatus('pending')
-        setLiveAnalysisError(null)
-      } catch (error) {
-        if (error instanceof DOMException && error.name === 'AbortError') {
-          return
-        }
-        if (
-          !isCurrentRealtimeSessionToken(sessionToken)
-          || !isCurrentLiveRecordingSession(sessionId, meetingId, liveRecordingSessionIdRef.current, liveMeetingIdRef.current)
-        ) {
-          return
-        }
-        const metadata = error instanceof ApiError
-          ? metadataFromAnalysisError(meetingId, error)
-          : buildLiveAnalysisMetadata(meetingId, 'FAILED', {
-            errorMessage: error instanceof Error ? error.message : 'Unable to load realtime analysis',
-          })
-        setLiveAnalysis(null)
-        setLiveAnalysisMetadata(metadata)
-        setLiveAnalysisStatus('failed')
-        setLiveAnalysisError(getRealtimeAnalysisFailureMessage(metadata, error instanceof Error ? error.message : undefined))
-      }
-    })()
-  }
-
-  const handleLiveAnalysisRetry = async () => {
-    const meetingId = liveMeetingIdRef.current
-    if (meetingId === null) {
-      return
-    }
-    if (
-      isNoTranscriptTerminalLifecycle(liveLifecycleState)
-      || liveAnalysisMetadata?.errorCode === 'NO_TRANSCRIPT_AFTER_FINALIZE'
-    ) {
-      setLiveAnalysisError(null)
-      return
-    }
-
-    const retryAfterSeconds = liveAnalysisMetadata?.retryAfterSeconds ?? 0
-    if (retryAfterSeconds > 0) {
-      setLiveAnalysisError(`Retry available after ${retryAfterSeconds}s.`)
-      return
-    }
-
-    liveAnalysisAbortControllerRef.current?.abort()
-    liveAnalysisAbortControllerRef.current = null
-    setLiveAnalysis(null)
-    setLiveAnalysisMetadata(buildLiveAnalysisMetadata(meetingId, 'ANALYZING'))
-    setLiveAnalysisStatus('polling')
-    setLiveAnalysisError(null)
-
-    try {
-      const response = await reanalyzeMeetingAnalysis(meetingId, {
-        mode: 'force',
-        reason: 'manual_reanalyze',
-        domainMode: selectedDomainMode,
-      })
-      const responseStatus = getAnalysisStatusValue(response)
-      setLiveAnalysisMetadata(response)
-
-      if (hasStructuredAnalysisData(response)) {
-        setLiveAnalysis(response)
-        setLiveAnalysisStatus('completed')
-        setLiveAnalysisError(null)
-        return
-      }
-
-      if (isFailedAnalysisStatus(responseStatus)) {
-        setLiveAnalysis(null)
-        setLiveAnalysisStatus('failed')
-        setLiveAnalysisError(getRealtimeAnalysisFailureMessage(response))
-        return
-      }
-
-      setLiveAnalysis(null)
-      setLiveAnalysisStatus('pending')
-      setLiveAnalysisError(null)
-    } catch (error) {
-      const metadata = error instanceof ApiError
-        ? metadataFromAnalysisError(meetingId, error)
-        : buildLiveAnalysisMetadata(meetingId, 'FAILED', {
-          errorMessage: error instanceof Error ? error.message : 'Unable to retry realtime analysis',
-        })
-      setLiveAnalysis(null)
-      setLiveAnalysisMetadata(metadata)
-      setLiveAnalysisStatus('failed')
-      setLiveAnalysisError(getRealtimeAnalysisFailureMessage(metadata, error instanceof Error ? error.message : undefined))
-    }
-  }
-
-  const handleLiveRecordingComplete = async (fullAudio: Blob, sessionId: number) => {
-    const sessionToken = activeRealtimeSessionTokenRef.current
-    const completedMeetingId = liveMeetingIdRef.current
-    let noTranscriptAfterFinalize = false
-    if (!sessionToken || !isCurrentLiveRecordingSession(sessionId, completedMeetingId, liveRecordingSessionIdRef.current, liveMeetingIdRef.current)) {
-      // eslint-disable-next-line no-console
-      console.warn('[Realtime] REALTIME_DROP_STALE_CHUNK', {
-        currentMeetingId: completedMeetingId,
-        sessionId,
-        activeSessionId: liveRecordingSessionIdRef.current,
-      })
-      return
-    }
-
-    setLiveStatusMessage(`Đã ghi âm ${Math.max(1, Math.round(fullAudio.size / 1024))} KB`)
-    console.info('[Realtime] FINAL_AUDIO_BLOB_READY', buildFinalAudioBlobReadyLogPayload(completedMeetingId, fullAudio.size))
-    try {
-      if (!isCurrentRealtimeSessionToken(sessionToken)) {
-        console.info('[Realtime] STALE_SESSION_COMPLETE_IGNORED', {
-          meetingId: completedMeetingId,
-          sessionId,
-        })
-        return
-      }
-
-      const { stopIncomplete } = await runLiveRecordingStopSequence({
-        meetingId: completedMeetingId,
-        sessionId,
-        stopStream: realtimeStream?.stopStream
-          ? () => realtimeStream.stopStream()
-          : undefined,
-        setLifecycleState: setLiveLifecycleState,
-      })
-      if (stopIncomplete) {
-        console.warn('[Realtime] STREAM_STOP_INCOMPLETE_DISCONNECT_FALLBACK', {
-          meetingId: completedMeetingId,
-          sessionId,
-        })
-        realtimeStream?.disconnect?.(sessionToken)
-        await new Promise((resolve) => setTimeout(resolve, STREAM_STOP_DISCONNECT_FALLBACK_DELAY_MS))
-      }
-
-      const activeMeetingId = liveMeetingIdRef.current
-      if (activeMeetingId) {
-        const hydrationRunId = hydrationRunIdRef.current + 1
-        hydrationRunIdRef.current = hydrationRunId
-        const partialState = resolveTranscriptPartialState({
-          stopIncomplete,
-          resetRequired: Boolean(realtimeStream.status.resetRequired),
-          statusMessage: realtimeStream.status.message,
-        })
-        const liveSnapshot = [...realtimeStream.transcripts]
-        const hydratedSegments = await hydrateLiveTranscriptSegments(
-          activeMeetingId,
-          getTranscript,
-          sessionToken,
-          isCurrentRealtimeSessionToken,
-          {
-            backendPartial: partialState,
-            backendResetRequired: realtimeStream.status.resetRequired,
-            currentLiveSegments: liveSnapshot,
-            hydrationRunId,
-            isHydrationRunActive: isCurrentHydrationRun,
-          },
-        )
-        if (
-          !isCurrentHydrationRun(hydrationRunId)
-          || !isCurrentRealtimeSessionToken(sessionToken)
-          || !isCurrentLiveRecordingSession(sessionId, completedMeetingId, liveRecordingSessionIdRef.current, liveMeetingIdRef.current)
-        ) {
-          return
-        }
-        const mergedHydration = mergeHydratedTranscriptWithLive(liveSnapshot, hydratedSegments)
-        setHydratedLiveTranscriptSegments(mergedHydration)
-        if (mergedHydration.length === 0) {
-          noTranscriptAfterFinalize = true
-        }
-        const shouldAttemptFinalAudioFallback = shouldAttemptRealtimeFinalAudioFallback({
-          mergedTranscriptCount: mergedHydration.length,
-          fullAudioBytes: fullAudio.size,
-          minFallbackAudioBytes: REALTIME_MIN_FALLBACK_AUDIO_BYTES,
-          stopIncomplete,
-          partialState,
-          resetRequired: Boolean(realtimeStream.status.resetRequired),
-          streamState: realtimeStream.status.state,
-        })
-        if (shouldAttemptFinalAudioFallback) {
-          setLiveStatusMessage('Đang thử chuyển sang nhận dạng giọng nói dự phòng...')
-          console.info('[Realtime] REALTIME_FINAL_AUDIO_FALLBACK_REQUESTED', {
-            meetingId: activeMeetingId,
-            sessionId,
-            audioBytes: fullAudio.size,
-            stopIncomplete,
-            partialState,
-            resetRequired: realtimeStream.status.resetRequired,
-          })
-          try {
-            const fallbackFile = new File(
-              [fullAudio],
-              `realtime-fallback-${activeMeetingId}.webm`,
-              { type: fullAudio.type || 'audio/webm' },
-            )
-            const fallbackResponse = await submitRealtimeFinalAudioFallback(
-              activeMeetingId,
-              fallbackFile,
-              selectedRealtimeLanguage,
-            )
-            const fallbackRows = Number(
-              fallbackResponse.transcriptRows ?? fallbackResponse.transcript_count ?? 0,
-            )
-            if (fallbackRows > 0) {
-              noTranscriptAfterFinalize = false
-              const fallbackTranscript = sessionToken
-                ? await getTranscript(activeMeetingId, {
-                    recordingSessionId: sessionToken.recordingSessionId,
-                    attemptId: sessionToken.attemptId,
-                  })
-                : await getTranscript(activeMeetingId)
-              const fallbackSegments = mergeTranscriptSegments(
-                normalizePersistedTranscriptSegments(fallbackTranscript.transcripts || []),
-              )
-              setHydratedLiveTranscriptSegments(fallbackSegments)
-              setLivePartialWarning(null)
-              setLiveStatusMessage('Đã nhận dạng transcript từ audio dự phòng')
-              console.info('[Realtime] REALTIME_FINAL_AUDIO_FALLBACK_SUCCEEDED', {
-                meetingId: activeMeetingId,
-                sessionId,
-                transcriptRows: fallbackRows,
-              })
-            } else {
-              const fallbackStatus = String(fallbackResponse.status ?? fallbackResponse.errorCode ?? 'NO_TRANSCRIPT')
-              if (fallbackStatus === 'FAILED_AUDIO_CAPTURE') {
-                setLiveLifecycleState('failed_audio_capture')
-                setLiveError('Không nhận được âm thanh hợp lệ để nhận dạng.')
-              } else if (fallbackStatus === 'FINAL_AUDIO_FALLBACK_UNAVAILABLE') {
-                setLivePartialWarning('Transcript đã lưu nhưng không thể khôi phục phần đuôi từ audio fallback (WebM continuation không khả dụng).')
-                console.info('[Realtime] REALTIME_FINAL_AUDIO_TAIL_RECOVERY_UNAVAILABLE', {
-                  meetingId: activeMeetingId,
-                  sessionId,
-                  persistedTranscriptRows: mergedHydration.length,
-                })
-              }
-              console.info('[Realtime] REALTIME_FINAL_AUDIO_FALLBACK_EMPTY', {
-                meetingId: activeMeetingId,
-                sessionId,
-                status: fallbackStatus,
-              })
-            }
-          } catch (fallbackError) {
-            console.warn('[Realtime] REALTIME_FINAL_AUDIO_FALLBACK_FAILED', {
-              meetingId: activeMeetingId,
-              sessionId,
-              error: fallbackError instanceof Error ? fallbackError.message : String(fallbackError),
-            })
-          }
-        }
-        if (noTranscriptAfterFinalize) {
-          liveAnalysisAbortControllerRef.current?.abort()
-          liveAnalysisAbortControllerRef.current = null
-          analysisPollRunIdRef.current += 1
-          setLiveLifecycleState('no_transcript_after_finalize')
-          setLivePartialWarning('Chưa có transcript')
-          setLiveStatusMessage('Đã dừng ghi âm (chưa có transcript)')
-          setLiveAnalysis(null)
-          setLiveAnalysisMetadata(buildLiveAnalysisMetadata(activeMeetingId, 'NO_ANALYSIS', {
-            errorCode: 'NO_TRANSCRIPT_AFTER_FINALIZE',
-            transcriptRows: 0,
-            finalized: true,
-          }))
-          setLiveAnalysisStatus('pending')
-          setLiveAnalysisError(null)
-        }
-        if (partialState && !noTranscriptAfterFinalize) {
-          setLivePartialWarning('Transcript có thể chưa đầy đủ')
-          console.info('[Realtime] TRANSCRIPT_PARTIAL_WARNING', {
-            meetingId: activeMeetingId,
-            fragments: hydratedSegments.length,
-          })
-        }
-      } else {
-        if (!isCurrentRealtimeSessionToken(sessionToken)) {
-          return
-        }
-        setHydratedLiveTranscriptSegments([])
-      }
-
-      // Close connection gracefully
-      if (
-        isCurrentLiveRecordingSession(
-          sessionId,
-          completedMeetingId,
-          liveRecordingSessionIdRef.current,
-          liveMeetingIdRef.current,
-        ) && realtimeStream?.disconnect
-      ) {
-        realtimeStream.disconnect(sessionToken)
-      }
-
-      if (noTranscriptAfterFinalize) {
-        setLiveLifecycleState('stopped_no_analysis')
-      } else {
-        setLiveLifecycleState('stopped')
-      }
-      setLiveError(null)
-      if (!noTranscriptAfterFinalize) {
-        setLiveStatusMessage('Đã dừng ghi âm')
-      }
-      if (completedMeetingId !== null && isCurrentRealtimeSessionToken(sessionToken) && !noTranscriptAfterFinalize) {
-        startRealtimeAnalysisPolling(completedMeetingId, sessionId, sessionToken)
-      }
-
-      console.info('[Realtime] REALTIME_CLEANUP_DONE', {
-        meetingId: liveMeetingIdRef.current,
-        sessionId,
-      })
-      audioRecorder.cleanupRecordingResources()
-    } catch (err) {
-      if (!isCurrentRealtimeSessionToken(sessionToken)) {
-        console.info('[Realtime] STALE_HYDRATION_IGNORED', {
-          meetingId: completedMeetingId,
-          sessionId,
-        })
-        return
-      }
-
-      console.error('Error during finalization after recording stop:', err)
-      setHydratedLiveTranscriptSegments([])
-      setLiveLifecycleState('error')
-    }
   }
 
   if (googleCallbackState === 'processing' || googleCallbackState === 'linking') {
@@ -3816,6 +2406,10 @@ export default function App() {
         onOpenMeeting={handleOpenMeetingFromDashboard}
         globalMeetingSearch={globalMeetingSearch}
         onGlobalMeetingSearchChange={setGlobalMeetingSearch}
+        globalStatusFilter={historyStatusFilter}
+        onGlobalStatusFilterChange={setHistoryStatusFilter}
+        globalLanguageFilter={historyLanguageFilter}
+        onGlobalLanguageFilterChange={setHistoryLanguageFilter}
         onGlobalMeetingSearchSubmit={(query) => {
           setGlobalMeetingSearch(query)
           navigateFeatureScene('files')

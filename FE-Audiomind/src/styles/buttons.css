@@ -1,0 +1,95 @@
+/* Unified button system — canonical: .btn .btn--primary | --secondary | --danger | --block | --compact */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  min-height: var(--btn-height);
+  padding: 0 var(--btn-padding-x);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border-strong);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  font-family: inherit;
+  line-height: 1.2;
+  text-decoration: none;
+  cursor: pointer;
+  transition:
+    background var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out),
+    opacity var(--duration-fast) var(--ease-out),
+    box-shadow var(--duration-fast) var(--ease-out);
+}
+
+.btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.btn--primary {
+  border-color: transparent;
+  background: var(--color-brand-600);
+  color: #fff;
+}
+
+.btn--primary:hover:not(:disabled) {
+  background: var(--color-brand-700);
+}
+
+.btn--secondary {
+  background: var(--color-surface);
+  color: var(--color-ink);
+}
+
+.btn--secondary:hover:not(:disabled) {
+  background: var(--color-surface-sunken);
+  border-color: var(--color-brand-500);
+}
+
+.btn--danger {
+  color: var(--color-ink);
+}
+
+.btn--danger:hover:not(:disabled) {
+  border-color: var(--color-danger);
+  background: var(--color-danger-bg);
+  color: var(--color-danger);
+}
+
+.btn--block {
+  width: 100%;
+}
+
+.btn--compact {
+  min-height: 34px;
+  padding: 8px 14px;
+  border-radius: 10px;
+  font-size: var(--text-sm);
+}
+
+/* Studio theme overrides */
+.app--studio .btn--primary,
+.app--studio .upload-panel__submit,
+.app--studio .studio-auth__submit {
+  background: linear-gradient(135deg, var(--studio-accent), #5b4fd6);
+  border: none;
+  color: #fff;
+  box-shadow: 0 8px 24px rgba(124, 108, 255, 0.35);
+}
+
+.app--studio .btn--primary:hover:not(:disabled) {
+  box-shadow: 0 12px 28px rgba(124, 108, 255, 0.5);
+}
+
+.app--studio .btn--secondary {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: var(--studio-border);
+  color: var(--studio-text);
+}
+
+.app--studio .btn--secondary:hover:not(:disabled) {
+  border-color: var(--studio-accent);
+  background: rgba(124, 108, 255, 0.12);
+}

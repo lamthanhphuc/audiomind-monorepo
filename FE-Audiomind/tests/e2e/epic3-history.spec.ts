@@ -126,6 +126,8 @@ test.describe('Epic3 meeting history', () => {
     await expect(firstMeeting).toBeVisible({ timeout: 120_000 })
     await firstMeeting.click()
 
+    await page.getByRole('tab', { name: 'Tìm trong transcript' }).click()
+
     const searchInput = page.locator('[data-testid="transcript-evidence-search-input"]')
     await searchInput.scrollIntoViewIfNeeded()
     await expect(searchInput).toBeVisible({ timeout: 120_000 })

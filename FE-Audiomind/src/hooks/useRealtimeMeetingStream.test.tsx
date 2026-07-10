@@ -1,5 +1,5 @@
 import { createRoot } from 'react-dom/client'
-import { act } from 'react-dom/test-utils'
+import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
     mergeTranscriptSegments,
@@ -125,7 +125,7 @@ describe('useRealtimeMeetingStream', () => {
   })
 
   it('connects, sends audio chunks and parses transcript events', async () => {
-    const infoSpy = vi.spyOn(console, 'info')
+    const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => {})
     expect(MockWebSocket.instances).toHaveLength(1)
     const socket = MockWebSocket.instances[0]
 
@@ -1765,3 +1765,4 @@ describe('useRealtimeMeetingStream', () => {
     secondContainer?.remove()
   })
 })
+

@@ -40,7 +40,7 @@ export default function FeatureMindmap({
         </div>
         {hasMeetings ? (
           <label className="feature-mindmap-scene__picker" data-testid="mindmap-meeting-picker">
-            <span>Meeting</span>
+            <span>Cuộc họp</span>
             <select
               value={selectedMeetingId ?? ''}
               onChange={(event) => {

@@ -23,7 +23,7 @@ export const RealtimeTranscript: React.FC<RealtimeTranscriptProps> = ({
   onPauseToggle,
   highlightKeywords = [],
   maxHeight = '400px',
-  emptyMessage = 'Waiting for transcript...',
+  emptyMessage = 'Đang chờ transcript...',
   domainMode = null,
 }) => {
   const lexiconTerms = useDomainLexiconTerms(domainMode)
@@ -76,8 +76,14 @@ export const RealtimeTranscript: React.FC<RealtimeTranscriptProps> = ({
 
   if (displaySegments.length === 0) {
     return (
-      <div className="realtime-transcript-empty">
-        <p>{emptyMessage}</p>
+      <div className="realtime-transcript">
+        <div
+          className="realtime-transcript-empty transcript-container"
+          style={cssVars({ '--scroll-max-height': maxHeight })}
+          data-testid="realtime-transcript-scroll"
+        >
+          <p>{emptyMessage}</p>
+        </div>
       </div>
     )
   }
@@ -89,18 +95,19 @@ export const RealtimeTranscript: React.FC<RealtimeTranscriptProps> = ({
           <button
             className="pause-button"
             onClick={() => onPauseToggle(!isPaused)}
-            title={isPaused ? 'Resume' : 'Pause'}
+            title={isPaused ? 'Tiếp tục tự cuộn' : 'Tạm dừng tự cuộn'}
           >
             {isPaused ? '▶' : '⏸'}
           </button>
         )}
-        <span className="segment-count">{displaySegments.length} segments</span>
+        <span className="segment-count">{displaySegments.length} đoạn</span>
       </div>
 
       <div
         className="transcript-container"
         style={cssVars({ '--scroll-max-height': maxHeight })}
         ref={scrollContainerRef}
+        data-testid="realtime-transcript-scroll"
       >
         {displaySegments.map((segment) => {
           const startSeconds = segment.start ?? segment.timestamp ?? 0

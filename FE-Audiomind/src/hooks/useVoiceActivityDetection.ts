@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { realtimeInfo } from '../utils/realtimeTelemetry'
 
 export type VoiceActivityState = 'listening' | 'silent_paused' | 'listening_resumed'
 export type MicSensitivityMode = 'low' | 'normal' | 'high'
@@ -224,7 +225,7 @@ export const useVoiceActivityDetection = ({
             speechThreshold,
           )
           calibrationSamplesRef.current = []
-          console.info('[Realtime] VAD_CALIBRATED', {
+          realtimeInfo('[Realtime] VAD_CALIBRATED', {
             noiseFloor: Number(thresholdsRef.current.noiseFloor.toFixed(4)),
             speechStartThreshold: Number(thresholdsRef.current.speechStartThreshold.toFixed(4)),
             speechContinueThreshold: Number(thresholdsRef.current.speechContinueThreshold.toFixed(4)),
@@ -250,7 +251,7 @@ export const useVoiceActivityDetection = ({
             silenceStartMsRef.current = null
             speechStartMsRef.current = null
             transitionTo('listening_resumed')
-            console.info('[Realtime] VAD_RESUMED', {
+            realtimeInfo('[Realtime] VAD_RESUMED', {
               resumeMinSpeechMs: resumeDurationMs,
               sensitivityMode: normalizedSensitivityMode,
             })
@@ -292,7 +293,7 @@ export const useVoiceActivityDetection = ({
             resumeLabelTimerRef.current = null
           }
           transitionTo('silent_paused')
-          console.info('[Realtime] VAD_PAUSED', {
+          realtimeInfo('[Realtime] VAD_PAUSED', {
             silenceDurationMs,
             sensitivityMode: normalizedSensitivityMode,
           })

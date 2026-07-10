@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { createScheduledMeeting, getGoogleStatus, GoogleIntegrationError, hasGoogleCalendarScope, isGoogleLinkedWithoutCalendarGrant, needsGoogleIntegrationGrant, missingGoogleLinkScopes, pollGoogleCalendarStatus, redirectToFullGoogleLink, resolveGoogleConnectionState, GOOGLE_CALENDAR_EVENTS_SCOPE, GOOGLE_GMAIL_SEND_SCOPE, FULL_GOOGLE_LINK_SCOPES } from './googleIntegration'
+import { createScheduledMeeting, getGoogleStatus, GoogleIntegrationError, hasGoogleCalendarScope, isGoogleLinkedWithoutCalendarGrant, needsGoogleIntegrationGrant, missingGoogleLinkScopes, pollGoogleCalendarStatus, redirectToFullGoogleLink, resolveGoogleConnectionState, startGoogleCalendarLink, startGoogleGmailLink, GOOGLE_CALENDAR_EVENTS_SCOPE, GOOGLE_GMAIL_SEND_SCOPE, FULL_GOOGLE_LINK_SCOPES } from './googleIntegration'
 
 describe('googleIntegration service', () => {
   beforeEach(() => {
@@ -101,6 +101,30 @@ describe('googleIntegration service', () => {
       grantedScopes: [...FULL_GOOGLE_LINK_SCOPES],
       missingScopes: [],
     })).toBe(false)
+  })
+
+  it('startGoogleCalendarLink requests only calendar scope', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      authorizationUrl: 'https://accounts.google.com/o/oauth2/v2/auth?scope=calendar',
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+
+    await expect(startGoogleCalendarLink('/studio/integrations')).resolves.toContain('calendar')
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
+      additionalScopes: [GOOGLE_CALENDAR_EVENTS_SCOPE],
+      redirectAfter: '/studio/integrations',
+    })
+  })
+
+  it('startGoogleGmailLink requests only gmail send scope', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      authorizationUrl: 'https://accounts.google.com/o/oauth2/v2/auth?scope=gmail',
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+
+    await expect(startGoogleGmailLink('/studio/integrations')).resolves.toContain('gmail')
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
+      additionalScopes: [GOOGLE_GMAIL_SEND_SCOPE],
+      redirectAfter: '/studio/integrations',
+    })
   })
 
   it('redirectToFullGoogleLink requests calendar and gmail scopes then assigns location', async () => {

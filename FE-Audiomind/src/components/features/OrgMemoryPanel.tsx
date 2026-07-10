@@ -61,7 +61,7 @@ export default function OrgMemoryPanel({ onOpenMeeting }: OrgMemoryPanelProps) {
   return (
     <section className="org-memory-panel" data-testid="org-memory-panel">
       {!hasContent ? (
-        <EmptyState message="Chưa có ghi chú thuật ngữ hoặc speaker đã lưu. Hãy đặt tên speaker và thêm glossary trong cuộc họp." />
+        <EmptyState message="Chưa có ghi chú thuật ngữ hoặc người nói đã lưu. Hãy đặt tên người nói và thêm ghi chú thuật ngữ trong cuộc họp." />
       ) : (
         <div className="org-memory-panel__grid">
           {notes.length > 0 && (
@@ -74,7 +74,7 @@ export default function OrgMemoryPanel({ onOpenMeeting }: OrgMemoryPanelProps) {
                     <span>{note.body.slice(0, 120)}{note.body.length > 120 ? '…' : ''}</span>
                     {note.meetingId != null && onOpenMeeting && (
                       <button type="button" className="org-memory-panel__link" onClick={() => onOpenMeeting(note.meetingId!)}>
-                        Mở meeting
+                        Mở cuộc họp
                       </button>
                     )}
                   </li>
@@ -84,7 +84,7 @@ export default function OrgMemoryPanel({ onOpenMeeting }: OrgMemoryPanelProps) {
           )}
           {speakers.length > 0 && (
             <div>
-              <h3 className="org-memory-panel__title">Speaker quen</h3>
+              <h3 className="org-memory-panel__title">Người nói quen</h3>
               <ul className="org-memory-panel__list">
                 {speakers.map((speaker) => (
                   <li key={speaker.speakerFingerprint}>
@@ -95,7 +95,7 @@ export default function OrgMemoryPanel({ onOpenMeeting }: OrgMemoryPanelProps) {
                     </span>
                     {speaker.lastMeetingId != null && onOpenMeeting && (
                       <button type="button" className="org-memory-panel__link" onClick={() => onOpenMeeting(speaker.lastMeetingId!)}>
-                        Meeting gần nhất
+                        Cuộc họp gần nhất
                       </button>
                     )}
                   </li>

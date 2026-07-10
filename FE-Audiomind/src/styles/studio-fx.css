@@ -155,6 +155,7 @@
 
 /* ─── Page reveal ─── */
 .studio-reveal {
+  opacity: 1;
   animation: studio-fade-up 0.55s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
@@ -208,14 +209,14 @@
   color: var(--studio-text);
 }
 
-.app--studio .btn-primary,
+.app--studio .btn--primary,
 .app--studio .studio-auth__submit,
 .app--studio .upload-panel__submit {
   position: relative;
   overflow: hidden;
 }
 
-.app--studio .btn-primary::after,
+.app--studio .btn--primary::after,
 .app--studio .studio-auth__submit::after {
   content: '';
   position: absolute;
@@ -230,7 +231,7 @@
   transition: transform 0.55s ease;
 }
 
-.app--studio .btn-primary:hover::after,
+.app--studio .btn--primary:hover::after,
 .app--studio .studio-auth__submit:hover::after {
   transform: translateX(120%);
 }
@@ -374,7 +375,7 @@
 
 @keyframes studio-fade-up {
   from {
-    opacity: 0;
+    opacity: 1;
     transform: translateY(14px);
   }
   to {

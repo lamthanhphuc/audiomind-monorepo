@@ -4,15 +4,18 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.example.userservice.entity.GoogleOAuthGrant;
 import com.example.userservice.entity.UserAccount;
+import com.example.userservice.entity.UserIdentity;
 import com.example.userservice.google.GoogleScopes;
 import com.example.userservice.repository.GoogleOAuthGrantRepository;
 import com.example.userservice.repository.UserAccountRepository;
 import com.example.userservice.repository.UserIdentityRepository;
+import java.net.URI;
 import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
@@ -21,6 +24,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.web.util.UriComponentsBuilder;
 
 @ExtendWith(MockitoExtension.class)
 class GoogleGrantServiceTest {
@@ -52,6 +56,61 @@ class GoogleGrantServiceTest {
                 grantRepository,
                 userRepository,
                 identityRepository);
+    }
+
+    @Test
+    void startLink_buildsAuthorizationUrlForRequestedScopesOnly() {
+        GoogleOAuthProperties linkProperties = configuredGrantProperties();
+        GoogleGrantService linkService = new GoogleGrantService(
+                linkProperties,
+                redisStore,
+                oauthClient,
+                tokenCipher,
+                grantRepository,
+                userRepository,
+                identityRepository);
+
+        UserAccount user = new UserAccount();
+        user.setId(9L);
+        when(userRepository.findById(9L)).thenReturn(Optional.of(user));
+        when(identityRepository.findByUserIdAndProviderAndUnlinkedAtIsNull(9L, "google"))
+                .thenReturn(Optional.of(new UserIdentity()));
+
+        URI uri = linkService.startLink(9L, List.of(GoogleScopes.CALENDAR_EVENTS), "/studio/integrations");
+        var params = UriComponentsBuilder.fromUri(uri).build().getQueryParams();
+
+        assertThat(params.getFirst("scope"))
+                .contains(GoogleScopes.CALENDAR_EVENTS)
+                .doesNotContain(GoogleScopes.GMAIL_SEND);
+        assertThat(params.getFirst("redirect_uri")).isEqualTo("http://localhost:8083/auth/google/link/callback");
+        assertThat(params.getFirst("access_type")).isEqualTo("offline");
+        verify(redisStore).saveLinkState(anyString(), anyString(), eq(9L), eq(List.of(GoogleScopes.CALENDAR_EVENTS)), eq("/studio/integrations"));
+    }
+
+    @Test
+    void startLink_canRequestGmailScopeOnly() {
+        GoogleOAuthProperties linkProperties = configuredGrantProperties();
+        GoogleGrantService linkService = new GoogleGrantService(
+                linkProperties,
+                redisStore,
+                oauthClient,
+                tokenCipher,
+                grantRepository,
+                userRepository,
+                identityRepository);
+
+        UserAccount user = new UserAccount();
+        user.setId(10L);
+        when(userRepository.findById(10L)).thenReturn(Optional.of(user));
+        when(identityRepository.findByUserIdAndProviderAndUnlinkedAtIsNull(10L, "google"))
+                .thenReturn(Optional.empty());
+
+        URI uri = linkService.startLink(10L, List.of(GoogleScopes.GMAIL_SEND), "/studio/integrations");
+        var params = UriComponentsBuilder.fromUri(uri).build().getQueryParams();
+
+        assertThat(params.getFirst("scope"))
+                .contains(GoogleScopes.GMAIL_SEND)
+                .doesNotContain(GoogleScopes.CALENDAR_EVENTS);
     }
 
     @Test
@@ -121,5 +180,19 @@ class GoogleGrantServiceTest {
         assertThat(captor.getValue().getGrantedScopes())
                 .contains(GoogleScopes.GMAIL_SEND)
                 .doesNotContain(GoogleScopes.CALENDAR_EVENTS);
+    }
+
+    private static GoogleOAuthProperties configuredGrantProperties() {
+        GoogleOAuthProperties properties = new GoogleOAuthProperties();
+        properties.setEnabled(true);
+        properties.setClientId("client-id");
+        properties.setClientSecret("client-secret");
+        properties.setRedirectUri("http://localhost:8083/auth/google/callback");
+        properties.setLinkRedirectUri("http://localhost:8083/auth/google/link/callback");
+        properties.setFrontendBaseUrl("http://localhost:8080");
+        properties.setTokenEncryptionKey("01234567890123456789012345678901");
+        properties.setTokenEncryptionKid("v1");
+        properties.setInternalServiceToken("internal-token");
+        return properties;
     }
 }

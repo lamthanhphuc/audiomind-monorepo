@@ -52,9 +52,14 @@
   align-items: center;
   justify-content: center;
   min-height: 220px;
+  overflow-y: auto;
   color: var(--color-ink-subtle);
   font-style: italic;
   background: linear-gradient(180deg, var(--color-brand-50) 0%, var(--color-surface) 100%);
+}
+
+.realtime-transcript-empty p {
+  margin: 0;
 }
 
 .transcript-segment {

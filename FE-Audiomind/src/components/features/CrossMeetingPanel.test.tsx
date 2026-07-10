@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { createRoot, type Root } from 'react-dom/client'
-import { act } from 'react-dom/test-utils'
+import { act } from 'react'
 import CrossMeetingPanel from './CrossMeetingPanel'
 
 vi.mock('../../services/api', () => ({
@@ -61,3 +61,4 @@ describe('CrossMeetingPanel', () => {
     expect(container.textContent).toContain('Sprint planning')
   })
 })
+

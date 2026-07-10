@@ -17,6 +17,7 @@ import {
   createTabAudioPipelineMonitor,
   type TabAudioPipelineMonitor,
 } from '../utils/tabAudioPipeline'
+import { realtimeWarn } from '../utils/realtimeTelemetry'
 
 const RECORDER_MIME_TYPE = 'audio/webm; codecs=opus'
 
@@ -138,7 +139,7 @@ export const useDualAudioRecorder = (
         sessionId,
         onTrackEnded: () => notifyTabTrackEnded(),
         onTrackMuted: () => {
-          console.warn('[Realtime] TAB_AUDIO_TRACK_MUTED_DIAGNOSTIC', {
+          realtimeWarn('[Realtime] TAB_AUDIO_TRACK_MUTED_DIAGNOSTIC', {
             meetingId: options.diagnosticMeetingId ?? null,
             sessionId,
           })

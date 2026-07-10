@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { createRoot } from 'react-dom/client'
-import { act } from 'react-dom/test-utils'
+import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { TranscriptSegment } from '../../hooks/useRealtimeMeetingStream'
 import { TranscriptDisplay } from './TranscriptDisplay'
@@ -90,3 +90,4 @@ describe('TranscriptDisplay lexicon highlighting', () => {
     expect(highlights).not.toContain('hợp đồng')
   })
 })
+

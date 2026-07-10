@@ -219,6 +219,7 @@ export default function RealtimeDashboardScene({
   sttQuotaPercent,
 }: RealtimeDashboardSceneProps) {
   const [highlightMeetCapture, setHighlightMeetCapture] = useState(false)
+  const [advancedSettingsOpen, setAdvancedSettingsOpen] = useState(liveLifecycleState === 'recording')
 
   useEffect(() => {
     try {
@@ -263,7 +264,7 @@ export default function RealtimeDashboardScene({
   const liveAnalysisEmptyMessage = isNoTranscriptFinalized
     ? 'Không có nội dung để phân tích'
     : liveAnalysisStatus === 'pending'
-    ? 'Phân tích chưa sẵn sàng. Hãy thử phân tích lại khi transcript đã hoàn tất.'
+    ? 'Phân tích chưa sẵn sàng. Hãy thử lại khi bản ghi đã hoàn tất.'
     : liveAnalysisStatus === 'failed'
       ? (liveAnalysisMetadata?.transcriptSaved || liveAnalysisMetadata?.retryable
         ? 'Transcript đã lưu. Phân tích AI tạm thời chưa sẵn sàng.'
@@ -319,11 +320,26 @@ export default function RealtimeDashboardScene({
                 </span>
                 <span className="realtime-transcript-chip meta-pill" data-testid="realtime-transcript-status">
                   {liveTranscriptSegments.length > 0
-                    ? `${liveTranscriptSegments.length} đoạn transcript`
-                    : 'Chưa có transcript live'}
+                    ? `${liveTranscriptSegments.length} đoạn bản ghi`
+                    : 'Chưa có bản ghi trực tiếp'}
                 </span>
                 <p className="realtime-panel__status">
                   {liveStatusMessage || connectionView.detail || 'Sẵn sàng tạo meeting và bắt đầu ghi âm'}
+                </p>
+              </div>
+            </div>
+            {liveMeetingId && (
+              <span className="realtime-panel__meeting-badge">Cuộc họp #{liveMeetingId}</span>
+            )}
+          </div>
+
+          <div className="realtime-workflow-grid">
+            <section className="ui-section ui-section--subtle realtime-stage realtime-stage--prepare">
+              <div>
+                <p className="ui-section__eyebrow">1. Chuẩn bị ghi</p>
+                <h3 className="ui-section__title">Nguồn âm thanh và ngữ cảnh</h3>
+                <p className="ui-section__description">
+                  Chọn nguồn ghi, ngôn ngữ và lĩnh vực trước khi bắt đầu.
                 </p>
               </div>
               <div className="realtime-panel__settings">
@@ -340,106 +356,127 @@ export default function RealtimeDashboardScene({
                     onChange={onRecordingSourceChange}
                   />
                 </div>
-                <label className="upload-panel__label">
-                  <span className="upload-panel__label-text">Ngôn ngữ</span>
-                  <select
-                    className="upload-panel__select"
-                    value={selectedRealtimeLanguage}
-                    onChange={(event) => onRealtimeLanguageChange(event.target.value)}
-                    disabled={isRealtimeLanguageSelectorDisabled}
-                  >
-                    {REALTIME_LANGUAGE_OPTIONS.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <DomainModeSelector
-                  id="realtime-domain-mode"
-                  value={selectedDomainMode}
-                  onChange={onDomainModeChange}
-                  disabled={isRealtimeLanguageSelectorDisabled}
-                  testId="realtime-domain-mode-select"
-                  compact
-                />
-                <label className="upload-panel__label">
-                  <span className="upload-panel__label-text">Chế độ người nói</span>
-                  <select
-                    className="upload-panel__select"
-                    value={selectedRealtimeSpeakerMode}
-                    onChange={(event) => onRealtimeSpeakerModeChange(event.target.value)}
-                    disabled={isRealtimeSpeakerModeSelectorDisabled}
-                  >
-                    {REALTIME_SPEAKER_MODE_OPTIONS.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="upload-panel__label">
-                  <span className="upload-panel__label-text">Độ nhạy mic</span>
-                  <select
-                    className="upload-panel__select"
-                    value={selectedMicSensitivity}
-                    onChange={(event) => onMicSensitivityChange(event.target.value)}
-                    disabled={micSensitivityDisabled}
-                  >
-                    {REALTIME_MIC_SENSITIVITY_OPTIONS.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                  {micSensitivityHelper && (
-                    <span className="realtime-panel__hint">{micSensitivityHelper}</span>
-                  )}
-                </label>
-                {noiseSuppressionToggleEnabled && !isTabOnlySource && (
-                  <label className="realtime-toggle">
-                    <span className="upload-panel__label-text">Khử nhiễu microphone</span>
-                    <span className="realtime-toggle__control">
-                      <input
-                        type="checkbox"
-                        checked={noiseSuppressionEnabled}
-                        onChange={(event) => onNoiseSuppressionChange(event.target.checked)}
-                        disabled={noiseSuppressionDisabled}
-                      />
-                      <span>{noiseSuppressionEnabled ? 'On' : 'Off'}</span>
-                    </span>
-                    <span className="realtime-panel__hint">{noiseSuppressionHelper}</span>
+                <div className="ui-field-grid">
+                  <label className="upload-panel__label">
+                    <span className="upload-panel__label-text">Ngôn ngữ</span>
+                    <select
+                      className="upload-panel__select"
+                      value={selectedRealtimeLanguage}
+                      onChange={(event) => onRealtimeLanguageChange(event.target.value)}
+                      disabled={isRealtimeLanguageSelectorDisabled}
+                    >
+                      {REALTIME_LANGUAGE_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
                   </label>
+                  <DomainModeSelector
+                    id="realtime-domain-mode"
+                    value={selectedDomainMode}
+                    onChange={onDomainModeChange}
+                    disabled={isRealtimeLanguageSelectorDisabled}
+                    testId="realtime-domain-mode-select"
+                    compact
+                  />
+                </div>
+                <button
+                  type="button"
+                  className="btn btn--secondary"
+                  aria-expanded={advancedSettingsOpen}
+                  onClick={() => setAdvancedSettingsOpen((current) => !current)}
+                  data-testid="realtime-advanced-settings-toggle"
+                >
+                  {advancedSettingsOpen ? 'Ẩn tùy chỉnh nâng cao' : 'Mở tùy chỉnh nâng cao'}
+                </button>
+                {advancedSettingsOpen && (
+                  <div className="realtime-advanced-settings" data-testid="realtime-advanced-settings">
+                    <label className="upload-panel__label">
+                      <span className="upload-panel__label-text">Chế độ người nói</span>
+                      <select
+                        className="upload-panel__select"
+                        value={selectedRealtimeSpeakerMode}
+                        onChange={(event) => onRealtimeSpeakerModeChange(event.target.value)}
+                        disabled={isRealtimeSpeakerModeSelectorDisabled}
+                      >
+                        {REALTIME_SPEAKER_MODE_OPTIONS.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="upload-panel__label">
+                      <span className="upload-panel__label-text">Độ nhạy mic</span>
+                      <select
+                        className="upload-panel__select"
+                        value={selectedMicSensitivity}
+                        onChange={(event) => onMicSensitivityChange(event.target.value)}
+                        disabled={micSensitivityDisabled}
+                      >
+                        {REALTIME_MIC_SENSITIVITY_OPTIONS.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                      {micSensitivityHelper && (
+                        <span className="realtime-panel__hint">{micSensitivityHelper}</span>
+                      )}
+                    </label>
+                    {noiseSuppressionToggleEnabled && !isTabOnlySource && (
+                      <label className="realtime-toggle">
+                        <span className="upload-panel__label-text">Khử nhiễu microphone</span>
+                        <span className="realtime-toggle__control">
+                          <input
+                            type="checkbox"
+                            checked={noiseSuppressionEnabled}
+                            onChange={(event) => onNoiseSuppressionChange(event.target.checked)}
+                            disabled={noiseSuppressionDisabled}
+                          />
+                          <span>{noiseSuppressionEnabled ? 'Bật' : 'Tắt'}</span>
+                        </span>
+                        <span className="realtime-panel__hint">{noiseSuppressionHelper}</span>
+                      </label>
+                    )}
+                  </div>
                 )}
               </div>
-            </div>
-            {liveMeetingId && (
-              <span className="realtime-panel__meeting-badge">Cuộc họp #{liveMeetingId}</span>
-            )}
-          </div>
+            </section>
 
-          <div className="realtime-panel__recorder-wrap">
-            {dualStreamActive && dualStreamBackendEnabled === false && (
-              <div className="warning-banner" role="alert">
-                Dual-stream chưa bật trên server. Ghi âm sẽ dùng chế độ một luồng cho đến khi admin bật REALTIME_DUAL_STREAM_TAB_MIC_ENABLED.
+            <section className="ui-section ui-section--subtle realtime-stage realtime-stage--recording">
+              <div>
+                <p className="ui-section__eyebrow">2. Đang ghi</p>
+                <h3 className="ui-section__title">Điều khiển phiên ghi</h3>
+                <p className="ui-section__description">
+                  Bắt đầu, dừng và theo dõi trạng thái realtime tại một nơi.
+                </p>
               </div>
-            )}
-            <DualStreamQuotaInfoBanner
-              visible={dualStreamActive && selectedRecordingSource === 'browser_tab_with_mic'}
-              isRecording={liveLifecycleState === 'recording'}
-              sttPercent={sttQuotaPercent}
-              onNavigateBilling={onNavigateBilling}
-            />
-            <AudioRecorderButton
-              recorder={audioRecorder}
-              lifecycleState={recorderLifecycleState}
-              recordingSource={selectedRecordingSource}
-              onBeforeStartRecording={onBeforeStartRecording}
-              onChunkReady={onChunkReady}
-              onRecordingComplete={onRecordingComplete}
-              onStopRequested={onStopRequested}
-              gracefulStopRef={gracefulStopRef}
-            />
+              <div className="realtime-panel__recorder-wrap">
+                {dualStreamActive && dualStreamBackendEnabled === false && (
+                  <div className="warning-banner" role="alert">
+                    Chế độ tách riêng âm thanh tab và micro chưa sẵn sàng. Phiên này sẽ ghi bằng một luồng âm thanh.
+                  </div>
+                )}
+                <DualStreamQuotaInfoBanner
+                  visible={dualStreamActive && selectedRecordingSource === 'browser_tab_with_mic'}
+                  isRecording={liveLifecycleState === 'recording'}
+                  sttPercent={sttQuotaPercent}
+                  onNavigateBilling={onNavigateBilling}
+                />
+                <AudioRecorderButton
+                  recorder={audioRecorder}
+                  lifecycleState={recorderLifecycleState}
+                  recordingSource={selectedRecordingSource}
+                  onBeforeStartRecording={onBeforeStartRecording}
+                  onChunkReady={onChunkReady}
+                  onRecordingComplete={onRecordingComplete}
+                  onStopRequested={onStopRequested}
+                  gracefulStopRef={gracefulStopRef}
+                />
+              </div>
+            </section>
           </div>
         </div>
 
@@ -468,12 +505,17 @@ export default function RealtimeDashboardScene({
           </div>
         )}
 
-        <div className="realtime-panel__grid">
+        <section className="ui-section realtime-stage realtime-stage--live">
+          <div>
+            <p className="ui-section__eyebrow">Bản ghi trực tiếp</p>
+            <h3 className="ui-section__title">Nội dung đang ghi</h3>
+          </div>
+        <div className="realtime-panel__grid realtime-panel__grid--transcript">
           <RealtimeTranscript
             segments={liveTranscriptSegments}
             isPaused={liveLifecycleState === 'silent_paused'}
             highlightKeywords={liveTranscriptKeywords}
-            emptyMessage={isNoTranscriptFinalized ? 'Chưa có transcript' : undefined}
+            emptyMessage={isNoTranscriptFinalized ? 'Chưa có bản ghi' : undefined}
             maxHeight="620px"
             domainMode={liveAnalysis?.domainMode}
           />
@@ -494,9 +536,14 @@ export default function RealtimeDashboardScene({
             </div>
           </aside>
         </div>
+        </section>
 
         {showLiveAnalysis && (
-          <div className="realtime-analysis-section">
+          <section className="ui-section realtime-analysis-section">
+            <div>
+              <p className="ui-section__eyebrow">3. Sau khi ghi</p>
+              <h3 className="ui-section__title">Phân tích realtime</h3>
+            </div>
             <AnalysisStatusPanel
               metadata={liveAnalysisMetadata ?? liveAnalysis}
               evidenceMatches={liveEvidenceMatches}
@@ -515,7 +562,7 @@ export default function RealtimeDashboardScene({
               summaryFallback="(đang chờ phân tích)"
               testId="e2e-live-analysis"
             />
-          </div>
+          </section>
         )}
       </section>
     </div>

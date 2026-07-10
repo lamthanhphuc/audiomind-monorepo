@@ -6,6 +6,7 @@ import {
   type RecordingSource,
   isBrowserTabRecordingSource,
 } from '../../constants/recordingSource'
+import { realtimeError, realtimeInfo } from '../../utils/realtimeTelemetry'
 import './AudioRecorderButton.css'
 
 type RecorderLifecycleState =
@@ -62,7 +63,7 @@ export function AudioRecorderButton({
     chunkEnqueueSeqRef.current += 1
     const seq = chunkEnqueueSeqRef.current
     if (postStop || AUDIO_DEBUG_ENABLED || import.meta.env.DEV) {
-      console.info('[Realtime] REALTIME_FINAL_CHUNK_ENQUEUED', {
+      realtimeInfo('[Realtime] REALTIME_FINAL_CHUNK_ENQUEUED', {
         sessionId,
         seq,
         size: chunk.size,
@@ -247,7 +248,7 @@ export function AudioRecorderButton({
       chunkDispatchEnabledRef.current = true
       setChunkDispatchRevision((revision) => revision + 1)
     } catch (error) {
-      console.error('[AudioRecorderButton] Failed to start recording:', error)
+      realtimeError('[AudioRecorderButton] Failed to start recording:', error)
       recorder.abortRecording()
     } finally {
       setIsBusy(false)

@@ -1,5 +1,5 @@
 import { createRoot } from 'react-dom/client'
-import { act } from 'react-dom/test-utils'
+import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as api from '../services/api'
 import App from './App'
@@ -12,6 +12,14 @@ const baseMeeting = {
   language: 'vi',
   status: 'completed',
 }
+
+const mockMeetingListPage = (items: typeof baseMeeting[]) => ({
+  items,
+  total: items.length,
+  page: 1,
+  pageSize: 10,
+  totalPages: items.length > 0 ? 1 : 0,
+})
 
 const flush = async () => {
   await act(async () => {
@@ -31,6 +39,8 @@ describe('App history analysis navigation', () => {
     localStorage.setItem('audiomind.access_token', 'dummy-token')
 
     vi.spyOn(api, 'listMeetingsWithParams').mockResolvedValue([baseMeeting])
+    vi.spyOn(api, 'listMeetingsPage').mockResolvedValue(mockMeetingListPage([baseMeeting]))
+    vi.spyOn(api, 'getMeetingDetail').mockResolvedValue(baseMeeting)
     vi.spyOn(api, 'listMeetingResultScopes').mockResolvedValue([{ scopeKind: 'legacy' }])
     vi.spyOn(api, 'resolveMeetingResultScope').mockImplementation(async (meetingId) => ({
       scopeKind: 'legacy',
@@ -89,18 +99,18 @@ describe('App history analysis navigation', () => {
     })
     await flush()
 
-    const historyMenu = Array.from(container.querySelectorAll('li')).find((item) => item.textContent?.includes('Lịch sử meeting'))
+    const historyMenu = container.querySelector('[data-testid="dashboard-nav-history"]') as HTMLButtonElement | null
     expect(historyMenu).toBeTruthy()
 
     await act(async () => {
       historyMenu?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
     await flush()
+    await flush()
 
     expect(container.textContent).toContain('Lịch sử cuộc họp')
 
-    const meetingButton = Array.from(container.querySelectorAll('[data-testid="meeting-list"] button'))
-      .find((item) => item.textContent?.includes('#7')) as HTMLButtonElement | undefined
+    const meetingButton = container.querySelector('[data-testid="meeting-list"] button') as HTMLButtonElement | null
     expect(meetingButton).toBeTruthy()
 
     await act(async () => {
@@ -131,3 +141,4 @@ describe('App history analysis navigation', () => {
     expect(container.querySelector('[data-testid="meeting-list"]')).toBeTruthy()
   })
 })
+

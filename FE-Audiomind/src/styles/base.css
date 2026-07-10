@@ -17,9 +17,9 @@ body {
   line-height: 1.5;
   color: var(--color-ink);
   background:
-    radial-gradient(ellipse 80% 50% at 10% -10%, rgba(99, 102, 241, 0.18), transparent 55%),
-    radial-gradient(ellipse 60% 40% at 100% 0%, rgba(139, 92, 246, 0.12), transparent 50%),
-    linear-gradient(180deg, #f8fafc 0%, #eef2ff 45%, #f1f5f9 100%);
+    radial-gradient(ellipse 78% 48% at 12% -12%, rgba(99, 102, 241, 0.1), transparent 58%),
+    radial-gradient(ellipse 55% 35% at 100% 0%, rgba(139, 92, 246, 0.08), transparent 52%),
+    linear-gradient(180deg, #f9fbff 0%, #f3f6ff 45%, #f7f9fc 100%);
 }
 
 .sr-only {

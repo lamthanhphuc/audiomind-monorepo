@@ -98,7 +98,7 @@ export default function SpeakerNamingPanel({ meetingId, transcriptSegments, onPr
       )
       setDrafts(nextDrafts)
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : 'Không tải được speaker profiles')
+      setError(loadError instanceof Error ? loadError.message : 'Không tải được hồ sơ người nói')
       setDrafts(speakerKeys.map((speakerKey) => ({ speakerKey, displayName: '' })))
     } finally {
       setLoading(false)
@@ -138,7 +138,7 @@ export default function SpeakerNamingPanel({ meetingId, transcriptSegments, onPr
       setSavedHint('Đã lưu tên người nói cho cuộc họp này.')
       window.setTimeout(() => setSavedHint(''), 2500)
     } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : 'Không lưu được speaker profiles')
+      setError(saveError instanceof Error ? saveError.message : 'Không lưu được hồ sơ người nói')
     } finally {
       setSaving(false)
     }
@@ -154,12 +154,12 @@ export default function SpeakerNamingPanel({ meetingId, transcriptSegments, onPr
         <div>
           <h3>Đặt tên người nói</h3>
           <p className="speaker-naming-panel__subtitle">
-            Đổi SPEAKER_1 thành tên thật. Gợi ý từ lịch sử rename trước đó.
+            Đổi SPEAKER_1 thành tên thật. Gợi ý từ lịch sử đặt tên trước đó.
           </p>
         </div>
         <button
           type="button"
-          className="secondary-cta"
+          className="btn btn--secondary"
           onClick={() => void handleSave()}
           disabled={saving || loading}
           data-testid="speaker-naming-save"
@@ -168,13 +168,13 @@ export default function SpeakerNamingPanel({ meetingId, transcriptSegments, onPr
         </button>
       </header>
 
-      {loading && <p className="speaker-naming-panel__hint">Đang tải speaker…</p>}
+      {loading && <p className="speaker-naming-panel__hint">Đang tải người nói…</p>}
       {error && <p className="speaker-naming-panel__error" role="alert">{error}</p>}
       {savedHint && <p className="speaker-naming-panel__hint">{savedHint}</p>}
 
       {knownSpeakers.length > 0 && (
         <div className="speaker-naming-panel__memory" data-testid="speaker-memory-suggestions">
-          <p className="speaker-naming-panel__memory-title">Speaker quen từ các cuộc họp trước</p>
+          <p className="speaker-naming-panel__memory-title">Người nói quen từ các cuộc họp trước</p>
           <div className="speaker-naming-panel__memory-chips">
             {knownSpeakers.map((speaker) => (
               <button
@@ -197,7 +197,7 @@ export default function SpeakerNamingPanel({ meetingId, transcriptSegments, onPr
       )}
 
       {drafts.length === 0 && !loading ? (
-        <p className="speaker-naming-panel__empty">Chưa phát hiện speaker trong transcript.</p>
+        <p className="speaker-naming-panel__empty">Chưa phát hiện người nói trong transcript.</p>
       ) : (
         <ul className="speaker-naming-panel__list">
           {drafts.map((draft) => (

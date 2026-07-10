@@ -46,10 +46,8 @@ export default function MeetingAudioPlayer({
     }
     audio.pause()
     audio.removeAttribute('src')
-    try {
+    if (import.meta.env.MODE !== 'test') {
       audio.load()
-    } catch {
-      // jsdom does not implement HTMLMediaElement.load
     }
     setIsPlaying(false)
     setCurrentTime(0)
@@ -58,10 +56,8 @@ export default function MeetingAudioPlayer({
 
   const assignAudioSource = useCallback((audio: HTMLAudioElement, source: string) => {
     audio.src = source
-    try {
+    if (import.meta.env.MODE !== 'test') {
       audio.load()
-    } catch {
-      // jsdom does not implement HTMLMediaElement.load
     }
   }, [])
 

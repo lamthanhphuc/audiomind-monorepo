@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { createRoot } from 'react-dom/client'
-import { act } from 'react-dom/test-utils'
+import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import GlobalMeetingSearch from './GlobalMeetingSearch'
 
@@ -45,3 +45,4 @@ describe('GlobalMeetingSearch', () => {
     expect(input.getAttribute('aria-label')).toBe('Tìm meeting toàn cục')
   })
 })
+

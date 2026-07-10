@@ -99,6 +99,14 @@ export const missingGoogleLinkScopes = (status: GoogleStatus): string[] => {
   return FULL_GOOGLE_LINK_SCOPES.filter((scope) => !status.grantedScopes.includes(scope))
 }
 
+export const missingGoogleCalendarScope = (status: GoogleStatus): boolean => (
+  !hasGoogleCalendarScope(status)
+)
+
+export const missingGoogleGmailScope = (status: GoogleStatus): boolean => (
+  !hasGoogleGmailSendScope(status)
+)
+
 export const hasGoogleCalendarScope = (status: GoogleStatus | null | undefined): boolean => {
   return Boolean(status?.grantedScopes.includes(GOOGLE_CALENDAR_EVENTS_SCOPE))
 }
@@ -120,7 +128,17 @@ export const resolveGoogleConnectionState = (status: GoogleStatus | null | undef
   return 'ready'
 }
 
-/** Same-tab redirect to Google link OAuth with Calendar + Gmail scopes (post-login step). */
+/** Integration OAuth: request only Calendar scope. */
+export const startGoogleCalendarLink = async (
+  redirectAfter = '/studio/integrations',
+): Promise<string> => startGoogleLink([GOOGLE_CALENDAR_EVENTS_SCOPE], redirectAfter)
+
+/** Integration OAuth: request only Gmail send scope. */
+export const startGoogleGmailLink = async (
+  redirectAfter = '/studio/integrations',
+): Promise<string> => startGoogleLink([GOOGLE_GMAIL_SEND_SCOPE], redirectAfter)
+
+/** Same-tab redirect to Google link OAuth with all integration scopes. */
 export const redirectToFullGoogleLink = async (redirectAfter: string): Promise<void> => {
   const authorizationUrl = await startGoogleLink([...FULL_GOOGLE_LINK_SCOPES], redirectAfter)
   window.location.assign(authorizationUrl)

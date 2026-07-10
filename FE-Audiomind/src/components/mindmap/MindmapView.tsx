@@ -181,24 +181,24 @@ export default function MindmapView({
 
             <h2>Sơ đồ mindmap cuộc họp</h2>
 
-            <p>Trực quan hóa từ khóa, thuật ngữ, vấn đề, hành động và grouped plan.</p>
+            <p>Trực quan hóa từ khóa, thuật ngữ, vấn đề và kế hoạch hành động.</p>
 
           </div>
 
           <div className="mindmap-view__actions">
             <button
               type="button"
-              className="secondary-cta"
+              className="btn btn--secondary"
               onClick={() => setViewMode((mode) => (mode === 'flow' ? 'svg' : 'flow'))}
               data-testid="mindmap-view-toggle"
             >
-              {viewMode === 'flow' ? 'Chế độ SVG' : 'Chế độ tương tác'}
+              {viewMode === 'flow' ? 'Bản tĩnh' : 'Bản tương tác'}
             </button>
             <button
 
               type="button"
 
-              className="secondary-cta"
+              className="btn btn--secondary"
 
               disabled={exporting || !analysis}
 
@@ -208,13 +208,13 @@ export default function MindmapView({
 
             >
 
-              {exporting ? 'Đang export…' : 'Export PNG'}
+              {exporting ? 'Đang xuất…' : 'Xuất PNG'}
 
             </button>
 
             {onRefresh && (
 
-              <button type="button" className="secondary-cta" disabled={busy || !meetingId} onClick={() => void onRefresh()}>
+              <button type="button" className="btn btn--secondary" disabled={busy || !meetingId} onClick={() => void onRefresh()}>
 
                 Làm mới dữ liệu
 
@@ -242,23 +242,23 @@ export default function MindmapView({
           <div className="mindmap-view__actions">
             <button
               type="button"
-              className="secondary-cta"
+              className="btn btn--secondary"
               onClick={() => setViewMode((mode) => (mode === 'flow' ? 'svg' : 'flow'))}
               data-testid="mindmap-view-toggle"
             >
-              {viewMode === 'flow' ? 'Chế độ SVG' : 'Chế độ tương tác'}
+              {viewMode === 'flow' ? 'Bản tĩnh' : 'Bản tương tác'}
             </button>
             <button
               type="button"
-              className="secondary-cta"
+              className="btn btn--secondary"
               disabled={exporting || !analysis}
               onClick={() => void handleExportPng()}
               data-testid="mindmap-export-png"
             >
-              {exporting ? 'Đang export…' : 'Export PNG'}
+              {exporting ? 'Đang xuất…' : 'Xuất PNG'}
             </button>
             {onRefresh && (
-              <button type="button" className="secondary-cta" disabled={busy || !meetingId} onClick={() => void onRefresh()}>
+              <button type="button" className="btn btn--secondary" disabled={busy || !meetingId} onClick={() => void onRefresh()}>
                 Làm mới dữ liệu
               </button>
             )}
