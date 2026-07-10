@@ -3,7 +3,10 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   FULL_GOOGLE_LINK_SCOPES,
   GOOGLE_CALENDAR_EVENTS_SCOPE,
+  GOOGLE_GMAIL_SEND_SCOPE,
   getGoogleStatus,
+  hasGoogleCalendarScope,
+  hasGoogleGmailSendScope,
   missingGoogleLinkScopes,
   needsGoogleIntegrationGrant,
   startGoogleLink,
@@ -88,19 +91,37 @@ export function useGoogleIntegrationStatus({
     oauthPollCleanupRef.current = null
   }, [])
 
-  const beginOAuthGrantPoll = useCallback((onGranted?: () => void) => {
+  const beginOAuthGrantPoll = useCallback((
+    requiredScope: string,
+    onGranted?: () => void,
+  ) => {
     stopOAuthGrantPoll()
     let cancelled = false
     let attempts = 0
+
+    const isScopeGranted = (fresh: GoogleStatus): boolean => {
+      if (requiredScope === GOOGLE_GMAIL_SEND_SCOPE) {
+        return hasGoogleGmailSendScope(fresh)
+      }
+      if (requiredScope === GOOGLE_CALENDAR_EVENTS_SCOPE) {
+        return hasGoogleCalendarScope(fresh)
+      }
+      return !needsGoogleIntegrationGrant(fresh)
+    }
 
     const tick = async () => {
       if (cancelled) return
       if (document.visibilityState !== 'visible') return
       attempts += 1
       const fresh = await refreshStatus()
-      if (fresh && !needsGoogleIntegrationGrant(fresh)) {
+      if (fresh && isScopeGranted(fresh)) {
         oauthInFlightRef.current = false
-        setNotice('Đã cấp đủ quyền Google (Calendar + Gmail).')
+        const label = requiredScope === GOOGLE_GMAIL_SEND_SCOPE
+          ? 'Gmail'
+          : requiredScope === GOOGLE_CALENDAR_EVENTS_SCOPE
+            ? 'Calendar'
+            : 'Google'
+        setNotice(`Đã cấp quyền ${label}.`)
         stopOAuthGrantPoll()
         onGranted?.()
         return
@@ -126,6 +147,9 @@ export function useGoogleIntegrationStatus({
     scopesToRequest: string[],
     onGranted?: () => void,
   ) => {
+    if (scopesToRequest.length === 0) {
+      throw new Error('At least one Google integration scope is required')
+    }
     if (oauthInFlightRef.current) {
       setNotice('Đang chờ bạn hoàn tất cấp quyền ở tab Google - quay lại tab này sau khi xong.')
       return
@@ -136,12 +160,12 @@ export function useGoogleIntegrationStatus({
 
     try {
       const authorizationUrl = await startGoogleLink(
-        scopesToRequest.length > 0 ? scopesToRequest : [GOOGLE_CALENDAR_EVENTS_SCOPE],
+        scopesToRequest,
         STUDIO_SCENE_PATHS.integrations,
       )
       const navigation = launchIntegrationOAuth(oauthTab, authorizationUrl, (value) => setNotice(value ?? ''))
       if (navigation === 'new_tab') {
-        beginOAuthGrantPoll(onGranted)
+        beginOAuthGrantPoll(scopesToRequest[0], onGranted)
       } else {
         oauthInFlightRef.current = false
       }
@@ -164,6 +188,32 @@ export function useGoogleIntegrationStatus({
       setBusy(false)
     }
   }, [])
+
+  const connectGoogleCalendar = useCallback(() => {
+    void run(async () => {
+      persistPendingSchedule()
+      const fresh = await refreshStatus()
+      if (fresh && hasGoogleCalendarScope(fresh)) {
+        setNotice('Google Calendar đã được kết nối.')
+        return
+      }
+      setNotice('Đang mở tab Google để cấp quyền Calendar…')
+      await requestGoogleLinkScopes([GOOGLE_CALENDAR_EVENTS_SCOPE])
+    })
+  }, [persistPendingSchedule, refreshStatus, requestGoogleLinkScopes, run])
+
+  const connectGoogleGmail = useCallback(() => {
+    void run(async () => {
+      persistPendingSchedule()
+      const fresh = await refreshStatus()
+      if (fresh && hasGoogleGmailSendScope(fresh)) {
+        setNotice('Gmail đã được kết nối.')
+        return
+      }
+      setNotice('Đang mở tab Google để cấp quyền Gmail…')
+      await requestGoogleLinkScopes([GOOGLE_GMAIL_SEND_SCOPE])
+    })
+  }, [persistPendingSchedule, refreshStatus, requestGoogleLinkScopes, run])
 
   const connectAllGoogleScopes = useCallback(() => {
     void run(async () => {
@@ -226,6 +276,8 @@ export function useGoogleIntegrationStatus({
     refreshStatus,
     requestGoogleLinkScopes,
     run,
+    connectGoogleCalendar,
+    connectGoogleGmail,
     connectAllGoogleScopes,
     stopOAuthGrantPoll,
   }

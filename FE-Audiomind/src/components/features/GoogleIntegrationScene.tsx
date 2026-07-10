@@ -80,7 +80,8 @@ export function GoogleIntegrationSection({
     refreshStatus,
     requestGoogleLinkScopes,
     run,
-    connectAllGoogleScopes,
+    connectGoogleCalendar,
+    connectGoogleGmail,
   } = useGoogleIntegrationStatus({
     callbackNotice,
     oauthRefreshTick,
@@ -113,7 +114,6 @@ export function GoogleIntegrationSection({
     run,
     onNavigateRealtimeMeetCapture,
   })
-  const hasFullGoogleGrant = status ? !needsGoogleIntegrationGrant(status) : false
   const connectionState = resolveGoogleConnectionState(status)
   const needsGoogleGrant = Boolean(status?.linked && needsGoogleIntegrationGrant(status))
   const connectionLabel = connectionState === 'ready'
@@ -218,9 +218,8 @@ export function GoogleIntegrationSection({
         status={status}
         busy={busy}
         oauthEnabled={oauthEnabled}
-        needsGoogleGrant={needsGoogleGrant}
-        hasFullGoogleGrant={hasFullGoogleGrant}
-        onConnectAllGoogleScopes={connectAllGoogleScopes}
+        onConnectCalendar={connectGoogleCalendar}
+        onConnectGmail={connectGoogleGmail}
         onRevokeGoogleGrant={() => run(async () => {
           await revokeGoogleGrant()
           await loadStatus()
@@ -237,7 +236,7 @@ export function GoogleIntegrationSection({
 
       {needsGoogleGrant && (
         <div className="google-integration__message google-integration__message--warn" role="status" data-testid="google-calendar-grant-required">
-          Tài khoản Google đã đăng nhập nhưng chưa đủ quyền. Bấm「Cấp quyền Google (Calendar + Gmail)」hoặc「Lên lịch & tạo Meet」— sau khi cấp quyền ở tab Google, quay lại tab này để tiếp tục.
+          Tài khoản Google đã đăng nhập nhưng chưa đủ quyền. Bấm「Connect」ở Calendar hoặc Gmail — sau khi cấp quyền ở tab Google, quay lại tab này để tiếp tục.
         </div>
       )}
 

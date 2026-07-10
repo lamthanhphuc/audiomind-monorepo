@@ -28,7 +28,7 @@ describe('GoogleIntegrationScene', () => {
       linked: true,
       googleEmail: 'user@example.com',
       grantedScopes: [googleIntegration.GOOGLE_CALENDAR_EVENTS_SCOPE],
-      missingScopes: [],
+      missingScopes: [googleIntegration.GOOGLE_GMAIL_SEND_SCOPE],
     })
     vi.mocked(googleIntegration.getGoogleCalendarStatus).mockResolvedValue({
       meetingId: 7,
@@ -61,7 +61,8 @@ describe('GoogleIntegrationScene', () => {
 
     expect(container.textContent).toContain('user@example.com')
     expect(container.textContent).toContain('Ghi âm Google Meet')
-    expect(container.querySelector('[data-testid="google-full-grant-connect"]')).not.toBeNull()
+    expect(container.querySelector('[data-testid="google-calendar-connect"]')).toBeNull()
+    expect(container.querySelector('[data-testid="google-gmail-connect"]')).not.toBeNull()
     expect(googleIntegration.getGoogleStatus).toHaveBeenCalled()
   })
 

@@ -6,20 +6,11 @@ import {
   refreshAccessToken,
   setAccessToken,
 } from '../services/auth'
-import {
-  getGoogleStatus,
-  needsGoogleIntegrationGrant,
-  redirectToFullGoogleLink,
-} from '../services/googleIntegration'
+import { applyPostAuthDestination, resolveDestinationFromRedirectAfter, resolvePostAuthDestination } from '../utils/inviteAuth'
 import {
   INVITE_ACCESS_NOTICE,
   probeInvitedMeetingAccess,
 } from '../utils/inviteAccess'
-import {
-  applyPostAuthDestination,
-  resolveDestinationFromRedirectAfter,
-  resolvePostAuthDestination,
-} from '../utils/inviteAuth'
 import { returnToOAuthOpener } from '../utils/oauthCallbackHandoff'
 import type { MeetingResultScope } from '../utils/meetingResultScope'
 import {
@@ -69,7 +60,6 @@ const googleAlreadyLinkedMessage = 'Tài khoản Google này đã được liên
 const googleConnectionFailedMessage = 'Không thể kết nối Google. Vui lòng thử lại.'
 const googleConnectedMessage = 'Đã kết nối Google và cập nhật quyền truy cập.'
 const googleLoginInvalidMessage = 'Phiên đăng nhập Google không hợp lệ. Vui lòng thử lại.'
-const googleGrantCheckFailedMessage = 'Không kiểm tra được quyền Google. Vào Tích hợp và bấm "Kết nối Calendar" trước khi tạo Meet.'
 const zoomConnectedMessage = 'Đã kết nối Zoom thành công. Chọn cloud recording để import.'
 const billingSyncingMessage = 'Thanh toán PayOS thành công. Đang đồng bộ gói Pro...'
 const billingFallbackMessage = 'Thanh toán thành công. Gói đã cập nhật trên server - bấm "Đồng bộ JWT" nếu badge vẫn hiện Free.'
@@ -202,17 +192,6 @@ export const useInitialRedirectHandling = ({
               } finally {
                 window.clearTimeout(accessTimeout)
               }
-            }
-
-            try {
-              const googleStatus = await getGoogleStatus()
-              if (needsGoogleIntegrationGrant(googleStatus)) {
-                setGoogleCallbackState('linking')
-                await redirectToFullGoogleLink(studioPath)
-                return
-              }
-            } catch {
-              setGoogleIntegrationNotice(googleGrantCheckFailedMessage)
             }
 
             window.history.replaceState({}, '', studioPath)

@@ -34,7 +34,6 @@ class GoogleLoginServiceTest {
     @Mock private UserAccountRepository userAccountRepository;
     @Mock private UserIdentityRepository userIdentityRepository;
     @Mock private JwtUtil jwtUtil;
-    @Mock private GoogleGrantService googleGrantService;
     @Mock private PendingMeetingShareClient pendingMeetingShareClient;
 
     private GoogleOAuthProperties properties;
@@ -56,7 +55,6 @@ class GoogleLoginServiceTest {
                 userAccountRepository,
                 userIdentityRepository,
                 jwtUtil,
-                googleGrantService,
                 pendingMeetingShareClient,
                 3600L);
     }
@@ -69,6 +67,9 @@ class GoogleLoginServiceTest {
         assertTrue(redirect.getQuery().contains("scope=openid%20email%20profile")
                 || redirect.toString().contains("scope=openid%20email%20profile"));
         assertFalse(redirect.toString().contains("calendar"));
+        assertFalse(redirect.toString().contains("gmail"));
+        assertFalse(redirect.toString().contains("access_type"));
+        assertFalse(redirect.toString().contains("offline"));
         verify(redisStore).saveState(anyString(), anyString(), eq("/meetings"));
     }
 

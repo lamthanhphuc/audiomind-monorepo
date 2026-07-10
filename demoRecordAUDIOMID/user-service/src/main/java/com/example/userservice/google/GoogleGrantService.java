@@ -72,21 +72,15 @@ public class GoogleGrantService {
         scopes.addAll(requestedScopes);
         log.info("event=GOOGLE_LINK_STARTED traceId={} userId={} scopeCount={}",
                 MDC.get("traceId"), userId, scopes.size());
-        UriComponentsBuilder auth = UriComponentsBuilder.fromUriString("https://accounts.google.com/o/oauth2/v2/auth")
-                .queryParam("client_id", properties.getClientId())
-                .queryParam("redirect_uri", properties.getLinkRedirectUri())
-                .queryParam("response_type", "code")
-                .queryParam("scope", String.join(" ", scopes))
-                .queryParam("state", state)
-                .queryParam("nonce", nonce)
-                .queryParam("access_type", "offline")
-                .queryParam("include_granted_scopes", "true")
-                .queryParam("prompt", "consent");
-        identityRepository.findByUserIdAndProviderAndUnlinkedAtIsNull(userId, "google")
+        Optional<String> loginHint = identityRepository.findByUserIdAndProviderAndUnlinkedAtIsNull(userId, "google")
                 .map(UserIdentity::getProviderEmail)
-                .filter(email -> email != null && !email.isBlank())
-                .ifPresent(email -> auth.queryParam("login_hint", email));
-        return auth.build().encode().toUri();
+                .filter(email -> email != null && !email.isBlank());
+        return GoogleOAuthAuthorizationUrls.buildIntegrationAuthorization(
+                properties,
+                requestedScopes,
+                state,
+                nonce,
+                loginHint);
     }
 
     public URI handleLinkCallback(String code, String state, String providerError) {

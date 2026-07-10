@@ -7,10 +7,12 @@ import {
   RECORDING_SOURCE_DESCRIPTIONS,
   type RecordingSource,
 } from '../../constants/recordingSource'
-import type {
-  GoogleCalendarMeetingListItem,
-  GoogleCalendarStatus,
-  GoogleStatus,
+import {
+  hasGoogleCalendarScope,
+  hasGoogleGmailSendScope,
+  type GoogleCalendarMeetingListItem,
+  type GoogleCalendarStatus,
+  type GoogleStatus,
 } from '../../services/googleIntegration'
 import { LoadingState } from '../ui/LoadingState'
 
@@ -306,9 +308,8 @@ type GoogleAccountStatusProps = {
   status: GoogleStatus | null
   busy: boolean
   oauthEnabled: boolean
-  needsGoogleGrant: boolean
-  hasFullGoogleGrant: boolean
-  onConnectAllGoogleScopes: () => void
+  onConnectCalendar: () => void
+  onConnectGmail: () => void
   onRevokeGoogleGrant: () => void
   onUnlinkGoogleIdentity: () => void
 }
@@ -317,39 +318,75 @@ export function GoogleAccountStatus({
   status,
   busy,
   oauthEnabled,
-  needsGoogleGrant,
-  hasFullGoogleGrant,
-  onConnectAllGoogleScopes,
+  onConnectCalendar,
+  onConnectGmail,
   onRevokeGoogleGrant,
   onUnlinkGoogleIdentity,
 }: GoogleAccountStatusProps) {
+  const calendarConnected = Boolean(status && hasGoogleCalendarScope(status))
+  const gmailConnected = Boolean(status && hasGoogleGmailSendScope(status))
+
   return (
     <div className="google-integration__section">
       <div>
         <h2>Tài khoản Google</h2>
-        <p>{status?.googleEmail || 'Kết nối Google để cấp quyền cho Calendar, Meet và gửi email mời.'}</p>
+        <p>Kết nối từng quyền khi cần — đăng nhập Google không yêu cầu Calendar hay Gmail.</p>
+      </div>
 
-        {status?.grantedScopes && status.grantedScopes.length > 0 && (
-          <div className="google-integration__scopes">
-            {status.grantedScopes.map((scope) => (
-              <span key={scope} className="google-integration__scope-chip">{scope.split('/').pop()}</span>
-            ))}
+      <div className="google-integration__connection-rows" data-testid="google-connection-rows">
+        <div className="google-integration__connection-row" data-testid="google-account-row">
+          <div>
+            <strong>Google Account</strong>
+            <p>{status?.googleEmail || 'Chưa đăng nhập bằng Google'}</p>
           </div>
-        )}
+          <span className={`google-integration__connection-state ${status?.linked ? 'is-connected' : ''}`}>
+            {status?.linked ? '✓ Logged in' : 'Not connected'}
+          </span>
+        </div>
+
+        <div className="google-integration__connection-row" data-testid="google-calendar-row">
+          <div>
+            <strong>Google Calendar</strong>
+            <p>Tạo lịch và Google Meet từ Audiomind.</p>
+          </div>
+          {calendarConnected ? (
+            <span className="google-integration__connection-state is-connected">✓ Connected</span>
+          ) : (
+            <button
+              type="button"
+              className="google-btn google-btn--primary"
+              disabled={busy || !oauthEnabled || !status?.linked}
+              onClick={onConnectCalendar}
+              data-testid="google-calendar-connect"
+            >
+              Connect
+            </button>
+          )}
+        </div>
+
+        <div className="google-integration__connection-row" data-testid="google-gmail-row">
+          <div>
+            <strong>Google Gmail</strong>
+            <p>Gửi email mời chia sẻ meeting qua Gmail.</p>
+          </div>
+          {gmailConnected ? (
+            <span className="google-integration__connection-state is-connected">✓ Connected</span>
+          ) : (
+            <button
+              type="button"
+              className="google-btn google-btn--primary"
+              disabled={busy || !oauthEnabled || !status?.linked}
+              onClick={onConnectGmail}
+              data-testid="google-gmail-connect"
+            >
+              Connect
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="google-integration__actions">
-        <button
-          type="button"
-          className={`google-btn google-btn--primary ${needsGoogleGrant ? 'google-btn--emphasis' : ''}`}
-          disabled={busy || !oauthEnabled}
-          onClick={onConnectAllGoogleScopes}
-          data-testid="google-full-grant-connect"
-        >
-          {hasFullGoogleGrant ? 'Cấp lại quyền Google' : 'Cấp quyền Google (Calendar + Gmail)'}
-        </button>
-
-        {status?.grantedScopes.length ? (
+        {(status?.grantedScopes.length ?? 0) > 0 ? (
           <button type="button" className="google-btn" disabled={busy} onClick={onRevokeGoogleGrant}>
             Thu hồi quyền
           </button>
