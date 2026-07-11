@@ -290,10 +290,12 @@
   flex-direction: column;
 }
 
-.app--studio .dashboard-sidebar {
-  position: relative;
-  z-index: 2;
-  backdrop-filter: blur(10px);
+@media (min-width: 901px) {
+  .app--studio .dashboard-sidebar {
+    position: relative;
+    z-index: 2;
+    backdrop-filter: blur(10px);
+  }
 }
 
 .app--studio .dashboard-header,
