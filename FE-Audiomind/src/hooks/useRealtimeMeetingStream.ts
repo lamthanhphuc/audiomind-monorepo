@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { getAccessToken } from '../services/auth'
 import { REALTIME_WS_BASE_URL } from '../services/config'
+import { realtimeEncodingForMimeType } from '../utils/mediaRecorderFormat'
 import { realtimeError, realtimeInfo, realtimeWarn } from '../utils/realtimeTelemetry'
 import { normalizeTranscriptEvent, upsertTranscriptSegment } from '../utils/transcript'
 
@@ -955,6 +956,18 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
     if (firstChunkSentAtRef.current <= 0) {
       firstChunkSentAtRef.current = tsMs
     }
+    const chunkMimeType = audioChunk.type || 'audio/webm; codecs=opus'
+    const encoding = realtimeEncodingForMimeType(chunkMimeType)
+    if (!encoding) {
+      realtimeWarn('[Realtime] REALTIME_DROP_AUDIO_CHUNK', {
+        meetingId: normalizedMeetingId,
+        connectionSeq: connectionSequenceRef.current,
+        reason: 'unsupported_chunk_mime',
+        mimeType: String(chunkMimeType).slice(0, 64),
+      })
+      return
+    }
+
     const metadata: JsonValue = {
       type: 'audio.chunk',
       meeting_id: normalizedMeetingId,
@@ -962,9 +975,9 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
       ts_ms: tsMs,
       sample_rate: AUDIO_SAMPLE_RATE,
       channels: 1,
-      encoding: 'webm-opus',
+      encoding,
       size: audioChunk.size,
-      mime_type: audioChunk.type || 'audio/webm; codecs=opus',
+      mime_type: chunkMimeType,
       recording_session_id: tokenAtSendStart.recordingSessionId,
       attempt_id: tokenAtSendStart.attemptId,
       ...(isDual && streamId ? { stream_id: streamId } : {}),

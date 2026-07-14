@@ -53,9 +53,15 @@ class RealtimePayloadValidatorTest {
     }
 
     @Test
-    void validateBinary_acceptsWebmHeader() {
-        byte[] payload = new byte[] {0x1A, 0x45, (byte) 0xDF, (byte) 0xA3, 0x01};
-        var result = validator.validateBinary(payload, (long) payload.length);
+    void validateMetadata_rejectsMp4MimeEvenWithWebmEncoding() {
+        var result = validator.validateMetadata(1L, 100L, "audio/mp4", "webm-opus", null);
+        assertFalse(result.valid());
+        assertEquals(RealtimePayloadValidator.ValidationError.REALTIME_UNSUPPORTED_ENCODING, result.errorCode());
+    }
+
+    @Test
+    void validateMetadata_acceptsWebmOpusContract() {
+        var result = validator.validateMetadata(1L, 100L, "audio/webm; codecs=opus", "webm-opus", null);
         assertTrue(result.valid());
     }
 }

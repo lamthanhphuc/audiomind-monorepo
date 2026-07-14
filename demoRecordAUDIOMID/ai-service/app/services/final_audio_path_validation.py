@@ -10,6 +10,7 @@ from pathlib import Path
 
 from app.config import get_settings
 from app.ffmpeg_utils import ensure_ffmpeg_on_path, resolve_ffmpeg_path
+from app.services.server_audio_roots import get_server_managed_audio_roots
 
 logger = logging.getLogger(__name__)
 
@@ -38,40 +39,8 @@ class FinalAudioPathError(ValueError):
         self.safe_message = message
 
 
-def _parse_allowed_roots(raw: str | None, fallback_roots: list[Path]) -> list[Path]:
-    roots: list[Path] = []
-    if raw and raw.strip():
-        for part in raw.split(","):
-            candidate = part.strip()
-            if not candidate:
-                continue
-            roots.append(Path(candidate).expanduser().resolve(strict=False))
-    for root in fallback_roots:
-        roots.append(Path(root).expanduser().resolve(strict=False))
-
-    # Preserve order, drop duplicates.
-    unique: list[Path] = []
-    seen: set[str] = set()
-    for root in roots:
-        key = str(root)
-        if key in seen:
-            continue
-        seen.add(key)
-        unique.append(root)
-    return unique
-
-
 def get_final_audio_allowed_roots(settings=None) -> list[Path]:
-    cfg = settings or get_settings()
-    return _parse_allowed_roots(
-        getattr(cfg, "final_audio_allowed_roots", None),
-        [
-            Path(cfg.audio_storage_path),
-            Path(cfg.temp_storage_path),
-            Path("/app/uploads"),
-            Path("/app/storage"),
-        ],
-    )
+    return list(get_server_managed_audio_roots(settings))
 
 
 def _is_under_root(resolved: Path, root: Path) -> bool:
@@ -82,16 +51,28 @@ def _is_under_root(resolved: Path, root: Path) -> bool:
         return False
 
 
+def _resolve_allowed_suffixes(cfg) -> set[str]:
+    configured = {
+        part.strip().lower()
+        for part in str(getattr(cfg, "allowed_upload_extensions", "")).split(",")
+        if part.strip()
+    }
+    # Config present → exact allowlist. Empty config → hardcoded defaults.
+    return configured if configured else set(ALLOWED_AUDIO_SUFFIXES)
+
+
 def _probe_has_audio_stream(path: Path, timeout_seconds: int = 30) -> bool:
+    """Fail closed when ffprobe is unavailable or probe fails."""
     try:
         ffmpeg_path = ensure_ffmpeg_on_path()
     except FileNotFoundError:
         try:
             ffmpeg_path = resolve_ffmpeg_path()
-        except Exception:
-            # Without ffprobe availability, suffix+size checks already ran.
-            logger.warning("FINAL_AUDIO_PROBE_SKIPPED reason=ffprobe_unavailable")
-            return True
+        except Exception as exc:
+            raise FinalAudioPathError(
+                "FINAL_AUDIO_PROBE_UNAVAILABLE",
+                "Audio probe is unavailable on this server",
+            ) from exc
 
     ffprobe_path = Path(ffmpeg_path).with_name(
         "ffprobe.exe" if os.name == "nt" else "ffprobe"
@@ -99,8 +80,10 @@ def _probe_has_audio_stream(path: Path, timeout_seconds: int = 30) -> bool:
     if not ffprobe_path.is_file():
         located = shutil.which("ffprobe")
         if not located:
-            logger.warning("FINAL_AUDIO_PROBE_SKIPPED reason=ffprobe_unavailable")
-            return True
+            raise FinalAudioPathError(
+                "FINAL_AUDIO_PROBE_UNAVAILABLE",
+                "Audio probe is unavailable on this server",
+            )
         ffprobe_path = Path(located)
 
     try:
@@ -123,11 +106,16 @@ def _probe_has_audio_stream(path: Path, timeout_seconds: int = 30) -> bool:
             shell=False,
             check=False,
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except subprocess.TimeoutExpired as exc:
+        raise FinalAudioPathError(
+            "FINAL_AUDIO_PROBE_TIMEOUT",
+            "Audio probe timed out",
+        ) from exc
+    except OSError as exc:
         raise FinalAudioPathError(
             "FINAL_AUDIO_PROBE_FAILED",
             "Audio probe failed for the provided file",
-        ) from None
+        ) from exc
 
     if probe.returncode != 0 or "audio" not in (probe.stdout or "").lower():
         raise FinalAudioPathError(
@@ -189,7 +177,6 @@ def validate_final_audio_fallback_path(
             "Audio path must be a regular file",
         )
 
-    # Containment: resolved path must stay under an allowed root.
     if not any(_is_under_root(resolved, root) for root in roots):
         logger.warning(
             "FINAL_AUDIO_PATH_REJECTED reason=outside_allowed_root name=%s",
@@ -201,13 +188,8 @@ def validate_final_audio_fallback_path(
         )
 
     suffix = resolved.suffix.lower()
-    configured = {
-        part.strip().lower()
-        for part in str(getattr(cfg, "allowed_upload_extensions", "")).split(",")
-        if part.strip()
-    }
-    allowed_suffixes = configured or set(ALLOWED_AUDIO_SUFFIXES)
-    if suffix not in allowed_suffixes and suffix not in ALLOWED_AUDIO_SUFFIXES:
+    allowed_suffixes = _resolve_allowed_suffixes(cfg)
+    if suffix not in allowed_suffixes:
         raise FinalAudioPathError(
             "FINAL_AUDIO_EXTENSION_REJECTED",
             "Audio file extension is not supported",

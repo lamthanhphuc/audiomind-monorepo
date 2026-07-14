@@ -1,10 +1,13 @@
 import { realtimeWarn } from './realtimeTelemetry'
 
 export type MediaRecorderExtension = 'webm' | 'm4a'
+export type MediaRecorderPurpose = 'realtime' | 'final'
 
 export type MediaRecorderFormat = {
   mimeType?: string
   extension: MediaRecorderExtension
+  /** Wire encoding accepted by RealtimePayloadValidator when purpose is realtime. */
+  encoding?: 'webm-opus'
 }
 
 export type RecordedAudioResult = {
@@ -13,16 +16,41 @@ export type RecordedAudioResult = {
   extension: MediaRecorderExtension
 }
 
-const MIME_CANDIDATES = [
+export class UnsupportedRealtimeRecorderFormatError extends Error {
+  readonly code = 'REALTIME_UNSUPPORTED_RECORDER_FORMAT' as const
+
+  constructor(message = 'Trình duyệt không hỗ trợ định dạng ghi âm realtime (WebM/Opus) mà pipeline yêu cầu.') {
+    super(message)
+    this.name = 'UnsupportedRealtimeRecorderFormatError'
+  }
+}
+
+/** Formats accepted by processing-service RealtimePayloadValidator (WebM/Opus only). */
+export const REALTIME_MIME_CANDIDATES = [
+  'audio/webm;codecs=opus',
+  'audio/webm; codecs=opus',
+  'audio/webm',
+] as const
+
+/** Broader formats for final/batch recording where FFmpeg/upload can transcode. */
+export const FINAL_MIME_CANDIDATES = [
   'audio/webm;codecs=opus',
   'audio/webm; codecs=opus',
   'audio/webm',
   'audio/mp4',
 ] as const
 
+/** Mirror of RealtimePayloadValidator ALLOWED_CONTAINERS / ALLOWED_CODECS for FE contract tests. */
+export const REALTIME_PAYLOAD_CONTRACT = {
+  allowedContainers: ['webm'] as const,
+  allowedCodecs: ['opus', 'webm-opus'] as const,
+  encoding: 'webm-opus' as const,
+}
+
 const DEFAULT_FORMAT: MediaRecorderFormat = {
   mimeType: undefined,
   extension: 'webm',
+  encoding: 'webm-opus',
 }
 
 export const extensionForMimeType = (mimeType: string | undefined | null): MediaRecorderExtension => {
@@ -41,9 +69,27 @@ export const extensionForMimeType = (mimeType: string | undefined | null): Media
   return 'webm'
 }
 
-export const getSupportedMediaRecorderFormat = (): MediaRecorderFormat => {
+export const isRealtimeCompatibleMimeType = (mimeType: string | undefined | null): boolean => {
+  const normalized = String(mimeType || '').toLowerCase().replace(/\s+/g, '')
+  if (!normalized) {
+    return false
+  }
+  return REALTIME_PAYLOAD_CONTRACT.allowedContainers.some((container) => normalized.includes(container))
+}
+
+export const realtimeEncodingForMimeType = (mimeType: string | undefined | null): 'webm-opus' | null => {
+  if (!isRealtimeCompatibleMimeType(mimeType)) {
+    return null
+  }
+  return REALTIME_PAYLOAD_CONTRACT.encoding
+}
+
+const selectFormat = (
+  candidates: readonly string[],
+  purpose: MediaRecorderPurpose,
+): MediaRecorderFormat => {
   if (typeof MediaRecorder === 'undefined') {
-    return { ...DEFAULT_FORMAT }
+    return purpose === 'realtime' ? { ...DEFAULT_FORMAT } : { mimeType: undefined, extension: 'webm' }
   }
 
   const isTypeSupported = typeof MediaRecorder.isTypeSupported === 'function'
@@ -51,27 +97,72 @@ export const getSupportedMediaRecorderFormat = (): MediaRecorderFormat => {
     : null
 
   if (!isTypeSupported) {
-    return { ...DEFAULT_FORMAT }
+    return purpose === 'realtime' ? { ...DEFAULT_FORMAT } : { mimeType: undefined, extension: 'webm' }
   }
 
-  for (const candidate of MIME_CANDIDATES) {
+  for (const candidate of candidates) {
     try {
       if (isTypeSupported(candidate)) {
-        return {
+        const format: MediaRecorderFormat = {
           mimeType: candidate,
           extension: extensionForMimeType(candidate),
         }
+        if (purpose === 'realtime') {
+          format.encoding = REALTIME_PAYLOAD_CONTRACT.encoding
+        }
+        return format
       }
     } catch {
       // ignore isTypeSupported failures
     }
   }
 
-  return { ...DEFAULT_FORMAT }
+  return purpose === 'realtime' ? { ...DEFAULT_FORMAT, mimeType: undefined } : { mimeType: undefined, extension: 'webm' }
+}
+
+export const getSupportedMediaRecorderFormat = (
+  options: { purpose?: MediaRecorderPurpose } = {},
+): MediaRecorderFormat => {
+  const purpose = options.purpose ?? 'final'
+  return selectFormat(
+    purpose === 'realtime' ? REALTIME_MIME_CANDIDATES : FINAL_MIME_CANDIDATES,
+    purpose,
+  )
+}
+
+export const getSupportedRealtimeRecorderFormat = (): MediaRecorderFormat =>
+  getSupportedMediaRecorderFormat({ purpose: 'realtime' })
+
+export const getSupportedFinalRecorderFormat = (): MediaRecorderFormat =>
+  getSupportedMediaRecorderFormat({ purpose: 'final' })
+
+/**
+ * Require a realtime WebM format compatible with RealtimePayloadValidator.
+ * Throws when MediaRecorder can negotiate types but none of the WebM candidates work.
+ * When isTypeSupported is unavailable, allows browser-default MediaRecorder options
+ * while still advertising webm-opus wire encoding.
+ */
+export const requireSupportedRealtimeRecorderFormat = (): MediaRecorderFormat => {
+  const format = getSupportedRealtimeRecorderFormat()
+  if (format.mimeType && isRealtimeCompatibleMimeType(format.mimeType)) {
+    return format
+  }
+
+  const hasIsTypeSupported = typeof MediaRecorder !== 'undefined'
+    && typeof MediaRecorder.isTypeSupported === 'function'
+  if (!hasIsTypeSupported) {
+    return {
+      mimeType: undefined,
+      extension: 'webm',
+      encoding: REALTIME_PAYLOAD_CONTRACT.encoding,
+    }
+  }
+
+  throw new UnsupportedRealtimeRecorderFormatError()
 }
 
 export const buildMediaRecorderOptions = (
-  format: MediaRecorderFormat = getSupportedMediaRecorderFormat(),
+  format: MediaRecorderFormat = getSupportedFinalRecorderFormat(),
   audioBitsPerSecond = 64_000,
 ): MediaRecorderOptions => {
   return {
@@ -98,7 +189,7 @@ export const resolveRecordedAudioResult = (params: {
   mimeType: string
   extension: MediaRecorderExtension
 } => {
-  const requested = params.requestedFormat ?? getSupportedMediaRecorderFormat()
+  const requested = params.requestedFormat ?? getSupportedFinalRecorderFormat()
   const actualMimeType =
     params.recorderMimeType
     || requested.mimeType

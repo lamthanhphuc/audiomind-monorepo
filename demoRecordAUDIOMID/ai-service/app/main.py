@@ -1446,11 +1446,9 @@ def ensure_runtime_dirs() -> None:
 
 def resolve_upload_dir() -> Path:
     """Pick the first writable upload directory shared across API and worker containers."""
-    candidates = (
-        Path("/app/uploads"),
-        Path("/app/storage/uploads"),
-        Path("./storage/uploads"),
-    )
+    from app.services.server_audio_roots import get_upload_dir_candidates
+
+    candidates = get_upload_dir_candidates()
     for upload_dir in candidates:
         try:
             upload_dir.mkdir(parents=True, exist_ok=True)
@@ -1458,10 +1456,12 @@ def resolve_upload_dir() -> Path:
             with probe_file.open("wb") as probe:
                 probe.write(b"ok")
             probe_file.unlink(missing_ok=True)
-            return upload_dir
-        except OSError as permission_error:
+            return upload_dir.resolve(strict=False)
+        except OSError as write_error:
             logger.warning(
-                f"Upload dir not writable ({upload_dir}): {permission_error}"
+                "Upload directory candidate unavailable name=%s error=%s",
+                upload_dir.name,
+                type(write_error).__name__,
             )
 
     raise RuntimeError("No writable upload directory is available")

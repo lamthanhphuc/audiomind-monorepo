@@ -6,6 +6,7 @@ import { AudioRecorderButton } from './AudioRecorderButton'
 
 class MockMediaRecorder {
   static instances: MockMediaRecorder[] = []
+  static isTypeSupported = (type: string) => type.includes('webm')
 
   state: 'inactive' | 'recording' | 'paused' = 'inactive'
   ondataavailable: ((event: { data: Blob }) => void) | null = null

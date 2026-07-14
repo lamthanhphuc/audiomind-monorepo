@@ -668,11 +668,18 @@ export const useRealtimeSession = ({
     const validateMicTinyChunks = streamId === 'mic' || (!streamId && !isTabCaptureSource)
     const currentRms = audioRecorder.getCurrentRms()
     const isTinyChunk = chunkBytes > 0 && chunkBytes < REALTIME_TINY_CHUNK_MAX_BYTES
-    const isSilentCapture = currentRms === null || currentRms <= REALTIME_TINY_CHUNK_MAX_RMS
+    // null RMS means "unavailable", not silent — only measured low RMS counts as silence.
+    const isSilentCapture = typeof currentRms === 'number' && currentRms <= REALTIME_TINY_CHUNK_MAX_RMS
     if (validateMicTinyChunks && isTinyChunk && isSilentCapture) {
       liveTinyChunkStreakRef.current += 1
-    } else if (chunkBytes >= REALTIME_TINY_CHUNK_MAX_BYTES) {
+    } else if (chunkBytes >= REALTIME_TINY_CHUNK_MAX_BYTES || (validateMicTinyChunks && typeof currentRms === 'number' && !isSilentCapture)) {
       liveTinyChunkStreakRef.current = 0
+    } else if (validateMicTinyChunks && currentRms === null) {
+      realtimeWarn('[Realtime] REALTIME_RMS_UNAVAILABLE', {
+        meetingId: activeMeetingId,
+        sessionId,
+        chunkBytes,
+      })
     }
 
     if (

@@ -23,8 +23,10 @@ import {
 import { realtimeInfo, realtimeWarn } from '../utils/realtimeTelemetry'
 import {
   buildMediaRecorderOptions,
-  getSupportedMediaRecorderFormat,
+  getSupportedFinalRecorderFormat,
+  requireSupportedRealtimeRecorderFormat,
   resolveRecordedAudioResult,
+  UnsupportedRealtimeRecorderFormatError,
   type MediaRecorderFormat,
 } from '../utils/mediaRecorderFormat'
 import {
@@ -132,7 +134,7 @@ export const useAudioRecorder = (
   const [audioChunks, setAudioChunks] = useState<Blob[]>([])
   const [duration, setDuration] = useState(0)
 
-  const recorderFormatRef = useRef<MediaRecorderFormat>(getSupportedMediaRecorderFormat())
+  const recorderFormatRef = useRef<MediaRecorderFormat>(getSupportedFinalRecorderFormat())
   const constraintIssuesRef = useRef<MicrophoneHealthIssue[]>([])
   const healthTrackerRef = useRef(createMicrophoneHealthTracker())
   const [micHealthIssue, setMicHealthIssue] = useState<MicrophoneHealthIssue | null>(null)
@@ -600,7 +602,7 @@ export const useAudioRecorder = (
         })
       }
 
-      const format = getSupportedMediaRecorderFormat()
+      const format = requireSupportedRealtimeRecorderFormat()
       recorderFormatRef.current = format
       const recorder = new MediaRecorder(stream, buildMediaRecorderOptions(format))
       mediaRecorderRef.current = recorder
@@ -721,7 +723,11 @@ export const useAudioRecorder = (
         mediaRecorderRef.current = null
         if (mountedRef.current) {
           setState('error')
-          setErrorMessage(mapAudioSourceErrorMessage(error))
+          setErrorMessage(
+            error instanceof UnsupportedRealtimeRecorderFormatError
+              ? error.message
+              : mapAudioSourceErrorMessage(error),
+          )
         }
       }
       return null

@@ -3,6 +3,7 @@ import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const createTabMicMixFromStreams = vi.fn()
+const createStandaloneMicAnalyser = vi.fn()
 const acquireDualTabMicSources = vi.fn()
 const attachAudioTrackEndedHandler = vi.fn(() => () => {})
 const createTabAudioPipelineMonitor = vi.fn(() => ({
@@ -16,6 +17,7 @@ vi.mock('../utils/audioSourceAcquisition', async () => {
     ...actual,
     acquireDualTabMicSources,
     createTabMicMixFromStreams,
+    createStandaloneMicAnalyser,
     attachAudioTrackEndedHandler,
     mapAudioSourceErrorMessage: (error: unknown) => (error instanceof Error ? error.message : 'error'),
   }
@@ -159,7 +161,7 @@ describe('useDualAudioRecorder', () => {
       micAnalyser: {
         fftSize: 512,
         getByteTimeDomainData: (buf: Uint8Array) => {
-          buf.fill(128)
+          buf.fill(140)
         },
       },
       tabAnalyser: {},
@@ -168,6 +170,16 @@ describe('useDualAudioRecorder', () => {
       tabGain: {},
       tabDuckGain: 0.42,
       cleanupGraph: mixerCleanup,
+    })
+    createStandaloneMicAnalyser.mockResolvedValue({
+      audioContext: { close: vi.fn().mockResolvedValue(undefined), state: 'running' },
+      analyser: {
+        fftSize: 512,
+        getByteTimeDomainData: (buf: Uint8Array) => {
+          buf.fill(140)
+        },
+      },
+      cleanup: vi.fn(),
     })
   })
 
@@ -332,7 +344,7 @@ describe('useDualAudioRecorder', () => {
     expect(result.chunks.every((chunk) => !chunk.type.includes('FALLBACK'))).toBe(true)
   })
 
-  it('keeps realtime when fallback MediaRecorder constructor throws', async () => {
+  it('keeps realtime when fallback MediaRecorder constructor throws and cleans mixer', async () => {
     FakeMediaRecorder.failCtorForMixed = true
     await renderHarness()
     await act(async () => {
@@ -340,6 +352,29 @@ describe('useDualAudioRecorder', () => {
     })
     expect(FakeMediaRecorder.instances).toHaveLength(2)
     expect(latest!.state).toBe('recording')
+    expect(mixerCleanup).toHaveBeenCalled()
+  })
+
+  it('cleans mixer when fallback MediaRecorder start throws', async () => {
+    FakeMediaRecorder.failStartForMixed = true
+    await renderHarness()
+    await act(async () => {
+      await latest!.startRecording()
+    })
+    expect(latest!.state).toBe('recording')
+    expect(FakeMediaRecorder.instances.length).toBeGreaterThanOrEqual(2)
+    expect(mixerCleanup).toHaveBeenCalled()
+  })
+
+  it('exposes mic health and RMS after fallback mixer failure', async () => {
+    createTabMicMixFromStreams.mockRejectedValueOnce(new Error('mixer boom'))
+    await renderHarness()
+    await act(async () => {
+      await latest!.startRecording()
+    })
+    expect(latest!.state).toBe('recording')
+    expect(latest).toHaveProperty('micHealthIssue')
+    expect(typeof latest!.getCurrentRms()).toBe('number')
   })
 
   it('exposes mic health message when dual mic leg is active', async () => {

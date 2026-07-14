@@ -2,16 +2,20 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   acquireDualTabMicSources,
   attachAudioTrackEndedHandler,
+  createStandaloneMicAnalyser,
   createTabMicMixFromStreams,
   mapAudioSourceErrorMessage,
   type DualTabMicStreamId,
+  type StandaloneMicAnalyser,
   type TabMicMixerHandles,
 } from '../utils/audioSourceAcquisition'
 import { REALTIME_RECORDER_TIMESLICE_MS } from '../services/config'
 import {
   buildMediaRecorderOptions,
-  getSupportedMediaRecorderFormat,
+  getSupportedFinalRecorderFormat,
+  requireSupportedRealtimeRecorderFormat,
   resolveRecordedAudioResult,
+  UnsupportedRealtimeRecorderFormatError,
   type MediaRecorderFormat,
 } from '../utils/mediaRecorderFormat'
 import {
@@ -116,6 +120,7 @@ export const useDualAudioRecorder = (
   const tabChunkSeqRef = useRef(0)
   const micAnalyserRef = useRef<AnalyserNode | null>(null)
   const micAnalyserDataRef = useRef<Uint8Array | null>(null)
+  const standaloneMicAnalyserRef = useRef<StandaloneMicAnalyser | null>(null)
   const micHealthTimerRef = useRef<number | null>(null)
   const healthTrackerRef = useRef(createMicrophoneHealthTracker())
   const constraintIssuesRef = useRef<MicrophoneHealthIssue[]>([])
@@ -231,6 +236,15 @@ export const useDualAudioRecorder = (
     stopMicHealthMonitor()
     stopDurationTimer()
 
+    if (standaloneMicAnalyserRef.current) {
+      try {
+        standaloneMicAnalyserRef.current.cleanup()
+      } catch {
+        // ignore
+      }
+      standaloneMicAnalyserRef.current = null
+    }
+
     streamRecordersRef.current.forEach(({ recorder }) => {
       try {
         recorder.ondataavailable = null
@@ -341,12 +355,14 @@ export const useDualAudioRecorder = (
       })
       startedAtRef.current = performance.now()
 
-      const format = getSupportedMediaRecorderFormat()
-      const recorderOptions = buildMediaRecorderOptions(format)
+      const realtimeFormat = requireSupportedRealtimeRecorderFormat()
+      const realtimeRecorderOptions = buildMediaRecorderOptions(realtimeFormat)
+      const finalFormat = getSupportedFinalRecorderFormat()
+      const finalRecorderOptions = buildMediaRecorderOptions(finalFormat)
 
       // Required: dual realtime recorders first.
       const recorders: StreamRecorder[] = streams.map(({ streamId, stream }) => {
-        const recorder = new MediaRecorder(stream, recorderOptions)
+        const recorder = new MediaRecorder(stream, realtimeRecorderOptions)
         const chunks: Blob[] = []
         recorder.ondataavailable = (event) => {
           if (event.data.size <= 0) {
@@ -376,18 +392,33 @@ export const useDualAudioRecorder = (
 
       streamRecordersRef.current = recorders
 
-      // Optional: fallback mixed recorder — never fail dual realtime if this fails.
+      // Mic RMS/health must work even when optional fallback mixer fails.
       fallbackRecorderRef.current = null
       micAnalyserRef.current = null
       micAnalyserDataRef.current = null
       if (acquired.micIncluded && acquired.mic) {
         try {
-          const mixer = await createTabMicMixFromStreams(acquired.tab.stream, acquired.mic.stream, {
+          const standalone = await createStandaloneMicAnalyser(acquired.mic.stream)
+          standaloneMicAnalyserRef.current = standalone
+          startMicHealthMonitor(acquired.mic.stream, standalone.analyser, sessionId)
+        } catch (analyserError) {
+          realtimeWarn('[Realtime] DUAL_MIC_ANALYSER_UNAVAILABLE', {
+            meetingId: options.diagnosticMeetingId ?? null,
+            sessionId,
+            error: analyserError instanceof Error ? analyserError.name : 'unknown',
+          })
+          startMicHealthMonitor(acquired.mic.stream, null, sessionId)
+        }
+
+        let mixer: TabMicMixerHandles | null = null
+        let fallbackRecorder: MediaRecorder | null = null
+        try {
+          mixer = await createTabMicMixFromStreams(acquired.tab.stream, acquired.mic.stream, {
             stopMicTracksOnCleanup: false,
           })
           await ensureAudioContextRunning(mixer.audioContext)
           const fallbackChunks: Blob[] = []
-          const fallbackRecorder = new MediaRecorder(mixer.mixedStream, recorderOptions)
+          fallbackRecorder = new MediaRecorder(mixer.mixedStream, finalRecorderOptions)
           fallbackRecorder.ondataavailable = (event) => {
             if (event.data.size > 0) {
               fallbackChunks.push(event.data)
@@ -397,22 +428,34 @@ export const useDualAudioRecorder = (
           fallbackRecorderRef.current = {
             recorder: fallbackRecorder,
             chunks: fallbackChunks,
-            format,
+            format: finalFormat,
             mixer,
           }
-          startMicHealthMonitor(acquired.mic.stream, mixer.micAnalyser, sessionId)
+          // Prefer mixer mic analyser when available (shares context with mixed graph).
+          if (mixer.micAnalyser) {
+            micAnalyserRef.current = mixer.micAnalyser
+            micAnalyserDataRef.current = new Uint8Array(mixer.micAnalyser.fftSize)
+          }
         } catch (fallbackError) {
+          try {
+            fallbackRecorder && (fallbackRecorder.ondataavailable = null)
+            if (fallbackRecorder && fallbackRecorder.state !== 'inactive') {
+              fallbackRecorder.stop()
+            }
+          } catch {
+            // ignore
+          }
+          try {
+            mixer?.cleanupGraph()
+          } catch {
+            // ignore
+          }
+          fallbackRecorderRef.current = null
           realtimeWarn('[Realtime] DUAL_FALLBACK_MIXER_UNAVAILABLE', {
             meetingId: options.diagnosticMeetingId ?? null,
             sessionId,
             error: fallbackError instanceof Error ? fallbackError.name : 'unknown',
           })
-          try {
-            // Best-effort: still expose mic health from a one-off analyser if mixer failed.
-            startMicHealthMonitor(acquired.mic.stream, null, sessionId)
-          } catch {
-            // ignore
-          }
         }
       }
 
@@ -425,7 +468,9 @@ export const useDualAudioRecorder = (
       setState('recording')
       return sessionId
     } catch (error) {
-      const message = mapAudioSourceErrorMessage(error)
+      const message = error instanceof UnsupportedRealtimeRecorderFormatError
+        ? error.message
+        : mapAudioSourceErrorMessage(error)
       setErrorMessage(message)
       setState('error')
       cleanupRecordingResources()
@@ -491,7 +536,7 @@ export const useDualAudioRecorder = (
       // Degraded: tab-only encoder when fallback unavailable — never concat tab+mic.
       const tabRecorder = recorders.find((entry) => entry.streamId === 'tab')
       const tabChunks = tabRecorder?.chunks ?? []
-      const format = getSupportedMediaRecorderFormat()
+      const format = getSupportedFinalRecorderFormat()
       const resolved = resolveRecordedAudioResult({
         blob: new Blob(tabChunks, { type: tabRecorder?.recorder.mimeType || format.mimeType || 'audio/webm' }),
         recorderMimeType: tabRecorder?.recorder.mimeType,

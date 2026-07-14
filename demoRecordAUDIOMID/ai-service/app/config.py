@@ -125,7 +125,10 @@ class Settings(BaseSettings):
     # Storage
     audio_storage_path: str = "./storage/audio"
     temp_storage_path: str = "./storage/temp"
-    # Comma-separated absolute/relative roots; empty uses audio+temp+/app/uploads+/app/storage.
+    # Comma-separated absolute/relative roots for final-audio-fallback paths.
+    # When set, this list is the exact allowlist (defaults are not merged).
+    # When empty, defaults include /app/uploads, /app/storage/uploads,
+    # ./storage/uploads plus configured audio/temp storage paths.
     final_audio_allowed_roots: str = ""
 
     # Optional FFmpeg audio enhancement (STT profile only in this release)

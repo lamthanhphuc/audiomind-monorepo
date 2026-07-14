@@ -1,0 +1,16 @@
+{
+  "allowedContainers": ["webm"],
+  "allowedCodecs": ["opus", "webm-opus"],
+  "encoding": "webm-opus",
+  "realtimeMimeCandidates": [
+    "audio/webm;codecs=opus",
+    "audio/webm; codecs=opus",
+    "audio/webm"
+  ],
+  "finalMimeCandidates": [
+    "audio/webm;codecs=opus",
+    "audio/webm; codecs=opus",
+    "audio/webm",
+    "audio/mp4"
+  ]
+}
