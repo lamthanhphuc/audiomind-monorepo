@@ -2,6 +2,7 @@
   "allowedContainers": ["webm"],
   "allowedCodecs": ["opus", "webm-opus"],
   "encoding": "webm-opus",
+  "allowBareWebm": true,
   "realtimeMimeCandidates": [
     "audio/webm;codecs=opus",
     "audio/webm; codecs=opus",
@@ -12,5 +13,6 @@
     "audio/webm; codecs=opus",
     "audio/webm",
     "audio/mp4"
-  ]
+  ],
+  "notes": "Explicit codecs in mime_type must be opus-compatible; vorbis/pcm/mp4 rejected. Bare audio/webm allowed when allowBareWebm is true."
 }

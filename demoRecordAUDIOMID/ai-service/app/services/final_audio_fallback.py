@@ -68,12 +68,7 @@ def run_final_audio_fallback(
             resolved_request,
             exc.code,
         )
-        return {
-            "status": "failed",
-            "error_code": exc.code,
-            "transcript_count": 0,
-            "idempotent_replay": False,
-        }
+        raise
 
     audio_bytes = path.stat().st_size
     logger.info(

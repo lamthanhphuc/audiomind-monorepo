@@ -22,9 +22,8 @@ import {
 } from '../utils/tabAudioPipeline'
 import { realtimeInfo, realtimeWarn } from '../utils/realtimeTelemetry'
 import {
-  buildMediaRecorderOptions,
+  createVerifiedRealtimeMediaRecorder,
   getSupportedFinalRecorderFormat,
-  requireSupportedRealtimeRecorderFormat,
   resolveRecordedAudioResult,
   UnsupportedRealtimeRecorderFormatError,
   type MediaRecorderFormat,
@@ -602,9 +601,8 @@ export const useAudioRecorder = (
         })
       }
 
-      const format = requireSupportedRealtimeRecorderFormat()
+      const { recorder, format } = createVerifiedRealtimeMediaRecorder(stream)
       recorderFormatRef.current = format
-      const recorder = new MediaRecorder(stream, buildMediaRecorderOptions(format))
       mediaRecorderRef.current = recorder
       streamRef.current = stream
       healthTrackerRef.current.reset()

@@ -12,8 +12,8 @@ import {
 import { REALTIME_RECORDER_TIMESLICE_MS } from '../services/config'
 import {
   buildMediaRecorderOptions,
+  createVerifiedRealtimeMediaRecorder,
   getSupportedFinalRecorderFormat,
-  requireSupportedRealtimeRecorderFormat,
   resolveRecordedAudioResult,
   UnsupportedRealtimeRecorderFormatError,
   type MediaRecorderFormat,
@@ -355,14 +355,9 @@ export const useDualAudioRecorder = (
       })
       startedAtRef.current = performance.now()
 
-      const realtimeFormat = requireSupportedRealtimeRecorderFormat()
-      const realtimeRecorderOptions = buildMediaRecorderOptions(realtimeFormat)
-      const finalFormat = getSupportedFinalRecorderFormat()
-      const finalRecorderOptions = buildMediaRecorderOptions(finalFormat)
-
-      // Required: dual realtime recorders first.
+      // Required: dual realtime recorders first — verify actual MIME before start.
       const recorders: StreamRecorder[] = streams.map(({ streamId, stream }) => {
-        const recorder = new MediaRecorder(stream, realtimeRecorderOptions)
+        const { recorder } = createVerifiedRealtimeMediaRecorder(stream)
         const chunks: Blob[] = []
         recorder.ondataavailable = (event) => {
           if (event.data.size <= 0) {
@@ -418,6 +413,8 @@ export const useDualAudioRecorder = (
           })
           await ensureAudioContextRunning(mixer.audioContext)
           const fallbackChunks: Blob[] = []
+          const finalFormat = getSupportedFinalRecorderFormat()
+          const finalRecorderOptions = buildMediaRecorderOptions(finalFormat)
           fallbackRecorder = new MediaRecorder(mixer.mixedStream, finalRecorderOptions)
           fallbackRecorder.ondataavailable = (event) => {
             if (event.data.size > 0) {
@@ -431,10 +428,18 @@ export const useDualAudioRecorder = (
             format: finalFormat,
             mixer,
           }
-          // Prefer mixer mic analyser when available (shares context with mixed graph).
+          // Prefer mixer mic analyser: switch health/RMS to shared context and drop standalone.
           if (mixer.micAnalyser) {
-            micAnalyserRef.current = mixer.micAnalyser
-            micAnalyserDataRef.current = new Uint8Array(mixer.micAnalyser.fftSize)
+            stopMicHealthMonitor()
+            if (standaloneMicAnalyserRef.current) {
+              try {
+                standaloneMicAnalyserRef.current.cleanup()
+              } catch {
+                // ignore
+              }
+              standaloneMicAnalyserRef.current = null
+            }
+            startMicHealthMonitor(acquired.mic.stream, mixer.micAnalyser, sessionId)
           }
         } catch (fallbackError) {
           try {
@@ -476,7 +481,7 @@ export const useDualAudioRecorder = (
       cleanupRecordingResources()
       throw error
     }
-  }, [cleanupRecordingResources, noiseSuppressionEnabled, options, startMicHealthMonitor, timesliceMs])
+  }, [cleanupRecordingResources, noiseSuppressionEnabled, options, startMicHealthMonitor, stopMicHealthMonitor, timesliceMs])
 
   const stopRecording = useCallback(() => {
     // Non-graceful: stop + full privacy cleanup immediately (logout / leave scene).

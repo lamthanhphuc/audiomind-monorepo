@@ -24,6 +24,10 @@ class MockMediaRecorder {
     MockMediaRecorder.instances.push(this)
   }
 
+  get mimeType() {
+    return this.options?.mimeType || 'audio/webm;codecs=opus'
+  }
+
   start = vi.fn((_timeslice?: number) => {
     this.state = 'recording'
   })

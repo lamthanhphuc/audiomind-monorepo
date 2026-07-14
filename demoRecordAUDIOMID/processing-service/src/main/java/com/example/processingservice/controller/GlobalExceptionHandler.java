@@ -240,6 +240,8 @@ public class GlobalExceptionHandler {
                     UPLOAD_SECURITY_SCAN_FAILED,
                     REALTIME_CHUNK_TOO_LARGE,
                     REALTIME_UNSUPPORTED_ENCODING,
+                    REALTIME_UNSUPPORTED_AUDIO_CODEC,
+                    REALTIME_AUDIO_METADATA_MISMATCH,
                     REALTIME_INVALID_PAYLOAD,
                     QUOTA_EXCEEDED,
                     INTERNAL_ERROR -> true;

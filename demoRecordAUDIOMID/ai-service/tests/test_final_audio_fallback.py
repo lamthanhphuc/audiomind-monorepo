@@ -161,17 +161,17 @@ def test_run_final_audio_fallback_rejects_tiny_audio(allowed_root: Path):
             "Audio file is too small for fallback transcription",
         ),
     ):
-        result = run_final_audio_fallback(
-            meeting_id=42,
-            audio_path=str(tiny_path),
-            language="vi",
-            trace_id="trace-42",
-            request_id="req-42",
-        )
+        with pytest.raises(FinalAudioPathError) as exc:
+            run_final_audio_fallback(
+                meeting_id=42,
+                audio_path=str(tiny_path),
+                language="vi",
+                trace_id="trace-42",
+                request_id="req-42",
+            )
 
-    assert result["status"] == "failed"
-    assert result["error_code"] == "FINAL_AUDIO_FALLBACK_UNAVAILABLE"
-    assert result["transcript_count"] == 0
+    assert exc.value.code == "FINAL_AUDIO_FALLBACK_UNAVAILABLE"
+    assert str(tiny_path) not in exc.value.safe_message
 
 
 @patch("app.services.final_audio_fallback.prepare_audio_for_stt")

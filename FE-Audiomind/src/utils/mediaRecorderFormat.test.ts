@@ -3,12 +3,15 @@ import {
   REALTIME_MIME_CANDIDATES,
   FINAL_MIME_CANDIDATES,
   REALTIME_PAYLOAD_CONTRACT,
+  assertRealtimeCompatibleMimeType,
   buildMediaRecorderOptions,
+  createVerifiedRealtimeMediaRecorder,
   extensionForMimeType,
   getSupportedFinalRecorderFormat,
   getSupportedMediaRecorderFormat,
   getSupportedRealtimeRecorderFormat,
   isRealtimeCompatibleMimeType,
+  parseRealtimeMimeType,
   realtimeEncodingForMimeType,
   requireSupportedRealtimeRecorderFormat,
   resolveRecordedAudioResult,
@@ -46,13 +49,68 @@ describe('mediaRecorderFormat', () => {
     expect(() => requireSupportedRealtimeRecorderFormat()).toThrow(UnsupportedRealtimeRecorderFormatError)
   })
 
-  it('allows browser-default MediaRecorder when isTypeSupported is unavailable', () => {
+  it('does not invent encoding when isTypeSupported is unavailable', () => {
     vi.stubGlobal('MediaRecorder', {})
     expect(requireSupportedRealtimeRecorderFormat()).toEqual({
       mimeType: undefined,
       extension: 'webm',
-      encoding: 'webm-opus',
     })
+  })
+
+  it('rejects vorbis and accepts quoted opus codecs', () => {
+    expect(isRealtimeCompatibleMimeType('audio/webm;codecs=vorbis')).toBe(false)
+    expect(isRealtimeCompatibleMimeType('audio/webm; codecs="opus"')).toBe(true)
+    expect(parseRealtimeMimeType('audio/webm; codecs="opus"')).toEqual({
+      container: 'audio/webm',
+      codecs: ['opus'],
+    })
+    expect(assertRealtimeCompatibleMimeType('audio/webm; codecs="opus"').encoding).toBe('webm-opus')
+    expect(() => assertRealtimeCompatibleMimeType('audio/webm;codecs=vorbis')).toThrow(
+      UnsupportedRealtimeRecorderFormatError,
+    )
+    expect(() => assertRealtimeCompatibleMimeType('')).toThrow(UnsupportedRealtimeRecorderFormatError)
+    expect(() => assertRealtimeCompatibleMimeType(undefined)).toThrow(UnsupportedRealtimeRecorderFormatError)
+  })
+
+  it('rejects actual MP4 Mime when isTypeSupported is missing and does not start recorder', () => {
+    const start = vi.fn()
+    class Mp4Recorder {
+      mimeType = 'audio/mp4'
+      state = 'inactive'
+      start = start
+      constructor(_stream: MediaStream, _options?: MediaRecorderOptions) {}
+    }
+    vi.stubGlobal('MediaRecorder', Mp4Recorder)
+    const stream = { getTracks: () => [] } as unknown as MediaStream
+    expect(() => createVerifiedRealtimeMediaRecorder(stream)).toThrow(UnsupportedRealtimeRecorderFormatError)
+    expect(start).not.toHaveBeenCalled()
+  })
+
+  it('accepts actual WebM/Opus mime when isTypeSupported is missing', () => {
+    class WebmRecorder {
+      mimeType = 'audio/webm;codecs=opus'
+      constructor(_stream: MediaStream, _options?: MediaRecorderOptions) {}
+    }
+    vi.stubGlobal('MediaRecorder', WebmRecorder)
+    const stream = { getTracks: () => [] } as unknown as MediaStream
+    const { format } = createVerifiedRealtimeMediaRecorder(stream)
+    expect(format).toEqual({
+      mimeType: 'audio/webm;codecs=opus',
+      container: 'webm',
+      codec: 'opus',
+      encoding: 'webm-opus',
+      extension: 'webm',
+    })
+  })
+
+  it('rejects actual WebM/Vorbis mime after construction', () => {
+    class VorbisRecorder {
+      mimeType = 'audio/webm;codecs=vorbis'
+      constructor(_stream: MediaStream, _options?: MediaRecorderOptions) {}
+    }
+    vi.stubGlobal('MediaRecorder', VorbisRecorder)
+    const stream = { getTracks: () => [] } as unknown as MediaStream
+    expect(() => createVerifiedRealtimeMediaRecorder(stream)).toThrow(UnsupportedRealtimeRecorderFormatError)
   })
 
   it('selects WebM for realtime and emits validator-compatible encoding', () => {
@@ -72,6 +130,7 @@ describe('mediaRecorderFormat', () => {
     expect(REALTIME_PAYLOAD_CONTRACT.allowedCodecs).toEqual(contract.allowedCodecs)
     expect(realtimeEncodingForMimeType('audio/mp4')).toBeNull()
     expect(realtimeEncodingForMimeType('audio/webm; codecs=opus')).toBe('webm-opus')
+    expect(realtimeEncodingForMimeType('audio/webm;codecs=vorbis')).toBeNull()
   })
 
   it('purpose=final remains the default getSupportedMediaRecorderFormat() behavior', () => {
