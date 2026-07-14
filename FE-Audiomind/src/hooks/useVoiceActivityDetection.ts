@@ -42,7 +42,7 @@ export const DEFAULT_VAD_SILENCE_DURATION_MS = 1500
 export const DEFAULT_VAD_RESUME_DURATION_MS = 120
 export const DEFAULT_VAD_SAMPLE_INTERVAL_MS = 100
 export const DEFAULT_VAD_RESUMED_LABEL_MS = 900
-export const DEFAULT_VAD_NOISE_CALIBRATION_MS = 800
+export const DEFAULT_VAD_NOISE_CALIBRATION_MS = 1600
 export const DEFAULT_VAD_HANGOVER_MS = 400
 
 const MIN_THRESHOLD = 0.002
@@ -215,9 +215,12 @@ export const useVoiceActivityDetection = ({
         const calibrationElapsedMs = now - calibrationStartedAtRef.current
         if (calibrationElapsedMs <= noiseCalibrationMs) {
           calibrationSamplesRef.current.push(rms)
+          // Do not pause/resume while calibrating noise floor.
+          return
         } else if (calibrationSamplesRef.current.length > 0) {
-          const samples = calibrationSamplesRef.current
-          const noiseFloor = samples.reduce((sum, sample) => sum + sample, 0) / samples.length
+          const samples = [...calibrationSamplesRef.current].sort((a, b) => a - b)
+          const percentileIndex = Math.max(0, Math.floor(samples.length * 0.2))
+          const noiseFloor = samples[percentileIndex] ?? samples[0] ?? 0
           thresholdsRef.current = resolveVadThresholds(
             noiseFloor,
             normalizedSensitivityMode,

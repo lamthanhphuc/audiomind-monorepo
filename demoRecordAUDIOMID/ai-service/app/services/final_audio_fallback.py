@@ -8,6 +8,7 @@ from typing import Any
 
 from app.config import get_settings
 from app.database import SessionLocal
+from app.services.audio_enhancement_service import prepare_audio_for_stt
 from app.services.stt_adapter import DeepgramSTTAdapter
 from app.services.stt_persistence import (
     TranscriptFragmentInput,
@@ -76,6 +77,14 @@ def run_final_audio_fallback(
             "idempotent_replay": False,
         }
 
+    prepared_path, enhanced_path = prepare_audio_for_stt(
+        path,
+        enabled=settings.audio_enhancement_enabled,
+        provider_name=settings.audio_enhancement_provider,
+        keep_enhanced=settings.audio_keep_enhanced_file,
+        timeout_seconds=settings.audio_enhancement_timeout_seconds,
+        temp_dir=Path(settings.temp_storage_path),
+    )
     db = SessionLocal()
     try:
         repository = TranscriptPersistenceRepository(db)
@@ -104,7 +113,7 @@ def run_final_audio_fallback(
         adapter = _build_adapter()
         effective_language = language or settings.deepgram_language
         result = adapter.batch_transcribe_file(
-            file_path=str(path),
+            file_path=str(prepared_path),
             language=effective_language,
             model=settings.deepgram_batch_model,
         )
@@ -181,3 +190,11 @@ def run_final_audio_fallback(
         }
     finally:
         db.close()
+        if enhanced_path is not None and not settings.audio_keep_enhanced_file:
+            try:
+                enhanced_path.unlink(missing_ok=True)
+            except OSError:
+                logger.warning(
+                    "AUDIO_ENHANCEMENT_CLEANUP_FAILED input=%s",
+                    enhanced_path.name,
+                )

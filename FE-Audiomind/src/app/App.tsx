@@ -1232,6 +1232,7 @@ export default function App() {
   const dualAudioRecorder = useDualAudioRecorder({
     diagnosticMeetingId: liveMeetingId,
     timesliceMs: recorderTimesliceMs,
+    noiseSuppressionEnabled,
     onTrackEnded: () => onTabAudioTrackEndedRef.current?.(),
     onCaptureError: (message) => onTabCaptureFailureRef.current?.(message, 'track'),
     onPipelineStalled: () => onTabPipelineStalledRef.current?.(),

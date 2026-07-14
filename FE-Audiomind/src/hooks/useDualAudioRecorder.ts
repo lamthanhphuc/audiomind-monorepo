@@ -2,24 +2,32 @@ import { useCallback, useRef, useState } from 'react'
 import {
   acquireDualTabMicSources,
   attachAudioTrackEndedHandler,
+  createTabMicMixFromStreams,
   mapAudioSourceErrorMessage,
   type DualTabMicStreamId,
+  type TabMicMixerHandles,
 } from '../utils/audioSourceAcquisition'
+import { REALTIME_RECORDER_TIMESLICE_MS } from '../services/config'
 import {
-  REALTIME_RECORDER_TIMESLICE_MS,
-} from '../services/config'
-import type { AudioRecorderState, GracefulStopResult, UseAudioRecorderReturn } from './useAudioRecorder'
-import {
-  RECORDER_STOP_TIMEOUT_MS,
-  REQUEST_DATA_GRACE_MS,
-} from './useAudioRecorder'
+  buildMediaRecorderOptions,
+  getSupportedMediaRecorderFormat,
+  resolveRecordedAudioResult,
+  type MediaRecorderFormat,
+} from '../utils/mediaRecorderFormat'
 import {
   createTabAudioPipelineMonitor,
+  ensureAudioContextRunning,
+  measureAnalyserRms,
   type TabAudioPipelineMonitor,
 } from '../utils/tabAudioPipeline'
 import { realtimeWarn } from '../utils/realtimeTelemetry'
-
-const RECORDER_MIME_TYPE = 'audio/webm; codecs=opus'
+import {
+  REQUEST_DATA_GRACE_MS,
+  RECORDER_STOP_TIMEOUT_MS,
+  type AudioRecorderState,
+  type GracefulStopResult,
+  type UseAudioRecorderReturn,
+} from './useAudioRecorder'
 
 type StreamRecorder = {
   streamId: DualTabMicStreamId
@@ -27,8 +35,16 @@ type StreamRecorder = {
   chunks: Blob[]
 }
 
+type FallbackRecorderState = {
+  recorder: MediaRecorder
+  chunks: Blob[]
+  format: MediaRecorderFormat
+  mixer: TabMicMixerHandles
+}
+
 export type UseDualAudioRecorderOptions = {
   timesliceMs?: number
+  noiseSuppressionEnabled?: boolean
   onTrackEnded?: () => void
   onCaptureError?: (message: string) => void
   onPipelineStalled?: (streamId: DualTabMicStreamId) => void
@@ -40,6 +56,35 @@ const sleep = (ms: number) => new Promise<void>((resolve) => {
   window.setTimeout(resolve, ms)
 })
 
+const stopRecorderGraceful = async (
+  recorder: MediaRecorder,
+  chunks: Blob[],
+): Promise<void> => {
+  if (recorder.state !== 'recording' && recorder.state !== 'paused') {
+    return
+  }
+  try {
+    recorder.requestData()
+  } catch {
+    // ignore
+  }
+  await new Promise<void>((resolve) => {
+    const timeout = window.setTimeout(resolve, RECORDER_STOP_TIMEOUT_MS)
+    recorder.addEventListener('stop', () => {
+      window.clearTimeout(timeout)
+      resolve()
+    }, { once: true })
+    try {
+      recorder.stop()
+    } catch {
+      window.clearTimeout(timeout)
+      resolve()
+    }
+  })
+  await sleep(REQUEST_DATA_GRACE_MS)
+  void chunks
+}
+
 export const useDualAudioRecorder = (
   options: UseDualAudioRecorderOptions = {},
 ): UseAudioRecorderReturn => {
@@ -50,6 +95,7 @@ export const useDualAudioRecorder = (
 
   const recordingSessionIdRef = useRef(0)
   const streamRecordersRef = useRef<StreamRecorder[]>([])
+  const fallbackRecorderRef = useRef<FallbackRecorderState | null>(null)
   const activeStreamIdsRef = useRef<DualTabMicStreamId[]>(['tab'])
   const dualCleanupRef = useRef<(() => void) | null>(null)
   const trackEndedDetachRef = useRef<(() => void) | null>(null)
@@ -58,7 +104,10 @@ export const useDualAudioRecorder = (
   const startedAtRef = useRef<number | null>(null)
   const tabPipelineMonitorRef = useRef<TabAudioPipelineMonitor | null>(null)
   const tabChunkSeqRef = useRef(0)
+  const micAnalyserRef = useRef<AnalyserNode | null>(null)
+  const micAnalyserDataRef = useRef<Uint8Array | null>(null)
   const timesliceMs = Math.max(100, Math.floor(options.timesliceMs ?? REALTIME_RECORDER_TIMESLICE_MS))
+  const noiseSuppressionEnabled = options.noiseSuppressionEnabled ?? true
 
   const stopDurationTimer = useCallback(() => {
     if (durationTimerRef.current !== null) {
@@ -83,6 +132,22 @@ export const useDualAudioRecorder = (
       }
     })
     streamRecordersRef.current = []
+
+    const fallback = fallbackRecorderRef.current
+    if (fallback) {
+      try {
+        if (fallback.recorder.state !== 'inactive') {
+          fallback.recorder.stop()
+        }
+      } catch {
+        // ignore
+      }
+      fallback.mixer.cleanupGraph()
+      fallbackRecorderRef.current = null
+    }
+    micAnalyserRef.current = null
+    micAnalyserDataRef.current = null
+
     dualCleanupRef.current?.()
     dualCleanupRef.current = null
     tabTrackTerminalHandledRef.current = false
@@ -117,7 +182,10 @@ export const useDualAudioRecorder = (
     }
 
     try {
-      const acquired = await acquireDualTabMicSources({ meetingId: options.diagnosticMeetingId ?? null })
+      const acquired = await acquireDualTabMicSources({
+        meetingId: options.diagnosticMeetingId ?? null,
+        noiseSuppressionEnabled,
+      })
       dualCleanupRef.current = acquired.cleanup
 
       const streams: Array<{ streamId: DualTabMicStreamId; stream: MediaStream }> = [
@@ -148,8 +216,40 @@ export const useDualAudioRecorder = (
       })
       startedAtRef.current = performance.now()
 
+      const format = getSupportedMediaRecorderFormat()
+      const recorderOptions = buildMediaRecorderOptions(format)
+
+      if (acquired.micIncluded && acquired.mic) {
+        const mixer = await createTabMicMixFromStreams(acquired.tab.stream, acquired.mic.stream, {
+          stopMicTracksOnCleanup: false,
+        })
+        await ensureAudioContextRunning(mixer.audioContext)
+        micAnalyserRef.current = mixer.micAnalyser
+        if (mixer.micAnalyser) {
+          micAnalyserDataRef.current = new Uint8Array(mixer.micAnalyser.fftSize)
+        }
+        const fallbackChunks: Blob[] = []
+        const fallbackRecorder = new MediaRecorder(mixer.mixedStream, recorderOptions)
+        fallbackRecorder.ondataavailable = (event) => {
+          if (event.data.size > 0) {
+            fallbackChunks.push(event.data)
+          }
+        }
+        fallbackRecorder.start(timesliceMs)
+        fallbackRecorderRef.current = {
+          recorder: fallbackRecorder,
+          chunks: fallbackChunks,
+          format,
+          mixer,
+        }
+      } else {
+        fallbackRecorderRef.current = null
+        micAnalyserRef.current = null
+        micAnalyserDataRef.current = null
+      }
+
       const recorders: StreamRecorder[] = streams.map(({ streamId, stream }) => {
-        const recorder = new MediaRecorder(stream, { mimeType: RECORDER_MIME_TYPE })
+        const recorder = new MediaRecorder(stream, recorderOptions)
         const chunks: Blob[] = []
         recorder.ondataavailable = (event) => {
           if (event.data.size > 0) {
@@ -189,7 +289,7 @@ export const useDualAudioRecorder = (
       cleanupRecordingResources()
       throw error
     }
-  }, [cleanupRecordingResources, options, timesliceMs])
+  }, [cleanupRecordingResources, noiseSuppressionEnabled, options, timesliceMs])
 
   const stopRecording = useCallback(() => {
     streamRecordersRef.current.forEach(({ recorder }) => {
@@ -197,62 +297,99 @@ export const useDualAudioRecorder = (
         recorder.stop()
       }
     })
+    const fallback = fallbackRecorderRef.current
+    if (fallback && (fallback.recorder.state === 'recording' || fallback.recorder.state === 'paused')) {
+      try {
+        fallback.recorder.stop()
+      } catch {
+        // ignore
+      }
+    }
     stopDurationTimer()
     setState('stopped')
-    dualCleanupRef.current?.()
-    dualCleanupRef.current = null
   }, [stopDurationTimer])
 
   const stopRecordingGraceful = useCallback(async (): Promise<GracefulStopResult> => {
     const sessionId = recordingSessionIdRef.current
     const recorders = [...streamRecordersRef.current]
+    const fallback = fallbackRecorderRef.current
     const postStopChunks: Blob[] = []
 
     await Promise.all(recorders.map(async ({ streamId, recorder, chunks }) => {
       const chunksBefore = chunks.length
-      if (recorder.state === 'recording' || recorder.state === 'paused') {
-        try {
-          recorder.requestData()
-        } catch {
-          // ignore
-        }
-        await new Promise<void>((resolve) => {
-          const timeout = window.setTimeout(resolve, RECORDER_STOP_TIMEOUT_MS)
-          recorder.addEventListener('stop', () => {
-            window.clearTimeout(timeout)
-            resolve()
-          }, { once: true })
-          try {
-            recorder.stop()
-          } catch {
-            window.clearTimeout(timeout)
-            resolve()
-          }
-        })
-        await sleep(REQUEST_DATA_GRACE_MS)
-        for (let index = chunksBefore; index < chunks.length; index += 1) {
-          const chunk = chunks[index]
-          postStopChunks.push(chunk)
-          void options.onChunkReady?.(chunk, streamId, sessionId)
-        }
+      await stopRecorderGraceful(recorder, chunks)
+      for (let index = chunksBefore; index < chunks.length; index += 1) {
+        const chunk = chunks[index]
+        postStopChunks.push(chunk)
+        void options.onChunkReady?.(chunk, streamId, sessionId)
       }
     }))
 
+    let fullBlob: Blob
+    let mimeType = 'audio/webm'
+    let extension: 'webm' | 'm4a' = 'webm'
+    let collectedChunkCount = 0
+
+    if (fallback) {
+      await stopRecorderGraceful(fallback.recorder, fallback.chunks)
+      const resolved = resolveRecordedAudioResult({
+        blob: new Blob(fallback.chunks, { type: fallback.recorder.mimeType || fallback.format.mimeType || 'audio/webm' }),
+        recorderMimeType: fallback.recorder.mimeType,
+        requestedFormat: fallback.format,
+        chunks: fallback.chunks,
+        sessionId,
+        collectedChunkCount: fallback.chunks.length,
+        postStopChunkCount: 0,
+      })
+      fullBlob = resolved.fullBlob
+      mimeType = resolved.mimeType
+      extension = resolved.extension
+      collectedChunkCount = fallback.chunks.length
+      fallback.mixer.cleanupGraph()
+      fallbackRecorderRef.current = null
+    } else {
+      // Tab-only dual fallback when mic unavailable: use tab recorder alone (single encoder).
+      const tabRecorder = recorders.find((entry) => entry.streamId === 'tab')
+      const tabChunks = tabRecorder?.chunks ?? []
+      const format = getSupportedMediaRecorderFormat()
+      const resolved = resolveRecordedAudioResult({
+        blob: new Blob(tabChunks, { type: tabRecorder?.recorder.mimeType || format.mimeType || 'audio/webm' }),
+        recorderMimeType: tabRecorder?.recorder.mimeType,
+        requestedFormat: format,
+        chunks: tabChunks,
+        sessionId,
+        collectedChunkCount: tabChunks.length,
+        postStopChunkCount: postStopChunks.length,
+      })
+      fullBlob = resolved.fullBlob
+      mimeType = resolved.mimeType
+      extension = resolved.extension
+      collectedChunkCount = tabChunks.length
+    }
+
     stopDurationTimer()
     setState('stopped')
+    // Drain complete — now safe to stop source tracks.
     dualCleanupRef.current?.()
     dualCleanupRef.current = null
+    micAnalyserRef.current = null
+    micAnalyserDataRef.current = null
 
-    const allChunks = recorders.flatMap(({ chunks }) => chunks)
-    const fullBlob = new Blob(allChunks, { type: RECORDER_MIME_TYPE })
     return {
       fullBlob,
       sessionId,
-      collectedChunkCount: allChunks.length,
+      collectedChunkCount,
       postStopChunkCount: postStopChunks.length,
-      chunks: allChunks,
+      chunks: fallback?.chunks ?? recorders.find((entry) => entry.streamId === 'tab')?.chunks ?? [],
+      mimeType,
+      extension,
+      recorded: {
+        blob: fullBlob,
+        mimeType,
+        extension,
+      },
     }
-  }, [stopDurationTimer])
+  }, [options, stopDurationTimer])
 
   const pauseRecording = useCallback(() => {
     streamRecordersRef.current.forEach(({ recorder }) => {
@@ -260,6 +397,10 @@ export const useDualAudioRecorder = (
         recorder.pause()
       }
     })
+    const fallback = fallbackRecorderRef.current
+    if (fallback?.recorder.state === 'recording') {
+      fallback.recorder.pause()
+    }
     setState('paused')
   }, [])
 
@@ -269,7 +410,27 @@ export const useDualAudioRecorder = (
         recorder.resume()
       }
     })
+    const fallback = fallbackRecorderRef.current
+    if (fallback?.recorder.state === 'paused') {
+      fallback.recorder.resume()
+    }
     setState('recording')
+  }, [])
+
+  const getCurrentRms = useCallback((): number | null => {
+    const analyser = micAnalyserRef.current
+    const buffer = micAnalyserDataRef.current
+    if (!analyser || !buffer) {
+      return null
+    }
+    if (buffer.length !== analyser.fftSize) {
+      micAnalyserDataRef.current = new Uint8Array(analyser.fftSize)
+    }
+    const samples = micAnalyserDataRef.current
+    if (!samples) {
+      return null
+    }
+    return measureAnalyserRms(analyser, samples)
   }, [])
 
   return {
@@ -285,7 +446,7 @@ export const useDualAudioRecorder = (
     pauseRecording,
     resumeRecording,
     duration,
-    getCurrentRms: () => null,
+    getCurrentRms,
     getRollingChunks: () => audioChunks,
     getActiveStreamIds: () => [...activeStreamIdsRef.current],
   }

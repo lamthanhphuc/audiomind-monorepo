@@ -4547,12 +4547,14 @@ async def final_audio_fallback(
 
     trace_id = getattr(http_request.state, "trace_id", None)
     request_id = getattr(http_request.state, "request_id", None)
-    result = run_final_audio_fallback(
-        meeting_id=meeting_id,
-        audio_path=audio_path,
-        language=language,
-        trace_id=trace_id,
-        request_id=request_id,
+    result = await asyncio.to_thread(
+        lambda: run_final_audio_fallback(
+            meeting_id=meeting_id,
+            audio_path=audio_path,
+            language=language,
+            trace_id=trace_id,
+            request_id=request_id,
+        )
     )
     return {
         "meeting_id": meeting_id,

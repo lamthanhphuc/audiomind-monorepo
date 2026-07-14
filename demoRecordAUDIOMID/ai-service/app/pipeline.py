@@ -32,6 +32,7 @@ from app.services.analysis_runs import (
     normalize_analysis_mode,
 )
 from app.services.analysis_factory import build_analysis_analyzer
+from app.services.audio_enhancement_service import prepare_audio_for_stt
 from app.services.audio_processor import AudioProcessor
 from app.services.stt_adapter import (
     DeepgramSTTAdapter,
@@ -858,11 +859,44 @@ class ProcessingPipeline:
             Processing result dictionary
         """
         active_analysis_run = None
+        enhanced_path: Path | None = None
         try:
             logger.info(f"Starting processing pipeline for meeting {meeting_id}")
             runtime_device = get_runtime_device()
             self._ensure_models_loaded()
             resolved_audio_path = self._resolve_audio_path(audio_path)
+            native_deepgram_diarization = self._should_use_native_deepgram_diarization()
+            local_diarization_will_run = bool(
+                self._should_enable_diarization(runtime_device)
+                and not native_deepgram_diarization
+                and self.diarization_available
+                and self.speaker_diarizer is not None
+            )
+            should_enhance_audio = bool(
+                settings.audio_enhancement_enabled
+                and (
+                    precomputed_transcript_segments is None
+                    or local_diarization_will_run
+                )
+            )
+            prepared_audio_path = Path(resolved_audio_path)
+            if should_enhance_audio:
+                prepared_audio_path, enhanced_path = prepare_audio_for_stt(
+                    resolved_audio_path,
+                    enabled=True,
+                    provider_name=settings.audio_enhancement_provider,
+                    keep_enhanced=settings.audio_keep_enhanced_file,
+                    timeout_seconds=settings.audio_enhancement_timeout_seconds,
+                    temp_dir=Path(settings.temp_storage_path),
+                )
+            else:
+                logger.info(
+                    "AUDIO_ENHANCEMENT_SKIPPED meetingId={} reason={}",
+                    meeting_id,
+                    "disabled"
+                    if not settings.audio_enhancement_enabled
+                    else "precomputed_transcript_without_local_diarization",
+                )
             glossary_context = glossary_context or {}
             effective_glossary_terms = self._normalize_glossary_terms(
                 glossary_context.get("terms"),
@@ -900,7 +934,7 @@ class ProcessingPipeline:
                 )
 
                 transcript_segments = self._transcribe_with_provider_selection(
-                    audio_path=resolved_audio_path,
+                    audio_path=str(prepared_audio_path),
                     language=language,
                     initial_prompt=initial_prompt,
                     meeting_id=meeting_id,
@@ -921,7 +955,7 @@ class ProcessingPipeline:
                 self._should_enable_diarization(runtime_device)
                 and self.diarization_available
             )
-            if self._should_use_native_deepgram_diarization():
+            if native_deepgram_diarization:
                 logger.info("Step 3/4: Native Deepgram speaker diarization enabled")
                 aligned_segments = self._normalize_speaker_labels(transcript_segments)
                 speaker_count = (
@@ -937,7 +971,7 @@ class ProcessingPipeline:
             elif diarization_enabled and self.speaker_diarizer is not None:
                 # Step 3: Speaker diarization
                 logger.info("Step 3: Speaker diarization")
-                diarization = self.speaker_diarizer.diarize(resolved_audio_path)
+                diarization = self.speaker_diarizer.diarize(str(prepared_audio_path))
                 speaker_segments = self.speaker_diarizer.format_diarization(diarization)
 
                 speaker_count = self.speaker_diarizer.get_speaker_count(diarization)
@@ -961,6 +995,16 @@ class ProcessingPipeline:
                     }
                     for seg in transcript_segments
                 ]
+
+            if enhanced_path is not None and not settings.audio_keep_enhanced_file:
+                try:
+                    enhanced_path.unlink(missing_ok=True)
+                except OSError:
+                    logger.warning(
+                        "AUDIO_ENHANCEMENT_CLEANUP_FAILED meetingId={} file={}",
+                        meeting_id,
+                        enhanced_path.name,
+                    )
 
             aligned_segments = self._deduplicate_repeated_segments(aligned_segments)
 
@@ -1178,6 +1222,16 @@ class ProcessingPipeline:
                 f"Processing pipeline error for meeting {meeting_id}: {repr(e)}"
             )
             raise
+        finally:
+            if enhanced_path is not None and not settings.audio_keep_enhanced_file:
+                try:
+                    enhanced_path.unlink(missing_ok=True)
+                except OSError:
+                    logger.warning(
+                        "AUDIO_ENHANCEMENT_CLEANUP_FAILED meetingId={} file={}",
+                        meeting_id,
+                        enhanced_path.name,
+                    )
 
     def _save_results(
         self,

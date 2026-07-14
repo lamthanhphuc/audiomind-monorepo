@@ -63,16 +63,23 @@ const prepareTabAudioTracks = (stream: MediaStream): void => {
 const isNoiseSuppressionConstraintSupported = (): boolean =>
   Boolean(navigator.mediaDevices?.getSupportedConstraints?.().noiseSuppression)
 
+export type MicrophoneAcquisitionOptions = {
+  noiseSuppressionEnabled?: boolean
+  /** Mic-only / dual default true. Mixed mode keeps false for RMS/gate compatibility. */
+  echoCancellationEnabled?: boolean
+  /** Mic-only / dual default true. Mixed mode keeps false for RMS/gate compatibility. */
+  autoGainControlEnabled?: boolean
+}
+
 const buildMicrophoneConstraints = (
-  noiseSuppressionEnabled: boolean,
-  options?: { forTabMix?: boolean },
+  options: MicrophoneAcquisitionOptions = {},
 ): MediaStreamConstraints => {
-  const forTabMix = options?.forTabMix === true
+  const noiseSuppressionEnabled = options.noiseSuppressionEnabled !== false
+  const echoCancellationEnabled = options.echoCancellationEnabled !== false
+  const autoGainControlEnabled = options.autoGainControlEnabled !== false
   const audio: MediaTrackConstraints = {
-    // Tab audio is captured directly (not through speakers). AEC/AGC can
-    // suppress the mic when tab speech is loud in the mixed STT stream.
-    echoCancellation: !forTabMix,
-    autoGainControl: !forTabMix,
+    echoCancellation: echoCancellationEnabled,
+    autoGainControl: autoGainControlEnabled,
     channelCount: 1,
     sampleRate: { ideal: PREFERRED_SAMPLE_RATE },
   }
@@ -191,26 +198,12 @@ const discardDisplayVideoTracks = (stream: MediaStream) => {
 }
 
 const acquireMicrophoneStream = async (
-  noiseSuppressionEnabled: boolean,
-  forTabMix = false,
+  options: MicrophoneAcquisitionOptions = {},
 ): Promise<MediaStream> => {
   if (!navigator.mediaDevices?.getUserMedia) {
     throw new AudioSourceError('Trình duyệt không hỗ trợ getUserMedia cho microphone.', 'not_supported')
   }
-  return navigator.mediaDevices.getUserMedia(
-    buildMicrophoneConstraints(noiseSuppressionEnabled, { forTabMix }),
-  )
-}
-
-export type TabMicMixerHandles = {
-  audioContext: AudioContext
-  sourceTabStream: MediaStream
-  sourceTabTrack: MediaStreamTrack | null
-  tabAnalyser: AnalyserNode
-  tabPostGainAnalyser: AnalyserNode
-  outputAnalyser: AnalyserNode
-  tabGain: GainNode
-  tabDuckGain: number
+  return navigator.mediaDevices.getUserMedia(buildMicrophoneConstraints(options))
 }
 
 const acquireBrowserTabStream = async (): Promise<MediaStream> => {
@@ -229,41 +222,41 @@ const acquireBrowserTabStream = async (): Promise<MediaStream> => {
   return stream
 }
 
-const mixTabAndMicrophoneStreams = async (
-  tabStream: MediaStream,
-  _noiseSuppressionEnabled: boolean,
-): Promise<{
-  stream: MediaStream
-  cleanup: () => void
-  micIncluded: boolean
-  mixerHandles?: TabMicMixerHandles
-}> => {
-  let micStream: MediaStream | null = null
-  try {
-    // Raw mic for tab-mix VAD: browser noise suppression lowers RMS and delays gate open.
-    micStream = await acquireMicrophoneStream(false, true)
-  } catch (error) {
-    realtimeWarn('[Realtime]', BROWSER_TAB_CAPTURE_TELEMETRY.CAPTURE_FAILED, {
-      reason: 'optional_mic_unavailable',
-      message: error instanceof Error ? error.message : String(error),
-    })
-    return {
-      stream: tabStream,
-      cleanup: () => {},
-      micIncluded: false,
-    }
-  }
+export type TabMicMixerHandles = {
+  audioContext: AudioContext
+  mixedStream: MediaStream
+  sourceTabStream: MediaStream
+  sourceMicStream: MediaStream | null
+  sourceTabTrack: MediaStreamTrack | null
+  micAnalyser: AnalyserNode | null
+  tabAnalyser: AnalyserNode
+  tabPostGainAnalyser: AnalyserNode
+  outputAnalyser: AnalyserNode
+  tabGain: GainNode
+  tabDuckGain: number
+  cleanupGraph: () => void
+}
 
+type CreateTabMicMixOptions = {
+  /** When true, cleanupGraph also stops mic tracks (mixed single-stream ownership). Dual keeps false. */
+  stopMicTracksOnCleanup?: boolean
+}
+
+/**
+ * Mix existing tab + mic streams without re-acquiring microphone.
+ * cleanupGraph disconnects nodes and closes AudioContext but does not stop tab tracks.
+ */
+export const createTabMicMixFromStreams = async (
+  tabStream: MediaStream,
+  micStream: MediaStream,
+  options: CreateTabMicMixOptions = {},
+): Promise<TabMicMixerHandles> => {
+  const stopMicTracksOnCleanup = options.stopMicTracksOnCleanup === true
   const AudioContextCtor = window.AudioContext
     || (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
 
   if (!AudioContextCtor) {
-    stopTracks(micStream)
-    return {
-      stream: tabStream,
-      cleanup: () => {},
-      micIncluded: false,
-    }
+    throw new AudioSourceError('Trình duyệt không hỗ trợ Web Audio API để mix tab + mic.', 'not_supported')
   }
 
   const audioContext = new AudioContextCtor()
@@ -375,9 +368,6 @@ const mixTabAndMicrophoneStreams = async (
           holdMs: micPriority ? SPEECH_HOLD_MS : 0,
           reason: micPriority ? 'mic_detected_without_tab_mute' : 'tab_default',
         })
-        if (!micPriority) {
-          // mic hold expired — tab resumes
-        }
       }
 
       if (now - lastStatsAt >= 5000) {
@@ -424,72 +414,96 @@ const mixTabAndMicrophoneStreams = async (
     suppressLocalAudioPlayback: false,
     mixedTrackCount: mixedStream.getAudioTracks().length,
   })
-  const cleanup = () => {
+
+  const cleanupGraph = () => {
     if (rafId) {
       window.cancelAnimationFrame(rafId)
+      rafId = 0
     }
     if (contextWatchId) {
       window.clearInterval(contextWatchId)
+      contextWatchId = 0
     }
     document.removeEventListener('visibilitychange', onVisibilityChange)
-    try {
-      tabSource.disconnect()
-    } catch {
-      // ignore
+    for (const node of [tabSource, micSource, tabGain, micGain, micAnalyser, tabAnalyser, tabPostGainAnalyser, outputAnalyser]) {
+      try {
+        node.disconnect()
+      } catch {
+        // ignore
+      }
     }
-    try {
-      micSource.disconnect()
-    } catch {
-      // ignore
+    if (stopMicTracksOnCleanup) {
+      stopTracks(micStream)
     }
-    try {
-      tabGain.disconnect()
-    } catch {
-      // ignore
-    }
-    try {
-      micGain.disconnect()
-    } catch {
-      // ignore
-    }
-    try {
-      micAnalyser.disconnect()
-    } catch {
-      // ignore
-    }
-    try {
-      tabAnalyser.disconnect()
-    } catch {
-      // ignore
-    }
-    try {
-      tabPostGainAnalyser.disconnect()
-    } catch {
-      // ignore
-    }
-    try {
-      outputAnalyser.disconnect()
-    } catch {
-      // ignore
-    }
-    stopTracks(micStream)
     void audioContext.close().catch(() => {})
   }
 
   return {
-    stream: mixedStream,
-    cleanup,
-    micIncluded: true,
-    mixerHandles: {
-      audioContext,
-      sourceTabStream: tabStream,
-      sourceTabTrack: tabStream.getAudioTracks()[0] ?? null,
-      tabAnalyser,
-      tabPostGainAnalyser,
-      outputAnalyser,
-      tabGain,
-      tabDuckGain: TAB_DUCK_GAIN,
-    },
+    audioContext,
+    mixedStream,
+    sourceTabStream: tabStream,
+    sourceMicStream: micStream,
+    sourceTabTrack: tabStream.getAudioTracks()[0] ?? null,
+    micAnalyser,
+    tabAnalyser,
+    tabPostGainAnalyser,
+    outputAnalyser,
+    tabGain,
+    tabDuckGain: TAB_DUCK_GAIN,
+    cleanupGraph,
+  }
+}
+
+const mixTabAndMicrophoneStreams = async (
+  tabStream: MediaStream,
+  noiseSuppressionEnabled: boolean,
+): Promise<{
+  stream: MediaStream
+  cleanup: () => void
+  micIncluded: boolean
+  mixerHandles?: TabMicMixerHandles
+}> => {
+  let micStream: MediaStream | null = null
+  try {
+    // Mixed mode: keep AEC/AGC off for RMS/gate compatibility; honor NS toggle.
+    micStream = await acquireMicrophoneStream({
+      noiseSuppressionEnabled,
+      echoCancellationEnabled: false,
+      autoGainControlEnabled: false,
+    })
+  } catch (error) {
+    realtimeWarn('[Realtime]', BROWSER_TAB_CAPTURE_TELEMETRY.CAPTURE_FAILED, {
+      reason: 'optional_mic_unavailable',
+      message: error instanceof Error ? error.message : String(error),
+    })
+    return {
+      stream: tabStream,
+      cleanup: () => {},
+      micIncluded: false,
+    }
+  }
+
+  try {
+    const mixerHandles = await createTabMicMixFromStreams(tabStream, micStream, {
+      stopMicTracksOnCleanup: true,
+    })
+    return {
+      stream: mixerHandles.mixedStream,
+      cleanup: mixerHandles.cleanupGraph,
+      micIncluded: true,
+      mixerHandles,
+    }
+  } catch (error) {
+    stopTracks(micStream)
+    realtimeWarn('[Realtime]', BROWSER_TAB_CAPTURE_TELEMETRY.CAPTURE_FAILED, {
+      reason: 'tab_mic_mix_unavailable',
+      message: error instanceof Error ? error.message : String(error),
+    })
+    return {
+      stream: tabStream,
+      cleanup: () => {},
+      micIncluded: false,
+    }
   }
 }
 
@@ -503,14 +517,21 @@ export type AcquiredDualTabMicSources = {
 }
 
 export const acquireDualTabMicSources = async (
-  options: { meetingId?: number | null } = {},
+  options: {
+    meetingId?: number | null
+    noiseSuppressionEnabled?: boolean
+  } = {},
 ): Promise<AcquiredDualTabMicSources> => {
-  const { meetingId = null } = options
+  const { meetingId = null, noiseSuppressionEnabled = true } = options
   const tabStream = await acquireBrowserTabStream()
   let micStream: MediaStream | null = null
 
   try {
-    micStream = await acquireMicrophoneStream(false, true)
+    micStream = await acquireMicrophoneStream({
+      noiseSuppressionEnabled,
+      echoCancellationEnabled: true,
+      autoGainControlEnabled: true,
+    })
   } catch (error) {
     realtimeWarn('[Realtime]', BROWSER_TAB_CAPTURE_TELEMETRY.CAPTURE_FAILED, {
       meetingId,
@@ -545,6 +566,7 @@ export const acquireDualTabMicSources = async (
     source: 'browser_tab_with_mic',
     micIncluded: true,
     dualStream: true,
+    noiseSuppressionEnabled,
   })
 
   return {
@@ -564,7 +586,11 @@ export const acquireAudioSource = async (
 
   try {
     if (source === 'microphone') {
-      const stream = await acquireMicrophoneStream(noiseSuppressionEnabled)
+      const stream = await acquireMicrophoneStream({
+        noiseSuppressionEnabled,
+        echoCancellationEnabled: true,
+        autoGainControlEnabled: true,
+      })
       ownedStreams = [stream]
       return {
         stream,

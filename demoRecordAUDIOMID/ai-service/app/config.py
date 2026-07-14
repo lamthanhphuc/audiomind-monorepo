@@ -126,6 +126,13 @@ class Settings(BaseSettings):
     audio_storage_path: str = "./storage/audio"
     temp_storage_path: str = "./storage/temp"
 
+    # Optional FFmpeg audio enhancement
+    audio_enhancement_enabled: bool = False
+    audio_enhancement_provider: str = "ffmpeg"
+    audio_enhancement_profile: str = "stt"
+    audio_enhancement_timeout_seconds: int = 120
+    audio_keep_enhanced_file: bool = False
+
     # Model Settings
     whisper_model: str = "base"
     device: str = "auto"  # auto | cpu | cuda
@@ -306,6 +313,25 @@ class Settings(BaseSettings):
         self.ai_provider = (self.ai_provider or "gemini").strip().lower()
         if self.ai_provider not in {"gemini", "ollama", "local"}:
             self.ai_provider = "gemini"
+
+        self.audio_enhancement_provider = (
+            self.audio_enhancement_provider or ""
+        ).strip().lower()
+        if self.audio_enhancement_enabled and self.audio_enhancement_provider not in {
+            "",
+            "none",
+            "ffmpeg",
+        }:
+            raise ValueError(
+                "audio_enhancement_provider must be one of: none, ffmpeg "
+                "(elevenlabs and deepfilter are not supported)"
+            )
+        self.audio_enhancement_profile = (
+            self.audio_enhancement_profile or "stt"
+        ).strip().lower()
+        self.audio_enhancement_timeout_seconds = max(
+            1, int(self.audio_enhancement_timeout_seconds or 120)
+        )
 
         return self
 

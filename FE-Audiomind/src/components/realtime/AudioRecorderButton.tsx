@@ -26,7 +26,11 @@ interface AudioRecorderButtonProps {
   recorder: UseAudioRecorderReturn
   recordingSource?: RecordingSource
   onChunkReady?: (chunk: Blob, sessionId: number) => void | Promise<void>
-  onRecordingComplete?: (fullAudio: Blob, sessionId: number) => void
+  onRecordingComplete?: (
+    fullAudio: Blob,
+    sessionId: number,
+    recorded?: { mimeType: string; extension: 'webm' | 'm4a'; blob: Blob },
+  ) => void
   onBeforeStartRecording?: (recordingSessionId: number) => Promise<void> | void
   onStopRequested?: () => void
   gracefulStopRef?: React.MutableRefObject<(() => Promise<void>) | null>
@@ -145,7 +149,7 @@ export function AudioRecorderButton({
 
       if (!completionEmittedRef.current) {
         completionEmittedRef.current = true
-        onRecordingComplete?.(result.fullBlob, sessionId)
+        onRecordingComplete?.(result.fullBlob, sessionId, result.recorded)
       }
     } finally {
       setIsBusy(false)

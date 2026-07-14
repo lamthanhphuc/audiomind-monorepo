@@ -21,6 +21,22 @@ import {
   type TabAudioPipelineMonitor,
 } from '../utils/tabAudioPipeline'
 import { realtimeInfo, realtimeWarn } from '../utils/realtimeTelemetry'
+import {
+  buildMediaRecorderOptions,
+  getSupportedMediaRecorderFormat,
+  resolveRecordedAudioResult,
+  type MediaRecorderFormat,
+} from '../utils/mediaRecorderFormat'
+import {
+  compareRequestedMicrophoneSettings,
+  readMicrophoneAudioSettings,
+  toSafeMicTelemetry,
+} from '../utils/microphoneSettings'
+import {
+  MIC_HEALTH_MESSAGES,
+  createMicrophoneHealthTracker,
+  type MicrophoneHealthIssue,
+} from '../constants/micHealthConstants'
 
 export type AudioRecorderState = 'idle' | 'connecting' | 'recording' | 'paused' | 'stopped' | 'error'
 
@@ -55,9 +71,10 @@ export interface UseAudioRecorderReturn {
   getCurrentRms: () => number | null
   getRollingChunks: () => Blob[]
   getActiveStreamIds?: () => Array<'tab' | 'mic'>
+  micHealthIssue?: MicrophoneHealthIssue | null
+  micHealthMessage?: string | null
 }
 
-const RECORDER_MIME_TYPE = 'audio/webm; codecs=opus'
 const DURATION_TICK_MS = 250
 const FALLBACK_RECORDER_TIMESLICE_MS = 250
 
@@ -71,27 +88,39 @@ export type GracefulStopResult = {
   collectedChunkCount: number
   postStopChunkCount: number
   chunks: Blob[]
+  mimeType: string
+  extension: 'webm' | 'm4a'
+  recorded: {
+    blob: Blob
+    mimeType: string
+    extension: 'webm' | 'm4a'
+  }
 }
 
 const sleep = (ms: number) => new Promise<void>((resolve) => {
   window.setTimeout(resolve, ms)
 })
 
-const logSafeMicSettings = (stream: MediaStream) => {
-  const track = stream.getAudioTracks?.()[0] ?? stream.getTracks()[0]
-  const settings = track?.getSettings?.()
-  if (!settings) {
-    return
+const logSafeMicSettings = (
+  stream: MediaStream,
+  requested: {
+    noiseSuppressionEnabled: boolean
+    echoCancellationEnabled: boolean
+    autoGainControlEnabled: boolean
+  },
+): MicrophoneHealthIssue[] => {
+  const settings = readMicrophoneAudioSettings(stream)
+  const telemetry = toSafeMicTelemetry(settings)
+  if (telemetry) {
+    realtimeInfo('[Realtime] MIC_SETTINGS', telemetry)
   }
-
-  realtimeInfo('[Realtime] MIC_SETTINGS', {
-    noiseSuppression: settings.noiseSuppression,
-    echoCancellation: settings.echoCancellation,
-    autoGainControl: settings.autoGainControl,
-    sampleRate: settings.sampleRate,
-    channelCount: settings.channelCount,
-    deviceIdPresent: typeof settings.deviceId === 'string' && settings.deviceId.length > 0,
-  })
+  const issues: MicrophoneHealthIssue[] = []
+  for (const issue of compareRequestedMicrophoneSettings(requested, settings)) {
+    if (issue === 'noise_suppression_unavailable' || issue === 'echo_cancellation_unavailable') {
+      issues.push(issue)
+    }
+  }
+  return issues
 }
 
 export const useAudioRecorder = (
@@ -102,6 +131,11 @@ export const useAudioRecorder = (
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [audioChunks, setAudioChunks] = useState<Blob[]>([])
   const [duration, setDuration] = useState(0)
+
+  const recorderFormatRef = useRef<MediaRecorderFormat>(getSupportedMediaRecorderFormat())
+  const constraintIssuesRef = useRef<MicrophoneHealthIssue[]>([])
+  const healthTrackerRef = useRef(createMicrophoneHealthTracker())
+  const [micHealthIssue, setMicHealthIssue] = useState<MicrophoneHealthIssue | null>(null)
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
@@ -333,28 +367,47 @@ export const useAudioRecorder = (
       void ensureAudioContextRunning(audioContext)
 
       const shouldLogLevel = meetingId !== null && (AUDIO_DEBUG_ENABLED || import.meta.env.DEV)
-      const logLevel = () => {
+      const tickHealth = () => {
         if (!mountedRef.current || recordingSessionIdRef.current !== sessionId) {
           return
         }
-
         const metrics = readAudioMetrics()
         if (!metrics) {
           return
         }
-        // eslint-disable-next-line no-console
-        realtimeInfo('[Realtime] REALTIME_AUDIO_LEVEL', {
-          meetingId,
-          sessionId,
-          rms: Number(metrics.rms.toFixed(4)),
-          peak: Number(metrics.peak.toFixed(4)),
-        })
+        let clippingSamples = 0
+        const samples = audioAnalyserSamplesRef.current
+        if (samples) {
+          for (const sample of samples) {
+            const normalized = Math.abs((sample - 128) / 128)
+            if (normalized >= 0.98) {
+              clippingSamples += 1
+            }
+          }
+        }
+        const health = healthTrackerRef.current.update(
+          {
+            rms: metrics.rms,
+            peak: metrics.peak,
+            clippingRatio: samples && samples.length > 0 ? clippingSamples / samples.length : 0,
+          },
+          Date.now(),
+          constraintIssuesRef.current,
+        )
+        setMicHealthIssue(health.activeIssue)
+        if (shouldLogLevel) {
+          realtimeInfo('[Realtime] REALTIME_AUDIO_LEVEL', {
+            meetingId,
+            sessionId,
+            rms: Number(metrics.rms.toFixed(4)),
+            peak: Number(metrics.peak.toFixed(4)),
+            healthIssue: health.activeIssue,
+          })
+        }
       }
 
-      if (shouldLogLevel) {
-        logLevel()
-        audioLevelTimerRef.current = window.setInterval(logLevel, 1000)
-      }
+      tickHealth()
+      audioLevelTimerRef.current = window.setInterval(tickHealth, 120)
     } catch {
       stopAudioLevelDiagnostics()
     }
@@ -456,7 +509,7 @@ export const useAudioRecorder = (
         // eslint-disable-next-line no-console
         realtimeInfo('[AudioRecorder] chunk diagnostics', {
           size: blob.size,
-          mimeType: blob.type || recorder.mimeType || RECORDER_MIME_TYPE,
+          mimeType: blob.type || recorder.mimeType || recorderFormatRef.current.mimeType || 'audio/webm',
           recorderState: recorder.state,
           chunkSequence: chunkCount,
           bufferedChunks: chunkCount,
@@ -543,11 +596,21 @@ export const useAudioRecorder = (
         })
       }
 
-      const recorder = new MediaRecorder(stream, { mimeType: RECORDER_MIME_TYPE })
+      const format = getSupportedMediaRecorderFormat()
+      recorderFormatRef.current = format
+      const recorder = new MediaRecorder(stream, buildMediaRecorderOptions(format))
       mediaRecorderRef.current = recorder
       streamRef.current = stream
       if (recordingSource === 'microphone') {
-        logSafeMicSettings(stream)
+        constraintIssuesRef.current = logSafeMicSettings(stream, {
+          noiseSuppressionEnabled,
+          echoCancellationEnabled: true,
+          autoGainControlEnabled: true,
+        })
+        healthTrackerRef.current.reset()
+        setMicHealthIssue(null)
+      } else {
+        constraintIssuesRef.current = []
       }
       startAudioLevelDiagnostics(stream, sessionId, diagnosticMeetingId)
       startTabPipelineMonitor(stream, sessionId, diagnosticMeetingId, acquired.tabMixerHandles)
@@ -651,22 +714,40 @@ export const useAudioRecorder = (
     const recorder = mediaRecorderRef.current
 
     const buildResult = (chunks: Blob[], postStopChunkCount: number): GracefulStopResult => {
-      const fullBlob = new Blob(chunks.length > 0 ? chunks : [], { type: RECORDER_MIME_TYPE })
+      const recorder = mediaRecorderRef.current
+      const format = recorderFormatRef.current
+      const rawBlob = new Blob(chunks.length > 0 ? chunks : [], {
+        type: recorder?.mimeType || format.mimeType || 'audio/webm',
+      })
+      const resolved = resolveRecordedAudioResult({
+        blob: rawBlob,
+        recorderMimeType: recorder?.mimeType,
+        requestedFormat: format,
+        chunks,
+        sessionId,
+        collectedChunkCount: chunks.length,
+        postStopChunkCount,
+      })
       if (AUDIO_DEBUG_ENABLED || import.meta.env.DEV) {
         realtimeInfo('[Realtime] FINAL_AUDIO_BLOB_READY', {
           meetingId: diagnosticMeetingId,
           sessionId,
-          bytes: fullBlob.size,
+          bytes: resolved.fullBlob.size,
           collectedChunkCount: chunks.length,
           postStopChunkCount,
+          mimeType: resolved.mimeType,
+          extension: resolved.extension,
         })
       }
       return {
-        fullBlob,
+        fullBlob: resolved.fullBlob,
         sessionId,
         collectedChunkCount: chunks.length,
         postStopChunkCount,
         chunks,
+        mimeType: resolved.mimeType,
+        extension: resolved.extension,
+        recorded: resolved.result,
       }
     }
 
@@ -910,5 +991,7 @@ export const useAudioRecorder = (
     duration,
     getCurrentRms,
     getRollingChunks,
+    micHealthIssue,
+    micHealthMessage: micHealthIssue ? MIC_HEALTH_MESSAGES[micHealthIssue] : null,
   }
 }

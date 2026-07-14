@@ -801,7 +801,11 @@ export const useRealtimeSession = ({
     setLiveAnalysisStatus,
   ])
 
-  const handleLiveRecordingComplete = useCallback(async (fullAudio: Blob, sessionId: number) => {
+  const handleLiveRecordingComplete = useCallback(async (
+    fullAudio: Blob,
+    sessionId: number,
+    recordedMeta?: { mimeType: string; extension: 'webm' | 'm4a' },
+  ) => {
     const sessionToken = activeRealtimeSessionTokenRef.current
     const completedMeetingId = liveMeetingIdRef.current
     let noTranscriptAfterFinalize = false
@@ -910,10 +914,13 @@ export const useRealtimeSession = ({
             resetRequired: realtimeStream.status.resetRequired,
           })
           try {
+            const fallbackExtension = recordedMeta?.extension
+              || (fullAudio.type.toLowerCase().includes('mp4') ? 'm4a' : 'webm')
+            const fallbackMime = recordedMeta?.mimeType || fullAudio.type || 'audio/webm'
             const fallbackFile = new File(
               [fullAudio],
-              `realtime-fallback-${activeMeetingId}.webm`,
-              { type: fullAudio.type || 'audio/webm' },
+              `realtime-fallback-${activeMeetingId}.${fallbackExtension}`,
+              { type: fallbackMime },
             )
             const fallbackResponse = await submitRealtimeFinalAudioFallback(
               activeMeetingId,
