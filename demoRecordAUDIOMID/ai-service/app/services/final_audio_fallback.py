@@ -9,6 +9,10 @@ from typing import Any
 from app.config import get_settings
 from app.database import SessionLocal
 from app.services.audio_enhancement_service import prepare_audio_for_stt
+from app.services.final_audio_path_validation import (
+    FinalAudioPathError,
+    validate_final_audio_fallback_path,
+)
 from app.services.stt_adapter import DeepgramSTTAdapter
 from app.services.stt_persistence import (
     TranscriptFragmentInput,
@@ -18,7 +22,6 @@ from app.services.stt_persistence import (
 logger = logging.getLogger(__name__)
 
 FALLBACK_EVENT_PREFIX = "final-audio-fallback"
-MIN_FALLBACK_AUDIO_BYTES = 128
 
 
 def _build_adapter() -> DeepgramSTTAdapter:
@@ -50,41 +53,40 @@ def run_final_audio_fallback(
     resolved_trace = trace_id or f"final-audio-fallback-{meeting_id}"
     resolved_request = request_id or resolved_trace
     settings = get_settings()
-    path = Path(audio_path)
-    audio_bytes = path.stat().st_size if path.is_file() else 0
 
+    try:
+        path = validate_final_audio_fallback_path(
+            audio_path,
+            settings=settings,
+            require_audio_probe=True,
+        )
+    except FinalAudioPathError as exc:
+        logger.warning(
+            "STT_FINAL_AUDIO_FALLBACK_FAILED meeting_id=%s traceId=%s requestId=%s errorCode=%s",
+            meeting_id,
+            resolved_trace,
+            resolved_request,
+            exc.code,
+        )
+        return {
+            "status": "failed",
+            "error_code": exc.code,
+            "transcript_count": 0,
+            "idempotent_replay": False,
+        }
+
+    audio_bytes = path.stat().st_size
     logger.info(
-        "STT_FINAL_AUDIO_FALLBACK_STARTED meeting_id=%s traceId=%s requestId=%s audioBytes=%s language=%s",
+        "STT_FINAL_AUDIO_FALLBACK_STARTED meeting_id=%s traceId=%s requestId=%s audioBytes=%s language=%s name=%s",
         meeting_id,
         resolved_trace,
         resolved_request,
         audio_bytes,
         language,
+        path.name,
     )
 
-    if audio_bytes < MIN_FALLBACK_AUDIO_BYTES:
-        logger.warning(
-            "STT_FINAL_AUDIO_FALLBACK_FAILED meeting_id=%s traceId=%s requestId=%s errorCode=FINAL_AUDIO_FALLBACK_UNAVAILABLE audioBytes=%s",
-            meeting_id,
-            resolved_trace,
-            resolved_request,
-            audio_bytes,
-        )
-        return {
-            "status": "failed",
-            "error_code": "FINAL_AUDIO_FALLBACK_UNAVAILABLE",
-            "transcript_count": 0,
-            "idempotent_replay": False,
-        }
-
-    prepared_path, enhanced_path = prepare_audio_for_stt(
-        path,
-        enabled=settings.audio_enhancement_enabled,
-        provider_name=settings.audio_enhancement_provider,
-        keep_enhanced=settings.audio_keep_enhanced_file,
-        timeout_seconds=settings.audio_enhancement_timeout_seconds,
-        temp_dir=Path(settings.temp_storage_path),
-    )
+    # Idempotency BEFORE enhancement / STT so retries are cheap.
     db = SessionLocal()
     try:
         repository = TranscriptPersistenceRepository(db)
@@ -110,68 +112,86 @@ def run_final_audio_fallback(
                 "idempotent_replay": True,
             }
 
-        adapter = _build_adapter()
-        effective_language = language or settings.deepgram_language
-        result = adapter.batch_transcribe_file(
-            file_path=str(prepared_path),
-            language=effective_language,
-            model=settings.deepgram_batch_model,
+        prepared_path, enhanced_path = prepare_audio_for_stt(
+            path,
+            enabled=settings.audio_enhancement_enabled,
+            provider_name=settings.audio_enhancement_provider,
+            keep_enhanced=settings.audio_keep_enhanced_file,
+            timeout_seconds=settings.audio_enhancement_timeout_seconds,
+            temp_dir=Path(settings.temp_storage_path),
         )
-        segments = result.get("segments", []) if isinstance(result, dict) else []
-        persisted = 0
-        base_seq = len(existing)
-        for index, segment in enumerate(segments, start=1):
-            if not isinstance(segment, dict):
-                continue
-            text = str(segment.get("text", "")).strip()
-            if not text:
-                continue
-            fragment = TranscriptFragmentInput(
-                meeting_id=meeting_id,
-                seq=base_seq + index,
-                speaker=str(segment.get("speaker", "SPEAKER_1")),
-                start_time=float(segment.get("start", 0.0)),
-                end_time=float(segment.get("end", 0.0)),
-                text=text,
-                event_id=f"{FALLBACK_EVENT_PREFIX}-{meeting_id}-{index}",
-                is_final=True,
-                confidence=(
-                    float(segment["confidence"])
-                    if segment.get("confidence") is not None
-                    else None
-                ),
+        try:
+            adapter = _build_adapter()
+            effective_language = language or settings.deepgram_language
+            result = adapter.batch_transcribe_file(
+                file_path=str(prepared_path),
+                language=effective_language,
+                model=settings.deepgram_batch_model,
             )
-            repository.append_fragment(fragment)
-            persisted += 1
+            segments = result.get("segments", []) if isinstance(result, dict) else []
+            persisted = 0
+            base_seq = len(existing)
+            for index, segment in enumerate(segments, start=1):
+                if not isinstance(segment, dict):
+                    continue
+                text = str(segment.get("text", "")).strip()
+                if not text:
+                    continue
+                fragment = TranscriptFragmentInput(
+                    meeting_id=meeting_id,
+                    seq=base_seq + index,
+                    speaker=str(segment.get("speaker", "SPEAKER_1")),
+                    start_time=float(segment.get("start", 0.0)),
+                    end_time=float(segment.get("end", 0.0)),
+                    text=text,
+                    event_id=f"{FALLBACK_EVENT_PREFIX}-{meeting_id}-{index}",
+                    is_final=True,
+                    confidence=(
+                        float(segment["confidence"])
+                        if segment.get("confidence") is not None
+                        else None
+                    ),
+                )
+                repository.append_fragment(fragment)
+                persisted += 1
 
-        db.commit()
-        if persisted > 0:
+            db.commit()
+            if persisted > 0:
+                logger.info(
+                    "STT_FINAL_AUDIO_FALLBACK_SUCCEEDED meeting_id=%s traceId=%s requestId=%s transcriptCount=%s",
+                    meeting_id,
+                    resolved_trace,
+                    resolved_request,
+                    persisted,
+                )
+                return {
+                    "status": "completed",
+                    "error_code": None,
+                    "transcript_count": persisted,
+                    "idempotent_replay": False,
+                }
+
             logger.info(
-                "STT_FINAL_AUDIO_FALLBACK_SUCCEEDED meeting_id=%s traceId=%s requestId=%s transcriptCount=%s",
+                "STT_FINAL_AUDIO_FALLBACK_SUCCEEDED meeting_id=%s traceId=%s requestId=%s transcriptCount=0 errorCode=NO_TRANSCRIPT",
                 meeting_id,
                 resolved_trace,
                 resolved_request,
-                persisted,
             )
             return {
                 "status": "completed",
-                "error_code": None,
-                "transcript_count": persisted,
+                "error_code": "NO_TRANSCRIPT",
+                "transcript_count": 0,
                 "idempotent_replay": False,
             }
-
-        logger.info(
-            "STT_FINAL_AUDIO_FALLBACK_SUCCEEDED meeting_id=%s traceId=%s requestId=%s transcriptCount=0 errorCode=NO_TRANSCRIPT",
-            meeting_id,
-            resolved_trace,
-            resolved_request,
-        )
-        return {
-            "status": "completed",
-            "error_code": "NO_TRANSCRIPT",
-            "transcript_count": 0,
-            "idempotent_replay": False,
-        }
+        finally:
+            if enhanced_path is not None and not settings.audio_keep_enhanced_file:
+                try:
+                    enhanced_path.unlink(missing_ok=True)
+                except OSError:
+                    logger.warning(
+                        "AUDIO_ENHANCEMENT_CLEANUP_FAILED input=%s",
+                        enhanced_path.name,
+                    )
     except Exception as exc:
         db.rollback()
         logger.warning(
@@ -190,11 +210,3 @@ def run_final_audio_fallback(
         }
     finally:
         db.close()
-        if enhanced_path is not None and not settings.audio_keep_enhanced_file:
-            try:
-                enhanced_path.unlink(missing_ok=True)
-            except OSError:
-                logger.warning(
-                    "AUDIO_ENHANCEMENT_CLEANUP_FAILED input=%s",
-                    enhanced_path.name,
-                )

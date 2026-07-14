@@ -409,6 +409,8 @@ describe('useAudioRecorder', () => {
     expect(getDisplayMedia).toHaveBeenCalled()
     expect(latestRecorder?.state).toBe('recording')
     expect(videoTrack.stop).toHaveBeenCalled()
+    expect(latestRecorder?.micHealthIssue).toBeNull()
+    expect(latestRecorder?.micHealthMessage).toBeNull()
   })
 
   it('reports missing tab audio as Vietnamese error', async () => {

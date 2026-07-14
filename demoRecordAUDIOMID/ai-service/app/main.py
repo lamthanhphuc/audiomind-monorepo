@@ -4544,18 +4544,24 @@ async def final_audio_fallback(
     language: str = Form(default="vi"),
 ):
     from app.services.final_audio_fallback import run_final_audio_fallback
+    from app.services.final_audio_path_validation import FinalAudioPathError
 
     trace_id = getattr(http_request.state, "trace_id", None)
     request_id = getattr(http_request.state, "request_id", None)
-    result = await asyncio.to_thread(
-        lambda: run_final_audio_fallback(
+    try:
+        result = await asyncio.to_thread(
+            run_final_audio_fallback,
             meeting_id=meeting_id,
             audio_path=audio_path,
             language=language,
             trace_id=trace_id,
             request_id=request_id,
         )
-    )
+    except FinalAudioPathError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"error_code": exc.code, "message": exc.safe_message},
+        ) from None
     return {
         "meeting_id": meeting_id,
         **result,

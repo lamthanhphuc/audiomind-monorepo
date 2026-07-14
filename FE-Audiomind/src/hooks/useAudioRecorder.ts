@@ -276,6 +276,10 @@ export const useAudioRecorder = (
       audioContextRef.current = null
       void context.close().catch(() => {})
     }
+
+    constraintIssuesRef.current = []
+    healthTrackerRef.current.reset()
+    setMicHealthIssue(null)
   }, [])
 
   const startTabPipelineMonitor = useCallback((
@@ -601,18 +605,33 @@ export const useAudioRecorder = (
       const recorder = new MediaRecorder(stream, buildMediaRecorderOptions(format))
       mediaRecorderRef.current = recorder
       streamRef.current = stream
+      healthTrackerRef.current.reset()
+      setMicHealthIssue(null)
+      constraintIssuesRef.current = []
+
+      // Mic health only for modes that actually capture a microphone leg.
+      // Tab-only must never raise mic health warnings; mixed uses the source mic stream,
+      // never the mixed destination.
       if (recordingSource === 'microphone') {
         constraintIssuesRef.current = logSafeMicSettings(stream, {
           noiseSuppressionEnabled,
           echoCancellationEnabled: true,
           autoGainControlEnabled: true,
         })
-        healthTrackerRef.current.reset()
-        setMicHealthIssue(null)
+        startAudioLevelDiagnostics(stream, sessionId, diagnosticMeetingId)
+      } else if (recordingSource === 'browser_tab_with_mic') {
+        const micStream = acquired.tabMixerHandles?.sourceMicStream ?? null
+        if (micStream) {
+          constraintIssuesRef.current = logSafeMicSettings(micStream, {
+            noiseSuppressionEnabled,
+            echoCancellationEnabled: false,
+            autoGainControlEnabled: false,
+          })
+          startAudioLevelDiagnostics(micStream, sessionId, diagnosticMeetingId)
+        }
       } else {
-        constraintIssuesRef.current = []
+        stopAudioLevelDiagnostics()
       }
-      startAudioLevelDiagnostics(stream, sessionId, diagnosticMeetingId)
       startTabPipelineMonitor(stream, sessionId, diagnosticMeetingId, acquired.tabMixerHandles)
 
       recorder.ondataavailable = (event) => {
