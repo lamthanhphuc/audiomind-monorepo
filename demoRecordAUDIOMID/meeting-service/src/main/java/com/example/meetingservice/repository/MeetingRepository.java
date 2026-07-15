@@ -34,4 +34,20 @@ public interface MeetingRepository extends JpaRepository<Meeting,Long> {
 			""")
 	int clearSubjectAssignmentsForOwner(
 			@Param("subjectId") Long subjectId, @Param("ownerUserId") Long ownerUserId);
+
+	@Query("""
+			SELECT m FROM Meeting m
+			WHERE m.ownerUserId = :ownerUserId
+			  AND m.subjectId IS NULL
+			  AND m.deletedAt IS NULL
+			  AND (
+			        :search IS NULL
+			        OR lower(m.title) LIKE lower(concat('%', :search, '%'))
+			        OR lower(coalesce(m.originalFileName, '')) LIKE lower(concat('%', :search, '%'))
+			      )
+			""")
+	Page<Meeting> findUnclassifiedForOwner(
+			@Param("ownerUserId") Long ownerUserId,
+			@Param("search") String search,
+			Pageable pageable);
 }

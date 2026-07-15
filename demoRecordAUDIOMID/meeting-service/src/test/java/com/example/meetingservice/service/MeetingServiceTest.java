@@ -31,6 +31,9 @@ class MeetingServiceTest {
     @Mock
     private MeetingShareRepository meetingShareRepository;
 
+    @Mock
+    private com.example.meetingservice.repository.SubjectRepository subjectRepository;
+
     @InjectMocks
     private MeetingService meetingService;
 
