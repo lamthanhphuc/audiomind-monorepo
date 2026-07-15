@@ -9,6 +9,11 @@ import app.main as main_module
 from app.models import Analysis, Base, MeetingAnalysisRun, Transcript
 from app.schemas import RealtimeTranscriptAnalysisRequest
 from app.services.analysis_runs import persist_completed_analysis_run
+from app.services.analysis_versioning import merge_domain_analysis_payload
+from app.services.segment_identity import (
+    assign_stable_segment_ids,
+    format_aligned_transcript_for_analysis,
+)
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -19,13 +24,14 @@ class FakeBatchAnalyzer:
         *,
         provider: str = "gemini",
         model: str = "gemini-2.5-flash",
-        prompt_version: str = "prompt-v1",
-        schema_version: str = "schema-v1",
+        prompt_version: str = "gemini-business-v2",
+        schema_version: str = "gemini-business-v2",
     ):
         self.provider = provider
         self.model = model
         self.PROMPT_VERSION = prompt_version
         self.SCHEMA_VERSION = schema_version
+        self.analysis_domain_mode = "it"
         self.calls = []
 
     def format_transcript_for_analysis(self, segments):
@@ -122,9 +128,9 @@ def _segments():
     ]
 
 
-def _formatted_transcript(segments=None):
-    analyzer = FakeBatchAnalyzer()
-    return analyzer.format_transcript_for_analysis(segments or _segments())
+def _formatted_transcript(segments=None, meeting_id: int = 0):
+    aligned = assign_stable_segment_ids(meeting_id, segments or _segments())
+    return format_aligned_transcript_for_analysis(aligned)
 
 
 def _analysis_payload(summary):
@@ -142,8 +148,9 @@ def _analysis_payload(summary):
         ],
         "action_items": [{"task": "Scale API", "owner": None, "deadline": None}],
         "actionItems": ["Scale API"],
-        "promptVersion": "prompt-v1",
-        "schemaVersion": "schema-v1",
+        "promptVersion": "gemini-business-v2",
+        "schemaVersion": "gemini-business-v2",
+        "analysisFeatureSet": "grouped-action-plan-v1-it",
         "source": "test",
     }
 
@@ -160,16 +167,21 @@ def _seed_completed_run(
     transcript_language: str | None = "vi",
 ):
     analyzer = analyzer or FakeBatchAnalyzer()
+    normalized, domain_payload = merge_domain_analysis_payload(
+        "it",
+        _analysis_payload(summary),
+    )
     run = persist_completed_analysis_run(
         db=db_session,
         meeting_id=meeting_id,
         analyzer=analyzer,
-        analysis_payload=_analysis_payload(summary),
+        analysis_payload=domain_payload,
         summary=summary,
         fallback_transcript_hash=fallback_hash,
-        fallback_text=fallback_text or _formatted_transcript(),
+        fallback_text=fallback_text or _formatted_transcript(meeting_id=meeting_id),
         recognition_mode=recognition_mode,
         transcript_language=transcript_language,
+        normalized_domain_mode=normalized,
     )
     db_session.commit()
     return run
@@ -194,7 +206,7 @@ def test_batch_cache_hit_skips_provider_and_does_not_duplicate_run(
         db_session,
         meeting_id=meeting_id,
         analyzer=analyzer,
-        fallback_text=_formatted_transcript(),
+        fallback_text=_formatted_transcript(meeting_id=meeting_id),
     )
     pipeline = _make_batch_pipeline(monkeypatch, analyzer)
 
@@ -207,8 +219,8 @@ def test_batch_cache_hit_skips_provider_and_does_not_duplicate_run(
     assert result["analysis"]["cacheHit"] is True
     assert result["analysis"]["provider"] == "gemini"
     assert result["analysis"]["model"] == "gemini-2.5-flash"
-    assert result["analysis"]["promptVersion"] == "prompt-v1"
-    assert result["analysis"]["schemaVersion"] == "schema-v1"
+    assert result["analysis"]["promptVersion"] == "gemini-business-v2"
+    assert result["analysis"]["schemaVersion"] == "gemini-business-v2"
     assert result["analysis"]["canonicalTranscriptHash"] is not None
     assert result["analysis"]["analysisInputMode"] == "readable_fallback"
     assert (
@@ -252,7 +264,7 @@ def test_provider_model_prompt_schema_mismatch_is_cache_miss(db_session, monkeyp
         db_session,
         meeting_id=meeting_id,
         analyzer=stale_analyzer,
-        fallback_text=_formatted_transcript(),
+        fallback_text=_formatted_transcript(meeting_id=meeting_id),
     )
     analyzer = FakeBatchAnalyzer()
     pipeline = _make_batch_pipeline(monkeypatch, analyzer)
@@ -298,8 +310,8 @@ def test_canonical_hash_version_mismatch_is_cache_miss(db_session, monkeypatch):
             status="COMPLETED",
             provider="gemini",
             model="gemini-2.5-flash",
-            prompt_version="prompt-v1",
-            schema_version="schema-v1",
+            prompt_version="gemini-business-v2",
+            schema_version="gemini-business-v2",
             canonical_transcript_hash="a" * 64,
             canonical_transcript_version="canonical-v1",
             analysis_input_mode="canonical",
@@ -352,8 +364,8 @@ def test_realtime_cache_hit_skips_provider_and_returns_metadata(
         transcript=transcript,
         source="realtime",
         transcript_hash=transcript_hash,
-        prompt_version="prompt-v1",
-        schema_version="schema-v1",
+        prompt_version="gemini-business-v2",
+        schema_version="gemini-business-v2",
     )
 
     response = asyncio.run(main_module.analyze_realtime_transcript(request, db_session))
@@ -402,8 +414,8 @@ def test_realtime_cache_only_hit_does_not_initialize_provider(db_session, monkey
         transcript=transcript,
         source="export_report",
         transcript_hash=transcript_hash,
-        prompt_version="prompt-v1",
-        schema_version="schema-v1",
+        prompt_version="gemini-business-v2",
+        schema_version="gemini-business-v2",
         mode="cache_only",
     )
 

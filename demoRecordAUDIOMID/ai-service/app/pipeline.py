@@ -32,6 +32,11 @@ from app.services.analysis_runs import (
     normalize_analysis_mode,
 )
 from app.services.analysis_factory import build_analysis_analyzer
+from app.services.analysis_versioning import merge_domain_analysis_payload
+from app.services.segment_identity import (
+    assign_stable_segment_ids,
+    format_aligned_transcript_for_analysis,
+)
 from app.services.audio_enhancement_service import prepare_audio_for_stt
 from app.services.audio_processor import AudioProcessor
 from app.services.stt_adapter import (
@@ -1009,11 +1014,16 @@ class ProcessingPipeline:
                     )
 
             aligned_segments = self._deduplicate_repeated_segments(aligned_segments)
+            aligned_segments = assign_stable_segment_ids(meeting_id, aligned_segments)
 
             # Step 5: AI Analysis
             logger.info("Step 5: AI analysis")
             mode = normalize_analysis_mode(analysis_mode)
-            formatted_transcript = self.ai_analyzer.format_transcript_for_analysis(
+            normalized_domain, domain_payload = merge_domain_analysis_payload(
+                domain_mode,
+                default_domain=self.ai_analyzer.analysis_domain_mode,
+            )
+            formatted_transcript = format_aligned_transcript_for_analysis(
                 aligned_segments
             )
             analysis_identity = build_analysis_cache_identity(
@@ -1022,8 +1032,10 @@ class ProcessingPipeline:
                 analyzer=self.ai_analyzer,
                 fallback_transcript_hash=None,
                 fallback_text=formatted_transcript,
+                analysis_payload=domain_payload,
                 recognition_mode=_normalized_stt_provider(),
                 transcript_language=self._normalize_batch_language(language),
+                normalized_domain_mode=normalized_domain,
             )
             cached_analysis_run = (
                 None
@@ -1175,7 +1187,7 @@ class ProcessingPipeline:
                 enforce_gemini_quota(owner_user_id, formatted_transcript)
                 analysis_metadata = {
                     "source": "upload",
-                    "domainMode": domain_mode or "it",
+                    "domainMode": normalized_domain,
                 }
                 analysis_result = self.ai_analyzer.analyze_meeting(
                     formatted_transcript,
@@ -1296,8 +1308,13 @@ class ProcessingPipeline:
                     end_time=float(_to_builtin(segment.get("end", 0.0))),
                     text=str(segment.get("text", "")),
                     event_id=(
-                        str(segment.get("event_id"))
-                        if segment.get("event_id")
+                        str(
+                            segment.get("segment_id")
+                            or segment.get("event_id")
+                        )
+                        if (
+                            segment.get("segment_id") or segment.get("event_id")
+                        )
                         else None
                     ),
                     is_final=bool(segment.get("is_final", False)),

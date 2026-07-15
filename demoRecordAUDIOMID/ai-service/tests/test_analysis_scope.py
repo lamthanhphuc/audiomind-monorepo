@@ -59,10 +59,18 @@ def _identity(
         recognition_mode=None,
         speaker_stabilization_version=None,
         analysis_input_mode="readable_fallback",
-        analysis_feature_set="grouped-action-plan-v1",
+        analysis_feature_set="grouped-action-plan-v1-it",
+        normalized_domain_mode="it",
         recording_session_id=recording_session_id,
         attempt_id=attempt_id,
     )
+
+
+def _persist_payload(extra: dict | None = None) -> dict:
+    payload = {"analysisFeatureSet": "grouped-action-plan-v1-it"}
+    if extra:
+        payload.update(extra)
+    return payload
 
 
 def test_v2_analysis_runs_are_isolated_by_attempt(db_session, monkeypatch):
@@ -80,12 +88,13 @@ def test_v2_analysis_runs_are_isolated_by_attempt(db_session, monkeypatch):
             db=db_session,
             meeting_id=42,
             analyzer=analyzer,
-            analysis_payload={"summary": summary, "keywords": [summary]},
+            analysis_payload=_persist_payload({"summary": summary, "keywords": [summary]}),
             summary=summary,
             fallback_transcript_hash="hash-a",
             fallback_text=summary,
             recording_session_id=session_id,
             attempt_id=attempt_id,
+            normalized_domain_mode="it",
         )
     db_session.commit()
 
@@ -108,10 +117,11 @@ def test_v2_cache_lookup_does_not_return_legacy_run(db_session, monkeypatch):
         db=db_session,
         meeting_id=55,
         analyzer=analyzer,
-        analysis_payload={"summary": "Legacy analysis"},
+        analysis_payload=_persist_payload({"summary": "Legacy analysis"}),
         summary="Legacy analysis",
         fallback_transcript_hash="legacy-hash",
         fallback_text="legacy transcript",
+        normalized_domain_mode="it",
     )
     db_session.commit()
 
@@ -132,10 +142,11 @@ def test_legacy_scope_only_returns_null_null_runs(db_session, monkeypatch):
         db=db_session,
         meeting_id=77,
         analyzer=analyzer,
-        analysis_payload={"summary": "Legacy only"},
+        analysis_payload=_persist_payload({"summary": "Legacy only"}),
         summary="Legacy only",
         fallback_transcript_hash="legacy-hash",
         fallback_text="legacy transcript",
+        normalized_domain_mode="it",
     )
     db_session.commit()
 
