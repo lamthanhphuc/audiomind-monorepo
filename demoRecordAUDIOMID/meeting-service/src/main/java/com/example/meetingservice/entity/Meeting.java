@@ -33,6 +33,9 @@ public class Meeting {
     @Column(name = "owner_user_id")
     private Long ownerUserId;
 
+    @Column(name = "subject_id")
+    private Long subjectId;
+
     @Column(name = "created_at")
     private LocalDateTime createdAt;
 
