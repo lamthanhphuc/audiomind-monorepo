@@ -42,7 +42,7 @@ See [branch-cleanup-report.md](./branch-cleanup-report.md).
 | `b0039ea` | `feat(subjects): add folder and subject persistence` |
 | `60f76a9` | `docs: record step 4 persistence commit SHA` |
 | `7b27d02` | `fix(test): restore meeting service commons io runtime` |
-| *(pending)* | `feat(subjects): add folder and subject management` |
+| `8060b88` | `feat(subjects): add folder and subject management` |
 
 ## D–E. Segment identity + analysis cache
 
