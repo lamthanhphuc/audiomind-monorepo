@@ -62,6 +62,9 @@ public class AIServiceClient {
     @Value("${deepgram.language:vi}")
     private String deepgramLanguage;
 
+    @Value("${app.internal.service-token:}")
+    private String internalServiceToken;
+
     public Map<String, Object> processAudio(Long meetingId, String audioPath) {
         return processAudio(meetingId, audioPath, null, null, null, "vi", null, null, null, null);
     }
@@ -996,6 +999,12 @@ public class AIServiceClient {
         headers.add(REQUEST_HEADER, resolvedRequestId);
         if (StringUtils.hasText(authorization)) {
             headers.add(HttpHeaders.AUTHORIZATION, authorization);
+        }
+        String normalizedInternalToken = StringUtils.hasText(internalServiceToken)
+                ? internalServiceToken.trim()
+                : "";
+        if (StringUtils.hasText(normalizedInternalToken)) {
+            headers.add("X-Internal-Service-Token", normalizedInternalToken);
         }
         headers.setContentType(MediaType.MULTIPART_FORM_DATA);
 

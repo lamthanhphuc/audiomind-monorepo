@@ -88,7 +88,11 @@ type RealtimeDashboardSceneProps = {
   audioRecorder: ReturnType<typeof useAudioRecorder>
   onBeforeStartRecording: (recordingSessionId: number) => Promise<void>
   onChunkReady?: (chunk: Blob, sessionId: number) => void | Promise<void>
-  onRecordingComplete?: (fullAudio: Blob, sessionId: number) => void
+  onRecordingComplete?: (
+    fullAudio: Blob,
+    sessionId: number,
+    recorded?: { mimeType: string; extension: 'webm' | 'm4a'; blob: Blob },
+  ) => void
   onStopRequested?: () => void
   gracefulStopRef?: MutableRefObject<(() => Promise<void>) | null>
   liveError: string | null
@@ -439,6 +443,11 @@ export default function RealtimeDashboardScene({
                         </span>
                         <span className="realtime-panel__hint">{noiseSuppressionHelper}</span>
                       </label>
+                    )}
+                    {audioRecorder.micHealthMessage && (
+                      <p className="realtime-panel__hint realtime-panel__hint--warn" role="status">
+                        {audioRecorder.micHealthMessage}
+                      </p>
                     )}
                   </div>
                 )}

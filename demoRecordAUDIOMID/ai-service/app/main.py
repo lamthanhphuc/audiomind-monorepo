@@ -1446,11 +1446,9 @@ def ensure_runtime_dirs() -> None:
 
 def resolve_upload_dir() -> Path:
     """Pick the first writable upload directory shared across API and worker containers."""
-    candidates = (
-        Path("/app/uploads"),
-        Path("/app/storage/uploads"),
-        Path("./storage/uploads"),
-    )
+    from app.services.server_audio_roots import get_upload_dir_candidates
+
+    candidates = get_upload_dir_candidates()
     for upload_dir in candidates:
         try:
             upload_dir.mkdir(parents=True, exist_ok=True)
@@ -1458,10 +1456,12 @@ def resolve_upload_dir() -> Path:
             with probe_file.open("wb") as probe:
                 probe.write(b"ok")
             probe_file.unlink(missing_ok=True)
-            return upload_dir
-        except OSError as permission_error:
+            return upload_dir.resolve(strict=False)
+        except OSError as write_error:
             logger.warning(
-                f"Upload dir not writable ({upload_dir}): {permission_error}"
+                "Upload directory candidate unavailable name=%s error=%s",
+                upload_dir.name,
+                type(write_error).__name__,
             )
 
     raise RuntimeError("No writable upload directory is available")
@@ -4544,16 +4544,46 @@ async def final_audio_fallback(
     language: str = Form(default="vi"),
 ):
     from app.services.final_audio_fallback import run_final_audio_fallback
+    from app.services.final_audio_path_validation import FinalAudioPathError
+    from app.services.internal_service_auth import (
+        FinalAudioAuthError,
+        raise_http_for_auth_error,
+        require_internal_service_token,
+    )
 
+    try:
+        require_internal_service_token(http_request)
+    except FinalAudioAuthError as auth_exc:
+        raise_http_for_auth_error(auth_exc)
+
+    # Trusted internal callers (processing-service) may pass a raw server path.
+    # TODO(security): migrate to upload/file ID binding so meeting ownership is proven
+    # without trusting client-supplied absolute paths (even from internal callers).
     trace_id = getattr(http_request.state, "trace_id", None)
     request_id = getattr(http_request.state, "request_id", None)
-    result = run_final_audio_fallback(
-        meeting_id=meeting_id,
-        audio_path=audio_path,
-        language=language,
-        trace_id=trace_id,
-        request_id=request_id,
-    )
+    try:
+        result = await asyncio.to_thread(
+            run_final_audio_fallback,
+            meeting_id=meeting_id,
+            audio_path=audio_path,
+            language=language,
+            trace_id=trace_id,
+            request_id=request_id,
+        )
+    except FinalAudioPathError as exc:
+        status = (
+            503
+            if exc.code
+            in {
+                "FINAL_AUDIO_PROBE_UNAVAILABLE",
+                "FINAL_AUDIO_PROBE_TIMEOUT",
+            }
+            else 400
+        )
+        raise HTTPException(
+            status_code=status,
+            detail={"error_code": exc.code, "message": exc.safe_message},
+        ) from None
     return {
         "meeting_id": meeting_id,
         **result,

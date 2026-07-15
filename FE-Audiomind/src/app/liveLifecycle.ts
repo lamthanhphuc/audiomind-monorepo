@@ -69,6 +69,7 @@ export const resolveVoiceActivityLifecycleUpdate = ({
     || liveLifecycleState === 'stopped'
     || liveLifecycleState === 'no_transcript_after_finalize'
     || liveLifecycleState === 'stopped_no_analysis'
+    || liveLifecycleState === 'failed_audio_capture'
     || liveLifecycleState === 'error'
   ) {
     return {

@@ -68,6 +68,16 @@ export const ERROR_CATALOG: Record<string, ErrorCatalogEntry> = {
     ctaId: 'retry_recording',
     ctaLabel: 'Ghi lại',
   },
+  REALTIME_UNSUPPORTED_AUDIO_CODEC: {
+    message: 'Codec ghi âm realtime không được hỗ trợ. Hãy dùng trình duyệt hỗ trợ WebM/Opus (Chrome hoặc Edge).',
+    ctaId: 'retry_recording',
+    ctaLabel: 'Đổi trình duyệt hoặc ghi lại',
+  },
+  REALTIME_AUDIO_METADATA_MISMATCH: {
+    message: 'Metadata âm thanh realtime không hợp lệ. Vui lòng thử ghi lại.',
+    ctaId: 'retry_recording',
+    ctaLabel: 'Thử ghi lại',
+  },
   REALTIME_INVALID_PAYLOAD: {
     message: 'Dữ liệu realtime không hợp lệ.',
     ctaId: 'retry_recording',

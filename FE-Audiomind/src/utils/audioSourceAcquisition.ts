@@ -63,16 +63,23 @@ const prepareTabAudioTracks = (stream: MediaStream): void => {
 const isNoiseSuppressionConstraintSupported = (): boolean =>
   Boolean(navigator.mediaDevices?.getSupportedConstraints?.().noiseSuppression)
 
+export type MicrophoneAcquisitionOptions = {
+  noiseSuppressionEnabled?: boolean
+  /** Mic-only / dual default true. Mixed mode keeps false for RMS/gate compatibility. */
+  echoCancellationEnabled?: boolean
+  /** Mic-only / dual default true. Mixed mode keeps false for RMS/gate compatibility. */
+  autoGainControlEnabled?: boolean
+}
+
 const buildMicrophoneConstraints = (
-  noiseSuppressionEnabled: boolean,
-  options?: { forTabMix?: boolean },
+  options: MicrophoneAcquisitionOptions = {},
 ): MediaStreamConstraints => {
-  const forTabMix = options?.forTabMix === true
+  const noiseSuppressionEnabled = options.noiseSuppressionEnabled !== false
+  const echoCancellationEnabled = options.echoCancellationEnabled !== false
+  const autoGainControlEnabled = options.autoGainControlEnabled !== false
   const audio: MediaTrackConstraints = {
-    // Tab audio is captured directly (not through speakers). AEC/AGC can
-    // suppress the mic when tab speech is loud in the mixed STT stream.
-    echoCancellation: !forTabMix,
-    autoGainControl: !forTabMix,
+    echoCancellation: echoCancellationEnabled,
+    autoGainControl: autoGainControlEnabled,
     channelCount: 1,
     sampleRate: { ideal: PREFERRED_SAMPLE_RATE },
   }
@@ -191,26 +198,12 @@ const discardDisplayVideoTracks = (stream: MediaStream) => {
 }
 
 const acquireMicrophoneStream = async (
-  noiseSuppressionEnabled: boolean,
-  forTabMix = false,
+  options: MicrophoneAcquisitionOptions = {},
 ): Promise<MediaStream> => {
   if (!navigator.mediaDevices?.getUserMedia) {
     throw new AudioSourceError('Trình duyệt không hỗ trợ getUserMedia cho microphone.', 'not_supported')
   }
-  return navigator.mediaDevices.getUserMedia(
-    buildMicrophoneConstraints(noiseSuppressionEnabled, { forTabMix }),
-  )
-}
-
-export type TabMicMixerHandles = {
-  audioContext: AudioContext
-  sourceTabStream: MediaStream
-  sourceTabTrack: MediaStreamTrack | null
-  tabAnalyser: AnalyserNode
-  tabPostGainAnalyser: AnalyserNode
-  outputAnalyser: AnalyserNode
-  tabGain: GainNode
-  tabDuckGain: number
+  return navigator.mediaDevices.getUserMedia(buildMicrophoneConstraints(options))
 }
 
 const acquireBrowserTabStream = async (): Promise<MediaStream> => {
@@ -229,9 +222,366 @@ const acquireBrowserTabStream = async (): Promise<MediaStream> => {
   return stream
 }
 
+export type TabMicMixerHandles = {
+  audioContext: AudioContext
+  mixedStream: MediaStream
+  sourceTabStream: MediaStream
+  sourceMicStream: MediaStream | null
+  sourceTabTrack: MediaStreamTrack | null
+  micAnalyser: AnalyserNode | null
+  tabAnalyser: AnalyserNode
+  tabPostGainAnalyser: AnalyserNode
+  outputAnalyser: AnalyserNode
+  tabGain: GainNode
+  tabDuckGain: number
+  cleanupGraph: () => void
+}
+
+type CreateTabMicMixOptions = {
+  /** When true, cleanupGraph also stops mic tracks (mixed single-stream ownership). Dual keeps false. */
+  stopMicTracksOnCleanup?: boolean
+}
+
+/**
+ * Mix existing tab + mic streams without re-acquiring microphone.
+ * cleanupGraph disconnects nodes and closes AudioContext but does not stop tab tracks.
+ */
+export const createTabMicMixFromStreams = async (
+  tabStream: MediaStream,
+  micStream: MediaStream,
+  options: CreateTabMicMixOptions = {},
+): Promise<TabMicMixerHandles> => {
+  const stopMicTracksOnCleanup = options.stopMicTracksOnCleanup === true
+  const AudioContextCtor = window.AudioContext
+    || (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+
+  if (!AudioContextCtor) {
+    throw new AudioSourceError('Trình duyệt không hỗ trợ Web Audio API để mix tab + mic.', 'not_supported')
+  }
+
+  let audioContext: AudioContext | null = null
+  let rafId = 0
+  let contextWatchId = 0
+  let onVisibilityChange: (() => void) | null = null
+  const connectedNodes: AudioNode[] = []
+
+  const rollbackPartialMixer = () => {
+    if (rafId) {
+      window.cancelAnimationFrame(rafId)
+      rafId = 0
+    }
+    if (contextWatchId) {
+      window.clearInterval(contextWatchId)
+      contextWatchId = 0
+    }
+    if (onVisibilityChange) {
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+      onVisibilityChange = null
+    }
+    for (const node of connectedNodes) {
+      try {
+        node.disconnect()
+      } catch {
+        // ignore
+      }
+    }
+    connectedNodes.length = 0
+    if (audioContext) {
+      const context = audioContext
+      audioContext = null
+      void context.close().catch(() => {})
+    }
+  }
+
+  try {
+    audioContext = new AudioContextCtor()
+    const destination = audioContext.createMediaStreamDestination()
+    const tabSource = audioContext.createMediaStreamSource(tabStream)
+    const micSource = audioContext.createMediaStreamSource(micStream)
+    connectedNodes.push(tabSource, micSource, destination)
+
+    // Stable mix: mic activity is diagnostic only and must never mute tab audio.
+    const TAB_PASS_GAIN = 0.5
+    const TAB_DUCK_GAIN = 0.42
+    const MIC_PASS_GAIN = 1.15
+    const MIC_IDLE_GAIN = MIC_PASS_GAIN
+    const MIC_ENTER_RMS = 0.013
+    const MIC_SUSTAIN_RMS = 0.01
+    const MIC_VS_TAB_ENTER_RATIO = 0.28
+    const QUIET_TAB_RMS = 0.02
+    const SPEECH_HOLD_MS = 3000
+    const MIN_MIC_WINDOW_MS = 900
+    const GATE_ARM_DELAY_MS = 500
+    const GAIN_RELEASE = 0.06
+    const mixReadyAt = performance.now()
+
+    const tabGain = audioContext.createGain()
+    const micGain = audioContext.createGain()
+    tabGain.gain.value = TAB_PASS_GAIN
+    micGain.gain.value = MIC_IDLE_GAIN
+    connectedNodes.push(tabGain, micGain)
+
+    const micAnalyser = audioContext.createAnalyser()
+    micAnalyser.fftSize = 512
+    const micAnalyserData = new Uint8Array(micAnalyser.frequencyBinCount)
+    const tabAnalyser = audioContext.createAnalyser()
+    tabAnalyser.fftSize = 512
+    const tabAnalyserData = new Uint8Array(tabAnalyser.frequencyBinCount)
+    const tabPostGainAnalyser = audioContext.createAnalyser()
+    tabPostGainAnalyser.fftSize = 512
+    const tabPostGainAnalyserData = new Uint8Array(tabPostGainAnalyser.frequencyBinCount)
+    const outputAnalyser = audioContext.createAnalyser()
+    outputAnalyser.fftSize = 512
+    connectedNodes.push(micAnalyser, tabAnalyser, tabPostGainAnalyser, outputAnalyser)
+
+    let micPriorityActive = false
+    let lastMicSpeechAt = 0
+    let micWindowStartedAt = 0
+    let micActiveMs = 0
+    let tabActiveMs = 0
+    let lastTickAt = performance.now()
+    let lastStatsAt = performance.now()
+
+    const tick = () => {
+      try {
+        const micRms = measureAnalyserRms(micAnalyser, micAnalyserData)
+        const tabRms = measureAnalyserRms(tabAnalyser, tabAnalyserData)
+        const tabPostGainRms = measureAnalyserRms(tabPostGainAnalyser, tabPostGainAnalyserData)
+        const now = performance.now()
+        const deltaMs = now - lastTickAt
+        lastTickAt = now
+
+        const inMicHold = now - lastMicSpeechAt < SPEECH_HOLD_MS
+        const tabQuiet = tabRms < QUIET_TAB_RMS
+        const micDominatesTab = micRms >= tabRms * MIC_VS_TAB_ENTER_RATIO
+        const gateArmed = now - mixReadyAt >= GATE_ARM_DELAY_MS
+        const canEnterMic = gateArmed && micRms >= MIC_ENTER_RMS && (tabQuiet || micDominatesTab)
+        const canSustainMic = inMicHold && micRms >= MIC_SUSTAIN_RMS
+
+        if (canEnterMic || canSustainMic) {
+          lastMicSpeechAt = now
+        }
+
+        let micPriority = now - lastMicSpeechAt < SPEECH_HOLD_MS
+        if (micPriority && !micPriorityActive) {
+          micWindowStartedAt = now
+        }
+        if (micPriorityActive && !micPriority && now - micWindowStartedAt < MIN_MIC_WINDOW_MS) {
+          micPriority = true
+        }
+
+        const targetGains = resolveTabMicGateGains({
+          micPriority,
+          tabPassGain: TAB_PASS_GAIN,
+          tabDuckGain: TAB_DUCK_GAIN,
+          micPassGain: MIC_PASS_GAIN,
+          micIdleGain: MIC_IDLE_GAIN,
+        })
+        tabGain.gain.value += (targetGains.tabGain - tabGain.gain.value) * GAIN_RELEASE
+        micGain.gain.value += (targetGains.micGain - micGain.gain.value) * GAIN_RELEASE
+        if (tabGain.gain.value < TAB_DUCK_GAIN) {
+          tabGain.gain.value = TAB_DUCK_GAIN
+        }
+        if (micGain.gain.value <= 0) {
+          micGain.gain.value = MIC_PASS_GAIN
+        }
+        if (micPriority) {
+          micActiveMs += deltaMs
+        } else {
+          tabActiveMs += deltaMs
+        }
+
+        if (micPriority !== micPriorityActive) {
+          micPriorityActive = micPriority
+          realtimeInfo('[Realtime] TAB_MIC_GATE', {
+            activeSource: micPriority ? 'microphone' : 'browser_tab',
+            policy: 'stable_mix',
+            micRms: Number(micRms.toFixed(4)),
+            tabInputRms: Number(tabRms.toFixed(4)),
+            tabPostGainRms: Number(tabPostGainRms.toFixed(4)),
+            tabGain: Number(tabGain.gain.value.toFixed(3)),
+            micGain: Number(micGain.gain.value.toFixed(3)),
+            holdMs: micPriority ? SPEECH_HOLD_MS : 0,
+            reason: micPriority ? 'mic_detected_without_tab_mute' : 'tab_default',
+          })
+        }
+
+        if (now - lastStatsAt >= 5000) {
+          micActiveMs = 0
+          tabActiveMs = 0
+          lastStatsAt = now
+        }
+      } catch {
+        // ignore sampling errors
+      }
+      rafId = window.requestAnimationFrame(tick)
+    }
+
+    tabSource.connect(tabGain)
+    tabGain.connect(tabPostGainAnalyser)
+    tabGain.connect(destination)
+    tabGain.connect(outputAnalyser)
+    micSource.connect(micGain)
+    micGain.connect(destination)
+    micGain.connect(outputAnalyser)
+    micSource.connect(micAnalyser)
+    tabSource.connect(tabAnalyser)
+    rafId = window.requestAnimationFrame(tick)
+
+    const resumeMixerContext = () => {
+      if (audioContext) {
+        void ensureAudioContextRunning(audioContext)
+      }
+    }
+    onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        resumeMixerContext()
+      }
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    contextWatchId = window.setInterval(resumeMixerContext, 1000)
+    await ensureAudioContextRunning(audioContext)
+
+    const mixedStream = destination.stream
+    realtimeInfo('[Realtime] TAB_MIC_MIX_READY', {
+      contextState: audioContext.state,
+      mode: 'stable_mix',
+      tabPassGain: TAB_PASS_GAIN,
+      tabMinGain: TAB_DUCK_GAIN,
+      micPassGain: MIC_PASS_GAIN,
+      suppressLocalAudioPlayback: false,
+      mixedTrackCount: mixedStream.getAudioTracks().length,
+    })
+
+    const settledContext = audioContext
+    audioContext = null
+    const cleanupGraph = () => {
+      if (rafId) {
+        window.cancelAnimationFrame(rafId)
+        rafId = 0
+      }
+      if (contextWatchId) {
+        window.clearInterval(contextWatchId)
+        contextWatchId = 0
+      }
+      if (onVisibilityChange) {
+        document.removeEventListener('visibilitychange', onVisibilityChange)
+        onVisibilityChange = null
+      }
+      for (const node of [tabSource, micSource, tabGain, micGain, micAnalyser, tabAnalyser, tabPostGainAnalyser, outputAnalyser]) {
+        try {
+          node.disconnect()
+        } catch {
+          // ignore
+        }
+      }
+      if (stopMicTracksOnCleanup) {
+        stopTracks(micStream)
+      }
+      void settledContext.close().catch(() => {})
+    }
+
+    return {
+      audioContext: settledContext,
+      mixedStream,
+      sourceTabStream: tabStream,
+      sourceMicStream: micStream,
+      sourceTabTrack: tabStream.getAudioTracks()[0] ?? null,
+      micAnalyser,
+      tabAnalyser,
+      tabPostGainAnalyser,
+      outputAnalyser,
+      tabGain,
+      tabDuckGain: TAB_DUCK_GAIN,
+      cleanupGraph,
+    }
+  } catch (error) {
+    rollbackPartialMixer()
+    throw error
+  }
+}
+
+export type StandaloneMicAnalyser = {
+  audioContext: AudioContext
+  analyser: AnalyserNode
+  cleanup: () => void
+}
+
+/**
+ * Lightweight mic-only analyser for dual RMS/health.
+ * Does not touch speakers and does not re-acquire microphone tracks.
+ */
+export const createStandaloneMicAnalyser = async (
+  micStream: MediaStream,
+): Promise<StandaloneMicAnalyser> => {
+  const AudioContextCtor = window.AudioContext
+    || (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+  if (!AudioContextCtor) {
+    throw new AudioSourceError('Trình duyệt không hỗ trợ Web Audio API.', 'not_supported')
+  }
+
+  let audioContext: AudioContext | null = new AudioContextCtor()
+  let source: MediaStreamAudioSourceNode | null = null
+  let analyser: AnalyserNode | null = null
+
+  const cleanup = () => {
+    try {
+      source?.disconnect()
+    } catch {
+      // ignore
+    }
+    try {
+      analyser?.disconnect()
+    } catch {
+      // ignore
+    }
+    source = null
+    analyser = null
+    if (audioContext) {
+      const context = audioContext
+      audioContext = null
+      void context.close().catch(() => {})
+    }
+  }
+
+  try {
+    source = audioContext.createMediaStreamSource(micStream)
+    analyser = audioContext.createAnalyser()
+    analyser.fftSize = 512
+    source.connect(analyser)
+    await ensureAudioContextRunning(audioContext)
+    const settledContext = audioContext
+    const settledAnalyser = analyser
+    const settledSource = source
+    audioContext = null
+    source = null
+    analyser = null
+    return {
+      audioContext: settledContext,
+      analyser: settledAnalyser,
+      cleanup: () => {
+        try {
+          settledSource.disconnect()
+        } catch {
+          // ignore
+        }
+        try {
+          settledAnalyser.disconnect()
+        } catch {
+          // ignore
+        }
+        void settledContext.close().catch(() => {})
+      },
+    }
+  } catch (error) {
+    cleanup()
+    throw error
+  }
+}
+
 const mixTabAndMicrophoneStreams = async (
   tabStream: MediaStream,
-  _noiseSuppressionEnabled: boolean,
+  noiseSuppressionEnabled: boolean,
 ): Promise<{
   stream: MediaStream
   cleanup: () => void
@@ -240,8 +590,12 @@ const mixTabAndMicrophoneStreams = async (
 }> => {
   let micStream: MediaStream | null = null
   try {
-    // Raw mic for tab-mix VAD: browser noise suppression lowers RMS and delays gate open.
-    micStream = await acquireMicrophoneStream(false, true)
+    // Mixed mode: keep AEC/AGC off for RMS/gate compatibility; honor NS toggle.
+    micStream = await acquireMicrophoneStream({
+      noiseSuppressionEnabled,
+      echoCancellationEnabled: false,
+      autoGainControlEnabled: false,
+    })
   } catch (error) {
     realtimeWarn('[Realtime]', BROWSER_TAB_CAPTURE_TELEMETRY.CAPTURE_FAILED, {
       reason: 'optional_mic_unavailable',
@@ -254,242 +608,27 @@ const mixTabAndMicrophoneStreams = async (
     }
   }
 
-  const AudioContextCtor = window.AudioContext
-    || (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
-
-  if (!AudioContextCtor) {
+  try {
+    const mixerHandles = await createTabMicMixFromStreams(tabStream, micStream, {
+      stopMicTracksOnCleanup: true,
+    })
+    return {
+      stream: mixerHandles.mixedStream,
+      cleanup: mixerHandles.cleanupGraph,
+      micIncluded: true,
+      mixerHandles,
+    }
+  } catch (error) {
     stopTracks(micStream)
+    realtimeWarn('[Realtime]', BROWSER_TAB_CAPTURE_TELEMETRY.CAPTURE_FAILED, {
+      reason: 'tab_mic_mix_unavailable',
+      message: error instanceof Error ? error.message : String(error),
+    })
     return {
       stream: tabStream,
       cleanup: () => {},
       micIncluded: false,
     }
-  }
-
-  const audioContext = new AudioContextCtor()
-  const destination = audioContext.createMediaStreamDestination()
-  const tabSource = audioContext.createMediaStreamSource(tabStream)
-  const micSource = audioContext.createMediaStreamSource(micStream)
-
-  // Stable mix: mic activity is diagnostic only and must never mute tab audio.
-  const TAB_PASS_GAIN = 0.5
-  const TAB_DUCK_GAIN = 0.42
-  const MIC_PASS_GAIN = 1.15
-  const MIC_IDLE_GAIN = MIC_PASS_GAIN
-  const MIC_ENTER_RMS = 0.013
-  const MIC_SUSTAIN_RMS = 0.01
-  const MIC_VS_TAB_ENTER_RATIO = 0.28
-  const QUIET_TAB_RMS = 0.02
-  const SPEECH_HOLD_MS = 3000
-  const MIN_MIC_WINDOW_MS = 900
-  const GATE_ARM_DELAY_MS = 500
-  const GAIN_RELEASE = 0.06
-  const mixReadyAt = performance.now()
-
-  const tabGain = audioContext.createGain()
-  const micGain = audioContext.createGain()
-  tabGain.gain.value = TAB_PASS_GAIN
-  micGain.gain.value = MIC_IDLE_GAIN
-
-  const micAnalyser = audioContext.createAnalyser()
-  micAnalyser.fftSize = 512
-  const micAnalyserData = new Uint8Array(micAnalyser.frequencyBinCount)
-  const tabAnalyser = audioContext.createAnalyser()
-  tabAnalyser.fftSize = 512
-  const tabAnalyserData = new Uint8Array(tabAnalyser.frequencyBinCount)
-  const tabPostGainAnalyser = audioContext.createAnalyser()
-  tabPostGainAnalyser.fftSize = 512
-  const tabPostGainAnalyserData = new Uint8Array(tabPostGainAnalyser.frequencyBinCount)
-  const outputAnalyser = audioContext.createAnalyser()
-  outputAnalyser.fftSize = 512
-
-  let rafId = 0
-  let contextWatchId = 0
-  let micPriorityActive = false
-  let lastMicSpeechAt = 0
-  let micWindowStartedAt = 0
-  let micActiveMs = 0
-  let tabActiveMs = 0
-  let lastTickAt = performance.now()
-  let lastStatsAt = performance.now()
-
-  const tick = () => {
-    try {
-      const micRms = measureAnalyserRms(micAnalyser, micAnalyserData)
-      const tabRms = measureAnalyserRms(tabAnalyser, tabAnalyserData)
-      const tabPostGainRms = measureAnalyserRms(tabPostGainAnalyser, tabPostGainAnalyserData)
-      const now = performance.now()
-      const deltaMs = now - lastTickAt
-      lastTickAt = now
-
-      const inMicHold = now - lastMicSpeechAt < SPEECH_HOLD_MS
-      const tabQuiet = tabRms < QUIET_TAB_RMS
-      const micDominatesTab = micRms >= tabRms * MIC_VS_TAB_ENTER_RATIO
-      const gateArmed = now - mixReadyAt >= GATE_ARM_DELAY_MS
-      const canEnterMic = gateArmed && micRms >= MIC_ENTER_RMS && (tabQuiet || micDominatesTab)
-      const canSustainMic = inMicHold && micRms >= MIC_SUSTAIN_RMS
-
-      if (canEnterMic || canSustainMic) {
-        lastMicSpeechAt = now
-      }
-
-      let micPriority = now - lastMicSpeechAt < SPEECH_HOLD_MS
-      if (micPriority && !micPriorityActive) {
-        micWindowStartedAt = now
-      }
-      if (micPriorityActive && !micPriority && now - micWindowStartedAt < MIN_MIC_WINDOW_MS) {
-        micPriority = true
-      }
-
-      const targetGains = resolveTabMicGateGains({
-        micPriority,
-        tabPassGain: TAB_PASS_GAIN,
-        tabDuckGain: TAB_DUCK_GAIN,
-        micPassGain: MIC_PASS_GAIN,
-        micIdleGain: MIC_IDLE_GAIN,
-      })
-      tabGain.gain.value += (targetGains.tabGain - tabGain.gain.value) * GAIN_RELEASE
-      micGain.gain.value += (targetGains.micGain - micGain.gain.value) * GAIN_RELEASE
-      if (tabGain.gain.value < TAB_DUCK_GAIN) {
-        tabGain.gain.value = TAB_DUCK_GAIN
-      }
-      if (micGain.gain.value <= 0) {
-        micGain.gain.value = MIC_PASS_GAIN
-      }
-      if (micPriority) {
-        micActiveMs += deltaMs
-      } else {
-        tabActiveMs += deltaMs
-      }
-
-      if (micPriority !== micPriorityActive) {
-        micPriorityActive = micPriority
-        realtimeInfo('[Realtime] TAB_MIC_GATE', {
-          activeSource: micPriority ? 'microphone' : 'browser_tab',
-          policy: 'stable_mix',
-          micRms: Number(micRms.toFixed(4)),
-          tabInputRms: Number(tabRms.toFixed(4)),
-          tabPostGainRms: Number(tabPostGainRms.toFixed(4)),
-          tabGain: Number(tabGain.gain.value.toFixed(3)),
-          micGain: Number(micGain.gain.value.toFixed(3)),
-          holdMs: micPriority ? SPEECH_HOLD_MS : 0,
-          reason: micPriority ? 'mic_detected_without_tab_mute' : 'tab_default',
-        })
-        if (!micPriority) {
-          // mic hold expired — tab resumes
-        }
-      }
-
-      if (now - lastStatsAt >= 5000) {
-        micActiveMs = 0
-        tabActiveMs = 0
-        lastStatsAt = now
-      }
-    } catch {
-      // ignore sampling errors
-    }
-    rafId = window.requestAnimationFrame(tick)
-  }
-
-  tabSource.connect(tabGain)
-  tabGain.connect(tabPostGainAnalyser)
-  tabGain.connect(destination)
-  tabGain.connect(outputAnalyser)
-  micSource.connect(micGain)
-  micGain.connect(destination)
-  micGain.connect(outputAnalyser)
-  micSource.connect(micAnalyser)
-  tabSource.connect(tabAnalyser)
-  rafId = window.requestAnimationFrame(tick)
-
-  const resumeMixerContext = () => {
-    void ensureAudioContextRunning(audioContext)
-  }
-  const onVisibilityChange = () => {
-    if (document.visibilityState === 'visible') {
-      resumeMixerContext()
-    }
-  }
-  document.addEventListener('visibilitychange', onVisibilityChange)
-  contextWatchId = window.setInterval(resumeMixerContext, 1000)
-  await ensureAudioContextRunning(audioContext)
-
-  const mixedStream = destination.stream
-  realtimeInfo('[Realtime] TAB_MIC_MIX_READY', {
-    contextState: audioContext.state,
-    mode: 'stable_mix',
-    tabPassGain: TAB_PASS_GAIN,
-    tabMinGain: TAB_DUCK_GAIN,
-    micPassGain: MIC_PASS_GAIN,
-    suppressLocalAudioPlayback: false,
-    mixedTrackCount: mixedStream.getAudioTracks().length,
-  })
-  const cleanup = () => {
-    if (rafId) {
-      window.cancelAnimationFrame(rafId)
-    }
-    if (contextWatchId) {
-      window.clearInterval(contextWatchId)
-    }
-    document.removeEventListener('visibilitychange', onVisibilityChange)
-    try {
-      tabSource.disconnect()
-    } catch {
-      // ignore
-    }
-    try {
-      micSource.disconnect()
-    } catch {
-      // ignore
-    }
-    try {
-      tabGain.disconnect()
-    } catch {
-      // ignore
-    }
-    try {
-      micGain.disconnect()
-    } catch {
-      // ignore
-    }
-    try {
-      micAnalyser.disconnect()
-    } catch {
-      // ignore
-    }
-    try {
-      tabAnalyser.disconnect()
-    } catch {
-      // ignore
-    }
-    try {
-      tabPostGainAnalyser.disconnect()
-    } catch {
-      // ignore
-    }
-    try {
-      outputAnalyser.disconnect()
-    } catch {
-      // ignore
-    }
-    stopTracks(micStream)
-    void audioContext.close().catch(() => {})
-  }
-
-  return {
-    stream: mixedStream,
-    cleanup,
-    micIncluded: true,
-    mixerHandles: {
-      audioContext,
-      sourceTabStream: tabStream,
-      sourceTabTrack: tabStream.getAudioTracks()[0] ?? null,
-      tabAnalyser,
-      tabPostGainAnalyser,
-      outputAnalyser,
-      tabGain,
-      tabDuckGain: TAB_DUCK_GAIN,
-    },
   }
 }
 
@@ -503,14 +642,21 @@ export type AcquiredDualTabMicSources = {
 }
 
 export const acquireDualTabMicSources = async (
-  options: { meetingId?: number | null } = {},
+  options: {
+    meetingId?: number | null
+    noiseSuppressionEnabled?: boolean
+  } = {},
 ): Promise<AcquiredDualTabMicSources> => {
-  const { meetingId = null } = options
+  const { meetingId = null, noiseSuppressionEnabled = true } = options
   const tabStream = await acquireBrowserTabStream()
   let micStream: MediaStream | null = null
 
   try {
-    micStream = await acquireMicrophoneStream(false, true)
+    micStream = await acquireMicrophoneStream({
+      noiseSuppressionEnabled,
+      echoCancellationEnabled: true,
+      autoGainControlEnabled: true,
+    })
   } catch (error) {
     realtimeWarn('[Realtime]', BROWSER_TAB_CAPTURE_TELEMETRY.CAPTURE_FAILED, {
       meetingId,
@@ -545,6 +691,7 @@ export const acquireDualTabMicSources = async (
     source: 'browser_tab_with_mic',
     micIncluded: true,
     dualStream: true,
+    noiseSuppressionEnabled,
   })
 
   return {
@@ -564,7 +711,11 @@ export const acquireAudioSource = async (
 
   try {
     if (source === 'microphone') {
-      const stream = await acquireMicrophoneStream(noiseSuppressionEnabled)
+      const stream = await acquireMicrophoneStream({
+        noiseSuppressionEnabled,
+        echoCancellationEnabled: true,
+        autoGainControlEnabled: true,
+      })
       ownedStreams = [stream]
       return {
         stream,

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   acquireAudioSource,
+  acquireDualTabMicSources,
   attachAudioTrackEndedHandler,
   AudioSourceError,
 } from './audioSourceAcquisition'
@@ -55,12 +56,53 @@ describe('acquireAudioSource', () => {
     expect(getUserMedia).toHaveBeenCalledWith({
       audio: expect.objectContaining({
         noiseSuppression: true,
+        echoCancellation: true,
+        autoGainControl: true,
         channelCount: 1,
       }),
     })
     expect(acquired.stream).toBeDefined()
     acquired.cleanup()
     expect(audioTrack.stop).toHaveBeenCalled()
+  })
+
+  it('disables microphone noise suppression when toggle is false', async () => {
+    const audioTrack = createMockTrack()
+    const getUserMedia = vi.fn().mockResolvedValue(createMockStream([audioTrack]))
+    Object.defineProperty(navigator, 'mediaDevices', {
+      value: {
+        getUserMedia,
+        getSupportedConstraints: vi.fn(() => ({ noiseSuppression: true })),
+      },
+      configurable: true,
+    })
+
+    await acquireAudioSource({ source: 'microphone', noiseSuppressionEnabled: false })
+    expect(getUserMedia).toHaveBeenCalledWith({
+      audio: expect.objectContaining({
+        noiseSuppression: false,
+        echoCancellation: true,
+        autoGainControl: true,
+      }),
+    })
+  })
+
+  it('keeps tab capture processing constraints disabled', async () => {
+    const audioTrack = createMockTrack()
+    const getDisplayMedia = vi.fn().mockResolvedValue(createMockStream([audioTrack]))
+    Object.defineProperty(navigator, 'mediaDevices', {
+      value: { getDisplayMedia },
+      configurable: true,
+    })
+
+    await acquireAudioSource({ source: 'browser_tab' })
+    expect(getDisplayMedia).toHaveBeenCalledWith(expect.objectContaining({
+      audio: expect.objectContaining({
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false,
+      }),
+    }))
   })
 
   it('rejects browser tab stream without audio tracks', async () => {
@@ -202,5 +244,67 @@ describe('attachAudioTrackEndedHandler', () => {
     attachAudioTrackEndedHandler(stream, vi.fn(), { onMuted })
     listeners.get('mute')?.()
     expect(onMuted).toHaveBeenCalledWith(track)
+  })
+})
+
+describe('acquireDualTabMicSources', () => {
+  const originalMediaDevices = navigator.mediaDevices
+
+  afterEach(() => {
+    Object.defineProperty(navigator, 'mediaDevices', {
+      value: originalMediaDevices,
+      configurable: true,
+    })
+  })
+
+  it('passes noise suppression toggle and enables AEC/AGC on dual mic leg', async () => {
+    const tabTrack = createMockTrack({ id: 'tab' })
+    const micTrack = createMockTrack({ id: 'mic' })
+    const getDisplayMedia = vi.fn().mockResolvedValue(createMockStream([tabTrack]))
+    const getUserMedia = vi.fn().mockResolvedValue(createMockStream([micTrack]))
+    Object.defineProperty(navigator, 'mediaDevices', {
+      value: {
+        getDisplayMedia,
+        getUserMedia,
+        getSupportedConstraints: vi.fn(() => ({ noiseSuppression: true })),
+      },
+      configurable: true,
+    })
+
+    const acquired = await acquireDualTabMicSources({ noiseSuppressionEnabled: true })
+    expect(getUserMedia).toHaveBeenCalledWith({
+      audio: expect.objectContaining({
+        noiseSuppression: true,
+        echoCancellation: true,
+        autoGainControl: true,
+        channelCount: 1,
+      }),
+    })
+    expect(acquired.micIncluded).toBe(true)
+    acquired.cleanup()
+  })
+
+  it('can disable dual mic noise suppression via toggle', async () => {
+    const tabTrack = createMockTrack({ id: 'tab' })
+    const micTrack = createMockTrack({ id: 'mic' })
+    const getDisplayMedia = vi.fn().mockResolvedValue(createMockStream([tabTrack]))
+    const getUserMedia = vi.fn().mockResolvedValue(createMockStream([micTrack]))
+    Object.defineProperty(navigator, 'mediaDevices', {
+      value: {
+        getDisplayMedia,
+        getUserMedia,
+        getSupportedConstraints: vi.fn(() => ({ noiseSuppression: true })),
+      },
+      configurable: true,
+    })
+
+    await acquireDualTabMicSources({ noiseSuppressionEnabled: false })
+    expect(getUserMedia).toHaveBeenCalledWith({
+      audio: expect.objectContaining({
+        noiseSuppression: false,
+        echoCancellation: true,
+        autoGainControl: true,
+      }),
+    })
   })
 })

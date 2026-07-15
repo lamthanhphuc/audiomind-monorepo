@@ -7,6 +7,7 @@ import { useHistorySearchFilters } from './useHistorySearchFilters'
 import { useRealtimeControls } from './useRealtimeControls'
 import { useRealtimeLifecycleEffects } from './useRealtimeLifecycleEffects'
 import { useRealtimeSession } from './useRealtimeSession'
+import { useTerminalAudioCaptureCleanup } from './useTerminalAudioCaptureCleanup'
 import { useRecentMeetingsSidebar } from './useRecentMeetingsSidebar'
 import { useStudioRouteSync } from './useStudioRouteSync'
 import { useInitialRedirectHandling } from './useInitialRedirectHandling'
@@ -993,6 +994,8 @@ export const resolveFreshRealtimeMeetingId = (meeting: { id?: unknown; existingM
 export type LiveRecordingStopSequenceResult = {
   stopSent: boolean
   stopIncomplete: boolean
+  /** True when the owning attempt/session changed mid-flight; caller must no-op. */
+  stale?: boolean
 }
 
 export type LiveRecordingStopSequenceInput = {
@@ -1001,24 +1004,45 @@ export type LiveRecordingStopSequenceInput = {
   source?: string
   stopStream?: () => Promise<boolean>
   setLifecycleState: (state: LiveLifecycleState) => void
+  /** Ownership predicate checked around every async boundary and lifecycle mutation. */
+  isCurrentAttempt?: () => boolean
 }
 
 export async function runLiveRecordingStopSequence(
   input: LiveRecordingStopSequenceInput,
 ): Promise<LiveRecordingStopSequenceResult> {
+  const isCurrentAttempt = input.isCurrentAttempt ?? (() => true)
+
+  if (!isCurrentAttempt()) {
+    return { stopSent: false, stopIncomplete: false, stale: true }
+  }
+
   realtimeInfo('[Realtime] REALTIME_STOP_REQUESTED', {
     meetingId: input.meetingId,
     sessionId: input.sessionId,
     ...(input.source ? { source: input.source } : {}),
     phase: 'stream_finalize',
   })
+
+  if (!isCurrentAttempt()) {
+    return { stopSent: false, stopIncomplete: false, stale: true }
+  }
   input.setLifecycleState('stopping')
 
   let stopSent = false
   if (input.stopStream) {
+    if (!isCurrentAttempt()) {
+      return { stopSent: false, stopIncomplete: false, stale: true }
+    }
     stopSent = await input.stopStream()
+    if (!isCurrentAttempt()) {
+      return { stopSent: false, stopIncomplete: false, stale: true }
+    }
   }
 
+  if (!isCurrentAttempt()) {
+    return { stopSent: false, stopIncomplete: false, stale: true }
+  }
   input.setLifecycleState('finalizing_transcript')
 
   return {
@@ -1232,6 +1256,7 @@ export default function App() {
   const dualAudioRecorder = useDualAudioRecorder({
     diagnosticMeetingId: liveMeetingId,
     timesliceMs: recorderTimesliceMs,
+    noiseSuppressionEnabled,
     onTrackEnded: () => onTabAudioTrackEndedRef.current?.(),
     onCaptureError: (message) => onTabCaptureFailureRef.current?.(message, 'track'),
     onPipelineStalled: () => onTabPipelineStalledRef.current?.(),
@@ -1268,6 +1293,26 @@ export default function App() {
       : undefined,
   })
 
+  const {
+    failedAudioCaptureCleanupKeyRef,
+    runTerminalAudioCaptureCleanupRef,
+  } = useTerminalAudioCaptureCleanup({
+    audioRecorder,
+    realtimeStream,
+    activeRealtimeSessionTokenRef,
+    liveMeetingIdRef,
+    liveAnalysisAbortControllerRef,
+    analysisPollRunIdRef,
+    setLiveLifecycleState,
+    setLiveError,
+    setLiveAnalysis,
+    setLiveAnalysisMetadata,
+    setLiveAnalysisStatus,
+    setLiveAnalysisError,
+    setLivePartialWarning,
+    setLiveStatusMessage,
+  })
+
   useRealtimeLifecycleEffects({
     audioRecorder,
     realtimeStream,
@@ -1294,6 +1339,7 @@ export default function App() {
     onTabAudioTrackEndedRef,
     onTabCaptureFailureRef,
     onTabPipelineStalledRef,
+    runTerminalAudioCaptureCleanupRef,
     setLiveLifecycleState,
     setLiveError,
     setLiveStatusMessage,
@@ -1408,6 +1454,8 @@ export default function App() {
     setHydratedLiveTranscriptSegments,
     setLiveLifecycleState,
     setShowJoinOtherMeeting,
+    runTerminalAudioCaptureCleanupRef,
+    failedAudioCaptureCleanupKeyRef,
     sessionHelpers: {
       pollRealtimeAnalysisAfterStop,
       hydrateLiveTranscriptSegments,

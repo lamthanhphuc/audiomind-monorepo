@@ -12,6 +12,8 @@ describe('errorCatalog', () => {
       'UPLOAD_SECURITY_SCAN_FAILED',
       'REALTIME_CHUNK_TOO_LARGE',
       'REALTIME_UNSUPPORTED_ENCODING',
+      'REALTIME_UNSUPPORTED_AUDIO_CODEC',
+      'REALTIME_AUDIO_METADATA_MISMATCH',
       'REALTIME_INVALID_PAYLOAD',
       'MIC_PERMISSION_DENIED',
       'INVALID_AUDIO_CAPTURE',
@@ -49,6 +51,13 @@ describe('errorCatalog', () => {
       ctaId: 'reduce_file_size',
       ctaLabel: 'Giảm dung lượng file',
     })
+  })
+
+  it('maps new realtime codec/metadata mismatch codes for UX', () => {
+    expect(ERROR_CATALOG.REALTIME_UNSUPPORTED_AUDIO_CODEC.message).toMatch(/WebM\/Opus/)
+    expect(ERROR_CATALOG.REALTIME_UNSUPPORTED_AUDIO_CODEC.ctaId).toBe('retry_recording')
+    expect(ERROR_CATALOG.REALTIME_AUDIO_METADATA_MISMATCH.message).toMatch(/không hợp lệ/i)
+    expect(ERROR_CATALOG.REALTIME_AUDIO_METADATA_MISMATCH.ctaLabel).toBe('Thử ghi lại')
   })
 
   it('resolveErrorPresentation returns CTA when UX enabled', () => {

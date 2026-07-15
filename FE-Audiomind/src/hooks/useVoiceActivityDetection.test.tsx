@@ -190,7 +190,7 @@ describe('useVoiceActivityDetection', () => {
       sensitivityMode: 'high',
     }))
 
-    await advance(700)
+    await advance(1600)
     expect(latest?.state).toBe('silent_paused')
 
     rms = 0.008

@@ -6,6 +6,7 @@ import { AudioRecorderButton } from './AudioRecorderButton'
 
 class MockMediaRecorder {
   static instances: MockMediaRecorder[] = []
+  static isTypeSupported = (type: string) => type.includes('webm')
 
   state: 'inactive' | 'recording' | 'paused' = 'inactive'
   ondataavailable: ((event: { data: Blob }) => void) | null = null
@@ -21,6 +22,10 @@ class MockMediaRecorder {
     this.stream = stream
     this.options = options
     MockMediaRecorder.instances.push(this)
+  }
+
+  get mimeType() {
+    return this.options?.mimeType || 'audio/webm;codecs=opus'
   }
 
   start = vi.fn((_timeslice?: number) => {
@@ -409,6 +414,8 @@ describe('useAudioRecorder', () => {
     expect(getDisplayMedia).toHaveBeenCalled()
     expect(latestRecorder?.state).toBe('recording')
     expect(videoTrack.stop).toHaveBeenCalled()
+    expect(latestRecorder?.micHealthIssue).toBeNull()
+    expect(latestRecorder?.micHealthMessage).toBeNull()
   })
 
   it('reports missing tab audio as Vietnamese error', async () => {

@@ -18,11 +18,14 @@ import {
 } from '../services/config'
 import { buildLiveAnalysisMetadata } from './liveAnalysisMetadata'
 import {
+  isFailedAudioCaptureLifecycle,
   isNoTranscriptTerminalLifecycle,
+  isRealtimeTerminalLifecycle,
   resolveVoiceActivityLifecycleUpdate,
   type LiveLifecycleState,
 } from './liveLifecycle'
 import { realtimeInfo, realtimeWarn } from '../utils/realtimeTelemetry'
+import type { RunTerminalAudioCaptureCleanupRef } from './useTerminalAudioCaptureCleanup'
 
 const LIVE_STATUS_LISTENING = 'Đang lắng nghe...'
 
@@ -42,7 +45,10 @@ type RealtimeStreamLike = {
   }
   isAuthenticated: boolean
   clearQueuedAudio?: () => void
-  disconnect: (token: RealtimeSessionToken) => void
+  disconnect: (
+    token: RealtimeSessionToken | null,
+    options?: { reason?: 'user' | 'audio_capture_failure' | 'default' },
+  ) => void
   configureDualStreams?: (streamIds: Array<'tab' | 'mic'>) => void
 }
 
@@ -76,6 +82,7 @@ export type RealtimeLifecycleEffectsInput = {
   onTabAudioTrackEndedRef: MutableRefObject<(() => void) | undefined>
   onTabCaptureFailureRef: MutableRefObject<((message: string, reason: 'track' | 'stall') => void) | undefined>
   onTabPipelineStalledRef: MutableRefObject<(() => void) | undefined>
+  runTerminalAudioCaptureCleanupRef: RunTerminalAudioCaptureCleanupRef
   setLiveLifecycleState: Dispatch<SetStateAction<LiveLifecycleState>>
   setLiveError: Dispatch<SetStateAction<string | null>>
   setLiveStatusMessage: Dispatch<SetStateAction<string | null>>
@@ -112,6 +119,7 @@ export const useRealtimeLifecycleEffects = ({
   onTabAudioTrackEndedRef,
   onTabCaptureFailureRef,
   onTabPipelineStalledRef,
+  runTerminalAudioCaptureCleanupRef,
   setLiveLifecycleState,
   setLiveError,
   setLiveStatusMessage,
@@ -123,8 +131,22 @@ export const useRealtimeLifecycleEffects = ({
 }: RealtimeLifecycleEffectsInput) => {
   const lastLoggedRealtimeLanguageRef = useRef<RealtimeLanguage | null>(null)
   const lastLoggedRealtimeSpeakerModeRef = useRef<RealtimeSpeakerMode | null>(null)
+  const audioRecorderRef = useRef(audioRecorder)
+  const realtimeStreamRef = useRef(realtimeStream)
 
   useEffect(() => {
+    audioRecorderRef.current = audioRecorder
+  }, [audioRecorder])
+
+  useEffect(() => {
+    realtimeStreamRef.current = realtimeStream
+  }, [realtimeStream])
+
+  useEffect(() => {
+    // Capture attempt ownership when installing the callback so a stale closure
+    // cannot terminate a newer session/attempt.
+    const callbackToken = activeRealtimeSessionToken
+
     onTabAudioTrackEndedRef.current = () => {
       if (!isBrowserTabRecordingSource(selectedRecordingSourceRef.current)) {
         return
@@ -145,31 +167,26 @@ export const useRealtimeLifecycleEffects = ({
       if (!isBrowserTabRecordingSource(selectedRecordingSourceRef.current)) {
         return
       }
-      if (audioRecorder.state !== 'recording' && audioRecorder.state !== 'paused' && audioRecorder.state !== 'connecting') {
-        return
-      }
-      realtimeWarn('[Realtime] TAB_AUDIO_CAPTURE_FAILURE', {
-        meetingId: liveMeetingIdRef.current,
-        source: selectedRecordingSourceRef.current,
-        reason,
-        message,
+      runTerminalAudioCaptureCleanupRef.current({
+        expectedToken: callbackToken,
+        requireRecorderActive: true,
+        errorMessage: message,
+        statusMessage: 'Lỗi thu âm tab',
+        partialWarning: message,
+        logEvent: '[Realtime] TAB_AUDIO_CAPTURE_FAILURE',
+        logDetails: {
+          source: selectedRecordingSourceRef.current,
+          reason,
+          message,
+        },
       })
-      setLiveError(message)
-      setLiveLifecycleState('failed_audio_capture')
-      setLiveStatusMessage('Lỗi thu âm tab')
-      setLivePartialWarning(message)
-      audioRecorder.abortRecording()
-      const activeToken = activeRealtimeSessionTokenRef.current
-      realtimeStream.clearQueuedAudio?.()
-      if (activeToken) {
-        realtimeStream.disconnect(activeToken)
-      }
     }
     onTabPipelineStalledRef.current = () => {
       if (!isBrowserTabRecordingSource(selectedRecordingSourceRef.current)) {
         return
       }
-      if (audioRecorder.state !== 'recording' && audioRecorder.state !== 'paused' && audioRecorder.state !== 'connecting') {
+      const recorder = audioRecorderRef.current
+      if (recorder.state !== 'recording' && recorder.state !== 'paused' && recorder.state !== 'connecting') {
         return
       }
       realtimeWarn('[Realtime] TAB_AUDIO_PIPELINE_DEGRADED', {
@@ -181,17 +198,13 @@ export const useRealtimeLifecycleEffects = ({
       setLiveStatusMessage(RECORDING_SOURCE_ERRORS.tabCaptureStalled)
     }
   }, [
-    audioRecorder,
-    realtimeStream,
-    activeRealtimeSessionTokenRef,
+    activeRealtimeSessionToken,
     gracefulStopRef,
     liveMeetingIdRef,
     onTabAudioTrackEndedRef,
     onTabCaptureFailureRef,
     onTabPipelineStalledRef,
     selectedRecordingSourceRef,
-    setLiveError,
-    setLiveLifecycleState,
     setLivePartialWarning,
     setLiveStatusMessage,
     tabTrackEndedFinalizeRef,
@@ -255,6 +268,16 @@ export const useRealtimeLifecycleEffects = ({
   }, [noiseSuppressionSupported])
 
   useEffect(() => {
+    if (
+      realtimeStream.status.state === 'FAILED_AUDIO_CAPTURE'
+      || realtimeStream.status.status === 'FAILED_AUDIO_CAPTURE'
+      || realtimeStream.status.errorCode === 'FAILED_AUDIO_CAPTURE'
+      || realtimeStream.status.errorCode === 'REALTIME_UNSUPPORTED_RECORDER_FORMAT'
+      || isFailedAudioCaptureLifecycle(liveLifecycleState)
+    ) {
+      return
+    }
+
     if (!realtimeStream.status.resetRequired) {
       resetRecoveryInProgressRef.current = false
       return
@@ -287,7 +310,16 @@ export const useRealtimeLifecycleEffects = ({
       .catch((error) => {
         setLiveError(error instanceof Error ? error.message : 'Không thể khởi động lại ghi âm')
       })
-  }, [audioRecorder, dualStreamActive, liveMeetingIdRef, realtimeStream, resetRecoveryInProgressRef, setLiveError, setLivePartialWarning])
+  }, [
+    audioRecorder,
+    dualStreamActive,
+    liveLifecycleState,
+    liveMeetingIdRef,
+    realtimeStream,
+    resetRecoveryInProgressRef,
+    setLiveError,
+    setLivePartialWarning,
+  ])
 
   useEffect(() => {
     const noTranscriptStatus =
@@ -335,50 +367,43 @@ export const useRealtimeLifecycleEffects = ({
   ])
 
   useEffect(() => {
+    const statusState = realtimeStream.status.state
+    const statusErrorCode = realtimeStream.status.errorCode
+    const statusStatus = realtimeStream.status.status
     const failedAudioCapture =
-      realtimeStream.status.state === 'FAILED_AUDIO_CAPTURE'
-      || realtimeStream.status.errorCode === 'FAILED_AUDIO_CAPTURE'
-      || realtimeStream.status.status === 'FAILED_AUDIO_CAPTURE'
+      statusState === 'FAILED_AUDIO_CAPTURE'
+      || statusErrorCode === 'FAILED_AUDIO_CAPTURE'
+      || statusErrorCode === 'REALTIME_UNSUPPORTED_RECORDER_FORMAT'
+      || statusStatus === 'FAILED_AUDIO_CAPTURE'
     if (!failedAudioCapture) {
       return
     }
 
-    const meetingId = liveMeetingIdRef.current
-    if (meetingId === null) {
-      return
-    }
-
-    liveAnalysisAbortControllerRef.current?.abort()
-    liveAnalysisAbortControllerRef.current = null
-    analysisPollRunIdRef.current += 1
-    setLiveLifecycleState('failed_audio_capture')
-    setLiveAnalysis(null)
-    setLiveAnalysisMetadata(buildLiveAnalysisMetadata(meetingId, 'NO_ANALYSIS', {
-      errorCode: 'FAILED_AUDIO_CAPTURE',
-      transcriptRows: 0,
-      finalized: true,
-    }))
-    setLiveAnalysisStatus('pending')
-    setLiveAnalysisError(null)
-    setLivePartialWarning('Không thu được audio hợp lệ. Kiểm tra quyền mic và thử ghi lại.')
-    setLiveStatusMessage('Lỗi thu âm')
+    runTerminalAudioCaptureCleanupRef.current({
+      expectedToken: activeRealtimeSessionTokenRef.current,
+      errorMessage: 'Không thu được audio realtime hợp lệ. Kiểm tra định dạng ghi âm hoặc thử ghi lại.',
+      statusMessage: 'Lỗi thu âm',
+      partialWarning: 'Không thu được audio hợp lệ. Kiểm tra quyền mic và thử ghi lại.',
+    })
   }, [
-    analysisPollRunIdRef,
-    liveAnalysisAbortControllerRef,
-    liveMeetingIdRef,
+    activeRealtimeSessionTokenRef,
     realtimeStream.status.errorCode,
     realtimeStream.status.state,
     realtimeStream.status.status,
-    setLiveAnalysis,
-    setLiveAnalysisError,
-    setLiveAnalysisMetadata,
-    setLiveAnalysisStatus,
-    setLiveLifecycleState,
-    setLivePartialWarning,
-    setLiveStatusMessage,
+    runTerminalAudioCaptureCleanupRef,
   ])
 
   useEffect(() => {
+    if (
+      isFailedAudioCaptureLifecycle(liveLifecycleState)
+      || realtimeStream.status.state === 'FAILED_AUDIO_CAPTURE'
+      || realtimeStream.status.status === 'FAILED_AUDIO_CAPTURE'
+      || realtimeStream.status.errorCode === 'FAILED_AUDIO_CAPTURE'
+      || realtimeStream.status.errorCode === 'REALTIME_UNSUPPORTED_RECORDER_FORMAT'
+    ) {
+      return
+    }
+
     const isRealtimeRecordingActive = audioRecorder.state === 'recording' || audioRecorder.state === 'paused'
     if (!isRealtimeRecordingActive) {
       return
@@ -392,7 +417,18 @@ export const useRealtimeLifecycleEffects = ({
     realtimeStream.clearQueuedAudio?.()
     audioRecorder.abortRecording()
     setLiveStatusMessage('WebSocket bị ngắt, đang khôi phục kết nối...')
-  }, [audioRecorder, realtimeStream, restartAfterReconnectRef, setLiveStatusMessage])
+  }, [
+    audioRecorder.state,
+    liveLifecycleState,
+    realtimeStream.clearQueuedAudio,
+    realtimeStream.status.errorCode,
+    realtimeStream.status.state,
+    realtimeStream.status.status,
+    restartAfterReconnectRef,
+    setLiveStatusMessage,
+    // abortRecording via ref-stable identity is not required; call through latest recorder ref
+    audioRecorder.abortRecording,
+  ])
 
   useEffect(() => {
     if (!restartAfterReconnectRef.current) {
@@ -444,6 +480,16 @@ export const useRealtimeLifecycleEffects = ({
   }, [liveLifecycleState, realtimeStream.isAuthenticated, setLiveLifecycleState, setLiveStatusMessage])
 
   useEffect(() => {
+    if (
+      isRealtimeTerminalLifecycle(liveLifecycleState)
+      || realtimeStream.status.state === 'FAILED_AUDIO_CAPTURE'
+      || realtimeStream.status.status === 'FAILED_AUDIO_CAPTURE'
+      || realtimeStream.status.errorCode === 'FAILED_AUDIO_CAPTURE'
+      || realtimeStream.status.errorCode === 'REALTIME_UNSUPPORTED_RECORDER_FORMAT'
+    ) {
+      return
+    }
+
     if (audioRecorder.state === 'connecting') {
       setLiveLifecycleState('connecting')
       return
@@ -454,6 +500,7 @@ export const useRealtimeLifecycleEffects = ({
         liveLifecycleState === 'stopping'
         || liveLifecycleState === 'finalizing_transcript'
         || isNoTranscriptTerminalLifecycle(liveLifecycleState)
+        || isFailedAudioCaptureLifecycle(liveLifecycleState)
       ) {
         return
       }
@@ -474,6 +521,7 @@ export const useRealtimeLifecycleEffects = ({
         || liveLifecycleState === 'analysis_completed'
         || liveLifecycleState === 'analysis_failed'
         || isNoTranscriptTerminalLifecycle(liveLifecycleState)
+        || isFailedAudioCaptureLifecycle(liveLifecycleState)
       ) {
         return
       }
@@ -484,7 +532,15 @@ export const useRealtimeLifecycleEffects = ({
     if (audioRecorder.state === 'error') {
       setLiveLifecycleState('error')
     }
-  }, [audioRecorder.state, liveLifecycleState, realtimeStream.isAuthenticated, setLiveLifecycleState])
+  }, [
+    audioRecorder.state,
+    liveLifecycleState,
+    realtimeStream.isAuthenticated,
+    realtimeStream.status.errorCode,
+    realtimeStream.status.state,
+    realtimeStream.status.status,
+    setLiveLifecycleState,
+  ])
 
   useEffect(() => {
     const voiceActivityUpdate = resolveVoiceActivityLifecycleUpdate({

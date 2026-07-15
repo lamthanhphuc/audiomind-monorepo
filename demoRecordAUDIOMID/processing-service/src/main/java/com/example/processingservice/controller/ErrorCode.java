@@ -88,6 +88,20 @@ public enum ErrorCode {
             "retry_recording",
             "Ghi lại"
     ),
+    REALTIME_UNSUPPORTED_AUDIO_CODEC(
+            415,
+            "Unsupported realtime audio codec",
+            "Codec ghi âm realtime không được hỗ trợ.",
+            "retry_recording",
+            "Ghi lại"
+    ),
+    REALTIME_AUDIO_METADATA_MISMATCH(
+            400,
+            "Realtime audio metadata mismatch",
+            "Metadata âm thanh realtime không khớp.",
+            "retry_recording",
+            "Thử ghi lại"
+    ),
     REALTIME_INVALID_PAYLOAD(
             400,
             "Invalid realtime payload",
