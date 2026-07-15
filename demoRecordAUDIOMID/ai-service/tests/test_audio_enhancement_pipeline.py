@@ -23,7 +23,9 @@ def _load_processing_pipeline(monkeypatch):
 
     audio_processor_stub = types.ModuleType("app.services.audio_processor")
     audio_processor_stub.AudioProcessor = type("AudioProcessor", (), {})
-    monkeypatch.setitem(sys.modules, "app.services.audio_processor", audio_processor_stub)
+    monkeypatch.setitem(
+        sys.modules, "app.services.audio_processor", audio_processor_stub
+    )
     pipeline_module = importlib.import_module("app.pipeline")
     return pipeline_module.ProcessingPipeline, pipeline_module
 
@@ -63,9 +65,13 @@ def test_pipeline_enhancement_success_uses_prepared_for_stt_and_diarization(
     prepare = MagicMock(return_value=(prepared, prepared))
     monkeypatch.setattr(pipeline_module, "prepare_audio_for_stt", prepare)
     monkeypatch.setattr(pipeline_module.settings, "audio_enhancement_enabled", True)
-    monkeypatch.setattr(pipeline_module.settings, "audio_enhancement_provider", "ffmpeg")
+    monkeypatch.setattr(
+        pipeline_module.settings, "audio_enhancement_provider", "ffmpeg"
+    )
     monkeypatch.setattr(pipeline_module.settings, "audio_keep_enhanced_file", False)
-    monkeypatch.setattr(pipeline_module.settings, "temp_storage_path", str(audio_file.parent))
+    monkeypatch.setattr(
+        pipeline_module.settings, "temp_storage_path", str(audio_file.parent)
+    )
 
     pipeline = _base_pipeline(ProcessingPipeline, pipeline_module, monkeypatch)
     pipeline.diarization_available = True
@@ -85,7 +91,9 @@ def test_pipeline_enhancement_success_uses_prepared_for_stt_and_diarization(
     pipeline.speaker_diarizer.diarize.side_effect = _diarize
 
     with pytest.raises(_PipelineGate, match="diarization-seen-prepared"):
-        pipeline.process_meeting(audio_path=str(audio_file), meeting_id=11, db=MagicMock())
+        pipeline.process_meeting(
+            audio_path=str(audio_file), meeting_id=11, db=MagicMock()
+        )
 
     prepare.assert_called_once()
 
@@ -95,9 +103,13 @@ def test_pipeline_enhancement_failure_uses_original(monkeypatch, audio_file: Pat
     prepare = MagicMock(return_value=(Path(audio_file), None))
     monkeypatch.setattr(pipeline_module, "prepare_audio_for_stt", prepare)
     monkeypatch.setattr(pipeline_module.settings, "audio_enhancement_enabled", True)
-    monkeypatch.setattr(pipeline_module.settings, "audio_enhancement_provider", "ffmpeg")
+    monkeypatch.setattr(
+        pipeline_module.settings, "audio_enhancement_provider", "ffmpeg"
+    )
     monkeypatch.setattr(pipeline_module.settings, "audio_keep_enhanced_file", False)
-    monkeypatch.setattr(pipeline_module.settings, "temp_storage_path", str(audio_file.parent))
+    monkeypatch.setattr(
+        pipeline_module.settings, "temp_storage_path", str(audio_file.parent)
+    )
 
     pipeline = _base_pipeline(ProcessingPipeline, pipeline_module, monkeypatch)
     pipeline.diarization_available = False
@@ -112,7 +124,9 @@ def test_pipeline_enhancement_failure_uses_original(monkeypatch, audio_file: Pat
     pipeline._transcribe_with_provider_selection = _stt
 
     with pytest.raises(_PipelineGate, match="stt-seen-original"):
-        pipeline.process_meeting(audio_path=str(audio_file), meeting_id=12, db=MagicMock())
+        pipeline.process_meeting(
+            audio_path=str(audio_file), meeting_id=12, db=MagicMock()
+        )
 
 
 def test_pipeline_skips_enhancement_for_precomputed_without_diarization(
@@ -153,9 +167,13 @@ def test_pipeline_enhances_precomputed_when_local_diarization_needed(
     prepare = MagicMock(return_value=(prepared, prepared))
     monkeypatch.setattr(pipeline_module, "prepare_audio_for_stt", prepare)
     monkeypatch.setattr(pipeline_module.settings, "audio_enhancement_enabled", True)
-    monkeypatch.setattr(pipeline_module.settings, "audio_enhancement_provider", "ffmpeg")
+    monkeypatch.setattr(
+        pipeline_module.settings, "audio_enhancement_provider", "ffmpeg"
+    )
     monkeypatch.setattr(pipeline_module.settings, "audio_keep_enhanced_file", True)
-    monkeypatch.setattr(pipeline_module.settings, "temp_storage_path", str(audio_file.parent))
+    monkeypatch.setattr(
+        pipeline_module.settings, "temp_storage_path", str(audio_file.parent)
+    )
 
     pipeline = _base_pipeline(ProcessingPipeline, pipeline_module, monkeypatch)
     pipeline.diarization_available = True
@@ -181,16 +199,22 @@ def test_pipeline_enhances_precomputed_when_local_diarization_needed(
     assert prepared.exists()
 
 
-def test_pipeline_cleanup_after_diarization_when_keep_false(monkeypatch, audio_file: Path):
+def test_pipeline_cleanup_after_diarization_when_keep_false(
+    monkeypatch, audio_file: Path
+):
     ProcessingPipeline, pipeline_module = _load_processing_pipeline(monkeypatch)
     prepared = audio_file.parent / "prepared.wav"
     prepared.write_bytes(b"prepared")
     prepare = MagicMock(return_value=(prepared, prepared))
     monkeypatch.setattr(pipeline_module, "prepare_audio_for_stt", prepare)
     monkeypatch.setattr(pipeline_module.settings, "audio_enhancement_enabled", True)
-    monkeypatch.setattr(pipeline_module.settings, "audio_enhancement_provider", "ffmpeg")
+    monkeypatch.setattr(
+        pipeline_module.settings, "audio_enhancement_provider", "ffmpeg"
+    )
     monkeypatch.setattr(pipeline_module.settings, "audio_keep_enhanced_file", False)
-    monkeypatch.setattr(pipeline_module.settings, "temp_storage_path", str(audio_file.parent))
+    monkeypatch.setattr(
+        pipeline_module.settings, "temp_storage_path", str(audio_file.parent)
+    )
 
     pipeline = _base_pipeline(ProcessingPipeline, pipeline_module, monkeypatch)
     pipeline.diarization_available = True
@@ -210,7 +234,9 @@ def test_pipeline_cleanup_after_diarization_when_keep_false(monkeypatch, audio_f
     )
 
     with pytest.raises(_PipelineGate, match="past-diarization"):
-        pipeline.process_meeting(audio_path=str(audio_file), meeting_id=15, db=MagicMock())
+        pipeline.process_meeting(
+            audio_path=str(audio_file), meeting_id=15, db=MagicMock()
+        )
 
     # Mid-pipeline cleanup after diarization should have removed prepared file (KEEP=false).
     assert not prepared.exists()

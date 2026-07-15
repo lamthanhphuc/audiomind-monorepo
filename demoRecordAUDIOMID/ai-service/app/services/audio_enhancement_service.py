@@ -191,7 +191,9 @@ class FFmpegAudioEnhancementProvider:
 
     @staticmethod
     def _command_error(result: subprocess.CompletedProcess[str]) -> str:
-        return ((result.stderr or result.stdout or "unknown FFmpeg error").strip())[:500]
+        return ((result.stderr or result.stdout or "unknown FFmpeg error").strip())[
+            :500
+        ]
 
     @staticmethod
     def _is_filter_error(error: str) -> bool:
@@ -203,7 +205,9 @@ class FFmpegAudioEnhancementProvider:
         try:
             partial_path.unlink(missing_ok=True)
         except OSError:
-            logger.warning("AUDIO_ENHANCEMENT_PARTIAL_CLEANUP_FAILED file=%s", partial_path.name)
+            logger.warning(
+                "AUDIO_ENHANCEMENT_PARTIAL_CLEANUP_FAILED file=%s", partial_path.name
+            )
 
 
 def prepare_audio_for_stt(

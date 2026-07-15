@@ -893,9 +893,11 @@ class ProcessingPipeline:
                 logger.info(
                     "AUDIO_ENHANCEMENT_SKIPPED meetingId={} reason={}",
                     meeting_id,
-                    "disabled"
-                    if not settings.audio_enhancement_enabled
-                    else "precomputed_transcript_without_local_diarization",
+                    (
+                        "disabled"
+                        if not settings.audio_enhancement_enabled
+                        else "precomputed_transcript_without_local_diarization"
+                    ),
                 )
             glossary_context = glossary_context or {}
             effective_glossary_terms = self._normalize_glossary_terms(

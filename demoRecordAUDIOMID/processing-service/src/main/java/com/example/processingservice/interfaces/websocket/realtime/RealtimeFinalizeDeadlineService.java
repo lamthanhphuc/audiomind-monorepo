@@ -29,6 +29,7 @@ public class RealtimeFinalizeDeadlineService {
     private final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(2);
     private final ConcurrentHashMap<DeadlineKey, DeadlineState> pendingDeadlines = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<DeadlineKey, AtomicInteger> retryAttempts = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<DeadlineKey, Object> keyLocks = new ConcurrentHashMap<>();
     private final AtomicLong generations = new AtomicLong(0L);
 
     public record FinalizeAttemptContext(
@@ -102,18 +103,33 @@ public class RealtimeFinalizeDeadlineService {
             long delayMs,
             String source
     ) {
-        long generation = beginGeneration(key);
-        ScheduledFuture<?> future = scheduler.schedule(
-                () -> attemptFinalize(key, context, runner, source, generation),
-                delayMs,
-                TimeUnit.MILLISECONDS);
-        pendingDeadlines.computeIfPresent(key, (ignored, state) ->
-                state.generation() == generation ? new DeadlineState(future, generation) : state);
+        // Serialize schedule/cancel for a key so a short-delay timer cannot observe a
+        // half-registered generation and orphaned futures cannot survive a reschedule.
+        synchronized (lockFor(key)) {
+            long generation = beginGeneration(key);
+            ScheduledFuture<?> future = scheduler.schedule(
+                    () -> attemptFinalize(key, context, runner, source, generation),
+                    delayMs,
+                    TimeUnit.MILLISECONDS);
+            DeadlineState current = pendingDeadlines.get(key);
+            if (current == null || current.generation() != generation) {
+                future.cancel(false);
+                return;
+            }
+            pendingDeadlines.put(key, new DeadlineState(future, generation));
+        }
+    }
+
+    private Object lockFor(DeadlineKey key) {
+        return keyLocks.computeIfAbsent(key, ignored -> new Object());
     }
 
     public void requestFinalize(Long meetingId, FinalizeAttemptContext context, FinalizeRunner runner) {
         DeadlineKey key = DeadlineKey.from(context);
-        long generation = beginGeneration(key);
+        long generation;
+        synchronized (lockFor(key)) {
+            generation = beginGeneration(key);
+        }
         attemptFinalize(key, context, runner, "immediate", generation);
     }
 
@@ -144,8 +160,10 @@ public class RealtimeFinalizeDeadlineService {
     }
 
     private void clear(DeadlineKey key) {
-        cancelDeadline(key);
-        retryAttempts.remove(key);
+        synchronized (lockFor(key)) {
+            cancelDeadline(key);
+            retryAttempts.remove(key);
+        }
     }
 
     private void attemptFinalize(
@@ -192,9 +210,12 @@ public class RealtimeFinalizeDeadlineService {
     }
 
     private void clearIfCurrent(DeadlineKey key, long generation) {
-        DeadlineState existing = pendingDeadlines.get(key);
-        if (existing != null && existing.generation() == generation) {
-            clear(key);
+        synchronized (lockFor(key)) {
+            DeadlineState existing = pendingDeadlines.get(key);
+            if (existing != null && existing.generation() == generation) {
+                cancelDeadline(key);
+                retryAttempts.remove(key);
+            }
         }
     }
 

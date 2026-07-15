@@ -79,7 +79,10 @@ def test_enhance_success_writes_partial_then_renames(
     assert "pcm_s16le" in args[0]
 
 
-@patch("app.services.audio_enhancement_service.ensure_ffmpeg_on_path", return_value="ffmpeg")
+@patch(
+    "app.services.audio_enhancement_service.ensure_ffmpeg_on_path",
+    return_value="ffmpeg",
+)
 def test_enhance_nonzero_exit_cleans_partial(
     _ensure_ffmpeg: MagicMock, source_audio: Path, tmp_path: Path
 ):
@@ -87,7 +90,9 @@ def test_enhance_nonzero_exit_cleans_partial(
     partial = output.with_suffix(".wav.partial")
     partial.write_bytes(b"partial")
     provider = FFmpegAudioEnhancementProvider(timeout_seconds=1)
-    failed = subprocess.CompletedProcess([], 1, "", "Invalid data found when processing input")
+    failed = subprocess.CompletedProcess(
+        [], 1, "", "Invalid data found when processing input"
+    )
 
     with patch.object(provider, "_probe_audio_stream"), patch(
         "app.services.audio_enhancement_service.subprocess.run", return_value=failed
@@ -99,7 +104,10 @@ def test_enhance_nonzero_exit_cleans_partial(
     assert not output.exists()
 
 
-@patch("app.services.audio_enhancement_service.ensure_ffmpeg_on_path", return_value="ffmpeg")
+@patch(
+    "app.services.audio_enhancement_service.ensure_ffmpeg_on_path",
+    return_value="ffmpeg",
+)
 def test_enhance_timeout_cleans_partial(
     _ensure_ffmpeg: MagicMock, source_audio: Path, tmp_path: Path
 ):
@@ -133,7 +141,10 @@ def test_enhance_rejects_same_resolved_path(source_audio: Path):
         provider.enhance(source_audio, source_audio, AudioEnhancementProfile.STT)
 
 
-@patch("app.services.audio_enhancement_service.ensure_ffmpeg_on_path", return_value="ffmpeg")
+@patch(
+    "app.services.audio_enhancement_service.ensure_ffmpeg_on_path",
+    return_value="ffmpeg",
+)
 def test_enhance_never_overwrites_original(
     _ensure_ffmpeg: MagicMock, source_audio: Path, tmp_path: Path
 ):
@@ -152,7 +163,10 @@ def test_enhance_never_overwrites_original(
     assert output.exists()
 
 
-@patch("app.services.audio_enhancement_service.ensure_ffmpeg_on_path", return_value="ffmpeg")
+@patch(
+    "app.services.audio_enhancement_service.ensure_ffmpeg_on_path",
+    return_value="ffmpeg",
+)
 def test_enhance_falls_back_through_filters(
     _ensure_ffmpeg: MagicMock, source_audio: Path, tmp_path: Path
 ):
@@ -175,10 +189,15 @@ def test_enhance_falls_back_through_filters(
         provider.enhance(source_audio, output, AudioEnhancementProfile.STT)
 
     assert run.call_count == 3
-    assert run.call_args_list[0].args[0][run.call_args_list[0].args[0].index("-af") + 1].startswith(
-        "highpass=f=80,afftdn"
+    assert (
+        run.call_args_list[0]
+        .args[0][run.call_args_list[0].args[0].index("-af") + 1]
+        .startswith("highpass=f=80,afftdn")
     )
-    assert run.call_args_list[1].args[0][run.call_args_list[1].args[0].index("-af") + 1] == "highpass=f=80"
+    assert (
+        run.call_args_list[1].args[0][run.call_args_list[1].args[0].index("-af") + 1]
+        == "highpass=f=80"
+    )
     assert "-af" not in run.call_args_list[2].args[0]
 
 

@@ -83,6 +83,5 @@ def get_upload_dir_candidates(settings=None) -> tuple[Path, ...]:
     if configured:
         return configured
     return tuple(
-        Path(candidate).expanduser()
-        for candidate in DEFAULT_SERVER_MANAGED_AUDIO_ROOTS
+        Path(candidate).expanduser() for candidate in DEFAULT_SERVER_MANAGED_AUDIO_ROOTS
     )

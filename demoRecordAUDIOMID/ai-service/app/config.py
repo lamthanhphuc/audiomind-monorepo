@@ -319,8 +319,8 @@ class Settings(BaseSettings):
             self.ai_provider = "gemini"
 
         self.audio_enhancement_provider = (
-            self.audio_enhancement_provider or ""
-        ).strip().lower()
+            (self.audio_enhancement_provider or "").strip().lower()
+        )
         if self.audio_enhancement_enabled and self.audio_enhancement_provider not in {
             "",
             "none",

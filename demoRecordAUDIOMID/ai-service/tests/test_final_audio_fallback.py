@@ -76,8 +76,14 @@ def test_validate_rejects_traversal(allowed_root: Path, tmp_path: Path):
             allowed_roots=[allowed_root.resolve()],
             require_audio_probe=False,
         )
-    assert exc.value.code in {"FINAL_AUDIO_PATH_FORBIDDEN", "FINAL_AUDIO_PATH_NOT_FOUND"}
-    assert "secret" not in exc.value.safe_message or "not found" in exc.value.safe_message.lower()
+    assert exc.value.code in {
+        "FINAL_AUDIO_PATH_FORBIDDEN",
+        "FINAL_AUDIO_PATH_NOT_FOUND",
+    }
+    assert (
+        "secret" not in exc.value.safe_message
+        or "not found" in exc.value.safe_message.lower()
+    )
 
 
 def test_validate_rejects_symlink_escape(allowed_root: Path, tmp_path: Path):

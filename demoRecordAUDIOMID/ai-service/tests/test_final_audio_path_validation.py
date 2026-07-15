@@ -35,13 +35,18 @@ def test_empty_config_uses_defaults_including_local_uploads():
     settings.final_audio_allowed_roots = ""
     settings.audio_storage_path = "./storage/audio"
     settings.temp_storage_path = "./storage/temp"
-    roots = {str(path) for path in get_default_server_managed_audio_roots(
-        audio_storage_path=settings.audio_storage_path,
-        temp_storage_path=settings.temp_storage_path,
-    )}
+    roots = {
+        str(path)
+        for path in get_default_server_managed_audio_roots(
+            audio_storage_path=settings.audio_storage_path,
+            temp_storage_path=settings.temp_storage_path,
+        )
+    }
     assert any(path.endswith("uploads") or "storage" in path for path in roots)
     candidates = get_upload_dir_candidates(settings)
-    assert any(str(path).replace("\\", "/").endswith("storage/uploads") for path in candidates)
+    assert any(
+        str(path).replace("\\", "/").endswith("storage/uploads") for path in candidates
+    )
 
 
 def test_local_storage_uploads_accepted_sibling_rejected(tmp_path: Path, monkeypatch):

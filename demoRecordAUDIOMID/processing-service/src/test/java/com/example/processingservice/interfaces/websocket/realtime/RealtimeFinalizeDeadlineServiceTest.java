@@ -27,6 +27,15 @@ class RealtimeFinalizeDeadlineServiceTest {
     void tearDown() {
         service.clear(1L);
         service.clear(2L);
+        // Drain any leaked timers between tests.
+        service.clear(context(1L, "ws-1", 40L, 1L));
+        service.clear(context(1L, "ws-short", 52L, 1L));
+        service.clear(context(1L, "ws-retry", 51L, 1L));
+        service.clear(context(1L, "ws-immediate", 50L, 1L));
+        service.clear(context(1L, "ws-old", 30L, 1L));
+        service.clear(context(1L, "ws-new", 31L, 2L));
+        service.clear(context(2L, "ws-a", 20L, 1L));
+        service.clear(context(2L, "ws-b", 21L, 2L));
     }
 
     private RealtimeFinalizeDeadlineService.FinalizeAttemptContext context(
@@ -105,19 +114,21 @@ class RealtimeFinalizeDeadlineServiceTest {
         CountDownLatch latch = new CountDownLatch(1);
         RealtimeFinalizeDeadlineService.FinalizeAttemptContext firstContext = context(1L, "ws-1", 40L, 1L);
 
+        // Use a long initial delay so supersede is deterministic (not racing a 120ms timer).
         service.rescheduleInactivityDeadline(1L, firstContext, ctx -> {
             runs.incrementAndGet();
             latch.countDown();
-        }, 120L);
+        }, 5_000L);
         service.rescheduleInactivityDeadline(
                 1L,
                 firstContext,
                 mock(RealtimeFinalizeDeadlineService.FinalizeRunner.class),
-                500L
+                5_000L
         );
 
-        assertFalse(latch.await(200, TimeUnit.MILLISECONDS));
+        assertFalse(latch.await(300, TimeUnit.MILLISECONDS));
         assertEquals(0, runs.get());
+        service.clear(firstContext);
     }
 
     @Test
@@ -162,9 +173,9 @@ class RealtimeFinalizeDeadlineServiceTest {
 
         assertTrue(latch.await(2, TimeUnit.SECONDS));
         assertEquals(1, runs.get());
-        Thread.sleep(50L);
+        // Runner counts down before clearIfCurrent; wait for map cleanup.
+        assertTrue(awaitPendingDeadlinesEmpty(2, TimeUnit.SECONDS));
         assertEquals(1, runs.get());
-        assertTrue(pendingDeadlinesForTesting().isEmpty());
 
         AtomicInteger secondRuns = new AtomicInteger();
         CountDownLatch secondLatch = new CountDownLatch(1);
@@ -175,7 +186,18 @@ class RealtimeFinalizeDeadlineServiceTest {
 
         assertTrue(secondLatch.await(2, TimeUnit.SECONDS));
         assertEquals(1, secondRuns.get());
-        assertTrue(pendingDeadlinesForTesting().isEmpty());
+        assertTrue(awaitPendingDeadlinesEmpty(2, TimeUnit.SECONDS));
+    }
+
+    private boolean awaitPendingDeadlinesEmpty(long timeout, TimeUnit unit) throws InterruptedException {
+        long deadlineNs = System.nanoTime() + unit.toNanos(timeout);
+        while (System.nanoTime() < deadlineNs) {
+            if (pendingDeadlinesForTesting().isEmpty()) {
+                return true;
+            }
+            Thread.sleep(10L);
+        }
+        return pendingDeadlinesForTesting().isEmpty();
     }
 
     @SuppressWarnings("unchecked")

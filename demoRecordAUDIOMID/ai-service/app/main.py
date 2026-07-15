@@ -4571,10 +4571,15 @@ async def final_audio_fallback(
             request_id=request_id,
         )
     except FinalAudioPathError as exc:
-        status = 503 if exc.code in {
-            "FINAL_AUDIO_PROBE_UNAVAILABLE",
-            "FINAL_AUDIO_PROBE_TIMEOUT",
-        } else 400
+        status = (
+            503
+            if exc.code
+            in {
+                "FINAL_AUDIO_PROBE_UNAVAILABLE",
+                "FINAL_AUDIO_PROBE_TIMEOUT",
+            }
+            else 400
+        )
         raise HTTPException(
             status_code=status,
             detail={"error_code": exc.code, "message": exc.safe_message},

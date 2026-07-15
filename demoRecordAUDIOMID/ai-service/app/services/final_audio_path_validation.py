@@ -143,7 +143,11 @@ def validate_final_audio_fallback_path(
     if not isinstance(raw_path, str) or not raw_path.strip():
         raise FinalAudioPathError("FINAL_AUDIO_PATH_INVALID", "Audio path is required")
 
-    roots = allowed_roots if allowed_roots is not None else get_final_audio_allowed_roots(cfg)
+    roots = (
+        allowed_roots
+        if allowed_roots is not None
+        else get_final_audio_allowed_roots(cfg)
+    )
     if not roots:
         raise FinalAudioPathError(
             "FINAL_AUDIO_ALLOWED_ROOT_MISSING",
@@ -152,7 +156,9 @@ def validate_final_audio_fallback_path(
 
     candidate = Path(raw_path.strip()).expanduser()
     if candidate.is_symlink():
-        logger.warning("FINAL_AUDIO_PATH_REJECTED reason=symlink name=%s", candidate.name)
+        logger.warning(
+            "FINAL_AUDIO_PATH_REJECTED reason=symlink name=%s", candidate.name
+        )
         raise FinalAudioPathError(
             "FINAL_AUDIO_SYMLINK_REJECTED",
             "Symlinked audio paths are not allowed",
@@ -219,7 +225,9 @@ def validate_final_audio_fallback_path(
     if require_audio_probe:
         _probe_has_audio_stream(
             resolved,
-            timeout_seconds=int(getattr(cfg, "audio_enhancement_timeout_seconds", 30) or 30),
+            timeout_seconds=int(
+                getattr(cfg, "audio_enhancement_timeout_seconds", 30) or 30
+            ),
         )
 
     return resolved
