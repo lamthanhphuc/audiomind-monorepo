@@ -25,6 +25,13 @@ export type RecordedAudioResult = {
   extension: MediaRecorderExtension
 }
 
+export type ParsedRealtimeMimeType = {
+  container: string
+  codecs: string[]
+  codecParameterPresent: boolean
+  codecParameterMalformed: boolean
+}
+
 export class UnsupportedRealtimeRecorderFormatError extends Error {
   readonly code = 'REALTIME_UNSUPPORTED_RECORDER_FORMAT' as const
 
@@ -49,12 +56,15 @@ export const FINAL_MIME_CANDIDATES = [
   'audio/mp4',
 ] as const
 
-/** Mirror of RealtimePayloadValidator ALLOWED_CONTAINERS / ALLOWED_CODECS for FE contract tests. */
+/** Mirror of packages/contracts/realtime-audio-format.json */
 export const REALTIME_PAYLOAD_CONTRACT = {
   allowedContainers: ['webm'] as const,
+  /** MIME codec tokens (not wire encoding). */
   allowedCodecs: ['opus', 'webm-opus'] as const,
+  /** Exact wire encodings accepted by RealtimePayloadValidator. */
+  wireEncodings: ['webm-opus'] as const,
   encoding: 'webm-opus' as const,
-  /** Bare audio/webm (no codecs=) is allowed; explicit non-opus codecs are rejected. */
+  /** Bare audio/webm (no codecs parameter) is allowed. */
   allowBareWebm: true as const,
 }
 
@@ -74,13 +84,38 @@ export const extensionForMimeType = (mimeType: string | undefined | null): Media
   return 'webm'
 }
 
+const stripBalancedQuotes = (value: string): { value: string; malformed: boolean } => {
+  const trimmed = value.trim()
+  if (!trimmed) {
+    return { value: '', malformed: false }
+  }
+  const startsDouble = trimmed.startsWith('"')
+  const endsDouble = trimmed.endsWith('"')
+  const startsSingle = trimmed.startsWith("'")
+  const endsSingle = trimmed.endsWith("'")
+  if (startsDouble || endsDouble) {
+    if (!(startsDouble && endsDouble) || trimmed.length < 2) {
+      return { value: trimmed, malformed: true }
+    }
+    return { value: trimmed.slice(1, -1), malformed: false }
+  }
+  if (startsSingle || endsSingle) {
+    if (!(startsSingle && endsSingle) || trimmed.length < 2) {
+      return { value: trimmed, malformed: true }
+    }
+    return { value: trimmed.slice(1, -1), malformed: false }
+  }
+  return { value: trimmed, malformed: false }
+}
+
 /**
  * Parse MIME type into container + codecs.
- * Handles whitespace, case, and quoted codec tokens (e.g. codecs="opus").
+ * Distinguishes bare WebM from empty/malformed codecs= parameters.
+ * Only recognizes the exact parameter name `codecs` (not codecsx / startsWith).
  */
 export const parseRealtimeMimeType = (
   mimeType: string | undefined | null,
-): { container: string; codecs: string[] } | null => {
+): ParsedRealtimeMimeType | null => {
   const raw = String(mimeType || '').trim()
   if (!raw) {
     return null
@@ -92,39 +127,74 @@ export const parseRealtimeMimeType = (
   }
 
   const codecs: string[] = []
+  let codecParameterPresent = false
+  let codecParameterMalformed = false
+
   for (const part of parts.slice(1)) {
-    const match = /^codecs\s*=\s*(.+)$/i.exec(part)
-    if (!match) {
+    const eq = part.indexOf('=')
+    if (eq < 0) {
+      if (part.toLowerCase() === 'codecs') {
+        codecParameterPresent = true
+        codecParameterMalformed = true
+      }
       continue
     }
-    let value = match[1].trim()
-    if (
-      (value.startsWith('"') && value.endsWith('"'))
-      || (value.startsWith("'") && value.endsWith("'"))
-    ) {
-      value = value.slice(1, -1)
+
+    const name = part.slice(0, eq).trim().toLowerCase()
+    if (name !== 'codecs') {
+      continue
     }
-    for (const token of value.split(',')) {
+
+    codecParameterPresent = true
+    const rawValue = part.slice(eq + 1)
+    if (!rawValue.trim()) {
+      codecParameterMalformed = true
+      continue
+    }
+
+    const unquoted = stripBalancedQuotes(rawValue)
+    if (unquoted.malformed) {
+      codecParameterMalformed = true
+      continue
+    }
+    if (!unquoted.value.trim()) {
+      codecParameterMalformed = true
+      continue
+    }
+
+    // Keep trailing empty tokens (equivalent to Java split(",", -1)).
+    let sawToken = false
+    for (const token of unquoted.value.split(',')) {
       const codec = token.trim().toLowerCase().replace(/^["']|["']$/g, '')
-      if (codec) {
-        codecs.push(codec)
+      if (!codec) {
+        codecParameterMalformed = true
+        continue
       }
+      sawToken = true
+      codecs.push(codec)
+    }
+    if (!sawToken) {
+      codecParameterMalformed = true
     }
   }
 
-  return { container, codecs }
+  return {
+    container,
+    codecs,
+    codecParameterPresent,
+    codecParameterMalformed,
+  }
 }
 
-const isOpusCodecToken = (codec: string): boolean => {
-  const normalized = codec.toLowerCase().replace(/\s+/g, '')
-  return normalized === 'opus'
-    || normalized === 'webm-opus'
-    || normalized === 'audio/opus'
+const isAllowedRealtimeCodecToken = (codec: string): boolean => {
+  // Exact membership after trim + lowercase only — never strip internal whitespace.
+  const normalized = codec.trim().toLowerCase()
+  return (REALTIME_PAYLOAD_CONTRACT.allowedCodecs as readonly string[]).includes(normalized)
 }
 
 /**
  * True only for WebM/Opus-compatible MIME types.
- * Explicit non-opus codecs (vorbis, pcm, …) are rejected even if container is webm.
+ * Explicit non-opus codecs and malformed codecs= parameters are rejected.
  * Empty MIME is never compatible.
  */
 export const isRealtimeCompatibleMimeType = (mimeType: string | undefined | null): boolean => {
@@ -135,10 +205,16 @@ export const isRealtimeCompatibleMimeType = (mimeType: string | undefined | null
   if (parsed.container !== 'audio/webm') {
     return false
   }
-  if (parsed.codecs.length === 0) {
+  if (parsed.codecParameterMalformed) {
+    return false
+  }
+  if (!parsed.codecParameterPresent) {
     return REALTIME_PAYLOAD_CONTRACT.allowBareWebm
   }
-  return parsed.codecs.every(isOpusCodecToken)
+  if (parsed.codecs.length === 0) {
+    return false
+  }
+  return parsed.codecs.every(isAllowedRealtimeCodecToken)
 }
 
 export const realtimeEncodingForMimeType = (mimeType: string | undefined | null): 'webm-opus' | null => {
@@ -251,6 +327,7 @@ export const requireSupportedRealtimeRecorderFormat = (): MediaRecorderFormat =>
 /**
  * Create a MediaRecorder and verify its actual MIME before the caller starts recording.
  * Does not call start() — callers start only after this returns successfully.
+ * Only trusts recorder.mimeType (never preferred/candidate MIME).
  */
 export const createVerifiedRealtimeMediaRecorder = (
   stream: MediaStream,
@@ -262,8 +339,7 @@ export const createVerifiedRealtimeMediaRecorder = (
 
   const preferred = requireSupportedRealtimeRecorderFormat()
   const recorder = new MediaRecorder(stream, buildMediaRecorderOptions(preferred, audioBitsPerSecond))
-  const actualMimeType = recorder.mimeType || preferred.mimeType || ''
-  const format = assertRealtimeCompatibleMimeType(actualMimeType)
+  const format = assertRealtimeCompatibleMimeType(recorder.mimeType)
   return { recorder, format }
 }
 

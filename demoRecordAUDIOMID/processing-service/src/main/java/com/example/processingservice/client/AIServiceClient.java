@@ -1000,8 +1000,11 @@ public class AIServiceClient {
         if (StringUtils.hasText(authorization)) {
             headers.add(HttpHeaders.AUTHORIZATION, authorization);
         }
-        if (StringUtils.hasText(internalServiceToken)) {
-            headers.add("X-Internal-Service-Token", internalServiceToken);
+        String normalizedInternalToken = StringUtils.hasText(internalServiceToken)
+                ? internalServiceToken.trim()
+                : "";
+        if (StringUtils.hasText(normalizedInternalToken)) {
+            headers.add("X-Internal-Service-Token", normalizedInternalToken);
         }
         headers.setContentType(MediaType.MULTIPART_FORM_DATA);
 

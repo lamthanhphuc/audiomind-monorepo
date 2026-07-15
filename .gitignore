@@ -82,3 +82,10 @@ storage/job-status.json
 *.last-run.json
 contextcaddy-config.json
 .aider*
+
+# Local review / verification artifacts (keep outside the repo)
+/review-*/
+/review-fixed/
+/*-review-bundle.zip
+/working-tree.patch
+/staged.patch

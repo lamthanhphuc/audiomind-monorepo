@@ -56,15 +56,18 @@ def require_internal_service_token(
             503,
         )
 
-    provided = request.headers.get(header_name) or request.headers.get(header_name.lower())
-    if provided is None or not str(provided).strip():
+    provided = request.headers.get(header_name)
+    if provided is None:
+        provided = request.headers.get(header_name.lower())
+    # Missing or empty header → 401. Do NOT trim raw request credentials.
+    if provided is None or provided == "":
         raise FinalAudioAuthError(
             "FINAL_AUDIO_UNAUTHORIZED",
             "Internal service authentication is required",
             401,
         )
 
-    provided_bytes = str(provided).encode("utf-8")
+    provided_bytes = provided.encode("utf-8")
     expected_bytes = expected.encode("utf-8")
     if not hmac.compare_digest(provided_bytes, expected_bytes):
         raise FinalAudioAuthError(

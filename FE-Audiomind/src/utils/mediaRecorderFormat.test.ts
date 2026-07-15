@@ -63,6 +63,8 @@ describe('mediaRecorderFormat', () => {
     expect(parseRealtimeMimeType('audio/webm; codecs="opus"')).toEqual({
       container: 'audio/webm',
       codecs: ['opus'],
+      codecParameterPresent: true,
+      codecParameterMalformed: false,
     })
     expect(assertRealtimeCompatibleMimeType('audio/webm; codecs="opus"').encoding).toBe('webm-opus')
     expect(() => assertRealtimeCompatibleMimeType('audio/webm;codecs=vorbis')).toThrow(
@@ -70,6 +72,74 @@ describe('mediaRecorderFormat', () => {
     )
     expect(() => assertRealtimeCompatibleMimeType('')).toThrow(UnsupportedRealtimeRecorderFormatError)
     expect(() => assertRealtimeCompatibleMimeType(undefined)).toThrow(UnsupportedRealtimeRecorderFormatError)
+  })
+
+  it('rejects malformed codecs parameters and ignores codecsx', () => {
+    expect(isRealtimeCompatibleMimeType('audio/webm;codecs=')).toBe(false)
+    expect(isRealtimeCompatibleMimeType('audio/webm;codecs')).toBe(false)
+    expect(isRealtimeCompatibleMimeType('audio/webm;codecs="opus')).toBe(false)
+    expect(isRealtimeCompatibleMimeType('audio/webm;codecs=opus"')).toBe(false)
+    expect(parseRealtimeMimeType('audio/webm;codecs=')).toMatchObject({
+      codecParameterPresent: true,
+      codecParameterMalformed: true,
+    })
+    expect(parseRealtimeMimeType('audio/webm;codecsx=opus')).toMatchObject({
+      codecParameterPresent: false,
+      codecParameterMalformed: false,
+      codecs: [],
+    })
+    expect(isRealtimeCompatibleMimeType('audio/webm;codecsx=opus')).toBe(true)
+  })
+
+  it('rejects trailing/leading empty codec tokens and non-contract codecs', () => {
+    for (const mime of [
+      'audio/webm;codecs=opus,',
+      'audio/webm;codecs=,opus',
+      'audio/webm;codecs=opus,,',
+      'audio/webm;codecs=opus,,webm-opus',
+      'audio/webm;codecs="opus,"',
+      'audio/webm;codecs=",opus"',
+      'audio/webm;codecs=audio/opus',
+      'audio/webm;codecs=vorbis',
+    ]) {
+      expect(isRealtimeCompatibleMimeType(mime)).toBe(false)
+      expect(realtimeEncodingForMimeType(mime)).toBeNull()
+    }
+
+    expect(isRealtimeCompatibleMimeType('audio/webm')).toBe(true)
+    expect(isRealtimeCompatibleMimeType('audio/webm;codecs=opus')).toBe(true)
+    expect(isRealtimeCompatibleMimeType('audio/webm;codecs="opus"')).toBe(true)
+    expect(isRealtimeCompatibleMimeType('audio/webm; codecs = "opus"')).toBe(true)
+    expect(isRealtimeCompatibleMimeType('audio/webm;codecs=webm-opus')).toBe(true)
+    expect(isRealtimeCompatibleMimeType('audio/webm;codecs= opus ')).toBe(true)
+  })
+
+  it('rejects codecs with internal whitespace instead of collapsing tokens', () => {
+    for (const mime of [
+      'audio/webm;codecs=o p u s',
+      'audio/webm;codecs="o p u s"',
+      'audio/webm;codecs=webm - opus',
+      'audio/webm;codecs=o\tp\tu\ts',
+      'audio/webm;codecs=o\np\nus',
+      'audio/webm;codecs=webm\t-\topus',
+    ]) {
+      expect(isRealtimeCompatibleMimeType(mime)).toBe(false)
+      expect(realtimeEncodingForMimeType(mime)).toBeNull()
+    }
+  })
+
+  it('rejects empty actual mimeType even when isTypeSupported reports WebM', () => {
+    const start = vi.fn()
+    class EmptyMimeRecorder {
+      static isTypeSupported = () => true
+      mimeType = ''
+      start = start
+      constructor(_stream: MediaStream, _options?: MediaRecorderOptions) {}
+    }
+    vi.stubGlobal('MediaRecorder', EmptyMimeRecorder)
+    const stream = { getTracks: () => [] } as unknown as MediaStream
+    expect(() => createVerifiedRealtimeMediaRecorder(stream)).toThrow(UnsupportedRealtimeRecorderFormatError)
+    expect(start).not.toHaveBeenCalled()
   })
 
   it('rejects actual MP4 Mime when isTypeSupported is missing and does not start recorder', () => {
@@ -84,6 +154,17 @@ describe('mediaRecorderFormat', () => {
     const stream = { getTracks: () => [] } as unknown as MediaStream
     expect(() => createVerifiedRealtimeMediaRecorder(stream)).toThrow(UnsupportedRealtimeRecorderFormatError)
     expect(start).not.toHaveBeenCalled()
+  })
+
+  it('does not fall back to preferred MIME when actual mimeType is empty', () => {
+    class PreferredOnlyRecorder {
+      static isTypeSupported = (type: string) => type.includes('webm')
+      mimeType = ''
+      constructor(_stream: MediaStream, _options?: MediaRecorderOptions) {}
+    }
+    vi.stubGlobal('MediaRecorder', PreferredOnlyRecorder)
+    const stream = { getTracks: () => [] } as unknown as MediaStream
+    expect(() => createVerifiedRealtimeMediaRecorder(stream)).toThrow(UnsupportedRealtimeRecorderFormatError)
   })
 
   it('accepts actual WebM/Opus mime when isTypeSupported is missing', () => {
@@ -128,8 +209,12 @@ describe('mediaRecorderFormat', () => {
     const contract = await import('../../../packages/contracts/realtime-audio-format.json')
     expect(REALTIME_PAYLOAD_CONTRACT.allowedContainers).toEqual(contract.allowedContainers)
     expect(REALTIME_PAYLOAD_CONTRACT.allowedCodecs).toEqual(contract.allowedCodecs)
+    expect([...REALTIME_PAYLOAD_CONTRACT.wireEncodings]).toEqual(contract.wireEncodings)
+    expect(REALTIME_PAYLOAD_CONTRACT.allowedCodecs).toEqual(['opus', 'webm-opus'])
     expect(realtimeEncodingForMimeType('audio/mp4')).toBeNull()
     expect(realtimeEncodingForMimeType('audio/webm; codecs=opus')).toBe('webm-opus')
+    expect(realtimeEncodingForMimeType('audio/webm;codecs=webm-opus')).toBe('webm-opus')
+    expect(realtimeEncodingForMimeType('audio/webm;codecs=audio/opus')).toBeNull()
     expect(realtimeEncodingForMimeType('audio/webm;codecs=vorbis')).toBeNull()
   })
 

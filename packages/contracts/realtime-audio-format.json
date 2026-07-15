@@ -1,6 +1,7 @@
 {
   "allowedContainers": ["webm"],
   "allowedCodecs": ["opus", "webm-opus"],
+  "wireEncodings": ["webm-opus"],
   "encoding": "webm-opus",
   "allowBareWebm": true,
   "realtimeMimeCandidates": [
@@ -14,5 +15,5 @@
     "audio/webm",
     "audio/mp4"
   ],
-  "notes": "Explicit codecs in mime_type must be opus-compatible; vorbis/pcm/mp4 rejected. Bare audio/webm allowed when allowBareWebm is true."
+  "notes": "MIME codecs= tokens are exactly allowedCodecs (opus, webm-opus). audio/opus is not a codec token. Wire encoding must be exactly webm-opus. Bare audio/webm allowed; empty/malformed/trailing-empty codecs= tokens rejected. Blank MIME or blank encoding rejected."
 }

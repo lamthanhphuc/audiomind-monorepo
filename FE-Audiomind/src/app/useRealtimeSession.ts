@@ -42,6 +42,8 @@ import {
 import { realtimeError, realtimeInfo, realtimeWarn } from '../utils/realtimeTelemetry'
 import { buildLiveAnalysisMetadata } from './liveAnalysisMetadata'
 import { isNoTranscriptTerminalLifecycle, type LiveLifecycleState } from './liveLifecycle'
+import { isTerminalAudioCaptureAttempt } from './terminalAudioCaptureCleanup'
+import type { RunTerminalAudioCaptureCleanupRef } from './useTerminalAudioCaptureCleanup'
 
 const REALTIME_ANALYSIS_POLL_MAX_ATTEMPTS = 45
 const STREAM_STOP_DISCONNECT_FALLBACK_DELAY_MS = 500
@@ -73,6 +75,7 @@ type HydrationOptions = {
 type LiveRecordingStopSequenceResult = {
   stopSent: boolean
   stopIncomplete: boolean
+  stale?: boolean
 }
 
 type LiveRecordingStopSequenceInput = {
@@ -81,6 +84,7 @@ type LiveRecordingStopSequenceInput = {
   stopStream?: () => Promise<boolean>
   setLifecycleState: (state: LiveLifecycleState) => void
   source?: string
+  isCurrentAttempt?: () => boolean
 }
 
 type RealtimeFinalAudioFallbackInput = {
@@ -120,7 +124,10 @@ type RealtimeStreamLike = {
   clearQueuedAudio?: () => void
   clearTranscripts?: () => void
   clearKeywords?: () => void
-  disconnect: (token: RealtimeSessionToken | null) => void
+  disconnect: (
+    token: RealtimeSessionToken | null,
+    options?: { reason?: 'user' | 'audio_capture_failure' | 'default' },
+  ) => void
   configureDualStreams?: (streamIds: Array<'tab' | 'mic'>) => void
   waitForSessionReady: (
     timeoutMs?: number,
@@ -220,6 +227,8 @@ export type UseRealtimeSessionInput = {
   setHydratedLiveTranscriptSegments: Dispatch<SetStateAction<TranscriptSegment[] | null>>
   setLiveLifecycleState: Dispatch<SetStateAction<LiveLifecycleState>>
   setShowJoinOtherMeeting: Dispatch<SetStateAction<boolean>>
+  runTerminalAudioCaptureCleanupRef: RunTerminalAudioCaptureCleanupRef
+  failedAudioCaptureCleanupKeyRef: MutableRefObject<string | null>
   sessionHelpers: RealtimeSessionHelpers
   analysisHelpers: RealtimeAnalysisHelpers
 }
@@ -258,6 +267,8 @@ export const useRealtimeSession = ({
   setHydratedLiveTranscriptSegments,
   setLiveLifecycleState,
   setShowJoinOtherMeeting,
+  runTerminalAudioCaptureCleanupRef,
+  failedAudioCaptureCleanupKeyRef,
   sessionHelpers,
   analysisHelpers,
 }: UseRealtimeSessionInput) => {
@@ -662,6 +673,12 @@ export const useRealtimeSession = ({
       return
     }
 
+    if (
+      isTerminalAudioCaptureAttempt(failedAudioCaptureCleanupKeyRef, activeToken, activeMeetingId)
+    ) {
+      return
+    }
+
     const chunkBytes = chunk.size
     const recordingDurationSec = audioRecorder.duration
     const isTabCaptureSource = isBrowserTabRecordingSource(selectedRecordingSourceRef.current)
@@ -688,22 +705,25 @@ export const useRealtimeSession = ({
       && liveTinyChunkStreakRef.current >= REALTIME_TINY_CHUNK_STREAK_THRESHOLD
     ) {
       const captureError = getRecordingSourceTinyChunkError(selectedRecordingSourceRef.current)
-      realtimeWarn('[Realtime] REALTIME_TINY_CHUNK_STREAK_CLIENT', {
-        meetingId: activeMeetingId,
-        sessionId,
-        streak: liveTinyChunkStreakRef.current,
-        chunkBytes,
-        rms: currentRms,
-        recordingDurationSec,
+      const cleaned = runTerminalAudioCaptureCleanupRef.current({
+        expectedToken: activeToken,
+        requireRecorderActive: true,
+        errorMessage: captureError,
+        statusMessage: 'Không nhận được âm thanh hợp lệ',
+        partialWarning: captureError,
+        logEvent: '[Realtime] REALTIME_TINY_CHUNK_STREAK_CLIENT',
+        logDetails: {
+          meetingId: activeMeetingId,
+          sessionId,
+          streak: liveTinyChunkStreakRef.current,
+          chunkBytes,
+          rms: currentRms,
+          recordingDurationSec,
+        },
       })
-      liveTinyChunkStreakRef.current = 0
-      setLiveError(captureError)
-      setLiveLifecycleState('failed_audio_capture')
-      setLiveStatusMessage('Không nhận được âm thanh hợp lệ')
-      audioRecorder.abortRecording()
-      realtimeStream.clearQueuedAudio?.()
-      realtimeStream.disconnect(activeToken)
-      return
+      if (cleaned) {
+        return
+      }
     }
 
     try {
@@ -716,15 +736,16 @@ export const useRealtimeSession = ({
   }, [
     activeRealtimeSessionTokenRef,
     audioRecorder,
+    failedAudioCaptureCleanupKeyRef,
     isCurrentRealtimeSessionToken,
     liveMeetingIdRef,
     liveRecordingSessionIdRef,
     liveTinyChunkStreakRef,
     realtimeStream,
+    runTerminalAudioCaptureCleanupRef,
     selectedRecordingSourceRef,
     setLiveError,
     setLiveLifecycleState,
-    setLiveStatusMessage,
   ])
 
   const handleLiveAnalysisRetry = useCallback(async () => {
@@ -816,15 +837,18 @@ export const useRealtimeSession = ({
     const sessionToken = activeRealtimeSessionTokenRef.current
     const completedMeetingId = liveMeetingIdRef.current
     let noTranscriptAfterFinalize = false
-    if (
-      !sessionToken
-      || !isCurrentLiveRecordingSession(
+    let terminalAudioCaptureFailure = false
+    const isCurrentCompletion = (): boolean => (
+      Boolean(sessionToken)
+      && isCurrentRealtimeSessionToken(sessionToken)
+      && isCurrentLiveRecordingSession(
         sessionId,
         completedMeetingId,
         liveRecordingSessionIdRef.current,
         liveMeetingIdRef.current,
       )
-    ) {
+    )
+    if (!sessionToken || !isCurrentCompletion()) {
       realtimeWarn('[Realtime] REALTIME_DROP_STALE_CHUNK', {
         currentMeetingId: completedMeetingId,
         sessionId,
@@ -836,7 +860,7 @@ export const useRealtimeSession = ({
     setLiveStatusMessage(`Đã ghi âm ${Math.max(1, Math.round(fullAudio.size / 1024))} KB`)
     realtimeInfo('[Realtime] FINAL_AUDIO_BLOB_READY', buildFinalAudioBlobReadyLogPayload(completedMeetingId, fullAudio.size))
     try {
-      if (!isCurrentRealtimeSessionToken(sessionToken)) {
+      if (!isCurrentCompletion()) {
         realtimeInfo('[Realtime] STALE_SESSION_COMPLETE_IGNORED', {
           meetingId: completedMeetingId,
           sessionId,
@@ -844,14 +868,25 @@ export const useRealtimeSession = ({
         return
       }
 
-      const { stopIncomplete } = await runLiveRecordingStopSequence({
+      const stopResult = await runLiveRecordingStopSequence({
         meetingId: completedMeetingId,
         sessionId,
         stopStream: realtimeStream.stopStream
           ? () => realtimeStream.stopStream!()
           : undefined,
         setLifecycleState: setLiveLifecycleState,
+        isCurrentAttempt: isCurrentCompletion,
       })
+      if (stopResult.stale || !isCurrentCompletion()) {
+        realtimeInfo('[Realtime] STALE_SESSION_COMPLETE_IGNORED', {
+          meetingId: completedMeetingId,
+          sessionId,
+          phase: 'after_stop_sequence',
+          stale: Boolean(stopResult.stale),
+        })
+        return
+      }
+      const { stopIncomplete } = stopResult
       if (stopIncomplete) {
         realtimeWarn('[Realtime] STREAM_STOP_INCOMPLETE_DISCONNECT_FALLBACK', {
           meetingId: completedMeetingId,
@@ -859,6 +894,14 @@ export const useRealtimeSession = ({
         })
         realtimeStream.disconnect(sessionToken)
         await new Promise((resolve) => setTimeout(resolve, STREAM_STOP_DISCONNECT_FALLBACK_DELAY_MS))
+        if (!isCurrentCompletion()) {
+          realtimeInfo('[Realtime] STALE_SESSION_COMPLETE_IGNORED', {
+            meetingId: completedMeetingId,
+            sessionId,
+            phase: 'after_stop_incomplete_delay',
+          })
+          return
+        }
       }
 
       const activeMeetingId = liveMeetingIdRef.current
@@ -884,16 +927,7 @@ export const useRealtimeSession = ({
             isHydrationRunActive: isCurrentHydrationRun,
           },
         )
-        if (
-          !isCurrentHydrationRun(hydrationRunId)
-          || !isCurrentRealtimeSessionToken(sessionToken)
-          || !isCurrentLiveRecordingSession(
-            sessionId,
-            completedMeetingId,
-            liveRecordingSessionIdRef.current,
-            liveMeetingIdRef.current,
-          )
-        ) {
+        if (!isCurrentHydrationRun(hydrationRunId) || !isCurrentCompletion()) {
           return
         }
         const mergedHydration = mergeHydratedTranscriptWithLive(liveSnapshot, hydratedSegments)
@@ -934,6 +968,14 @@ export const useRealtimeSession = ({
               fallbackFile,
               selectedRealtimeLanguage,
             )
+            if (!isCurrentCompletion()) {
+              realtimeInfo('[Realtime] STALE_SESSION_COMPLETE_IGNORED', {
+                meetingId: completedMeetingId,
+                sessionId,
+                phase: 'after_final_audio_fallback',
+              })
+              return
+            }
             const fallbackRows = Number(
               fallbackResponse.transcriptRows ?? fallbackResponse.transcript_count ?? 0,
             )
@@ -945,6 +987,14 @@ export const useRealtimeSession = ({
                     attemptId: sessionToken.attemptId,
                   })
                 : await getTranscript(activeMeetingId)
+              if (!isCurrentCompletion()) {
+                realtimeInfo('[Realtime] STALE_SESSION_COMPLETE_IGNORED', {
+                  meetingId: completedMeetingId,
+                  sessionId,
+                  phase: 'after_fallback_transcript',
+                })
+                return
+              }
               const fallbackSegments = mergeTranscriptSegments(
                 normalizePersistedTranscriptSegments(fallbackTranscript.transcripts || []),
               )
@@ -959,8 +1009,24 @@ export const useRealtimeSession = ({
             } else {
               const fallbackStatus = String(fallbackResponse.status ?? fallbackResponse.errorCode ?? 'NO_TRANSCRIPT')
               if (fallbackStatus === 'FAILED_AUDIO_CAPTURE') {
-                setLiveLifecycleState('failed_audio_capture')
-                setLiveError('Không nhận được âm thanh hợp lệ để nhận dạng.')
+                const cleaned = runTerminalAudioCaptureCleanupRef.current({
+                  expectedToken: sessionToken,
+                  errorMessage: 'Không nhận được âm thanh hợp lệ để nhận dạng.',
+                  statusMessage: 'Không nhận được âm thanh hợp lệ',
+                  partialWarning: 'Không nhận được âm thanh hợp lệ để nhận dạng.',
+                  transcriptRows: fallbackRows,
+                  logEvent: '[Realtime] REALTIME_FINAL_AUDIO_FALLBACK_FAILED_AUDIO_CAPTURE',
+                  logDetails: {
+                    meetingId: activeMeetingId,
+                    sessionId,
+                    transcriptRows: fallbackRows,
+                    status: fallbackStatus,
+                  },
+                })
+                if (cleaned) {
+                  terminalAudioCaptureFailure = true
+                  noTranscriptAfterFinalize = false
+                }
               } else if (fallbackStatus === 'FINAL_AUDIO_FALLBACK_UNAVAILABLE') {
                 setLivePartialWarning('Transcript đã lưu nhưng không thể khôi phục phần đuôi từ audio fallback (WebM continuation không khả dụng).')
                 realtimeInfo('[Realtime] REALTIME_FINAL_AUDIO_TAIL_RECOVERY_UNAVAILABLE', {
@@ -976,6 +1042,9 @@ export const useRealtimeSession = ({
               })
             }
           } catch (fallbackError) {
+            if (!isCurrentCompletion()) {
+              return
+            }
             realtimeWarn('[Realtime] REALTIME_FINAL_AUDIO_FALLBACK_FAILED', {
               meetingId: activeMeetingId,
               sessionId,
@@ -983,7 +1052,10 @@ export const useRealtimeSession = ({
             })
           }
         }
-        if (noTranscriptAfterFinalize) {
+        if (!isCurrentCompletion()) {
+          return
+        }
+        if (noTranscriptAfterFinalize && !terminalAudioCaptureFailure) {
           liveAnalysisAbortControllerRef.current?.abort()
           liveAnalysisAbortControllerRef.current = null
           analysisPollRunIdRef.current += 1
@@ -999,7 +1071,7 @@ export const useRealtimeSession = ({
           setLiveAnalysisStatus('pending')
           setLiveAnalysisError(null)
         }
-        if (partialState && !noTranscriptAfterFinalize) {
+        if (partialState && !noTranscriptAfterFinalize && !terminalAudioCaptureFailure) {
           setLivePartialWarning('Transcript có thể chưa đầy đủ')
           realtimeInfo('[Realtime] TRANSCRIPT_PARTIAL_WARNING', {
             meetingId: activeMeetingId,
@@ -1007,21 +1079,28 @@ export const useRealtimeSession = ({
           })
         }
       } else {
-        if (!isCurrentRealtimeSessionToken(sessionToken)) {
+        if (!isCurrentCompletion()) {
           return
         }
         setHydratedLiveTranscriptSegments([])
       }
 
-      if (
-        isCurrentLiveRecordingSession(
-          sessionId,
-          completedMeetingId,
-          liveRecordingSessionIdRef.current,
-          liveMeetingIdRef.current,
-        ) && realtimeStream.disconnect
-      ) {
+      if (!isCurrentCompletion()) {
+        return
+      }
+
+      if (realtimeStream.disconnect && !terminalAudioCaptureFailure) {
         realtimeStream.disconnect(sessionToken)
+      }
+
+      if (terminalAudioCaptureFailure) {
+        realtimeInfo('[Realtime] REALTIME_CLEANUP_DONE', {
+          meetingId: liveMeetingIdRef.current,
+          sessionId,
+          terminalAudioCaptureFailure: true,
+        })
+        audioRecorder.cleanupRecordingResources()
+        return
       }
 
       if (noTranscriptAfterFinalize) {
@@ -1033,7 +1112,7 @@ export const useRealtimeSession = ({
       if (!noTranscriptAfterFinalize) {
         setLiveStatusMessage('Đã dừng ghi âm')
       }
-      if (completedMeetingId !== null && isCurrentRealtimeSessionToken(sessionToken) && !noTranscriptAfterFinalize) {
+      if (completedMeetingId !== null && !noTranscriptAfterFinalize) {
         startRealtimeAnalysisPolling(completedMeetingId, sessionId, sessionToken)
       }
 
@@ -1043,7 +1122,7 @@ export const useRealtimeSession = ({
       })
       audioRecorder.cleanupRecordingResources()
     } catch (err) {
-      if (!isCurrentRealtimeSessionToken(sessionToken)) {
+      if (!isCurrentCompletion()) {
         realtimeInfo('[Realtime] STALE_HYDRATION_IGNORED', {
           meetingId: completedMeetingId,
           sessionId,
@@ -1071,6 +1150,7 @@ export const useRealtimeSession = ({
     realtimeStream,
     resolveTranscriptPartialState,
     runLiveRecordingStopSequence,
+    runTerminalAudioCaptureCleanupRef,
     selectedRealtimeLanguage,
     setHydratedLiveTranscriptSegments,
     setLiveAnalysis,

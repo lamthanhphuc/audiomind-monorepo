@@ -77,6 +77,52 @@ def test_valid_token_passes():
     )
 
 
+def test_configured_token_whitespace_is_normalized_for_exact_header_match():
+    settings = MagicMock()
+    settings.internal_service_token = " expected-secret "
+    require_internal_service_token(
+        _request_with_headers({"X-Internal-Service-Token": "expected-secret"}),
+        settings=settings,
+    )
+
+
+def test_raw_request_token_with_leading_whitespace_rejects_with_403():
+    settings = MagicMock()
+    settings.internal_service_token = "expected-secret"
+    with pytest.raises(FinalAudioAuthError) as exc:
+        require_internal_service_token(
+            _request_with_headers({"X-Internal-Service-Token": " expected-secret "}),
+            settings=settings,
+        )
+    assert exc.value.status_code == 403
+    assert exc.value.code == "FINAL_AUDIO_FORBIDDEN"
+    assert "expected-secret" not in str(exc.value)
+
+
+def test_raw_request_token_with_trailing_whitespace_rejects_with_403():
+    settings = MagicMock()
+    settings.internal_service_token = "expected-secret"
+    with pytest.raises(FinalAudioAuthError) as exc:
+        require_internal_service_token(
+            _request_with_headers({"X-Internal-Service-Token": "expected-secret "}),
+            settings=settings,
+        )
+    assert exc.value.status_code == 403
+    assert exc.value.code == "FINAL_AUDIO_FORBIDDEN"
+
+
+def test_empty_header_rejects_with_401():
+    settings = MagicMock()
+    settings.internal_service_token = "expected-secret"
+    with pytest.raises(FinalAudioAuthError) as exc:
+        require_internal_service_token(
+            _request_with_headers({"X-Internal-Service-Token": ""}),
+            settings=settings,
+        )
+    assert exc.value.status_code == 401
+    assert exc.value.code == "FINAL_AUDIO_UNAUTHORIZED"
+
+
 def test_run_final_audio_fallback_propagates_path_error():
     with patch(
         "app.services.final_audio_fallback.validate_final_audio_fallback_path",

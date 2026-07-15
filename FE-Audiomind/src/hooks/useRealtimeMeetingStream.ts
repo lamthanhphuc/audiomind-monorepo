@@ -77,6 +77,11 @@ export const normalizeRealtimeSpeakerMode = (speakerMode?: string | null): Realt
 
 export type RealtimeAudioStreamId = 'tab' | 'mic'
 
+/** Distinguishes owner-driven closes so onclose can avoid reconnect / status races. */
+export type RealtimeDisconnectOptions = {
+  reason?: 'user' | 'audio_capture_failure' | 'default'
+}
+
 interface UseRealtimeMeetingStreamOptions {
   meetingId: number | null
   userId: number | null
@@ -91,6 +96,12 @@ interface UseRealtimeMeetingStreamOptions {
   onTranscript?: (segment: TranscriptSegment) => void
   onKeyword?: (hit: KeywordHit) => void
   onStatusChange?: (status: RealtimeStatusEvent) => void
+  /** Owner cleanup when a live chunk has empty/unsupported MIME (terminal, once per session). */
+  onAudioCaptureFailure?: (detail: {
+    reason: 'missing_chunk_mime' | 'unsupported_chunk_mime'
+    mimeType: string
+    errorCode: string
+  }) => void
   autoReconnect?: boolean
   reconnectAttempts?: number
   reconnectDelay?: number
@@ -190,6 +201,7 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
     onTranscript,
     onKeyword,
     onStatusChange,
+    onAudioCaptureFailure,
     autoReconnect = true,
     reconnectAttempts = 5,
     reconnectDelay = 1000,
@@ -226,10 +238,22 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
   const effectRunCountRef = useRef(0)
   const connectRef = useRef<() => void>(() => {})
   const userStopRequestedRef = useRef(false)
-  const streamStopSentRef = useRef(false)
+  /** Attempt-scoped stop-sent flag so attempt 1 cannot block/mark attempt 2. */
+  const streamStopSentRef = useRef<{ attemptKey: string; sent: true } | null>(null)
+  /** Blocks further chunk sends after an unsupported/empty Blob.type failure. */
+  const audioCaptureFailedRef = useRef(false)
+  /** Ensures unsupported chunk MIME is reported once per connect session. */
+  const invalidChunkMimeReportedRef = useRef(false)
+  /**
+   * Terminal session failure: onclose must not auto-reconnect or overwrite
+   * FAILED_AUDIO_CAPTURE with stopped/completed/error/reconnecting.
+   */
+  const terminalAudioCaptureFailureRef = useRef(false)
   const selectedLanguageRef = useRef<RealtimeLanguage>(DEFAULT_REALTIME_LANGUAGE)
   const selectedSpeakerModeRef = useRef<RealtimeSpeakerMode>(DEFAULT_REALTIME_SPEAKER_MODE)
   const selectedDomainModeRef = useRef<string>('it')
+  const onStatusChangeRef = useRef(onStatusChange)
+  const onAudioCaptureFailureRef = useRef(onAudioCaptureFailure)
 
   const resolvedToken = token || getAccessToken() || ''
   const canConnect = enabled && meetingId !== null && userId !== null && resolvedToken.trim().length > 0 && sessionToken !== null
@@ -251,6 +275,14 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
     activeStreamsRef.current = activeStreams
   }, [activeStreams, dualStream])
 
+  useEffect(() => {
+    onStatusChangeRef.current = onStatusChange
+  }, [onStatusChange])
+
+  useEffect(() => {
+    onAudioCaptureFailureRef.current = onAudioCaptureFailure
+  }, [onAudioCaptureFailure])
+
   const isSameSessionToken = useCallback((left: RealtimeSessionToken | null, right: RealtimeSessionToken | null) => {
     if (!left || !right) {
       return false
@@ -268,14 +300,25 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
     return isSameSessionToken(candidate, activeSessionTokenRef.current)
   }, [isSameSessionToken])
 
+  const sessionAttemptKey = useCallback((token: RealtimeSessionToken): string => {
+    return `${token.meetingId}:${token.recordingSessionId}:${token.attemptId}:${token.connectionSeq}`
+  }, [])
+
+  const isStreamStopSentForToken = useCallback((token: RealtimeSessionToken | null): boolean => {
+    if (!token || !streamStopSentRef.current?.sent) {
+      return false
+    }
+    return streamStopSentRef.current.attemptKey === sessionAttemptKey(token)
+  }, [sessionAttemptKey])
+
   useEffect(() => {
     activeSessionTokenRef.current = sessionToken
   }, [sessionToken])
 
   const updateStatus = useCallback((newStatus: RealtimeStatusEvent) => {
     setStatus(newStatus)
-    onStatusChange?.(newStatus)
-  }, [onStatusChange])
+    onStatusChangeRef.current?.(newStatus)
+  }, [])
 
   const sendRaw = useCallback((message: JsonValue) => {
     const serialized = JSON.stringify(message)
@@ -397,19 +440,32 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
     })
   }, [meetingId])
 
-  const waitForBufferedAmountToDrain = useCallback(async (timeoutMs = STOP_DRAIN_TIMEOUT_MS) => {
+  const waitForBufferedAmountToDrain = useCallback(async (
+    expectedSocket: WebSocket,
+    isCurrentOwner: () => boolean,
+    timeoutMs = STOP_DRAIN_TIMEOUT_MS,
+  ): Promise<{ drained: boolean; stale: boolean }> => {
     const startedAt = Date.now()
 
     while (Date.now() - startedAt < timeoutMs) {
-      const websocket = wsRef.current
-      if (!websocket || websocket.readyState !== WebSocket.OPEN || websocket.bufferedAmount <= 0) {
-        return true
+      if (!isCurrentOwner() || wsRef.current !== expectedSocket) {
+        return { drained: false, stale: true }
+      }
+      if (expectedSocket.readyState !== WebSocket.OPEN || expectedSocket.bufferedAmount <= 0) {
+        return { drained: true, stale: false }
       }
 
       await new Promise((resolve) => window.setTimeout(resolve, STOP_DRAIN_POLL_MS))
     }
 
-    return (wsRef.current?.bufferedAmount ?? 0) <= 0
+    if (!isCurrentOwner() || wsRef.current !== expectedSocket) {
+      return { drained: false, stale: true }
+    }
+
+    return {
+      drained: expectedSocket.readyState !== WebSocket.OPEN || expectedSocket.bufferedAmount <= 0,
+      stale: false,
+    }
   }, [])
 
   const clearSessionReadyState = useCallback(() => {
@@ -468,10 +524,35 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
     clearPendingQueue()
   }, [clearPendingQueue])
 
-  const disconnect = useCallback((expectedToken?: RealtimeSessionToken | null) => {
+  const markTerminalAudioCaptureFailure = useCallback(() => {
+    audioCaptureFailedRef.current = true
+    terminalAudioCaptureFailureRef.current = true
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current)
+      reconnectTimeoutRef.current = null
+    }
+  }, [])
+
+  const disconnect = useCallback((
+    expectedToken?: RealtimeSessionToken | null,
+    options?: RealtimeDisconnectOptions,
+  ) => {
     const tokenToUse = expectedToken ?? activeSessionTokenRef.current
     if (!isActiveSessionToken(tokenToUse)) {
       return
+    }
+
+    if (options?.reason === 'audio_capture_failure') {
+      markTerminalAudioCaptureFailure()
+      // Set terminal status before close so onclose never overwrites with reconnecting/stopped/completed.
+      updateStatus({
+        state: 'FAILED_AUDIO_CAPTURE',
+        status: 'FAILED_AUDIO_CAPTURE',
+        errorCode: 'FAILED_AUDIO_CAPTURE',
+        message: 'Realtime audio capture failed',
+        // Terminal capture failures must not trip recorder auto-reset recovery.
+        resetRequired: false,
+      })
     }
 
     if (reconnectTimeoutRef.current) {
@@ -483,6 +564,7 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
     realtimeInfo('[Realtime] REALTIME_WS_DISCONNECT', {
       meetingId,
       connectionSeq: connectionSequenceRef.current,
+      reason: options?.reason ?? 'default',
     })
 
     clearPendingQueue('disconnect')
@@ -500,7 +582,15 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
 
     setIsAuthenticated(false)
     setIsConnected(false)
-  }, [clearPendingQueue, clearSessionReadyState, isActiveSessionToken, meetingId, rejectSessionReadyWaiters])
+  }, [
+    clearPendingQueue,
+    clearSessionReadyState,
+    isActiveSessionToken,
+    markTerminalAudioCaptureFailure,
+    meetingId,
+    rejectSessionReadyWaiters,
+    updateStatus,
+  ])
 
   const connect = useCallback(() => {
     if (!canConnect || meetingId === null || userId === null) {
@@ -672,6 +762,9 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
                     : incomingState === 'completed' || incomingState === 'stopped'
                       ? incomingState
                       : 'connected'
+              if (nextState === 'FAILED_AUDIO_CAPTURE') {
+                markTerminalAudioCaptureFailure()
+              }
               updateStatus({
                 state: nextState,
                 activeConnections: toNumber(data.activeConnections),
@@ -735,6 +828,8 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
           userStopRequestedRef.current ||
           closeEvent.reason?.trim() === 'Stream stopped by client'
         const isNormalClose = closeEvent.code === 1000 || closeEvent.code === 1001
+        const isTerminalAudioCaptureFailure =
+          terminalAudioCaptureFailureRef.current || audioCaptureFailedRef.current
 
         setIsConnected(false)
         setIsAuthenticated(false)
@@ -743,6 +838,21 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
         userStopRequestedRef.current = false
         clearPendingQueue('ws_close')
         clearSessionReadyState()
+
+        // Terminal capture failure: never reconnect and never overwrite FAILED_AUDIO_CAPTURE.
+        if (isTerminalAudioCaptureFailure) {
+          if (reconnectTimeoutRef.current) {
+            clearTimeout(reconnectTimeoutRef.current)
+            reconnectTimeoutRef.current = null
+          }
+          rejectSessionReadyWaiters(
+            reason,
+            meetingId,
+            sessionToken?.attemptId ?? 0,
+            sessionToken?.recordingSessionId ?? 0,
+          )
+          return
+        }
 
         if (isAuthFailure) {
           rejectSessionReadyWaiters(
@@ -784,6 +894,9 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
           updateStatus({ state: 'reconnecting', message: `${reason}. Reconnecting in ${Math.round(delay / 1000)}s...` })
           const reconnectToken = sessionToken
           reconnectTimeoutRef.current = window.setTimeout(() => {
+            if (terminalAudioCaptureFailureRef.current || audioCaptureFailedRef.current) {
+              return
+            }
             if (!isSameSessionToken(reconnectToken, activeSessionTokenRef.current)) {
               return
             }
@@ -807,7 +920,7 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
       realtimeError('[Realtime] Failed to establish connection:', error)
       updateStatus({ state: 'error', message: 'Failed to connect' })
     }
-  }, [autoReconnect, canConnect, clearPendingQueue, clearSessionReadyState, flushPendingMessages, meetingId, reconnectAttempts, reconnectDelay, rejectSessionReadyWaiters, resolveSessionReadyWaiters, resolvedToken, sendRaw, sessionToken, updateStatus, userId])
+  }, [autoReconnect, canConnect, clearPendingQueue, clearSessionReadyState, flushPendingMessages, isSameSessionToken, markTerminalAudioCaptureFailure, meetingId, reconnectAttempts, reconnectDelay, rejectSessionReadyWaiters, resolveSessionReadyWaiters, resolvedToken, sendRaw, sessionToken, updateStatus, userId])
 
   useEffect(() => {
     connectRef.current = connect
@@ -905,7 +1018,11 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
       throw new Error('Invalid meeting ID for audio chunk')
     }
 
-    if (userStopRequestedRef.current || streamStopSentRef.current) {
+    if (audioCaptureFailedRef.current) {
+      return
+    }
+
+    if (userStopRequestedRef.current || isStreamStopSentForToken(activeSessionTokenRef.current)) {
       realtimeWarn('[Realtime] REALTIME_DROP_AUDIO_CHUNK', {
         meetingId: normalizedMeetingId,
         connectionSeq: connectionSequenceRef.current,
@@ -946,7 +1063,42 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
       return
     }
 
-    // Send metadata as JSON first
+    // Never invent MIME/encoding — only trust Blob.type from the recorder.
+    const chunkMimeType = String(audioChunk.type || '').trim()
+    const encoding = realtimeEncodingForMimeType(chunkMimeType)
+    if (!chunkMimeType || !encoding) {
+      const reason = chunkMimeType ? 'unsupported_chunk_mime' as const : 'missing_chunk_mime' as const
+      if (invalidChunkMimeReportedRef.current) {
+        return
+      }
+      invalidChunkMimeReportedRef.current = true
+      markTerminalAudioCaptureFailure()
+      clearPendingQueue()
+      realtimeError('[Realtime] REALTIME_UNSUPPORTED_CHUNK_MIME', {
+        meetingId: normalizedMeetingId,
+        connectionSeq: connectionSequenceRef.current,
+        reason,
+        mimeType: chunkMimeType.slice(0, 64),
+      })
+      const errorCode = 'REALTIME_UNSUPPORTED_RECORDER_FORMAT'
+      updateStatus({
+        state: 'FAILED_AUDIO_CAPTURE',
+        status: 'FAILED_AUDIO_CAPTURE',
+        errorCode,
+        message: chunkMimeType
+          ? 'Realtime audio chunk format is not supported'
+          : 'Realtime audio chunk is missing MIME type',
+        resetRequired: true,
+      })
+      onAudioCaptureFailureRef.current?.({
+        reason,
+        mimeType: chunkMimeType,
+        errorCode,
+      })
+      return
+    }
+
+    // Send metadata as JSON first (after MIME is verified).
     const isDual = dualStreamRef.current && streamId
     const seq = isDual
       ? (streamId === 'tab' ? (tabAudioSequenceRef.current += 1) : (micAudioSequenceRef.current += 1))
@@ -955,17 +1107,6 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
     lastChunkSentAtRef.current = tsMs
     if (firstChunkSentAtRef.current <= 0) {
       firstChunkSentAtRef.current = tsMs
-    }
-    const chunkMimeType = audioChunk.type || 'audio/webm; codecs=opus'
-    const encoding = realtimeEncodingForMimeType(chunkMimeType)
-    if (!encoding) {
-      realtimeWarn('[Realtime] REALTIME_DROP_AUDIO_CHUNK', {
-        meetingId: normalizedMeetingId,
-        connectionSeq: connectionSequenceRef.current,
-        reason: 'unsupported_chunk_mime',
-        mimeType: String(chunkMimeType).slice(0, 64),
-      })
-      return
     }
 
     const metadata: JsonValue = {
@@ -1096,7 +1237,17 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
         })
       })
     return sendChainRef.current
-  }, [autoReconnect, canConnect, isActiveSessionToken, isAuthenticated, meetingId, updateStatus])
+  }, [
+    autoReconnect,
+    canConnect,
+    clearPendingQueue,
+    isActiveSessionToken,
+    isAuthenticated,
+    isStreamStopSentForToken,
+    markTerminalAudioCaptureFailure,
+    meetingId,
+    updateStatus,
+  ])
 
   const pause = useCallback(() => {
     sendRaw({ type: 'stream.pause' })
@@ -1104,29 +1255,59 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
 
   const stopStream = useCallback(async () => {
     const tokenAtStop = activeSessionTokenRef.current
+    const expectedSocket = wsRef.current
+    const expectedConnectionSeq = connectionSequenceRef.current
+
     if (!tokenAtStop || !isActiveSessionToken(tokenAtStop)) {
-      clearPendingQueue('stale_stop')
+      // Ownership already moved on — never clear the active attempt's queue.
       return false
     }
 
+    const attemptKey = sessionAttemptKey(tokenAtStop)
+    const isCurrentStopOwner = () => (
+      isActiveSessionToken(tokenAtStop)
+      && wsRef.current === expectedSocket
+      && connectionSequenceRef.current === expectedConnectionSeq
+      && !terminalAudioCaptureFailureRef.current
+    )
+
     userStopRequestedRef.current = true
 
-    if (streamStopSentRef.current) {
+    if (isStreamStopSentForToken(tokenAtStop)) {
       realtimeInfo('[Realtime] STREAM_STOP_DUPLICATE_IGNORED', {
         meetingId,
         lastSeq: audioSequenceRef.current,
         queueDepth: pendingQueueRef.current.length,
       })
-      clearPendingQueue('duplicate_stop')
+      if (isCurrentStopOwner()) {
+        clearPendingQueue('duplicate_stop')
+      }
       return true
     }
 
-    const flushStats = flushPendingMessages(true)
-    const drained = await waitForBufferedAmountToDrain()
-    const websocket = wsRef.current
-    const bufferedAmount = websocket?.bufferedAmount ?? 0
+    if (!isCurrentStopOwner() || !expectedSocket) {
+      if (isCurrentStopOwner() && !expectedSocket) {
+        clearPendingQueue('stop_socket_not_open')
+      }
+      return false
+    }
 
-    if (!drained && bufferedAmount > 0) {
+    const flushStats = flushPendingMessages(true)
+    const drainResult = await waitForBufferedAmountToDrain(expectedSocket, isCurrentStopOwner)
+
+    if (drainResult.stale || !isCurrentStopOwner()) {
+      realtimeInfo('[Realtime] STREAM_STOP_STALE_IGNORED', {
+        meetingId: tokenAtStop.meetingId,
+        recordingSessionId: tokenAtStop.recordingSessionId,
+        attemptId: tokenAtStop.attemptId,
+        connectionSeq: expectedConnectionSeq,
+      })
+      return false
+    }
+
+    const bufferedAmount = expectedSocket.bufferedAmount
+
+    if (!drainResult.drained && bufferedAmount > 0) {
       realtimeWarn('[Realtime] STREAM_STOP_BUFFER_DRAIN_TIMEOUT', {
         meetingId: tokenAtStop.meetingId,
         recordingSessionId: tokenAtStop.recordingSessionId,
@@ -1137,7 +1318,7 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
       })
     }
 
-    if (!websocket || websocket.readyState !== WebSocket.OPEN) {
+    if (expectedSocket.readyState !== WebSocket.OPEN) {
       realtimeWarn('[Realtime] STREAM_STOP_FAILED', {
         meetingId: tokenAtStop.meetingId,
         recordingSessionId: tokenAtStop.recordingSessionId,
@@ -1146,7 +1327,13 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
         queueDepth: pendingQueueRef.current.length,
         reason: 'socket_not_open',
       })
-      clearPendingQueue('stop_socket_not_open')
+      if (isCurrentStopOwner()) {
+        clearPendingQueue('stop_socket_not_open')
+      }
+      return false
+    }
+
+    if (!isCurrentStopOwner()) {
       return false
     }
 
@@ -1156,11 +1343,11 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
       attemptId: tokenAtStop.attemptId,
       lastSeq: audioSequenceRef.current,
       queueDepth: pendingQueueRef.current.length,
-      bufferedAmount: websocket.bufferedAmount,
+      bufferedAmount: expectedSocket.bufferedAmount,
     })
 
     try {
-      websocket.send(JSON.stringify({
+      expectedSocket.send(JSON.stringify({
         type: 'stream.stop',
         meetingId: tokenAtStop.meetingId,
         timestamp: Date.now(),
@@ -1168,6 +1355,9 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
         attempt_id: tokenAtStop.attemptId,
       }))
     } catch (error) {
+      if (!isCurrentStopOwner()) {
+        return false
+      }
       realtimeWarn('[Realtime] STREAM_STOP_FAILED', {
         meetingId: tokenAtStop.meetingId,
         recordingSessionId: tokenAtStop.recordingSessionId,
@@ -1180,7 +1370,11 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
       return false
     }
 
-    streamStopSentRef.current = true
+    if (!isCurrentStopOwner()) {
+      return false
+    }
+
+    streamStopSentRef.current = { attemptKey, sent: true }
 
     realtimeInfo('[Realtime] STREAM_STOP_AFTER_FLUSH', {
       meetingId: tokenAtStop.meetingId,
@@ -1190,11 +1384,19 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
       queuedAudioChunks: flushStats.queuedAudioChunks,
       flushedChunks: flushStats.flushedAudioChunks,
       queueDepth: pendingQueueRef.current.length,
-      bufferedAmount: websocket.bufferedAmount,
+      bufferedAmount: expectedSocket.bufferedAmount,
     })
     clearPendingQueue('stream_stop_sent')
     return true
-  }, [clearPendingQueue, flushPendingMessages, isActiveSessionToken, meetingId, waitForBufferedAmountToDrain])
+  }, [
+    clearPendingQueue,
+    flushPendingMessages,
+    isActiveSessionToken,
+    isStreamStopSentForToken,
+    meetingId,
+    sessionAttemptKey,
+    waitForBufferedAmountToDrain,
+  ])
 
   const resume = useCallback(() => {
     sendRaw({ type: 'stream.resume' })
@@ -1263,8 +1465,11 @@ export const useRealtimeMeetingStream = (options: UseRealtimeMeetingStreamOption
 
     setTranscripts([])
     setKeywords([])
-    streamStopSentRef.current = false
+    streamStopSentRef.current = null
     userStopRequestedRef.current = false
+    audioCaptureFailedRef.current = false
+    invalidChunkMimeReportedRef.current = false
+    terminalAudioCaptureFailureRef.current = false
     pendingQueueRef.current = []
     audioSequenceRef.current = 0
     firstChunkSentAtRef.current = 0

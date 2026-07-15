@@ -1408,6 +1408,66 @@ describe('runLiveRecordingStopSequence', () => {
 
     expect(result).toEqual({ stopSent: false, stopIncomplete: true })
   })
+
+  it('returns stale and skips finalizing_transcript when ownership changes during stopStream', async () => {
+    const stopDeferred = {
+      promise: null as unknown as Promise<boolean>,
+      resolve: null as unknown as (value: boolean) => void,
+    }
+    stopDeferred.promise = new Promise<boolean>((resolve) => {
+      stopDeferred.resolve = resolve
+    })
+
+    const startedDeferred = {
+      promise: null as unknown as Promise<void>,
+      resolve: null as unknown as () => void,
+    }
+    startedDeferred.promise = new Promise<void>((resolve) => {
+      startedDeferred.resolve = resolve
+    })
+
+    let current = true
+    const setLifecycleState = vi.fn()
+
+    const resultPromise = runLiveRecordingStopSequence({
+      meetingId: 42,
+      sessionId: 7,
+      isCurrentAttempt: () => current,
+      stopStream: vi.fn(async () => {
+        startedDeferred.resolve()
+        return stopDeferred.promise
+      }),
+      setLifecycleState,
+    })
+
+    await startedDeferred.promise
+    expect(setLifecycleState).toHaveBeenCalledWith('stopping')
+    setLifecycleState.mockClear()
+
+    current = false
+    stopDeferred.resolve(true)
+    const result = await resultPromise
+
+    expect(result).toEqual({ stopSent: false, stopIncomplete: false, stale: true })
+    expect(setLifecycleState).not.toHaveBeenCalledWith('finalizing_transcript')
+  })
+
+  it('skips all lifecycle mutations when already stale before stopping', async () => {
+    const setLifecycleState = vi.fn()
+    const stopStream = vi.fn(async () => true)
+
+    const result = await runLiveRecordingStopSequence({
+      meetingId: 42,
+      sessionId: 7,
+      isCurrentAttempt: () => false,
+      stopStream,
+      setLifecycleState,
+    })
+
+    expect(result).toEqual({ stopSent: false, stopIncomplete: false, stale: true })
+    expect(setLifecycleState).not.toHaveBeenCalled()
+    expect(stopStream).not.toHaveBeenCalled()
+  })
 })
 
 describe('beginGracefulStopLifecycle', () => {

@@ -284,6 +284,7 @@ export const useDualAudioRecorder = (
       // ignore
     }
     dualCleanupRef.current = null
+    activeStreamIdsRef.current = []
     tabTrackTerminalHandledRef.current = false
     gracefulStopInProgressRef.current = false
   }, [stopDurationTimer, stopMicHealthMonitor])
@@ -355,37 +356,61 @@ export const useDualAudioRecorder = (
       })
       startedAtRef.current = performance.now()
 
-      // Required: dual realtime recorders first — verify actual MIME before start.
-      const recorders: StreamRecorder[] = streams.map(({ streamId, stream }) => {
-        const { recorder } = createVerifiedRealtimeMediaRecorder(stream)
-        const chunks: Blob[] = []
-        recorder.ondataavailable = (event) => {
-          if (event.data.size <= 0) {
-            return
+      // Dual realtime startup phases:
+      // 1) construct + verify MIME  2) attach handlers  3) own refs  4) start
+      const constructed: StreamRecorder[] = []
+      let ownedByRef = false
+      try {
+        for (const { streamId, stream } of streams) {
+          const { recorder } = createVerifiedRealtimeMediaRecorder(stream)
+          const chunks: Blob[] = []
+          recorder.ondataavailable = (event) => {
+            if (event.data.size <= 0) {
+              return
+            }
+            if (recordingSessionIdRef.current !== sessionId || dispatchSessionIdRef.current !== sessionId) {
+              return
+            }
+            chunks.push(event.data)
+            setAudioChunks((prev) => [...prev, event.data])
+            if (streamId === 'tab') {
+              tabChunkSeqRef.current += 1
+              const elapsedMs = startedAtRef.current === null
+                ? 0
+                : Math.max(0, Math.round(performance.now() - startedAtRef.current))
+              tabPipelineMonitorRef.current?.notifyRecorderChunk({
+                seq: tabChunkSeqRef.current,
+                bytes: event.data.size,
+                elapsedMs,
+              })
+            }
+            void options.onChunkReady?.(event.data, streamId, sessionId)
           }
-          if (recordingSessionIdRef.current !== sessionId || dispatchSessionIdRef.current !== sessionId) {
-            return
-          }
-          chunks.push(event.data)
-          setAudioChunks((prev) => [...prev, event.data])
-          if (streamId === 'tab') {
-            tabChunkSeqRef.current += 1
-            const elapsedMs = startedAtRef.current === null
-              ? 0
-              : Math.max(0, Math.round(performance.now() - startedAtRef.current))
-            tabPipelineMonitorRef.current?.notifyRecorderChunk({
-              seq: tabChunkSeqRef.current,
-              bytes: event.data.size,
-              elapsedMs,
-            })
-          }
-          void options.onChunkReady?.(event.data, streamId, sessionId)
+          constructed.push({ streamId, recorder, chunks })
         }
-        recorder.start(timesliceMs)
-        return { streamId, recorder, chunks }
-      })
 
-      streamRecordersRef.current = recorders
+        streamRecordersRef.current = constructed
+        ownedByRef = true
+
+        for (const { recorder } of constructed) {
+          recorder.start(timesliceMs)
+        }
+      } catch (recorderStartupError) {
+        for (const { recorder } of constructed) {
+          try {
+            recorder.ondataavailable = null
+            if (recorder.state !== 'inactive') {
+              recorder.stop()
+            }
+          } catch {
+            // ignore cleanup errors while aborting startup
+          }
+        }
+        if (ownedByRef) {
+          streamRecordersRef.current = []
+        }
+        throw recorderStartupError
+      }
 
       // Mic RMS/health must work even when optional fallback mixer fails.
       fallbackRecorderRef.current = null

@@ -271,6 +271,328 @@ describe('useRealtimeMeetingStream', () => {
     })
   })
 
+  it('fails the realtime session once for empty Blob.type without inventing WebM/Opus metadata', async () => {
+    const statusEvents: Array<{ state?: string; errorCode?: string }> = []
+    const captureFailures: Array<{ reason: string; mimeType: string; errorCode: string }> = []
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    function Harness() {
+      latest = useRealtimeMeetingStream({
+        meetingId: 88,
+        userId: 12,
+        token: 'jwt-token',
+        sessionToken: currentSessionToken,
+        enabled: true,
+        autoReconnect: false,
+        onStatusChange: (status) => {
+          statusEvents.push({ state: status.state, errorCode: status.errorCode })
+        },
+        onAudioCaptureFailure: (detail) => {
+          captureFailures.push(detail)
+        },
+      })
+      return null
+    }
+
+    act(() => {
+      root.render(<Harness />)
+    })
+
+    const socket = MockWebSocket.instances.at(-1)!
+    act(() => {
+      socket.open()
+    })
+    await flush()
+    act(() => {
+      socket.receive({
+        type: 'session.ready',
+        meetingId: 88,
+        authenticated: true,
+        activeConnections: 1,
+      })
+    })
+    await flush()
+    socket.send.mockClear()
+    statusEvents.length = 0
+    captureFailures.length = 0
+
+    await act(async () => {
+      await latest!.sendAudioChunk(new Blob(['abc'], { type: '' }), '88')
+      await latest!.sendAudioChunk(new Blob(['def'], { type: '' }), '88')
+    })
+    await flush()
+
+    const textMessages = socket.send.mock.calls
+      .map(([payload]) => {
+        try {
+          return typeof payload === 'string' ? (JSON.parse(payload) as Record<string, unknown>) : null
+        } catch {
+          return null
+        }
+      })
+      .filter((msg): msg is Record<string, unknown> => msg !== null)
+    const binaryMessages = socket.send.mock.calls
+      .map(([payload]) => (payload instanceof ArrayBuffer ? payload : null))
+      .filter((msg): msg is ArrayBuffer => msg !== null)
+
+    expect(textMessages.some((message) => message.type === 'audio.chunk')).toBe(false)
+    expect(binaryMessages).toHaveLength(0)
+    expect(textMessages.some((message) => String(message.mime_type || '').includes('webm'))).toBe(false)
+    expect(latest?.status.state).toBe('FAILED_AUDIO_CAPTURE')
+    expect(latest?.status.errorCode).toBe('REALTIME_UNSUPPORTED_RECORDER_FORMAT')
+    expect(statusEvents.filter((event) => event.state === 'FAILED_AUDIO_CAPTURE')).toHaveLength(1)
+    expect(captureFailures).toEqual([
+      {
+        reason: 'missing_chunk_mime',
+        mimeType: '',
+        errorCode: 'REALTIME_UNSUPPORTED_RECORDER_FORMAT',
+      },
+    ])
+    errorSpy.mockRestore()
+  })
+
+  it('keeps FAILED_AUDIO_CAPTURE terminal under autoReconnect without opening a second socket', async () => {
+    const statusEvents: Array<string | undefined> = []
+    const captureFailures: Array<{ reason: string }> = []
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    function Harness() {
+      latest = useRealtimeMeetingStream({
+        meetingId: 88,
+        userId: 12,
+        token: 'jwt-token',
+        sessionToken: currentSessionToken,
+        enabled: true,
+        autoReconnect: true,
+        reconnectAttempts: 5,
+        reconnectDelay: 10,
+        onStatusChange: (status) => {
+          statusEvents.push(status.state)
+        },
+        onAudioCaptureFailure: (detail) => {
+          captureFailures.push({ reason: detail.reason })
+        },
+      })
+      return null
+    }
+
+    act(() => {
+      root.render(<Harness />)
+    })
+
+    const firstSocket = MockWebSocket.instances.at(-1)!
+    act(() => {
+      firstSocket.open()
+    })
+    await flush()
+    act(() => {
+      firstSocket.receive({
+        type: 'session.ready',
+        meetingId: 88,
+        authenticated: true,
+        activeConnections: 1,
+      })
+    })
+    await flush()
+    const socketsBeforeFailure = MockWebSocket.instances.length
+    firstSocket.send.mockClear()
+    statusEvents.length = 0
+    captureFailures.length = 0
+
+    await act(async () => {
+      await latest!.sendAudioChunk(new Blob(['abc'], { type: '' }), '88')
+    })
+    await flush()
+
+    expect(latest?.status.state).toBe('FAILED_AUDIO_CAPTURE')
+    expect(captureFailures).toHaveLength(1)
+
+    await act(async () => {
+      latest!.disconnect(currentSessionToken, { reason: 'audio_capture_failure' })
+    })
+    await flush()
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 40))
+    })
+    await flush()
+
+    expect(MockWebSocket.instances.length).toBe(socketsBeforeFailure)
+    expect(latest?.status.state).toBe('FAILED_AUDIO_CAPTURE')
+    expect(statusEvents).not.toContain('reconnecting')
+    expect(statusEvents).not.toContain('stopped')
+    expect(statusEvents).not.toContain('completed')
+    expect(statusEvents.filter((state) => state === 'error')).toHaveLength(0)
+
+    await act(async () => {
+      await latest!.sendAudioChunk(new Blob(['more'], { type: 'audio/webm;codecs=opus' }), '88')
+      await latest!.sendAudioChunk(new Blob(['x'], { type: '' }), '88')
+    })
+    await flush()
+
+    const audioChunkMessages = firstSocket.send.mock.calls
+      .map(([payload]) => {
+        try {
+          return typeof payload === 'string' ? (JSON.parse(payload) as Record<string, unknown>) : null
+        } catch {
+          return null
+        }
+      })
+      .filter((msg): msg is Record<string, unknown> => msg?.type === 'audio.chunk')
+    expect(audioChunkMessages).toHaveLength(0)
+    expect(captureFailures).toHaveLength(1)
+  })
+
+  it('resets terminal capture failure guard for a new session attempt', async () => {
+    const captureFailures: Array<{ reason: string }> = []
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    let activeToken = createSessionToken(88, 1, 1)
+
+    function Harness() {
+      latest = useRealtimeMeetingStream({
+        meetingId: 88,
+        userId: 12,
+        token: 'jwt-token',
+        sessionToken: activeToken,
+        enabled: true,
+        autoReconnect: true,
+        onAudioCaptureFailure: (detail) => {
+          captureFailures.push({ reason: detail.reason })
+        },
+      })
+      return null
+    }
+
+    act(() => {
+      root.render(<Harness />)
+    })
+
+    const firstSocket = MockWebSocket.instances.at(-1)!
+    act(() => {
+      firstSocket.open()
+    })
+    await flush()
+    act(() => {
+      firstSocket.receive({
+        type: 'session.ready',
+        meetingId: 88,
+        authenticated: true,
+        activeConnections: 1,
+      })
+    })
+    await flush()
+
+    await act(async () => {
+      await latest!.sendAudioChunk(new Blob(['abc'], { type: 'audio/mp4' }), '88')
+    })
+    await flush()
+    expect(captureFailures).toHaveLength(1)
+    expect(latest?.status.state).toBe('FAILED_AUDIO_CAPTURE')
+
+    activeToken = createSessionToken(88, 1, 2)
+    currentSessionToken = activeToken
+    act(() => {
+      root.render(<Harness />)
+    })
+    await flush()
+
+    const secondSocket = MockWebSocket.instances.at(-1)!
+    expect(secondSocket).not.toBe(firstSocket)
+    act(() => {
+      secondSocket.open()
+    })
+    await flush()
+    act(() => {
+      secondSocket.receive({
+        type: 'session.ready',
+        meetingId: 88,
+        authenticated: true,
+        activeConnections: 1,
+      })
+    })
+    await flush()
+    secondSocket.send.mockClear()
+
+    await act(async () => {
+      await latest!.sendAudioChunk(new Blob(['abc'], { type: '' }), '88')
+      await latest!.sendAudioChunk(new Blob(['def'], { type: '' }), '88')
+    })
+    await flush()
+
+    expect(captureFailures).toHaveLength(2)
+    expect(latest?.status.state).toBe('FAILED_AUDIO_CAPTURE')
+    expect(secondSocket.send.mock.calls.some(([payload]) => {
+      try {
+        return typeof payload === 'string' && JSON.parse(payload).type === 'audio.chunk'
+      } catch {
+        return false
+      }
+    })).toBe(false)
+  })
+
+  it('fails the realtime session once for unsupported Blob.type like audio/mp4', async () => {
+    const captureFailures: Array<{ reason: string; mimeType: string }> = []
+
+    function Harness() {
+      latest = useRealtimeMeetingStream({
+        meetingId: 88,
+        userId: 12,
+        token: 'jwt-token',
+        sessionToken: currentSessionToken,
+        enabled: true,
+        autoReconnect: false,
+        onAudioCaptureFailure: (detail) => {
+          captureFailures.push({ reason: detail.reason, mimeType: detail.mimeType })
+        },
+      })
+      return null
+    }
+
+    act(() => {
+      root.render(<Harness />)
+    })
+
+    const socket = MockWebSocket.instances.at(-1)!
+    act(() => {
+      socket.open()
+    })
+    await flush()
+    act(() => {
+      socket.receive({
+        type: 'session.ready',
+        meetingId: 88,
+        authenticated: true,
+        activeConnections: 1,
+      })
+    })
+    await flush()
+    socket.send.mockClear()
+    captureFailures.length = 0
+
+    await act(async () => {
+      await latest!.sendAudioChunk(new Blob(['abc'], { type: 'audio/mp4' }), '88')
+      await latest!.sendAudioChunk(new Blob(['def'], { type: 'audio/webm;codecs=opus' }), '88')
+    })
+    await flush()
+
+    const audioChunkMessages = socket.send.mock.calls
+      .map(([payload]) => {
+        try {
+          return typeof payload === 'string' ? (JSON.parse(payload) as Record<string, unknown>) : null
+        } catch {
+          return null
+        }
+      })
+      .filter((msg): msg is Record<string, unknown> => msg?.type === 'audio.chunk')
+
+    expect(audioChunkMessages).toHaveLength(0)
+    expect(latest?.status.state).toBe('FAILED_AUDIO_CAPTURE')
+    expect(latest?.status.errorCode).toBe('REALTIME_UNSUPPORTED_RECORDER_FORMAT')
+    expect(captureFailures).toEqual([
+      { reason: 'unsupported_chunk_mime', mimeType: 'audio/mp4' },
+    ])
+  })
+
   it('sends the selected realtime language in auth.init', async () => {
     let selectedLanguage: 'vi' | 'en' | 'multi' = 'vi'
 
@@ -1176,6 +1498,48 @@ describe('useRealtimeMeetingStream', () => {
     }
   })
 
+  it('returns safely without sending when socket closes during drain', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+
+    try {
+      const socket = MockWebSocket.instances[0]
+      act(() => {
+        socket.open()
+        socket.receive({
+          type: 'session.ready',
+          meetingId: 88,
+          authenticated: true,
+          activeConnections: 1,
+        })
+      })
+      await flush()
+
+      socket.bufferedAmount = 4096
+      const stopPromise = latest!.stopStream()
+      act(() => {
+        socket.readyState = MockWebSocket.CLOSED
+      })
+      await vi.advanceTimersByTimeAsync(100)
+      const stopResult = await stopPromise
+
+      const stopMessages = socket.send.mock.calls
+        .map(([payload]) => {
+          if (typeof payload !== 'string') return null
+          try {
+            return JSON.parse(payload) as Record<string, unknown>
+          } catch {
+            return null
+          }
+        })
+        .filter((message): message is Record<string, unknown> => message?.type === 'stream.stop')
+
+      expect(stopResult).toBe(false)
+      expect(stopMessages).toHaveLength(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('assigns a fresh ts_ms value for each audio chunk', async () => {
     let now = 1_000
     vi.spyOn(Date, 'now').mockImplementation(() => {
@@ -1766,3 +2130,268 @@ describe('useRealtimeMeetingStream', () => {
   })
 })
 
+describe('useRealtimeMeetingStream stopStream same-hook-instance ownership', () => {
+  const SESSION_TOKEN: RealtimeSessionToken = {
+    meetingId: 88,
+    recordingSessionId: 1,
+    attemptId: 1,
+    connectionSeq: 0,
+  }
+
+  const STOP_DRAIN_POLL_MS = 25
+
+  let container: HTMLDivElement
+  let root: ReturnType<typeof createRoot>
+  let latest: ReturnType<typeof useRealtimeMeetingStream> | null
+
+  function parseSent(socket: MockWebSocket): Array<Record<string, unknown>> {
+    return socket.send.mock.calls
+      .map(([payload]) => {
+        try {
+          return typeof payload === 'string' ? (JSON.parse(payload) as Record<string, unknown>) : null
+        } catch {
+          return null
+        }
+      })
+      .filter((message): message is Record<string, unknown> => Boolean(message))
+  }
+
+  function stopMessages(socket: MockWebSocket) {
+    return parseSent(socket).filter((message) => message.type === 'stream.stop')
+  }
+
+  /**
+   * Stable component type — attempt / auth switches MUST re-render this same function.
+   * Never introduce HarnessAttempt2 / HarnessReconnect sibling types.
+   */
+  function OwnershipHarness({
+    authToken,
+    sessionToken,
+    autoReconnect = false,
+  }: {
+    authToken: string
+    sessionToken: RealtimeSessionToken
+    autoReconnect?: boolean
+  }) {
+    latest = useRealtimeMeetingStream({
+      meetingId: sessionToken.meetingId,
+      userId: 12,
+      token: authToken,
+      sessionToken,
+      enabled: true,
+      autoReconnect,
+    })
+    return null
+  }
+
+  beforeEach(() => {
+    ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    MockWebSocket.instances = []
+    vi.stubGlobal('WebSocket', MockWebSocket)
+    latest = null
+    container = document.createElement('div')
+    document.body.appendChild(container)
+    root = createRoot(container)
+  })
+
+  afterEach(() => {
+    act(() => {
+      root.unmount()
+    })
+    container.remove()
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+    vi.clearAllMocks()
+  })
+
+  async function flushMicrotasks(): Promise<void> {
+    await act(async () => {
+      await Promise.resolve()
+    })
+  }
+
+  async function openAndReady(socket: MockWebSocket, meetingId = 88): Promise<void> {
+    act(() => {
+      socket.open()
+      socket.receive({
+        type: 'session.ready',
+        meetingId,
+        authenticated: true,
+        activeConnections: 1,
+      })
+    })
+    await flushMicrotasks()
+  }
+
+  function holdBufferedAmount(socket: MockWebSocket, amount: number): void {
+    Object.defineProperty(socket, 'bufferedAmount', {
+      configurable: true,
+      get: () => amount,
+    })
+  }
+
+  it('does not send stale stream.stop on a newer socket after same-instance attempt switch during drain', async () => {
+    const attempt2Token: RealtimeSessionToken = {
+      meetingId: 88,
+      recordingSessionId: 1,
+      attemptId: 2,
+      connectionSeq: 1,
+    }
+
+    act(() => {
+      root.render(
+        <OwnershipHarness authToken="jwt-attempt-1" sessionToken={SESSION_TOKEN} autoReconnect={false} />,
+      )
+    })
+    await flushMicrotasks()
+
+    const socket1 = MockWebSocket.instances.at(-1)!
+    await openAndReady(socket1)
+
+    expect(latest).not.toBeNull()
+    const attempt1Api = latest!
+
+    holdBufferedAmount(socket1, 1200)
+
+    let staleStopResolved = false
+    let staleStopResult: boolean | undefined
+    let staleStopPromise!: Promise<boolean>
+    await act(async () => {
+      staleStopPromise = attempt1Api.stopStream().then((result) => {
+        staleStopResolved = true
+        staleStopResult = result
+        return result
+      })
+      await Promise.resolve()
+    })
+
+    expect(staleStopResolved).toBe(false)
+
+    // Enter the drain poll loop on the same hook instance before switching attempt.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(STOP_DRAIN_POLL_MS)
+    })
+    expect(staleStopResolved).toBe(false)
+
+    await act(async () => {
+      root.render(
+        <OwnershipHarness authToken="jwt-attempt-2" sessionToken={attempt2Token} autoReconnect={false} />,
+      )
+    })
+    await flushMicrotasks()
+
+    expect(latest).not.toBeNull()
+
+    const socket2 = MockWebSocket.instances.at(-1)!
+    expect(socket2).not.toBe(socket1)
+    await openAndReady(socket2)
+    expect(latest!.isConnected).toBe(true)
+
+    holdBufferedAmount(socket1, 0)
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(STOP_DRAIN_POLL_MS)
+      await staleStopPromise
+    })
+
+    expect(staleStopResolved).toBe(true)
+    expect(staleStopResult).toBe(false)
+    expect(stopMessages(socket1)).toHaveLength(0)
+    expect(stopMessages(socket2)).toHaveLength(0)
+
+    // Attempt-2 stop must succeed on the shared hook: proves stale stop did not set
+    // streamStopSentRef for the new attempt.
+    let attempt2StopResult = false
+    await act(async () => {
+      attempt2StopResult = await latest!.stopStream()
+    })
+
+    expect(attempt2StopResult).toBe(true)
+    expect(stopMessages(socket2)).toHaveLength(1)
+    expect(stopMessages(socket2)[0]).toMatchObject({
+      type: 'stream.stop',
+      meetingId: attempt2Token.meetingId,
+      recording_session_id: attempt2Token.recordingSessionId,
+      attempt_id: attempt2Token.attemptId,
+    })
+    expect(
+      stopMessages(socket2).some(
+        (message) => message.attempt_id === SESSION_TOKEN.attemptId,
+      ),
+    ).toBe(false)
+  })
+
+  it('does not send stop on replacement socket when connection instance changes during drain on same hook', async () => {
+    act(() => {
+      root.render(
+        <OwnershipHarness authToken="jwt-conn-1" sessionToken={SESSION_TOKEN} autoReconnect={false} />,
+      )
+    })
+    await flushMicrotasks()
+
+    const socket1 = MockWebSocket.instances.at(-1)!
+    await openAndReady(socket1)
+
+    expect(latest).not.toBeNull()
+    const streamApi = latest!
+
+    holdBufferedAmount(socket1, 900)
+
+    let staleStopResolved = false
+    let staleStopResult: boolean | undefined
+    let staleStopPromise!: Promise<boolean>
+    await act(async () => {
+      staleStopPromise = streamApi.stopStream().then((result) => {
+        staleStopResolved = true
+        staleStopResult = result
+        return result
+      })
+      await Promise.resolve()
+    })
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(STOP_DRAIN_POLL_MS)
+    })
+    expect(staleStopResolved).toBe(false)
+
+    // Same harness type + same session token: change auth token so the connect effect
+    // replaces the socket / connectionSequence without remounting the hook.
+    await act(async () => {
+      root.render(
+        <OwnershipHarness authToken="jwt-conn-2" sessionToken={SESSION_TOKEN} autoReconnect={false} />,
+      )
+    })
+    await flushMicrotasks()
+
+    const socket2 = MockWebSocket.instances.at(-1)!
+    expect(socket2).not.toBe(socket1)
+    await openAndReady(socket2)
+    expect(latest!.isConnected).toBe(true)
+
+    holdBufferedAmount(socket1, 0)
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(STOP_DRAIN_POLL_MS)
+      await staleStopPromise
+    })
+
+    expect(staleStopResolved).toBe(true)
+    expect(staleStopResult).toBe(false)
+    expect(stopMessages(socket2)).toHaveLength(0)
+
+    let freshStopResult = false
+    await act(async () => {
+      freshStopResult = await latest!.stopStream()
+    })
+
+    expect(freshStopResult).toBe(true)
+    expect(stopMessages(socket2)).toHaveLength(1)
+    expect(stopMessages(socket2)[0]).toMatchObject({
+      type: 'stream.stop',
+      meetingId: SESSION_TOKEN.meetingId,
+      recording_session_id: SESSION_TOKEN.recordingSessionId,
+      attempt_id: SESSION_TOKEN.attemptId,
+    })
+  })
+})

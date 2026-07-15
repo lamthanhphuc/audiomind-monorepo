@@ -705,4 +705,77 @@ class AIServiceClientTest {
         assertEquals("Bearer test-token", entity.getHeaders().getFirst(HttpHeaders.AUTHORIZATION));
         assertEquals("application/json", entity.getHeaders().getContentType().toString());
     }
+
+    @Test
+    void runFinalAudioFallback_sendsInternalServiceTokenWhenConfigured() {
+        RestTemplate restTemplate = mock(RestTemplate.class);
+        AIServiceClient client = new AIServiceClient(restTemplate);
+        ReflectionTestUtils.setField(client, "aiUrl", "http://ai-service");
+        ReflectionTestUtils.setField(client, "internalServiceToken", "  internal-token-value  ");
+
+        ResponseEntity<Map<String, Object>> response = new ResponseEntity<>(
+                Map.of("status", "completed", "transcript_count", 1),
+                HttpStatus.OK
+        );
+        when(restTemplate.exchange(
+                any(String.class),
+                eq(HttpMethod.POST),
+                any(HttpEntity.class),
+                any(org.springframework.core.ParameterizedTypeReference.class)
+        )).thenReturn(response);
+
+        Map<String, Object> body = client.runFinalAudioFallback(
+                42L,
+                "/app/uploads/sample.webm",
+                "vi",
+                "trace-42",
+                "Bearer user-token"
+        );
+        assertEquals("completed", body.get("status"));
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<HttpEntity<MultiValueMap<String, Object>>> captor = ArgumentCaptor.forClass(HttpEntity.class);
+        verify(restTemplate).exchange(
+                eq("http://ai-service/api/v1/stt/final-audio-fallback"),
+                eq(HttpMethod.POST),
+                captor.capture(),
+                any(org.springframework.core.ParameterizedTypeReference.class)
+        );
+
+        HttpHeaders headers = captor.getValue().getHeaders();
+        assertEquals("internal-token-value", headers.getFirst("X-Internal-Service-Token"));
+        assertEquals("Bearer user-token", headers.getFirst(HttpHeaders.AUTHORIZATION));
+    }
+
+    @Test
+    void runFinalAudioFallback_omitsInternalServiceTokenWhenBlank() {
+        RestTemplate restTemplate = mock(RestTemplate.class);
+        AIServiceClient client = new AIServiceClient(restTemplate);
+        ReflectionTestUtils.setField(client, "aiUrl", "http://ai-service");
+        ReflectionTestUtils.setField(client, "internalServiceToken", "   ");
+
+        ResponseEntity<Map<String, Object>> response = new ResponseEntity<>(
+                Map.of("status", "completed", "transcript_count", 0),
+                HttpStatus.OK
+        );
+        when(restTemplate.exchange(
+                any(String.class),
+                eq(HttpMethod.POST),
+                any(HttpEntity.class),
+                any(org.springframework.core.ParameterizedTypeReference.class)
+        )).thenReturn(response);
+
+        client.runFinalAudioFallback(7L, "/app/uploads/a.webm", "en", "trace-7", null);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<HttpEntity<MultiValueMap<String, Object>>> captor = ArgumentCaptor.forClass(HttpEntity.class);
+        verify(restTemplate).exchange(
+                eq("http://ai-service/api/v1/stt/final-audio-fallback"),
+                eq(HttpMethod.POST),
+                captor.capture(),
+                any(org.springframework.core.ParameterizedTypeReference.class)
+        );
+
+        assertNull(captor.getValue().getHeaders().getFirst("X-Internal-Service-Token"));
+    }
 }

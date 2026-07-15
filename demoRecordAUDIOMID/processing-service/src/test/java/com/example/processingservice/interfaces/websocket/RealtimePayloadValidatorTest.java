@@ -99,6 +99,134 @@ class RealtimePayloadValidatorTest {
     }
 
     @Test
+    void validateMetadata_rejectsSubstringWireEncodings() {
+        assertEquals(
+                RealtimePayloadValidator.ValidationError.REALTIME_UNSUPPORTED_ENCODING,
+                validator.validateMetadata(1L, 100L, "audio/webm", "not-opus", null).errorCode()
+        );
+        assertEquals(
+                RealtimePayloadValidator.ValidationError.REALTIME_UNSUPPORTED_ENCODING,
+                validator.validateMetadata(1L, 100L, "audio/webm", "opus-invalid", null).errorCode()
+        );
+        assertEquals(
+                RealtimePayloadValidator.ValidationError.REALTIME_UNSUPPORTED_ENCODING,
+                validator.validateMetadata(1L, 100L, "audio/webm", "malicious-webm-opus-payload", null).errorCode()
+        );
+        assertEquals(
+                RealtimePayloadValidator.ValidationError.REALTIME_UNSUPPORTED_ENCODING,
+                validator.validateMetadata(1L, 100L, "audio/webm", "webm-opus-extra", null).errorCode()
+        );
+        assertEquals(
+                RealtimePayloadValidator.ValidationError.REALTIME_UNSUPPORTED_ENCODING,
+                validator.validateMetadata(1L, 100L, "audio/webm", "opus", null).errorCode()
+        );
+    }
+
+    @Test
+    void validateMetadata_rejectsBlankEncodingAndBlankMime() {
+        assertEquals(
+                RealtimePayloadValidator.ValidationError.REALTIME_UNSUPPORTED_ENCODING,
+                validator.validateMetadata(1L, 100L, "audio/webm", "", null).errorCode()
+        );
+        assertEquals(
+                RealtimePayloadValidator.ValidationError.REALTIME_UNSUPPORTED_ENCODING,
+                validator.validateMetadata(1L, 100L, "audio/webm", null, null).errorCode()
+        );
+        assertEquals(
+                RealtimePayloadValidator.ValidationError.REALTIME_AUDIO_METADATA_MISMATCH,
+                validator.validateMetadata(1L, 100L, "", "webm-opus", null).errorCode()
+        );
+        assertEquals(
+                RealtimePayloadValidator.ValidationError.REALTIME_AUDIO_METADATA_MISMATCH,
+                validator.validateMetadata(1L, 100L, null, "webm-opus", null).errorCode()
+        );
+    }
+
+    @Test
+    void validateMetadata_rejectsMalformedCodecsParameter() {
+        assertEquals(
+                RealtimePayloadValidator.ValidationError.REALTIME_UNSUPPORTED_AUDIO_CODEC,
+                validator.validateMetadata(1L, 100L, "audio/webm;codecs=", "webm-opus", null).errorCode()
+        );
+        assertEquals(
+                RealtimePayloadValidator.ValidationError.REALTIME_UNSUPPORTED_AUDIO_CODEC,
+                validator.validateMetadata(1L, 100L, "audio/webm;codecs", "webm-opus", null).errorCode()
+        );
+        assertEquals(
+                RealtimePayloadValidator.ValidationError.REALTIME_UNSUPPORTED_AUDIO_CODEC,
+                validator.validateMetadata(1L, 100L, "audio/webm;codecs=\"opus", "webm-opus", null).errorCode()
+        );
+        assertEquals(
+                RealtimePayloadValidator.ValidationError.REALTIME_UNSUPPORTED_AUDIO_CODEC,
+                validator.validateMetadata(1L, 100L, "audio/webm;codecs=opus\"", "webm-opus", null).errorCode()
+        );
+    }
+
+    @Test
+    void validateMetadata_rejectsTrailingEmptyCodecTokens() {
+        for (String mime : new String[] {
+                "audio/webm;codecs=opus,",
+                "audio/webm;codecs=,opus",
+                "audio/webm;codecs=opus,,",
+                "audio/webm;codecs=\"opus,\"",
+                "audio/webm;codecs=\",opus\""
+        }) {
+            assertEquals(
+                    RealtimePayloadValidator.ValidationError.REALTIME_UNSUPPORTED_AUDIO_CODEC,
+                    validator.validateMetadata(1L, 100L, mime, "webm-opus", null).errorCode(),
+                    mime
+            );
+        }
+    }
+
+    @Test
+    void validateMetadata_rejectsNonContractCodecTokens() {
+        assertEquals(
+                RealtimePayloadValidator.ValidationError.REALTIME_UNSUPPORTED_AUDIO_CODEC,
+                validator.validateMetadata(1L, 100L, "audio/webm;codecs=audio/opus", "webm-opus", null).errorCode()
+        );
+        assertEquals(
+                RealtimePayloadValidator.ValidationError.REALTIME_UNSUPPORTED_AUDIO_CODEC,
+                validator.validateMetadata(1L, 100L, "audio/webm;codecs=vorbis", "webm-opus", null).errorCode()
+        );
+    }
+
+    @Test
+    void validateMetadata_rejectsInternalWhitespaceInCodecTokens() {
+        for (String mime : new String[] {
+                "audio/webm;codecs=o p u s",
+                "audio/webm;codecs=\"o p u s\"",
+                "audio/webm;codecs=webm - opus",
+                "audio/webm;codecs=o\tp\tu\ts",
+                "audio/webm;codecs=o\np\nus",
+                "audio/webm;codecs=webm\t-\topus",
+                "audio/webm;codecs=opus,,webm-opus"
+        }) {
+            assertEquals(
+                    RealtimePayloadValidator.ValidationError.REALTIME_UNSUPPORTED_AUDIO_CODEC,
+                    validator.validateMetadata(1L, 100L, mime, "webm-opus", null).errorCode(),
+                    mime
+            );
+        }
+    }
+
+    @Test
+    void validateMetadata_acceptsContractCodecTokens() {
+        assertTrue(validator.validateMetadata(1L, 100L, "audio/webm;codecs=opus", "webm-opus", null).valid());
+        assertTrue(validator.validateMetadata(1L, 100L, "audio/webm;codecs=\"opus\"", "webm-opus", null).valid());
+        assertTrue(validator.validateMetadata(1L, 100L, "audio/webm; codecs = \"opus\"", "webm-opus", null).valid());
+        assertTrue(validator.validateMetadata(1L, 100L, "audio/webm;codecs=webm-opus", "webm-opus", null).valid());
+        assertTrue(validator.validateMetadata(1L, 100L, "audio/webm;codecs= opus ", "webm-opus", null).valid());
+        assertTrue(validator.validateMetadata(1L, 100L, "audio/webm", "webm-opus", null).valid());
+    }
+
+    @Test
+    void validateMetadata_ignoresCodecsxAndTreatsAsBareWebm() {
+        var result = validator.validateMetadata(1L, 100L, "audio/webm;codecsx=opus", "webm-opus", null);
+        assertTrue(result.valid());
+    }
+
+    @Test
     void sharedContractJsonMatchesValidatorConstants() throws Exception {
         Path contractPath = resolveContractPath();
         assertTrue(Files.isRegularFile(contractPath), "Missing contract at " + contractPath);
@@ -108,11 +236,15 @@ class RealtimePayloadValidatorTest {
         root.get("allowedContainers").forEach(n -> containers.add(n.asText()));
         Set<String> codecs = new HashSet<>();
         root.get("allowedCodecs").forEach(n -> codecs.add(n.asText()));
+        Set<String> wireEncodings = new HashSet<>();
+        root.get("wireEncodings").forEach(n -> wireEncodings.add(n.asText()));
 
         assertEquals(RealtimePayloadValidator.ALLOWED_CONTAINERS, containers);
         assertEquals(RealtimePayloadValidator.ALLOWED_CODECS, codecs);
+        assertEquals(RealtimePayloadValidator.ALLOWED_WIRE_ENCODINGS, wireEncodings);
         assertEquals(RealtimePayloadValidator.ALLOW_BARE_WEBM, root.get("allowBareWebm").asBoolean(true));
         assertEquals("webm-opus", root.get("encoding").asText());
+        assertTrue(RealtimePayloadValidator.ALLOWED_WIRE_ENCODINGS.contains(root.get("encoding").asText()));
     }
 
     private static Path resolveContractPath() {

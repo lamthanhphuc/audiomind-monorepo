@@ -37,10 +37,12 @@ class FakeMediaRecorder {
   static instances: FakeMediaRecorder[] = []
   static failStartForMixed = false
   static failCtorForMixed = false
+  static mimeByLabel: Record<string, string> = {}
+  static failStartForLabel: string | null = null
   state: 'inactive' | 'recording' | 'paused' = 'inactive'
   mimeType = 'audio/webm;codecs=opus'
   ondataavailable: ((event: { data: Blob }) => void) | null = null
-  private readonly streamLabel: string
+  readonly streamLabel: string
   private readonly isFallback: boolean
   private stopListeners: Array<() => void> = []
   requestDataCalls = 0
@@ -49,6 +51,10 @@ class FakeMediaRecorder {
   constructor(stream: MediaStream & { __label?: string }, _options?: MediaRecorderOptions) {
     this.streamLabel = stream.__label || 'unknown'
     this.isFallback = this.streamLabel === 'mixed'
+    const overrideMime = FakeMediaRecorder.mimeByLabel[this.streamLabel]
+    if (typeof overrideMime === 'string') {
+      this.mimeType = overrideMime
+    }
     if (this.isFallback && FakeMediaRecorder.failCtorForMixed) {
       throw new Error('fallback mediarecorder ctor failed')
     }
@@ -58,6 +64,9 @@ class FakeMediaRecorder {
   start() {
     if (this.isFallback && FakeMediaRecorder.failStartForMixed) {
       throw new Error('fallback start failed')
+    }
+    if (FakeMediaRecorder.failStartForLabel === this.streamLabel) {
+      throw new Error(`${this.streamLabel} start failed`)
     }
     this.state = 'recording'
   }
@@ -102,6 +111,8 @@ describe('useDualAudioRecorder', () => {
     FakeMediaRecorder.instances = []
     FakeMediaRecorder.failStartForMixed = false
     FakeMediaRecorder.failCtorForMixed = false
+    FakeMediaRecorder.mimeByLabel = {}
+    FakeMediaRecorder.failStartForLabel = null
     vi.stubGlobal('MediaRecorder', Object.assign(FakeMediaRecorder, {
       isTypeSupported: () => true,
     }))
@@ -384,5 +395,47 @@ describe('useDualAudioRecorder', () => {
     })
     expect(latest).toHaveProperty('micHealthIssue')
     expect(latest).toHaveProperty('micHealthMessage')
+  })
+
+  it('cleans tab recorder when mic actual MIME is invalid before start', async () => {
+    FakeMediaRecorder.mimeByLabel = { mic: 'audio/webm;codecs=vorbis' }
+    const onChunkReady = vi.fn()
+    await renderHarness({ onChunkReady })
+    await act(async () => {
+      await expect(latest!.startRecording()).rejects.toMatchObject({
+        code: 'REALTIME_UNSUPPORTED_RECORDER_FORMAT',
+      })
+    })
+
+    expect(latest!.state).toBe('error')
+    expect(latest!.getActiveStreamIds?.()).toEqual([])
+    expect(onChunkReady).not.toHaveBeenCalled()
+    const tabRecorder = FakeMediaRecorder.instances.find((instance) => instance.streamLabel === 'tab')
+    expect(tabRecorder).toBeTruthy()
+    expect(tabRecorder!.state).toBe('inactive')
+    expect(tabRecorder!.ondataavailable).toBeNull()
+    expect(tabTrackStop).toHaveBeenCalled()
+    expect(micTrackStop).toHaveBeenCalled()
+  })
+
+  it('stops first started recorder when second start throws', async () => {
+    FakeMediaRecorder.failStartForLabel = 'mic'
+    const onChunkReady = vi.fn()
+    await renderHarness({ onChunkReady })
+    await act(async () => {
+      await expect(latest!.startRecording()).rejects.toThrow('mic start failed')
+    })
+
+    expect(latest!.state).toBe('error')
+    expect(onChunkReady).not.toHaveBeenCalled()
+    const tabRecorder = FakeMediaRecorder.instances.find((instance) => instance.streamLabel === 'tab')
+    const micRecorder = FakeMediaRecorder.instances.find((instance) => instance.streamLabel === 'mic')
+    expect(tabRecorder?.state).toBe('inactive')
+    expect(tabRecorder?.stopCalls).toBeGreaterThan(0)
+    expect(tabRecorder?.ondataavailable).toBeNull()
+    expect(micRecorder?.ondataavailable).toBeNull()
+    expect(micRecorder?.state).toBe('inactive')
+    expect(tabTrackStop).toHaveBeenCalled()
+    expect(micTrackStop).toHaveBeenCalled()
   })
 })
