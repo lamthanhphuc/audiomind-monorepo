@@ -1,6 +1,6 @@
 # Phase 1 — Quản lý môn học và phân tích từng buổi
 
-**Status:** In progress — Steps 0–4 implemented on `feature/phase1-subject-education`  
+**Status:** In progress — Steps 0–5 implemented on `feature/phase1-subject-education`  
 **Branch target:** `feature/phase1-subject-education` (tạo trong Git Stage A)  
 **Base:** `main` — khi triển khai phải `git fetch origin` và xác minh `origin/main` mới nhất; ghi **commit SHA thực tế** vào `docs/branch-cleanup-report.md` và implementation report (không khóa cứng một SHA cố định).
 

@@ -1,220 +1,116 @@
 # Phase 1 — Implementation report
 
-
-
 **Branch:** `feature/phase1-subject-education`  
-
 **Base:** `origin/main` @ `d77a030`  
-
 **Started:** 2026-07-15  
-
-**Status:** In progress (Steps 0–4 complete)
-
-
+**Status:** In progress (Steps 0–5 complete)
 
 ## A. Git cleanup
 
-
-
 | Item | Result |
-
 |------|--------|
-
 | Stage A | Completed — audit report only, no deletions/tags |
-
 | Stage B | **Not performed** — awaiting user approval |
-
 | Feature branch | `feature/phase1-subject-education` created from `main` |
-
-
 
 See [branch-cleanup-report.md](./branch-cleanup-report.md).
 
-
-
 ## B. Step 0 — Source verification
 
-
-
-### grpc_stt_service reachability (locked)
-
-
-
 | Finding | Detail |
-
 |---------|--------|
-
-| Production start | `main.py` lifespan starts gRPC when `_get_stt_adapter()` returns adapter (requires `deepgram_api_key`) |
-
-| Primary browser realtime | WebSocket → `stt_session_actor` → `DeepgramSTTAdapter._resolve_segment_id` (stable meeting-start IDs) |
-
-| gRPC `StreamAudio` | **Reachable** when gRPC server runs; was `uuid4()` — now canonicalized via `segment_identity.py` |
-
-| **Decision** | Evidence guarantee for gRPC stream path included in same contract as adapter path |
-
-
+| gRPC path | Reachable; segment IDs canonicalized via `segment_identity.py` |
 
 ### Plan deviations
 
-
-
 | Area | Deviation | Reason |
-
 |------|-----------|--------|
-
-| Deepgram missing speaker | ID uses `speaker_unknown` (not `speaker_1`) | Plan §5.3 test vectors; updated `test_deepgram_stt_adapter` |
-
-| Batch transcript format | `format_aligned_transcript_for_analysis` adds `[SEGMENT_ID=…]` markers | Plan §5.4; cache tests updated to match formatted text |
-
-| Testcontainers artifact | Boot 4 BOM uses `testcontainers-postgresql` (not `postgresql`) | Verified against processing-service naming + Boot 4 parent |
-
-
+| Deepgram missing speaker | `speaker_unknown` | Plan §5.3 |
+| Batch transcript markers | `[SEGMENT_ID=…]` | Plan §5.4 |
+| Testcontainers artifact | `testcontainers-postgresql` | Boot 4 BOM |
+| Subject list `page` default | **1-based** (matches `MeetingService`) | Source convention vs query sketch `page=0` |
+| Color validation | trim + max 20 only | No FE format constraint |
 
 ## C. Commits landed
 
+| Commit | Message |
+|--------|---------|
+| `0fb4cbc` | `docs: add phase 1 plan and git stage A audit report` |
+| `b2a154a` | `feat(ai): add segment identity source of truth` |
+| `c948106` | `feat(ai): domain-aware analysis cache identity` |
+| `97ba858` | `docs: update phase 1 implementation report for steps 2-3` |
+| `b0039ea` | `feat(subjects): add folder and subject persistence` |
+| `60f76a9` | `docs: record step 4 persistence commit SHA` |
+| `7b27d02` | `fix(test): restore meeting service commons io runtime` |
+| *(pending)* | `feat(subjects): add folder and subject management` |
 
+## D–E. Segment identity + analysis cache
 
-| Commit | Message | Scope |
-
-|--------|---------|-------|
-
-| `0fb4cbc` | `docs: add phase 1 plan and git stage A audit report` | Plan + branch audit + report stub |
-
-| `b2a154a` | `feat(ai): add segment identity source of truth` | `segment_identity.py`, stt_adapter, grpc, canonical persist |
-
-| `c948106` | `feat(ai): domain-aware analysis cache identity` | `analysis_versioning.py`, cache lookup by `idempotency_key`, pipeline/main wire-up |
-
-| `97ba858` | `docs: update phase 1 implementation report for steps 2-3` | Implementation report |
-
-| `b0039ea` | `feat(subjects): add folder and subject persistence` | Flyway V16 + Meeting.subjectId + StudyFolderSubjectMigrationTest |
-
-
-
-## D. Segment identity (Step 2)
-
-
-
-- **New:** `demoRecordAUDIOMID/ai-service/app/services/segment_identity.py`
-
-- **Delegated:** `stt_adapter._resolve_segment_id`, `main._build_segment_id`, `canonical_persist_service.assign_segment_ids`, `grpc_stt_service` partial/final events
-
-- **Batch:** `pipeline.py` assigns stable IDs before analysis; transcript formatted with segment markers
-
-- **Tests:** `test_segment_identity.py` (plan vectors), `test_deepgram_stt_adapter` updated
-
-
-
-## E. Analysis cache identity (Step 3)
-
-
-
-- **New:** `demoRecordAUDIOMID/ai-service/app/services/analysis_versioning.py`
-
-- **`AnalysisCacheIdentity`:** in-memory `normalized_domain_mode`; domain part in idempotency hash
-
-- **`find_completed_analysis_run_for_identity`:** primary lookup by `idempotency_key` (not `_identity_filters` alone)
-
-- **Domain feature sets:** `grouped-action-plan-v1-{general,it,business}`, `education-study-v1`
-
-- **Tests:** `test_analysis_versioning.py`, updated `test_analysis_scope.py`, `test_analysis_cache_hit_miss.py`
-
-
+Completed in Steps 2–3 (see prior sections / commits).
 
 ## F. Database persistence (Step 4)
 
+- V16: `study_folder`, `subject`, `meeting.subject_id` + `fk_meeting_subject ON DELETE SET NULL`
+- `StudyFolderSubjectMigrationTest` — 6 scenarios pass
 
+## G. Pre-Step 5 MimeSniffer gate
 
-### Migration
+### Root cause (verified)
 
+| Item | Value |
+|------|-------|
+| Failing tests | `MimeSnifferTest` ×4 + `UploadValidatorMimeIntegrationTest` ×1 |
+| Exception | `NoClassDefFoundError: org/apache/commons/io/input/ChecksumInputStream` |
+| Call chain | `MimeSniffer.detectMime` → `Tika.detect` → `DefaultZipContainerDetector` → `ArchiveStreamFactory.detect` (commons-compress) |
+| Resolved before fix | `commons-io:2.13.0` via `tika-core:2.9.0` |
+| Culprit | Step 4 Testcontainers 2.0.3 brings `commons-compress:1.28.0` (requires commons-io **2.20.0** / ChecksumInputStream since 2.16+) onto test CP |
+| Evidence | compress POM pins `commons-io:2.20.0`; jar 2.13.0 lacks `ChecksumInputStream`; jar 2.16.1+ has it |
 
+### Fix
 
-- **File:** `meeting-service/.../V16__study_folder_subject_and_meeting_subject.sql`
+Direct `commons-io:2.20.0` on meeting-service (matches compress 1.28.0 declared dependency). Commit `7b27d02`.
 
-- **Tables:** `study_folder`, `subject`
+### Full module after fix
 
-- **Column:** `meeting.subject_id BIGINT NULL`
+`mvnw -pl meeting-service test` → **100 passed** (includes MimeSniffer + migration + folder/subject tests).
 
-- **FK:** `fk_meeting_subject` → `subject(id)` **ON DELETE SET NULL** (no CASCADE)
+## H. Folder/Subject CRUD (Step 5)
 
-- **Indexes:** `idx_study_folder_owner`, `idx_study_folder_parent`, `idx_subject_owner`, `idx_subject_folder`, `idx_meeting_subject`, `idx_meeting_owner_unclassified` (partial on `owner_user_id` WHERE `subject_id IS NULL AND deleted_at IS NULL`)
+### Endpoints
 
-- **Unique partial:** `uq_study_folder_owner_parent_name_active`, `uq_subject_owner_name_active`
+```text
+POST/GET/PATCH/DELETE /study-folders
+GET /study-folders/tree
+GET /study-folders/{folderId}
 
-- **Verified meeting columns:** `owner_user_id`, `deleted_at` (from V1/V2/V5)
+POST/GET/PATCH/DELETE /subjects
+GET /subjects/{subjectId}
+GET /subjects/{subjectId}/meetings
+```
 
+### Authorization
 
+- JWT `requirePrincipal`; owner-scoped repo lookups
+- Cross-user → **404** `RESOURCE_NOT_FOUND` (existing meeting/share convention)
+- Duplicate name → **409** `CONFLICT`
+- Unknown sort → **400** `VALIDATION_ERROR`
+- PATCH uses `Map.containsKey` (null clear vs omitted)
+- Archive (`DELETE /subjects/{id}`): transaction unassigns owned meetings then sets `archived_at`; idempotent
 
-### JPA
+### Not in this step
 
-
-
-- `Meeting.subjectId` scalar `Long` only — no `@ManyToOne` yet (Step 5)
-
-
-
-### Migration test
-
-
-
-- `StudyFolderSubjectMigrationTest` (Surefire `*Test`, PostgreSQL Testcontainers)
-
-- Seeds minimal `app_users` (V15 requires it; user-service owned in prod) + Flyway `baselineOnMigrate` at version `0`
-
-- Scenarios: empty→V16 schema; V15→V16 legacy preserve; FK SET NULL; subject/folder unique indexes; legacy safety
-
-
-
-### Not in this commit
-
-
-
-- Folder/subject CRUD, meeting assignment API, upload/realtime `subjectId`, FE, education, OpenAPI
-
-
-
-## G–I. (pending)
-
-
-
-- Folder/subject domain + APIs (Step 5–6)
-
-- Education schema/prompt (Step 7)
-
-- OpenAPI + FE (Steps 8–11)
-
-- Full verification (Step 12)
-
-
+Meeting assignment APIs, upload/realtime `subjectId`, education AI, FE, OpenAPI.
 
 ## Test / build log
 
-
-
 | Step | Command | Result |
-
 |------|---------|--------|
+| Pre-5 | `dependency:tree -Dincludes=commons-io` | was 2.13.0 → now 2.20.0 |
+| Pre-5 | `*MimeSniffer*` | 5 passed |
+| Step 5 | `StudyFolderServiceTest` + `SubjectServiceTest` | 24 passed |
+| Step 5 | full `meeting-service test` | **100 passed** |
 
-| Stage A | Git audit | OK |
+## Remaining
 
-| Step 2 | `pytest test_segment_identity.py test_deepgram…` | 21 passed |
-
-| Step 3 | `pytest test_analysis_versioning.py test_analysis_scope.py test_analysis_cache_hit_miss.py` | All passed |
-
-| Step 4 | `mvnw -pl meeting-service -Dtest=StudyFolderSubjectMigrationTest test` | **6 passed** |
-
-| Step 4 | `mvnw -pl meeting-service test` | Migration + unit OK; **MimeSnifferTest (4) + UploadValidatorMimeIntegrationTest (1) fail** with `NoClassDefFoundError: org/apache/commons/io/input/ChecksumInputStream` — **unrelated to V16** (Tika/commons-io classpath); excluding those: **71 passed** |
-
-
-
-## Remaining issues
-
-
-
-- `main.py` transcript GET path uses `resolve_segment_id_for_read` but batch `format_transcript_for_analysis` in `ai_analyzer.py` unchanged (pipeline uses `format_aligned_transcript_for_analysis` instead)
-
-- Legacy runs with `grouped-action-plan-v1` (no domain suffix) intentionally cache-miss per plan §6.4
-
-- Git Stage B not run (by design)
-
-- Pre-existing MimeSniffer / commons-io classpath failures on full `meeting-service` Surefire run
-
+- Step 6: meeting subject assign / unclassified / upload subjectId
+- Git Stage B not run
