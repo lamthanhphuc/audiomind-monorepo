@@ -17,6 +17,7 @@ import ai_stream_pb2 as ai__stream__pb2  # noqa: E402
 import ai_stream_pb2_grpc as ai__stream__pb2__grpc  # noqa: E402
 import realtime_events_pb2 as realtime__events__pb2  # noqa: E402
 
+from app.services.segment_identity import build_stable_segment_id
 from app.services.stt_adapter import DeepgramSTTAdapter  # noqa: E402
 
 
@@ -115,8 +116,14 @@ class AiStreamServicer(ai__stream__pb2__grpc.AiStreamServiceServicer):
                         emitted_at_ms = int(
                             partial_event.get("ts_ms") or audio_chunk.ts_ms
                         )
+                        start_seconds = emitted_at_ms / 1000.0
+                        segment_id = build_stable_segment_id(
+                            meeting_id or 0,
+                            speaker=partial_event.get("speaker"),
+                            start_time=start_seconds,
+                        )
                         response = realtime__events__pb2.StreamEnvelope(
-                            event_id=str(uuid4()),
+                            event_id=segment_id,
                             event_type="transcript.partial",
                             trace_id=request.trace_id or "",
                             emitted_at_ms=emitted_at_ms,
@@ -124,9 +131,9 @@ class AiStreamServicer(ai__stream__pb2__grpc.AiStreamServiceServicer):
                         response.transcript_partial.CopyFrom(
                             realtime__events__pb2.TranscriptPartialEvent(
                                 meeting_id=meeting_id,
-                                segment_id=str(uuid4()),
-                                start_time=emitted_at_ms / 1000.0,
-                                end_time=emitted_at_ms / 1000.0,
+                                segment_id=segment_id,
+                                start_time=start_seconds,
+                                end_time=start_seconds,
                                 speaker=str(partial_event.get("speaker") or "unknown"),
                                 text=str(partial_event.get("text") or "").strip(),
                                 language="vi",
@@ -144,8 +151,13 @@ class AiStreamServicer(ai__stream__pb2__grpc.AiStreamServiceServicer):
                 )
 
                 # Emit final transcript event
+                final_segment_id = build_stable_segment_id(
+                    meeting_id or 0,
+                    speaker="system",
+                    start_time=0.0,
+                )
                 response = realtime__events__pb2.StreamEnvelope(
-                    event_id=str(uuid4()),
+                    event_id=final_segment_id,
                     event_type="transcript.final",
                     trace_id="",
                     emitted_at_ms=0,
@@ -153,7 +165,7 @@ class AiStreamServicer(ai__stream__pb2__grpc.AiStreamServiceServicer):
                 response.transcript_partial.CopyFrom(
                     realtime__events__pb2.TranscriptPartialEvent(
                         meeting_id=meeting_id or 0,
-                        segment_id=str(uuid4()),
+                        segment_id=final_segment_id,
                         start_time=0.0,
                         end_time=0.0,
                         speaker="system",

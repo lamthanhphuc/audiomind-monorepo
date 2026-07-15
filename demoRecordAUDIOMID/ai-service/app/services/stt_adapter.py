@@ -13,6 +13,10 @@ from uuid import uuid4
 from loguru import logger
 
 from app.logging_utils import safe_error_message, transcript_hash_prefix
+from app.services.segment_identity import (
+    build_stable_segment_id,
+    canonicalize_segment_id,
+)
 
 try:
     import websockets
@@ -1647,47 +1651,40 @@ class DeepgramSTTAdapter:
             or ""
         ).strip()
         if explicit_id:
-            return self._canonicalize_segment_id(explicit_id)
+            return canonicalize_segment_id(explicit_id)
 
-        meeting_part = (
-            f"meeting-{session.meeting_id}" if session is not None else "meeting-0"
-        )
-
-        speaker_part = (
-            str(speaker).strip().lower().replace(" ", "_") if speaker else "unknown"
-        )
-        if speaker_part in {"", "unknown", "system"}:
-            speaker_part = "speaker_1"
-        if start_time is not None and session is not None:
-            stable_id = f"{meeting_part}-start-{start_time:.3f}-{speaker_part}"
-            return self._canonicalize_segment_id(stable_id)
+        meeting_id = session.meeting_id if session is not None else 0
 
         if start_time is not None:
-            return self._canonicalize_segment_id(
-                f"{meeting_part}-start-{start_time:.3f}-{speaker_part}"
+            return build_stable_segment_id(
+                meeting_id,
+                speaker=speaker,
+                start_time=start_time,
             )
+
         if end_time is not None and is_final:
-            return f"{meeting_part}-end-{end_time:.3f}"
+            return build_stable_segment_id(
+                meeting_id,
+                speaker=speaker or "system",
+                start_time=end_time,
+            )
 
         if session is not None:
             session.fallback_segment_counter += 1
-            return (
-                f"{meeting_part}-temp-{speaker_part}-{session.fallback_segment_counter}"
+            return build_stable_segment_id(
+                meeting_id,
+                speaker=speaker,
+                zero_based_index=session.fallback_segment_counter - 1,
             )
 
-        return f"{meeting_part}-ts-{int(ts_ms)}"
+        return build_stable_segment_id(
+            meeting_id,
+            speaker=speaker,
+            zero_based_index=int(ts_ms),
+        )
 
     def _canonicalize_segment_id(self, segment_id: str) -> str:
-        raw = str(segment_id or "").strip()
-        if not raw:
-            return raw
-        match = self._LEGACY_SEGMENT_ID_PATTERN.match(raw)
-        if match:
-            return (
-                f"meeting-{match.group('meeting')}-start-"
-                f"{float(match.group('start')):.3f}-{match.group('speaker').lower()}"
-            )
-        return raw
+        return canonicalize_segment_id(segment_id)
 
     def _first_float_value(self, *values: Any) -> float | None:
         for value in values:
