@@ -52,6 +52,13 @@ Not evaluated against GitHub protected-branch API in this audit. `origin/main` t
 - Untracked: `docs/phase1-subject-education-plan.md` (added to feature branch in first docs commit)
 - No stash required (clean aside from plan doc)
 
+## Working tree after Phase 1 FE integration (2026-07-16)
+
+- Branch: `feature/phase1-subject-education`
+- Latest commits include OpenAPI/contracts, FE study workspace, education panel, tests
+- Working tree: clean after `c86a19d`
+- Stage B: still **not performed**
+
 ## Stage B gate
 
 **Do not delete any local or remote branch until the user explicitly approves this report's proposed-delete list.**

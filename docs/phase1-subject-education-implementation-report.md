@@ -3,7 +3,7 @@
 **Branch:** `feature/phase1-subject-education`  
 **Base:** `origin/main` @ `d77a030`  
 **Started:** 2026-07-15  
-**Status:** In progress (Steps 0–6 complete)
+**Status:** Partially completed (Steps 0–7 FE integration landed; manual E2E smoke pending)
 
 ## A. Git cleanup
 
@@ -47,6 +47,13 @@ See [branch-cleanup-report.md](./branch-cleanup-report.md).
 | `8060b88` | `feat(subjects): add folder and subject management` |
 | `38a5fd5` | `docs: record step 5 folder subject management commit SHA` |
 | `2ec0915` | `feat(meetings): support subject assignment and upload subjectId` |
+| `5525c95` | `feat(ai): add education study structured analysis` |
+| `34916c7` | `docs: add phase 1 subject education completion plan` |
+| `85fcea5` | `feat(contracts): add study folder, subject and educationStudy schemas` |
+| `cc266a4` | `feat(fe): add study types, services and education normalizer` |
+| `4bcd222` | `feat(fe): add study workspace routing and subject management UI` |
+| `190912b` | `feat(fe): wire subject selection, education panel and evidence navigation` |
+| `c86a19d` | `test(fe): extend routing and upload API tests for study workspace` |
 
 ## D–E. Segment identity + analysis cache
 
@@ -161,7 +168,42 @@ Excludes shared / other-user / soft-deleted / assigned meetings. DB search + whi
 
 ### Not in this step
 
-Education AI (`educationStudy`), OpenAPI/clients, FE SubjectPicker/pages, Git Stage B.
+Git Stage B.
+
+## J. OpenAPI + generated clients (Step 8)
+
+- `packages/contracts/meeting-api.yaml`: study-folders, subjects, unclassified, assign subject, realtime/upload `subjectId`
+- `packages/contracts/ai-api.yaml`: explicit `educationStudy` schema
+- Regenerated `packages/api-clients/{meeting,ai,processing,user}.ts` via `npm run generate:client`
+- Verified: `validate:contracts`, `typecheck:client`, `check:openapi`
+
+## K. Frontend integration (Step 9)
+
+### Services / types
+
+- `types/study.ts`, `types/education.ts` + `Meeting.subjectId`, `AiAnalysis.educationStudy`
+- `services/studyFolders.ts`, `services/subjects.ts`
+- `createRealtimeMeeting` / `uploadToMeetingApi` object input with optional `subjectId` (legacy positional args preserved)
+- `domainMode` **not** sent to meeting-service (processing/AI flow unchanged)
+
+### Routing / state
+
+- Scenes: `subjects`, `subjectDetail`, `unclassified`
+- Paths: `/studio/subjects`, `/studio/subjects/:subjectId`, `/studio/unclassified`
+- `StudyWorkspaceProvider`: folder tree + picker catalog + invalidation revisions only
+- Page hooks: `useSubjectsList`, `useSubjectDetail`, `useUnclassifiedMeetings`
+
+### UI
+
+- Sidebar `SubjectSidebarSection` (API-backed tree; no hard-coded courses)
+- Pages: subjects list, subject detail (Option B meeting rows), unclassified assign
+- Dialogs: folder/subject CRUD, `SubjectPicker` on upload + realtime
+- Education: `EducationAnalysisPanel` when `analysis.educationStudy != null`
+- Evidence: `useTranscriptEvidenceNavigation` maps `sourceSegmentIds` → raw `TranscriptSegment.id` → time range → highlight/scroll
+
+### Processing verification
+
+- `GET /processing/{meetingId}/analysis/saved` returns stored JSON; processing-service tests pass without DTO change (open Map passthrough)
 
 ## Test / build log
 
@@ -171,9 +213,37 @@ Education AI (`educationStudy`), OpenAPI/clients, FE SubjectPicker/pages, Git St
 | Step 5 | `StudyFolderServiceTest` + `SubjectServiceTest` | 24 passed |
 | Step 5 | full `meeting-service test` | **100 passed** |
 | Step 6 | subject assignment + upload/realtime suites | 30 new tests |
-| Step 6 | full `meeting-service test` | **130 passed** |
+| Step 6 | full `meeting-service test` | **130 passed** (6 skipped migration IT) |
+| Step 7 AI | `test_education_*.py` | **22 passed** |
+| Step 7 AI | full `pytest tests` | **479 passed**, 22 skipped |
+| Step 8 | `validate:contracts` + `generate:client` + `typecheck:client` + `check:openapi` | pass |
+| Step 9 FE | `npm --prefix FE-Audiomind run test` | **624 passed** |
+| Step 9 FE | `npm --prefix FE-Audiomind run build` | pass (tsc + vite) |
+| Step 9 FE | `npm run lint` | pass |
+| Step 9 | `processing-service test` | **311 passed** |
+
+## Manual smoke (pending live stack)
+
+| # | Scenario | Status |
+|---|----------|--------|
+| 1 | Folder + subject create; reload persists | Not run (requires running meeting-api) |
+| 2 | Realtime with `subjectId` → subject detail | Not run |
+| 3 | Upload with `subjectId`; duplicate unchanged | Not run |
+| 4 | Unclassified assign → list update | Not run |
+| 5 | Education structured sections visible | Code-verified via normalizer + panel tests |
+| 6 | Evidence click → transcript highlight | Code-verified via `transcriptEvidence` + hook tests |
+
+## Acceptance criteria snapshot
+
+- **DONE:** AC-01,02,05–07,10–11,18–19,31–32,35–44 (code),46–48,49,50,51,52,53,55 (process)
+- **PARTIAL:** AC-08,09,12–17,20–30,33–34,45,54 (FE implemented; live smoke not executed)
+- **TODO:** AC-03 (clean tree until docs commit), AC-04 (branch cleanup Stage B)
+
+Overall Phase 1 status: **Partially completed** — blocking gap is live manual smoke (AC-54) and final docs commit cleanliness (AC-03).
 
 ## Remaining
 
-- Step 7+: AI education / OpenAPI / FE (per plan)
+- Live manual smoke against running meeting-api + processing-api + ai-api
 - Git Stage B not run
+- Meeting history detail subject reassignment UI (optional enhancement; assign available on subject detail + unclassified)
+- Deferred: subject meeting row `duration`/`sourceType`/transcriptStatus/analysisStatus (Option B)
