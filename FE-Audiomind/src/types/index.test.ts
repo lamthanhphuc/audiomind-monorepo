@@ -165,4 +165,29 @@ describe('grouped action plan normalization', () => {
     expect(isRetryableAnalysisFailure(analysis)).toBe(true)
     expect(normalizeAnalysisDisplayStatus(analysis)).toBe('failed_retryable')
   })
+
+  it('preserves educationStudy on saved analysis responses', () => {
+    const analysis = normalizeAnalysisResponse({
+      summary: 'Legacy summary',
+      keywords: [],
+      technicalTerms: [],
+      painPoints: [],
+      actionItems: [],
+      domainMode: 'education',
+      educationStudy: {
+        title: 'Week 3',
+        overview: 'Cell biology',
+        learningObjectives: ['Identify organelles'],
+        sections: [],
+        keyPoints: [],
+        keywords: ['mitochondria'],
+        glossary: [],
+        mustRemember: [],
+        unclearPoints: [],
+      },
+    })
+
+    expect(analysis.educationStudy?.title).toBe('Week 3')
+    expect(analysis.educationStudy?.overview).toBe('Cell biology')
+  })
 })
