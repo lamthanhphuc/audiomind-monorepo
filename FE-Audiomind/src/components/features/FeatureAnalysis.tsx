@@ -350,9 +350,7 @@ export default function FeatureAnalysis({
     onHighlightChange: setHighlightRange,
     onNavigateSuccess: () => {
       setEvidenceWarning(null)
-      if (hydrateFromApi) {
-        setActiveTab('content')
-      }
+      setActiveTab('content')
     },
     onMissingSegment: () => {
       setEvidenceWarning('Không tìm thấy đoạn transcript tương ứng với bằng chứng này.')
