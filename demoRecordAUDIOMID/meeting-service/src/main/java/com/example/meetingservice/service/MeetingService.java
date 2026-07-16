@@ -292,8 +292,11 @@ public class MeetingService {
         Sort resolvedSort = resolveUnclassifiedSort(sort);
         PageRequest pageable = PageRequest.of(safePage - 1, safePageSize, resolvedSort);
         String normalizedSearch = normalizeNullable(search);
-        Page<Meeting> result =
-                meetingRepository.findUnclassifiedForOwner(ownerUserId, normalizedSearch, pageable);
+        Page<Meeting> result = normalizedSearch == null
+                ? meetingRepository.findByOwnerUserIdAndSubjectIdIsNullAndDeletedAtIsNull(
+                        ownerUserId, pageable)
+                : meetingRepository.findUnclassifiedForOwner(
+                        ownerUserId, "%" + normalizedSearch + "%", pageable);
         long total = result.getTotalElements();
         int totalPages = total == 0 ? 0 : result.getTotalPages();
         return new MeetingPageResult(
