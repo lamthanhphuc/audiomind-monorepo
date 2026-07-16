@@ -189,13 +189,22 @@ describe('FeatureAnalysis', () => {
     const segmentId = 'meeting-43-start-2.000-speaker_1'
     vi.spyOn(api, 'getTranscript').mockResolvedValue({
       meeting_id: 43,
-      transcripts: [{
-        segment_id: segmentId,
-        speaker: 'Speaker 1',
-        start_time: 2,
-        end_time: 4,
-        text: 'Saved segment',
-      }],
+      transcripts: [
+        {
+          segment_id: 'meeting-43-start-0.000-speaker_1',
+          speaker: 'Speaker 1',
+          start_time: 0,
+          end_time: 2,
+          text: 'Saved introduction',
+        },
+        {
+          segment_id: segmentId,
+          speaker: 'Speaker 1',
+          start_time: 2,
+          end_time: 4,
+          text: 'Saved segment',
+        },
+      ],
     } as any)
     vi.mocked(api.getSavedAnalysis).mockResolvedValue(educationAnalysis([segmentId]) as any)
 

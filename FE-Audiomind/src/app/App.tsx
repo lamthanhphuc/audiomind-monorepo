@@ -1909,10 +1909,10 @@ export default function App() {
       getAnalysis(meetingId),
     ])
 
+    // Preserve canonical persisted IDs for education evidence navigation.
+    // FeatureAnalysis/TranscriptDisplay handles visual grouping separately.
     const mergedTranscriptSegments = sortTranscriptSegmentsByTimeline(
-      mergeTranscriptSegments(
-        normalizePersistedTranscriptSegments(transcript.transcripts || []),
-      ),
+      normalizePersistedTranscriptSegments(transcript.transcripts || []),
     )
 
     const mergedTranscript = mergedTranscriptSegments

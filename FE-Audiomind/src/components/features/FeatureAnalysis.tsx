@@ -9,7 +9,7 @@ import {
   scrollTranscriptToHighlight,
   type TranscriptHighlightRange,
 } from '../../utils/transcriptJump'
-import { normalizePersistedTranscriptForView } from '../../utils/transcript'
+import { normalizePersistedTranscriptSegments } from '../../utils/transcript'
 import { resolveMeetingResultScope } from '../../services/api'
 import {
   scopeToAnalysisOptions,
@@ -269,7 +269,10 @@ export default function FeatureAnalysis({
           return
         }
 
-        const segments = normalizePersistedTranscriptForView(transcriptResponse.transcripts || [])
+        // Keep canonical persisted segment identities for evidence resolution.
+        // TranscriptDisplay performs its own visual grouping without changing
+        // the navigation source segments.
+        const segments = normalizePersistedTranscriptSegments(transcriptResponse.transcripts || [])
         const analysisState = getAnalysisStateFromResponse(analysisResponse)
 
         setHydratedTranscriptSegments(segments)
