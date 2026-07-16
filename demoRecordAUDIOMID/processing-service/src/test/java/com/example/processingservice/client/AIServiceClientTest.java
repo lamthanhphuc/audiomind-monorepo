@@ -637,11 +637,219 @@ class AIServiceClientTest {
         assertEquals("Speaker 1: export text", payload.get("transcript"));
         assertEquals("export_report", payload.get("source"));
         assertEquals("cache_only", payload.get("mode"));
+        assertEquals("general", payload.get("domain_mode"));
         assertEquals("hash-55", payload.get("transcript_hash"));
         assertEquals("prompt-v1", payload.get("prompt_version"));
         assertEquals("schema-v1", payload.get("schema_version"));
         assertEquals("Bearer test-token", entity.getHeaders().getFirst(HttpHeaders.AUTHORIZATION));
         assertEquals("application/json", entity.getHeaders().getContentType().toString());
+    }
+
+    @Test
+    void getSavedAnalysisCacheOnly_shouldUseEducationDomainWhenProvided() {
+        RestTemplate restTemplate = mock(RestTemplate.class);
+        AIServiceClient client = new AIServiceClient(restTemplate);
+        ReflectionTestUtils.setField(client, "aiUrl", "http://ai-service");
+
+        ResponseEntity<Map<String, Object>> response = new ResponseEntity<>(
+                Map.of("status", "completed", "cacheHit", true),
+                HttpStatus.OK
+        );
+        when(restTemplate.exchange(
+                any(String.class),
+                eq(HttpMethod.POST),
+                any(HttpEntity.class),
+                any(org.springframework.core.ParameterizedTypeReference.class)
+        )).thenReturn(response);
+
+        client.getSavedAnalysisCacheOnly(
+                56L,
+                "Speaker 1: lecture",
+                "hash-56",
+                "education-analysis-v1",
+                "education-study-v1",
+                "grouped-action-plan-v1",
+                10L,
+                2L,
+                "education",
+                "trace-edu",
+                "Bearer test-token"
+        );
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<HttpEntity<Map<String, Object>>> captor = ArgumentCaptor.forClass(HttpEntity.class);
+        verify(restTemplate).exchange(
+                eq("http://ai-service/api/internal/realtime-analysis"),
+                eq(HttpMethod.POST),
+                captor.capture(),
+                any(org.springframework.core.ParameterizedTypeReference.class)
+        );
+
+        Map<String, Object> payload = captor.getValue().getBody();
+        assertEquals("education", payload.get("domain_mode"));
+        assertEquals("cache_only", payload.get("mode"));
+        assertEquals(10L, payload.get("recording_session_id"));
+        assertEquals(2L, payload.get("attempt_id"));
+    }
+
+    @Test
+    void getSavedAnalysisCacheOnly_shouldKeepItDomainWhenProvided() {
+        RestTemplate restTemplate = mock(RestTemplate.class);
+        AIServiceClient client = new AIServiceClient(restTemplate);
+        ReflectionTestUtils.setField(client, "aiUrl", "http://ai-service");
+
+        ResponseEntity<Map<String, Object>> response = new ResponseEntity<>(
+                Map.of("status", "completed"),
+                HttpStatus.OK
+        );
+        when(restTemplate.exchange(
+                any(String.class),
+                eq(HttpMethod.POST),
+                any(HttpEntity.class),
+                any(org.springframework.core.ParameterizedTypeReference.class)
+        )).thenReturn(response);
+
+        client.getSavedAnalysisCacheOnly(
+                57L,
+                "Speaker 1: sprint",
+                "hash-57",
+                "prompt-v1",
+                "schema-v1",
+                "grouped-action-plan-v1",
+                null,
+                null,
+                "it",
+                "trace-it",
+                null
+        );
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<HttpEntity<Map<String, Object>>> captor = ArgumentCaptor.forClass(HttpEntity.class);
+        verify(restTemplate).exchange(
+                any(String.class),
+                eq(HttpMethod.POST),
+                captor.capture(),
+                any(org.springframework.core.ParameterizedTypeReference.class)
+        );
+        assertEquals("it", captor.getValue().getBody().get("domain_mode"));
+    }
+
+    @Test
+    void getSavedAnalysisCacheOnly_shouldFallbackUnknownDomainToGeneral() {
+        RestTemplate restTemplate = mock(RestTemplate.class);
+        AIServiceClient client = new AIServiceClient(restTemplate);
+        ReflectionTestUtils.setField(client, "aiUrl", "http://ai-service");
+
+        ResponseEntity<Map<String, Object>> response = new ResponseEntity<>(
+                Map.of("status", "completed"),
+                HttpStatus.OK
+        );
+        when(restTemplate.exchange(
+                any(String.class),
+                eq(HttpMethod.POST),
+                any(HttpEntity.class),
+                any(org.springframework.core.ParameterizedTypeReference.class)
+        )).thenReturn(response);
+
+        client.getSavedAnalysisCacheOnly(
+                58L,
+                "text",
+                "hash-58",
+                "prompt-v1",
+                "schema-v1",
+                "grouped-action-plan-v1",
+                null,
+                null,
+                "finance",
+                "trace-unknown",
+                null
+        );
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<HttpEntity<Map<String, Object>>> captor = ArgumentCaptor.forClass(HttpEntity.class);
+        verify(restTemplate).exchange(
+                any(String.class),
+                eq(HttpMethod.POST),
+                captor.capture(),
+                any(org.springframework.core.ParameterizedTypeReference.class)
+        );
+        assertEquals("general", captor.getValue().getBody().get("domain_mode"));
+    }
+
+    @Test
+    void analyzeRealtimeTranscript_shouldNormalizeNullDomainToGeneral() {
+        RestTemplate restTemplate = mock(RestTemplate.class);
+        AIServiceClient client = new AIServiceClient(restTemplate);
+        ReflectionTestUtils.setField(client, "aiUrl", "http://ai-service");
+
+        ResponseEntity<Map<String, Object>> response = new ResponseEntity<>(
+                Map.of("status", "completed"),
+                HttpStatus.OK
+        );
+        when(restTemplate.exchange(
+                any(String.class),
+                eq(HttpMethod.POST),
+                any(HttpEntity.class),
+                any(org.springframework.core.ParameterizedTypeReference.class)
+        )).thenReturn(response);
+
+        client.analyzeRealtimeTranscript(
+                59L,
+                "Speaker 1: demo",
+                null,
+                "realtime",
+                "hash-59",
+                "trace-null-domain",
+                null
+        );
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<HttpEntity<Map<String, Object>>> captor = ArgumentCaptor.forClass(HttpEntity.class);
+        verify(restTemplate).exchange(
+                any(String.class),
+                eq(HttpMethod.POST),
+                captor.capture(),
+                any(org.springframework.core.ParameterizedTypeReference.class)
+        );
+        assertEquals("general", captor.getValue().getBody().get("domain_mode"));
+    }
+
+    @Test
+    void analyzeRealtimeTranscript_shouldPassEducationDomain() {
+        RestTemplate restTemplate = mock(RestTemplate.class);
+        AIServiceClient client = new AIServiceClient(restTemplate);
+        ReflectionTestUtils.setField(client, "aiUrl", "http://ai-service");
+
+        ResponseEntity<Map<String, Object>> response = new ResponseEntity<>(
+                Map.of("status", "completed"),
+                HttpStatus.OK
+        );
+        when(restTemplate.exchange(
+                any(String.class),
+                eq(HttpMethod.POST),
+                any(HttpEntity.class),
+                any(org.springframework.core.ParameterizedTypeReference.class)
+        )).thenReturn(response);
+
+        client.analyzeRealtimeTranscript(
+                60L,
+                "Speaker 1: lecture",
+                "Education",
+                "realtime",
+                "hash-60",
+                "trace-edu-rt",
+                null
+        );
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<HttpEntity<Map<String, Object>>> captor = ArgumentCaptor.forClass(HttpEntity.class);
+        verify(restTemplate).exchange(
+                any(String.class),
+                eq(HttpMethod.POST),
+                captor.capture(),
+                any(org.springframework.core.ParameterizedTypeReference.class)
+        );
+        assertEquals("education", captor.getValue().getBody().get("domain_mode"));
     }
 
     @Test

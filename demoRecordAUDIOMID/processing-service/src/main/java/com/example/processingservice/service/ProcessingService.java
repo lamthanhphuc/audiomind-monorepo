@@ -38,6 +38,7 @@ import com.example.processingservice.client.AIServiceClient;
 import com.example.processingservice.client.MeetingServiceClient;
 import com.example.processingservice.client.UserQuotaClient;
 import com.example.processingservice.config.Epic3FeatureFlags;
+import com.example.processingservice.util.DomainModes;
 import com.example.processingservice.config.Epic3PolicyLoader;
 import com.example.processingservice.controller.dto.TranscriptEvidenceMatch;
 import com.example.processingservice.controller.dto.TranscriptSearchResponse;
@@ -3581,6 +3582,7 @@ public class ProcessingService {
             return response;
         }
         try {
+            String domainMode = resolveDomainModeForMeeting(meetingId);
             Map<String, Object> aiResponse = aiServiceClient.getSavedAnalysisCacheOnly(
                     meetingId,
                     transcriptText,
@@ -3590,6 +3592,7 @@ public class ProcessingService {
                     GROUPED_ACTION_PLAN_FEATURE_SET,
                     recordingSessionId,
                     attemptId,
+                    domainMode,
                     traceId,
                     authorization
             );
@@ -4253,6 +4256,27 @@ public class ProcessingService {
         return analysis;
     }
 
+    /**
+     * Resolve AI domain for cache lookup / lazy analysis.
+     * Order: job/result metadata → persisted analysis → fallback {@link DomainModes#DEFAULT}.
+     */
+    private String resolveDomainModeForMeeting(Long meetingId) {
+        Map<String, Object> state = jobStateStore.getJobState(meetingId).orElse(null);
+        if (state == null || state.isEmpty()) {
+            return DomainModes.DEFAULT;
+        }
+        Map<String, Object> result = extractResult(state);
+        Map<String, Object> analysis = extractAnalysisFromState(state);
+        return DomainModes.firstNonBlankNormalized(
+                result.get("domainMode"),
+                result.get("domain_mode"),
+                state.get("domainMode"),
+                state.get("domain_mode"),
+                analysis.get("domainMode"),
+                analysis.get("domain_mode")
+        );
+    }
+
     @SuppressWarnings("unchecked")
     private List<Map<String, Object>> extractTranscriptRowsFromState(Map<String, Object> state) {
         if (state == null) {
@@ -4855,12 +4879,17 @@ public class ProcessingService {
         }
 
         try {
+            String domainMode = resolveDomainModeForMeeting(meetingId);
             Map<String, Object> aiResponse = aiServiceClient.getSavedAnalysisCacheOnly(
                     meetingId,
                     transcriptText,
                     transcriptHash,
                     promptVersion,
                     schemaVersion,
+                    GROUPED_ACTION_PLAN_FEATURE_SET,
+                    null,
+                    null,
+                    domainMode,
                     traceId,
                     authorization
             );
@@ -5200,11 +5229,12 @@ public class ProcessingService {
         try {
             String promptVersion = resolvePromptVersion(null);
             String schemaVersion = resolveSchemaVersion(null);
+            String domainMode = resolveDomainModeForMeeting(meetingId);
             enforceGeminiQuotaForText(transcriptText);
             Map<String, Object> response = aiServiceClient.analyzeRealtimeTranscript(
                     meetingId,
                     transcriptText,
-                    "it",
+                    domainMode,
                     "realtime",
                     transcriptHash,
                     promptVersion,

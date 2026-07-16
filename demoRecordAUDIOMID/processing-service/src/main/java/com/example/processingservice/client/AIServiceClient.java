@@ -653,6 +653,9 @@ public class AIServiceClient {
                 promptVersion,
                 schemaVersion,
                 DEFAULT_ANALYSIS_FEATURE_SET,
+                null,
+                null,
+                null,
                 traceId,
                 authorization
         );
@@ -677,6 +680,7 @@ public class AIServiceClient {
                 analysisFeatureSet,
                 null,
                 null,
+                null,
                 traceId,
                 authorization
         );
@@ -694,6 +698,34 @@ public class AIServiceClient {
             String traceId,
             String authorization
     ) {
+        return getSavedAnalysisCacheOnly(
+                meetingId,
+                transcript,
+                transcriptHash,
+                promptVersion,
+                schemaVersion,
+                analysisFeatureSet,
+                recordingSessionId,
+                attemptId,
+                null,
+                traceId,
+                authorization
+        );
+    }
+
+    public Map<String, Object> getSavedAnalysisCacheOnly(
+            Long meetingId,
+            String transcript,
+            String transcriptHash,
+            String promptVersion,
+            String schemaVersion,
+            String analysisFeatureSet,
+            Long recordingSessionId,
+            Long attemptId,
+            String domainMode,
+            String traceId,
+            String authorization
+    ) {
         HttpHeaders headers = new HttpHeaders();
         String resolvedTraceId = resolveTraceId(traceId);
         String resolvedRequestId = resolveRequestId(resolvedTraceId);
@@ -707,7 +739,10 @@ public class AIServiceClient {
         Map<String, Object> request = new HashMap<>();
         request.put("meeting_id", meetingId);
         request.put("transcript", transcript == null ? "" : transcript);
-        request.put("domain_mode", "it");
+        request.put(
+                "domain_mode",
+                com.example.processingservice.util.DomainModes.normalize(domainMode)
+        );
         request.put("source", "export_report");
         request.put("mode", "cache_only");
         if (StringUtils.hasText(transcriptHash)) {
@@ -893,9 +928,10 @@ public class AIServiceClient {
         Map<String, Object> request = new HashMap<>();
         request.put("meeting_id", meetingId);
         request.put("transcript", transcript == null ? "" : transcript);
-        if (StringUtils.hasText(domainMode)) {
-            request.put("domain_mode", domainMode);
-        }
+        request.put(
+                "domain_mode",
+                com.example.processingservice.util.DomainModes.normalize(domainMode)
+        );
         if (StringUtils.hasText(source)) {
             request.put("source", source);
         }

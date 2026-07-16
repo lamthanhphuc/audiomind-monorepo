@@ -10,6 +10,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.ArgumentMatchers.nullable;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.timeout;
@@ -472,6 +473,7 @@ class ProcessingServiceTest {
                 anyString(),
                 eq(9001L),
                 eq(2L),
+                any(),
                 eq("trace-960"),
                 eq(AUTH_HEADER)
         )).thenReturn(Map.of(
@@ -515,6 +517,7 @@ class ProcessingServiceTest {
                 anyString(),
                 eq(9001L),
                 eq(3L),
+                any(),
                 eq("trace-961"),
                 eq(AUTH_HEADER)
         )).thenReturn(Map.of(
@@ -726,6 +729,7 @@ class ProcessingServiceTest {
                 anyString(),
                 eq(9001L),
                 eq(2L),
+                any(),
                 eq("trace-962"),
                 eq(AUTH_HEADER)
         )).thenReturn(Map.of(
@@ -1874,7 +1878,7 @@ class ProcessingServiceTest {
                 verify(aiServiceClient, never()).analyzeRealtimeTranscript(
                                 eq(700L),
                                 anyString(),
-                                eq("it"),
+                                eq("general"),
                                 eq("realtime"),
                                 anyString(),
                                 anyString(),
@@ -1895,7 +1899,7 @@ class ProcessingServiceTest {
                 verify(aiServiceClient, never()).analyzeRealtimeTranscript(
                                 eq(701L),
                                 anyString(),
-                                eq("it"),
+                                eq("general"),
                                 eq("realtime"),
                                 anyString(),
                                 anyString(),
@@ -2036,7 +2040,7 @@ class ProcessingServiceTest {
         verify(aiServiceClient, never()).analyzeRealtimeTranscript(
                 eq(920L),
                 anyString(),
-                eq("it"),
+                eq("general"),
                 eq("realtime"),
                 anyString(),
                 anyString(),
@@ -2082,7 +2086,7 @@ class ProcessingServiceTest {
         verify(aiServiceClient, never()).analyzeRealtimeTranscript(
                 eq(921L),
                 anyString(),
-                eq("it"),
+                eq("general"),
                 eq("realtime"),
                 anyString(),
                 anyString(),
@@ -2468,6 +2472,10 @@ class ProcessingServiceTest {
                 anyString(),
                 eq("gemini-business-v2"),
                 eq("gemini-business-v2"),
+                anyString(),
+                isNull(),
+                isNull(),
+                any(),
                 eq("trace-930"),
                 eq(AUTH_HEADER)
         )).thenReturn(cacheOnlyResponse);
@@ -2491,6 +2499,10 @@ class ProcessingServiceTest {
                 anyString(),
                 eq("gemini-business-v2"),
                 eq("gemini-business-v2"),
+                anyString(),
+                isNull(),
+                isNull(),
+                eq("general"),
                 eq("trace-930"),
                 eq(AUTH_HEADER)
         );
@@ -2533,6 +2545,10 @@ class ProcessingServiceTest {
                 anyString(),
                 anyString(),
                 anyString(),
+                anyString(),
+                isNull(),
+                isNull(),
+                any(),
                 eq("trace-931"),
                 eq(AUTH_HEADER)
         )).thenThrow(new HttpClientErrorException(HttpStatus.NOT_FOUND));
@@ -2584,6 +2600,10 @@ class ProcessingServiceTest {
                 anyString(),
                 anyString(),
                 anyString(),
+                anyString(),
+                isNull(),
+                isNull(),
+                any(),
                 eq("trace-932"),
                 eq(AUTH_HEADER)
         )).thenReturn(Map.of(
@@ -2681,7 +2701,11 @@ class ProcessingServiceTest {
                 anyString(),
                 anyString(),
                 anyString(),
-                anyString()
+                nullable(Long.class),
+                nullable(Long.class),
+                any(),
+                anyString(),
+                any()
         );
     }
 
@@ -2718,7 +2742,11 @@ class ProcessingServiceTest {
                 anyString(),
                 anyString(),
                 anyString(),
-                anyString()
+                nullable(Long.class),
+                nullable(Long.class),
+                any(),
+                anyString(),
+                any()
         );
     }
 
@@ -2791,7 +2819,7 @@ class ProcessingServiceTest {
         when(aiServiceClient.analyzeRealtimeTranscript(
                 eq(608L),
                 anyString(),
-                eq("it"),
+                eq("general"),
                 eq("realtime"),
                 anyString(),
                 anyString(),
@@ -2806,7 +2834,7 @@ class ProcessingServiceTest {
         verify(aiServiceClient, timeout(1000)).analyzeRealtimeTranscript(
                 eq(608L),
                 anyString(),
-                eq("it"),
+                eq("general"),
                 eq("realtime"),
                 anyString(),
                 anyString(),
@@ -2820,6 +2848,53 @@ class ProcessingServiceTest {
                 eq("get_analysis_lazy"),
                 eq("processing_service_lazy_poll"),
                 eq("lock-token")
+        );
+    }
+
+    @Test
+    void getAnalysis_shouldPassEducationDomainToLazyRealtimeAnalysisFromJobMetadata() {
+        when(jobStateStore.getJobState(621L)).thenReturn(Optional.of(Map.of(
+                "status", "COMPLETED",
+                "result", Map.of(
+                        "domainMode", "education",
+                        "transcripts", List.of(
+                                Map.of("speaker", "SPEAKER_1", "text", "education lecture transcript")
+                        )
+                )
+        )));
+        when(aiServiceClient.getAnalysis(621L, "trace-621"))
+                .thenThrow(new HttpClientErrorException(HttpStatus.NOT_FOUND));
+        when(aiServiceClient.getTranscript(621L, "trace-621")).thenReturn(Map.of(
+                "meeting_id", 621L,
+                "transcripts", List.of(
+                        Map.of("speaker", "SPEAKER_1", "text", "education lecture transcript")
+                )
+        ));
+        when(aiServiceClient.analyzeRealtimeTranscript(
+                eq(621L),
+                anyString(),
+                eq("education"),
+                eq("realtime"),
+                anyString(),
+                anyString(),
+                anyString(),
+                eq("trace-621"),
+                eq(AUTH_HEADER)
+        )).thenReturn(Map.of("status", "completed"));
+
+        Map<String, Object> response = processingService.getAnalysis(621L, "trace-621", AUTH_HEADER);
+
+        assertEquals("RUNNING", response.get("status"));
+        verify(aiServiceClient, timeout(1000)).analyzeRealtimeTranscript(
+                eq(621L),
+                anyString(),
+                eq("education"),
+                eq("realtime"),
+                anyString(),
+                anyString(),
+                anyString(),
+                eq("trace-621"),
+                eq(AUTH_HEADER)
         );
     }
 
@@ -2850,7 +2925,7 @@ class ProcessingServiceTest {
         verify(aiServiceClient, never()).analyzeRealtimeTranscript(
                 eq(620L),
                 anyString(),
-                eq("it"),
+                eq("general"),
                 eq("realtime"),
                 anyString(),
                 anyString(),
@@ -2903,7 +2978,7 @@ class ProcessingServiceTest {
         when(aiServiceClient.analyzeRealtimeTranscript(
                 eq(615L),
                 anyString(),
-                eq("it"),
+                eq("general"),
                 eq("realtime"),
                 anyString(),
                 anyString(),
@@ -2982,7 +3057,7 @@ class ProcessingServiceTest {
         verify(aiServiceClient, never()).analyzeRealtimeTranscript(
                 eq(619L),
                 anyString(),
-                eq("it"),
+                eq("general"),
                 eq("realtime"),
                 anyString(),
                 anyString(),
@@ -3022,7 +3097,7 @@ class ProcessingServiceTest {
         when(aiServiceClient.analyzeRealtimeTranscript(
                 eq(614L),
                 anyString(),
-                eq("it"),
+                eq("general"),
                 eq("realtime"),
                 anyString(),
                 anyString(),
@@ -3039,7 +3114,7 @@ class ProcessingServiceTest {
                 argThat(value -> value != null
                         && value.contains("Canonical cleaned sentence.")
                         && !value.contains("raw noisy sentence.")),
-                eq("it"),
+                eq("general"),
                 eq("realtime"),
                 anyString(),
                 anyString(),
@@ -3089,7 +3164,7 @@ class ProcessingServiceTest {
         when(aiServiceClient.analyzeRealtimeTranscript(
                 eq(615L),
                 anyString(),
-                eq("it"),
+                eq("general"),
                 eq("realtime"),
                 anyString(),
                 anyString(),
@@ -3108,7 +3183,7 @@ class ProcessingServiceTest {
                         && value.contains("canonical sentence from ai sidecar")
                         && !value.contains("state raw sentence that should not be analyzed")
                         && !value.contains("raw noisy sentence from ai")),
-                eq("it"),
+                eq("general"),
                 eq("realtime"),
                 anyString(),
                 anyString(),
@@ -3132,7 +3207,7 @@ class ProcessingServiceTest {
         when(aiServiceClient.analyzeRealtimeTranscript(
                 eq(609L),
                 anyString(),
-                eq("it"),
+                eq("general"),
                 eq("realtime"),
                 anyString(),
                 anyString(),
@@ -3169,7 +3244,7 @@ class ProcessingServiceTest {
         verify(aiServiceClient, timeout(1500).times(1)).analyzeRealtimeTranscript(
                 eq(609L),
                 anyString(),
-                eq("it"),
+                eq("general"),
                 eq("realtime"),
                 anyString(),
                 anyString(),
@@ -3215,7 +3290,7 @@ class ProcessingServiceTest {
         verify(aiServiceClient, never()).analyzeRealtimeTranscript(
                 eq(611L),
                 anyString(),
-                eq("it"),
+                eq("general"),
                 eq("realtime"),
                 anyString(),
                 anyString(),
@@ -3240,7 +3315,7 @@ class ProcessingServiceTest {
         when(aiServiceClient.analyzeRealtimeTranscript(
                 eq(612L),
                 anyString(),
-                eq("it"),
+                eq("general"),
                 eq("realtime"),
                 anyString(),
                 anyString(),
@@ -3289,7 +3364,7 @@ class ProcessingServiceTest {
         when(aiServiceClient.analyzeRealtimeTranscript(
                 eq(613L),
                 anyString(),
-                eq("it"),
+                eq("general"),
                 eq("realtime"),
                 anyString(),
                 anyString(),
@@ -3338,7 +3413,7 @@ class ProcessingServiceTest {
         verify(aiServiceClient, never()).analyzeRealtimeTranscript(
                 eq(610L),
                 anyString(),
-                eq("it"),
+                eq("general"),
                 eq("realtime"),
                 anyString(),
                 anyString(),
@@ -3375,7 +3450,7 @@ class ProcessingServiceTest {
         verify(aiServiceClient, never()).analyzeRealtimeTranscript(
                 eq(614L),
                 anyString(),
-                eq("it"),
+                eq("general"),
                 eq("realtime"),
                 anyString(),
                 anyString(),
