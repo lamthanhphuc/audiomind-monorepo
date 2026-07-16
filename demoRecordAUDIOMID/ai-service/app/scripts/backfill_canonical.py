@@ -110,7 +110,7 @@ def _preview_analysis_run_backfill(
             return [], None, "", ""
 
         result = canonicalize_segments(segments)
-        rows = assign_segment_ids(result.rows)
+        rows = assign_segment_ids(result.rows, meeting_id)
         stats: dict[str, Any] | None = None
         if rebuild_stats:
             rows = enrich_rows_with_term_frequency(rows)
@@ -141,7 +141,7 @@ def _backfill_meeting_analysis_run(
         )
 
     result = canonicalize_segments(segments)
-    rows = assign_segment_ids(result.rows)
+    rows = assign_segment_ids(result.rows, meeting_id)
     stats: dict[str, Any] | None = None
     if rebuild_stats:
         rows = enrich_rows_with_term_frequency(rows)

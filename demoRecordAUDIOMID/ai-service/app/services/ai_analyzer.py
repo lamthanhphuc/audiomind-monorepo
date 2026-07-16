@@ -21,9 +21,25 @@ from app.services.analysis_errors import (
     AnalysisProviderError,
     AnalysisUnavailableError,
 )
+from app.services.analysis_versioning import resolve_analysis_versions
+from app.services.education_analysis import (
+    build_education_prompt_rules,
+    build_education_system_instruction,
+    coerce_allowed_segment_ids,
+    education_study_gemini_schema,
+    normalize_education_study,
+)
 from app.services.gemini_fault_injection import resolve_gemini_http_client_factory
 from app.services.gemini_client import GeminiClient
 from app.services.gemini_key_manager import GeminiKeyConfigError, GeminiKeyManager
+
+# Internal-only analyze metadata: used for post-validation, not Gemini prompt text.
+_INTERNAL_ANALYSIS_METADATA_KEYS = frozenset(
+    {
+        "allowedSegmentIds",
+        "allowed_segment_ids",
+    }
+)
 
 
 class AIAnalyzer:
@@ -369,7 +385,8 @@ class AIAnalyzer:
         if domain_mode == "education":
             return (
                 "Nếu domainMode=education, ưu tiên mục tiêu học tập, nội dung bài giảng, "
-                "đánh giá, bài tập, tiến độ học viên, câu hỏi cần làm rõ và việc cần chuẩn bị."
+                "đánh giá, bài tập, tiến độ học viên, câu hỏi cần làm rõ và việc cần chuẩn bị. "
+                "Đồng thời tạo educationStudy có cấu trúc theo schema education-study-v1."
             )
         if domain_mode == "general":
             return (
@@ -523,8 +540,10 @@ class AIAnalyzer:
             },
         }
 
-    def _build_gemini_response_schema(self) -> Dict[str, Any]:
-        return {
+    def _build_gemini_response_schema(
+        self, domain_mode: str | None = None
+    ) -> Dict[str, Any]:
+        schema: Dict[str, Any] = {
             "type": "OBJECT",
             "properties": {
                 "summary": {"type": "STRING"},
@@ -560,6 +579,13 @@ class AIAnalyzer:
                 "analysisFeatureSet": {"type": "STRING"},
             },
         }
+        normalized_domain = self._normalize_domain_mode(
+            domain_mode or self.analysis_domain_mode,
+            default=self.analysis_domain_mode,
+        )
+        if normalized_domain == "education":
+            schema["properties"]["educationStudy"] = education_study_gemini_schema()
+        return schema
 
     def _coerce_structured_technical_terms(self, values: Any) -> List[Dict[str, str]]:
         normalized: List[Dict[str, str]] = []
@@ -1689,6 +1715,8 @@ TEXT:
 
         lines = ["NGỮ CẢNH BỔ SUNG:"]
         for key, value in metadata.items():
+            if key in _INTERNAL_ANALYSIS_METADATA_KEYS:
+                continue
             if value is None:
                 continue
             text = str(value).strip()
@@ -2137,15 +2165,29 @@ NỘI DUNG:
         self, prompt: str, metadata: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         domain_mode = self._resolve_analysis_domain_mode(metadata)
+        versions = resolve_analysis_versions(domain_mode)
         metadata_source = str((metadata or {}).get("source") or "").strip().lower()
         is_realtime = metadata_source == "realtime"
-        system_prompt = (
-            "Bạn là trợ lý phân tích biên bản họp. Hãy trả về đúng một object JSON hợp lệ và không thêm gì khác. "
-            "Tất cả nội dung trong các value phải bằng tiếng Việt, trừ tên riêng và thuật ngữ kỹ thuật cần giữ nguyên. "
-            f"domainMode hiện tại là {domain_mode}."
-        )
+        if domain_mode == "education":
+            system_prompt = build_education_system_instruction(domain_mode)
+        else:
+            system_prompt = (
+                "Bạn là trợ lý phân tích biên bản họp. Hãy trả về đúng một object JSON hợp lệ và không thêm gì khác. "
+                "Tất cả nội dung trong các value phải bằng tiếng Việt, trừ tên riêng và thuật ngữ kỹ thuật cần giữ nguyên. "
+                f"domainMode hiện tại là {domain_mode}."
+            )
         metadata_text = self._metadata_to_prompt_lines(metadata)
         domain_guidance = self._domain_guidance_for_mode(domain_mode)
+        if domain_mode == "education":
+            language_hint = None
+            if metadata:
+                language_hint = metadata.get("language") or metadata.get(
+                    "meetingLanguage"
+                )
+            domain_guidance = (
+                f"{domain_guidance}\n\n"
+                f"{build_education_prompt_rules(language_hint=language_hint)}"
+            )
         json_prompt = self._build_gemini_analysis_json_prompt(
             transcript=prompt,
             metadata_text=metadata_text,
@@ -2159,7 +2201,7 @@ NỘI DUNG:
             model=self.model,
             temperature=0.1,
             response_json=True,
-            response_schema=self._build_gemini_response_schema(),
+            response_schema=self._build_gemini_response_schema(domain_mode),
             max_output_tokens=self.analysis_max_output_tokens,
         )
         try:
@@ -2192,14 +2234,60 @@ NỘI DUNG:
         structured = self._normalize_gemini_structured_analysis(prompt, parsed)
         structured["domainMode"] = domain_mode
         structured["domain_mode"] = domain_mode
+        structured["promptVersion"] = versions["promptVersion"]
+        structured["schemaVersion"] = versions["schemaVersion"]
+        structured["analysisFeatureSet"] = versions["analysisFeatureSet"]
+
+        if domain_mode == "education":
+            allowed_ids = coerce_allowed_segment_ids(
+                (metadata or {}).get("allowedSegmentIds")
+                or (metadata or {}).get("allowed_segment_ids")
+            )
+            meeting_id_raw = (metadata or {}).get("meetingId") or (metadata or {}).get(
+                "meeting_id"
+            )
+            meeting_id: int | None = None
+            try:
+                if meeting_id_raw is not None:
+                    meeting_id = int(meeting_id_raw)
+            except (TypeError, ValueError):
+                meeting_id = None
+            try:
+                education_study = normalize_education_study(
+                    parsed.get("educationStudy") if isinstance(parsed, dict) else None,
+                    allowed_segment_ids=allowed_ids,
+                    meeting_id=meeting_id,
+                )
+            except Exception as exc:  # noqa: BLE001 — soft-fail education only
+                logger.warning(
+                    "EDUCATION_STUDY_NORMALIZE_FAILED meeting_id={} domain_mode={} error_class={} detail={}",
+                    meeting_id,
+                    domain_mode,
+                    type(exc).__name__,
+                    safe_error_message(exc),
+                )
+                education_study = None
+            if education_study is not None:
+                structured["educationStudy"] = education_study
+            else:
+                structured.pop("educationStudy", None)
+                logger.warning(
+                    "EDUCATION_STUDY_OMITTED meeting_id={} domain_mode={} reason=normalize_failed_or_missing",
+                    meeting_id,
+                    domain_mode,
+                )
+            if (metadata or {}).get("evidenceUnavailable") is True or (
+                not allowed_ids
+                and str((metadata or {}).get("source") or "").lower() == "realtime"
+            ):
+                structured["evidenceUnavailable"] = True
+                logger.info(
+                    "EDUCATION_EVIDENCE_UNAVAILABLE meeting_id={} source=realtime",
+                    meeting_id,
+                )
+
         if is_realtime:
             structured = self._compact_realtime_structured_analysis(structured)
-        structured["promptVersion"] = (
-            str(structured.get("promptVersion") or "").strip() or self.PROMPT_VERSION
-        )
-        structured["schemaVersion"] = (
-            str(structured.get("schemaVersion") or "").strip() or self.SCHEMA_VERSION
-        )
         if metadata:
             metadata_hash = str(metadata.get("transcriptHash") or "").strip()
             if metadata_hash:
@@ -2517,6 +2605,10 @@ NỘI DUNG:
                     str(data.get("transcriptHash") or "").strip() or None
                 ),
             }
+            if isinstance(data.get("educationStudy"), dict):
+                legacy_payload["educationStudy"] = data["educationStudy"]
+            if data.get("evidenceUnavailable") is True:
+                legacy_payload["evidenceUnavailable"] = True
             prepared = self._ensure_analysis_completeness(transcript, legacy_payload)
 
             # F8 rule: Gemini missing action items must remain empty.

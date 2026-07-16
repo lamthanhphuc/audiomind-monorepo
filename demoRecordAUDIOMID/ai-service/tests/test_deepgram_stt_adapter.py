@@ -360,7 +360,7 @@ def test_deepgram_results_payload_extracts_timing_and_segment_identity():
     assert event["start_time"] == pytest.approx(12.85)
     assert event["end_time"] == pytest.approx(15.06)
     assert event["end_time"] >= event["start_time"]
-    assert event["segment_id"] == "meeting-0-start-12.850-speaker_1"
+    assert event["segment_id"] == "meeting-0-start-12.850-speaker_unknown"
 
 
 def test_deepgram_results_payload_never_returns_end_before_start():

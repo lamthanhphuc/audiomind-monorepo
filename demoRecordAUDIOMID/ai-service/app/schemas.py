@@ -161,6 +161,8 @@ class AnalysisResponse(BaseModel):
     stale: Optional[bool] = None
     staleReason: Optional[str] = None
     retryAfterSeconds: Optional[int] = None
+    educationStudy: Optional[Dict[str, Any]] = None
+    evidenceUnavailable: Optional[bool] = None
 
     class Config:
         from_attributes = True
