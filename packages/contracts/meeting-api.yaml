@@ -230,6 +230,347 @@ paths:
       responses:
         "200":
           description: Created task
+  /study-folders:
+    post:
+      summary: Create study folder
+      operationId: createStudyFolder
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateStudyFolderRequest"
+      responses:
+        "200":
+          description: Created folder
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StudyFolderResponse"
+    get:
+      summary: List study folders
+      operationId: listStudyFolders
+      responses:
+        "200":
+          description: Folder list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/StudyFolderResponse"
+  /study-folders/tree:
+    get:
+      summary: Get study folder tree with subjects
+      operationId: getStudyFolderTree
+      responses:
+        "200":
+          description: Folder tree
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StudyFolderTreeResponse"
+  /study-folders/{folderId}:
+    get:
+      summary: Get study folder by id
+      operationId: getStudyFolder
+      parameters:
+        - in: path
+          name: folderId
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: Folder
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StudyFolderResponse"
+    patch:
+      summary: Update study folder
+      operationId: updateStudyFolder
+      parameters:
+        - in: path
+          name: folderId
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateStudyFolderRequest"
+      responses:
+        "200":
+          description: Updated folder
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StudyFolderResponse"
+    delete:
+      summary: Delete study folder
+      operationId: deleteStudyFolder
+      parameters:
+        - in: path
+          name: folderId
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: Deleted folder
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StudyFolderResponse"
+  /subjects:
+    post:
+      summary: Create subject
+      operationId: createSubject
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateSubjectRequest"
+      responses:
+        "200":
+          description: Created subject
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SubjectResponse"
+    get:
+      summary: List subjects
+      operationId: listSubjects
+      parameters:
+        - in: query
+          name: folderId
+          schema:
+            type: integer
+            format: int64
+        - in: query
+          name: search
+          schema:
+            type: string
+        - in: query
+          name: archived
+          schema:
+            type: boolean
+            default: false
+        - in: query
+          name: page
+          schema:
+            type: integer
+            default: 1
+        - in: query
+          name: pageSize
+          schema:
+            type: integer
+            default: 10
+        - in: query
+          name: sort
+          schema:
+            type: string
+            default: name_asc
+      responses:
+        "200":
+          description: Subject page
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SubjectPageResponse"
+  /subjects/{subjectId}:
+    get:
+      summary: Get subject detail
+      operationId: getSubject
+      parameters:
+        - in: path
+          name: subjectId
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: Subject detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SubjectDetailResponse"
+    patch:
+      summary: Update subject
+      operationId: updateSubject
+      parameters:
+        - in: path
+          name: subjectId
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateSubjectRequest"
+      responses:
+        "200":
+          description: Updated subject
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SubjectResponse"
+    delete:
+      summary: Archive subject
+      operationId: archiveSubject
+      parameters:
+        - in: path
+          name: subjectId
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: Archived subject
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SubjectResponse"
+  /subjects/{subjectId}/meetings:
+    get:
+      summary: List meetings for subject
+      operationId: listSubjectMeetings
+      parameters:
+        - in: path
+          name: subjectId
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - in: query
+          name: page
+          schema:
+            type: integer
+            default: 1
+        - in: query
+          name: pageSize
+          schema:
+            type: integer
+            default: 10
+      responses:
+        "200":
+          description: Subject meetings page
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SubjectMeetingPageResponse"
+  /meetings/realtime:
+    post:
+      summary: Create realtime meeting
+      operationId: createRealtimeMeeting
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateRealtimeMeetingRequest"
+      responses:
+        "200":
+          description: Created realtime meeting
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeetingUploadResponse"
+  /meetings/upload:
+    post:
+      summary: Upload meeting audio
+      operationId: uploadMeeting
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - title
+                - file
+              properties:
+                title:
+                  type: string
+                file:
+                  type: string
+                  format: binary
+                language:
+                  type: string
+                subjectId:
+                  type: string
+      responses:
+        "200":
+          description: Uploaded meeting
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeetingUploadResponse"
+  /meetings/unclassified:
+    get:
+      summary: List unclassified meetings
+      operationId: listUnclassifiedMeetings
+      parameters:
+        - in: query
+          name: search
+          schema:
+            type: string
+        - in: query
+          name: sort
+          schema:
+            type: string
+            default: createdAt_desc
+        - in: query
+          name: page
+          schema:
+            type: integer
+            default: 1
+        - in: query
+          name: pageSize
+          schema:
+            type: integer
+            default: 10
+      responses:
+        "200":
+          description: Unclassified meetings page (Map wrapper equivalent to PageResponse)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeetingPageResponse"
+  /meetings/{meetingId}/subject:
+    patch:
+      summary: Assign or remove meeting subject
+      operationId: assignMeetingSubject
+      parameters:
+        - in: path
+          name: meetingId
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AssignMeetingSubjectRequest"
+      responses:
+        "200":
+          description: Updated meeting
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeetingEntity"
   /health:
     get:
       summary: Health check
@@ -362,3 +703,453 @@ components:
           type: string
         summary:
           type: string
+    CreateStudyFolderRequest:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+        color:
+          type: string
+          nullable: true
+        parentFolderId:
+          type: integer
+          format: int64
+          nullable: true
+    UpdateStudyFolderRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        color:
+          type: string
+          nullable: true
+        parentFolderId:
+          type: integer
+          format: int64
+          nullable: true
+    StudyFolderResponse:
+      type: object
+      required:
+        - id
+        - name
+      properties:
+        id:
+          type: integer
+          format: int64
+        ownerUserId:
+          type: integer
+          format: int64
+        parentFolderId:
+          type: integer
+          format: int64
+          nullable: true
+        name:
+          type: string
+        color:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        deletedAt:
+          type: string
+          format: date-time
+          nullable: true
+        subjectCount:
+          type: integer
+          format: int64
+    SubjectSummaryResponse:
+      type: object
+      required:
+        - id
+        - name
+      properties:
+        id:
+          type: integer
+          format: int64
+        name:
+          type: string
+        code:
+          type: string
+          nullable: true
+        semester:
+          type: string
+          nullable: true
+        color:
+          type: string
+          nullable: true
+        folderId:
+          type: integer
+          format: int64
+          nullable: true
+        archivedAt:
+          type: string
+          format: date-time
+          nullable: true
+        meetingCount:
+          type: integer
+          format: int64
+    StudyFolderTreeNode:
+      type: object
+      required:
+        - id
+        - name
+      properties:
+        id:
+          type: integer
+          format: int64
+        name:
+          type: string
+        color:
+          type: string
+          nullable: true
+        parentFolderId:
+          type: integer
+          format: int64
+          nullable: true
+        children:
+          type: array
+          items:
+            $ref: "#/components/schemas/StudyFolderTreeNode"
+        subjects:
+          type: array
+          items:
+            $ref: "#/components/schemas/SubjectSummaryResponse"
+    StudyFolderTreeResponse:
+      type: object
+      properties:
+        folders:
+          type: array
+          items:
+            $ref: "#/components/schemas/StudyFolderTreeNode"
+        rootSubjects:
+          type: array
+          items:
+            $ref: "#/components/schemas/SubjectSummaryResponse"
+    CreateSubjectRequest:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+        code:
+          type: string
+          nullable: true
+        semester:
+          type: string
+          nullable: true
+        description:
+          type: string
+          nullable: true
+        color:
+          type: string
+          nullable: true
+        folderId:
+          type: integer
+          format: int64
+          nullable: true
+    UpdateSubjectRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        code:
+          type: string
+          nullable: true
+        semester:
+          type: string
+          nullable: true
+        description:
+          type: string
+          nullable: true
+        color:
+          type: string
+          nullable: true
+        folderId:
+          type: integer
+          format: int64
+          nullable: true
+    SubjectResponse:
+      type: object
+      required:
+        - id
+        - name
+      properties:
+        id:
+          type: integer
+          format: int64
+        ownerUserId:
+          type: integer
+          format: int64
+        folderId:
+          type: integer
+          format: int64
+          nullable: true
+        name:
+          type: string
+        code:
+          type: string
+          nullable: true
+        semester:
+          type: string
+          nullable: true
+        description:
+          type: string
+          nullable: true
+        color:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        archivedAt:
+          type: string
+          format: date-time
+          nullable: true
+        meetingCount:
+          type: integer
+          format: int64
+    SubjectDetailResponse:
+      type: object
+      required:
+        - subject
+      properties:
+        subject:
+          $ref: "#/components/schemas/SubjectResponse"
+    SubjectMeetingResponse:
+      type: object
+      required:
+        - id
+        - title
+        - status
+      properties:
+        id:
+          type: integer
+          format: int64
+        title:
+          type: string
+        status:
+          type: string
+        language:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        subjectId:
+          type: integer
+          format: int64
+          nullable: true
+    PageMeta:
+      type: object
+      required:
+        - items
+        - total
+        - page
+        - pageSize
+        - totalPages
+      properties:
+        items:
+          type: array
+          items: {}
+        total:
+          type: integer
+          format: int64
+        page:
+          type: integer
+        pageSize:
+          type: integer
+        totalPages:
+          type: integer
+    SubjectPageResponse:
+      type: object
+      required:
+        - items
+        - total
+        - page
+        - pageSize
+        - totalPages
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/SubjectResponse"
+        total:
+          type: integer
+          format: int64
+        page:
+          type: integer
+        pageSize:
+          type: integer
+        totalPages:
+          type: integer
+    SubjectMeetingPageResponse:
+      type: object
+      required:
+        - items
+        - total
+        - page
+        - pageSize
+        - totalPages
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/SubjectMeetingResponse"
+        total:
+          type: integer
+          format: int64
+        page:
+          type: integer
+        pageSize:
+          type: integer
+        totalPages:
+          type: integer
+    MeetingEntity:
+      type: object
+      required:
+        - id
+        - title
+      properties:
+        id:
+          type: integer
+          format: int64
+        title:
+          type: string
+        audioPath:
+          type: string
+        originalFileName:
+          type: string
+          nullable: true
+        ownerUserId:
+          type: integer
+          format: int64
+          nullable: true
+        subjectId:
+          type: integer
+          format: int64
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        language:
+          type: string
+          nullable: true
+        fileSize:
+          type: integer
+          format: int64
+          nullable: true
+        status:
+          type: string
+          nullable: true
+        scheduledStartAt:
+          type: string
+          format: date-time
+          nullable: true
+        scheduledEndAt:
+          type: string
+          format: date-time
+          nullable: true
+        scheduledTimezone:
+          type: string
+          nullable: true
+        sharedWithMe:
+          type: boolean
+          nullable: true
+    MeetingPageResponse:
+      type: object
+      required:
+        - items
+        - total
+        - page
+        - pageSize
+        - totalPages
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/MeetingEntity"
+        total:
+          type: integer
+          format: int64
+        page:
+          type: integer
+        pageSize:
+          type: integer
+        totalPages:
+          type: integer
+    CreateRealtimeMeetingRequest:
+      type: object
+      properties:
+        title:
+          type: string
+        language:
+          type: string
+        subjectId:
+          type: integer
+          format: int64
+          nullable: true
+    MeetingUploadResponse:
+      type: object
+      required:
+        - id
+        - title
+        - audioPath
+      properties:
+        id:
+          type: integer
+          format: int64
+        title:
+          type: string
+        audioPath:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        originalFileName:
+          type: string
+          nullable: true
+        ownerUserId:
+          type: integer
+          format: int64
+          nullable: true
+        language:
+          type: string
+          nullable: true
+        fileSize:
+          type: integer
+          format: int64
+          nullable: true
+        status:
+          type: string
+          nullable: true
+        subjectId:
+          type: integer
+          format: int64
+          nullable: true
+        duplicate:
+          type: boolean
+        reused:
+          type: boolean
+        existingMeetingId:
+          type: integer
+          format: int64
+          nullable: true
+        source:
+          type: string
+    AssignMeetingSubjectRequest:
+      type: object
+      properties:
+        subjectId:
+          type: integer
+          format: int64
+          nullable: true

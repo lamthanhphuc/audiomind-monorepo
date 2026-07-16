@@ -176,6 +176,182 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/study-folders": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List study folders */
+        get: operations["listStudyFolders"];
+        put?: never;
+        /** Create study folder */
+        post: operations["createStudyFolder"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/study-folders/tree": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get study folder tree with subjects */
+        get: operations["getStudyFolderTree"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/study-folders/{folderId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get study folder by id */
+        get: operations["getStudyFolder"];
+        put?: never;
+        post?: never;
+        /** Delete study folder */
+        delete: operations["deleteStudyFolder"];
+        options?: never;
+        head?: never;
+        /** Update study folder */
+        patch: operations["updateStudyFolder"];
+        trace?: never;
+    };
+    "/subjects": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List subjects */
+        get: operations["listSubjects"];
+        put?: never;
+        /** Create subject */
+        post: operations["createSubject"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/subjects/{subjectId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get subject detail */
+        get: operations["getSubject"];
+        put?: never;
+        post?: never;
+        /** Archive subject */
+        delete: operations["archiveSubject"];
+        options?: never;
+        head?: never;
+        /** Update subject */
+        patch: operations["updateSubject"];
+        trace?: never;
+    };
+    "/subjects/{subjectId}/meetings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List meetings for subject */
+        get: operations["listSubjectMeetings"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/meetings/realtime": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create realtime meeting */
+        post: operations["createRealtimeMeeting"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/meetings/upload": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Upload meeting audio */
+        post: operations["uploadMeeting"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/meetings/unclassified": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List unclassified meetings */
+        get: operations["listUnclassifiedMeetings"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/meetings/{meetingId}/subject": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Assign or remove meeting subject */
+        patch: operations["assignMeetingSubject"];
+        trace?: never;
+    };
     "/health": {
         parameters: {
             query?: never;
@@ -301,6 +477,204 @@ export interface components {
         MeetingResultUpdate: {
             transcript: string;
             summary: string;
+        };
+        CreateStudyFolderRequest: {
+            name: string;
+            color?: string | null;
+            /** Format: int64 */
+            parentFolderId?: number | null;
+        };
+        UpdateStudyFolderRequest: {
+            name?: string;
+            color?: string | null;
+            /** Format: int64 */
+            parentFolderId?: number | null;
+        };
+        StudyFolderResponse: {
+            /** Format: int64 */
+            id: number;
+            /** Format: int64 */
+            ownerUserId?: number;
+            /** Format: int64 */
+            parentFolderId?: number | null;
+            name: string;
+            color?: string | null;
+            /** Format: date-time */
+            createdAt?: string;
+            /** Format: date-time */
+            updatedAt?: string;
+            /** Format: date-time */
+            deletedAt?: string | null;
+            /** Format: int64 */
+            subjectCount?: number;
+        };
+        SubjectSummaryResponse: {
+            /** Format: int64 */
+            id: number;
+            name: string;
+            code?: string | null;
+            semester?: string | null;
+            color?: string | null;
+            /** Format: int64 */
+            folderId?: number | null;
+            /** Format: date-time */
+            archivedAt?: string | null;
+            /** Format: int64 */
+            meetingCount?: number;
+        };
+        StudyFolderTreeNode: {
+            /** Format: int64 */
+            id: number;
+            name: string;
+            color?: string | null;
+            /** Format: int64 */
+            parentFolderId?: number | null;
+            children?: components["schemas"]["StudyFolderTreeNode"][];
+            subjects?: components["schemas"]["SubjectSummaryResponse"][];
+        };
+        StudyFolderTreeResponse: {
+            folders?: components["schemas"]["StudyFolderTreeNode"][];
+            rootSubjects?: components["schemas"]["SubjectSummaryResponse"][];
+        };
+        CreateSubjectRequest: {
+            name: string;
+            code?: string | null;
+            semester?: string | null;
+            description?: string | null;
+            color?: string | null;
+            /** Format: int64 */
+            folderId?: number | null;
+        };
+        UpdateSubjectRequest: {
+            name?: string;
+            code?: string | null;
+            semester?: string | null;
+            description?: string | null;
+            color?: string | null;
+            /** Format: int64 */
+            folderId?: number | null;
+        };
+        SubjectResponse: {
+            /** Format: int64 */
+            id: number;
+            /** Format: int64 */
+            ownerUserId?: number;
+            /** Format: int64 */
+            folderId?: number | null;
+            name: string;
+            code?: string | null;
+            semester?: string | null;
+            description?: string | null;
+            color?: string | null;
+            /** Format: date-time */
+            createdAt?: string;
+            /** Format: date-time */
+            updatedAt?: string;
+            /** Format: date-time */
+            archivedAt?: string | null;
+            /** Format: int64 */
+            meetingCount?: number;
+        };
+        SubjectDetailResponse: {
+            subject: components["schemas"]["SubjectResponse"];
+        };
+        SubjectMeetingResponse: {
+            /** Format: int64 */
+            id: number;
+            title: string;
+            status: string;
+            language?: string | null;
+            /** Format: date-time */
+            createdAt?: string;
+            /** Format: int64 */
+            subjectId?: number | null;
+        };
+        PageMeta: {
+            items: unknown[];
+            /** Format: int64 */
+            total: number;
+            page: number;
+            pageSize: number;
+            totalPages: number;
+        };
+        SubjectPageResponse: {
+            items: components["schemas"]["SubjectResponse"][];
+            /** Format: int64 */
+            total: number;
+            page: number;
+            pageSize: number;
+            totalPages: number;
+        };
+        SubjectMeetingPageResponse: {
+            items: components["schemas"]["SubjectMeetingResponse"][];
+            /** Format: int64 */
+            total: number;
+            page: number;
+            pageSize: number;
+            totalPages: number;
+        };
+        MeetingEntity: {
+            /** Format: int64 */
+            id: number;
+            title: string;
+            audioPath?: string;
+            originalFileName?: string | null;
+            /** Format: int64 */
+            ownerUserId?: number | null;
+            /** Format: int64 */
+            subjectId?: number | null;
+            /** Format: date-time */
+            createdAt?: string;
+            language?: string | null;
+            /** Format: int64 */
+            fileSize?: number | null;
+            status?: string | null;
+            /** Format: date-time */
+            scheduledStartAt?: string | null;
+            /** Format: date-time */
+            scheduledEndAt?: string | null;
+            scheduledTimezone?: string | null;
+            sharedWithMe?: boolean | null;
+        };
+        MeetingPageResponse: {
+            items: components["schemas"]["MeetingEntity"][];
+            /** Format: int64 */
+            total: number;
+            page: number;
+            pageSize: number;
+            totalPages: number;
+        };
+        CreateRealtimeMeetingRequest: {
+            title?: string;
+            language?: string;
+            /** Format: int64 */
+            subjectId?: number | null;
+        };
+        MeetingUploadResponse: {
+            /** Format: int64 */
+            id: number;
+            title: string;
+            audioPath: string;
+            /** Format: date-time */
+            createdAt?: string;
+            originalFileName?: string | null;
+            /** Format: int64 */
+            ownerUserId?: number | null;
+            language?: string | null;
+            /** Format: int64 */
+            fileSize?: number | null;
+            status?: string | null;
+            /** Format: int64 */
+            subjectId?: number | null;
+            duplicate?: boolean;
+            reused?: boolean;
+            /** Format: int64 */
+            existingMeetingId?: number | null;
+            source?: string;
+        };
+        AssignMeetingSubjectRequest: {
+            /** Format: int64 */
+            subjectId?: number | null;
         };
     };
     responses: never;
@@ -610,6 +984,391 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    listStudyFolders: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Folder list */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StudyFolderResponse"][];
+                };
+            };
+        };
+    };
+    createStudyFolder: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateStudyFolderRequest"];
+            };
+        };
+        responses: {
+            /** @description Created folder */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StudyFolderResponse"];
+                };
+            };
+        };
+    };
+    getStudyFolderTree: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Folder tree */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StudyFolderTreeResponse"];
+                };
+            };
+        };
+    };
+    getStudyFolder: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                folderId: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Folder */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StudyFolderResponse"];
+                };
+            };
+        };
+    };
+    deleteStudyFolder: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                folderId: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted folder */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StudyFolderResponse"];
+                };
+            };
+        };
+    };
+    updateStudyFolder: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                folderId: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateStudyFolderRequest"];
+            };
+        };
+        responses: {
+            /** @description Updated folder */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StudyFolderResponse"];
+                };
+            };
+        };
+    };
+    listSubjects: {
+        parameters: {
+            query?: {
+                folderId?: number;
+                search?: string;
+                archived?: boolean;
+                page?: number;
+                pageSize?: number;
+                sort?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Subject page */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SubjectPageResponse"];
+                };
+            };
+        };
+    };
+    createSubject: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateSubjectRequest"];
+            };
+        };
+        responses: {
+            /** @description Created subject */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SubjectResponse"];
+                };
+            };
+        };
+    };
+    getSubject: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                subjectId: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Subject detail */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SubjectDetailResponse"];
+                };
+            };
+        };
+    };
+    archiveSubject: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                subjectId: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Archived subject */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SubjectResponse"];
+                };
+            };
+        };
+    };
+    updateSubject: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                subjectId: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateSubjectRequest"];
+            };
+        };
+        responses: {
+            /** @description Updated subject */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SubjectResponse"];
+                };
+            };
+        };
+    };
+    listSubjectMeetings: {
+        parameters: {
+            query?: {
+                page?: number;
+                pageSize?: number;
+            };
+            header?: never;
+            path: {
+                subjectId: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Subject meetings page */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SubjectMeetingPageResponse"];
+                };
+            };
+        };
+    };
+    createRealtimeMeeting: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["CreateRealtimeMeetingRequest"];
+            };
+        };
+        responses: {
+            /** @description Created realtime meeting */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MeetingUploadResponse"];
+                };
+            };
+        };
+    };
+    uploadMeeting: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": {
+                    title: string;
+                    /** Format: binary */
+                    file: string;
+                    language?: string;
+                    subjectId?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Uploaded meeting */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MeetingUploadResponse"];
+                };
+            };
+        };
+    };
+    listUnclassifiedMeetings: {
+        parameters: {
+            query?: {
+                search?: string;
+                sort?: string;
+                page?: number;
+                pageSize?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Unclassified meetings page (Map wrapper equivalent to PageResponse) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MeetingPageResponse"];
+                };
+            };
+        };
+    };
+    assignMeetingSubject: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                meetingId: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["AssignMeetingSubjectRequest"];
+            };
+        };
+        responses: {
+            /** @description Updated meeting */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MeetingEntity"];
+                };
             };
         };
     };

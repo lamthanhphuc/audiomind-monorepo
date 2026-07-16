@@ -440,7 +440,124 @@ components:
         meeting_id:
           type: integer
           format: int64
+        educationStudy:
+          $ref: "#/components/schemas/EducationStudy"
       additionalProperties: true
+    EducationImportance:
+      type: string
+      enum:
+        - HIGH
+        - MEDIUM
+        - LOW
+    EducationSection:
+      type: object
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        summary:
+          type: string
+        keyPoints:
+          type: array
+          items:
+            type: string
+        keywords:
+          type: array
+          items:
+            type: string
+        sourceSegmentIds:
+          type: array
+          items:
+            type: string
+    EducationKeyPoint:
+      type: object
+      properties:
+        content:
+          type: string
+        importance:
+          $ref: "#/components/schemas/EducationImportance"
+        sourceSegmentIds:
+          type: array
+          items:
+            type: string
+    EducationGlossaryItem:
+      type: object
+      properties:
+        term:
+          type: string
+        definition:
+          type: string
+        example:
+          type: string
+          nullable: true
+        category:
+          type: string
+          nullable: true
+        sourceSegmentIds:
+          type: array
+          items:
+            type: string
+    EducationMustRememberItem:
+      type: object
+      properties:
+        content:
+          type: string
+        importance:
+          $ref: "#/components/schemas/EducationImportance"
+        reason:
+          type: string
+          nullable: true
+        sourceSegmentIds:
+          type: array
+          items:
+            type: string
+    EducationUnclearPoint:
+      type: object
+      properties:
+        content:
+          type: string
+        reason:
+          type: string
+        sourceSegmentIds:
+          type: array
+          items:
+            type: string
+    EducationStudy:
+      type: object
+      properties:
+        title:
+          type: string
+        overview:
+          type: string
+        learningObjectives:
+          type: array
+          items:
+            type: string
+        sections:
+          type: array
+          items:
+            $ref: "#/components/schemas/EducationSection"
+        keyPoints:
+          type: array
+          items:
+            $ref: "#/components/schemas/EducationKeyPoint"
+        keywords:
+          type: array
+          items:
+            type: string
+        glossary:
+          type: array
+          items:
+            $ref: "#/components/schemas/EducationGlossaryItem"
+        mustRemember:
+          type: array
+          items:
+            $ref: "#/components/schemas/EducationMustRememberItem"
+        unclearPoints:
+          type: array
+          items:
+            $ref: "#/components/schemas/EducationUnclearPoint"
     DomainLexicon:
       type: object
       required:
