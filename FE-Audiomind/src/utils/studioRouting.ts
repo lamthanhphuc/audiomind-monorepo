@@ -156,7 +156,14 @@ export const applyParsedStudioRoute = (
   } else if (route.scene === 'mindmap') {
     handlers.setMindmapSelectedMeetingId(route.meetingId)
     handlers.setMindmapSelectedScope?.(route.resultScope ?? null)
-  } else if (route.scene === 'subjectDetail') {
+  }
+
+  // Only the subjectDetail route carries a subjectId; every other route (including
+  // browser back/forward navigation away from a subject) must clear the selection so
+  // stale state doesn't leak into unrelated scenes.
+  if (route.scene === 'subjectDetail') {
     handlers.setSelectedSubjectId?.(route.subjectId ?? null)
+  } else {
+    handlers.setSelectedSubjectId?.(null)
   }
 }

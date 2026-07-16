@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { getSubject, getSubjectMeetings } from '../services/subjects'
 import { useStudyWorkspace } from './useStudyWorkspace'
 import type { PageResponse, Subject, SubjectMeeting } from '../types/study'
@@ -9,8 +9,10 @@ export const useSubjectDetail = (subjectId: number | null, page = 1, pageSize = 
   const [meetingsPage, setMeetingsPage] = useState<PageResponse<SubjectMeeting> | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const requestSeqRef = useRef(0)
 
   const reload = useCallback(async () => {
+    const requestId = ++requestSeqRef.current
     if (subjectId == null || subjectId <= 0) {
       setSubject(null)
       setMeetingsPage(null)
@@ -23,12 +25,20 @@ export const useSubjectDetail = (subjectId: number | null, page = 1, pageSize = 
         getSubject(subjectId),
         getSubjectMeetings(subjectId, page, pageSize),
       ])
+      if (requestId !== requestSeqRef.current) {
+        return
+      }
       setSubject(subjectResponse)
       setMeetingsPage(meetingsResponse)
     } catch (loadError) {
+      if (requestId !== requestSeqRef.current) {
+        return
+      }
       setError(loadError instanceof Error ? loadError.message : 'Không tải được chi tiết môn học')
     } finally {
-      setLoading(false)
+      if (requestId === requestSeqRef.current) {
+        setLoading(false)
+      }
     }
   }, [page, pageSize, subjectId])
 

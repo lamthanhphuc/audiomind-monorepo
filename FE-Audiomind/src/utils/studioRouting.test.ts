@@ -1,10 +1,21 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import {
+  applyParsedStudioRoute,
   buildStudioPath,
   parseStudioRouteFromLocation,
   resolveStudioRedirectAfter,
+  type ParsedStudioRoute,
 } from './studioRouting'
+
+const createHandlers = () => ({
+  setFeatureScene: vi.fn(),
+  setHistoryAnalysisMeetingId: vi.fn(),
+  setHistoryAnalysisScope: vi.fn(),
+  setMindmapSelectedMeetingId: vi.fn(),
+  setMindmapSelectedScope: vi.fn(),
+  setSelectedSubjectId: vi.fn(),
+})
 
 describe('studioRouting', () => {
   it('parses studio history path', () => {
@@ -101,6 +112,47 @@ describe('studioRouting', () => {
       meetingId: null,
       subjectId: null,
       resultScope: null,
+    })
+  })
+
+  describe('applyParsedStudioRoute (browser back/forward)', () => {
+    it('sets selectedSubjectId when navigating to subjectDetail', () => {
+      const handlers = createHandlers()
+      const route: ParsedStudioRoute = { scene: 'subjectDetail', meetingId: null, subjectId: 7, resultScope: null }
+      applyParsedStudioRoute(route, handlers)
+      expect(handlers.setFeatureScene).toHaveBeenCalledWith('subjectDetail')
+      expect(handlers.setSelectedSubjectId).toHaveBeenCalledWith(7)
+    })
+
+    it('clears selectedSubjectId when navigating back to subjects list', () => {
+      const handlers = createHandlers()
+      const route: ParsedStudioRoute = { scene: 'subjects', meetingId: null, subjectId: null, resultScope: null }
+      applyParsedStudioRoute(route, handlers)
+      expect(handlers.setFeatureScene).toHaveBeenCalledWith('subjects')
+      expect(handlers.setSelectedSubjectId).toHaveBeenCalledWith(null)
+    })
+
+    it('clears selectedSubjectId when navigating forward to an unrelated scene', () => {
+      const handlers = createHandlers()
+      const route: ParsedStudioRoute = { scene: 'files', meetingId: null, subjectId: null, resultScope: null }
+      applyParsedStudioRoute(route, handlers)
+      expect(handlers.setSelectedSubjectId).toHaveBeenCalledWith(null)
+    })
+
+    it('clears selectedSubjectId when navigating to unclassified', () => {
+      const handlers = createHandlers()
+      const route: ParsedStudioRoute = { scene: 'unclassified', meetingId: null, subjectId: null, resultScope: null }
+      applyParsedStudioRoute(route, handlers)
+      expect(handlers.setSelectedSubjectId).toHaveBeenCalledWith(null)
+    })
+
+    it('does not throw when setSelectedSubjectId handler is not provided', () => {
+      const route: ParsedStudioRoute = { scene: 'upload', meetingId: null, subjectId: null, resultScope: null }
+      expect(() => applyParsedStudioRoute(route, {
+        setFeatureScene: vi.fn(),
+        setHistoryAnalysisMeetingId: vi.fn(),
+        setMindmapSelectedMeetingId: vi.fn(),
+      })).not.toThrow()
     })
   })
 })
