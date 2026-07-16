@@ -4,6 +4,7 @@ import { useDomainLexiconTerms } from '../../hooks/useDomainLexiconTerms'
 import type { TranscriptSegment } from '../../hooks/useRealtimeMeetingStream'
 import { cssVars } from '../../utils/cssVars'
 import { formatTranscriptTimestamp, formatDualStreamSpeakerLabel, sortTranscriptSegmentsByTimeline } from '../../utils/transcript'
+import type { TranscriptHighlightRange } from '../../utils/transcriptJump'
 import { HighlightedTranscriptText } from './HighlightedTranscriptText'
 import './RealtimeTranscript.css'
 
@@ -15,6 +16,18 @@ interface RealtimeTranscriptProps {
   maxHeight?: string
   emptyMessage?: string
   domainMode?: string | null
+  highlightRange?: TranscriptHighlightRange | null
+}
+
+const segmentOverlapsHighlight = (
+  startSeconds: number,
+  endSeconds: number,
+  highlightRange: TranscriptHighlightRange | null | undefined,
+): boolean => {
+  if (!highlightRange) {
+    return false
+  }
+  return startSeconds <= highlightRange.endTime && endSeconds >= highlightRange.startTime
 }
 
 export const RealtimeTranscript: React.FC<RealtimeTranscriptProps> = ({
@@ -25,6 +38,7 @@ export const RealtimeTranscript: React.FC<RealtimeTranscriptProps> = ({
   maxHeight = '400px',
   emptyMessage = 'Đang chờ transcript...',
   domainMode = null,
+  highlightRange = null,
 }) => {
   const lexiconTerms = useDomainLexiconTerms(domainMode)
   const scrollContainerRef = useRef<HTMLDivElement>(null)
@@ -115,11 +129,14 @@ export const RealtimeTranscript: React.FC<RealtimeTranscriptProps> = ({
           const timestampLabel = endSeconds > startSeconds
             ? `${formatTranscriptTimestamp(startSeconds)} - ${formatTranscriptTimestamp(endSeconds)}`
             : formatTranscriptTimestamp(startSeconds)
+          const isHighlighted = segmentOverlapsHighlight(startSeconds, endSeconds, highlightRange)
 
           return (
             <div
               key={segment.mergeKey ?? segment.id}
-              className="transcript-segment"
+              className={`transcript-segment${isHighlighted ? ' transcript-display__segment--highlight' : ''}`}
+              data-segment-start={startSeconds}
+              data-segment-end={endSeconds}
             >
               <div className="segment-speaker">{formatDualStreamSpeakerLabel(segment.speaker, segment.streamId)}</div>
               <div className="segment-text">

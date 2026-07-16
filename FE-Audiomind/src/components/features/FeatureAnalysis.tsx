@@ -348,7 +348,12 @@ export default function FeatureAnalysis({
   const { navigateToSegment } = useTranscriptEvidenceNavigation({
     segments: effectiveSegments,
     onHighlightChange: setHighlightRange,
-    onBeforeNavigate: hydrateFromApi ? () => setActiveTab('content') : undefined,
+    onNavigateSuccess: () => {
+      setEvidenceWarning(null)
+      if (hydrateFromApi) {
+        setActiveTab('content')
+      }
+    },
     onMissingSegment: () => {
       setEvidenceWarning('Không tìm thấy đoạn transcript tương ứng với bằng chứng này.')
     },

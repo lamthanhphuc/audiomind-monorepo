@@ -21,6 +21,12 @@
   cursor: not-allowed;
 }
 
+.education-evidence-unavailable {
+  font-size: var(--text-xs, 0.75rem);
+  font-style: italic;
+  color: var(--color-ink-subtle, #6b7280);
+}
+
 .education-panel {
   display: grid;
   gap: var(--space-4, 16px);

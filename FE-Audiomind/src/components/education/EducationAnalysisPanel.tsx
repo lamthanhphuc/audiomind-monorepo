@@ -1,10 +1,11 @@
 import type { AiAnalysis, EducationImportance } from '../../types'
+import type { EvidenceClickHandler } from '../../utils/transcriptEvidence'
 import { EducationEvidenceButton } from './EducationEvidenceButton'
 import './education-panel.css'
 
 export type EducationAnalysisPanelProps = {
   analysis: AiAnalysis
-  onEvidenceClick?: (segmentId: string) => void
+  onEvidenceClick?: EvidenceClickHandler
 }
 
 const importanceLabel = (importance: EducationImportance): string => {
@@ -27,6 +28,7 @@ export function EducationAnalysisPanel({
   if (!study) {
     return null
   }
+  const evidenceUnavailable = analysis.evidenceUnavailable === true
 
   return (
     <section className="education-panel" data-testid="education-analysis-panel">
@@ -68,6 +70,7 @@ export function EducationAnalysisPanel({
                   <EducationEvidenceButton
                     sourceSegmentIds={section.sourceSegmentIds}
                     onEvidenceClick={onEvidenceClick}
+                    evidenceUnavailable={evidenceUnavailable}
                   />
                 </div>
                 {section.summary ? <p className="education-panel__overview">{section.summary}</p> : null}
@@ -104,6 +107,7 @@ export function EducationAnalysisPanel({
                   <EducationEvidenceButton
                     sourceSegmentIds={item.sourceSegmentIds}
                     onEvidenceClick={onEvidenceClick}
+                    evidenceUnavailable={evidenceUnavailable}
                   />
                 </div>
                 <p className="education-panel__overview">{item.content}</p>
@@ -135,6 +139,7 @@ export function EducationAnalysisPanel({
                   <EducationEvidenceButton
                     sourceSegmentIds={item.sourceSegmentIds}
                     onEvidenceClick={onEvidenceClick}
+                    evidenceUnavailable={evidenceUnavailable}
                   />
                 </div>
                 <p className="education-glossary-def">{item.definition}</p>
@@ -163,6 +168,7 @@ export function EducationAnalysisPanel({
                   <EducationEvidenceButton
                     sourceSegmentIds={item.sourceSegmentIds}
                     onEvidenceClick={onEvidenceClick}
+                    evidenceUnavailable={evidenceUnavailable}
                   />
                 </div>
                 <p className="education-panel__overview">{item.content}</p>
@@ -183,6 +189,7 @@ export function EducationAnalysisPanel({
                   <EducationEvidenceButton
                     sourceSegmentIds={item.sourceSegmentIds}
                     onEvidenceClick={onEvidenceClick}
+                    evidenceUnavailable={evidenceUnavailable}
                   />
                 </div>
                 <p className="education-panel__overview">{item.content}</p>

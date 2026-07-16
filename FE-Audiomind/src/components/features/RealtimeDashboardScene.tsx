@@ -5,6 +5,8 @@ import { collectEvidenceMatchesFromAnalysis } from '../../utils/evidenceMatches'
 import { AudioRecorderButton } from '../realtime/AudioRecorderButton'
 import { RealtimeTranscript } from '../transcript/RealtimeTranscript'
 import { ErrorState } from '../ui/ErrorState'
+import { useTranscriptEvidenceNavigation } from '../../hooks/useTranscriptEvidenceNavigation'
+import type { TranscriptHighlightRange } from '../../utils/transcriptJump'
 import type { useAudioRecorder } from '../../hooks/useAudioRecorder'
 import type { RealtimeLanguage, RealtimeSpeakerMode, TranscriptSegment } from '../../hooks/useRealtimeMeetingStream'
 import type { MicSensitivityMode } from '../../hooks/useVoiceActivityDetection'
@@ -229,6 +231,19 @@ export default function RealtimeDashboardScene({
 }: RealtimeDashboardSceneProps) {
   const [highlightMeetCapture, setHighlightMeetCapture] = useState(false)
   const [advancedSettingsOpen, setAdvancedSettingsOpen] = useState(liveLifecycleState === 'recording')
+  const [liveHighlightRange, setLiveHighlightRange] = useState<TranscriptHighlightRange | null>(null)
+  const [liveEvidenceWarning, setLiveEvidenceWarning] = useState<string | null>(null)
+
+  // Realtime scene has no transcript tab to switch to, so evidence clicks only
+  // highlight + scroll the live transcript (no setActiveTab call here).
+  const { navigateToSegment: navigateToLiveEvidenceSegment } = useTranscriptEvidenceNavigation({
+    segments: liveTranscriptSegments,
+    onHighlightChange: setLiveHighlightRange,
+    onNavigateSuccess: () => setLiveEvidenceWarning(null),
+    onMissingSegment: () => {
+      setLiveEvidenceWarning('Không tìm thấy đoạn transcript tương ứng với bằng chứng này.')
+    },
+  })
 
   useEffect(() => {
     try {
@@ -543,6 +558,7 @@ export default function RealtimeDashboardScene({
             emptyMessage={isNoTranscriptFinalized ? 'Chưa có bản ghi' : undefined}
             maxHeight="620px"
             domainMode={liveAnalysis?.domainMode}
+            highlightRange={liveHighlightRange}
           />
 
           <aside className="realtime-panel__aside">
@@ -586,7 +602,11 @@ export default function RealtimeDashboardScene({
               emptyMessage={liveAnalysisEmptyMessage}
               summaryFallback="(đang chờ phân tích)"
               testId="e2e-live-analysis"
+              onEvidenceClick={navigateToLiveEvidenceSegment}
             />
+            {liveEvidenceWarning ? (
+              <p className="ui-status-strip" role="status" data-testid="live-evidence-warning">{liveEvidenceWarning}</p>
+            ) : null}
           </section>
         )}
       </section>
