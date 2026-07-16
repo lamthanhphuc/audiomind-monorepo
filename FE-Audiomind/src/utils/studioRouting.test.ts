@@ -11,6 +11,7 @@ describe('studioRouting', () => {
     expect(parseStudioRouteFromLocation({ pathname: '/studio/history', search: '' })).toEqual({
       scene: 'files',
       meetingId: null,
+      subjectId: null,
       resultScope: null,
     })
   })
@@ -19,6 +20,7 @@ describe('studioRouting', () => {
     expect(parseStudioRouteFromLocation({ pathname: '/studio/analysis', search: '?meetingId=42' })).toEqual({
       scene: 'analysis',
       meetingId: 42,
+      subjectId: null,
       resultScope: null,
     })
   })
@@ -30,6 +32,7 @@ describe('studioRouting', () => {
     })).toEqual({
       scene: 'analysis',
       meetingId: 42,
+      subjectId: null,
       resultScope: {
         scopeKind: 'v2',
         meetingId: 42,
@@ -39,8 +42,36 @@ describe('studioRouting', () => {
     })
   })
 
+  it('parses subject detail path', () => {
+    expect(parseStudioRouteFromLocation({ pathname: '/studio/subjects/12', search: '' })).toEqual({
+      scene: 'subjectDetail',
+      meetingId: null,
+      subjectId: 12,
+      resultScope: null,
+    })
+  })
+
+  it('parses subjects and unclassified paths', () => {
+    expect(parseStudioRouteFromLocation({ pathname: '/studio/subjects', search: '' })).toEqual({
+      scene: 'subjects',
+      meetingId: null,
+      subjectId: null,
+      resultScope: null,
+    })
+    expect(parseStudioRouteFromLocation({ pathname: '/studio/unclassified', search: '' })).toEqual({
+      scene: 'unclassified',
+      meetingId: null,
+      subjectId: null,
+      resultScope: null,
+    })
+  })
+
   it('builds mindmap path with meetingId', () => {
     expect(buildStudioPath('mindmap', { meetingId: 9 })).toBe('/studio/mindmap?meetingId=9')
+  })
+
+  it('builds subject detail path', () => {
+    expect(buildStudioPath('subjectDetail', { subjectId: 5 })).toBe('/studio/subjects/5')
   })
 
   it('builds analysis path with v2 scope', () => {
@@ -59,6 +90,7 @@ describe('studioRouting', () => {
     expect(resolveStudioRedirectAfter('/studio/history')).toEqual({
       scene: 'files',
       meetingId: null,
+      subjectId: null,
       resultScope: null,
     })
   })
@@ -67,6 +99,7 @@ describe('studioRouting', () => {
     expect(resolveStudioRedirectAfter('https://evil.example')).toEqual({
       scene: 'integrations',
       meetingId: null,
+      subjectId: null,
       resultScope: null,
     })
   })
