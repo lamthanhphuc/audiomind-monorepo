@@ -219,12 +219,12 @@ Git Stage B.
 | Step 5 | full `meeting-service test` | **100 passed** |
 | Step 6 | subject assignment + upload/realtime suites | 30 new tests |
 | Step 6 | full `meeting-service test` | 130 tests run; 0 failures; 0 errors; 6 skipped |
-| Step 7 AI | `test_education_*.py` | **22 passed** |
-| Step 7 AI | full `pytest tests` | **479 passed**, 22 skipped |
+| Step 7 AI | targeted Education suite | **24 passed** |
+| Step 7 AI | Python 3.11 full `pytest tests` | **480 passed, 23 skipped, 0 failed, 0 errors** |
 | Step 8 | `validate:contracts` + `generate:client` + `typecheck:client` + `check:openapi` | pass |
-| Step 9 FE | `npm --prefix FE-Audiomind run test` | **676 passed** (after P0/P1) |
-| Step 9 FE | `npm --prefix FE-Audiomind run build` | pass (tsc + vite) |
-| Step 9 | `processing-service` DomainModes + AIServiceClient + ProcessingService | **129 passed** (focused suite) |
+| Step 9 FE | `npm --prefix FE-Audiomind run test` | **683 passed / 71 files** |
+| Step 9 FE | `npm --prefix FE-Audiomind run build` | pass (tsc + Vite; 2,127 modules) |
+| Step 9 Java | meeting-service / processing-service full | **131 / 321 passed** |
 | P0-1 | Hard-coded `domain_mode=it` removed; `DomainModes` normalize + resolve from job metadata | pass |
 
 ## P0/P1 hardening (2026-07-16)
@@ -262,38 +262,52 @@ Health (all **200**): frontend `:8080`, meeting `:8081/health`, processing `:808
 | `8f8017f` | `GET /meetings/unclassified` → 503: Hibernate/Postgres `lower(bytea)` on null-search JPQL |
 | `04d4cd3` | Education Gemini often omitted `educationStudy`; require in schema + alias extract + summary fallback |
 
+### Focused live re-verification (2026-07-16)
+
+Detailed, redacted evidence is stored under `logs/phase1-verification/`.
+
+| Scenario | Status | Evidence |
+|----------|--------|----------|
+| Health: frontend, meeting, processing, AI, user | **PASS** | All five endpoints returned HTTP 200 |
+| Fresh upload result (`hydrateFromApi=false`, meeting 11) | **PASS** | Switched to `Bản ghi`; transcript visible; 1 highlight; 1 scroll; no warning |
+| Saved Education analysis (`hydrateFromApi=true`, meeting 10) | **PASS** | Switched to `Bản ghi`; transcript visible; 1 highlight; 1 scroll; no warning |
+| Realtime Education evidence (meeting 12) | **FAIL** | Transcript persisted and API returned 200, but analysis never produced evidence; retry returned `RESOURCE_NOT_FOUND` for the saved transcript |
+
+The realtime run used a non-sensitive generated English lesson and selected the Education domain. The UI displayed `Đã lưu transcript`; `GET /processing/12/transcript?recording_session_id=1&attempt_id=1` returned segments, while analysis metadata was stale (`gemini-business-v2`) and rerun reported the saved transcript missing. This is a release blocker for realtime Education evidence, not a fabricated PASS.
+
 ### Automated verification (release pass)
 
 | Suite | Result |
 |-------|--------|
-| OpenAPI `validate:contracts` / `generate:client` / `typecheck:client` | pass |
-| OpenAPI `check:openapi` | fail tooling (`openapi-diff` circular `$ref` on folder tree) — contracts still valid; clients no drift |
-| FE lint (root) | pass |
-| FE test | **676 passed** / 71 files |
-| FE build | pass (tsc + vite) |
-| meeting-service full | **131 run, 0 fail, 0 error, 0 skipped** (post-unclassified fix) |
+| OpenAPI `validate:contracts` / `generate:client` / `typecheck:client` | pass; generated clients have no drift |
+| OpenAPI checker tests | **6 passed** (recursive unchanged plus breaking/parser cases) |
+| OpenAPI `check:openapi` | pass for all four contracts using pinned `@oasdiff-js/oasdiff-js` |
+| FE lint (root) | pass (one Node package-type warning) |
+| FE test | **683 passed** / 71 files / 0 failed |
+| FE build | pass (tsc + Vite; chunk-size warning only) |
+| meeting-service full | **131 run, 0 fail, 0 error, 0 skipped** |
 | `StudyFolderSubjectMigrationTest` | **6 passed** (Docker) |
 | processing-service full | **321 run, 0 fail, 0 error, 0 skipped** |
-| AI education targeted | **21+ passed** (post-educationStudy fix) |
-| AI full `pytest tests` | **479 passed, 22 skipped, 4 errors** — TestClient `httpx`/`app=` env mismatch (not Phase 1 source) |
+| AI education targeted | **24 passed, 5 warnings** |
+| AI full `pytest tests` | **480 passed, 23 skipped, 7 warnings, 0 failed, 0 errors** on Python 3.11.9 |
 
 ## Acceptance criteria snapshot
 
 | Status | Count | IDs |
 |--------|-------|-----|
-| **DONE** | **55** | AC-01–AC-55 |
-| **PARTIAL** | **0** | — |
+| **DONE** | **53** | AC-01–AC-33, AC-35–AC-42, AC-44–AC-55 |
+| **PARTIAL** | **2** | AC-34, AC-43 |
 | **TODO** | **0** | — |
 | **BLOCKED** | **0** | — |
 | **TOTAL** | **55** | — |
 
-Previously PARTIAL (9 criteria, not 7) closed by live smoke: **AC-12–AC-17**, **AC-33–AC-34**, **AC-54**.
+AC-43 remains partial because the required upload and saved evidence paths passed, but the fresh realtime evidence path did not become evidence-ready. AC-34 is also partial because the fresh realtime Education analysis failed during this verification.
 
-Overall Phase 1 status: **Completed**.
+Overall Phase 1 status: **Partially completed**.
 
 ## Remaining
 
-- Git Stage B not run (requires explicit user approval; does not block Completed)
+- Git Stage B not run, as required.
 - Deferred product polish: subject meeting row `duration`/`sourceType`/transcriptStatus/analysisStatus (Option B)
-- AI full suite 4 TestClient env errors remain unrelated to Phase 1 education/subject code
+- Realtime meeting 12 analysis/rerun mismatch: processing transcript is readable, but rerun reports the saved transcript missing; stale metadata also reports `gemini-business-v2` after Education was selected.
 - AC-54 DOCX/PDF export + meeting sharing exercised at route/API readiness level only (not full file QA)
