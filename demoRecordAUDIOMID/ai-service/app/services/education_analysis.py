@@ -462,3 +462,68 @@ def coerce_allowed_segment_ids(value: Any) -> set[str]:
     if isinstance(value, (list, tuple)):
         return {str(item).strip() for item in value if str(item).strip()}
     return set()
+
+
+def extract_education_study_raw(parsed: Any) -> Any:
+    """Pull educationStudy from common aliases Gemini may emit."""
+    if not isinstance(parsed, Mapping):
+        return None
+    for key in ("educationStudy", "education_study", "EducationStudy"):
+        value = parsed.get(key)
+        if value is not None:
+            return value
+    return None
+
+
+def build_fallback_education_study(
+    *,
+    summary: str | None = None,
+    meeting_summary: str | None = None,
+    keywords: Collection[str] | None = None,
+    technical_terms: Collection[Any] | None = None,
+) -> dict[str, Any]:
+    """Minimal educationStudy when the model omits the required object."""
+    overview = (summary or meeting_summary or "").strip() or "Nội dung buổi học từ transcript."
+    glossary: list[dict[str, Any]] = []
+    for item in technical_terms or []:
+        if isinstance(item, Mapping):
+            term = str(item.get("term") or "").strip()
+            definition = str(item.get("meaning") or item.get("definition") or "").strip()
+            if term and definition:
+                glossary.append(
+                    {
+                        "term": term,
+                        "definition": definition,
+                        "example": None,
+                        "category": str(item.get("category") or "").strip() or None,
+                        "sourceSegmentIds": [],
+                    }
+                )
+        if len(glossary) >= 8:
+            break
+    keyword_list = [
+        str(item).strip() for item in (keywords or []) if str(item).strip()
+    ][:12]
+    return {
+        "title": "Tóm tắt buổi học",
+        "overview": overview,
+        "learningObjectives": keyword_list[:5],
+        "sections": [
+            {
+                "id": "section-1",
+                "title": "Nội dung chính",
+                "summary": overview,
+                "keyPoints": keyword_list[:5],
+                "keywords": keyword_list[:5],
+                "sourceSegmentIds": [],
+            }
+        ],
+        "keyPoints": [
+            {"content": item, "importance": "MEDIUM", "sourceSegmentIds": []}
+            for item in keyword_list[:5]
+        ],
+        "keywords": keyword_list,
+        "glossary": glossary,
+        "mustRemember": [],
+        "unclearPoints": [],
+    }

@@ -52,8 +52,31 @@ def test_education_schema_contains_education_study_only_for_education_domain():
         education_schema["properties"]["educationStudy"]
         == education_study_gemini_schema()
     )
+    assert "educationStudy" in education_schema.get("required", [])
     assert "educationStudy" not in business_schema["properties"]
     assert "educationStudy" not in it_schema["properties"]
+    assert "educationStudy" not in business_schema.get("required", [])
+
+
+def test_extract_education_study_raw_aliases():
+    from app.services.education_analysis import extract_education_study_raw
+
+    assert extract_education_study_raw({"educationStudy": {"title": "A"}})["title"] == "A"
+    assert extract_education_study_raw({"education_study": {"title": "B"}})["title"] == "B"
+    assert extract_education_study_raw({"other": 1}) is None
+
+
+def test_fallback_education_study_from_summary():
+    from app.services.education_analysis import build_fallback_education_study
+
+    study = build_fallback_education_study(
+        summary="OSI layers overview",
+        keywords=["OSI", "Physical layer"],
+        technical_terms=[{"term": "OSI", "meaning": "Open Systems Interconnection"}],
+    )
+    assert study["overview"] == "OSI layers overview"
+    assert study["glossary"][0]["term"] == "OSI"
+    assert study["sections"][0]["title"] == "Nội dung chính"
 
 
 def test_education_prompt_contains_evidence_and_language_rules():
