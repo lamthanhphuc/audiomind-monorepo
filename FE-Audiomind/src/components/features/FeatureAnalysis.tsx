@@ -27,6 +27,7 @@ import MeetingTaskTracker from './MeetingTaskTracker'
 import { TranscriptDisplay } from '../transcript/TranscriptDisplay'
 import { listSpeakerProfiles, type SpeakerProfile } from '../../services/knowledgeLayer'
 import { AnalysisPanel } from '../analysis/AnalysisPanel'
+import { useTranscriptEvidenceNavigation } from '../../hooks/useTranscriptEvidenceNavigation'
 import { ErrorState } from '../ui/ErrorState'
 import { LoadingState } from '../ui/LoadingState'
 
@@ -110,6 +111,7 @@ const hasStructuredAnalysisData = (analysis: AiAnalysis | null): boolean => {
   if (!analysis) return false
   return Boolean(
     analysis.summary?.trim()
+    || analysis.educationStudy
     || (analysis.keywords?.length ?? 0) > 0
     || (analysis.technicalTerms?.length ?? 0) > 0
     || (analysis.painPoints?.length ?? 0) > 0
@@ -158,6 +160,7 @@ export default function FeatureAnalysis({
   const [activeTerm, setActiveTerm] = useState<string | null>(null)
   const [speakerDisplayMap, setSpeakerDisplayMap] = useState<Record<string, string>>({})
   const [highlightRange, setHighlightRange] = useState<TranscriptHighlightRange | null>(null)
+  const [evidenceWarning, setEvidenceWarning] = useState<string | null>(null)
   const [savedAnalysis, setSavedAnalysis] = useState<AiAnalysis | null>(null)
   const savedAnalysisAbortRef = useRef<AbortController | null>(null)
   const [rightPanelsOpen, setRightPanelsOpen] = useState<Record<AnalysisRightPanelKey, boolean>>(() => {
@@ -340,8 +343,16 @@ export default function FeatureAnalysis({
   }, [activeTab, loadSavedAnalysis, meetingId, resultScope])
 
   const effectiveAnalysis = hydrateFromApi ? hydratedAnalysis : (analysis ?? null)
-  const effectiveSegments = hydrateFromApi ? hydratedTranscriptSegments : transcriptSegments
-  const effectiveTranscriptText = hydrateFromApi ? hydratedTranscriptText : transcriptText
+  const effectiveSegments = hydrateFromApi ? hydratedTranscriptSegments : (transcriptSegments ?? [])
+  const effectiveTranscriptText = hydrateFromApi ? hydratedTranscriptText : (transcriptText ?? '')
+  const { navigateToSegment } = useTranscriptEvidenceNavigation({
+    segments: effectiveSegments,
+    onHighlightChange: setHighlightRange,
+    onBeforeNavigate: hydrateFromApi ? () => setActiveTab('content') : undefined,
+    onMissingSegment: () => {
+      setEvidenceWarning('Không tìm thấy đoạn transcript tương ứng với bằng chứng này.')
+    },
+  })
   const effectiveBusy = hydrateFromApi
     ? hydrateState === 'loading' || hydrateAnalysisState === 'processing'
     : Boolean(busy)
@@ -539,7 +550,11 @@ export default function FeatureAnalysis({
                   summaryFallback="(trống)"
                   loadingMessage="Đang phân tích nội dung..."
                   emptyMessage={analysisEmptyMessage}
+                  onEvidenceClick={navigateToSegment}
                 />
+                {evidenceWarning ? (
+                  <p className="ui-status-strip" role="status">{evidenceWarning}</p>
+                ) : null}
                 <AnalysisTermNotesSection
                   meetingId={meetingId}
                   analysis={displayAnalysis}

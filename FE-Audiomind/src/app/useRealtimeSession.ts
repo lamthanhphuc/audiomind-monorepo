@@ -196,6 +196,7 @@ export type UseRealtimeSessionInput = {
   realtimeStream: RealtimeStreamLike
   dualStreamActive: boolean
   selectedDomainMode: DomainMode
+  selectedSubjectId?: number | null
   selectedRealtimeLanguage: RealtimeLanguage
   selectedRecordingSource: RecordingSource
   selectedRecordingSourceRef: MutableRefObject<RecordingSource>
@@ -238,6 +239,7 @@ export const useRealtimeSession = ({
   realtimeStream,
   dualStreamActive,
   selectedDomainMode,
+  selectedSubjectId = null,
   selectedRealtimeLanguage,
   selectedRecordingSource,
   selectedRecordingSourceRef,
@@ -529,11 +531,11 @@ export const useRealtimeSession = ({
         }
         return 'Live recording session'
       }
-      const meeting = await createRealtimeMeeting(
-        resolveRealtimeMeetingTitle(),
-        selectedRealtimeLanguage,
-        selectedDomainMode,
-      )
+      const meeting = await createRealtimeMeeting({
+        title: resolveRealtimeMeetingTitle(),
+        language: selectedRealtimeLanguage,
+        subjectId: selectedSubjectId,
+      })
       const normalizedMeetingId = resolveFreshRealtimeMeetingId(meeting)
       if (!Number.isFinite(normalizedMeetingId)) {
         throw new Error('Meeting ID trả về không hợp lệ')

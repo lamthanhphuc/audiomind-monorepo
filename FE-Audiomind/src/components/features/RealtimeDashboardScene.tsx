@@ -16,6 +16,7 @@ import {
 } from '../../constants/recordingSource'
 import type { DomainMode } from '../../constants/domainMode'
 import DomainModeSelector from '../ui/DomainModeSelector'
+import SubjectPicker from '../subjects/SubjectPicker'
 import { RecordingSourceSelector } from '../realtime/RecordingSourceSelector'
 import { DualStreamQuotaInfoBanner } from '../ui/DualStreamQuotaInfoBanner'
 
@@ -69,6 +70,8 @@ type RealtimeDashboardSceneProps = {
   selectedRealtimeLanguage: RealtimeLanguage
   selectedDomainMode: DomainMode
   onDomainModeChange: (mode: DomainMode) => void
+  selectedSubjectId?: number | null
+  onSubjectIdChange?: (subjectId: number | null) => void
   selectedRealtimeSpeakerMode: RealtimeSpeakerMode
   selectedMicSensitivity: MicSensitivityMode
   selectedRecordingSource: RecordingSource
@@ -176,6 +179,8 @@ export default function RealtimeDashboardScene({
   selectedRealtimeLanguage,
   selectedDomainMode,
   onDomainModeChange,
+  selectedSubjectId = null,
+  onSubjectIdChange,
   selectedRealtimeSpeakerMode,
   selectedMicSensitivity,
   selectedRecordingSource,
@@ -384,6 +389,17 @@ export default function RealtimeDashboardScene({
                     testId="realtime-domain-mode-select"
                     compact
                   />
+                  {onSubjectIdChange ? (
+                    <label className="upload-panel__label">
+                      Môn học (tuỳ chọn)
+                      <SubjectPicker
+                        value={selectedSubjectId}
+                        onChange={onSubjectIdChange}
+                        disabled={isRealtimeLanguageSelectorDisabled}
+                        allowClear
+                      />
+                    </label>
+                  ) : null}
                 </div>
                 <button
                   type="button"

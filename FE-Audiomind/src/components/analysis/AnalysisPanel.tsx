@@ -1,5 +1,6 @@
 import type { AiAnalysis } from '../../types'
 import { formatDomainModeLabel } from '../../constants/domainMode'
+import { EducationAnalysisPanel } from '../education/EducationAnalysisPanel'
 import { EmptyState } from '../ui/EmptyState'
 import { ErrorState } from '../ui/ErrorState'
 import { LoadingState } from '../ui/LoadingState'
@@ -21,6 +22,7 @@ type AnalysisPanelProps = {
   summaryFallback?: string
   testId?: string
   summaryTestId?: string
+  onEvidenceClick?: (segmentId: string) => void
 }
 
 export const AnalysisPanel = ({
@@ -33,6 +35,7 @@ export const AnalysisPanel = ({
   summaryFallback = '(trống)',
   testId,
   summaryTestId,
+  onEvidenceClick,
 }: AnalysisPanelProps) => {
   if (status === 'loading') {
     return (
@@ -94,6 +97,13 @@ export const AnalysisPanel = ({
       evidence: undefined,
     }))
   const summaryText = analysis.meetingSummary || analysis.summary
+  const educationStudy = analysis.educationStudy
+  const educationKeywords = new Set(
+    (educationStudy?.keywords ?? []).map((keyword) => keyword.trim().toLowerCase()).filter(Boolean),
+  )
+  const displayKeywords = educationStudy
+    ? keywords.filter((keyword) => !educationKeywords.has(keyword.trim().toLowerCase()))
+    : keywords
 
   return (
     <section className="analysis-panel" data-testid={testId}>
@@ -102,6 +112,12 @@ export const AnalysisPanel = ({
         <span className="analysis-panel__domain">{formatDomainModeLabel(analysis.domainMode)}</span>
       </header>
 
+      {educationStudy ? (
+        <EducationAnalysisPanel analysis={analysis} onEvidenceClick={onEvidenceClick} />
+      ) : null}
+
+      {!educationStudy ? (
+      <>
       <AnalysisSection title="Tóm tắt" isEmpty={!summaryText}>
         <p
           className="analysis-panel__summary"
@@ -119,8 +135,8 @@ export const AnalysisPanel = ({
         </ul>
       </AnalysisSection>
 
-      <AnalysisSection title="Từ khóa" isEmpty={keywords.length === 0} emptyMessage="Không có từ khóa">
-        <KeywordChips keywords={keywords} />
+      <AnalysisSection title="Từ khóa" isEmpty={displayKeywords.length === 0} emptyMessage="Không có từ khóa">
+        <KeywordChips keywords={displayKeywords} />
       </AnalysisSection>
 
       <AnalysisSection
@@ -197,6 +213,8 @@ export const AnalysisPanel = ({
           <p className="analysis-panel__summary">{Math.round(normalizedConfidence * 100)}%</p>
         )}
       </AnalysisSection>
+      </>
+      ) : null}
     </section>
   )
 }

@@ -3,6 +3,7 @@ import type { RealtimeLanguage } from '../../hooks/useRealtimeMeetingStream'
 import { useUpload } from '../../hooks/useUpload'
 import type { DomainMode } from '../../constants/domainMode'
 import DomainModeSelector from '../ui/DomainModeSelector'
+import SubjectPicker from '../subjects/SubjectPicker'
 import OnboardingTour from '../onboarding/OnboardingTour'
 import { ErrorState } from '../ui/ErrorState'
 import { getStatusBadgeClass } from '../../utils/statusBadge'
@@ -15,6 +16,8 @@ type FeatureUploadProps = {
   onUploadLanguageChange: (language: RealtimeLanguage) => void
   domainMode: DomainMode
   onDomainModeChange: (mode: DomainMode) => void
+  selectedSubjectId?: number | null
+  onSubjectIdChange?: (subjectId: number | null) => void
   showOnboarding?: boolean
   onDismissOnboarding?: () => void
   onNavigateRealtime?: () => void
@@ -35,6 +38,8 @@ export default function FeatureUpload({
   onUploadLanguageChange,
   domainMode,
   onDomainModeChange,
+  selectedSubjectId = null,
+  onSubjectIdChange,
   showOnboarding = false,
   onDismissOnboarding,
   onNavigateRealtime,
@@ -180,6 +185,17 @@ export default function FeatureUpload({
                 disabled={disabled}
                 testId="e2e-upload-domain-mode-select"
               />
+              {onSubjectIdChange ? (
+                <div className="form-group">
+                  <label htmlFor="upload-subject">Môn học (tuỳ chọn)</label>
+                  <SubjectPicker
+                    value={selectedSubjectId}
+                    onChange={onSubjectIdChange}
+                    disabled={disabled}
+                    allowClear
+                  />
+                </div>
+              ) : null}
             </div>
           </section>
 

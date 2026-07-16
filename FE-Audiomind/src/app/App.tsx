@@ -19,6 +19,10 @@ import {
   isRecordingSourceSelectorDisabled,
   type LiveLifecycleState,
 } from './liveLifecycle'
+import { StudyWorkspaceProvider } from '../contexts/StudyWorkspaceProvider'
+import SubjectsListScene from '../components/subjects/SubjectsListScene'
+import SubjectDetailScene from '../components/subjects/SubjectDetailScene'
+import UnclassifiedMeetingsScene from '../components/subjects/UnclassifiedMeetingsScene'
 import FeatureAnalysis from '../components/features/FeatureAnalysis'
 import FeatureUpload from '../components/features/FeatureUpload'
 import MeetingHistoryScene from '../components/features/MeetingHistoryScene'
@@ -176,9 +180,9 @@ const isUploadDebugLoggingEnabled = (): boolean => {
 
 const readInitialStudioRoute = (): ParsedStudioRoute => {
   if (typeof window === 'undefined') {
-    return { scene: 'upload', meetingId: null }
+    return { scene: 'upload', meetingId: null, subjectId: null, resultScope: null }
   }
-  return parseStudioRouteFromLocation() ?? { scene: 'upload', meetingId: null }
+  return parseStudioRouteFromLocation() ?? { scene: 'upload', meetingId: null, subjectId: null, resultScope: null }
 }
 
 export const REALTIME_LANGUAGE_OPTIONS: Array<{ value: RealtimeLanguage; label: string }> = [
@@ -1158,6 +1162,9 @@ export default function App() {
   const [sessionPlanSyncTick, setSessionPlanSyncTick] = useState(0)
   const initialStudioRoute = readInitialStudioRoute()
   const [featureScene, setFeatureScene] = useState<DashboardScene>(initialStudioRoute.scene)
+  const [selectedSubjectId, setSelectedSubjectId] = useState<number | null>(initialStudioRoute.subjectId ?? null)
+  const [selectedUploadSubjectId, setSelectedUploadSubjectId] = useState<number | null>(null)
+  const [selectedRealtimeSubjectId, setSelectedRealtimeSubjectId] = useState<number | null>(null)
   const {
     globalMeetingSearch,
     setGlobalMeetingSearch,
@@ -1383,12 +1390,14 @@ export default function App() {
     scene: DashboardScene,
     options?: {
       meetingId?: number | null
+      subjectId?: number | null
       resultScope?: MeetingResultScope | null
       replace?: boolean
     },
   ) => {
     setFeatureScene(scene)
     const meetingId = options?.meetingId
+    const subjectId = options?.subjectId
     if (meetingId != null && Number.isFinite(meetingId) && meetingId > 0) {
       if (scene === 'analysis') {
         setHistoryAnalysisMeetingId(meetingId)
@@ -1400,8 +1409,14 @@ export default function App() {
         setHistoryFocusMeetingId(meetingId)
       }
     }
+    if (subjectId != null && Number.isFinite(subjectId) && subjectId > 0) {
+      setSelectedSubjectId(subjectId)
+    } else if (scene !== 'subjectDetail') {
+      setSelectedSubjectId(null)
+    }
     pushStudioRoute(scene, {
       meetingId,
+      subjectId,
       resultScope: options?.resultScope ?? null,
       replace: options?.replace,
     })
@@ -1425,6 +1440,7 @@ export default function App() {
     realtimeStream,
     dualStreamActive,
     selectedDomainMode,
+    selectedSubjectId: selectedRealtimeSubjectId,
     selectedRealtimeLanguage,
     selectedRecordingSource,
     selectedRecordingSourceRef,
@@ -1565,6 +1581,7 @@ export default function App() {
       setHistoryAnalysisScope,
       setMindmapSelectedMeetingId,
       setMindmapSelectedScope,
+      setSelectedSubjectId,
     },
     {
       setGoogleIntegrationNotice,
@@ -1946,7 +1963,12 @@ export default function App() {
       if (isUploadDebugLoggingEnabled()) {
         console.info('UPLOAD_REQUEST_SEND language=' + effectiveUploadLanguage)
       }
-      const meeting = await uploadToMeetingApi(file.name, file, effectiveUploadLanguage)
+      const meeting = await uploadToMeetingApi({
+        title: file.name,
+        file,
+        language: effectiveUploadLanguage,
+        subjectId: selectedUploadSubjectId,
+      })
       meetingId = Number(meeting.existingMeetingId ?? meeting.id)
       if (!Number.isFinite(meetingId) || meetingId <= 0) {
         throw new Error('Meeting ID trả về không hợp lệ')
@@ -2254,6 +2276,8 @@ export default function App() {
           selectedRealtimeLanguage={selectedRealtimeLanguage}
           selectedDomainMode={selectedDomainMode}
           onDomainModeChange={handleDomainModeChange}
+          selectedSubjectId={selectedRealtimeSubjectId}
+          onSubjectIdChange={setSelectedRealtimeSubjectId}
           selectedRealtimeSpeakerMode={selectedRealtimeSpeakerMode}
           selectedMicSensitivity={selectedMicSensitivity}
           selectedRecordingSource={selectedRecordingSource}
@@ -2342,6 +2366,33 @@ export default function App() {
       )
     }
 
+    if (featureScene === 'subjects') {
+      return (
+        <SubjectsListScene
+          onOpenSubject={(subjectId) => navigateFeatureScene('subjectDetail', { subjectId })}
+          onNavigateUnclassified={() => navigateFeatureScene('unclassified')}
+        />
+      )
+    }
+
+    if (featureScene === 'subjectDetail' && selectedSubjectId != null) {
+      return (
+        <SubjectDetailScene
+          subjectId={selectedSubjectId}
+          onOpenMeeting={(meetingId) => navigateFeatureScene('analysis', { meetingId })}
+          onBack={() => navigateFeatureScene('subjects')}
+        />
+      )
+    }
+
+    if (featureScene === 'unclassified') {
+      return (
+        <UnclassifiedMeetingsScene
+          onOpenMeeting={(meetingId) => navigateFeatureScene('analysis', { meetingId })}
+        />
+      )
+    }
+
     if (featureScene === 'files') {
       return (
         <MeetingHistoryScene
@@ -2373,6 +2424,8 @@ export default function App() {
         onUploadLanguageChange={setSelectedUploadLanguage}
         domainMode={selectedDomainMode}
         onDomainModeChange={handleDomainModeChange}
+        selectedSubjectId={selectedUploadSubjectId}
+        onSubjectIdChange={setSelectedUploadSubjectId}
         showOnboarding={showOnboarding}
         onDismissOnboarding={() => setShowOnboarding(false)}
         onNavigateRealtime={() => navigateFeatureScene('realtime')}
@@ -2437,6 +2490,7 @@ export default function App() {
   }
 
   return (
+    <StudyWorkspaceProvider>
     <div className="app app--dashboard app--studio">
       {authNotice ? (
         <p className="studio-auth__notice studio-auth__notice--dashboard" data-testid="auth-notice-banner" role="status">
@@ -2462,11 +2516,16 @@ export default function App() {
           setGlobalMeetingSearch(query)
           navigateFeatureScene('files')
         }}
+        selectedSubjectId={selectedSubjectId}
+        onNavigateSubjects={() => navigateFeatureScene('subjects')}
+        onNavigateSubjectDetail={(subjectId) => navigateFeatureScene('subjectDetail', { subjectId })}
+        onNavigateUnclassified={() => navigateFeatureScene('unclassified')}
       >
         <Suspense fallback={<LoadingState message="Đang tải màn hình..." />}>
           {renderDashboardScene()}
         </Suspense>
       </DashboardLayout>
     </div>
+    </StudyWorkspaceProvider>
   )
 }
