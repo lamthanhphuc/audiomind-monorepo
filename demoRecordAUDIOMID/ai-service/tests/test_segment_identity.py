@@ -70,7 +70,5 @@ def test_format_aligned_transcript_for_analysis_includes_markers():
             }
         ]
     )
-    assert (
-        format_segment_marker("meeting-12-start-10.000-speaker_1") in transcript
-    )
+    assert format_segment_marker("meeting-12-start-10.000-speaker_1") in transcript
     assert "[00:10] SPEAKER_1: Hello" in transcript

@@ -4,9 +4,8 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.models import Base, MeetingAnalysisRun
+from app.models import Base
 from app.services.analysis_runs import (
-    ANALYSIS_STATUS_COMPLETED,
     AnalysisCacheIdentity,
     begin_analysis_run,
     build_analysis_run_idempotency_key_for_identity,
@@ -99,9 +98,12 @@ def test_domain_cache_miss_across_modes(db_session, monkeypatch):
     )
 
     it_identity = _identity_for_domain("it")
-    normalized, payload = merge_domain_analysis_payload("it", {
-        "analysisFeatureSet": it_identity.analysis_feature_set,
-    })
+    normalized, payload = merge_domain_analysis_payload(
+        "it",
+        {
+            "analysisFeatureSet": it_identity.analysis_feature_set,
+        },
+    )
     persist_completed_analysis_run(
         db=db_session,
         meeting_id=101,
@@ -129,9 +131,12 @@ def test_same_domain_cache_hit(db_session, monkeypatch):
     )
 
     identity = _identity_for_domain("it")
-    normalized, payload = merge_domain_analysis_payload("it", {
-        "analysisFeatureSet": identity.analysis_feature_set,
-    })
+    normalized, payload = merge_domain_analysis_payload(
+        "it",
+        {
+            "analysisFeatureSet": identity.analysis_feature_set,
+        },
+    )
     persist_completed_analysis_run(
         db=db_session,
         meeting_id=101,
@@ -162,9 +167,12 @@ def test_idempotency_key_consistent_across_lookup_begin_persist(
     begin_key = run.idempotency_key
     db_session.commit()
 
-    normalized, payload = merge_domain_analysis_payload("business", {
-        "analysisFeatureSet": identity.analysis_feature_set,
-    })
+    normalized, payload = merge_domain_analysis_payload(
+        "business",
+        {
+            "analysisFeatureSet": identity.analysis_feature_set,
+        },
+    )
     persisted = persist_completed_analysis_run(
         db=db_session,
         meeting_id=101,

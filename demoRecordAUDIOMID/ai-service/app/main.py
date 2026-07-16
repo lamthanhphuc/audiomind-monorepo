@@ -72,7 +72,11 @@ from app.services.analysis_errors import (
 )
 from app.services.analysis_factory import build_analysis_analyzer
 from app.services.analysis_versioning import merge_domain_analysis_payload
-from app.services.segment_identity import resolve_segment_id_for_read
+from app.services.segment_identity import (
+    collect_allowed_segment_ids,
+    format_aligned_transcript_for_analysis,
+    resolve_segment_id_for_read,
+)
 from app.services.analysis_runs import (
     ANALYSIS_MODE_CACHE_ONLY,
     ANALYSIS_MODE_FAILED_RETRY,
@@ -1785,6 +1789,14 @@ def _normalize_analysis_payload(raw_analysis: dict[str, Any]) -> dict[str, Any]:
         "stale": raw_analysis.get("stale"),
         "staleReason": raw_analysis.get("staleReason"),
         "retryAfterSeconds": raw_analysis.get("retryAfterSeconds"),
+        "educationStudy": (
+            raw_analysis.get("educationStudy")
+            if isinstance(raw_analysis.get("educationStudy"), dict)
+            else None
+        ),
+        "evidenceUnavailable": (
+            True if raw_analysis.get("evidenceUnavailable") is True else None
+        ),
     }
 
 
@@ -2361,6 +2373,8 @@ def _analyze_and_persist_realtime_transcript(
     db: Session,
     analysis_run=None,
     rerun_reason: str | None = None,
+    allowed_segment_ids: list[str] | None = None,
+    evidence_unavailable: bool = False,
 ):
     analyzer = _get_realtime_analysis_analyzer()
     if analyzer is None:
@@ -2380,7 +2394,10 @@ def _analyze_and_persist_realtime_transcript(
         "promptVersion": prompt_version,
         "schemaVersion": schema_version,
         "analysisFeatureSet": analysis_feature_set,
+        "allowedSegmentIds": list(allowed_segment_ids or []),
     }
+    if evidence_unavailable:
+        metadata["evidenceUnavailable"] = True
 
     if getattr(analyzer, "provider", "") == "gemini":
         structured_analysis = analyzer._analyze_with_gemini(
@@ -2441,6 +2458,16 @@ def _analyze_and_persist_realtime_transcript(
         "groupedActionPlan": grouped_action_plan,
         "source": source,
     }
+    if isinstance(prepared.get("educationStudy"), dict):
+        technical_terms_payload["educationStudy"] = prepared["educationStudy"]
+    elif isinstance(normalized.get("educationStudy"), dict):
+        technical_terms_payload["educationStudy"] = normalized["educationStudy"]
+    if (
+        prepared.get("evidenceUnavailable") is True
+        or normalized.get("evidenceUnavailable") is True
+        or evidence_unavailable
+    ):
+        technical_terms_payload["evidenceUnavailable"] = True
     analysis_row = db.query(Analysis).filter(Analysis.meeting_id == meeting_id).first()
     if analysis_row is None:
         analysis_row = Analysis(meeting_id=meeting_id)
@@ -2460,6 +2487,12 @@ def _analyze_and_persist_realtime_transcript(
     analysis_for_job_state["analysisFeatureSet"] = prepared_feature_set
     analysis_for_job_state["groupedActionPlan"] = grouped_action_plan
     analysis_for_job_state["source"] = source
+    if isinstance(technical_terms_payload.get("educationStudy"), dict):
+        analysis_for_job_state["educationStudy"] = technical_terms_payload[
+            "educationStudy"
+        ]
+    if technical_terms_payload.get("evidenceUnavailable") is True:
+        analysis_for_job_state["evidenceUnavailable"] = True
     analysis_run = persist_completed_analysis_run(
         db=db,
         meeting_id=meeting_id,
@@ -3004,6 +3037,8 @@ async def get_analysis(
                 staleReason=run_metadata.get("staleReason")
                 or normalized.get("staleReason"),
                 retryAfterSeconds=normalized.get("retryAfterSeconds"),
+                educationStudy=normalized.get("educationStudy"),
+                evidenceUnavailable=normalized.get("evidenceUnavailable"),
             )
 
         job_state = get_job_status(meeting_id)
@@ -3075,6 +3110,8 @@ async def get_analysis(
                 staleReason=run_metadata.get("staleReason")
                 or normalized.get("staleReason"),
                 retryAfterSeconds=normalized.get("retryAfterSeconds"),
+                educationStudy=normalized.get("educationStudy"),
+                evidenceUnavailable=normalized.get("evidenceUnavailable"),
             )
 
         if pipeline is None:
@@ -3160,6 +3197,8 @@ async def get_analysis(
             staleReason=run_metadata.get("staleReason")
             or normalized.get("staleReason"),
             retryAfterSeconds=normalized.get("retryAfterSeconds"),
+            educationStudy=normalized.get("educationStudy"),
+            evidenceUnavailable=normalized.get("evidenceUnavailable"),
         )
 
     except HTTPException:
@@ -3218,6 +3257,74 @@ def _meeting_transcript_text_for_analysis(db: Session, meeting_id: int) -> str:
         speaker = str(row.speaker or "SPEAKER_1").strip() or "SPEAKER_1"
         lines.append(f"{speaker}: {text}")
     return "\n".join(lines).strip()
+
+
+def _load_structured_fragments_for_education(
+    db: Session,
+    meeting_id: int,
+    *,
+    recording_session_id: int | None = None,
+    attempt_id: int | None = None,
+) -> list[dict[str, Any]]:
+    """Load attempt-scoped (v2) or legacy visible fragments for education evidence."""
+    provenance = validate_transcript_provenance(recording_session_id, attempt_id)
+    repository = TranscriptPersistenceRepository(db)
+    if provenance.is_v2:
+        raw_segments = repository.assemble_attempt_visible_transcript_segments(
+            meeting_id,
+            recording_session_id=provenance.recording_session_id,
+            attempt_id=provenance.attempt_id,
+        )
+    else:
+        raw_segments = repository.assemble_visible_transcript_segments(meeting_id)
+
+    segments: list[dict[str, Any]] = []
+    for row in raw_segments:
+        text = str(row.get("text") or "").strip()
+        if not text:
+            continue
+        speaker = str(row.get("speaker") or "SPEAKER_1").strip() or "SPEAKER_1"
+        start_time = float(row.get("start_time") or row.get("start") or 0.0)
+        end_time = float(row.get("end_time") or row.get("end") or start_time)
+        segment_id = resolve_segment_id_for_read(
+            meeting_id=meeting_id,
+            speaker=speaker,
+            start_time=start_time,
+            explicit_segment_id=row.get("segment_id") or row.get("event_id"),
+        )
+        segments.append(
+            {
+                "segment_id": segment_id,
+                "event_id": segment_id,
+                "speaker": speaker,
+                "start": start_time,
+                "start_time": start_time,
+                "end": end_time,
+                "text": text,
+            }
+        )
+    return segments
+
+
+def _resolve_education_realtime_transcript_input(
+    *,
+    db: Session,
+    meeting_id: int,
+    plain_transcript: str,
+    recording_session_id: int | None = None,
+    attempt_id: int | None = None,
+) -> tuple[str, list[str], bool]:
+    """Return transcript text, allowed segment ids, evidence_unavailable."""
+    fragments = _load_structured_fragments_for_education(
+        db,
+        meeting_id,
+        recording_session_id=recording_session_id,
+        attempt_id=attempt_id,
+    )
+    allowed = sorted(collect_allowed_segment_ids(fragments))
+    if allowed:
+        return format_aligned_transcript_for_analysis(fragments), allowed, False
+    return plain_transcript, [], True
 
 
 @app.post("/api/meeting/{meeting_id}/analysis/rerun", response_model=AnalysisResponse)
@@ -3441,6 +3548,27 @@ async def analyze_realtime_transcript(
             override_payload,
             default_domain=default_domain,
         )
+        education_allowed_segment_ids: list[str] = []
+        education_evidence_unavailable = False
+        if normalized_domain == "education":
+            (
+                transcript_text,
+                education_allowed_segment_ids,
+                education_evidence_unavailable,
+            ) = _resolve_education_realtime_transcript_input(
+                db=db,
+                meeting_id=meeting_id,
+                plain_transcript=transcript_text,
+                recording_session_id=provenance.recording_session_id,
+                attempt_id=provenance.attempt_id,
+            )
+            transcript_hash = _compute_transcript_hash(transcript_text, None)
+            if education_evidence_unavailable:
+                logger.info(
+                    "event=EDUCATION_EVIDENCE_UNAVAILABLE meetingId={} source={} reason=plain_transcript",
+                    meeting_id,
+                    source,
+                )
         prompt_version = str(domain_payload["promptVersion"])
         schema_version = str(domain_payload["schemaVersion"])
         analysis_feature_set = str(domain_payload["analysisFeatureSet"])
@@ -3937,10 +4065,12 @@ async def analyze_realtime_transcript(
                 schema_version=schema_version,
                 analysis_feature_set=analysis_feature_set,
                 source=source,
-                domain_mode=request.domain_mode,
+                domain_mode=normalized_domain,
                 db=db,
                 analysis_run=active_analysis_run,
                 rerun_reason=request.reason,
+                allowed_segment_ids=education_allowed_segment_ids,
+                evidence_unavailable=education_evidence_unavailable,
             )
             success = True
             return response

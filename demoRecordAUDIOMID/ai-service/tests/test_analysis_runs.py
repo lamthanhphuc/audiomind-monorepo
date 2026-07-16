@@ -13,8 +13,9 @@ from sqlalchemy.orm import sessionmaker
 
 
 class FakeBatchAnalyzer:
-    PROMPT_VERSION = "gemini-business-v1"
-    SCHEMA_VERSION = "gemini-business-v1"
+    PROMPT_VERSION = "gemini-business-v2"
+    SCHEMA_VERSION = "gemini-business-v2"
+    analysis_domain_mode = "it"
 
     def __init__(self):
         self.provider = "gemini"

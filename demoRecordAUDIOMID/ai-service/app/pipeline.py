@@ -36,6 +36,7 @@ from app.services.analysis_versioning import merge_domain_analysis_payload
 from app.services.segment_identity import (
     assign_stable_segment_ids,
     format_aligned_transcript_for_analysis,
+    collect_allowed_segment_ids,
 )
 from app.services.audio_enhancement_service import prepare_audio_for_stt
 from app.services.audio_processor import AudioProcessor
@@ -1185,9 +1186,15 @@ class ProcessingPipeline:
                 from app.services.user_quota_client import enforce_gemini_quota
 
                 enforce_gemini_quota(owner_user_id, formatted_transcript)
+                allowed_segment_ids = sorted(
+                    collect_allowed_segment_ids(aligned_segments)
+                )
                 analysis_metadata = {
                     "source": "upload",
                     "domainMode": normalized_domain,
+                    "meetingId": meeting_id,
+                    "allowedSegmentIds": allowed_segment_ids,
+                    "language": language,
                 }
                 analysis_result = self.ai_analyzer.analyze_meeting(
                     formatted_transcript,
@@ -1308,13 +1315,8 @@ class ProcessingPipeline:
                     end_time=float(_to_builtin(segment.get("end", 0.0))),
                     text=str(segment.get("text", "")),
                     event_id=(
-                        str(
-                            segment.get("segment_id")
-                            or segment.get("event_id")
-                        )
-                        if (
-                            segment.get("segment_id") or segment.get("event_id")
-                        )
+                        str(segment.get("segment_id") or segment.get("event_id"))
+                        if (segment.get("segment_id") or segment.get("event_id"))
                         else None
                     ),
                     is_final=bool(segment.get("is_final", False)),
@@ -1396,6 +1398,20 @@ class ProcessingPipeline:
                     "schemaVersion": schema_version or None,
                     "source": str(clean_analysis.get("source") or "batch"),
                 }
+                if isinstance(clean_analysis.get("educationStudy"), dict):
+                    technical_terms_payload["educationStudy"] = clean_analysis[
+                        "educationStudy"
+                    ]
+                if clean_analysis.get("evidenceUnavailable") is True:
+                    technical_terms_payload["evidenceUnavailable"] = True
+                if clean_analysis.get("analysisFeatureSet"):
+                    technical_terms_payload["analysisFeatureSet"] = clean_analysis[
+                        "analysisFeatureSet"
+                    ]
+                if clean_analysis.get("groupedActionPlan") is not None:
+                    technical_terms_payload["groupedActionPlan"] = clean_analysis[
+                        "groupedActionPlan"
+                    ]
             analysis_run_payload = dict(clean_analysis)
             analysis_run_payload["transcriptHash"] = (
                 str(

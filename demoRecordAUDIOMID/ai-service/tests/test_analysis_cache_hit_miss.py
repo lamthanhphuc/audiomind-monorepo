@@ -52,10 +52,6 @@ class FakeBatchAnalyzer:
 
 
 class FakeRealtimeAnalyzer(FakeBatchAnalyzer):
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.analysis_domain_mode = "it"
-
     def _analyze_with_gemini(self, transcript, metadata=None):
         return self.analyze_meeting(transcript, metadata=metadata)
 

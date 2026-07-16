@@ -88,7 +88,9 @@ def test_v2_analysis_runs_are_isolated_by_attempt(db_session, monkeypatch):
             db=db_session,
             meeting_id=42,
             analyzer=analyzer,
-            analysis_payload=_persist_payload({"summary": summary, "keywords": [summary]}),
+            analysis_payload=_persist_payload(
+                {"summary": summary, "keywords": [summary]}
+            ),
             summary=summary,
             fallback_transcript_hash="hash-a",
             fallback_text=summary,

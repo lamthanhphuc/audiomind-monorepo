@@ -15,8 +15,17 @@ from app.services.analysis_runs import (
     build_analysis_cache_identity,
     persist_completed_analysis_run,
 )
+from app.services.analysis_versioning import merge_domain_analysis_payload
+from app.services.segment_identity import (
+    assign_stable_segment_ids,
+    format_aligned_transcript_for_analysis,
+)
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+
+# Matches app.pipeline._normalized_stt_provider() for default settings.stt_provider=deepgram.
+_BATCH_RECOGNITION_MODE = "deepgram"
+_BATCH_LANGUAGE = "vi"
 
 
 class FakeBatchAnalyzer:
@@ -25,13 +34,14 @@ class FakeBatchAnalyzer:
         *,
         provider: str = "gemini",
         model: str = "gemini-2.5-flash",
-        prompt_version: str = "prompt-v1",
-        schema_version: str = "schema-v1",
+        prompt_version: str = "gemini-business-v2",
+        schema_version: str = "gemini-business-v2",
     ):
         self.provider = provider
         self.model = model
         self.PROMPT_VERSION = prompt_version
         self.SCHEMA_VERSION = schema_version
+        self.analysis_domain_mode = "it"
         self.calls = []
 
     def format_transcript_for_analysis(self, segments):
@@ -109,9 +119,15 @@ def _segments():
     ]
 
 
-def _formatted_transcript(segments=None):
-    analyzer = FakeBatchAnalyzer()
-    return analyzer.format_transcript_for_analysis(segments or _segments())
+def _aligned_segments(meeting_id: int, segments=None):
+    return assign_stable_segment_ids(meeting_id, list(segments or _segments()))
+
+
+def _formatted_transcript(meeting_id: int, segments=None):
+    """Same analysis transcript text ProcessingPipeline hashes for cache identity."""
+    return format_aligned_transcript_for_analysis(
+        _aligned_segments(meeting_id, segments)
+    )
 
 
 def _analysis_payload(summary):
@@ -129,10 +145,34 @@ def _analysis_payload(summary):
         ],
         "action_items": [{"task": "Scale API", "owner": None, "deadline": None}],
         "actionItems": ["Scale API"],
-        "promptVersion": "prompt-v1",
-        "schemaVersion": "schema-v1",
         "source": "test",
     }
+
+
+def _identity_for_current_batch(
+    db_session,
+    meeting_id: int,
+    analyzer,
+    *,
+    segments=None,
+    language: str = _BATCH_LANGUAGE,
+):
+    """Build the identity ProcessingPipeline.process_meeting would build for this input."""
+    normalized, domain_payload = merge_domain_analysis_payload(
+        analyzer.analysis_domain_mode,
+        default_domain=analyzer.analysis_domain_mode,
+    )
+    return build_analysis_cache_identity(
+        db=db_session,
+        meeting_id=meeting_id,
+        analyzer=analyzer,
+        fallback_transcript_hash=None,
+        fallback_text=_formatted_transcript(meeting_id, segments),
+        analysis_payload=domain_payload,
+        recognition_mode=_BATCH_RECOGNITION_MODE,
+        transcript_language=language,
+        normalized_domain_mode=normalized,
+    )
 
 
 def _seed_completed_run(
@@ -142,18 +182,38 @@ def _seed_completed_run(
     analyzer=None,
     summary: str = "Cached summary",
     fallback_text: str | None = None,
+    segments=None,
 ):
     analyzer = analyzer or FakeBatchAnalyzer()
+    identity = _identity_for_current_batch(
+        db_session,
+        meeting_id,
+        analyzer,
+        segments=segments,
+    )
+    # Persist with the exact fallback text that identity used, unless overridden
+    # (e.g. intentional stale transcript-hash fixtures).
+    text = (
+        fallback_text
+        if fallback_text is not None
+        else _formatted_transcript(meeting_id, segments)
+    )
+    _, domain_payload = merge_domain_analysis_payload(
+        identity.normalized_domain_mode,
+        _analysis_payload(summary),
+        default_domain=identity.normalized_domain_mode,
+    )
     run = persist_completed_analysis_run(
         db=db_session,
         meeting_id=meeting_id,
         analyzer=analyzer,
-        analysis_payload=_analysis_payload(summary),
+        analysis_payload=domain_payload,
         summary=summary,
         fallback_transcript_hash=None,
-        fallback_text=fallback_text or _formatted_transcript(),
-        recognition_mode="deepgram",
-        transcript_language="vi",
+        fallback_text=text,
+        recognition_mode=identity.recognition_mode,
+        transcript_language=identity.transcript_language,
+        normalized_domain_mode=identity.normalized_domain_mode,
     )
     db_session.commit()
     return run
@@ -182,31 +242,10 @@ def _run_batch_with_mode(
         meeting_id=meeting_id,
         db=db_session,
         language="vi",
-        precomputed_transcript_segments=[
-            {
-                "seq": 1,
-                "speaker": "SPEAKER_1",
-                "start": 0.0,
-                "end": 1.5,
-                "text": "Can cap nhat API gateway",
-                "is_final": True,
-            }
-        ],
+        precomputed_transcript_segments=_segments(),
         analysis_mode=mode,
         requested_by="test-user",
         rerun_reason=reason,
-    )
-
-
-def _identity_for_current_batch(db_session, meeting_id: int, analyzer):
-    return build_analysis_cache_identity(
-        db=db_session,
-        meeting_id=meeting_id,
-        analyzer=analyzer,
-        fallback_transcript_hash=None,
-        fallback_text=_formatted_transcript(),
-        recognition_mode="deepgram",
-        transcript_language="vi",
     )
 
 
@@ -247,21 +286,21 @@ def test_cache_only_identity_mismatch_returns_stale_without_provider(
     db_session, monkeypatch
 ):
     meeting_id = 7103
+    current_analyzer = FakeBatchAnalyzer()
     stale_analyzer = FakeBatchAnalyzer(model="old-model")
+    # Same transcript/domain/versions as current identity; only model differs.
     _seed_completed_run(
         db_session,
         meeting_id=meeting_id,
         analyzer=stale_analyzer,
-        fallback_text=_formatted_transcript(),
     )
-    analyzer = FakeBatchAnalyzer()
-    pipeline = _make_batch_pipeline(monkeypatch, analyzer)
+    pipeline = _make_batch_pipeline(monkeypatch, current_analyzer)
 
     result = _run_batch_with_mode(
         pipeline, db_session, meeting_id, ANALYSIS_MODE_CACHE_ONLY
     )
 
-    assert analyzer.calls == []
+    assert current_analyzer.calls == []
     assert result["status"] == "stale"
     assert result["analysis"]["analysisStatus"] == "STALE"
     assert result["analysis"]["stale"] is True
@@ -304,7 +343,6 @@ def test_force_bypasses_completed_cache_and_preserves_history(db_session, monkey
         meeting_id=meeting_id,
         analyzer=analyzer,
         summary="Old cached summary",
-        fallback_text=_formatted_transcript(),
     )
     pipeline = _make_batch_pipeline(monkeypatch, analyzer)
 
@@ -382,14 +420,17 @@ def test_stale_detection_reports_canonical_version_change(db_session, monkeypatc
             status="COMPLETED",
             provider="gemini",
             model="gemini-2.5-flash",
-            prompt_version="prompt-v1",
-            schema_version="schema-v1",
+            prompt_version="gemini-business-v2",
+            schema_version="gemini-business-v2",
             canonical_transcript_hash="a" * 64,
             canonical_transcript_version="canonical-v1",
             analysis_input_mode="canonical",
-            recognition_mode="deepgram",
-            transcript_language="vi",
-            analysis_payload_json=_analysis_payload("Old canonical summary"),
+            recognition_mode=_BATCH_RECOGNITION_MODE,
+            transcript_language=_BATCH_LANGUAGE,
+            analysis_payload_json={
+                **_analysis_payload("Old canonical summary"),
+                "analysisFeatureSet": "grouped-action-plan-v1-it",
+            },
             summary="Old canonical summary",
             idempotency_key="stale-canonical-version-7107",
             created_at=now,

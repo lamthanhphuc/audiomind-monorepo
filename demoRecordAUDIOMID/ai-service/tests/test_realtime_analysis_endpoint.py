@@ -7,6 +7,7 @@ import app.main as main_module
 from app.models import Analysis, Base, MeetingAnalysisRun
 from app.schemas import AnalysisRerunRequest, RealtimeTranscriptAnalysisRequest
 from app.services.analysis_runs import persist_completed_analysis_run
+from app.services.analysis_versioning import merge_domain_analysis_payload
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -540,6 +541,7 @@ def test_realtime_analysis_in_progress_fresh_state_returns_skipped_with_retry(
         db_session.query(Analysis).filter(Analysis.meeting_id == meeting_id).first()
         is None
     )
+    assert main_module._realtime_analysis_analyzer.calls == []
 
 
 def test_realtime_analysis_in_progress_stale_state_allows_retry_and_completes(
@@ -599,7 +601,17 @@ def test_realtime_analysis_existing_result_returns_already_exists_even_when_runn
     db_session, monkeypatch
 ):
     meeting_id = 910
+    transcript = "Speaker 1: cached summary"
     transcript_hash = "f" * 64
+    analyzer = main_module._realtime_analysis_analyzer
+    normalized_domain, domain_payload = merge_domain_analysis_payload(
+        analyzer.analysis_domain_mode,
+        {
+            "summary": "cached summary",
+            "transcriptHash": transcript_hash,
+        },
+        default_domain=analyzer.analysis_domain_mode,
+    )
     cache_key = _default_cache_key(transcript_hash)
     existing = Analysis(
         meeting_id=meeting_id,
@@ -607,25 +619,24 @@ def test_realtime_analysis_existing_result_returns_already_exists_even_when_runn
         keywords=[],
         technical_terms={
             "transcript_hash": transcript_hash,
-            "promptVersion": main_module.AIAnalyzer.PROMPT_VERSION,
-            "schemaVersion": main_module.AIAnalyzer.SCHEMA_VERSION,
+            "promptVersion": domain_payload["promptVersion"],
+            "schemaVersion": domain_payload["schemaVersion"],
+            "analysisFeatureSet": domain_payload["analysisFeatureSet"],
+            "domainMode": normalized_domain,
         },
         action_items=[],
     )
     db_session.add(existing)
+    # Seed with the same domain versions realtime endpoint merges for domain "it".
     persist_completed_analysis_run(
         db=db_session,
         meeting_id=meeting_id,
-        analyzer=main_module._realtime_analysis_analyzer,
-        analysis_payload={
-            "summary": "cached summary",
-            "transcriptHash": transcript_hash,
-            "promptVersion": main_module.AIAnalyzer.PROMPT_VERSION,
-            "schemaVersion": main_module.AIAnalyzer.SCHEMA_VERSION,
-        },
+        analyzer=analyzer,
+        analysis_payload=domain_payload,
         summary="cached summary",
         fallback_transcript_hash=transcript_hash,
-        fallback_text="Speaker 1: cached summary",
+        fallback_text=transcript,
+        normalized_domain_mode=normalized_domain,
     )
     db_session.commit()
 
@@ -644,7 +655,7 @@ def test_realtime_analysis_existing_result_returns_already_exists_even_when_runn
 
     request = RealtimeTranscriptAnalysisRequest(
         meeting_id=meeting_id,
-        transcript="Speaker 1: cached summary",
+        transcript=transcript,
         source="realtime",
         transcript_hash=transcript_hash,
     )
@@ -654,6 +665,7 @@ def test_realtime_analysis_existing_result_returns_already_exists_even_when_runn
     assert response.status == "completed"
     assert response.cacheHit is True
     assert response.analysisStatus == "COMPLETED"
+    assert analyzer.calls == []
 
 
 def test_realtime_analysis_foreign_running_state_is_cleared_and_retried(

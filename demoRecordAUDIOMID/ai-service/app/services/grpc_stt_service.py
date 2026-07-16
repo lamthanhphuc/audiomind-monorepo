@@ -17,7 +17,7 @@ import ai_stream_pb2 as ai__stream__pb2  # noqa: E402
 import ai_stream_pb2_grpc as ai__stream__pb2__grpc  # noqa: E402
 import realtime_events_pb2 as realtime__events__pb2  # noqa: E402
 
-from app.services.segment_identity import build_stable_segment_id
+from app.services.segment_identity import build_stable_segment_id  # noqa: E402
 from app.services.stt_adapter import DeepgramSTTAdapter  # noqa: E402
 
 
