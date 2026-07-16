@@ -1,9 +1,10 @@
 # Phase 1 — Implementation report
 
 **Branch:** `feature/phase1-subject-education`  
-**Base:** `origin/main` @ `d77a030`  
+**Tracking branch:** `origin/feature/phase1-subject-education`  
+**Status:** Partially completed (P0/P1 code fixes landed; live E2E smoke AC-54 still open)  
 **Started:** 2026-07-15  
-**Status:** Partially completed (Steps 0–7 FE integration landed; manual E2E smoke pending)
+**P0/P1 hardening:** 2026-07-16
 
 ## A. Git cleanup
 
@@ -54,6 +55,7 @@ See [branch-cleanup-report.md](./branch-cleanup-report.md).
 | `4bcd222` | `feat(fe): add study workspace routing and subject management UI` |
 | `190912b` | `feat(fe): wire subject selection, education panel and evidence navigation` |
 | `c86a19d` | `test(fe): extend routing and upload API tests for study workspace` |
+| `2f45687` | `docs: record phase 1 FE integration and verification results` |
 
 ## D–E. Segment identity + analysis cache
 
@@ -159,11 +161,11 @@ Excludes shared / other-user / soft-deleted / assigned meetings. DB search + whi
 |-------|-------|
 | `MeetingSubjectAssignmentTest` | 17 |
 | `MeetingSubjectControllerTest` | 13 |
-| Regression + full module | **130 passed**, 0 failures, 0 errors |
+| Full module Maven summary | 130 tests run; 0 failures; 0 errors; 6 skipped |
 
 ```text
 .\mvnw.cmd -pl meeting-service test --no-transfer-progress
-→ Tests run: 130, Failures: 0, Errors: 0
+→ Tests run: 130, Failures: 0, Errors: 0, Skipped: 6
 ```
 
 ### Not in this step
@@ -213,14 +215,24 @@ Git Stage B.
 | Step 5 | `StudyFolderServiceTest` + `SubjectServiceTest` | 24 passed |
 | Step 5 | full `meeting-service test` | **100 passed** |
 | Step 6 | subject assignment + upload/realtime suites | 30 new tests |
-| Step 6 | full `meeting-service test` | **130 passed** (6 skipped migration IT) |
+| Step 6 | full `meeting-service test` | 130 tests run; 0 failures; 0 errors; 6 skipped |
 | Step 7 AI | `test_education_*.py` | **22 passed** |
 | Step 7 AI | full `pytest tests` | **479 passed**, 22 skipped |
 | Step 8 | `validate:contracts` + `generate:client` + `typecheck:client` + `check:openapi` | pass |
-| Step 9 FE | `npm --prefix FE-Audiomind run test` | **624 passed** |
+| Step 9 FE | `npm --prefix FE-Audiomind run test` | **676 passed** (after P0/P1) |
 | Step 9 FE | `npm --prefix FE-Audiomind run build` | pass (tsc + vite) |
-| Step 9 FE | `npm run lint` | pass |
-| Step 9 | `processing-service test` | **311 passed** |
+| Step 9 | `processing-service` DomainModes + AIServiceClient + ProcessingService | **129 passed** (focused suite) |
+| P0-1 | Hard-coded `domain_mode=it` removed; `DomainModes` normalize + resolve from job metadata | pass |
+
+## P0/P1 hardening (2026-07-16)
+
+| ID | Fix | Verification |
+|----|-----|--------------|
+| P0-1 | Processing saved/lazy analysis uses resolved domain (`general` fallback) | Java unit tests assert AI request `domain_mode` |
+| P0-2 | Multi-segment evidence + canonicalize + tab only after match | `transcriptEvidence` + navigation tests |
+| P0-3 | Folder/subject edit/archive UI + AC-29 history SubjectPicker | MeetingHistoryScene AC-29 tests |
+| P0-4 | Legacy analysis kept alongside `educationStudy` | AnalysisPanel tests |
+| P1-1..6 | Normalizer, `evidenceUnavailable`, catalog pages, pagination clamp, back clears subjectId, race guards | FE unit tests |
 
 ## Manual smoke (pending live stack)
 
@@ -232,18 +244,35 @@ Git Stage B.
 | 4 | Unclassified assign → list update | Not run |
 | 5 | Education structured sections visible | Code-verified via normalizer + panel tests |
 | 6 | Evidence click → transcript highlight | Code-verified via `transcriptEvidence` + hook tests |
+| 7 | Meeting history assign/change/clear subject (AC-29) | Unit-verified; live smoke pending |
 
 ## Acceptance criteria snapshot
 
-- **DONE:** AC-01,02,05–07,10–11,18–19,31–32,35–44 (code),46–48,49,50,51,52,53,55 (process)
-- **PARTIAL:** AC-08,09,12–17,20–30,33–34,45,54 (FE implemented; live smoke not executed)
-- **TODO:** AC-03 (clean tree until docs commit), AC-04 (branch cleanup Stage B)
+| Status | Count | IDs |
+|--------|-------|-----|
+| **DONE** | 48 | AC-01–AC-11, AC-18–AC-32, AC-35–AC-53, AC-55 |
+| **PARTIAL** | 7 | AC-12–AC-17, AC-33–AC-34, AC-54 |
+| **TODO** | 0 | — |
+| **BLOCKED** | 0 | — |
+| **TOTAL** | 55 | — |
 
-Overall Phase 1 status: **Partially completed** — blocking gap is live manual smoke (AC-54) and final docs commit cleanliness (AC-03).
+Notes:
+
+- AC-08/AC-09/AC-29 are **DONE** at code+unit level (folder/subject CRUD UI + history reassignment). Live confirmation still covered by AC-54.
+- AC-12–AC-17, AC-33 and AC-34 remain **PARTIAL** until live smoke verifies them.
+- AC-43–AC-45 are **DONE** via evidence + AnalysisPanel compatibility tests.
+
+Overall Phase 1 status: **Partially completed**.
 
 ## Remaining
 
-- Live manual smoke against running meeting-api + processing-api + ai-api
-- Git Stage B not run
-- Meeting history detail subject reassignment UI (optional enhancement; assign available on subject detail + unclassified)
+Blocking for Completed:
+
+1. **AC-54** — live end-to-end regression smoke not executed
+
+Also remaining PARTIAL until smoke verifies them: AC-12–AC-17, AC-33, AC-34.
+
+Non-blocking / deferred:
+
+- Git Stage B not run (requires explicit user approval; does not block an accurate branch-cleanup report)
 - Deferred: subject meeting row `duration`/`sourceType`/transcriptStatus/analysisStatus (Option B)

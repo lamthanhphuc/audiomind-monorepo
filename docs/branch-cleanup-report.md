@@ -1,17 +1,28 @@
-# Branch cleanup report — Stage A (audit only)
+tiepes tuctiep# Branch cleanup report — Stage A (audit only)
 
-**Date:** 2026-07-15  
-**Repository:** lamthanhphuc/audiomind-monorepo  
-**Base at audit:** `origin/main` @ `d77a030` (Feature/audio recording quality #121)  
-**Feature branch created:** `feature/phase1-subject-education`  
-**Stage:** A — audit only. **No deletions, no archive tags, no pushes.**
+**Date:** 2026-07-15 (Stage A audit)
+**Updated:** 2026-07-16 (post Phase 1 FE integration — report accuracy refresh)
+**Repository:** lamthanhphuc/audiomind-monorepo
+**Base at audit:** `origin/main` @ `d77a030` (Feature/audio recording quality #121)
+**Feature branch created:** `feature/phase1-subject-education`
+**Stage:** A — audit only. **No deletions, no archive tags.** Stage B not performed.
+
+## Current Git state (verified 2026-07-16)
+
+| Item | Value |
+|------|--------|
+| Branch | `feature/phase1-subject-education` |
+| Tracking branch | `origin/feature/phase1-subject-education` |
+| Ahead/behind | ahead 7, behind 0 (`git rev-list --left-right --count origin/feature/phase1-subject-education...HEAD` → `0	7`) |
+| Working tree | clean |
+| HEAD | `2f45687` — `docs: record phase 1 FE integration and verification results` |
 
 ## Kept (required)
 
 | Branch | Notes |
 |--------|--------|
 | `main` | Primary branch; tracks `origin/main` |
-| `feature/phase1-subject-education` | Phase 1 implementation branch (created from `main`) |
+| `feature/phase1-subject-education` | Phase 1 implementation branch; tracks `origin/feature/phase1-subject-education` |
 
 ## Local branches (proposed for Stage B — awaiting user approval)
 
@@ -22,13 +33,14 @@
 | `feature/new-user-premium-trial` | Unknown | No | **Proposed delete (local)** if merged or obsolete — user approval required |
 | `fix/mobile-dashboard-sidebar` | Likely merged via PR #120 | No | **Proposed delete (local)** if ancestor of `main` — user approval required |
 
-## Remote branches (proposed for Stage B — awaiting user approval)
+## Remote branches (current)
 
-After `git fetch --all --prune`, only `origin/main` remains on remote.
+Verified via `git branch -r`:
 
-| Remote | Proposed action |
-|--------|-----------------|
-| `origin/main` | **Keep** (protected primary) |
+| Remote | Status / proposed action |
+|--------|--------------------------|
+| `origin/main` | **Keep** (protected primary; `origin/HEAD` → `origin/main`) |
+| `origin/feature/phase1-subject-education` | **Keep** — active Phase 1 feature remote; local branch is ahead by 7 commits |
 
 Previously observed remotes (now pruned or removed upstream): `feat/public-legal-pages`, `feature/audio-recording-quality`, `function-GGlogin-and-payment` — no longer listed after prune.
 
@@ -41,7 +53,7 @@ Previously observed remotes (now pruned or removed upstream): `feat/public-legal
 
 ## Open pull requests
 
-None (`gh pr list --state open` → empty).
+None (`gh pr list --state open` → empty) at Stage A audit time.
 
 ## Protected / permission blocked
 
@@ -55,12 +67,19 @@ Not evaluated against GitHub protected-branch API in this audit. `origin/main` t
 ## Working tree after Phase 1 FE integration (2026-07-16)
 
 - Branch: `feature/phase1-subject-education`
-- Latest commits include OpenAPI/contracts, FE study workspace, education panel, tests
-- Working tree: clean after `c86a19d`
-- Stage B: still **not performed**
+- Tracking: `origin/feature/phase1-subject-education` (ahead 7, behind 0)
+- HEAD: `2f45687` — `docs: record phase 1 FE integration and verification results`
+- Latest landed work includes OpenAPI/contracts, FE study workspace, education panel, tests, and this documentation refresh
+- Working tree: clean
+- Stage A: completed
+- Stage B: **not performed**
+- No branches or tags deleted
+- No archive tags created
 
 ## Stage B gate
 
 **Do not delete any local or remote branch until the user explicitly approves this report's proposed-delete list.**
 
 Unmerged branches require archive tag push to `origin` before deletion (per plan §3).
+
+Stage B completion is **not** required for this report to be accurate. Report accuracy (AC-04) is satisfied when the documented branch/tracking/HEAD state matches current Git evidence; Stage B deletions remain deferred pending explicit user approval.
