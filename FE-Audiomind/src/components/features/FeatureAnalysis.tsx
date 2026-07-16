@@ -350,6 +350,7 @@ export default function FeatureAnalysis({
   const effectiveTranscriptText = hydrateFromApi ? hydratedTranscriptText : (transcriptText ?? '')
   const { navigateToSegment } = useTranscriptEvidenceNavigation({
     segments: effectiveSegments,
+    meetingId,
     onHighlightChange: setHighlightRange,
     onNavigateSuccess: () => {
       setEvidenceWarning(null)

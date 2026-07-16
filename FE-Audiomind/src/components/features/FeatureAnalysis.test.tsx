@@ -161,7 +161,7 @@ describe('FeatureAnalysis', () => {
   })
 
   it('switches upload-result evidence to transcript and renders the highlight', async () => {
-    const segmentId = 'meeting-42-start-1.000-speaker_1'
+    const segmentId = 'meeting-42-start-2.880-speaker_1'
     await act(async () => {
       root.render(
         <FeatureAnalysis
@@ -170,7 +170,14 @@ describe('FeatureAnalysis', () => {
           hydrateFromApi={false}
           analysis={educationAnalysis([segmentId]) as any}
           transcriptSegments={[
-            { id: segmentId, speaker: 'Speaker 1', text: 'Physical layer', start: 1, end: 3 },
+            {
+              id: 'time-0.000-speaker_1',
+              meetingId: 42,
+              speaker: 'Speaker 1',
+              text: 'Physical layer',
+              start: 0,
+              end: 15,
+            },
           ]}
         />,
       )
@@ -182,7 +189,7 @@ describe('FeatureAnalysis', () => {
 
     expect(container.querySelector('[data-testid="e2e-transcript"]')).toBeTruthy()
     expect(container.querySelector('.transcript-display__segment--highlight')).toBeTruthy()
-    expect(scrollTranscriptToHighlight).toHaveBeenCalledWith({ startTime: 1, endTime: 3 })
+    expect(scrollTranscriptToHighlight).toHaveBeenCalledWith({ startTime: 0, endTime: 15 })
   })
 
   it('keeps saved evidence navigation working when hydrateFromApi is true', async () => {

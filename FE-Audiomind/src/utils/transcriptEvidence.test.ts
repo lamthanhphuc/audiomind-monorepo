@@ -107,6 +107,35 @@ describe('resolveTranscriptEvidenceRange', () => {
     expect(range).toEqual({ startTime: 1.5, endTime: 3.5 })
   })
 
+  it('resolves canonical evidence by time inside a consolidated upload segment', () => {
+    const segments = [
+      makeSegment({
+        id: 'time-0.000-speaker_1',
+        meetingId: 10,
+        speaker: 'SPEAKER_1',
+        start: 0,
+        end: 15.5,
+      }),
+    ]
+    const range = resolveTranscriptEvidenceRange(
+      ['meeting-10-start-2.880-speaker_1'],
+      segments,
+      { meetingId: 10 },
+    )
+    expect(range).toEqual({ startTime: 0, endTime: 15.5 })
+  })
+
+  it('does not time-match consolidated evidence from another meeting', () => {
+    const segments = [
+      makeSegment({ id: 'time-0.000-speaker_1', meetingId: 10, start: 0, end: 15.5 }),
+    ]
+    expect(resolveTranscriptEvidenceRange(
+      ['meeting-99-start-2.880-speaker_1'],
+      segments,
+      { meetingId: 10 },
+    )).toBeNull()
+  })
+
   it('ignores malformed ids without throwing', () => {
     const segments = [makeSegment({ id: 'meeting-1-start-1.500-alice', start: 1.5, end: 3.5 })]
     expect(() => resolveTranscriptEvidenceRange(['   ', '', 'garbage-id'], segments)).not.toThrow()

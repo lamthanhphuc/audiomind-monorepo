@@ -7,6 +7,26 @@ export type EvidenceClickHandler = (segmentIds: string[]) => void
 // Mirrors LEGACY_SEGMENT_ID_PATTERN in
 // demoRecordAUDIOMID/ai-service/app/services/segment_identity.py
 const LEGACY_SEGMENT_ID_PATTERN = /^meeting-(\d+)-(\d+(?:\.\d+)?)-([a-z0-9_]+)-\d+$/i
+const CANONICAL_SEGMENT_ID_PATTERN = /^meeting-(\d+)-start-(\d+(?:\.\d+)?)-([a-z0-9_]+)$/i
+
+type TranscriptEvidenceContext = {
+  meetingId?: number | null
+}
+
+const parseCanonicalEvidenceIdentity = (
+  segmentId: string,
+): { meetingId: number; startTime: number; speaker: string } | null => {
+  const match = CANONICAL_SEGMENT_ID_PATTERN.exec(canonicalizeSegmentId(segmentId))
+  if (!match) {
+    return null
+  }
+  const meetingId = Number(match[1])
+  const startTime = Number(match[2])
+  if (!Number.isFinite(meetingId) || !Number.isFinite(startTime)) {
+    return null
+  }
+  return { meetingId, startTime, speaker: match[3].toLowerCase() }
+}
 
 /**
  * Ports `canonicalize_segment_id` from the AI service so the FE can match legacy
@@ -41,6 +61,7 @@ export const canonicalizeSegmentId = (segmentId: unknown): string => {
 export const resolveTranscriptEvidenceRange = (
   segmentIds: string[],
   segments: TranscriptSegment[],
+  context: TranscriptEvidenceContext = {},
 ): TranscriptHighlightRange | null => {
   if (!Array.isArray(segmentIds) || segmentIds.length === 0 || segments.length === 0) {
     return null
@@ -63,6 +84,42 @@ export const resolveTranscriptEvidenceRange = (
     if (!rawId) return false
     return canonicalTargets.has(rawId) || canonicalTargets.has(canonicalizeSegmentId(rawId))
   })
+
+  // Upload/saved transcript APIs may return a visually consolidated row with
+  // a synthetic `time-*` id while analysis evidence retains canonical raw
+  // ids. In that narrow case, resolve the canonical evidence start against
+  // the containing transcript time range. The caller must provide meetingId
+  // so evidence from another meeting can never match by timestamp alone.
+  if (context.meetingId != null) {
+    for (const rawId of segmentIds) {
+      const canonicalId = canonicalizeSegmentId(String(rawId ?? '').trim())
+      const hasExactMatch = matched.some((segment) => {
+        const segmentId = String(segment.id ?? '').trim()
+        return segmentId === rawId || canonicalizeSegmentId(segmentId) === canonicalId
+      })
+      if (hasExactMatch) {
+        continue
+      }
+      const identity = parseCanonicalEvidenceIdentity(String(rawId ?? '').trim())
+      if (!identity || identity.meetingId !== context.meetingId) {
+        continue
+      }
+      const containing = segments.find((segment) => {
+        const segmentStart = Number.isFinite(segment.start) ? segment.start : segment.timestamp ?? 0
+        const segmentEnd = Number.isFinite(segment.end) && segment.end > segmentStart
+          ? segment.end
+          : segmentStart
+        const segmentMeetingId = Number(segment.meetingId)
+        if (Number.isFinite(segmentMeetingId) && segmentMeetingId !== identity.meetingId) {
+          return false
+        }
+        return segmentStart <= identity.startTime && segmentEnd >= identity.startTime
+      })
+      if (containing && !matched.includes(containing)) {
+        matched.push(containing)
+      }
+    }
+  }
 
   if (matched.length === 0) {
     return null

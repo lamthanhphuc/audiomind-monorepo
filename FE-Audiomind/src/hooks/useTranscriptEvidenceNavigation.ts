@@ -5,6 +5,7 @@ import { scrollTranscriptToHighlight, type TranscriptHighlightRange } from '../u
 
 type UseTranscriptEvidenceNavigationOptions = {
   segments: TranscriptSegment[]
+  meetingId?: number | null
   onHighlightChange?: (range: TranscriptHighlightRange | null) => void
   /** Fired only after evidence successfully resolves to a transcript range. */
   onNavigateSuccess?: () => void
@@ -13,6 +14,7 @@ type UseTranscriptEvidenceNavigationOptions = {
 
 export const useTranscriptEvidenceNavigation = ({
   segments,
+  meetingId,
   onHighlightChange,
   onNavigateSuccess,
   onMissingSegment,
@@ -24,7 +26,7 @@ export const useTranscriptEvidenceNavigation = ({
     if (normalizedIds.length === 0) {
       return
     }
-    const range = resolveTranscriptEvidenceRange(normalizedIds, segments)
+    const range = resolveTranscriptEvidenceRange(normalizedIds, segments, { meetingId })
     if (!range) {
       onMissingSegment?.(normalizedIds)
       return
@@ -32,7 +34,7 @@ export const useTranscriptEvidenceNavigation = ({
     onNavigateSuccess?.()
     onHighlightChange?.(range)
     scrollTranscriptToHighlight(range)
-  }, [onHighlightChange, onMissingSegment, onNavigateSuccess, segments])
+  }, [meetingId, onHighlightChange, onMissingSegment, onNavigateSuccess, segments])
 
   return { navigateToSegment }
 }

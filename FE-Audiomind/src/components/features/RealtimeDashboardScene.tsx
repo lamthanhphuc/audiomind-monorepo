@@ -238,6 +238,7 @@ export default function RealtimeDashboardScene({
   // highlight + scroll the live transcript (no setActiveTab call here).
   const { navigateToSegment: navigateToLiveEvidenceSegment } = useTranscriptEvidenceNavigation({
     segments: liveTranscriptSegments,
+    meetingId: liveMeetingId,
     onHighlightChange: setLiveHighlightRange,
     onNavigateSuccess: () => setLiveEvidenceWarning(null),
     onMissingSegment: () => {
