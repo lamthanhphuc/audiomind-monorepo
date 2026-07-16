@@ -1,9 +1,14 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Inbox } from 'lucide-react'
 import { useSubjectsList } from '../../hooks/useSubjectsList'
+import { useStudyWorkspace } from '../../hooks/useStudyWorkspace'
+import { flattenStudyFolderTree } from '../../types/study'
+import type { Subject } from '../../types/study'
 import { EmptyState } from '../ui/EmptyState'
 import { ErrorState } from '../ui/ErrorState'
 import { LoadingState } from '../ui/LoadingState'
+import { ConfirmDialog } from './ConfirmDialog'
+import { SubjectDialog } from './SubjectDialog'
 import './subjects.css'
 
 export type SubjectsListSceneProps = {
@@ -35,9 +40,45 @@ export function SubjectsListScene({
     pageSize,
     sort: 'name_asc',
   })
+  const { folderTree, updateSubjectEntry, archiveSubjectEntry } = useStudyWorkspace()
 
   const items = page?.items ?? []
+  const total = page?.total ?? 0
   const totalPages = Math.max(1, page?.totalPages ?? 1)
+
+  useEffect(() => {
+    if (total === 0) {
+      if (pageIndex !== 1) setPageIndex(1)
+      return
+    }
+    if (pageIndex > totalPages) {
+      setPageIndex(totalPages)
+    }
+  }, [pageIndex, total, totalPages])
+
+  const flatFolders = useMemo(
+    () => flattenStudyFolderTree(folderTree?.folders ?? []),
+    [folderTree],
+  )
+
+  const [editingSubject, setEditingSubject] = useState<Subject | null>(null)
+  const [archivingSubject, setArchivingSubject] = useState<Subject | null>(null)
+  const [archiveBusy, setArchiveBusy] = useState(false)
+  const [archiveError, setArchiveError] = useState<string | null>(null)
+
+  const handleArchiveSubject = async () => {
+    if (!archivingSubject) return
+    setArchiveBusy(true)
+    setArchiveError(null)
+    try {
+      await archiveSubjectEntry(archivingSubject.id)
+      setArchivingSubject(null)
+    } catch (error) {
+      setArchiveError(error instanceof Error ? error.message : 'Không lưu trữ được môn học')
+    } finally {
+      setArchiveBusy(false)
+    }
+  }
 
   return (
     <section className="subjects-scene" data-testid="subjects-list-scene">
@@ -68,6 +109,7 @@ export function SubjectsListScene({
 
       {loading ? <LoadingState message="Đang tải danh sách môn học…" /> : null}
       {!loading && error ? <ErrorState message={error} title="Không tải được môn học" /> : null}
+      {archiveError ? <ErrorState message={archiveError} title="Lưu trữ thất bại" /> : null}
       {!loading && !error && items.length === 0 ? (
         <EmptyState message="Chưa có môn học nào. Hãy tạo môn từ thanh bên." />
       ) : null}
@@ -111,6 +153,25 @@ export function SubjectsListScene({
                         >
                           Mở
                         </button>
+                        <button
+                          type="button"
+                          className="btn btn--secondary btn--compact"
+                          onClick={() => setEditingSubject(subject)}
+                          data-testid={`subjects-list-edit-${subject.id}`}
+                        >
+                          Sửa
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn--danger btn--compact"
+                          onClick={() => {
+                            setArchiveError(null)
+                            setArchivingSubject(subject)
+                          }}
+                          data-testid={`subjects-list-archive-${subject.id}`}
+                        >
+                          Lưu trữ
+                        </button>
                       </div>
                     </td>
                   </tr>
@@ -144,6 +205,35 @@ export function SubjectsListScene({
           ) : null}
         </>
       ) : null}
+
+      <SubjectDialog
+        open={editingSubject != null}
+        mode="edit"
+        initial={editingSubject ?? undefined}
+        folders={flatFolders}
+        onClose={() => setEditingSubject(null)}
+        onSubmit={async (payload) => {
+          if (!editingSubject) return
+          await updateSubjectEntry(editingSubject.id, payload)
+        }}
+      />
+
+      <ConfirmDialog
+        open={archivingSubject != null}
+        title="Lưu trữ môn học"
+        message={`Lưu trữ môn học "${archivingSubject?.name ?? ''}"? Môn học sẽ không còn hiển thị trong danh sách và bộ chọn môn học.`}
+        confirmLabel="Lưu trữ"
+        tone="danger"
+        busy={archiveBusy}
+        error={archiveError}
+        onConfirm={() => void handleArchiveSubject()}
+        onCancel={() => {
+          if (archiveBusy) return
+          setArchivingSubject(null)
+          setArchiveError(null)
+        }}
+        testId="subjects-list-archive-confirm"
+      />
     </section>
   )
 }

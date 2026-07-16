@@ -24,7 +24,44 @@ import {
   type CreateSubjectInput,
   type UpdateSubjectInput,
 } from '../services/subjects'
-import type { StudyFolderTreeResponse, SubjectSummary } from '../types/study'
+import type { StudyFolderTreeResponse, Subject, SubjectSummary } from '../types/study'
+
+/** Safety cap on catalog pages fetched, to avoid unbounded requests if the backend ever returns a huge count. */
+const CATALOG_MAX_PAGES = 40
+const CATALOG_PAGE_SIZE = 50
+
+const toSubjectSummary = (subject: Subject): SubjectSummary => ({
+  id: subject.id,
+  name: subject.name,
+  code: subject.code,
+  semester: subject.semester,
+  color: subject.color,
+  folderId: subject.folderId,
+  archivedAt: subject.archivedAt,
+  meetingCount: subject.meetingCount,
+})
+
+/** Fetches every page of active subjects (up to a safety limit) so the catalog isn't capped at the first page. */
+const fetchFullSubjectCatalog = async (): Promise<SubjectSummary[]> => {
+  const seen = new Map<number, SubjectSummary>()
+  let pageIndex = 1
+  let totalPages = 1
+  do {
+    const page = await listSubjects({
+      archived: false,
+      page: pageIndex,
+      pageSize: CATALOG_PAGE_SIZE,
+      sort: 'name_asc',
+    })
+    for (const subject of page.items) {
+      seen.set(subject.id, toSubjectSummary(subject))
+    }
+    totalPages = Math.max(1, page.totalPages)
+    pageIndex += 1
+  } while (pageIndex <= totalPages && pageIndex <= CATALOG_MAX_PAGES)
+
+  return Array.from(seen.values()).sort((a, b) => a.name.localeCompare(b.name, 'vi'))
+}
 
 type StudyWorkspaceContextValue = {
   folderTree: StudyFolderTreeResponse | null
@@ -79,17 +116,8 @@ export function StudyWorkspaceProvider({ children }: { children: ReactNode }) {
     setCatalogLoading(true)
     setCatalogError(null)
     try {
-      const page = await listSubjects({ archived: false, page: 1, pageSize: 50, sort: 'name_asc' })
-      setCatalogSubjects(page.items.map((subject) => ({
-        id: subject.id,
-        name: subject.name,
-        code: subject.code,
-        semester: subject.semester,
-        color: subject.color,
-        folderId: subject.folderId,
-        archivedAt: subject.archivedAt,
-        meetingCount: subject.meetingCount,
-      })))
+      const subjects = await fetchFullSubjectCatalog()
+      setCatalogSubjects(subjects)
       setCatalogRevision((value) => value + 1)
     } catch (error) {
       setCatalogError(error instanceof Error ? error.message : 'Không tải được danh sách môn học')

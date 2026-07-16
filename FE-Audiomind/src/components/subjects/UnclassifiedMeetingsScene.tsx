@@ -39,7 +39,18 @@ export function UnclassifiedMeetingsScene({
   const { assignMeetingToSubject } = useStudyWorkspace()
 
   const items = page?.items ?? []
+  const total = page?.total ?? 0
   const totalPages = Math.max(1, page?.totalPages ?? 1)
+
+  useEffect(() => {
+    if (total === 0) {
+      if (pageIndex !== 1) setPageIndex(1)
+      return
+    }
+    if (pageIndex > totalPages) {
+      setPageIndex(totalPages)
+    }
+  }, [pageIndex, total, totalPages])
 
   const handleAssign = async (meetingId: number, subjectId: number | null) => {
     if (subjectId == null) return

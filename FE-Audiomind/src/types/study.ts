@@ -82,3 +82,23 @@ export type UnclassifiedFilters = {
   page?: number
   pageSize?: number
 }
+
+/** Flattens a study folder tree into a plain list (depth-first), e.g. for dialog "parent folder" pickers. */
+export const flattenStudyFolderTree = (nodes: StudyFolderTreeNode[]): StudyFolder[] => {
+  const result: StudyFolder[] = []
+  const walk = (items: StudyFolderTreeNode[]) => {
+    for (const node of items) {
+      result.push({
+        id: node.id,
+        name: node.name,
+        color: node.color,
+        parentFolderId: node.parentFolderId,
+      })
+      if (node.children?.length) {
+        walk(node.children)
+      }
+    }
+  }
+  walk(nodes)
+  return result
+}

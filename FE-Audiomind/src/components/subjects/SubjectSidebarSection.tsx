@@ -1,8 +1,10 @@
 import { useMemo, useState } from 'react'
-import { BookOpen, FolderPlus, GraduationCap, Inbox, Plus } from 'lucide-react'
+import { BookOpen, FolderPlus, GraduationCap, Inbox, Pencil, Plus, Trash2 } from 'lucide-react'
 import type { DashboardScene } from '../dashboard/DashboardLayout'
 import { useStudyWorkspace } from '../../hooks/useStudyWorkspace'
-import type { StudyFolder, StudyFolderTreeNode, SubjectSummary } from '../../types'
+import { flattenStudyFolderTree } from '../../types/study'
+import type { StudyFolderTreeNode, SubjectSummary } from '../../types'
+import { ConfirmDialog } from './ConfirmDialog'
 import { FolderDialog } from './FolderDialog'
 import { SubjectDialog } from './SubjectDialog'
 import './subjects.css'
@@ -13,25 +15,6 @@ export type SubjectSidebarSectionProps = {
   onNavigateSubjects: () => void
   onNavigateSubjectDetail: (subjectId: number) => void
   onNavigateUnclassified: () => void
-}
-
-const flattenFolders = (nodes: StudyFolderTreeNode[]): StudyFolder[] => {
-  const result: StudyFolder[] = []
-  const walk = (items: StudyFolderTreeNode[]) => {
-    for (const node of items) {
-      result.push({
-        id: node.id,
-        name: node.name,
-        color: node.color,
-        parentFolderId: node.parentFolderId,
-      })
-      if (node.children?.length) {
-        walk(node.children)
-      }
-    }
-  }
-  walk(nodes)
-  return result
 }
 
 function SubjectNavButton({
@@ -72,20 +55,48 @@ function FolderTreeNodeView({
   node,
   selectedSubjectId,
   onNavigateSubjectDetail,
+  onEditFolder,
+  onDeleteFolder,
 }: {
   node: StudyFolderTreeNode
   selectedSubjectId: number | null
   onNavigateSubjectDetail: (subjectId: number) => void
+  onEditFolder: (folder: StudyFolderTreeNode) => void
+  onDeleteFolder: (folder: StudyFolderTreeNode) => void
 }) {
   return (
     <li className="subject-sidebar__folder">
       <div className="subject-sidebar__folder-label">
-        <span
-          className="subject-sidebar__folder-dot"
-          style={{ background: node.color || '#6366f1' }}
-          aria-hidden
-        />
-        <span>{node.name}</span>
+        <span className="subject-sidebar__folder-label-main">
+          <span
+            className="subject-sidebar__folder-dot"
+            style={{ background: node.color || '#6366f1' }}
+            aria-hidden
+          />
+          <span>{node.name}</span>
+        </span>
+        <span className="subject-sidebar__folder-actions">
+          <button
+            type="button"
+            className="subject-sidebar__icon-btn"
+            title="Sửa thư mục"
+            aria-label={`Sửa thư mục ${node.name}`}
+            onClick={() => onEditFolder(node)}
+            data-testid={`subject-sidebar-edit-folder-${node.id}`}
+          >
+            <Pencil size={12} aria-hidden />
+          </button>
+          <button
+            type="button"
+            className="subject-sidebar__icon-btn"
+            title="Xoá thư mục"
+            aria-label={`Xoá thư mục ${node.name}`}
+            onClick={() => onDeleteFolder(node)}
+            data-testid={`subject-sidebar-delete-folder-${node.id}`}
+          >
+            <Trash2 size={12} aria-hidden />
+          </button>
+        </span>
       </div>
       <ul className="subject-sidebar__children">
         {node.subjects.map((subject) => (
@@ -105,6 +116,8 @@ function FolderTreeNodeView({
             node={child}
             selectedSubjectId={selectedSubjectId}
             onNavigateSubjectDetail={onNavigateSubjectDetail}
+            onEditFolder={onEditFolder}
+            onDeleteFolder={onDeleteFolder}
           />
         ))}
       </ul>
@@ -125,17 +138,37 @@ export function SubjectSidebarSection({
     treeError,
     createFolder,
     createSubjectEntry,
+    updateFolder,
+    removeFolder,
   } = useStudyWorkspace()
 
   const [folderDialogOpen, setFolderDialogOpen] = useState(false)
   const [subjectDialogOpen, setSubjectDialogOpen] = useState(false)
+  const [editingFolder, setEditingFolder] = useState<StudyFolderTreeNode | null>(null)
+  const [deletingFolder, setDeletingFolder] = useState<StudyFolderTreeNode | null>(null)
+  const [deleteFolderBusy, setDeleteFolderBusy] = useState(false)
+  const [deleteFolderError, setDeleteFolderError] = useState<string | null>(null)
 
   const flatFolders = useMemo(
-    () => flattenFolders(folderTree?.folders ?? []),
+    () => flattenStudyFolderTree(folderTree?.folders ?? []),
     [folderTree],
   )
 
   const rootSubjects: SubjectSummary[] = folderTree?.rootSubjects ?? []
+
+  const handleDeleteFolder = async () => {
+    if (!deletingFolder) return
+    setDeleteFolderBusy(true)
+    setDeleteFolderError(null)
+    try {
+      await removeFolder(deletingFolder.id)
+      setDeletingFolder(null)
+    } catch (error) {
+      setDeleteFolderError(error instanceof Error ? error.message : 'Không xoá được thư mục')
+    } finally {
+      setDeleteFolderBusy(false)
+    }
+  }
 
   return (
     <div className="dashboard-sidebar__section subject-sidebar" data-testid="subject-sidebar-section">
@@ -203,6 +236,11 @@ export function SubjectSidebarSection({
                 node={node}
                 selectedSubjectId={selectedSubjectId}
                 onNavigateSubjectDetail={onNavigateSubjectDetail}
+                onEditFolder={setEditingFolder}
+                onDeleteFolder={(folder) => {
+                  setDeleteFolderError(null)
+                  setDeletingFolder(folder)
+                }}
               />
             ))}
           </ul>
@@ -233,6 +271,35 @@ export function SubjectSidebarSection({
         onSubmit={async (payload) => {
           await createFolder(payload)
         }}
+      />
+
+      <FolderDialog
+        open={editingFolder != null}
+        mode="edit"
+        initial={editingFolder ?? undefined}
+        folders={flatFolders}
+        onClose={() => setEditingFolder(null)}
+        onSubmit={async (payload) => {
+          if (!editingFolder) return
+          await updateFolder(editingFolder.id, payload)
+        }}
+      />
+
+      <ConfirmDialog
+        open={deletingFolder != null}
+        title="Xoá thư mục"
+        message={`Xoá thư mục "${deletingFolder?.name ?? ''}"? Các môn học trong thư mục sẽ không còn thuộc thư mục này.`}
+        confirmLabel="Xoá"
+        tone="danger"
+        busy={deleteFolderBusy}
+        error={deleteFolderError}
+        onConfirm={() => void handleDeleteFolder()}
+        onCancel={() => {
+          if (deleteFolderBusy) return
+          setDeletingFolder(null)
+          setDeleteFolderError(null)
+        }}
+        testId="subject-sidebar-delete-folder-confirm"
       />
 
       <SubjectDialog

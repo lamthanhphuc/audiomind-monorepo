@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { ArrowLeft } from 'lucide-react'
 import { useSubjectDetail } from '../../hooks/useSubjectDetail'
 import { useStudyWorkspace } from '../../hooks/useStudyWorkspace'
@@ -28,7 +28,18 @@ export function SubjectDetailScene({
   const [actionError, setActionError] = useState<string | null>(null)
 
   const meetings = meetingsPage?.items ?? []
+  const total = meetingsPage?.total ?? 0
   const totalPages = Math.max(1, meetingsPage?.totalPages ?? 1)
+
+  useEffect(() => {
+    if (total === 0) {
+      if (pageIndex !== 1) setPageIndex(1)
+      return
+    }
+    if (pageIndex > totalPages) {
+      setPageIndex(totalPages)
+    }
+  }, [pageIndex, total, totalPages])
 
   const handleChangeSubject = async (meetingId: number, nextSubjectId: number | null) => {
     setRowBusyId(meetingId)
@@ -77,6 +88,12 @@ export function SubjectDetailScene({
           ) : null}
         </div>
       </header>
+
+      {subject?.archivedAt ? (
+        <p className="subjects-archived-banner" data-testid="subject-detail-archived-banner">
+          Môn học này đã được lưu trữ. Bạn vẫn có thể xem cuộc họp nhưng không thể gán môn học mới cho các cuộc họp khác.
+        </p>
+      ) : null}
 
       {loading ? <LoadingState message="Đang tải chi tiết môn học…" /> : null}
       {!loading && error ? <ErrorState message={error} title="Không tải được môn học" /> : null}
