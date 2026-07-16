@@ -164,5 +164,77 @@ describe('AnalysisPanel', () => {
     expect(container.textContent).toContain('Không có điểm nghẽn')
     expect(container.textContent).toContain('Không có bước tiếp theo')
   })
+
+  it('keeps legacy summary and action items when educationStudy is present', () => {
+    renderPanel({
+      analysis: {
+        summary: 'Legacy tong hop',
+        meetingSummary: 'Legacy tong hop',
+        keywords: ['API', 'cache'],
+        technicalTerms: [{ term: 'API', meaning: 'Giao dien', category: 'protocol' }],
+        painPoints: [],
+        actionItems: ['Nop bai tap'],
+        businessActionItems: [{ task: 'Nop bai tap', owner: 'An' }],
+        keyDecisions: [],
+        risks: ['Tre deadline'],
+        blockers: [],
+        nextSteps: [],
+        domainMode: 'education',
+        educationStudy: {
+          title: 'Bai giang 1',
+          overview: 'Tong quan hoc phan',
+          learningObjectives: [],
+          sections: [],
+          keyPoints: [],
+          keywords: ['API'],
+          glossary: [],
+          mustRemember: [],
+          unclearPoints: [],
+        },
+      },
+      status: 'ready',
+    })
+
+    expect(container.textContent).toContain('Legacy tong hop')
+    expect(container.textContent).toContain('Bai giang 1')
+    expect(container.textContent).toContain('Tong quan hoc phan')
+    expect(container.textContent).toContain('Nop bai tap')
+    expect(container.textContent).toContain('Tre deadline')
+    // education keyword "API" is deduped from legacy keyword chips
+    expect(container.textContent).toContain('cache')
+  })
+
+  it('dedupes case-insensitive keywords across education and legacy', () => {
+    renderPanel({
+      analysis: {
+        summary: 'Summary',
+        keywords: ['API', 'api', 'Cache'],
+        technicalTerms: [
+          { term: 'API', meaning: 'one', category: 'protocol' },
+          { term: 'api', meaning: 'two', category: 'protocol' },
+        ],
+        painPoints: [],
+        actionItems: [],
+        domainMode: 'education',
+        educationStudy: {
+          title: 'Study',
+          overview: 'Overview',
+          learningObjectives: [],
+          sections: [],
+          keyPoints: [],
+          keywords: ['API'],
+          glossary: [],
+          mustRemember: [],
+          unclearPoints: [],
+        },
+      },
+      status: 'ready',
+    })
+
+    const terms = Array.from(container.querySelectorAll('.analysis-term-card__term, .technical-term-card__term'))
+    // Only one technical term card for API after dedupe
+    const apiCards = terms.filter((el) => (el.textContent ?? '').toLowerCase() === 'api')
+    expect(apiCards.length).toBeLessThanOrEqual(1)
+  })
 })
 

@@ -1,4 +1,5 @@
 import type { AiAnalysis } from '../../types'
+import type { EvidenceClickHandler } from '../../utils/transcriptEvidence'
 import { formatDomainModeLabel } from '../../constants/domainMode'
 import { EducationAnalysisPanel } from '../education/EducationAnalysisPanel'
 import { EmptyState } from '../ui/EmptyState'
@@ -12,6 +13,32 @@ import './analysis-panel.css'
 
 export type AnalysisPanelStatus = 'idle' | 'loading' | 'ready' | 'empty' | 'error'
 
+const dedupeCaseInsensitive = (values: string[]): string[] => {
+  const seen = new Set<string>()
+  const result: string[] = []
+  for (const value of values) {
+    const trimmed = value.trim()
+    if (!trimmed) continue
+    const key = trimmed.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    result.push(trimmed)
+  }
+  return result
+}
+
+const dedupeTermsByName = <T extends { term: string }>(items: T[]): T[] => {
+  const seen = new Set<string>()
+  const result: T[] = []
+  for (const item of items) {
+    const key = item.term.trim().toLowerCase()
+    if (!key || seen.has(key)) continue
+    seen.add(key)
+    result.push(item)
+  }
+  return result
+}
+
 type AnalysisPanelProps = {
   title?: string
   analysis: AiAnalysis | null
@@ -22,7 +49,7 @@ type AnalysisPanelProps = {
   summaryFallback?: string
   testId?: string
   summaryTestId?: string
-  onEvidenceClick?: (segmentId: string) => void
+  onEvidenceClick?: EvidenceClickHandler
 }
 
 export const AnalysisPanel = ({
@@ -101,9 +128,10 @@ export const AnalysisPanel = ({
   const educationKeywords = new Set(
     (educationStudy?.keywords ?? []).map((keyword) => keyword.trim().toLowerCase()).filter(Boolean),
   )
-  const displayKeywords = educationStudy
-    ? keywords.filter((keyword) => !educationKeywords.has(keyword.trim().toLowerCase()))
-    : keywords
+  const displayKeywords = dedupeCaseInsensitive(
+    keywords.filter((keyword) => !educationKeywords.has(keyword.trim().toLowerCase())),
+  )
+  const dedupedTechnicalTerms = dedupeTermsByName(technicalTerms)
 
   return (
     <section className="analysis-panel" data-testid={testId}>
@@ -112,12 +140,6 @@ export const AnalysisPanel = ({
         <span className="analysis-panel__domain">{formatDomainModeLabel(analysis.domainMode)}</span>
       </header>
 
-      {educationStudy ? (
-        <EducationAnalysisPanel analysis={analysis} onEvidenceClick={onEvidenceClick} />
-      ) : null}
-
-      {!educationStudy ? (
-      <>
       <AnalysisSection title="Tóm tắt" isEmpty={!summaryText}>
         <p
           className="analysis-panel__summary"
@@ -127,94 +149,197 @@ export const AnalysisPanel = ({
         </p>
       </AnalysisSection>
 
-      <AnalysisSection title="Quyết định chính" isEmpty={decisions.length === 0} emptyMessage="Không có quyết định chính">
-        <ul className="analysis-action-list">
-          {decisions.map((item) => (
-            <li key={item}>{item}</li>
-          ))}
-        </ul>
-      </AnalysisSection>
+      {educationStudy ? (
+        <>
+          <EducationAnalysisPanel analysis={analysis} onEvidenceClick={onEvidenceClick} />
 
-      <AnalysisSection title="Từ khóa" isEmpty={displayKeywords.length === 0} emptyMessage="Không có từ khóa">
-        <KeywordChips keywords={displayKeywords} />
-      </AnalysisSection>
+          {displayKeywords.length > 0 && (
+            <AnalysisSection title="Từ khóa" testId="analysis-panel-legacy-keywords">
+              <KeywordChips keywords={displayKeywords} />
+            </AnalysisSection>
+          )}
 
-      <AnalysisSection
-        title="Thuật ngữ kỹ thuật"
-        isEmpty={technicalTerms.length === 0}
-        emptyMessage="Không có thuật ngữ kỹ thuật"
-      >
-        {technicalTerms.map((item) => (
-          <TechnicalTermCard key={item.term} term={item} />
-        ))}
-      </AnalysisSection>
+          {dedupedTechnicalTerms.length > 0 && (
+            <AnalysisSection title="Thuật ngữ kỹ thuật" testId="analysis-panel-legacy-terms">
+              {dedupedTechnicalTerms.map((item) => (
+                <TechnicalTermCard key={item.term} term={item} />
+              ))}
+            </AnalysisSection>
+          )}
 
-      <AnalysisSection title="Vấn đề / pain points" isEmpty={painPoints.length === 0} emptyMessage="Không có vấn đề được ghi nhận">
-        {painPoints.map((item) => (
-          <PainPointCard key={`${item.title}-${item.severity}`} item={item} />
-        ))}
-      </AnalysisSection>
+          {decisions.length > 0 && (
+            <AnalysisSection title="Quyết định chính">
+              <ul className="analysis-action-list">
+                {decisions.map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
+            </AnalysisSection>
+          )}
 
-      <AnalysisSection title="Đầu việc" isEmpty={actionItemDetails.length === 0} emptyMessage="Không có đầu việc">
-        <ul className="analysis-action-list">
-          {actionItemDetails.map((item) => (
-            <li key={`${item.task}-${item.owner ?? 'none'}-${item.dueDate ?? item.deadline ?? 'none'}`}>
-              <div className="analysis-action-item__task">{item.task}</div>
-              {(item.owner || item.dueDate || item.deadline || item.priority || item.status) && (
-                <div className="analysis-action-item__meta">
-                  {item.owner && <span>Người phụ trách: {item.owner}</span>}
-                  {(item.dueDate || item.deadline) && <span>Hạn: {item.dueDate ?? item.deadline}</span>}
-                  {item.priority && <span>Ưu tiên: {item.priority}</span>}
-                  {item.status && <span>Trạng thái: {item.status}</span>}
-                </div>
-              )}
-              {item.evidence && <div className="analysis-action-item__evidence">Bằng chứng: {item.evidence}</div>}
-            </li>
-          ))}
-        </ul>
-      </AnalysisSection>
+          {painPoints.length > 0 && (
+            <AnalysisSection title="Vấn đề / pain points">
+              {painPoints.map((item) => (
+                <PainPointCard key={`${item.title}-${item.severity}`} item={item} />
+              ))}
+            </AnalysisSection>
+          )}
 
-      <AnalysisSection title="Rủi ro" isEmpty={risks.length === 0} emptyMessage="Không có rủi ro">
-        <ul className="analysis-action-list">
-          {risks.map((item) => (
-            <li key={item}>{item}</li>
-          ))}
-        </ul>
-      </AnalysisSection>
+          {actionItemDetails.length > 0 && (
+            <AnalysisSection title="Đầu việc">
+              <ul className="analysis-action-list">
+                {actionItemDetails.map((item) => (
+                  <li key={`${item.task}-${item.owner ?? 'none'}-${item.dueDate ?? item.deadline ?? 'none'}`}>
+                    <div className="analysis-action-item__task">{item.task}</div>
+                    {(item.owner || item.dueDate || item.deadline || item.priority || item.status) && (
+                      <div className="analysis-action-item__meta">
+                        {item.owner && <span>Người phụ trách: {item.owner}</span>}
+                        {(item.dueDate || item.deadline) && <span>Hạn: {item.dueDate ?? item.deadline}</span>}
+                        {item.priority && <span>Ưu tiên: {item.priority}</span>}
+                        {item.status && <span>Trạng thái: {item.status}</span>}
+                      </div>
+                    )}
+                    {item.evidence && <div className="analysis-action-item__evidence">Bằng chứng: {item.evidence}</div>}
+                  </li>
+                ))}
+              </ul>
+            </AnalysisSection>
+          )}
 
-      <AnalysisSection title="Điểm nghẽn" isEmpty={blockers.length === 0} emptyMessage="Không có điểm nghẽn">
-        <ul className="analysis-action-list">
-          {blockers.map((item) => (
-            <li key={item}>{item}</li>
-          ))}
-        </ul>
-      </AnalysisSection>
+          {risks.length > 0 && (
+            <AnalysisSection title="Rủi ro">
+              <ul className="analysis-action-list">
+                {risks.map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
+            </AnalysisSection>
+          )}
 
-      <AnalysisSection title="Bước tiếp theo" isEmpty={nextSteps.length === 0} emptyMessage="Không có bước tiếp theo">
-        <ul className="analysis-action-list">
-          {nextSteps.map((item) => (
-            <li key={item}>{item}</li>
-          ))}
-        </ul>
-      </AnalysisSection>
+          {blockers.length > 0 && (
+            <AnalysisSection title="Điểm nghẽn">
+              <ul className="analysis-action-list">
+                {blockers.map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
+            </AnalysisSection>
+          )}
 
-      <AnalysisSection title="Tác động" isEmpty={!hasImpact} emptyMessage="Không có thông tin tác động">
-        {analysis.businessImpact && <p className="analysis-panel__summary"><strong>Kinh doanh:</strong> {analysis.businessImpact}</p>}
-        {analysis.customerImpact && <p className="analysis-panel__summary"><strong>Khách hàng:</strong> {analysis.customerImpact}</p>}
-        {analysis.technicalImpact && <p className="analysis-panel__summary"><strong>Kỹ thuật:</strong> {analysis.technicalImpact}</p>}
-      </AnalysisSection>
+          {nextSteps.length > 0 && (
+            <AnalysisSection title="Bước tiếp theo">
+              <ul className="analysis-action-list">
+                {nextSteps.map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
+            </AnalysisSection>
+          )}
 
-      <AnalysisSection
-        title="Độ tin cậy"
-        isEmpty={normalizedConfidence === undefined}
-        emptyMessage="Không có độ tin cậy"
-      >
-        {normalizedConfidence !== undefined && (
-          <p className="analysis-panel__summary">{Math.round(normalizedConfidence * 100)}%</p>
-        )}
-      </AnalysisSection>
-      </>
-      ) : null}
+          {hasImpact && (
+            <AnalysisSection title="Tác động">
+              {analysis.businessImpact && <p className="analysis-panel__summary"><strong>Kinh doanh:</strong> {analysis.businessImpact}</p>}
+              {analysis.customerImpact && <p className="analysis-panel__summary"><strong>Khách hàng:</strong> {analysis.customerImpact}</p>}
+              {analysis.technicalImpact && <p className="analysis-panel__summary"><strong>Kỹ thuật:</strong> {analysis.technicalImpact}</p>}
+            </AnalysisSection>
+          )}
+
+          {normalizedConfidence !== undefined && (
+            <AnalysisSection title="Độ tin cậy">
+              <p className="analysis-panel__summary">{Math.round(normalizedConfidence * 100)}%</p>
+            </AnalysisSection>
+          )}
+        </>
+      ) : (
+        <>
+          <AnalysisSection title="Quyết định chính" isEmpty={decisions.length === 0} emptyMessage="Không có quyết định chính">
+            <ul className="analysis-action-list">
+              {decisions.map((item) => (
+                <li key={item}>{item}</li>
+              ))}
+            </ul>
+          </AnalysisSection>
+
+          <AnalysisSection title="Từ khóa" isEmpty={displayKeywords.length === 0} emptyMessage="Không có từ khóa">
+            <KeywordChips keywords={displayKeywords} />
+          </AnalysisSection>
+
+          <AnalysisSection
+            title="Thuật ngữ kỹ thuật"
+            isEmpty={dedupedTechnicalTerms.length === 0}
+            emptyMessage="Không có thuật ngữ kỹ thuật"
+          >
+            {dedupedTechnicalTerms.map((item) => (
+              <TechnicalTermCard key={item.term} term={item} />
+            ))}
+          </AnalysisSection>
+
+          <AnalysisSection title="Vấn đề / pain points" isEmpty={painPoints.length === 0} emptyMessage="Không có vấn đề được ghi nhận">
+            {painPoints.map((item) => (
+              <PainPointCard key={`${item.title}-${item.severity}`} item={item} />
+            ))}
+          </AnalysisSection>
+
+          <AnalysisSection title="Đầu việc" isEmpty={actionItemDetails.length === 0} emptyMessage="Không có đầu việc">
+            <ul className="analysis-action-list">
+              {actionItemDetails.map((item) => (
+                <li key={`${item.task}-${item.owner ?? 'none'}-${item.dueDate ?? item.deadline ?? 'none'}`}>
+                  <div className="analysis-action-item__task">{item.task}</div>
+                  {(item.owner || item.dueDate || item.deadline || item.priority || item.status) && (
+                    <div className="analysis-action-item__meta">
+                      {item.owner && <span>Người phụ trách: {item.owner}</span>}
+                      {(item.dueDate || item.deadline) && <span>Hạn: {item.dueDate ?? item.deadline}</span>}
+                      {item.priority && <span>Ưu tiên: {item.priority}</span>}
+                      {item.status && <span>Trạng thái: {item.status}</span>}
+                    </div>
+                  )}
+                  {item.evidence && <div className="analysis-action-item__evidence">Bằng chứng: {item.evidence}</div>}
+                </li>
+              ))}
+            </ul>
+          </AnalysisSection>
+
+          <AnalysisSection title="Rủi ro" isEmpty={risks.length === 0} emptyMessage="Không có rủi ro">
+            <ul className="analysis-action-list">
+              {risks.map((item) => (
+                <li key={item}>{item}</li>
+              ))}
+            </ul>
+          </AnalysisSection>
+
+          <AnalysisSection title="Điểm nghẽn" isEmpty={blockers.length === 0} emptyMessage="Không có điểm nghẽn">
+            <ul className="analysis-action-list">
+              {blockers.map((item) => (
+                <li key={item}>{item}</li>
+              ))}
+            </ul>
+          </AnalysisSection>
+
+          <AnalysisSection title="Bước tiếp theo" isEmpty={nextSteps.length === 0} emptyMessage="Không có bước tiếp theo">
+            <ul className="analysis-action-list">
+              {nextSteps.map((item) => (
+                <li key={item}>{item}</li>
+              ))}
+            </ul>
+          </AnalysisSection>
+
+          <AnalysisSection title="Tác động" isEmpty={!hasImpact} emptyMessage="Không có thông tin tác động">
+            {analysis.businessImpact && <p className="analysis-panel__summary"><strong>Kinh doanh:</strong> {analysis.businessImpact}</p>}
+            {analysis.customerImpact && <p className="analysis-panel__summary"><strong>Khách hàng:</strong> {analysis.customerImpact}</p>}
+            {analysis.technicalImpact && <p className="analysis-panel__summary"><strong>Kỹ thuật:</strong> {analysis.technicalImpact}</p>}
+          </AnalysisSection>
+
+          <AnalysisSection
+            title="Độ tin cậy"
+            isEmpty={normalizedConfidence === undefined}
+            emptyMessage="Không có độ tin cậy"
+          >
+            {normalizedConfidence !== undefined && (
+              <p className="analysis-panel__summary">{Math.round(normalizedConfidence * 100)}%</p>
+            )}
+          </AnalysisSection>
+        </>
+      )}
     </section>
   )
 }
