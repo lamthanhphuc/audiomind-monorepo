@@ -3,6 +3,16 @@ import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as api from '../../services/api'
 import * as knowledgeLayer from '../../services/knowledgeLayer'
+
+vi.mock('../../utils/transcriptJump', async () => {
+  const actual = await vi.importActual<typeof import('../../utils/transcriptJump')>('../../utils/transcriptJump')
+  return {
+    ...actual,
+    scrollTranscriptToHighlight: vi.fn(),
+  }
+})
+
+import { scrollTranscriptToHighlight } from '../../utils/transcriptJump'
 import FeatureAnalysis from './FeatureAnalysis'
 
 vi.mock('../../services/knowledgeLayer', () => ({
@@ -37,6 +47,39 @@ const clickModelTab = async (container: HTMLElement) => {
   await flush()
 }
 
+const educationAnalysis = (sourceSegmentIds: string[]) => ({
+  summary: 'Legacy summary remains visible',
+  keywords: [],
+  technicalTerms: [],
+  painPoints: [],
+  actionItems: [],
+  domainMode: 'education',
+  educationStudy: {
+    title: 'Network lesson',
+    overview: 'OSI overview',
+    learningObjectives: [],
+    sections: [],
+    keyPoints: [{
+      content: 'Physical layer transmits bits',
+      importance: 'HIGH',
+      sourceSegmentIds,
+    }],
+    keywords: [],
+    glossary: [],
+    mustRemember: [],
+    unclearPoints: [],
+  },
+})
+
+const clickFirstEvidence = async (container: HTMLElement) => {
+  const button = container.querySelector('[data-testid="education-evidence-button"]') as HTMLButtonElement
+  expect(button).toBeTruthy()
+  await act(async () => {
+    button.click()
+  })
+  await flush()
+}
+
 describe('FeatureAnalysis', () => {
   let container: HTMLDivElement
   let root: ReturnType<typeof createRoot>
@@ -49,6 +92,7 @@ describe('FeatureAnalysis', () => {
     })
     vi.mocked(knowledgeLayer.listSpeakerProfiles).mockResolvedValue([])
     vi.mocked(knowledgeLayer.listKnowledgeNotes).mockResolvedValue([])
+    vi.mocked(scrollTranscriptToHighlight).mockClear()
     vi.spyOn(api, 'getSavedAnalysis').mockResolvedValue({
       summary: '',
       keywords: [],
@@ -114,6 +158,103 @@ describe('FeatureAnalysis', () => {
     expect(container.querySelector('[data-testid="analysis-term-notes"]')).toBeTruthy()
     expect(container.textContent).toContain('API')
     expect(container.textContent).toContain('Giao dien')
+  })
+
+  it('switches upload-result evidence to transcript and renders the highlight', async () => {
+    const segmentId = 'meeting-42-start-1.000-speaker_1'
+    await act(async () => {
+      root.render(
+        <FeatureAnalysis
+          meetingId={42}
+          meetingTitle="Upload result"
+          hydrateFromApi={false}
+          analysis={educationAnalysis([segmentId]) as any}
+          transcriptSegments={[
+            { id: segmentId, speaker: 'Speaker 1', text: 'Physical layer', start: 1, end: 3 },
+          ]}
+        />,
+      )
+    })
+    await clickModelTab(container)
+    expect(container.querySelector('[data-testid="e2e-transcript"]')).toBeNull()
+
+    await clickFirstEvidence(container)
+
+    expect(container.querySelector('[data-testid="e2e-transcript"]')).toBeTruthy()
+    expect(container.querySelector('.transcript-display__segment--highlight')).toBeTruthy()
+    expect(scrollTranscriptToHighlight).toHaveBeenCalledWith({ startTime: 1, endTime: 3 })
+  })
+
+  it('keeps saved evidence navigation working when hydrateFromApi is true', async () => {
+    const segmentId = 'meeting-43-start-2.000-speaker_1'
+    vi.spyOn(api, 'getTranscript').mockResolvedValue({
+      meeting_id: 43,
+      transcripts: [{
+        segment_id: segmentId,
+        speaker: 'Speaker 1',
+        start_time: 2,
+        end_time: 4,
+        text: 'Saved segment',
+      }],
+    } as any)
+    vi.mocked(api.getSavedAnalysis).mockResolvedValue(educationAnalysis([segmentId]) as any)
+
+    await act(async () => {
+      root.render(<FeatureAnalysis meetingId={43} meetingTitle="Saved result" hydrateFromApi />)
+    })
+    await flush()
+    await clickModelTab(container)
+    await clickFirstEvidence(container)
+
+    expect(container.querySelector('[data-testid="e2e-transcript"]')).toBeTruthy()
+    expect(container.querySelector('.transcript-display__segment--highlight')).toBeTruthy()
+    expect(scrollTranscriptToHighlight).toHaveBeenCalledWith({ startTime: 2, endTime: 4 })
+  })
+
+  it('does not switch tabs for invalid evidence and shows a visible warning', async () => {
+    await act(async () => {
+      root.render(
+        <FeatureAnalysis
+          meetingId={44}
+          hydrateFromApi={false}
+          analysis={educationAnalysis(['missing-segment']) as any}
+          transcriptSegments={[
+            { id: 'known-segment', speaker: 'Speaker 1', text: 'Known', start: 0, end: 1 },
+          ]}
+        />,
+      )
+    })
+    await clickModelTab(container)
+    await clickFirstEvidence(container)
+
+    expect(container.querySelector('[data-testid="e2e-transcript"]')).toBeNull()
+    expect(container.querySelector('[data-testid="e2e-analysis"]')).toBeTruthy()
+    expect(container.querySelector('[role="status"]')?.textContent).toContain('Không tìm thấy đoạn transcript')
+    expect(scrollTranscriptToHighlight).not.toHaveBeenCalled()
+  })
+
+  it('uses matched segments from partially valid multi-segment evidence', async () => {
+    const first = 'meeting-45-start-5.000-speaker_1'
+    const second = 'meeting-45-start-9.000-speaker_2'
+    await act(async () => {
+      root.render(
+        <FeatureAnalysis
+          meetingId={45}
+          hydrateFromApi={false}
+          analysis={educationAnalysis([first, 'missing-segment', second]) as any}
+          transcriptSegments={[
+            { id: first, speaker: 'Speaker 1', text: 'First', start: 5, end: 7 },
+            { id: second, speaker: 'Speaker 2', text: 'Second', start: 9, end: 12 },
+          ]}
+        />,
+      )
+    })
+    await clickModelTab(container)
+    await clickFirstEvidence(container)
+
+    expect(container.querySelector('[data-testid="e2e-transcript"]')).toBeTruthy()
+    expect(container.querySelectorAll('.transcript-display__segment--highlight')).toHaveLength(2)
+    expect(scrollTranscriptToHighlight).toHaveBeenCalledWith({ startTime: 5, endTime: 12 })
   })
 
   it('renders mindmap tab with legacy snake_case analysis payloads', async () => {

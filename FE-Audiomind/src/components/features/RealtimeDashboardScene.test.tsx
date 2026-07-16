@@ -3,6 +3,16 @@ import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { UseAudioRecorderReturn } from '../../hooks/useAudioRecorder'
 import type { AiAnalysis } from '../../types'
+
+vi.mock('../../utils/transcriptJump', async () => {
+  const actual = await vi.importActual<typeof import('../../utils/transcriptJump')>('../../utils/transcriptJump')
+  return {
+    ...actual,
+    scrollTranscriptToHighlight: vi.fn(),
+  }
+})
+
+import { scrollTranscriptToHighlight } from '../../utils/transcriptJump'
 import RealtimeDashboardScene, { resolveRealtimeLifecycleBadge } from './RealtimeDashboardScene'
 
 describe('RealtimeDashboardScene', () => {
@@ -13,6 +23,7 @@ describe('RealtimeDashboardScene', () => {
     container = document.createElement('div')
     document.body.appendChild(container)
     root = createRoot(container)
+    vi.mocked(scrollTranscriptToHighlight).mockClear()
   })
 
   afterEach(() => {
@@ -148,6 +159,56 @@ describe('RealtimeDashboardScene', () => {
       .toContain('Realtime analysis is ready')
     expect(container.querySelector('[data-testid="analysis-status-badge"]')?.textContent)
       .toBe('Hoàn tất')
+  })
+
+  it('navigates realtime evidence in place without requiring a transcript tab', async () => {
+    const segmentId = 'meeting-42-start-4.000-speaker_1'
+    const educationRealtimeAnalysis: AiAnalysis = {
+      ...analysis,
+      domainMode: 'education',
+      educationStudy: {
+        title: 'Realtime lesson',
+        overview: 'Live overview',
+        learningObjectives: [],
+        sections: [],
+        keyPoints: [{
+          content: 'Live evidence',
+          importance: 'HIGH',
+          sourceSegmentIds: [segmentId],
+        }],
+        keywords: [],
+        glossary: [],
+        mustRemember: [],
+        unclearPoints: [],
+      },
+    }
+
+    await act(async () => {
+      root.render(
+        <RealtimeDashboardScene
+          {...baseProps}
+          liveTranscriptSegments={[
+            { id: segmentId, speaker: 'Speaker 1', text: 'Live evidence', start: 4, end: 6 },
+          ]}
+          liveAnalysis={educationRealtimeAnalysis}
+          liveAnalysisMetadata={educationRealtimeAnalysis}
+          liveAnalysisStatus="completed"
+          showLiveAnalysis
+        />,
+      )
+    })
+
+    const evidenceButton = container.querySelector(
+      '[data-testid="education-evidence-button"]',
+    ) as HTMLButtonElement
+    expect(evidenceButton).toBeTruthy()
+    await act(async () => {
+      evidenceButton.click()
+    })
+
+    expect(container.querySelector('[data-testid="feature-analysis-model-tab"]')).toBeNull()
+    expect(container.querySelector('.transcript-display__segment--highlight')).toBeTruthy()
+    expect(scrollTranscriptToHighlight).toHaveBeenCalledWith({ startTime: 4, endTime: 6 })
   })
 
   it('renders finalized no-transcript state without analysis loading', () => {
