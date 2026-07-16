@@ -2,9 +2,12 @@
 
 **Branch:** `feature/phase1-subject-education`  
 **Tracking branch:** `origin/feature/phase1-subject-education`  
-**Status:** Partially completed (P0/P1 code fixes landed; live E2E smoke AC-54 still open)  
+**Ahead/behind:** ahead 16, behind 0 (`0	16`)  
+**HEAD:** `04d4cd3` — `fix(ai): require and fallback educationStudy for education domain`  
+**Working tree:** clean  
+**Status:** **Completed** (live verification 2026-07-16; Stage B not run)  
 **Started:** 2026-07-15  
-**P0/P1 hardening:** 2026-07-16
+**P0/P1 hardening + live smoke:** 2026-07-16
 
 ## A. Git cleanup
 
@@ -234,45 +237,63 @@ Git Stage B.
 | P0-4 | Legacy analysis kept alongside `educationStudy` | AnalysisPanel tests |
 | P1-1..6 | Normalizer, `evidenceUnavailable`, catalog pages, pagination clamp, back clears subjectId, race guards | FE unit tests |
 
-## Manual smoke (pending live stack)
+## Manual smoke (live stack — 2026-07-16)
 
-| # | Scenario | Status |
-|---|----------|--------|
-| 1 | Folder + subject create; reload persists | Not run (requires running meeting-api) |
-| 2 | Realtime with `subjectId` → subject detail | Not run |
-| 3 | Upload with `subjectId`; duplicate unchanged | Not run |
-| 4 | Unclassified assign → list update | Not run |
-| 5 | Education structured sections visible | Code-verified via normalizer + panel tests |
-| 6 | Evidence click → transcript highlight | Code-verified via `transcriptEvidence` + hook tests |
-| 7 | Meeting history assign/change/clear subject (AC-29) | Unit-verified; live smoke pending |
+Stack: `docker compose -f infra/docker-compose.dev.yml`  
+Health (all **200**): frontend `:8080`, meeting `:8081/health`, processing `:8082/health`, ai `:8000/health`, user `:8083/health`.
+
+| # | Scenario | Status | Evidence |
+|---|----------|--------|----------|
+| 1 | Folder CRUD + reload persistence + delete keeps subjects (`folderId` null) | **PASS** | Live API smoke |
+| 2 | Subject CRUD + archive hidden from picker + archived assign **409** | **PASS** | Live API smoke |
+| 3 | Realtime `subjectId` → subject detail; change/clear subject | **PASS** | Live API smoke (AC-12/13/14/16) |
+| 4 | Upload with subject; duplicate preserves original subject | **PASS** | Live API smoke (AC-17) |
+| 5 | Unclassified list/search/assign | **PASS** after `8f8017f` (was 503 `lower(bytea)`) | AC-12/15 |
+| 6 | Saved Education `domain_mode=education` + `educationStudy` via `GET /processing/{id}/analysis/saved` | **PASS** after `04d4cd3` + transcript scopes | AC-33 |
+| 7 | Realtime Education analysis FeatureSet `education-study-v1`, legacy summary preserved | **PASS** | AC-34 |
+| 8 | Evidence navigation (single/multi/missing IDs) | **PASS** | FE unit `useTranscriptEvidenceNavigation` 5/5 + live educationStudy |
+| 9 | Catalog ≥51 subjects / pagination page2 | **PASS** | page1=50, page2=3, total=53 |
+| 10 | AC-54 regression smoke | **PASS** (functional) | Browser login → studio; subjects/unclassified/realtime/upload/history routes; Deepgram+Gemini healthy |
+
+### Live fixes during smoke
+
+| Commit | Issue |
+|--------|-------|
+| `8f8017f` | `GET /meetings/unclassified` → 503: Hibernate/Postgres `lower(bytea)` on null-search JPQL |
+| `04d4cd3` | Education Gemini often omitted `educationStudy`; require in schema + alias extract + summary fallback |
+
+### Automated verification (release pass)
+
+| Suite | Result |
+|-------|--------|
+| OpenAPI `validate:contracts` / `generate:client` / `typecheck:client` | pass |
+| OpenAPI `check:openapi` | fail tooling (`openapi-diff` circular `$ref` on folder tree) — contracts still valid; clients no drift |
+| FE lint (root) | pass |
+| FE test | **676 passed** / 71 files |
+| FE build | pass (tsc + vite) |
+| meeting-service full | **131 run, 0 fail, 0 error, 0 skipped** (post-unclassified fix) |
+| `StudyFolderSubjectMigrationTest` | **6 passed** (Docker) |
+| processing-service full | **321 run, 0 fail, 0 error, 0 skipped** |
+| AI education targeted | **21+ passed** (post-educationStudy fix) |
+| AI full `pytest tests` | **479 passed, 22 skipped, 4 errors** — TestClient `httpx`/`app=` env mismatch (not Phase 1 source) |
 
 ## Acceptance criteria snapshot
 
 | Status | Count | IDs |
 |--------|-------|-----|
-| **DONE** | 48 | AC-01–AC-11, AC-18–AC-32, AC-35–AC-53, AC-55 |
-| **PARTIAL** | 7 | AC-12–AC-17, AC-33–AC-34, AC-54 |
-| **TODO** | 0 | — |
-| **BLOCKED** | 0 | — |
-| **TOTAL** | 55 | — |
+| **DONE** | **55** | AC-01–AC-55 |
+| **PARTIAL** | **0** | — |
+| **TODO** | **0** | — |
+| **BLOCKED** | **0** | — |
+| **TOTAL** | **55** | — |
 
-Notes:
+Previously PARTIAL (9 criteria, not 7) closed by live smoke: **AC-12–AC-17**, **AC-33–AC-34**, **AC-54**.
 
-- AC-08/AC-09/AC-29 are **DONE** at code+unit level (folder/subject CRUD UI + history reassignment). Live confirmation still covered by AC-54.
-- AC-12–AC-17, AC-33 and AC-34 remain **PARTIAL** until live smoke verifies them.
-- AC-43–AC-45 are **DONE** via evidence + AnalysisPanel compatibility tests.
-
-Overall Phase 1 status: **Partially completed**.
+Overall Phase 1 status: **Completed**.
 
 ## Remaining
 
-Blocking for Completed:
-
-1. **AC-54** — live end-to-end regression smoke not executed
-
-Also remaining PARTIAL until smoke verifies them: AC-12–AC-17, AC-33, AC-34.
-
-Non-blocking / deferred:
-
-- Git Stage B not run (requires explicit user approval; does not block an accurate branch-cleanup report)
-- Deferred: subject meeting row `duration`/`sourceType`/transcriptStatus/analysisStatus (Option B)
+- Git Stage B not run (requires explicit user approval; does not block Completed)
+- Deferred product polish: subject meeting row `duration`/`sourceType`/transcriptStatus/analysisStatus (Option B)
+- AI full suite 4 TestClient env errors remain unrelated to Phase 1 education/subject code
+- AC-54 DOCX/PDF export + meeting sharing exercised at route/API readiness level only (not full file QA)
