@@ -1,3 +1,5 @@
+import { canonicalizeSegmentId } from '../utils/transcriptEvidence'
+
 export type EducationImportance = 'HIGH' | 'MEDIUM' | 'LOW'
 
 export type EducationSection = {
@@ -48,22 +50,30 @@ export type EducationStudy = {
   unclearPoints: EducationUnclearPoint[]
 }
 
+/**
+ * Coerces a value to a trimmed string ONLY when it is actually a string.
+ * Unlike `String(value)`, this never turns objects/numbers/null into text
+ * (e.g. `String({})` => "[object Object]"); non-string input yields ''.
+ */
+const asTrimmedString = (value: unknown): string => (typeof value === 'string' ? value.trim() : '')
+
 const normalizeImportance = (value: unknown): EducationImportance => {
-  const normalized = String(value ?? '').trim().toUpperCase()
+  const normalized = asTrimmedString(value).toUpperCase()
   if (normalized === 'HIGH' || normalized === 'LOW') {
     return normalized
   }
   return 'MEDIUM'
 }
 
-const normalizeStringList = (value: unknown, limit = 32): string[] => {
+/** Normalizes an array of free-text strings: string-only items, trims, dedupes case-insensitively, caps length. */
+const normalizeStringArray = (value: unknown, limit = 32): string[] => {
   if (!Array.isArray(value)) {
     return []
   }
   const seen = new Set<string>()
   const result: string[] = []
   for (const item of value) {
-    const text = String(item ?? '').trim()
+    const text = asTrimmedString(item)
     if (!text) continue
     const key = text.toLowerCase()
     if (seen.has(key)) continue
@@ -74,100 +84,108 @@ const normalizeStringList = (value: unknown, limit = 32): string[] => {
   return result
 }
 
+/** Normalizes source segment ids: string-only items, canonicalized (legacy or canonical form), deduped. */
 const normalizeSegmentIds = (value: unknown): string[] => {
   if (!Array.isArray(value)) {
     return []
   }
-  return value
-    .map((item) => String(item ?? '').trim())
-    .filter(Boolean)
+  const seen = new Set<string>()
+  const result: string[] = []
+  for (const item of value) {
+    const text = asTrimmedString(item)
+    if (!text) continue
+    const canonical = canonicalizeSegmentId(text)
+    if (!canonical || seen.has(canonical)) continue
+    seen.add(canonical)
+    result.push(canonical)
+  }
+  return result
 }
 
+const isPlainObject = (value: unknown): value is Record<string, unknown> => (
+  Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+)
+
 const normalizeSection = (value: unknown, index: number): EducationSection | null => {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+  if (!isPlainObject(value)) {
     return null
   }
-  const record = value as Record<string, unknown>
-  const title = String(record.title ?? '').trim()
+  const title = asTrimmedString(value.title)
   if (!title) return null
   return {
-    id: String(record.id ?? `section-${index + 1}`).trim(),
+    id: asTrimmedString(value.id) || `section-${index + 1}`,
     title,
-    summary: String(record.summary ?? '').trim(),
-    keyPoints: normalizeStringList(record.keyPoints ?? record.key_points),
-    keywords: normalizeStringList(record.keywords),
-    sourceSegmentIds: normalizeSegmentIds(record.sourceSegmentIds ?? record.source_segment_ids),
+    summary: asTrimmedString(value.summary),
+    keyPoints: normalizeStringArray(value.keyPoints ?? value.key_points),
+    keywords: normalizeStringArray(value.keywords),
+    sourceSegmentIds: normalizeSegmentIds(value.sourceSegmentIds ?? value.source_segment_ids),
   }
 }
 
 const normalizeKeyPoint = (value: unknown): EducationKeyPoint | null => {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+  if (!isPlainObject(value)) {
     return null
   }
-  const record = value as Record<string, unknown>
-  const content = String(record.content ?? '').trim()
+  const content = asTrimmedString(value.content)
   if (!content) return null
   return {
     content,
-    importance: normalizeImportance(record.importance),
-    sourceSegmentIds: normalizeSegmentIds(record.sourceSegmentIds ?? record.source_segment_ids),
+    importance: normalizeImportance(value.importance),
+    sourceSegmentIds: normalizeSegmentIds(value.sourceSegmentIds ?? value.source_segment_ids),
   }
 }
 
 const normalizeGlossaryItem = (value: unknown): EducationGlossaryItem | null => {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+  if (!isPlainObject(value)) {
     return null
   }
-  const record = value as Record<string, unknown>
-  const term = String(record.term ?? '').trim()
-  const definition = String(record.definition ?? '').trim()
+  const term = asTrimmedString(value.term)
+  const definition = asTrimmedString(value.definition)
   if (!term || !definition) return null
   return {
     term,
     definition,
-    example: String(record.example ?? '').trim() || null,
-    category: String(record.category ?? '').trim() || null,
-    sourceSegmentIds: normalizeSegmentIds(record.sourceSegmentIds ?? record.source_segment_ids),
+    example: asTrimmedString(value.example) || null,
+    category: asTrimmedString(value.category) || null,
+    sourceSegmentIds: normalizeSegmentIds(value.sourceSegmentIds ?? value.source_segment_ids),
   }
 }
 
 const normalizeMustRemember = (value: unknown): EducationMustRememberItem | null => {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+  if (!isPlainObject(value)) {
     return null
   }
-  const record = value as Record<string, unknown>
-  const content = String(record.content ?? '').trim()
+  const content = asTrimmedString(value.content)
   if (!content) return null
   return {
     content,
-    importance: normalizeImportance(record.importance),
-    reason: String(record.reason ?? '').trim() || null,
-    sourceSegmentIds: normalizeSegmentIds(record.sourceSegmentIds ?? record.source_segment_ids),
+    importance: normalizeImportance(value.importance),
+    reason: asTrimmedString(value.reason) || null,
+    sourceSegmentIds: normalizeSegmentIds(value.sourceSegmentIds ?? value.source_segment_ids),
   }
 }
 
 const normalizeUnclearPoint = (value: unknown): EducationUnclearPoint | null => {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+  if (!isPlainObject(value)) {
     return null
   }
-  const record = value as Record<string, unknown>
-  const content = String(record.content ?? '').trim()
-  const reason = String(record.reason ?? '').trim()
+  const content = asTrimmedString(value.content)
+  const reason = asTrimmedString(value.reason)
   if (!content) return null
   return {
     content,
     reason: reason || 'Chưa rõ',
-    sourceSegmentIds: normalizeSegmentIds(record.sourceSegmentIds ?? record.source_segment_ids),
+    sourceSegmentIds: normalizeSegmentIds(value.sourceSegmentIds ?? value.source_segment_ids),
   }
 }
 
 export const normalizeEducationStudyAnalysis = (value: unknown): EducationStudy | null => {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+  if (!isPlainObject(value)) {
     return null
   }
-  const record = value as Record<string, unknown>
-  const title = String(record.title ?? '').trim()
-  const overview = String(record.overview ?? '').trim()
+  const record = value
+  const title = asTrimmedString(record.title)
+  const overview = asTrimmedString(record.overview)
   const sections = (Array.isArray(record.sections) ? record.sections : [])
     .map((item, index) => normalizeSection(item, index))
     .filter((item): item is EducationSection => item != null)
@@ -183,8 +201,8 @@ export const normalizeEducationStudyAnalysis = (value: unknown): EducationStudy 
   const unclearPoints = (Array.isArray(record.unclearPoints ?? record.unclear_points) ? (record.unclearPoints ?? record.unclear_points) as unknown[] : [])
     .map((item) => normalizeUnclearPoint(item))
     .filter((item): item is EducationUnclearPoint => item != null)
-  const learningObjectives = normalizeStringList(record.learningObjectives ?? record.learning_objectives)
-  const keywords = normalizeStringList(record.keywords)
+  const learningObjectives = normalizeStringArray(record.learningObjectives ?? record.learning_objectives)
+  const keywords = normalizeStringArray(record.keywords)
 
   const hasContent = Boolean(
     title

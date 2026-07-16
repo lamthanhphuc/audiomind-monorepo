@@ -442,6 +442,12 @@ components:
           format: int64
         educationStudy:
           $ref: "#/components/schemas/EducationStudy"
+        evidenceUnavailable:
+          type: boolean
+          description: >-
+            True when the transcript lacks stable segment identifiers, so
+            evidence links (e.g. education study "Xem bằng chứng" buttons)
+            cannot be resolved reliably.
       additionalProperties: true
     EducationImportance:
       type: string

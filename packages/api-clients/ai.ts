@@ -428,6 +428,8 @@ export interface components {
             /** Format: int64 */
             meeting_id: number;
             educationStudy?: components["schemas"]["EducationStudy"];
+            /** @description True when the transcript lacks stable segment identifiers, so evidence links (e.g. education study "Xem bằng chứng" buttons) cannot be resolved reliably. */
+            evidenceUnavailable?: boolean;
         } & {
             [key: string]: unknown;
         };
