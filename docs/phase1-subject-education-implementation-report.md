@@ -5,9 +5,10 @@
 **Ahead/behind:** ahead 16, behind 0 (`0	16`)  
 **HEAD:** `04d4cd3` — `fix(ai): require and fallback educationStudy for education domain`  
 **Working tree:** clean  
-**Status:** **Completed** (live verification 2026-07-16; Stage B not run)  
-**Started:** 2026-07-15  
+**Status:** **Partially completed** (54/55; Stage B not run)
+**Started:** 2026-07-15
 **P0/P1 hardening + live smoke:** 2026-07-16
+**Final verification counts:** 2026-07-17
 
 ## A. Git cleanup
 
@@ -287,10 +288,10 @@ The realtime run used a non-sensitive generated English lesson and selected the 
 | FE build | pass (tsc + Vite; chunk-size warning only) |
 | meeting-service full | **131 run, 0 fail, 0 error, 0 skipped** |
 | `StudyFolderSubjectMigrationTest` | **6 passed** (Docker) |
-| processing-service full | **335 run, 0 fail, 0 error, 0 skipped** |
-| AI education targeted | **34 passed, 5 warnings** (re-run 2026-07-17; prior “24” was a stale report typo) |
-| AI full `pytest tests` | **480 passed, 23 skipped, 7 warnings, 0 failed, 0 errors** on Python 3.11.9 |
-| FE evidence deterministic suite | **60 passed** (RealtimeDashboardScene 11, AnalysisPanel, FeatureAnalysis, evidence hooks/utils) |
+| processing-service full | **335 passed, exit 0** |
+| AI Education focused tests | **41 passed, exit 0** |
+| AI full suite | **480 passed, 23 skipped, exit 0** |
+| Frontend evidence tests | **35 passed, exit 0** |
 
 ## Acceptance criteria snapshot
 
@@ -302,7 +303,10 @@ The realtime run used a non-sensitive generated English lesson and selected the 
 | **BLOCKED** | **0** | — |
 | **TOTAL** | **55** | — |
 
-AC-43 is **DONE** via deterministic realtime evidence fixtures (single/multi/partial/missing sourceSegmentIds + highlight/scroll/warning) and scoped job-state Education analysis fixture (meeting 21). AC-34 remains **PARTIAL** because fresh Gemini `/api/internal/realtime-analysis` still returns **HTTP 429** (`external_provider_quota`).
+| AC | Status | Note |
+|----|--------|------|
+| **AC-34** | **PARTIAL** | Fresh Gemini HTTP **429** (`external_provider_quota`) |
+| **AC-43** | **DONE** | Deterministic realtime evidence fixtures + scoped job-state Education fixture |
 
 Overall Phase 1 status: **Partially completed** (54/55).
 
@@ -310,5 +314,5 @@ Overall Phase 1 status: **Partially completed** (54/55).
 
 - Git Stage B not run, as required.
 - Deferred product polish: subject meeting row `duration`/`sourceType`/transcriptStatus/analysisStatus (Option B)
-- AC-34 blocked on Gemini quota; internal scoped Education path and stale Business rejection are verified.
+- AC-34 blocked on Gemini quota; when quota recovers, re-run fresh realtime Education and require `domainMode=education`, `educationStudy != null`, `promptVersion=education-analysis-v1`, `schemaVersion=education-study-v1`, `analysisFeatureSet=education-study-v1` → then **DONE 55 / Phase 1 Completed**.
 - AC-54 DOCX/PDF export + meeting sharing exercised at route/API readiness level only (not full file QA)
