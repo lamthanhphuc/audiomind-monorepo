@@ -16,6 +16,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
@@ -3575,9 +3576,18 @@ public class ProcessingService {
         );
 
         Map<String, Object> state = jobStateStore.getJobState(meetingId).orElse(null);
+        Map<String, Object> result = extractResult(state);
         Map<String, Object> stateAnalysis = extractAnalysisFromState(state);
-        if (hasStructuredAnalysis(stateAnalysis)
-                && analysisMatchesScope(stateAnalysis, recordingSessionId, attemptId)) {
+        String expectedDomainMode = resolveExpectedDomainModeForScopedRequest(state, result);
+        ScopedJobStateMatch scopedMatch = evaluateScopedJobStateMatch(
+                stateAnalysis,
+                result,
+                state,
+                recordingSessionId,
+                attemptId,
+                expectedDomainMode
+        );
+        if (scopedMatch.matched()) {
             Map<String, Object> response = new HashMap<>();
             response.put("meeting_id", meetingId);
             response.put("status", "COMPLETED");
@@ -3590,11 +3600,22 @@ public class ProcessingService {
                     meetingId,
                     recordingSessionId,
                     attemptId,
-                    DomainModes.fromAnalysisPayload(stateAnalysis),
+                    scopedMatch.actualDomainMode(),
                     stateAnalysis.get("promptVersion")
             );
             return response;
         }
+        log.info(
+                "event=ANALYSIS_SCOPE_JOB_STATE_MISS meetingId={} expectedRecordingSessionId={} expectedAttemptId={} expectedDomainMode={} actualRecordingSessionId={} actualAttemptId={} actualDomainMode={} reason={}",
+                meetingId,
+                recordingSessionId,
+                attemptId,
+                expectedDomainMode,
+                scopedMatch.actualRecordingSessionId(),
+                scopedMatch.actualAttemptId(),
+                scopedMatch.actualDomainMode(),
+                scopedMatch.reason()
+        );
 
         Map<String, Object> aiTranscriptResult = null;
         try {
@@ -3687,32 +3708,257 @@ public class ProcessingService {
         }
     }
 
-    private boolean analysisMatchesScope(
-            Map<String, Object> analysis,
+    private record AnalysisScope(
             Long recordingSessionId,
-            Long attemptId
+            Long attemptId,
+            String domainMode
     ) {
-        if (analysis == null || analysis.isEmpty() || recordingSessionId == null || attemptId == null) {
+    }
+
+    private record ScopedJobStateMatch(
+            boolean matched,
+            String reason,
+            Long actualRecordingSessionId,
+            Long actualAttemptId,
+            String actualDomainMode
+    ) {
+        static ScopedJobStateMatch hit(AnalysisScope scope) {
+            return new ScopedJobStateMatch(
+                    true,
+                    "matched",
+                    scope.recordingSessionId(),
+                    scope.attemptId(),
+                    scope.domainMode()
+            );
+        }
+
+        static ScopedJobStateMatch miss(
+                String reason,
+                Long actualRecordingSessionId,
+                Long actualAttemptId,
+                String actualDomainMode
+        ) {
+            return new ScopedJobStateMatch(
+                    false,
+                    reason,
+                    actualRecordingSessionId,
+                    actualAttemptId,
+                    actualDomainMode
+            );
+        }
+    }
+
+    /**
+     * Scoped GET must exact-match session + attempt + domain.
+     * Structured content alone never satisfies a scoped request.
+     */
+    private ScopedJobStateMatch evaluateScopedJobStateMatch(
+            Map<String, Object> analysis,
+            Map<String, Object> result,
+            Map<String, Object> state,
+            Long expectedRecordingSessionId,
+            Long expectedAttemptId,
+            String expectedDomainMode
+    ) {
+        if (expectedRecordingSessionId == null || expectedAttemptId == null) {
+            return ScopedJobStateMatch.miss("missing_provenance", null, null, null);
+        }
+        if (!hasStructuredAnalysis(analysis)) {
+            return ScopedJobStateMatch.miss("empty_analysis", null, null, null);
+        }
+
+        Optional<AnalysisScope> resolvedScope = resolveAnalysisScope(analysis, result, state);
+        if (resolvedScope.isEmpty()) {
+            String reason = hasConflictingProvenance(analysis, result, state)
+                    ? "conflicting_provenance"
+                    : "missing_provenance";
+            return ScopedJobStateMatch.miss(reason, null, null, null);
+        }
+
+        AnalysisScope actual = resolvedScope.get();
+        if (!expectedRecordingSessionId.equals(actual.recordingSessionId())) {
+            return ScopedJobStateMatch.miss(
+                    "session_mismatch",
+                    actual.recordingSessionId(),
+                    actual.attemptId(),
+                    actual.domainMode()
+            );
+        }
+        if (!expectedAttemptId.equals(actual.attemptId())) {
+            return ScopedJobStateMatch.miss(
+                    "attempt_mismatch",
+                    actual.recordingSessionId(),
+                    actual.attemptId(),
+                    actual.domainMode()
+            );
+        }
+
+        String expectedDomain = DomainModes.normalize(expectedDomainMode);
+        String actualDomain = DomainModes.normalize(actual.domainMode());
+        if (!expectedDomain.equals(actualDomain)) {
+            return ScopedJobStateMatch.miss(
+                    "domain_mismatch",
+                    actual.recordingSessionId(),
+                    actual.attemptId(),
+                    actualDomain
+            );
+        }
+        return ScopedJobStateMatch.hit(actual);
+    }
+
+    /**
+     * Prefer a single provenance object that already carries both session and attempt.
+     * Never invent a scope by mixing session from one layer with attempt from another.
+     */
+    private Optional<AnalysisScope> resolveAnalysisScope(
+            Map<String, Object> analysis,
+            Map<String, Object> result,
+            Map<String, Object> state
+    ) {
+        Long analysisSession = readRecordingSessionId(analysis);
+        Long analysisAttempt = readAttemptId(analysis);
+        if (analysisSession != null && analysisAttempt != null) {
+            return Optional.of(new AnalysisScope(
+                    analysisSession,
+                    analysisAttempt,
+                    resolveDomainForProvenanceSource(analysis, result, state)
+            ));
+        }
+
+        Long resultSession = readRecordingSessionId(result);
+        Long resultAttempt = readAttemptId(result);
+        if (resultSession != null && resultAttempt != null) {
+            if (provenanceConflictsWithPartial(analysisSession, analysisAttempt, resultSession, resultAttempt)) {
+                return Optional.empty();
+            }
+            return Optional.of(new AnalysisScope(
+                    resultSession,
+                    resultAttempt,
+                    resolveDomainForProvenanceSource(result, analysis, state)
+            ));
+        }
+
+        Long stateSession = readRecordingSessionId(state);
+        Long stateAttempt = readAttemptId(state);
+        if (stateSession != null && stateAttempt != null) {
+            if (provenanceConflictsWithPartial(analysisSession, analysisAttempt, stateSession, stateAttempt)
+                    || provenanceConflictsWithPartial(resultSession, resultAttempt, stateSession, stateAttempt)) {
+                return Optional.empty();
+            }
+            return Optional.of(new AnalysisScope(
+                    stateSession,
+                    stateAttempt,
+                    resolveDomainForProvenanceSource(state, result, analysis)
+            ));
+        }
+        return Optional.empty();
+    }
+
+    private boolean hasConflictingProvenance(
+            Map<String, Object> analysis,
+            Map<String, Object> result,
+            Map<String, Object> state
+    ) {
+        Long analysisSession = readRecordingSessionId(analysis);
+        Long analysisAttempt = readAttemptId(analysis);
+        Long resultSession = readRecordingSessionId(result);
+        Long resultAttempt = readAttemptId(result);
+        Long stateSession = readRecordingSessionId(state);
+        Long stateAttempt = readAttemptId(state);
+
+        boolean analysisPartial = (analysisSession != null) != (analysisAttempt != null);
+        boolean resultPartial = (resultSession != null) != (resultAttempt != null);
+        boolean statePartial = (stateSession != null) != (stateAttempt != null);
+        if (!(analysisPartial || resultPartial || statePartial)) {
             return false;
         }
-        Long analysisSession = parseOptionalLong(
-                firstNonBlank(
-                        analysis.get("recordingSessionId"),
-                        analysis.get("recording_session_id")
-                )
-        );
-        Long analysisAttempt = parseOptionalLong(
-                firstNonBlank(
-                        analysis.get("attemptId"),
-                        analysis.get("attempt_id")
-                )
-        );
-        if (analysisSession == null || analysisAttempt == null) {
-            // Legacy analyses without provenance may still be returned for the active
-            // scoped request when they already carry structured content for this meeting.
-            return hasStructuredAnalysis(analysis);
+        if (analysisPartial && resultSession != null && resultAttempt != null
+                && provenanceConflictsWithPartial(analysisSession, analysisAttempt, resultSession, resultAttempt)) {
+            return true;
         }
-        return recordingSessionId.equals(analysisSession) && attemptId.equals(analysisAttempt);
+        if (analysisPartial && stateSession != null && stateAttempt != null
+                && provenanceConflictsWithPartial(analysisSession, analysisAttempt, stateSession, stateAttempt)) {
+            return true;
+        }
+        if (resultPartial && stateSession != null && stateAttempt != null
+                && provenanceConflictsWithPartial(resultSession, resultAttempt, stateSession, stateAttempt)) {
+            return true;
+        }
+        // Partial fields across layers that would require mixing to form a full scope.
+        if (analysisSession != null && analysisAttempt == null
+                && resultSession == null && resultAttempt != null) {
+            return true;
+        }
+        if (analysisAttempt != null && analysisSession == null
+                && resultAttempt == null && resultSession != null) {
+            return true;
+        }
+        return false;
+    }
+
+    private boolean provenanceConflictsWithPartial(
+            Long partialSession,
+            Long partialAttempt,
+            Long fullSession,
+            Long fullAttempt
+    ) {
+        if (partialSession != null && !partialSession.equals(fullSession)) {
+            return true;
+        }
+        return partialAttempt != null && !partialAttempt.equals(fullAttempt);
+    }
+
+    private String resolveDomainForProvenanceSource(
+            Map<String, Object> primary,
+            Map<String, Object> secondary,
+            Map<String, Object> tertiary
+    ) {
+        return DomainModes.firstNonBlankNormalized(
+                primary == null ? null : primary.get("domainMode"),
+                primary == null ? null : primary.get("domain_mode"),
+                secondary == null ? null : secondary.get("domainMode"),
+                secondary == null ? null : secondary.get("domain_mode"),
+                tertiary == null ? null : tertiary.get("domainMode"),
+                tertiary == null ? null : tertiary.get("domain_mode")
+        );
+    }
+
+    private String resolveExpectedDomainModeForScopedRequest(
+            Map<String, Object> state,
+            Map<String, Object> result
+    ) {
+        // Expected domain is the current job/session intent, not the nested analysis payload
+        // (which may still hold a stale cross-domain analysis).
+        return DomainModes.firstNonBlankNormalized(
+                result == null ? null : result.get("domainMode"),
+                result == null ? null : result.get("domain_mode"),
+                state == null ? null : state.get("domainMode"),
+                state == null ? null : state.get("domain_mode")
+        );
+    }
+
+    private Long readRecordingSessionId(Map<String, Object> payload) {
+        if (payload == null || payload.isEmpty()) {
+            return null;
+        }
+        return parseOptionalLong(
+                firstNonBlank(
+                        payload.get("recordingSessionId"),
+                        payload.get("recording_session_id")
+                )
+        );
+    }
+
+    private Long readAttemptId(Map<String, Object> payload) {
+        if (payload == null || payload.isEmpty()) {
+            return null;
+        }
+        return parseOptionalLong(
+                firstNonBlank(
+                        payload.get("attemptId"),
+                        payload.get("attempt_id")
+                )
+        );
     }
 
     private boolean shouldTriggerScopedOnDemandAnalysis(Map<String, Object> response) {
