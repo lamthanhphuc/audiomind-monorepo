@@ -2526,6 +2526,7 @@ def _analyze_and_persist_realtime_transcript(
     return RealtimeTranscriptAnalysisResponse(
         meeting_id=meeting_id,
         status="completed",
+        analysis=analysis_for_job_state,
         transcript_hash=transcript_hash,
         source=source,
         promptVersion=prompt_version,
