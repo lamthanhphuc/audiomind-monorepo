@@ -3002,6 +3002,136 @@ class ProcessingServiceTest {
     }
 
     @Test
+    void getScopedAnalysis_shouldReturnEducationStudyFromProcessingJobStateWithoutAiTranscript() {
+        when(jobStateStore.getJobState(624L)).thenReturn(Optional.of(Map.of(
+                "status", "COMPLETED",
+                "result", Map.of(
+                        "domainMode", "education",
+                        "recording_session_id", 1L,
+                        "attempt_id", 1L,
+                        "transcripts", List.of(
+                                Map.of(
+                                        "speaker", "SPEAKER_1",
+                                        "text", "Chlorophyll absorbs sunlight",
+                                        "segment_id", "meeting-624-start-0.000-speaker_1"
+                                )
+                        ),
+                        "analysis", Map.of(
+                                "summary", "Photosynthesis lesson",
+                                "domainMode", "education",
+                                "promptVersion", "education-analysis-v1",
+                                "schemaVersion", "education-study-v1",
+                                "analysisFeatureSet", "education-study-v1",
+                                "analysisStatus", "COMPLETED",
+                                "recordingSessionId", 1.0,
+                                "attemptId", 1.0,
+                                "educationStudy", Map.of(
+                                        "title", "Photosynthesis",
+                                        "overview", "Light to chemical energy",
+                                        "keyPoints", List.of(Map.of(
+                                                "content", "Chlorophyll absorbs light",
+                                                "importance", "HIGH",
+                                                "sourceSegmentIds", List.of("meeting-624-start-0.000-speaker_1")
+                                        ))
+                                )
+                        )
+                )
+        )));
+
+        Map<String, Object> response = processingService.getAnalysis(624L, "trace-624", AUTH_HEADER, 1L, 1L);
+
+        assertEquals("education-analysis-v1", response.get("promptVersion"));
+        assertEquals("education-study-v1", response.get("schemaVersion"));
+        assertEquals("education", response.get("domainMode"));
+        assertTrue(response.get("educationStudy") instanceof Map<?, ?>);
+        @SuppressWarnings("unchecked")
+        Map<String, Object> study = (Map<String, Object>) response.get("educationStudy");
+        assertEquals("Photosynthesis", study.get("title"));
+        verify(aiServiceClient, never()).getTranscript(anyLong(), anyString(), anyLong(), anyLong());
+        verify(aiServiceClient, never()).getSavedAnalysisCacheOnly(
+                anyLong(), anyString(), anyString(), anyString(), anyString(), anyString(),
+                anyLong(), anyLong(), anyString(), anyString(), anyString()
+        );
+        verify(aiServiceClient, never()).getAnalysis(anyLong(), anyString(), anyLong(), anyLong());
+    }
+
+    @Test
+    void getScopedAnalysis_shouldNotReuseJobStateAnalysisFromDifferentAttempt() {
+        when(jobStateStore.getJobState(625L)).thenReturn(Optional.of(Map.of(
+                "status", "COMPLETED",
+                "result", Map.of(
+                        "domainMode", "education",
+                        "recording_session_id", 1L,
+                        "attempt_id", 1L,
+                        "transcripts", List.of(
+                                Map.of("speaker", "SPEAKER_1", "text", "Fresh education attempt two")
+                        ),
+                        "analysis", Map.of(
+                                "summary", "Stale attempt-1 education",
+                                "domainMode", "education",
+                                "promptVersion", "education-analysis-v1",
+                                "schemaVersion", "education-study-v1",
+                                "analysisFeatureSet", "education-study-v1",
+                                "recordingSessionId", 1L,
+                                "attemptId", 1L,
+                                "educationStudy", Map.of("title", "Stale")
+                        )
+                )
+        )));
+        when(aiServiceClient.getTranscript(625L, "trace-625", 1L, 2L)).thenReturn(Map.of(
+                "meeting_id", 625L,
+                "transcripts", List.of(
+                        Map.of("speaker", "SPEAKER_1", "text", "Fresh education attempt two")
+                )
+        ));
+        when(aiServiceClient.getSavedAnalysisCacheOnly(
+                eq(625L),
+                anyString(),
+                anyString(),
+                eq("education-analysis-v1"),
+                eq("education-study-v1"),
+                eq("education-study-v1"),
+                eq(1L),
+                eq(2L),
+                eq("education"),
+                eq("trace-625"),
+                eq(AUTH_HEADER)
+        )).thenReturn(Map.of(
+                "status", "completed",
+                "analysisStatus", "COMPLETED",
+                "promptVersion", "education-analysis-v1",
+                "schemaVersion", "education-study-v1",
+                "analysisFeatureSet", "education-study-v1",
+                "analysis", Map.of(
+                        "summary", "Fresh attempt two",
+                        "educationStudy", Map.of("title", "Fresh")
+                )
+        ));
+
+        Map<String, Object> response = processingService.getAnalysis(625L, "trace-625", AUTH_HEADER, 1L, 2L);
+
+        assertEquals("education-analysis-v1", response.get("promptVersion"));
+        assertTrue(
+                response.containsKey("educationStudy")
+                        || (response.get("analysis") instanceof Map<?, ?> nested
+                        && nested.containsKey("educationStudy"))
+        );
+        verify(aiServiceClient).getSavedAnalysisCacheOnly(
+                eq(625L),
+                anyString(),
+                anyString(),
+                eq("education-analysis-v1"),
+                eq("education-study-v1"),
+                eq("education-study-v1"),
+                eq(1L),
+                eq(2L),
+                eq("education"),
+                eq("trace-625"),
+                eq(AUTH_HEADER)
+        );
+    }
+
+    @Test
     void getScopedAnalysis_shouldNotLookupBusinessCacheVersionsForEducationDomain() {
         when(jobStateStore.getJobState(623L)).thenReturn(Optional.of(Map.of(
                 "status", "COMPLETED",

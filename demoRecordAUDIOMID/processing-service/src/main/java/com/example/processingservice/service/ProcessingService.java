@@ -3573,29 +3573,60 @@ public class ProcessingService {
                 attemptId,
                 allowLazyTrigger
         );
-        Map<String, Object> aiTranscriptResult;
+
+        Map<String, Object> state = jobStateStore.getJobState(meetingId).orElse(null);
+        Map<String, Object> stateAnalysis = extractAnalysisFromState(state);
+        if (hasStructuredAnalysis(stateAnalysis)
+                && analysisMatchesScope(stateAnalysis, recordingSessionId, attemptId)) {
+            Map<String, Object> response = new HashMap<>();
+            response.put("meeting_id", meetingId);
+            response.put("status", "COMPLETED");
+            response.putAll(stateAnalysis);
+            if (!response.containsKey("analysisStatus")) {
+                response.put("analysisStatus", "COMPLETED");
+            }
+            log.info(
+                    "event=ANALYSIS_SCOPE_HIT_JOB_STATE meetingId={} recordingSessionId={} attemptId={} domainMode={} promptVersion={}",
+                    meetingId,
+                    recordingSessionId,
+                    attemptId,
+                    DomainModes.fromAnalysisPayload(stateAnalysis),
+                    stateAnalysis.get("promptVersion")
+            );
+            return response;
+        }
+
+        Map<String, Object> aiTranscriptResult = null;
         try {
             aiTranscriptResult = aiServiceClient.getTranscript(meetingId, traceId, recordingSessionId, attemptId);
         } catch (HttpStatusCodeException ex) {
-            if (ex.getStatusCode().value() == HttpStatus.NOT_FOUND.value()) {
-                Map<String, Object> response = new HashMap<>();
-                response.put("meeting_id", meetingId);
-                response.put("status", "NOT_FOUND");
-                response.put("analysisStatus", ANALYSIS_STATUS_UNAVAILABLE_FOR_SCOPE);
-                return response;
+            if (ex.getStatusCode().value() != HttpStatus.NOT_FOUND.value()) {
+                throw ex;
             }
-            throw ex;
+            log.info(
+                    "event=SCOPED_TRANSCRIPT_AI_MISS meetingId={} recordingSessionId={} attemptId={} fallback=processing_job_state",
+                    meetingId,
+                    recordingSessionId,
+                    attemptId
+            );
         }
-        if (AIServiceClient.isTranscriptNotReadyResponse(aiTranscriptResult)) {
-            Map<String, Object> response = new HashMap<>();
-            response.put("meeting_id", meetingId);
-            response.put("status", "NOT_FOUND");
-            response.put("analysisStatus", ANALYSIS_STATUS_NO_ANALYSIS);
-            return response;
+        List<Map<String, Object>> transcriptRows = List.of();
+        if (aiTranscriptResult != null
+                && !AIServiceClient.isTranscriptNotReadyResponse(aiTranscriptResult)) {
+            transcriptRows = normalizeTranscriptRows(aiTranscriptResult.get("transcripts"));
         }
-        List<Map<String, Object>> transcriptRows = normalizeTranscriptRows(
-                aiTranscriptResult == null ? null : aiTranscriptResult.get("transcripts")
-        );
+        if (transcriptRows.isEmpty()) {
+            transcriptRows = extractTranscriptRowsFromState(state);
+            if (!transcriptRows.isEmpty()) {
+                log.info(
+                        "event=SCOPED_TRANSCRIPT_PROCESSING_FALLBACK meetingId={} recordingSessionId={} attemptId={} rows={}",
+                        meetingId,
+                        recordingSessionId,
+                        attemptId,
+                        transcriptRows.size()
+                );
+            }
+        }
         String transcriptText = buildTranscriptText(transcriptRows);
         String transcriptHash = computeTranscriptHash(transcriptText);
         String domainMode = resolveDomainModeForMeeting(meetingId);
@@ -3654,6 +3685,34 @@ public class ProcessingService {
             }
             throw ex;
         }
+    }
+
+    private boolean analysisMatchesScope(
+            Map<String, Object> analysis,
+            Long recordingSessionId,
+            Long attemptId
+    ) {
+        if (analysis == null || analysis.isEmpty() || recordingSessionId == null || attemptId == null) {
+            return false;
+        }
+        Long analysisSession = parseOptionalLong(
+                firstNonBlank(
+                        analysis.get("recordingSessionId"),
+                        analysis.get("recording_session_id")
+                )
+        );
+        Long analysisAttempt = parseOptionalLong(
+                firstNonBlank(
+                        analysis.get("attemptId"),
+                        analysis.get("attempt_id")
+                )
+        );
+        if (analysisSession == null || analysisAttempt == null) {
+            // Legacy analyses without provenance may still be returned for the active
+            // scoped request when they already carry structured content for this meeting.
+            return hasStructuredAnalysis(analysis);
+        }
+        return recordingSessionId.equals(analysisSession) && attemptId.equals(analysisAttempt);
     }
 
     private boolean shouldTriggerScopedOnDemandAnalysis(Map<String, Object> response) {
@@ -5646,9 +5705,19 @@ public class ProcessingService {
         if (value == null || value.isBlank()) {
             return null;
         }
+        String normalized = value.trim();
         try {
-            return Long.parseLong(value.trim());
+            return Long.parseLong(normalized);
         } catch (NumberFormatException ex) {
+            try {
+                // Gson Object.class decodes JSON numbers as Double ("1.0").
+                double asDouble = Double.parseDouble(normalized);
+                if (Double.isFinite(asDouble) && asDouble == Math.rint(asDouble)) {
+                    return (long) asDouble;
+                }
+            } catch (NumberFormatException ignored) {
+                return null;
+            }
             return null;
         }
     }
@@ -5783,9 +5852,16 @@ public class ProcessingService {
         if (!summary.isBlank()) {
             return true;
         }
+        if (payload.get("educationStudy") instanceof Map<?, ?> educationStudy && !educationStudy.isEmpty()) {
+            return true;
+        }
         if (payload.get("analysis") instanceof Map<?, ?> analysisMap) {
             Object nestedSummary = analysisMap.get("summary");
             if (nestedSummary != null && !String.valueOf(nestedSummary).trim().isBlank()) {
+                return true;
+            }
+            Object nestedEducation = analysisMap.get("educationStudy");
+            if (nestedEducation instanceof Map<?, ?> nestedStudy && !nestedStudy.isEmpty()) {
                 return true;
             }
         }
