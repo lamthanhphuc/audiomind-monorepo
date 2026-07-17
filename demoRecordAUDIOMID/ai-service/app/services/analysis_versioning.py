@@ -35,12 +35,18 @@ def merge_domain_analysis_payload(
     *,
     default_domain: str = "it",
 ) -> tuple[str, dict[str, Any]]:
+    """Merge domain identity into analysis metadata.
+
+    Domain-resolved versions always win. Callers may still send prompt/schema
+    overrides, but those must not pin Education requests onto Business/IT
+    cache identity (or the reverse).
+    """
     normalized = normalize_domain_mode(domain_mode, default=default_domain)
     versions = resolve_analysis_versions(normalized)
     merged: dict[str, Any] = dict(payload or {})
-    merged.setdefault("domainMode", normalized)
-    merged.setdefault("domain_mode", normalized)
-    merged.setdefault("promptVersion", versions["promptVersion"])
-    merged.setdefault("schemaVersion", versions["schemaVersion"])
-    merged.setdefault("analysisFeatureSet", versions["analysisFeatureSet"])
+    merged["domainMode"] = normalized
+    merged["domain_mode"] = normalized
+    merged["promptVersion"] = versions["promptVersion"]
+    merged["schemaVersion"] = versions["schemaVersion"]
+    merged["analysisFeatureSet"] = versions["analysisFeatureSet"]
     return normalized, merged
