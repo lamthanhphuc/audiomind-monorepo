@@ -2592,6 +2592,92 @@ class MeetingWebSocketHandlerTest {
     }
 
     @Test
+    void handleTextMessage_streamStop_v2EducationShouldReMergeDomainProvenanceAfterAnalysis() throws Exception {
+        attributes.put("meetingId", 505L);
+        attributes.put("authenticated", true);
+        attributes.put("language", "vi");
+        attributes.put("authorization", "Bearer test-token");
+        attributes.put("lastAudioSeq", 40L);
+        attributes.put("AUDIO_RECEIVED_ATTR", Boolean.TRUE);
+        attributes.put("recordingSessionId", 9005L);
+        attributes.put("attemptId", 1L);
+        attributes.put("domainMode", "education");
+
+        doReturn(Map.of("type", "stream.stop")).when(objectMapper).readValue(anyString(), any(Class.class));
+        when(aiServiceClient.streamAudioChunk(
+                eq(505L),
+                isNull(),
+                any(byte[].class),
+                eq(-1L),
+                eq("vi"),
+                isNull(),
+                eq(true),
+                isNull(),
+                eq("Bearer test-token"),
+                eq(9005L),
+                eq(1L)
+        )).thenReturn(Map.of(
+                "transcript", "education lesson line",
+                "is_final", true,
+                "language", "vi",
+                "start_time", 1.0,
+                "end_time", 2.0
+        ));
+        when(aiServiceClient.getTranscript(eq(505L), anyString(), eq(9005L), eq(1L))).thenReturn(Map.of(
+                "meeting_id", 505L,
+                "transcripts", List.of(
+                        Map.of("speaker", "SPEAKER_1", "text", "education lesson line")
+                )
+        ));
+        when(aiServiceClient.analyzeRealtimeTranscript(
+                eq(505L),
+                anyString(),
+                eq("education"),
+                eq("realtime"),
+                anyString(),
+                isNull(),
+                isNull(),
+                isNull(),
+                eq(9005L),
+                eq(1L),
+                anyString(),
+                eq("Bearer test-token")
+        )).thenReturn(Map.of("status", "COMPLETED"));
+
+        handler.handleTextMessage(session, new TextMessage("{\"type\":\"stream.stop\"}"));
+
+        verify(aiServiceClient, timeout(1000)).analyzeRealtimeTranscript(
+                eq(505L),
+                eq("SPEAKER_1: education lesson line"),
+                eq("education"),
+                eq("realtime"),
+                anyString(),
+                isNull(),
+                isNull(),
+                isNull(),
+                eq(9005L),
+                eq(1L),
+                anyString(),
+                eq("Bearer test-token")
+        );
+        verify(jobStateStore, timeout(1000)).markAnalysisCompleted(
+                eq(505L),
+                anyString(),
+                eq("stream_stop"),
+                eq("processing_ws_realtime_stop"),
+                eq("lock-token")
+        );
+        // Once during finalize, once after COMPLETED analysis (AI may overwrite result).
+        verify(jobStateStore, timeout(1000).times(2)).mergeJobResultProvenance(
+                eq(505L),
+                eq(9005L),
+                eq(1L),
+                eq("education"),
+                anyString()
+        );
+    }
+
+    @Test
     void handleTextMessage_streamStop_v2ShouldFetchTranscriptForSameAttemptBeforeAnalysis() throws Exception {
         attributes.put("meetingId", 501L);
         attributes.put("authenticated", true);
