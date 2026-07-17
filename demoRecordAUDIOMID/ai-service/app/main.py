@@ -39,6 +39,7 @@ from app.database import (
 from app.ffmpeg_utils import ensure_ffmpeg_on_path
 from app.job_status_store import (
     _get_client,
+    build_completed_analysis_job_result,
     cleanup_expired_job_statuses,
     get_job_status,
     load_job_statuses,
@@ -2375,6 +2376,8 @@ def _analyze_and_persist_realtime_transcript(
     rerun_reason: str | None = None,
     allowed_segment_ids: list[str] | None = None,
     evidence_unavailable: bool = False,
+    recording_session_id: int | None = None,
+    attempt_id: int | None = None,
 ):
     analyzer = _get_realtime_analysis_analyzer()
     if analyzer is None:
@@ -2516,7 +2519,14 @@ def _analyze_and_persist_realtime_transcript(
     set_job_status(
         meeting_id=meeting_id,
         status="COMPLETED",
-        result={"analysis": analysis_for_job_state, "source": source},
+        result=build_completed_analysis_job_result(
+            meeting_id=meeting_id,
+            analysis=analysis_for_job_state,
+            source=source,
+            domain_mode=requested_domain_mode,
+            recording_session_id=recording_session_id,
+            attempt_id=attempt_id,
+        ),
         stage="completed",
         progress=100,
     )
@@ -3743,7 +3753,14 @@ async def analyze_realtime_transcript(
                 set_job_status(
                     meeting_id=meeting_id,
                     status="COMPLETED",
-                    result={"analysis": job_state_analysis, "source": source},
+                    result=build_completed_analysis_job_result(
+                        meeting_id=meeting_id,
+                        analysis=job_state_analysis,
+                        source=source,
+                        domain_mode=normalized_domain,
+                        recording_session_id=provenance.recording_session_id,
+                        attempt_id=provenance.attempt_id,
+                    ),
                     stage="completed",
                     progress=100,
                 )
@@ -4072,6 +4089,8 @@ async def analyze_realtime_transcript(
                 rerun_reason=request.reason,
                 allowed_segment_ids=education_allowed_segment_ids,
                 evidence_unavailable=education_evidence_unavailable,
+                recording_session_id=provenance.recording_session_id,
+                attempt_id=provenance.attempt_id,
             )
             success = True
             return response
