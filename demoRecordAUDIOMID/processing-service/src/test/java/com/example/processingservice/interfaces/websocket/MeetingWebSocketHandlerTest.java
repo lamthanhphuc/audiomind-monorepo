@@ -2474,11 +2474,12 @@ class MeetingWebSocketHandlerTest {
         attributes.put("AUDIO_RECEIVED_ATTR", Boolean.TRUE);
         attributes.put("lastAudioSeq", 1L);
 
-        lenient().when(aiServiceClient.streamAudioChunk(
+        CountDownLatch chunkProcessed = new CountDownLatch(1);
+        when(aiServiceClient.streamAudioChunk(
                 eq(907L),
                 isNull(),
-                any(byte[].class),
-                anyLong(),
+                argThat(bytes -> bytes != null && bytes.length == 2),
+                eq(1L),
                 eq("vi"),
                 isNull(),
                 eq(false),
@@ -2486,20 +2487,12 @@ class MeetingWebSocketHandlerTest {
                 eq("Bearer test-token"),
                 eq(1L),
                 eq(1L)
-        )).thenReturn(Map.of("transcript", "chunk", "is_final", false, "language", "vi"));
-        when(objectMapper.readValue(any(String.class), eq(Map.class))).thenReturn(Map.of(
-                "type", "audio.chunk",
-                "seq", 1L,
-                "size", 2L,
-                "recording_session_id", 1L,
-                "attempt_id", 1L
-        ));
-
-        handler.handleTextMessage(session, new TextMessage("{}"));
-        handler.handleBinaryMessage(session, new BinaryMessage(ByteBuffer.wrap(new byte[] {1, 2})));
-        assertTrue(realtimeAudioWorkerRegistry.contains("ws-session-1"));
-
-        lenient().when(aiServiceClient.streamAudioChunk(
+        )).thenAnswer(invocation -> {
+            chunkProcessed.countDown();
+            return Map.of("transcript", "chunk", "is_final", false, "language", "vi");
+        });
+        AtomicInteger finalizeCalls = new AtomicInteger(0);
+        when(aiServiceClient.streamAudioChunk(
                 eq(907L),
                 isNull(),
                 argThat(bytes -> bytes != null && bytes.length == 0),
@@ -2511,7 +2504,22 @@ class MeetingWebSocketHandlerTest {
                 eq("Bearer test-token"),
                 eq(1L),
                 eq(1L)
-        )).thenReturn(Map.of("transcript", "done", "is_final", true, "language", "vi"));
+        )).thenAnswer(invocation -> {
+            finalizeCalls.incrementAndGet();
+            return Map.of("transcript", "done", "is_final", true, "language", "vi");
+        });
+        when(objectMapper.readValue(any(String.class), eq(Map.class))).thenReturn(Map.of(
+                "type", "audio.chunk",
+                "seq", 1L,
+                "size", 2L,
+                "recording_session_id", 1L,
+                "attempt_id", 1L
+        ));
+
+        handler.handleTextMessage(session, new TextMessage("{}"));
+        handler.handleBinaryMessage(session, new BinaryMessage(ByteBuffer.wrap(new byte[] {1, 2})));
+        assertTrue(realtimeAudioWorkerRegistry.contains("ws-session-1"));
+        assertTrue(chunkProcessed.await(5, TimeUnit.SECONDS));
 
         handler.afterConnectionClosed(session, CloseStatus.NORMAL);
 
@@ -2528,6 +2536,7 @@ class MeetingWebSocketHandlerTest {
                 eq(1L),
                 eq(1L)
         );
+        assertEquals(1, finalizeCalls.get());
         assertFalse(realtimeAudioWorkerRegistry.contains("ws-session-1"));
     }
 
