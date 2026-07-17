@@ -295,6 +295,22 @@ The realtime run used a non-sensitive generated English lesson and selected the 
 | AI full suite | **480 passed, 23 skipped, exit 0** |
 | Frontend evidence tests | **35 passed, exit 0** |
 
+### Post-merge re-verification (main → feature conflict resolution)
+
+After merging `origin/main` (PR #122 Phase 1 landing) into the feature branch and resolving AI-service, meeting-service, test, and documentation conflicts:
+
+| Suite | Result |
+|-------|--------|
+| AI focused (versioning/education/provenance/realtime) | **46 passed, exit 0** |
+| AI full suite | **483 passed, 23 skipped, exit 0** |
+| processing-service full | **340 passed, 0 fail, 0 error, exit 0** |
+| meeting-service full | **131 passed, 0 fail, 0 error, exit 0** |
+| FE sort + evidence tests | **40 passed, exit 0** |
+| FE build | pass |
+| Root TS lint | pass |
+| Python ruff / black | pass (merged AI files reformatted to black) |
+| Contract check (schema/contracts/policy/openapi/client drift/log-safety) | pass, no drift |
+
 ### AC-34 fresh realtime Education smoke (2026-07-17, quota recovered)
 
 Evidence: `logs/phase1-verification/ac34-fresh-realtime-education-smoke.txt`.

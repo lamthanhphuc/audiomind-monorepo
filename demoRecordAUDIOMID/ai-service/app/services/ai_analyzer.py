@@ -2284,12 +2284,16 @@ NỘI DUNG:
                     build_fallback_education_study(
                         summary=str(structured.get("summary") or ""),
                         meeting_summary=str(structured.get("meetingSummary") or ""),
-                        keywords=structured.get("keywords")
-                        if isinstance(structured.get("keywords"), list)
-                        else [],
-                        technical_terms=structured.get("technicalTerms")
-                        if isinstance(structured.get("technicalTerms"), list)
-                        else [],
+                        keywords=(
+                            structured.get("keywords")
+                            if isinstance(structured.get("keywords"), list)
+                            else []
+                        ),
+                        technical_terms=(
+                            structured.get("technicalTerms")
+                            if isinstance(structured.get("technicalTerms"), list)
+                            else []
+                        ),
                     ),
                     allowed_segment_ids=allowed_ids,
                     meeting_id=meeting_id,

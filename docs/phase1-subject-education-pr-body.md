@@ -19,7 +19,7 @@ Completes Phase 1: subject management and per-meeting Education analysis.
 - Phase 1 acceptance criteria: 55 DONE / 0 PARTIAL
 - Processing-service: 340 passed, exit 0
 - Meeting-service: 131 passed
-- AI full suite: 480 passed, 23 skipped
+- AI full suite: 483 passed, 23 skipped (post-merge)
 - AI Education focused: 41 passed
 - Frontend evidence tests: 35 passed
 - Unclassified meetings tests: 5 passed
@@ -44,3 +44,4 @@ Completes Phase 1: subject management and per-meeting Education analysis.
 - No Git Stage B cleanup
 - Verification logs are redacted and stored locally under `logs/phase1-verification/` (gitignored)
 - Fast-path hardening: AI completed-analysis job-state writes now merge `domainMode` + recording session/attempt provenance instead of replacing the result map
+- Merged latest `origin/main` (PR #122) and resolved AI-service, meeting-service, test, and documentation conflicts; preserved the `lower(bytea)` unclassified search fix, domain-version override hardening, education fallback, and fast-path provenance

@@ -61,8 +61,12 @@ def test_education_schema_contains_education_study_only_for_education_domain():
 def test_extract_education_study_raw_aliases():
     from app.services.education_analysis import extract_education_study_raw
 
-    assert extract_education_study_raw({"educationStudy": {"title": "A"}})["title"] == "A"
-    assert extract_education_study_raw({"education_study": {"title": "B"}})["title"] == "B"
+    assert (
+        extract_education_study_raw({"educationStudy": {"title": "A"}})["title"] == "A"
+    )
+    assert (
+        extract_education_study_raw({"education_study": {"title": "B"}})["title"] == "B"
+    )
     assert extract_education_study_raw({"other": 1}) is None
 
 

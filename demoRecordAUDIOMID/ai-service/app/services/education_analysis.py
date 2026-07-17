@@ -483,12 +483,16 @@ def build_fallback_education_study(
     technical_terms: Collection[Any] | None = None,
 ) -> dict[str, Any]:
     """Minimal educationStudy when the model omits the required object."""
-    overview = (summary or meeting_summary or "").strip() or "Nội dung buổi học từ transcript."
+    overview = (
+        summary or meeting_summary or ""
+    ).strip() or "Nội dung buổi học từ transcript."
     glossary: list[dict[str, Any]] = []
     for item in technical_terms or []:
         if isinstance(item, Mapping):
             term = str(item.get("term") or "").strip()
-            definition = str(item.get("meaning") or item.get("definition") or "").strip()
+            definition = str(
+                item.get("meaning") or item.get("definition") or ""
+            ).strip()
             if term and definition:
                 glossary.append(
                     {
