@@ -5,6 +5,8 @@ import { collectEvidenceMatchesFromAnalysis } from '../../utils/evidenceMatches'
 import { AudioRecorderButton } from '../realtime/AudioRecorderButton'
 import { RealtimeTranscript } from '../transcript/RealtimeTranscript'
 import { ErrorState } from '../ui/ErrorState'
+import { useTranscriptEvidenceNavigation } from '../../hooks/useTranscriptEvidenceNavigation'
+import type { TranscriptHighlightRange } from '../../utils/transcriptJump'
 import type { useAudioRecorder } from '../../hooks/useAudioRecorder'
 import type { RealtimeLanguage, RealtimeSpeakerMode, TranscriptSegment } from '../../hooks/useRealtimeMeetingStream'
 import type { MicSensitivityMode } from '../../hooks/useVoiceActivityDetection'
@@ -16,6 +18,7 @@ import {
 } from '../../constants/recordingSource'
 import type { DomainMode } from '../../constants/domainMode'
 import DomainModeSelector from '../ui/DomainModeSelector'
+import SubjectPicker from '../subjects/SubjectPicker'
 import { RecordingSourceSelector } from '../realtime/RecordingSourceSelector'
 import { DualStreamQuotaInfoBanner } from '../ui/DualStreamQuotaInfoBanner'
 
@@ -69,6 +72,8 @@ type RealtimeDashboardSceneProps = {
   selectedRealtimeLanguage: RealtimeLanguage
   selectedDomainMode: DomainMode
   onDomainModeChange: (mode: DomainMode) => void
+  selectedSubjectId?: number | null
+  onSubjectIdChange?: (subjectId: number | null) => void
   selectedRealtimeSpeakerMode: RealtimeSpeakerMode
   selectedMicSensitivity: MicSensitivityMode
   selectedRecordingSource: RecordingSource
@@ -176,6 +181,8 @@ export default function RealtimeDashboardScene({
   selectedRealtimeLanguage,
   selectedDomainMode,
   onDomainModeChange,
+  selectedSubjectId = null,
+  onSubjectIdChange,
   selectedRealtimeSpeakerMode,
   selectedMicSensitivity,
   selectedRecordingSource,
@@ -224,6 +231,20 @@ export default function RealtimeDashboardScene({
 }: RealtimeDashboardSceneProps) {
   const [highlightMeetCapture, setHighlightMeetCapture] = useState(false)
   const [advancedSettingsOpen, setAdvancedSettingsOpen] = useState(liveLifecycleState === 'recording')
+  const [liveHighlightRange, setLiveHighlightRange] = useState<TranscriptHighlightRange | null>(null)
+  const [liveEvidenceWarning, setLiveEvidenceWarning] = useState<string | null>(null)
+
+  // Realtime scene has no transcript tab to switch to, so evidence clicks only
+  // highlight + scroll the live transcript (no setActiveTab call here).
+  const { navigateToSegment: navigateToLiveEvidenceSegment } = useTranscriptEvidenceNavigation({
+    segments: liveTranscriptSegments,
+    meetingId: liveMeetingId,
+    onHighlightChange: setLiveHighlightRange,
+    onNavigateSuccess: () => setLiveEvidenceWarning(null),
+    onMissingSegment: () => {
+      setLiveEvidenceWarning('Không tìm thấy đoạn transcript tương ứng với bằng chứng này.')
+    },
+  })
 
   useEffect(() => {
     try {
@@ -384,6 +405,17 @@ export default function RealtimeDashboardScene({
                     testId="realtime-domain-mode-select"
                     compact
                   />
+                  {onSubjectIdChange ? (
+                    <label className="upload-panel__label">
+                      Môn học (tuỳ chọn)
+                      <SubjectPicker
+                        value={selectedSubjectId}
+                        onChange={onSubjectIdChange}
+                        disabled={isRealtimeLanguageSelectorDisabled}
+                        allowClear
+                      />
+                    </label>
+                  ) : null}
                 </div>
                 <button
                   type="button"
@@ -527,6 +559,7 @@ export default function RealtimeDashboardScene({
             emptyMessage={isNoTranscriptFinalized ? 'Chưa có bản ghi' : undefined}
             maxHeight="620px"
             domainMode={liveAnalysis?.domainMode}
+            highlightRange={liveHighlightRange}
           />
 
           <aside className="realtime-panel__aside">
@@ -570,7 +603,11 @@ export default function RealtimeDashboardScene({
               emptyMessage={liveAnalysisEmptyMessage}
               summaryFallback="(đang chờ phân tích)"
               testId="e2e-live-analysis"
+              onEvidenceClick={navigateToLiveEvidenceSegment}
             />
+            {liveEvidenceWarning ? (
+              <p className="ui-status-strip" role="status" data-testid="live-evidence-warning">{liveEvidenceWarning}</p>
+            ) : null}
           </section>
         )}
       </section>

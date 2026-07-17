@@ -1,6 +1,8 @@
 import { copyFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { execSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { runOasdiffBreaking } from "@oasdiff-js/oasdiff-js";
 
 const specs = ["meeting-api.yaml", "processing-api.yaml", "ai-api.yaml", "user-api.yaml"];
 
@@ -28,7 +30,29 @@ function canUseGitOriginMain() {
   }
 }
 
-function main() {
+export async function runOpenApiDiff(baselinePath, currentPath, options = {}) {
+  const result = await runOasdiffBreaking(baselinePath, currentPath);
+  if (options.printOutput !== false) {
+    if (result.stdout) {
+      process.stdout.write(result.stdout);
+    }
+    if (result.stderr) {
+      process.stderr.write(result.stderr);
+    }
+  }
+  if (result.exitCode !== 0 || result.changes.length > 0) {
+    const detail = result.stderr
+      || result.stdout
+      || JSON.stringify(result.changes, null, 2)
+      || "breaking changes detected";
+    throw new Error(
+      `oasdiff found ${result.changes.length} breaking change(s), exit code ${result.exitCode}: ${detail}`,
+    );
+  }
+  return result;
+}
+
+export async function main() {
   const hasGitBaseline = canUseGitOriginMain();
   const tempDir = join("packages", "contracts", ".openapi-baseline");
   mkdirSync(tempDir, { recursive: true });
@@ -56,13 +80,16 @@ function main() {
         copyFileSync(snapshotPath, baselinePath);
       }
 
-      execSync(`npx openapi-diff \"${baselinePath}\" \"${current}\"`, {
-        stdio: "inherit"
-      });
+      await runOpenApiDiff(baselinePath, current);
+      console.log(`No breaking OpenAPI changes: ${spec}`);
     }
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }
 }
 
-main();
+const isDirectRun = process.argv[1]
+  && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
+if (isDirectRun) {
+  await main();
+}

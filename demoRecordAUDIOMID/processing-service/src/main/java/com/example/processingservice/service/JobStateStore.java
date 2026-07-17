@@ -232,6 +232,16 @@ public class JobStateStore {
             Long attemptId,
             String traceId
     ) {
+        mergeJobResultProvenance(jobId, recordingSessionId, attemptId, null, traceId);
+    }
+
+    public void mergeJobResultProvenance(
+            Long jobId,
+            Long recordingSessionId,
+            Long attemptId,
+            String domainMode,
+            String traceId
+    ) {
         if (jobId == null || recordingSessionId == null || attemptId == null) {
             return;
         }
@@ -243,6 +253,11 @@ public class JobStateStore {
         }
         result.put("recording_session_id", recordingSessionId);
         result.put("attempt_id", attemptId);
+        if (domainMode != null && !domainMode.isBlank()) {
+            String normalizedDomain = domainMode.trim().toLowerCase();
+            result.put("domainMode", normalizedDomain);
+            result.put("domain_mode", normalizedDomain);
+        }
         String status = normalizeStatus(state.getOrDefault("status", "COMPLETED"));
         String fileId = String.valueOf(state.getOrDefault("fileId", "realtime-meeting:" + jobId));
         upsertJobState(jobId, status, fileId, result, null, traceId);

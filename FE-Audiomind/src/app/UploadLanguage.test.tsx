@@ -76,8 +76,8 @@ describe('Upload language selector (integration)', () => {
 
     // upload called with language arg
     expect(uploadSpy).toHaveBeenCalled()
-    const args = uploadSpy.mock.calls[0]
-    expect(args[2]).toBe('en')
+    const args = uploadSpy.mock.calls[0]?.[0] as { language?: string }
+    expect(args.language).toBe('en')
 
     const postCalls = infoSpy.mock.calls.flat()
     const foundUploadLog = postCalls.find((c) => typeof c === 'string' && c.includes('UPLOAD_REQUEST_SEND'))

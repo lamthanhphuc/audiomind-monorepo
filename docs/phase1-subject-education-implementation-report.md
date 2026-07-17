@@ -1,9 +1,16 @@
 # Phase 1 — Implementation report
 
 **Branch:** `feature/phase1-subject-education`  
-**Base:** `origin/main` @ `d77a030`  
+**Tracking branch:** `origin/feature/phase1-subject-education`  
+**Status:** **Completed** — DONE 55, PARTIAL 0  
+**Verification baseline:** Phase 1 completion verified before final PR preparation  
+**Working tree at verification:** clean  
+**Ahead/behind at verification:** 0/0  
+**Verified source snapshot:** `3da6b73` / `4a2fc5d` (fast-path domain provenance fix + regression tests); AC-34 live smoke baseline `95cde1e`  
 **Started:** 2026-07-15  
-**Status:** In progress (Steps 0–6 complete)
+**P0/P1 hardening + live smoke:** 2026-07-16  
+**Final verification counts:** 2026-07-17  
+**AC-34 fresh Education smoke PASS:** 2026-07-17
 
 ## A. Git cleanup
 
@@ -47,6 +54,14 @@ See [branch-cleanup-report.md](./branch-cleanup-report.md).
 | `8060b88` | `feat(subjects): add folder and subject management` |
 | `38a5fd5` | `docs: record step 5 folder subject management commit SHA` |
 | `2ec0915` | `feat(meetings): support subject assignment and upload subjectId` |
+| `5525c95` | `feat(ai): add education study structured analysis` |
+| `34916c7` | `docs: add phase 1 subject education completion plan` |
+| `85fcea5` | `feat(contracts): add study folder, subject and educationStudy schemas` |
+| `cc266a4` | `feat(fe): add study types, services and education normalizer` |
+| `4bcd222` | `feat(fe): add study workspace routing and subject management UI` |
+| `190912b` | `feat(fe): wire subject selection, education panel and evidence navigation` |
+| `c86a19d` | `test(fe): extend routing and upload API tests for study workspace` |
+| `2f45687` | `docs: record phase 1 FE integration and verification results` |
 
 ## D–E. Segment identity + analysis cache
 
@@ -152,16 +167,51 @@ Excludes shared / other-user / soft-deleted / assigned meetings. DB search + whi
 |-------|-------|
 | `MeetingSubjectAssignmentTest` | 17 |
 | `MeetingSubjectControllerTest` | 13 |
-| Regression + full module | **130 passed**, 0 failures, 0 errors |
+| Full module Maven summary | 130 tests run; 0 failures; 0 errors; 6 skipped |
 
 ```text
 .\mvnw.cmd -pl meeting-service test --no-transfer-progress
-→ Tests run: 130, Failures: 0, Errors: 0
+→ Tests run: 130, Failures: 0, Errors: 0, Skipped: 6
 ```
 
 ### Not in this step
 
-Education AI (`educationStudy`), OpenAPI/clients, FE SubjectPicker/pages, Git Stage B.
+Git Stage B.
+
+## J. OpenAPI + generated clients (Step 8)
+
+- `packages/contracts/meeting-api.yaml`: study-folders, subjects, unclassified, assign subject, realtime/upload `subjectId`
+- `packages/contracts/ai-api.yaml`: explicit `educationStudy` schema
+- Regenerated `packages/api-clients/{meeting,ai,processing,user}.ts` via `npm run generate:client`
+- Verified: `validate:contracts`, `typecheck:client`, `check:openapi`
+
+## K. Frontend integration (Step 9)
+
+### Services / types
+
+- `types/study.ts`, `types/education.ts` + `Meeting.subjectId`, `AiAnalysis.educationStudy`
+- `services/studyFolders.ts`, `services/subjects.ts`
+- `createRealtimeMeeting` / `uploadToMeetingApi` object input with optional `subjectId` (legacy positional args preserved)
+- `domainMode` **not** sent to meeting-service (processing/AI flow unchanged)
+
+### Routing / state
+
+- Scenes: `subjects`, `subjectDetail`, `unclassified`
+- Paths: `/studio/subjects`, `/studio/subjects/:subjectId`, `/studio/unclassified`
+- `StudyWorkspaceProvider`: folder tree + picker catalog + invalidation revisions only
+- Page hooks: `useSubjectsList`, `useSubjectDetail`, `useUnclassifiedMeetings`
+
+### UI
+
+- Sidebar `SubjectSidebarSection` (API-backed tree; no hard-coded courses)
+- Pages: subjects list, subject detail (Option B meeting rows), unclassified assign
+- Dialogs: folder/subject CRUD, `SubjectPicker` on upload + realtime
+- Education: `EducationAnalysisPanel` when `analysis.educationStudy != null`
+- Evidence: `useTranscriptEvidenceNavigation` maps `sourceSegmentIds` → raw `TranscriptSegment.id` → time range → highlight/scroll
+
+### Processing verification
+
+- `GET /processing/{meetingId}/analysis/saved` returns stored JSON; processing-service tests pass without DTO change (open Map passthrough)
 
 ## Test / build log
 
@@ -171,9 +221,133 @@ Education AI (`educationStudy`), OpenAPI/clients, FE SubjectPicker/pages, Git St
 | Step 5 | `StudyFolderServiceTest` + `SubjectServiceTest` | 24 passed |
 | Step 5 | full `meeting-service test` | **100 passed** |
 | Step 6 | subject assignment + upload/realtime suites | 30 new tests |
-| Step 6 | full `meeting-service test` | **130 passed** |
+| Step 6 | full `meeting-service test` | 130 tests run; 0 failures; 0 errors; 6 skipped |
+| Step 7 AI | targeted Education suite | **24 passed** |
+| Step 7 AI | Python 3.11 full `pytest tests` | **480 passed, 23 skipped, 0 failed, 0 errors** |
+| Step 8 | `validate:contracts` + `generate:client` + `typecheck:client` + `check:openapi` | pass |
+| Step 9 FE | `npm --prefix FE-Audiomind run test` | **683 passed / 71 files** |
+| Step 9 FE | `npm --prefix FE-Audiomind run build` | pass (tsc + Vite; 2,127 modules) |
+| Step 9 Java | meeting-service / processing-service full | **131 / 321 passed** |
+| P0-1 | Hard-coded `domain_mode=it` removed; `DomainModes` normalize + resolve from job metadata | pass |
+
+## P0/P1 hardening (2026-07-16)
+
+| ID | Fix | Verification |
+|----|-----|--------------|
+| P0-1 | Processing saved/lazy analysis uses resolved domain (`general` fallback) | Java unit tests assert AI request `domain_mode` |
+| P0-2 | Multi-segment evidence + canonicalize + tab only after match | `transcriptEvidence` + navigation tests |
+| P0-3 | Folder/subject edit/archive UI + AC-29 history SubjectPicker | MeetingHistoryScene AC-29 tests |
+| P0-4 | Legacy analysis kept alongside `educationStudy` | AnalysisPanel tests |
+| P1-1..6 | Normalizer, `evidenceUnavailable`, catalog pages, pagination clamp, back clears subjectId, race guards | FE unit tests |
+
+## Manual smoke (live stack — 2026-07-16)
+
+Stack: `docker compose -f infra/docker-compose.dev.yml`  
+Health (all **200**): frontend `:8080`, meeting `:8081/health`, processing `:8082/health`, ai `:8000/health`, user `:8083/health`.
+
+| # | Scenario | Status | Evidence |
+|---|----------|--------|----------|
+| 1 | Folder CRUD + reload persistence + delete keeps subjects (`folderId` null) | **PASS** | Live API smoke |
+| 2 | Subject CRUD + archive hidden from picker + archived assign **409** | **PASS** | Live API smoke |
+| 3 | Realtime `subjectId` → subject detail; change/clear subject | **PASS** | Live API smoke (AC-12/13/14/16) |
+| 4 | Upload with subject; duplicate preserves original subject | **PASS** | Live API smoke (AC-17) |
+| 5 | Unclassified list/search/assign | **PASS** after `8f8017f` (was 503 `lower(bytea)`) | AC-12/15 |
+| 6 | Saved Education `domain_mode=education` + `educationStudy` via `GET /processing/{id}/analysis/saved` | **PASS** after `04d4cd3` + transcript scopes | AC-33 |
+| 7 | Realtime Education analysis FeatureSet `education-study-v1`, legacy summary preserved | **PASS** | AC-34 |
+| 8 | Evidence navigation (single/multi/missing IDs) | **PASS** | FE unit `useTranscriptEvidenceNavigation` 5/5 + live educationStudy |
+| 9 | Catalog ≥51 subjects / pagination page2 | **PASS** | page1=50, page2=3, total=53 |
+| 10 | AC-54 regression smoke | **PASS** (functional) | Browser login → studio; subjects/unclassified/realtime/upload/history routes; Deepgram+Gemini healthy |
+
+### Live fixes during smoke
+
+| Commit | Issue |
+|--------|-------|
+| `8f8017f` | `GET /meetings/unclassified` → 503: Hibernate/Postgres `lower(bytea)` on null-search JPQL |
+| `04d4cd3` | Education Gemini often omitted `educationStudy`; require in schema + alias extract + summary fallback |
+
+### Focused live re-verification (2026-07-16)
+
+Detailed, redacted evidence is stored under `logs/phase1-verification/`.
+
+| Scenario | Status | Evidence |
+|----------|--------|----------|
+| Health: frontend, meeting, processing, AI, user | **PASS** | All five endpoints returned HTTP 200 |
+| Fresh upload result (`hydrateFromApi=false`, meeting 11) | **PASS** | Switched to `Bản ghi`; transcript visible; 1 highlight; 1 scroll; no warning |
+| Saved Education analysis (`hydrateFromApi=true`, meeting 10) | **PASS** | Switched to `Bản ghi`; transcript visible; 1 highlight; 1 scroll; no warning |
+| Realtime Education evidence (meeting 12) | **FAIL** | Transcript persisted and API returned 200, but analysis never produced evidence; retry returned `RESOURCE_NOT_FOUND` for the saved transcript |
+
+The realtime run used a non-sensitive generated English lesson and selected the Education domain. The UI displayed `Đã lưu transcript`; `GET /processing/12/transcript?recording_session_id=1&attempt_id=1` returned segments, while analysis metadata was stale (`gemini-business-v2`) and rerun reported the saved transcript missing. This is a release blocker for realtime Education evidence, not a fabricated PASS.
+
+### Automated verification (release pass)
+
+| Suite | Result |
+|-------|--------|
+| OpenAPI `validate:contracts` / `generate:client` / `typecheck:client` | pass; generated clients have no drift |
+| OpenAPI checker tests | **6 passed** (recursive unchanged plus breaking/parser cases) |
+| OpenAPI `check:openapi` | pass for all four contracts using pinned `@oasdiff-js/oasdiff-js` |
+| FE lint (root) | pass (one Node package-type warning) |
+| FE test | **683 passed** / 71 files / 0 failed |
+| FE build | pass (tsc + Vite; chunk-size warning only) |
+| meeting-service full | **131 run, 0 fail, 0 error, 0 skipped** |
+| `StudyFolderSubjectMigrationTest` | **6 passed** (Docker) |
+| processing-service full | **340 passed, exit 0** |
+| AI Education focused tests | **41 passed, exit 0** |
+| AI full suite | **480 passed, 23 skipped, exit 0** |
+| Frontend evidence tests | **35 passed, exit 0** |
+
+### Post-merge re-verification (main → feature conflict resolution)
+
+After merging `origin/main` (PR #122 Phase 1 landing) into the feature branch and resolving AI-service, meeting-service, test, and documentation conflicts:
+
+| Suite | Result |
+|-------|--------|
+| AI focused (versioning/education/provenance/realtime) | **46 passed, exit 0** |
+| AI full suite | **483 passed, 23 skipped, exit 0** |
+| processing-service full | **340 passed, 0 fail, 0 error, exit 0** |
+| meeting-service full | **131 passed, 0 fail, 0 error, exit 0** |
+| FE sort + evidence tests | **40 passed, exit 0** |
+| FE build | pass |
+| Root TS lint | pass |
+| Python ruff / black | pass (merged AI files reformatted to black) |
+| Contract check (schema/contracts/policy/openapi/client drift/log-safety) | pass, no drift |
+
+### AC-34 fresh realtime Education smoke (2026-07-17, quota recovered)
+
+Evidence: `logs/phase1-verification/ac34-fresh-realtime-education-smoke.txt`.
+
+Fresh flow (new user, new meeting 8, no reused cache): `POST /meetings/realtime` → WS `auth.init domainMode=education` → real Vietnamese speech streamed as WebM/Opus (`recording_session_id=1`, `attempt_id=1`) → live `transcript.partial`/`transcript.final` from Deepgram → `stream.stop` → `REALTIME_ANALYSIS_REQUEST_SENT` → `REALTIME_ANALYSIS_SAVED` → scoped `GET /processing/8/analysis` HTTP 200.
+
+| Field | Value |
+|-------|-------|
+| `status` / `analysisStatus` | `SUCCEEDED` / `COMPLETED` |
+| `domainMode` | `education` |
+| `promptVersion` | `education-analysis-v1` |
+| `schemaVersion` | `education-study-v1` |
+| `analysisFeatureSet` | `education-study-v1` |
+| `educationStudy` | present (non-null) |
+| HTTP 429 | none in processing-api / ai-api logs for meeting 8 |
+
+Non-blocking observation during AC-34 smoke: first scoped GET logged `ANALYSIS_SCOPE_JOB_STATE_MISS reason=domain_mismatch` (`expectedDomainMode=general`) because AI `set_job_status` replaced the entire job-state `result` and wiped processing provenance. User-visible Education analysis still succeeded via AI transcript fallback. Post-verification hardening persists `domainMode` + session/attempt into the completed job-state result and re-merges provenance after realtime analysis so scoped GET can `ANALYSIS_SCOPE_HIT_JOB_STATE`.
+
+## Acceptance criteria snapshot
+
+| Status | Count | IDs |
+|--------|-------|-----|
+| **DONE** | **55** | AC-01–AC-55 |
+| **PARTIAL** | **0** | — |
+| **TODO** | **0** | — |
+| **BLOCKED** | **0** | — |
+| **TOTAL** | **55** | — |
+
+| AC | Status | Note |
+|----|--------|------|
+| **AC-34** | **DONE** | Fresh realtime Education smoke PASS 2026-07-17 (Gemini quota recovered; no 429) |
+| **AC-43** | **DONE** | Deterministic realtime evidence fixtures + scoped job-state Education fixture |
+
+Overall Phase 1 status: **Completed** (55/55).
 
 ## Remaining
 
-- Step 7+: AI education / OpenAPI / FE (per plan)
-- Git Stage B not run
+- Git Stage B not run, as required.
+- Deferred product polish: subject meeting row `duration`/`sourceType`/transcriptStatus/analysisStatus (Option B)
+- AC-54 DOCX/PDF export + meeting sharing exercised at route/API readiness level only (not full file QA)

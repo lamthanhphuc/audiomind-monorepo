@@ -230,7 +230,8 @@ class MeetingSubjectAssignmentTest {
     @Test
     void findUnclassifiedForOwnerPage_queriesOwnedNullSubjectOnly() {
         Meeting meeting = ownedMeeting(1L, null);
-        when(meetingRepository.findUnclassifiedForOwner(eq(9L), isNull(), any(Pageable.class)))
+        when(meetingRepository.findByOwnerUserIdAndSubjectIdIsNullAndDeletedAtIsNull(
+                        eq(9L), any(Pageable.class)))
                 .thenReturn(new PageImpl<>(List.of(meeting)));
 
         MeetingPageResult page = meetingService.findUnclassifiedForOwnerPage(9L, null, null, 1, 20);
@@ -241,9 +242,25 @@ class MeetingSubjectAssignmentTest {
         assertNull(page.items().getFirst().getSubjectId());
 
         ArgumentCaptor<Pageable> pageableCaptor = ArgumentCaptor.forClass(Pageable.class);
-        verify(meetingRepository).findUnclassifiedForOwner(eq(9L), isNull(), pageableCaptor.capture());
+        verify(meetingRepository)
+                .findByOwnerUserIdAndSubjectIdIsNullAndDeletedAtIsNull(eq(9L), pageableCaptor.capture());
+        verify(meetingRepository, never()).findUnclassifiedForOwner(any(), any(), any());
         assertEquals(0, pageableCaptor.getValue().getPageNumber());
         assertEquals(20, pageableCaptor.getValue().getPageSize());
+    }
+
+    @Test
+    void findUnclassifiedForOwnerPage_withSearch_passesWrappedPattern() {
+        Meeting meeting = ownedMeeting(2L, null);
+        when(meetingRepository.findUnclassifiedForOwner(eq(9L), eq("%swp%"), any(Pageable.class)))
+                .thenReturn(new PageImpl<>(List.of(meeting)));
+
+        MeetingPageResult page = meetingService.findUnclassifiedForOwnerPage(9L, "swp", null, 1, 20);
+
+        assertEquals(1, page.items().size());
+        verify(meetingRepository).findUnclassifiedForOwner(eq(9L), eq("%swp%"), any(Pageable.class));
+        verify(meetingRepository, never())
+                .findByOwnerUserIdAndSubjectIdIsNullAndDeletedAtIsNull(any(), any());
     }
 
     @Test
@@ -253,11 +270,14 @@ class MeetingSubjectAssignmentTest {
                 () -> meetingService.findUnclassifiedForOwnerPage(9L, null, "updatedAt_desc", 1, 20));
         assertTrue(ex.getMessage().contains("Unsupported sort"));
         verify(meetingRepository, never()).findUnclassifiedForOwner(any(), any(), any());
+        verify(meetingRepository, never())
+                .findByOwnerUserIdAndSubjectIdIsNullAndDeletedAtIsNull(any(), any());
     }
 
     @Test
     void findUnclassifiedForOwnerPage_emptyShapeUsesDefaults() {
-        when(meetingRepository.findUnclassifiedForOwner(eq(9L), isNull(), any(Pageable.class)))
+        when(meetingRepository.findByOwnerUserIdAndSubjectIdIsNullAndDeletedAtIsNull(
+                        eq(9L), any(Pageable.class)))
                 .thenReturn(new PageImpl<>(List.of()));
 
         MeetingPageResult page = meetingService.findUnclassifiedForOwnerPage(9L, null, null, null, null);

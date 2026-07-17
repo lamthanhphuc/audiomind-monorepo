@@ -40,7 +40,17 @@ describe('upload language request wiring', () => {
     vi.restoreAllMocks()
   })
 
-  it('includes language in meeting upload form data', async () => {
+  it('includes language and subjectId in meeting upload form data', async () => {
+    const file = new File([new Uint8Array([1, 2, 3])], 'sample.wav', { type: 'audio/wav' })
+    await uploadToMeetingApi({ title: 'sample', file, language: 'en', subjectId: 7 })
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    const form = init.body as FormData
+    expect(form.get('language')).toBe('en')
+    expect(form.get('subjectId')).toBe('7')
+  })
+
+  it('supports legacy positional upload arguments', async () => {
     const file = new File([new Uint8Array([1, 2, 3])], 'sample.wav', { type: 'audio/wav' })
     await uploadToMeetingApi('sample', file, 'en')
 
@@ -56,13 +66,24 @@ describe('upload language request wiring', () => {
   })
 
   it('creates realtime meetings through the non-upload endpoint', async () => {
-    await createRealtimeMeeting('Live recording session', 'en')
+    await createRealtimeMeeting({ title: 'Live recording session', language: 'en', subjectId: 3 })
 
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
     expect(url).toContain('/meetings/realtime')
     expect(url).not.toContain('/meetings/upload')
     expect(init.method).toBe('POST')
     expect(new Headers(init.headers).get('Content-Type')).toBe('application/json')
+    expect(JSON.parse(String(init.body))).toEqual({
+      title: 'Live recording session',
+      language: 'en',
+      subjectId: 3,
+    })
+  })
+
+  it('supports legacy positional realtime meeting arguments', async () => {
+    await createRealtimeMeeting('Live recording session', 'en')
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit]
     expect(JSON.parse(String(init.body))).toEqual({
       title: 'Live recording session',
       language: 'en',

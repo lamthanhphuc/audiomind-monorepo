@@ -427,8 +427,55 @@ export interface components {
         AnalysisResponse: {
             /** Format: int64 */
             meeting_id: number;
+            educationStudy?: components["schemas"]["EducationStudy"];
+            /** @description True when the transcript lacks stable segment identifiers, so evidence links (e.g. education study "Xem bằng chứng" buttons) cannot be resolved reliably. */
+            evidenceUnavailable?: boolean;
         } & {
             [key: string]: unknown;
+        };
+        /** @enum {string} */
+        EducationImportance: "HIGH" | "MEDIUM" | "LOW";
+        EducationSection: {
+            id?: string;
+            title?: string;
+            summary?: string;
+            keyPoints?: string[];
+            keywords?: string[];
+            sourceSegmentIds?: string[];
+        };
+        EducationKeyPoint: {
+            content?: string;
+            importance?: components["schemas"]["EducationImportance"];
+            sourceSegmentIds?: string[];
+        };
+        EducationGlossaryItem: {
+            term?: string;
+            definition?: string;
+            example?: string | null;
+            category?: string | null;
+            sourceSegmentIds?: string[];
+        };
+        EducationMustRememberItem: {
+            content?: string;
+            importance?: components["schemas"]["EducationImportance"];
+            reason?: string | null;
+            sourceSegmentIds?: string[];
+        };
+        EducationUnclearPoint: {
+            content?: string;
+            reason?: string;
+            sourceSegmentIds?: string[];
+        };
+        EducationStudy: {
+            title?: string;
+            overview?: string;
+            learningObjectives?: string[];
+            sections?: components["schemas"]["EducationSection"][];
+            keyPoints?: components["schemas"]["EducationKeyPoint"][];
+            keywords?: string[];
+            glossary?: components["schemas"]["EducationGlossaryItem"][];
+            mustRemember?: components["schemas"]["EducationMustRememberItem"][];
+            unclearPoints?: components["schemas"]["EducationUnclearPoint"][];
         };
         DomainLexicon: {
             domain: string;

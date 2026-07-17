@@ -187,3 +187,19 @@ def test_idempotency_key_consistent_across_lookup_begin_persist(
     persist_key = persisted.idempotency_key
 
     assert lookup_key == begin_key == persist_key
+
+
+def test_merge_domain_analysis_payload_overrides_mismatched_business_versions_for_education():
+    normalized, payload = merge_domain_analysis_payload(
+        "education",
+        {
+            "promptVersion": "gemini-business-v2",
+            "schemaVersion": "gemini-business-v2",
+            "analysisFeatureSet": "grouped-action-plan-v1",
+        },
+    )
+    assert normalized == "education"
+    assert payload["promptVersion"] == "education-analysis-v1"
+    assert payload["schemaVersion"] == "education-study-v1"
+    assert payload["analysisFeatureSet"] == "education-study-v1"
+    assert payload["domainMode"] == "education"

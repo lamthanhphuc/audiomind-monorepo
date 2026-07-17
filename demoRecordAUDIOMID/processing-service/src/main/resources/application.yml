@@ -17,6 +17,8 @@ server:
 logging:
   level:
     root: WARN
+    com.example.processingservice.service: INFO
+    com.example.processingservice.client: INFO
     com.example.processingservice.security.JwtAuthenticationFilter: DEBUG
     com.example.processingservice.interfaces.websocket: DEBUG
     org.springframework.security: DEBUG

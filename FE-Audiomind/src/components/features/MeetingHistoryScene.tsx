@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import { RefreshCw } from 'lucide-react'
 import { type DomainMode } from '../../constants/domainMode'
+import { useStudyWorkspace } from '../../hooks/useStudyWorkspace'
+import { SubjectPicker } from '../subjects/SubjectPicker'
 import type { Meeting } from '../../types'
 import { isUserQuotaExceeded } from '../../utils/quotaUx'
 import {
@@ -43,11 +45,14 @@ type HistoryOverviewPanelProps = {
   renameBusy: boolean
   deleteBusy: boolean
   listError: string | null
+  subjectBusy: boolean
+  subjectError: string | null
   onSelectedScopeChange: (scope: MeetingResultScope) => void
   onRenameValueChange: (value: string) => void
   onRename: () => void
   onDelete: () => void
   onShareLink: () => void
+  onSubjectChange: (subjectId: number | null) => void
   onOpenAnalysis?: (meetingId: number, context?: { title?: string; scope?: MeetingResultScope | null }) => void
   onOpenMindmap?: (meetingId: number, context?: { title?: string; scope?: MeetingResultScope | null }) => void
 }
@@ -94,15 +99,22 @@ function HistoryOverviewPanel({
   renameBusy,
   deleteBusy,
   listError,
+  subjectBusy,
+  subjectError,
   onSelectedScopeChange,
   onRenameValueChange,
   onRename,
   onDelete,
   onShareLink,
+  onSubjectChange,
   onOpenAnalysis,
   onOpenMindmap,
 }: HistoryOverviewPanelProps) {
   const meetingTitle = getMeetingLabel(selectedMeeting)
+  const { catalogSubjects } = useStudyWorkspace()
+  const assignedSubjectName = selectedMeeting.subjectId != null
+    ? catalogSubjects.find((subject) => subject.id === selectedMeeting.subjectId)?.name ?? null
+    : null
 
   return (
     <>
@@ -155,6 +167,21 @@ function HistoryOverviewPanel({
       )}
 
       <div className="history-actions">
+        <div className="history-actions__group history-subject-row ui-panel-actions" data-testid="meeting-subject-row">
+          <span className="history-actions__label" data-testid="meeting-subject-label">
+            Môn học: {assignedSubjectName ?? 'Chưa phân loại'}
+          </span>
+          <SubjectPicker
+            id={`meeting-history-subject-picker-${selectedMeeting.id}`}
+            label=""
+            value={selectedMeeting.subjectId ?? null}
+            disabled={subjectBusy}
+            allowClear
+            onChange={onSubjectChange}
+          />
+          {subjectBusy ? <span className="subjects-meta">Đang lưu…</span> : null}
+        </div>
+        {subjectError ? <ErrorState title="Không thể gán môn học" message={subjectError} /> : null}
         <div className="history-actions__group history-rename-row ui-panel-actions">
           <span className="history-actions__label">Quản lý</span>
           <input
@@ -231,6 +258,9 @@ export default function MeetingHistoryScene({
     scopeState,
     handleRename,
     handleDelete,
+    subjectBusy,
+    subjectError,
+    handleSubjectChange,
   } = useMeetingHistoryData({
     focusMeetingId,
     controlledSearchQuery,
@@ -551,11 +581,14 @@ export default function MeetingHistoryScene({
                     renameBusy={renameBusy}
                     deleteBusy={deleteBusy}
                     listError={listError}
+                    subjectBusy={subjectBusy}
+                    subjectError={subjectError}
                     onSelectedScopeChange={setSelectedScope}
                     onRenameValueChange={setRenameValue}
                     onRename={handleRename}
                     onDelete={handleDelete}
                     onShareLink={() => void handleShareMeetingLink()}
+                    onSubjectChange={(subjectId) => void handleSubjectChange(subjectId)}
                     onOpenAnalysis={onOpenAnalysis}
                     onOpenMindmap={onOpenMindmap}
                   />

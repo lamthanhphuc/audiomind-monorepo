@@ -14,13 +14,14 @@ import {
   Sparkles,
   type LucideIcon,
 } from 'lucide-react'
+import SubjectSidebarSection from '../subjects/SubjectSidebarSection'
 import GlobalMeetingSearch from './GlobalMeetingSearch'
 import { StudioAmbientBackground } from '../ui/StudioAmbientBackground'
 import ActiveJobsBanner from './ActiveJobsBanner'
 import NotificationCenter from './NotificationCenter'
 import type { HistoryLanguageFilter, HistoryStatusFilter } from '../../app/useHistorySearchFilters'
 
-export type DashboardScene = 'upload' | 'realtime' | 'analysis' | 'files' | 'mindmap' | 'knowledge' | 'insights' | 'integrations' | 'billing'
+export type DashboardScene = 'upload' | 'realtime' | 'analysis' | 'files' | 'mindmap' | 'knowledge' | 'insights' | 'integrations' | 'billing' | 'subjects' | 'subjectDetail' | 'unclassified'
 
 type DashboardUser = {
   name: string
@@ -45,6 +46,10 @@ type DashboardLayoutProps = {
   onGlobalStatusFilterChange?: (value: HistoryStatusFilter) => void
   globalLanguageFilter?: HistoryLanguageFilter
   onGlobalLanguageFilterChange?: (value: HistoryLanguageFilter) => void
+  selectedSubjectId?: number | null
+  onNavigateSubjects?: () => void
+  onNavigateSubjectDetail?: (subjectId: number) => void
+  onNavigateUnclassified?: () => void
 }
 
 type DashboardNavItem = {
@@ -76,6 +81,10 @@ export default function DashboardLayout({
   onGlobalStatusFilterChange,
   globalLanguageFilter = '',
   onGlobalLanguageFilterChange,
+  selectedSubjectId = null,
+  onNavigateSubjects,
+  onNavigateSubjectDetail,
+  onNavigateUnclassified,
 }: DashboardLayoutProps) {
   const initial = user.name.trim()[0]?.toUpperCase() || 'A'
   const [sidebarOpen, setSidebarOpen] = useState(false)
@@ -199,6 +208,16 @@ export default function DashboardLayout({
               </ul>
             </div>
           ))}
+
+          {onNavigateSubjects && onNavigateSubjectDetail && onNavigateUnclassified ? (
+            <SubjectSidebarSection
+              activeScene={activeMenu}
+              selectedSubjectId={selectedSubjectId}
+              onNavigateSubjects={onNavigateSubjects}
+              onNavigateSubjectDetail={onNavigateSubjectDetail}
+              onNavigateUnclassified={onNavigateUnclassified}
+            />
+          ) : null}
 
         <div className="dashboard-sidebar__section dashboard-sidebar__recents">
           <div className="dashboard-sidebar__title">Gần đây</div>

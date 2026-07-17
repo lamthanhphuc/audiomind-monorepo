@@ -81,12 +81,24 @@ export function useMeetingHistorySharing({
       setShareUserEmail(null)
       return
     }
+    let cancelled = false
     void getGoogleStatus()
-      .then((status) => setShareGoogleStatus(status))
-      .catch(() => setShareGoogleStatus(null))
+      .then((status) => {
+        if (!cancelled) setShareGoogleStatus(status)
+      })
+      .catch(() => {
+        if (!cancelled) setShareGoogleStatus(null)
+      })
     void getUserProfile()
-      .then((profile) => setShareUserEmail(profile.email || null))
-      .catch(() => setShareUserEmail(null))
+      .then((profile) => {
+        if (!cancelled) setShareUserEmail(profile.email || null)
+      })
+      .catch(() => {
+        if (!cancelled) setShareUserEmail(null)
+      })
+    return () => {
+      cancelled = true
+    }
   }, [selectedMeetingId])
 
   useEffect(() => {

@@ -25,8 +25,10 @@ from app.services.analysis_versioning import resolve_analysis_versions
 from app.services.education_analysis import (
     build_education_prompt_rules,
     build_education_system_instruction,
+    build_fallback_education_study,
     coerce_allowed_segment_ids,
     education_study_gemini_schema,
+    extract_education_study_raw,
     normalize_education_study,
 )
 from app.services.gemini_fault_injection import resolve_gemini_http_client_factory
@@ -386,7 +388,8 @@ class AIAnalyzer:
             return (
                 "Nếu domainMode=education, ưu tiên mục tiêu học tập, nội dung bài giảng, "
                 "đánh giá, bài tập, tiến độ học viên, câu hỏi cần làm rõ và việc cần chuẩn bị. "
-                "Đồng thời tạo educationStudy có cấu trúc theo schema education-study-v1."
+                "Đồng thời luôn trả về educationStudy (object bắt buộc) đúng schema education-study-v1; "
+                "không được bỏ trống hoặc omit field educationStudy."
             )
         if domain_mode == "general":
             return (
@@ -583,8 +586,17 @@ class AIAnalyzer:
             domain_mode or self.analysis_domain_mode,
             default=self.analysis_domain_mode,
         )
+        required = [
+            "summary",
+            "meetingSummary",
+            "keywords",
+            "technicalTerms",
+            "domainMode",
+        ]
         if normalized_domain == "education":
             schema["properties"]["educationStudy"] = education_study_gemini_schema()
+            required.append("educationStudy")
+        schema["required"] = required
         return schema
 
     def _coerce_structured_technical_terms(self, values: Any) -> List[Dict[str, str]]:
@@ -2254,7 +2266,7 @@ NỘI DUNG:
                 meeting_id = None
             try:
                 education_study = normalize_education_study(
-                    parsed.get("educationStudy") if isinstance(parsed, dict) else None,
+                    extract_education_study_raw(parsed),
                     allowed_segment_ids=allowed_ids,
                     meeting_id=meeting_id,
                 )
@@ -2267,6 +2279,30 @@ NỘI DUNG:
                     safe_error_message(exc),
                 )
                 education_study = None
+            if education_study is None:
+                education_study = normalize_education_study(
+                    build_fallback_education_study(
+                        summary=str(structured.get("summary") or ""),
+                        meeting_summary=str(structured.get("meetingSummary") or ""),
+                        keywords=(
+                            structured.get("keywords")
+                            if isinstance(structured.get("keywords"), list)
+                            else []
+                        ),
+                        technical_terms=(
+                            structured.get("technicalTerms")
+                            if isinstance(structured.get("technicalTerms"), list)
+                            else []
+                        ),
+                    ),
+                    allowed_segment_ids=allowed_ids,
+                    meeting_id=meeting_id,
+                )
+                logger.warning(
+                    "EDUCATION_STUDY_FALLBACK_APPLIED meeting_id={} domain_mode={} reason=normalize_failed_or_missing",
+                    meeting_id,
+                    domain_mode,
+                )
             if education_study is not None:
                 structured["educationStudy"] = education_study
             else:

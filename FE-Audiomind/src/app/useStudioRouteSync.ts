@@ -15,6 +15,7 @@ type StudioRouteStateSetters = {
   setHistoryAnalysisScope: (scope: MeetingResultScope | null) => void
   setMindmapSelectedMeetingId: (id: number | null) => void
   setMindmapSelectedScope: (scope: MeetingResultScope | null) => void
+  setSelectedSubjectId?: (id: number | null) => void
 }
 
 type OAuthNoticeHandlers = {
@@ -46,6 +47,7 @@ export const useStudioRouteSync = (
         applyParsedStudioRoute(event.route as ParsedStudioRoute, routeSetters)
         pushStudioRoute(event.route.scene, {
           meetingId: event.route.meetingId,
+          subjectId: event.route.subjectId,
           resultScope: event.route.resultScope ?? null,
           replace: true,
         })

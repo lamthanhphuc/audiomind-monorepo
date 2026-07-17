@@ -23,18 +23,19 @@
     "typecheck:client": "tsc --noEmit -p tsconfig.generated.json",
     "validate:schema": "node ./packages/tooling/config-validation/validate-schemas.mjs",
     "validate:contracts": "node ./packages/tooling/config-validation/validate-contracts.mjs",
-    "check:openapi": "node ./infra/scripts/check-openapi-main.mjs"
+    "check:openapi": "node ./infra/scripts/check-openapi-main.mjs",
+    "test:openapi-checker": "node --test ./infra/scripts/check-openapi-main.test.mjs"
   },
   "devDependencies": {
-    "@typescript-eslint/parser": "^8.29.1",
     "@commitlint/cli": "^19.8.0",
     "@commitlint/config-conventional": "^19.8.0",
+    "@oasdiff-js/oasdiff-js": "1.0.0",
+    "@typescript-eslint/parser": "^8.29.1",
     "ajv": "^8.17.1",
     "ajv-formats": "^3.0.1",
     "eslint": "^9.24.0",
     "husky": "^9.1.7",
     "jest": "^29.7.0",
-    "openapi-diff": "^0.24.1",
     "openapi-typescript": "^7.6.1",
     "typescript": "^5.8.3"
   }
