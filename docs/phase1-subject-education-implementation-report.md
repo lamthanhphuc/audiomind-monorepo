@@ -5,10 +5,11 @@
 **Ahead/behind:** ahead 16, behind 0 (`0	16`)  
 **HEAD:** `04d4cd3` — `fix(ai): require and fallback educationStudy for education domain`  
 **Working tree:** clean  
-**Status:** **Partially completed** (54/55; Stage B not run)
+**Status:** **Completed** (55/55; Stage B not run)
 **Started:** 2026-07-15
 **P0/P1 hardening + live smoke:** 2026-07-16
 **Final verification counts:** 2026-07-17
+**AC-34 fresh Education smoke PASS:** 2026-07-17
 
 ## A. Git cleanup
 
@@ -293,26 +294,44 @@ The realtime run used a non-sensitive generated English lesson and selected the 
 | AI full suite | **480 passed, 23 skipped, exit 0** |
 | Frontend evidence tests | **35 passed, exit 0** |
 
+### AC-34 fresh realtime Education smoke (2026-07-17, quota recovered)
+
+Evidence: `logs/phase1-verification/ac34-fresh-realtime-education-smoke.txt`.
+
+Fresh flow (new user, new meeting 8, no reused cache): `POST /meetings/realtime` → WS `auth.init domainMode=education` → real Vietnamese speech streamed as WebM/Opus (`recording_session_id=1`, `attempt_id=1`) → live `transcript.partial`/`transcript.final` from Deepgram → `stream.stop` → `REALTIME_ANALYSIS_REQUEST_SENT` → `REALTIME_ANALYSIS_SAVED` → scoped `GET /processing/8/analysis` HTTP 200.
+
+| Field | Value |
+|-------|-------|
+| `status` / `analysisStatus` | `SUCCEEDED` / `COMPLETED` |
+| `domainMode` | `education` |
+| `promptVersion` | `education-analysis-v1` |
+| `schemaVersion` | `education-study-v1` |
+| `analysisFeatureSet` | `education-study-v1` |
+| `educationStudy` | present (non-null) |
+| HTTP 429 | none in processing-api / ai-api logs for meeting 8 |
+
+Non-blocking observation: first scoped GET logged `ANALYSIS_SCOPE_JOB_STATE_MISS reason=domain_mismatch` (realtime job intent resolved `expectedDomainMode=general`); the AI-transcript fallback returned the correct Education analysis, so the user-visible result is correct.
+
 ## Acceptance criteria snapshot
 
 | Status | Count | IDs |
 |--------|-------|-----|
-| **DONE** | **54** | AC-01–AC-33, AC-35–AC-55 |
-| **PARTIAL** | **1** | AC-34 |
+| **DONE** | **55** | AC-01–AC-55 |
+| **PARTIAL** | **0** | — |
 | **TODO** | **0** | — |
 | **BLOCKED** | **0** | — |
 | **TOTAL** | **55** | — |
 
 | AC | Status | Note |
 |----|--------|------|
-| **AC-34** | **PARTIAL** | Fresh Gemini HTTP **429** (`external_provider_quota`) |
+| **AC-34** | **DONE** | Fresh realtime Education smoke PASS 2026-07-17 (Gemini quota recovered; no 429) |
 | **AC-43** | **DONE** | Deterministic realtime evidence fixtures + scoped job-state Education fixture |
 
-Overall Phase 1 status: **Partially completed** (54/55).
+Overall Phase 1 status: **Completed** (55/55).
 
 ## Remaining
 
 - Git Stage B not run, as required.
 - Deferred product polish: subject meeting row `duration`/`sourceType`/transcriptStatus/analysisStatus (Option B)
-- AC-34 blocked on Gemini quota; when quota recovers, re-run fresh realtime Education and require `domainMode=education`, `educationStudy != null`, `promptVersion=education-analysis-v1`, `schemaVersion=education-study-v1`, `analysisFeatureSet=education-study-v1` → then **DONE 55 / Phase 1 Completed**.
 - AC-54 DOCX/PDF export + meeting sharing exercised at route/API readiness level only (not full file QA)
+- Follow-up (non-blocking): realtime job intent resolves `expectedDomainMode=general`, so scoped job-state fast path misses for realtime Education meetings and relies on the AI fallback.
