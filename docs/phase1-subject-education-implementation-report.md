@@ -2,13 +2,14 @@
 
 **Branch:** `feature/phase1-subject-education`  
 **Tracking branch:** `origin/feature/phase1-subject-education`  
-**Ahead/behind:** ahead 16, behind 0 (`0	16`)  
-**HEAD:** `04d4cd3` — `fix(ai): require and fallback educationStudy for education domain`  
-**Working tree:** clean  
-**Status:** **Completed** (55/55; Stage B not run)
-**Started:** 2026-07-15
-**P0/P1 hardening + live smoke:** 2026-07-16
-**Final verification counts:** 2026-07-17
+**Status:** **Completed** — DONE 55, PARTIAL 0  
+**Verification baseline:** Phase 1 completion verified before final PR preparation  
+**Working tree at verification:** clean  
+**Ahead/behind at verification:** 0/0  
+**Verified source snapshot:** `3da6b73` / `4a2fc5d` (fast-path domain provenance fix + regression tests); AC-34 live smoke baseline `95cde1e`  
+**Started:** 2026-07-15  
+**P0/P1 hardening + live smoke:** 2026-07-16  
+**Final verification counts:** 2026-07-17  
 **AC-34 fresh Education smoke PASS:** 2026-07-17
 
 ## A. Git cleanup
@@ -289,7 +290,7 @@ The realtime run used a non-sensitive generated English lesson and selected the 
 | FE build | pass (tsc + Vite; chunk-size warning only) |
 | meeting-service full | **131 run, 0 fail, 0 error, 0 skipped** |
 | `StudyFolderSubjectMigrationTest` | **6 passed** (Docker) |
-| processing-service full | **335 passed, exit 0** |
+| processing-service full | **340 passed, exit 0** |
 | AI Education focused tests | **41 passed, exit 0** |
 | AI full suite | **480 passed, 23 skipped, exit 0** |
 | Frontend evidence tests | **35 passed, exit 0** |
@@ -310,7 +311,7 @@ Fresh flow (new user, new meeting 8, no reused cache): `POST /meetings/realtime`
 | `educationStudy` | present (non-null) |
 | HTTP 429 | none in processing-api / ai-api logs for meeting 8 |
 
-Non-blocking observation: first scoped GET logged `ANALYSIS_SCOPE_JOB_STATE_MISS reason=domain_mismatch` (realtime job intent resolved `expectedDomainMode=general`); the AI-transcript fallback returned the correct Education analysis, so the user-visible result is correct.
+Non-blocking observation during AC-34 smoke: first scoped GET logged `ANALYSIS_SCOPE_JOB_STATE_MISS reason=domain_mismatch` (`expectedDomainMode=general`) because AI `set_job_status` replaced the entire job-state `result` and wiped processing provenance. User-visible Education analysis still succeeded via AI transcript fallback. Post-verification hardening persists `domainMode` + session/attempt into the completed job-state result and re-merges provenance after realtime analysis so scoped GET can `ANALYSIS_SCOPE_HIT_JOB_STATE`.
 
 ## Acceptance criteria snapshot
 
@@ -334,4 +335,3 @@ Overall Phase 1 status: **Completed** (55/55).
 - Git Stage B not run, as required.
 - Deferred product polish: subject meeting row `duration`/`sourceType`/transcriptStatus/analysisStatus (Option B)
 - AC-54 DOCX/PDF export + meeting sharing exercised at route/API readiness level only (not full file QA)
-- Follow-up (non-blocking): realtime job intent resolves `expectedDomainMode=general`, so scoped job-state fast path misses for realtime Education meetings and relies on the AI fallback.
