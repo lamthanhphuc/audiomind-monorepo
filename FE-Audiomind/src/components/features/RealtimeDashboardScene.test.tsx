@@ -211,6 +211,122 @@ describe('RealtimeDashboardScene', () => {
     expect(scrollTranscriptToHighlight).toHaveBeenCalledWith({ startTime: 4, endTime: 6 })
   })
 
+  it('highlights multi-segment realtime evidence using min/max range', async () => {
+    const firstId = 'meeting-42-start-1.000-speaker_1'
+    const secondId = 'meeting-42-start-8.000-speaker_1'
+    const educationRealtimeAnalysis: AiAnalysis = {
+      ...analysis,
+      domainMode: 'education',
+      educationStudy: {
+        title: 'Multi segment lesson',
+        overview: 'Range evidence',
+        learningObjectives: [],
+        sections: [],
+        keyPoints: [{
+          content: 'Spans two segments',
+          importance: 'HIGH',
+          sourceSegmentIds: [firstId, secondId],
+        }],
+        keywords: [],
+        glossary: [],
+        mustRemember: [],
+        unclearPoints: [],
+      },
+    }
+
+    await act(async () => {
+      root.render(
+        <RealtimeDashboardScene
+          {...baseProps}
+          liveTranscriptSegments={[
+            { id: firstId, speaker: 'Speaker 1', text: 'First', start: 1, end: 3 },
+            { id: 'meeting-42-start-4.000-speaker_1', speaker: 'Speaker 1', text: 'Middle', start: 4, end: 6 },
+            { id: secondId, speaker: 'Speaker 1', text: 'Second', start: 8, end: 10 },
+          ]}
+          liveAnalysis={educationRealtimeAnalysis}
+          liveAnalysisMetadata={educationRealtimeAnalysis}
+          liveAnalysisStatus="completed"
+          showLiveAnalysis
+        />,
+      )
+    })
+
+    const evidenceButton = container.querySelector(
+      '[data-testid="education-evidence-button"]',
+    ) as HTMLButtonElement
+    await act(async () => {
+      evidenceButton.click()
+    })
+
+    expect(scrollTranscriptToHighlight).toHaveBeenCalledWith({ startTime: 1, endTime: 10 })
+    expect(container.querySelector('.transcript-display__segment--highlight')).toBeTruthy()
+  })
+
+  it('uses partial realtime evidence matches and warns when all ids are missing', async () => {
+    const matchedId = 'meeting-42-start-2.000-speaker_1'
+    const missingId = 'meeting-42-start-99.000-speaker_1'
+    const educationRealtimeAnalysis: AiAnalysis = {
+      ...analysis,
+      domainMode: 'education',
+      educationStudy: {
+        title: 'Partial evidence',
+        overview: 'Partial and missing',
+        learningObjectives: [],
+        sections: [],
+        keyPoints: [
+          {
+            content: 'Partial match',
+            importance: 'HIGH',
+            sourceSegmentIds: [matchedId, missingId],
+          },
+          {
+            content: 'All missing',
+            importance: 'MEDIUM',
+            sourceSegmentIds: ['missing-a', 'missing-b'],
+          },
+        ],
+        keywords: [],
+        glossary: [],
+        mustRemember: [],
+        unclearPoints: [],
+      },
+    }
+
+    await act(async () => {
+      root.render(
+        <RealtimeDashboardScene
+          {...baseProps}
+          liveTranscriptSegments={[
+            { id: matchedId, speaker: 'Speaker 1', text: 'Matched', start: 2, end: 4 },
+          ]}
+          liveAnalysis={educationRealtimeAnalysis}
+          liveAnalysisMetadata={educationRealtimeAnalysis}
+          liveAnalysisStatus="completed"
+          showLiveAnalysis
+        />,
+      )
+    })
+
+    const buttons = Array.from(
+      container.querySelectorAll('[data-testid="education-evidence-button"]'),
+    ) as HTMLButtonElement[]
+    expect(buttons.length).toBeGreaterThanOrEqual(2)
+
+    await act(async () => {
+      buttons[0].click()
+    })
+    expect(scrollTranscriptToHighlight).toHaveBeenCalledWith({ startTime: 2, endTime: 4 })
+    expect(container.textContent).not.toContain(
+      'Không tìm thấy đoạn transcript tương ứng với bằng chứng này.',
+    )
+
+    await act(async () => {
+      buttons[1].click()
+    })
+    expect(container.querySelector('[data-testid="live-evidence-warning"]')?.textContent)
+      .toContain('Không tìm thấy đoạn transcript tương ứng với bằng chứng này.')
+  })
+
   it('renders finalized no-transcript state without analysis loading', () => {
     const metadata: AiAnalysis = {
       meetingId: 42,
