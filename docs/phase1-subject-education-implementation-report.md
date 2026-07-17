@@ -287,27 +287,28 @@ The realtime run used a non-sensitive generated English lesson and selected the 
 | FE build | pass (tsc + Vite; chunk-size warning only) |
 | meeting-service full | **131 run, 0 fail, 0 error, 0 skipped** |
 | `StudyFolderSubjectMigrationTest` | **6 passed** (Docker) |
-| processing-service full | **321 run, 0 fail, 0 error, 0 skipped** |
-| AI education targeted | **24 passed, 5 warnings** |
+| processing-service full | **335 run, 0 fail, 0 error, 0 skipped** |
+| AI education targeted | **34 passed, 5 warnings** (re-run 2026-07-17; prior “24” was a stale report typo) |
 | AI full `pytest tests` | **480 passed, 23 skipped, 7 warnings, 0 failed, 0 errors** on Python 3.11.9 |
+| FE evidence deterministic suite | **60 passed** (RealtimeDashboardScene 11, AnalysisPanel, FeatureAnalysis, evidence hooks/utils) |
 
 ## Acceptance criteria snapshot
 
 | Status | Count | IDs |
 |--------|-------|-----|
-| **DONE** | **53** | AC-01–AC-33, AC-35–AC-42, AC-44–AC-55 |
-| **PARTIAL** | **2** | AC-34, AC-43 |
+| **DONE** | **54** | AC-01–AC-33, AC-35–AC-55 |
+| **PARTIAL** | **1** | AC-34 |
 | **TODO** | **0** | — |
 | **BLOCKED** | **0** | — |
 | **TOTAL** | **55** | — |
 
-AC-43 remains partial because the required upload and saved evidence paths passed, but the fresh realtime evidence path did not become evidence-ready. AC-34 is also partial because the fresh realtime Education analysis failed during this verification.
+AC-43 is **DONE** via deterministic realtime evidence fixtures (single/multi/partial/missing sourceSegmentIds + highlight/scroll/warning) and scoped job-state Education analysis fixture (meeting 21). AC-34 remains **PARTIAL** because fresh Gemini `/api/internal/realtime-analysis` still returns **HTTP 429** (`external_provider_quota`).
 
-Overall Phase 1 status: **Partially completed**.
+Overall Phase 1 status: **Partially completed** (54/55).
 
 ## Remaining
 
 - Git Stage B not run, as required.
 - Deferred product polish: subject meeting row `duration`/`sourceType`/transcriptStatus/analysisStatus (Option B)
-- Realtime meeting 12 analysis/rerun mismatch: processing transcript is readable, but rerun reports the saved transcript missing; stale metadata also reports `gemini-business-v2` after Education was selected.
+- AC-34 blocked on Gemini quota; internal scoped Education path and stale Business rejection are verified.
 - AC-54 DOCX/PDF export + meeting sharing exercised at route/API readiness level only (not full file QA)
