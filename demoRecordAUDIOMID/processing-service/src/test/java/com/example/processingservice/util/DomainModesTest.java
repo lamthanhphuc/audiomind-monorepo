@@ -42,4 +42,23 @@ class DomainModesTest {
         assertEquals("general", DomainModes.firstNonBlankNormalized((Object[]) null));
         assertEquals("general", DomainModes.firstNonBlankNormalized(null, " ", "unknown"));
     }
+
+    @Test
+    void resolveAnalysisVersions_shouldUseEducationIdentity() {
+        DomainModes.AnalysisVersions versions = DomainModes.resolveAnalysisVersions("education");
+        assertEquals("education-analysis-v1", versions.promptVersion());
+        assertEquals("education-study-v1", versions.schemaVersion());
+        assertEquals("education-study-v1", versions.analysisFeatureSet());
+    }
+
+    @Test
+    void resolveAnalysisVersions_shouldNamespaceNonEducationFeatureSets() {
+        DomainModes.AnalysisVersions it = DomainModes.resolveAnalysisVersions("it");
+        assertEquals("gemini-business-v2", it.promptVersion());
+        assertEquals("gemini-business-v2", it.schemaVersion());
+        assertEquals("grouped-action-plan-v1-it", it.analysisFeatureSet());
+
+        DomainModes.AnalysisVersions general = DomainModes.resolveAnalysisVersions(null);
+        assertEquals("grouped-action-plan-v1-general", general.analysisFeatureSet());
+    }
 }

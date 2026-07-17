@@ -1883,7 +1883,10 @@ class ProcessingServiceTest {
                                 anyString(),
                                 anyString(),
                                 anyString(),
-                                eq("trace-700"),
+                                anyString(),
+                isNull(),
+                isNull(),
+                eq("trace-700"),
                                 eq(AUTH_HEADER)
                 );
         }
@@ -1904,7 +1907,10 @@ class ProcessingServiceTest {
                                 anyString(),
                                 anyString(),
                                 anyString(),
-                                eq("trace-701"),
+                                anyString(),
+                isNull(),
+                isNull(),
+                eq("trace-701"),
                                 eq(AUTH_HEADER)
                 );
         }
@@ -2045,6 +2051,9 @@ class ProcessingServiceTest {
                 anyString(),
                 anyString(),
                 anyString(),
+                anyString(),
+                isNull(),
+                isNull(),
                 eq("trace-920"),
                 eq(AUTH_HEADER)
         );
@@ -2091,6 +2100,9 @@ class ProcessingServiceTest {
                 anyString(),
                 anyString(),
                 anyString(),
+                anyString(),
+                isNull(),
+                isNull(),
                 eq("trace-921"),
                 eq(AUTH_HEADER)
         );
@@ -2822,8 +2834,11 @@ class ProcessingServiceTest {
                 eq("general"),
                 eq("realtime"),
                 anyString(),
-                anyString(),
-                anyString(),
+                eq("gemini-business-v2"),
+                eq("gemini-business-v2"),
+                eq("grouped-action-plan-v1-general"),
+                isNull(),
+                isNull(),
                 eq("trace-608"),
                 eq(AUTH_HEADER)
         )).thenReturn(Map.of("status", "completed"));
@@ -2837,8 +2852,11 @@ class ProcessingServiceTest {
                 eq("general"),
                 eq("realtime"),
                 anyString(),
-                anyString(),
-                anyString(),
+                eq("gemini-business-v2"),
+                eq("gemini-business-v2"),
+                eq("grouped-action-plan-v1-general"),
+                isNull(),
+                isNull(),
                 eq("trace-608"),
                 eq(AUTH_HEADER)
         );
@@ -2876,8 +2894,11 @@ class ProcessingServiceTest {
                 eq("education"),
                 eq("realtime"),
                 anyString(),
-                anyString(),
-                anyString(),
+                eq("education-analysis-v1"),
+                eq("education-study-v1"),
+                eq("education-study-v1"),
+                isNull(),
+                isNull(),
                 eq("trace-621"),
                 eq(AUTH_HEADER)
         )).thenReturn(Map.of("status", "completed"));
@@ -2891,11 +2912,164 @@ class ProcessingServiceTest {
                 eq("education"),
                 eq("realtime"),
                 anyString(),
-                anyString(),
-                anyString(),
+                eq("education-analysis-v1"),
+                eq("education-study-v1"),
+                eq("education-study-v1"),
+                isNull(),
+                isNull(),
                 eq("trace-621"),
                 eq(AUTH_HEADER)
         );
+    }
+
+    @Test
+    void getScopedAnalysis_shouldLookupEducationCacheWithEducationVersions() {
+        when(jobStateStore.getJobState(622L)).thenReturn(Optional.of(Map.of(
+                "status", "COMPLETED",
+                "result", Map.of(
+                        "domainMode", "education",
+                        "recording_session_id", 3L,
+                        "attempt_id", 2L
+                )
+        )));
+        when(aiServiceClient.getTranscript(622L, "trace-622", 3L, 2L)).thenReturn(Map.of(
+                "meeting_id", 622L,
+                "transcripts", List.of(
+                        Map.of(
+                                "speaker", "SPEAKER_1",
+                                "text", "Operating systems lecture",
+                                "segment_id", "meeting-622-start-0.000-speaker_1"
+                        )
+                )
+        ));
+        when(aiServiceClient.getSavedAnalysisCacheOnly(
+                eq(622L),
+                anyString(),
+                anyString(),
+                eq("education-analysis-v1"),
+                eq("education-study-v1"),
+                eq("education-study-v1"),
+                eq(3L),
+                eq(2L),
+                eq("education"),
+                eq("trace-622"),
+                eq(AUTH_HEADER)
+        )).thenReturn(Map.of(
+                "status", "completed",
+                "analysisStatus", "COMPLETED",
+                "promptVersion", "education-analysis-v1",
+                "schemaVersion", "education-study-v1",
+                "analysisFeatureSet", "education-study-v1",
+                "analysis", Map.of(
+                        "summary", "OS lecture",
+                        "educationStudy", Map.of(
+                                "version", "education-study-v1",
+                                "lessonTitle", "Operating Systems",
+                                "keyPoints", List.of(Map.of(
+                                        "content", "A process is a program in execution",
+                                        "importance", "HIGH",
+                                        "sourceSegmentIds", List.of("meeting-622-start-0.000-speaker_1")
+                                ))
+                        )
+                )
+        ));
+
+        Map<String, Object> response = processingService.getAnalysis(622L, "trace-622", AUTH_HEADER, 3L, 2L);
+
+        assertEquals("education-analysis-v1", response.get("promptVersion"));
+        assertEquals("education-study-v1", response.get("schemaVersion"));
+        assertTrue(
+                response.containsKey("educationStudy")
+                        || (response.get("analysis") instanceof Map<?, ?> nested
+                        && nested.containsKey("educationStudy"))
+        );
+        verify(aiServiceClient).getSavedAnalysisCacheOnly(
+                eq(622L),
+                anyString(),
+                anyString(),
+                eq("education-analysis-v1"),
+                eq("education-study-v1"),
+                eq("education-study-v1"),
+                eq(3L),
+                eq(2L),
+                eq("education"),
+                eq("trace-622"),
+                eq(AUTH_HEADER)
+        );
+        verify(aiServiceClient, never()).analyzeRealtimeTranscript(
+                any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()
+        );
+    }
+
+    @Test
+    void getScopedAnalysis_shouldNotLookupBusinessCacheVersionsForEducationDomain() {
+        when(jobStateStore.getJobState(623L)).thenReturn(Optional.of(Map.of(
+                "status", "COMPLETED",
+                "result", Map.of(
+                        "domainMode", "education",
+                        "recording_session_id", 5L,
+                        "attempt_id", 1L
+                )
+        )));
+        when(aiServiceClient.getTranscript(623L, "trace-623", 5L, 1L)).thenReturn(Map.of(
+                "meeting_id", 623L,
+                "transcripts", List.of(
+                        Map.of("speaker", "SPEAKER_1", "text", "Fresh education attempt")
+                )
+        ));
+        when(aiServiceClient.getSavedAnalysisCacheOnly(
+                eq(623L),
+                anyString(),
+                anyString(),
+                eq("education-analysis-v1"),
+                eq("education-study-v1"),
+                eq("education-study-v1"),
+                eq(5L),
+                eq(1L),
+                eq("education"),
+                eq("trace-623"),
+                eq(AUTH_HEADER)
+        )).thenReturn(Map.of(
+                "status", "NO_ANALYSIS",
+                "analysisStatus", "NO_ANALYSIS",
+                "stale", true,
+                "staleReason", "prompt_version_changed",
+                "promptVersion", "gemini-business-v2"
+        ));
+        when(aiServiceClient.getAnalysis(623L, "trace-623", 5L, 1L)).thenReturn(Map.of(
+                "status", "completed",
+                "analysisStatus", "COMPLETED",
+                "promptVersion", "education-analysis-v1",
+                "schemaVersion", "education-study-v1",
+                "analysisFeatureSet", "education-study-v1",
+                "domainMode", "education",
+                "analysis", Map.of(
+                        "summary", "Fresh education",
+                        "educationStudy", Map.of(
+                                "version", "education-study-v1",
+                                "lessonTitle", "Fresh lesson",
+                                "keyPoints", List.of()
+                        )
+                )
+        ));
+
+        Map<String, Object> response = processingService.getAnalysis(623L, "trace-623", AUTH_HEADER, 5L, 1L);
+
+        assertEquals("education-analysis-v1", response.get("promptVersion"));
+        verify(aiServiceClient, never()).getSavedAnalysisCacheOnly(
+                eq(623L),
+                anyString(),
+                anyString(),
+                eq("gemini-business-v2"),
+                eq("gemini-business-v2"),
+                anyString(),
+                any(),
+                any(),
+                any(),
+                anyString(),
+                anyString()
+        );
+        verify(aiServiceClient).getAnalysis(623L, "trace-623", 5L, 1L);
     }
 
     @Test
@@ -2930,6 +3104,9 @@ class ProcessingServiceTest {
                 anyString(),
                 anyString(),
                 anyString(),
+                anyString(),
+                isNull(),
+                isNull(),
                 eq("trace-620"),
                 eq(AUTH_HEADER)
         );
@@ -2983,6 +3160,9 @@ class ProcessingServiceTest {
                 anyString(),
                 anyString(),
                 anyString(),
+                anyString(),
+                isNull(),
+                isNull(),
                 eq("trace-615"),
                 eq(AUTH_HEADER)
         )).thenThrow(HttpClientErrorException.create(
@@ -3062,6 +3242,9 @@ class ProcessingServiceTest {
                 anyString(),
                 anyString(),
                 anyString(),
+                anyString(),
+                isNull(),
+                isNull(),
                 eq("trace-619"),
                 eq(AUTH_HEADER)
         );
@@ -3102,6 +3285,9 @@ class ProcessingServiceTest {
                 anyString(),
                 anyString(),
                 anyString(),
+                anyString(),
+                isNull(),
+                isNull(),
                 eq("trace-614"),
                 eq(AUTH_HEADER)
         )).thenReturn(Map.of("status", "completed"));
@@ -3119,6 +3305,9 @@ class ProcessingServiceTest {
                 anyString(),
                 anyString(),
                 anyString(),
+                anyString(),
+                isNull(),
+                isNull(),
                 eq("trace-614"),
                 eq(AUTH_HEADER)
         );
@@ -3169,6 +3358,9 @@ class ProcessingServiceTest {
                 anyString(),
                 anyString(),
                 anyString(),
+                anyString(),
+                isNull(),
+                isNull(),
                 eq("trace-615"),
                 eq(AUTH_HEADER)
         )).thenReturn(Map.of("status", "completed"));
@@ -3188,6 +3380,9 @@ class ProcessingServiceTest {
                 anyString(),
                 anyString(),
                 anyString(),
+                anyString(),
+                isNull(),
+                isNull(),
                 eq("trace-615"),
                 eq(AUTH_HEADER)
         );
@@ -3212,6 +3407,9 @@ class ProcessingServiceTest {
                 anyString(),
                 anyString(),
                 anyString(),
+                anyString(),
+                isNull(),
+                isNull(),
                 eq("trace-609"),
                 eq(AUTH_HEADER)
         )).thenAnswer(invocation -> {
@@ -3249,6 +3447,9 @@ class ProcessingServiceTest {
                 anyString(),
                 anyString(),
                 anyString(),
+                anyString(),
+                isNull(),
+                isNull(),
                 eq("trace-609"),
                 eq(AUTH_HEADER)
         );
@@ -3295,6 +3496,9 @@ class ProcessingServiceTest {
                 anyString(),
                 anyString(),
                 anyString(),
+                anyString(),
+                isNull(),
+                isNull(),
                 eq("trace-611"),
                 eq(AUTH_HEADER)
         );
@@ -3320,6 +3524,9 @@ class ProcessingServiceTest {
                 anyString(),
                 anyString(),
                 anyString(),
+                anyString(),
+                isNull(),
+                isNull(),
                 eq("trace-612"),
                 eq(AUTH_HEADER)
         )).thenReturn(Map.of(
@@ -3369,6 +3576,9 @@ class ProcessingServiceTest {
                 anyString(),
                 anyString(),
                 anyString(),
+                anyString(),
+                isNull(),
+                isNull(),
                 eq("trace-613"),
                 eq(AUTH_HEADER)
         )).thenReturn(Map.of(
@@ -3418,6 +3628,9 @@ class ProcessingServiceTest {
                 anyString(),
                 anyString(),
                 anyString(),
+                anyString(),
+                isNull(),
+                isNull(),
                 eq("trace-610"),
                 eq(AUTH_HEADER)
         );
@@ -3455,6 +3668,9 @@ class ProcessingServiceTest {
                 anyString(),
                 anyString(),
                 anyString(),
+                anyString(),
+                isNull(),
+                isNull(),
                 eq("trace-614"),
                 eq(AUTH_HEADER)
         );
@@ -3482,10 +3698,10 @@ class ProcessingServiceTest {
                 "37575315f5e3c1689f1ccc05fc23cf21f24a317834899b0c1b0aaffb48a7f555",
                 "gemini-business-v2",
                 "gemini-business-v2",
-                "grouped-action-plan-v1",
+                "grouped-action-plan-v1-general",
                 null,
                 null,
-                null,
+                "general",
                 "trace-616",
                 AUTH_HEADER
         )).thenReturn(Map.of(
@@ -3513,10 +3729,10 @@ class ProcessingServiceTest {
                 "37575315f5e3c1689f1ccc05fc23cf21f24a317834899b0c1b0aaffb48a7f555",
                 "gemini-business-v2",
                 "gemini-business-v2",
-                "grouped-action-plan-v1",
+                "grouped-action-plan-v1-general",
                 null,
                 null,
-                null,
+                "general",
                 "trace-616",
                 AUTH_HEADER
         );
@@ -3573,12 +3789,15 @@ class ProcessingServiceTest {
     }
 
     @Test
-    void reanalyzeMeetingAnalysis_shouldMapAiServiceNotFoundToClearDomainError() {
+    void reanalyzeMeetingAnalysis_shouldNotRemapAiNotFoundWhenProcessingTranscriptPresent() {
         when(meetingServiceClient.getMeetingById(618L, "trace-618", AUTH_HEADER))
                 .thenReturn(Map.of("id", 618L));
         Map<String, Object> state = new HashMap<>();
         state.put("status", "COMPLETED");
         state.put("result", Map.of(
+                "domainMode", "education",
+                "recording_session_id", 9L,
+                "attempt_id", 2L,
                 "transcripts", List.of(Map.of(
                         "speaker", "SPEAKER_1",
                         "text", "Saved transcript"
@@ -3591,18 +3810,18 @@ class ProcessingServiceTest {
                 eq("manual_reanalyze"),
                 anyString(),
                 anyString(),
-                eq("gemini-business-v2"),
-                eq("gemini-business-v2"),
-                eq("grouped-action-plan-v1"),
+                eq("education-analysis-v1"),
+                eq("education-study-v1"),
+                eq("education-study-v1"),
                 isNull(),
                 isNull(),
-                isNull(),
+                eq("education"),
                 eq("trace-618"),
                 eq(AUTH_HEADER)
         )).thenThrow(new HttpClientErrorException(HttpStatus.NOT_FOUND, "Not Found"));
 
-        ResponseStatusException ex = assertThrows(
-                ResponseStatusException.class,
+        HttpClientErrorException ex = assertThrows(
+                HttpClientErrorException.class,
                 () -> processingService.reanalyzeMeetingAnalysis(
                         618L,
                         "force",
@@ -3613,7 +3832,21 @@ class ProcessingServiceTest {
         );
 
         assertEquals(HttpStatus.NOT_FOUND, ex.getStatusCode());
-        assertEquals("Cannot re-analyze because saved transcript was not found.", ex.getReason());
+        verify(aiServiceClient).rerunAnalysis(
+                eq(618L),
+                eq("force"),
+                eq("manual_reanalyze"),
+                anyString(),
+                anyString(),
+                eq("education-analysis-v1"),
+                eq("education-study-v1"),
+                eq("education-study-v1"),
+                isNull(),
+                isNull(),
+                eq("education"),
+                eq("trace-618"),
+                eq(AUTH_HEADER)
+        );
     }
 
     @Test

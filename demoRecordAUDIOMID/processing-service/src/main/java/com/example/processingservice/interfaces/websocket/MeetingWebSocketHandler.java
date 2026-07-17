@@ -1649,6 +1649,7 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                             meetingId,
                             currentRecordingSessionId(session),
                             currentAttemptId(session),
+                            normalizeDomainMode(getStringAttribute(session, DOMAIN_MODE_ATTR)),
                             resolveSessionTraceId(session)
                     );
                     triggerRealtimeAnalysisAsync(

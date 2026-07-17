@@ -1236,7 +1236,23 @@ public class ProcessingService {
             String traceId,
             String authorization) {
         assertMeetingAccess(meetingId, traceId, authorization);
-        TranscriptPayload transcriptPayload = loadSavedTranscriptPayloadForRerun(meetingId, traceId, authorization);
+        Map<String, Object> state = jobStateStore.getJobState(meetingId).orElse(null);
+        String resolvedDomainMode = DomainModes.firstNonBlankNormalized(
+                domainMode,
+                state == null ? null : extractResult(state).get("domainMode"),
+                state == null ? null : extractResult(state).get("domain_mode"),
+                state == null ? null : state.get("domainMode"),
+                state == null ? null : state.get("domain_mode")
+        );
+        Long recordingSessionId = resolveRecordingSessionIdFromState(state);
+        Long attemptId = resolveAttemptIdFromState(state);
+        TranscriptPayload transcriptPayload = loadSavedTranscriptPayloadForRerun(
+                meetingId,
+                recordingSessionId,
+                attemptId,
+                traceId,
+                authorization
+        );
         String transcriptText = buildTranscriptText(transcriptPayload.readableRows());
         if (transcriptText.isBlank()) {
             throw new ResponseStatusException(
@@ -1246,15 +1262,25 @@ public class ProcessingService {
         }
 
         String transcriptHash = resolveReportTranscriptHash(transcriptPayload, transcriptText);
-        Map<String, Object> state = jobStateStore.getJobState(meetingId).orElse(null);
         Map<String, Object> existingAnalysis = extractAnalysisFromState(state);
+        DomainModes.AnalysisVersions versions = DomainModes.resolveAnalysisVersions(resolvedDomainMode);
         AnalysisVersionSelection versionSelection = selectAnalysisVersionForWrite(
                 meetingId,
                 "rerun",
                 requestedPromptVersion,
                 requestedSchemaVersion,
                 existingAnalysis,
+                resolvedDomainMode,
+                versions,
                 traceId
+        );
+        log.info(
+                "event=ANALYSIS_RERUN_SCOPE meetingId={} recordingSessionId={} attemptId={} domainMode={} transcriptSegmentCount={}",
+                meetingId,
+                recordingSessionId,
+                attemptId,
+                resolvedDomainMode,
+                transcriptPayload.readableRows().size()
         );
         try {
             enforceGeminiQuotaForText(transcriptText);
@@ -1266,15 +1292,15 @@ public class ProcessingService {
                     transcriptHash,
                     versionSelection.promptVersion(),
                     versionSelection.schemaVersion(),
-                    GROUPED_ACTION_PLAN_FEATURE_SET,
+                    versionSelection.analysisFeatureSet(),
                     transcriptPayload.canonicalTranscriptHash(),
                     transcriptPayload.canonicalTranscriptVersion(),
-                    domainMode,
+                    resolvedDomainMode,
                     traceId,
                     authorization
             );
         } catch (HttpStatusCodeException ex) {
-            if (ex.getStatusCode().value() == HttpStatus.NOT_FOUND.value()) {
+            if (ex.getStatusCode().value() == HttpStatus.NOT_FOUND.value() && transcriptText.isBlank()) {
                 throw new ResponseStatusException(
                         HttpStatus.NOT_FOUND,
                         "Cannot re-analyze because saved transcript was not found.",
@@ -3572,8 +3598,11 @@ public class ProcessingService {
         );
         String transcriptText = buildTranscriptText(transcriptRows);
         String transcriptHash = computeTranscriptHash(transcriptText);
-        String promptVersion = resolvePromptVersion(null);
-        String schemaVersion = resolveSchemaVersion(null);
+        String domainMode = resolveDomainModeForMeeting(meetingId);
+        DomainModes.AnalysisVersions versions = DomainModes.resolveAnalysisVersions(domainMode);
+        String promptVersion = versions.promptVersion();
+        String schemaVersion = versions.schemaVersion();
+        String analysisFeatureSet = versions.analysisFeatureSet();
         if (transcriptText.isBlank()) {
             Map<String, Object> response = new HashMap<>();
             response.put("meeting_id", meetingId);
@@ -3582,14 +3611,13 @@ public class ProcessingService {
             return response;
         }
         try {
-            String domainMode = resolveDomainModeForMeeting(meetingId);
             Map<String, Object> aiResponse = aiServiceClient.getSavedAnalysisCacheOnly(
                     meetingId,
                     transcriptText,
                     transcriptHash,
                     promptVersion,
                     schemaVersion,
-                    GROUPED_ACTION_PLAN_FEATURE_SET,
+                    analysisFeatureSet,
                     recordingSessionId,
                     attemptId,
                     domainMode,
@@ -3630,6 +3658,9 @@ public class ProcessingService {
 
     private boolean shouldTriggerScopedOnDemandAnalysis(Map<String, Object> response) {
         if (response == null || response.isEmpty()) {
+            return true;
+        }
+        if (Boolean.TRUE.equals(response.get("stale"))) {
             return true;
         }
         String analysisStatus = normalizeStatus(response.get("analysisStatus"));
@@ -4862,8 +4893,11 @@ public class ProcessingService {
     ) {
         String transcriptText = buildTranscriptText(transcriptRows);
         String transcriptHash = resolveReportTranscriptHash(transcriptPayload, transcriptText);
-        String promptVersion = resolvePromptVersion(null);
-        String schemaVersion = resolveSchemaVersion(null);
+        String domainMode = resolveDomainModeForMeeting(meetingId);
+        DomainModes.AnalysisVersions versions = DomainModes.resolveAnalysisVersions(domainMode);
+        String promptVersion = versions.promptVersion();
+        String schemaVersion = versions.schemaVersion();
+        String analysisFeatureSet = versions.analysisFeatureSet();
         if (transcriptText.isBlank()) {
             return buildReportAnalysisMetadata(
                     ANALYSIS_STATUS_NO_ANALYSIS,
@@ -4879,14 +4913,13 @@ public class ProcessingService {
         }
 
         try {
-            String domainMode = resolveDomainModeForMeeting(meetingId);
             Map<String, Object> aiResponse = aiServiceClient.getSavedAnalysisCacheOnly(
                     meetingId,
                     transcriptText,
                     transcriptHash,
                     promptVersion,
                     schemaVersion,
-                    GROUPED_ACTION_PLAN_FEATURE_SET,
+                    analysisFeatureSet,
                     null,
                     null,
                     domainMode,
@@ -5151,13 +5184,15 @@ public class ProcessingService {
         }
 
         String transcriptHash = computeTranscriptHash(transcriptText);
-        String promptVersion = resolvePromptVersion(null);
-        String schemaVersion = resolveSchemaVersion(null);
+        String domainMode = resolveDomainModeForMeeting(meetingId);
+        DomainModes.AnalysisVersions versions = DomainModes.resolveAnalysisVersions(domainMode);
+        String promptVersion = versions.promptVersion();
+        String schemaVersion = versions.schemaVersion();
         String analysisCacheKey = buildAnalysisCacheKey(
                 transcriptHash,
                 promptVersion,
                 schemaVersion,
-                GROUPED_ACTION_PLAN_FEATURE_SET
+                versions.analysisFeatureSet()
         );
         JobStateStore.AnalysisTriggerDecision decision = jobStateStore.tryStartAnalysis(
                 meetingId,
@@ -5227,9 +5262,17 @@ public class ProcessingService {
             String lockToken
     ) {
         try {
-            String promptVersion = resolvePromptVersion(null);
-            String schemaVersion = resolveSchemaVersion(null);
             String domainMode = resolveDomainModeForMeeting(meetingId);
+            DomainModes.AnalysisVersions versions = DomainModes.resolveAnalysisVersions(domainMode);
+            String promptVersion = versions.promptVersion();
+            String schemaVersion = versions.schemaVersion();
+            String analysisFeatureSet = versions.analysisFeatureSet();
+            Long recordingSessionId = resolveRecordingSessionIdFromState(
+                    jobStateStore.getJobState(meetingId).orElse(null)
+            );
+            Long attemptId = resolveAttemptIdFromState(
+                    jobStateStore.getJobState(meetingId).orElse(null)
+            );
             enforceGeminiQuotaForText(transcriptText);
             Map<String, Object> response = aiServiceClient.analyzeRealtimeTranscript(
                     meetingId,
@@ -5239,16 +5282,32 @@ public class ProcessingService {
                     transcriptHash,
                     promptVersion,
                     schemaVersion,
+                    analysisFeatureSet,
+                    recordingSessionId,
+                    attemptId,
                     traceId,
                     authorization
             );
-            String responsePromptVersion = resolvePromptVersion(response);
-            String responseSchemaVersion = resolveSchemaVersion(response);
+            String responsePromptVersion = firstNonBlank(
+                    response == null ? null : response.get("promptVersion"),
+                    response == null ? null : response.get("prompt_version"),
+                    promptVersion
+            );
+            String responseSchemaVersion = firstNonBlank(
+                    response == null ? null : response.get("schemaVersion"),
+                    response == null ? null : response.get("schema_version"),
+                    schemaVersion
+            );
+            String responseFeatureSet = firstNonBlank(
+                    response == null ? null : response.get("analysisFeatureSet"),
+                    response == null ? null : response.get("analysis_feature_set"),
+                    analysisFeatureSet
+            );
             String responseCacheKey = buildAnalysisCacheKey(
                     transcriptHash,
                     responsePromptVersion,
                     responseSchemaVersion,
-                    GROUPED_ACTION_PLAN_FEATURE_SET
+                    responseFeatureSet
             );
             String status = normalizeStatus(response == null ? null : response.get("status"));
             String reason = normalizeRealtimeSkipReason(response);
@@ -5501,69 +5560,147 @@ public class ProcessingService {
             String requestedPromptVersion,
             String requestedSchemaVersion,
             Map<String, Object> existingAnalysis,
+            String domainMode,
+            DomainModes.AnalysisVersions domainVersions,
             String traceId
     ) {
-        String existingPromptVersion = firstNonBlank(
-                existingAnalysis == null ? null : existingAnalysis.get("promptVersion"),
-                existingAnalysis == null ? null : existingAnalysis.get("prompt_version")
-        );
-        String existingSchemaVersion = firstNonBlank(
-                existingAnalysis == null ? null : existingAnalysis.get("schemaVersion"),
-                existingAnalysis == null ? null : existingAnalysis.get("schema_version")
-        );
+        DomainModes.AnalysisVersions resolved = domainVersions == null
+                ? DomainModes.resolveAnalysisVersions(domainMode)
+                : domainVersions;
+        String selectedPrompt = resolved.promptVersion();
+        String selectedSchema = resolved.schemaVersion();
+        String selectedFeatureSet = resolved.analysisFeatureSet();
         String requestedPrompt = firstNonBlank(requestedPromptVersion);
         String requestedSchema = firstNonBlank(requestedSchemaVersion);
         boolean requestedDowngrade = isV1Version(requestedPrompt) || isV1Version(requestedSchema);
-        boolean existingV2 = isCanonicalV2(existingPromptVersion) || isCanonicalV2(existingSchemaVersion);
-        String reason = "canonical_default";
+        String reason = "domain_default";
 
         if (requestedDowngrade) {
+            reason = "downgrade_blocked";
             log.info(
-                    "event=ANALYSIS_VERSION_DOWNGRADE_BLOCKED traceId={} requestId={} meetingId={} source={} requestedPromptVersion={} requestedSchemaVersion={} selectedPromptVersion={} selectedSchemaVersion={}",
+                    "event=ANALYSIS_VERSION_DOWNGRADE_BLOCKED traceId={} requestId={} meetingId={} source={} domainMode={} requestedPromptVersion={} requestedSchemaVersion={} selectedPromptVersion={} selectedSchemaVersion={}",
                     traceId,
                     currentRequestId(traceId),
                     meetingId,
                     source,
+                    DomainModes.normalize(domainMode),
                     requestedPrompt,
                     requestedSchema,
-                    CANONICAL_ANALYSIS_VERSION,
-                    CANONICAL_ANALYSIS_VERSION
-            );
-            reason = "downgrade_blocked";
-        } else if (existingV2) {
-            reason = "existing_v2_preserved";
-            log.info(
-                    "event=RERUN_ANALYSIS_VERSION_PRESERVED traceId={} requestId={} meetingId={} source={} selectedPromptVersion={} selectedSchemaVersion={}",
-                    traceId,
-                    currentRequestId(traceId),
-                    meetingId,
-                    source,
-                    CANONICAL_ANALYSIS_VERSION,
-                    CANONICAL_ANALYSIS_VERSION
+                    selectedPrompt,
+                    selectedSchema
             );
         }
 
         log.info(
-                "event=ANALYSIS_VERSION_SELECTED traceId={} requestId={} meetingId={} source={} requestedPromptVersion={} requestedSchemaVersion={} selectedPromptVersion={} selectedSchemaVersion={} reason={}",
+                "event=ANALYSIS_VERSION_SELECTED traceId={} requestId={} meetingId={} source={} domainMode={} requestedPromptVersion={} requestedSchemaVersion={} selectedPromptVersion={} selectedSchemaVersion={} selectedFeatureSet={} reason={}",
                 traceId,
                 currentRequestId(traceId),
                 meetingId,
                 source,
+                DomainModes.normalize(domainMode),
                 requestedPrompt,
                 requestedSchema,
-                CANONICAL_ANALYSIS_VERSION,
-                CANONICAL_ANALYSIS_VERSION,
+                selectedPrompt,
+                selectedSchema,
+                selectedFeatureSet,
                 reason
         );
-        return new AnalysisVersionSelection(CANONICAL_ANALYSIS_VERSION, CANONICAL_ANALYSIS_VERSION);
+        return new AnalysisVersionSelection(selectedPrompt, selectedSchema, selectedFeatureSet);
     }
 
     private boolean isV1Version(String value) {
         return "gemini-business-v1".equalsIgnoreCase(value == null ? "" : value.trim());
     }
 
-    private boolean isCanonicalV2(String value) {
-        return CANONICAL_ANALYSIS_VERSION.equalsIgnoreCase(value == null ? "" : value.trim());
+    private Long resolveRecordingSessionIdFromState(Map<String, Object> state) {
+        if (state == null || state.isEmpty()) {
+            return null;
+        }
+        Map<String, Object> result = extractResult(state);
+        return parseOptionalLong(
+                firstNonBlank(
+                        result.get("recording_session_id"),
+                        result.get("recordingSessionId"),
+                        state.get("recording_session_id"),
+                        state.get("recordingSessionId")
+                )
+        );
+    }
+
+    private Long resolveAttemptIdFromState(Map<String, Object> state) {
+        if (state == null || state.isEmpty()) {
+            return null;
+        }
+        Map<String, Object> result = extractResult(state);
+        return parseOptionalLong(
+                firstNonBlank(
+                        result.get("attempt_id"),
+                        result.get("attemptId"),
+                        state.get("attempt_id"),
+                        state.get("attemptId")
+                )
+        );
+    }
+
+    private Long parseOptionalLong(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        try {
+            return Long.parseLong(value.trim());
+        } catch (NumberFormatException ex) {
+            return null;
+        }
+    }
+
+    private TranscriptPayload loadSavedTranscriptPayloadForRerun(
+            Long meetingId,
+            Long recordingSessionId,
+            Long attemptId,
+            String traceId,
+            String authorization
+    ) {
+        if (recordingSessionId != null && attemptId != null) {
+            try {
+                Map<String, Object> scopedTranscript = aiServiceClient.getTranscript(
+                        meetingId,
+                        traceId,
+                        recordingSessionId,
+                        attemptId
+                );
+                if (!AIServiceClient.isTranscriptNotReadyResponse(scopedTranscript)) {
+                    List<Map<String, Object>> rows = normalizeTranscriptRows(
+                            scopedTranscript == null ? null : scopedTranscript.get("transcripts")
+                    );
+                    if (!rows.isEmpty()) {
+                        log.info(
+                                "ANALYSIS_RERUN_TRANSCRIPT_SOURCE meetingId={} source=ai_scoped_transcript rows={} recordingSessionId={} attemptId={}",
+                                meetingId,
+                                rows.size(),
+                                recordingSessionId,
+                                attemptId
+                        );
+                        return new TranscriptPayload(
+                                rows,
+                                rows,
+                                TRANSCRIPT_MODE_RAW,
+                                null,
+                                null,
+                                null
+                        );
+                    }
+                }
+            } catch (Exception ex) {
+                log.warn(
+                        "event=ANALYSIS_RERUN_SCOPED_TRANSCRIPT_FALLBACK meetingId={} recordingSessionId={} attemptId={} errorCode={}",
+                        meetingId,
+                        recordingSessionId,
+                        attemptId,
+                        ex.getClass().getSimpleName()
+                );
+            }
+        }
+        return loadSavedTranscriptPayloadForRerun(meetingId, traceId, authorization);
     }
 
     private void logRealtimeAnalysisSkipThrottled(Long meetingId, String source, String reason) {
@@ -5796,7 +5933,11 @@ public class ProcessingService {
         SCOPE_UNAVAILABLE
     }
 
-    private record AnalysisVersionSelection(String promptVersion, String schemaVersion) {
+    private record AnalysisVersionSelection(
+            String promptVersion,
+            String schemaVersion,
+            String analysisFeatureSet
+    ) {
     }
 
     private enum TranscriptExportMode {
