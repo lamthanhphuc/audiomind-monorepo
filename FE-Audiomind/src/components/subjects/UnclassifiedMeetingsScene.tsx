@@ -34,7 +34,7 @@ export function UnclassifiedMeetingsScene({
     search: debouncedSearch || undefined,
     page: pageIndex,
     pageSize,
-    sort: 'created_desc',
+    sort: 'createdAt_desc',
   })
   const { assignMeetingToSubject } = useStudyWorkspace()
 
