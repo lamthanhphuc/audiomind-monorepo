@@ -1,7 +1,7 @@
 # Phase 2 — Subject Synthesis & Study Artifacts (Implementation Plan)
 
-**Status:** Implementing on `feature/phase2-subject-synthesis-study-artifacts`  
-**Base branch:** `origin/main` @ `e7ba389` (Phase 1 landed via PR #122 / #123 — verified files on origin/main)  
+**Status:** Implementing on `feature/phase2-subject-synthesis-study-artifacts`
+**Base branch:** `origin/main` @ `e7ba389` (Phase 1 landed via PR #122 / #123 — verified files on origin/main)
 **Provisional note:** Pre-fetch local Phase 1 HEAD `f8cd3db` was provisional only; discarded after verify.
 
 ## 1. Phase 1 architecture (verified)
