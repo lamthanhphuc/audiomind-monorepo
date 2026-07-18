@@ -164,46 +164,27 @@ def dispatch_jobs(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     _require_internal(request)
-    from app.models import StudyArtifact, SubjectSynthesis
-    from app.tasks import generate_study_artifact, generate_subject_synthesis
-
-    dispatched_synthesis: list[int] = []
-    dispatched_artifacts: list[int] = []
-
-    for synthesis_id in body.synthesisIds:
-        synth = (
-            db.query(SubjectSynthesis)
-            .filter(
-                SubjectSynthesis.id == synthesis_id,
-                SubjectSynthesis.owner_user_id == body.ownerUserId,
-                SubjectSynthesis.deleted_at.is_(None),
-            )
-            .first()
+    try:
+        return study_service.dispatch_study_jobs(
+            db,
+            owner_user_id=body.ownerUserId,
+            synthesis_ids=body.synthesisIds,
+            artifact_ids=body.artifactIds,
         )
-        if synth is None:
-            continue
-        generate_subject_synthesis.delay(synthesis_id)
-        dispatched_synthesis.append(synthesis_id)
+    except StudyValidationError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"error_code": exc.code, "message": exc.message, **exc.details},
+        ) from exc
 
-    for artifact_id in body.artifactIds:
-        art = (
-            db.query(StudyArtifact)
-            .filter(
-                StudyArtifact.id == artifact_id,
-                StudyArtifact.owner_user_id == body.ownerUserId,
-                StudyArtifact.deleted_at.is_(None),
-            )
-            .first()
-        )
-        if art is None:
-            continue
-        generate_study_artifact.delay(artifact_id)
-        dispatched_artifacts.append(artifact_id)
 
-    return {
-        "dispatchedSynthesisIds": dispatched_synthesis,
-        "dispatchedArtifactIds": dispatched_artifacts,
-    }
+@router.post("/api/internal/study/reconcile")
+def reconcile_jobs(
+    request: Request,
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    _require_internal(request)
+    return study_service.reconcile_study_generation_jobs(db)
 
 
 @router.post("/api/internal/study/quota-failed")
@@ -258,7 +239,7 @@ def get_artifact(
             db,
             artifact_id=artifact_id,
             owner_user_id=ownerUserId,
-            meeting_ids_for_stale=meeting_ids or None,
+            meeting_ids_for_stale=meeting_ids if meeting_ids else None,
         )
     except StudyAuthorizationError as exc:
         raise HTTPException(status_code=404, detail={"error_code": "NOT_FOUND"}) from exc
@@ -271,22 +252,25 @@ def list_artifacts(
     ownerUserId: int,
     artifactType: str | None = None,
     status: str | None = None,
+    page: int = 1,
+    size: int | None = None,
+    sort: str = "updated_at_desc",
+    meetingIds: str = "",
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     _require_internal(request)
-    items = study_service.list_artifacts_for_subject(
+    meeting_ids = [int(x) for x in meetingIds.split(",") if x.strip().isdigit()]
+    return study_service.list_artifacts_for_subject(
         db,
         subject_id=subject_id,
         owner_user_id=ownerUserId,
         artifact_type=artifactType,
         status=status,
+        page=page,
+        size=size,
+        sort=sort,
+        meeting_ids_for_stale=meeting_ids,
     )
-    from app.services.study import aggregate_statuses
-
-    return {
-        "items": items,
-        "status": aggregate_statuses([i["status"] for i in items]),
-    }
 
 
 @router.delete("/api/internal/study-artifacts/{artifact_id}")
