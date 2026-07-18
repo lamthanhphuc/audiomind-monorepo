@@ -84,6 +84,7 @@ def _build_sqlite_schema(engine) -> None:
         Column("version", Integer, nullable=False, default=1),
         Column("title", String(255)),
         Column("content_json", Text),
+        Column("options_json", Text),
         Column("source_hash", String(64), nullable=False),
         Column("options_hash", String(64)),
         Column("source_selection_mode", String(20), nullable=False),
@@ -95,6 +96,11 @@ def _build_sqlite_schema(engine) -> None:
         Column("error_message", Text),
         Column("warnings_json", Text),
         Column("generated_at", DateTime),
+        Column("dispatch_requested_at", DateTime),
+        Column("celery_task_id", String(128)),
+        Column("processing_started_at", DateTime),
+        Column("attempt_count", Integer, nullable=False, default=0),
+        Column("last_heartbeat_at", DateTime),
         Column("created_at", DateTime, nullable=False),
         Column("updated_at", DateTime, nullable=False),
         Column("deleted_at", DateTime),
@@ -133,6 +139,11 @@ def _build_sqlite_schema(engine) -> None:
         Column("error_message", Text),
         Column("warnings_json", Text),
         Column("generated_at", DateTime),
+        Column("dispatch_requested_at", DateTime),
+        Column("celery_task_id", String(128)),
+        Column("processing_started_at", DateTime),
+        Column("attempt_count", Integer, nullable=False, default=0),
+        Column("last_heartbeat_at", DateTime),
         Column("created_at", DateTime, nullable=False),
         Column("updated_at", DateTime, nullable=False),
         Column("deleted_at", DateTime),
@@ -235,7 +246,7 @@ def race_session_factory(tmp_path: Path):
 
 
 def _patch_sources(monkeypatch):
-    def _compute(db, *, owner_user_id, subject_id, source_selection_mode, meeting_ids):
+    def _compute(db, *, owner_user_id, subject_id, source_selection_mode, meeting_ids, require_ready=True):
         from app.services.study import build_source_hash
 
         source_hash = build_source_hash(
@@ -415,7 +426,7 @@ def test_soft_delete_allows_recreate_and_hides_from_cache(race_session_factory, 
         listed = study_service.list_artifacts_for_subject(
             db, subject_id=10, owner_user_id=1, artifact_type=None, status=None
         )
-        assert all(int(item["id"]) != artifact_a for item in listed)
+        assert all(int(item["id"]) != artifact_a for item in listed["items"])
 
         with pytest.raises(StudyAuthorizationError):
             study_service.get_artifact_for_owner(db, artifact_id=artifact_a, owner_user_id=1)
