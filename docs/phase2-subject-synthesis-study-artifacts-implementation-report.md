@@ -337,4 +337,86 @@ Base no longer includes `secret.yaml` in kustomization resources (template file 
 
 ### R.7 Merge gate
 
-**Ready to merge:** **Yes** — JWT wiring for meeting/processing/user via `audiomind-secrets/JWT_SECRET`; no `jwt-secret` / `USER_JWT_SECRET`; dev raw Secret vs staging/prod SealedSecret only; structural producer/key + duplicate ownership FAIL correctly; required K8s CI gate; Java startup tests; prior Phase 2 gates green; tracked tree clean.
+**Ready to merge:** **Superseded by section S** — JWT wiring remains required; managed PostgreSQL runtime closure is now also required.
+
+## S. Managed PostgreSQL runtime closure
+
+### S.1 Database ownership map
+
+Shared managed/dev PostgreSQL database name: `audiomind` (not split in this pass). Separate migration histories per owner:
+
+| Service | Engine | Owns tables via | Env / URL format | DB owner notes |
+|---------|--------|-----------------|------------------|----------------|
+| meeting-api | PostgreSQL | Flyway `flyway_schema_history_meeting` | `SPRING_DATASOURCE_*` JDBC (`MEETING_DATABASE_URL`) | Meeting / study_folder / subject schemas |
+| user-api | PostgreSQL | Flyway `flyway_schema_history_user` | `SPRING_DATASOURCE_*` JDBC (`USER_DATABASE_URL`) | `app_users`, quota, auth |
+| processing-api | **none** | — | No datasource | Redis + HTTP clients only |
+| ai-api | PostgreSQL | Alembic | `DATABASE_URL` ← `AI_DATABASE_URL` (`postgresql://…`) | AI / study generation tables |
+| celery-worker | same AI DB | Alembic (shared) | same `AI_DATABASE_URL` | Executes DB-backed tasks |
+| celery-beat | **none** | — | Broker only (no `DATABASE_URL`) | Schedules reconcile; workers query DB |
+
+### S.2 Java vs Python URL convention
+
+Secret `audiomind-db-secrets` keys:
+
+- `MEETING_DATABASE_URL` / `USER_DATABASE_URL` → must start with `jdbc:postgresql://`
+- `AI_DATABASE_URL` → must start with `postgresql://` (or `postgresql+psycopg://` / `postgresql+asyncpg://`)
+- `DB_USERNAME` / `DB_PASSWORD` → shared Spring username/password
+
+App Secret `audiomind-secrets` no longer carries database URLs.
+
+### S.3 Overlay strategy
+
+| Overlay | Internal DB | DB secret producer |
+|---------|-------------|--------------------|
+| Dev | `db-deployment` + Service `db` (dev-only resources) | Raw Secret `audiomind-db-secrets` |
+| Staging | **Absent** (not scaled-to-0; not rendered) | SealedSecret template → `audiomind-db-secrets` |
+| Prod | **Absent** | SealedSecret template → `audiomind-db-secrets` |
+
+Removed from staging/prod resources: `db-secret-placeholder.yaml`, raw `db-creds`, `db-managed-patch.yaml`. Example plaintext lives in `db-secret.example.yaml` (not in `resources`).
+
+### S.4 Wiring verification
+
+- meeting/user/ai-api/celery-worker → `audiomind-db-secrets` keys as above
+- processing → no datasource env
+- beat → no `DATABASE_URL`
+- staging/prod rendered manifests contain no `your-managed-db-host` / host `db` literals
+
+### S.5 Validators & CI
+
+- `scripts/validate-rendered-k8s.py --environment {dev,staging,prod}`: producer/key, duplicate ownership, placeholder guard, internal-DB-absent guard, JDBC vs SQLAlchemy scheme checks, beat `DATABASE_URL` ban
+- Tests: `tests/test_k8s_managed_database_wiring.py`, extended `tests/test_k8s_rendered_component_settings.py`
+- CI job `k8s-managed-database-validation` (required): render + structural + pytest + Spring `DatasourceContextIT` / failure tests + AI `test_database_startup.py`
+- `REQUIRE_K8S_RENDER_TESTS=true` / `REQUIRE_DATASOURCE_CONTEXT_TESTS=true` fail closed when tools/Docker missing
+
+### S.6 Context startup tests
+
+- Meeting / User: `DatasourceContextStartupTest` (`@DataJpaTest` + Testcontainers PostgreSQL + Flyway + `StartupConfigValidator`); `DatasourceContextFailureTest` for invalid/unreachable JDBC
+- AI: `test_database_startup.py` — Testcontainers PostgreSQL + Alembic upgrade head + SQLAlchemy connect; JDBC URL rejected for SQLAlchemy
+- Processing: no datasource context test (by design)
+
+### S.7 Matrix / smoke (this closure)
+
+| Gate | Result |
+|------|--------|
+| AI pytest | **689 passed**, 22 skipped, exit **0** |
+| Meeting / Processing / User Maven | **PASS** |
+| QuotaConcurrencyTest required gate | **tests=3 skipped=0** |
+| Meeting/User datasource context + Flyway | **PASS** |
+| AI SQLAlchemy + Alembic startup | **PASS** |
+| FE lint/test/build | **PASS** |
+| Contracts | **PASS** |
+| Managed DB render/validator | **PASS** (dev/staging/prod) |
+| Technical fake-provider smoke | **PASS** (prior Phase 2 gates retained) |
+| Real Gemini smoke | **NOT RUN** |
+| Managed database smoke (render + wiring) | **PASS** |
+| `kubectl apply --dry-run=client` | **BLOCKED offline** (API server unreachable); structural validator substitutes |
+
+### S.8 Remaining risks
+
+1. Staging/prod SealedSecret still uses `REPLACE_WITH_SEALED_*` markers until real `kubeseal` ciphertext is applied — **template committed, cluster-ready secret not yet present**.
+2. Shared DB `audiomind` remains; future per-service databases would require new keys and migrations.
+3. Offline `kubectl apply --dry-run=client` may still hit CRD discovery limits; structural validator covers Secret references.
+
+### S.9 Merge gate
+
+**Ready to merge:** **Yes** — meeting/user/AI/worker staging/prod use managed `audiomind-db-secrets` (not host `db`); processing has no fake datasource; beat has no `DATABASE_URL`; internal DB is dev-only; no raw placeholder DB Secret in staging/prod; JDBC vs SQLAlchemy schemes enforced; Spring + AI context startup tests pass; managed-DB CI gate required; prior Phase 2 gates green; tracked tree clean after commits.
