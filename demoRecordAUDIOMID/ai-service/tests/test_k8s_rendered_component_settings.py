@@ -146,10 +146,26 @@ def _index_config_and_secrets(
                 continue
             bucket = secrets.setdefault(str(target), {})
             for key in (doc.get("spec") or {}).get("encryptedData") or {}:
-                bucket.setdefault(
-                    str(key),
-                    "sealed-placeholder-value-at-least-32-chars",
-                )
+                # Synthetic plaintext for Settings/wiring checks (not real ciphertext).
+                synthetic = {
+                    "MEETING_DATABASE_URL": (
+                        "jdbc:postgresql://managed-db.test:5432/audiomind"
+                    ),
+                    "USER_DATABASE_URL": (
+                        "jdbc:postgresql://managed-db.test:5432/audiomind"
+                    ),
+                    "AI_DATABASE_URL": (
+                        "postgresql://audiomind:secure-pass@managed-db.test:5432/audiomind"
+                    ),
+                    "DB_USERNAME": "audiomind",
+                    "DB_PASSWORD": "secure-pass",
+                    "JWT_SECRET": "sealed-placeholder-value-at-least-32-chars",
+                    "INTERNAL_SERVICE_TOKEN": (
+                        "sealed-placeholder-value-at-least-32-chars"
+                    ),
+                    "GEMINI_API_KEY": "sealed-placeholder-gemini-key-value",
+                }.get(str(key), "sealed-placeholder-value-at-least-32-chars")
+                bucket.setdefault(str(key), synthetic)
     return config, secrets
 
 
@@ -299,23 +315,27 @@ def test_java_deployments_wire_jwt_from_audiomind_secrets(
     assert jwt["key"] == "JWT_SECRET"
 
     if deployment_name == "meeting-api-deployment":
-        assert resolved.get("SPRING_DATASOURCE_URL") or env_by_name.get(
-            "SPRING_DATASOURCE_USERNAME"
-        )
+        ds = env_by_name["SPRING_DATASOURCE_URL"]["valueFrom"]["secretKeyRef"]
+        assert ds == {"name": "audiomind-db-secrets", "key": "MEETING_DATABASE_URL"}
+        assert resolved["SPRING_DATASOURCE_URL"].startswith("jdbc:postgresql://")
         cors = resolved.get("CORS_ALLOWED_ORIGINS", "")
         if overlay in {"staging", "prod"}:
             assert "localhost" not in cors.lower()
+            assert "://db:" not in resolved["SPRING_DATASOURCE_URL"]
     if deployment_name == "processing-api-deployment":
         user_url = resolved.get("AUDIOMIND_USER_API_BASE_URL", "")
         assert user_url
+        assert "SPRING_DATASOURCE_URL" not in env_by_name
         if overlay in {"staging", "prod"}:
             assert "localhost" not in user_url.lower()
             ai_url = resolved.get("AUDIOMIND_AI_API_BASE_URL", "")
             assert ai_url and "localhost" not in ai_url.lower()
     if deployment_name == "user-api-deployment":
-        assert env_by_name.get("SPRING_DATASOURCE_URL") or resolved.get(
-            "SPRING_DATASOURCE_URL"
-        )
+        ds = env_by_name["SPRING_DATASOURCE_URL"]["valueFrom"]["secretKeyRef"]
+        assert ds == {"name": "audiomind-db-secrets", "key": "USER_DATABASE_URL"}
+        assert resolved["SPRING_DATASOURCE_URL"].startswith("jdbc:postgresql://")
+        if overlay in {"staging", "prod"}:
+            assert "://db:" not in resolved["SPRING_DATASOURCE_URL"]
 
 
 @pytest.mark.parametrize("overlay", OVERLAYS)
@@ -364,11 +384,22 @@ def test_rendered_component_settings(
             "CORS_ALLOWED_ORIGINS",
             "MEETING_SERVICE_BASE_URL",
             "INTERNAL_SERVICE_TOKEN",
+            "DATABASE_URL",
         ):
             assert forbidden not in resolved, (
                 f"beat container must not set {forbidden}; got {resolved.get(forbidden)!r}"
             )
         assert deployment["spec"].get("replicas") == 1
+
+    if component in {"api", "worker"}:
+        assert resolved.get("DATABASE_URL", "").strip(), (
+            f"{overlay}/{component}: DATABASE_URL must resolve from audiomind-db-secrets"
+        )
+        db_url = resolved["DATABASE_URL"]
+        assert db_url.startswith("postgresql://") or db_url.startswith(
+            "postgresql+psycopg://"
+        ) or db_url.startswith("postgresql+asyncpg://")
+        assert not db_url.startswith("jdbc:")
 
     _apply_resolved_env(monkeypatch, resolved)
 
