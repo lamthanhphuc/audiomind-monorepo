@@ -15,7 +15,19 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 os.environ.setdefault("INTERNAL_SERVICE_TOKEN", "phase2-smoke-token")
-os.environ.setdefault("AI_PROVIDER", "fake")
+
+
+@pytest.fixture(autouse=True)
+def _phase2_smoke_fake_provider(monkeypatch):
+    """Isolate fake provider to this module — do not pollute the full suite."""
+    monkeypatch.setenv("ANALYSIS_PROVIDER", "fake")
+    monkeypatch.setenv("AI_PROVIDER", "fake")
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
 
 from app.celery_app import celery_app
 from app.database import get_db
@@ -301,39 +313,51 @@ def smoke_client(monkeypatch):
     _patch_ready_sources(monkeypatch)
     monkeypatch.setattr(study_service, "_gemini_caller", lambda: _fake_gemini)
 
-    celery_app.conf.task_always_eager = True
-    celery_app.conf.task_eager_propagates = True
+    import app.celery_app as celery_module
+
+    # Always use the live module object — other tests may reload celery_app.
+    live_celery = celery_module.celery_app
+    live_celery.conf.task_always_eager = True
+    live_celery.conf.task_eager_propagates = True
+    # Avoid accidental broker DNS when eager execution still touches result backend.
+    live_celery.conf.broker_url = "memory://"
+    live_celery.conf.result_backend = "cache+memory://"
 
     dispatch_calls: list[tuple[str, int]] = []
     from app import tasks as tasks_module
 
-    original_syn = tasks_module.generate_subject_synthesis.apply_async
-    original_art = tasks_module.generate_study_artifact.apply_async
-
     def syn_apply_async(*args, **kwargs):
-        call_args = kwargs.get("args") or (args[0] if args else [])
+        call_args = kwargs.get("args") or (args[0] if args else ())
         synthesis_id = call_args[0] if call_args else None
         dispatch_calls.append(("synthesis", int(synthesis_id)))
-        return original_syn(*args, **kwargs)
+        # .apply() runs in-process — never touches Redis broker/backend.
+        return tasks_module.generate_subject_synthesis.apply(
+            args=tuple(call_args),
+            kwargs=dict(kwargs.get("kwargs") or {}),
+            throw=True,
+        )
 
     def art_apply_async(*args, **kwargs):
-        call_args = kwargs.get("args") or (args[0] if args else [])
+        call_args = kwargs.get("args") or (args[0] if args else ())
         artifact_id = call_args[0] if call_args else None
         dispatch_calls.append(("artifact", int(artifact_id)))
-        return original_art(*args, **kwargs)
+        return tasks_module.generate_study_artifact.apply(
+            args=tuple(call_args),
+            kwargs=dict(kwargs.get("kwargs") or {}),
+            throw=True,
+        )
 
     monkeypatch.setattr(tasks_module.generate_subject_synthesis, "apply_async", syn_apply_async)
     monkeypatch.setattr(tasks_module.generate_study_artifact, "apply_async", art_apply_async)
 
-    # Tasks use SessionLocal from app.database — point them at our smoke DB.
-    monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
+    # Tasks use SessionLocal from app.database — point them at our smoke DB.    monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
     monkeypatch.setattr("app.tasks.SessionLocal", SessionLocal)
 
     with asgi_client(app) as client:
         yield client, db, dispatch_calls
 
     app.dependency_overrides.clear()
-    celery_app.conf.task_always_eager = False
+    live_celery.conf.task_always_eager = False
     db.close()
     engine.dispose()
 

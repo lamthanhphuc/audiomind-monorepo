@@ -527,15 +527,15 @@ def test_phase2_finalization_evidence_smoke(tmp_path, monkeypatch, capsys):
     from tests import test_membership
     from tests import test_study_queue_deployment_config as deploy_cfg
     from tests.test_celery_beat_production_config import (
-        test_celery_app_loads_under_valid_production_settings,
-        test_production_settings_require_meeting_url_and_token,
+        test_api_and_worker_production_require_meeting_url_and_token,
+        test_celery_app_loads_under_beat_production_settings,
     )
 
     evidence: list[str] = []
 
-    # 1) K8s manifest token/URL presence
+    # 1) K8s manifest token/URL presence (api + worker; Beat is broker-only)
     text = deploy_cfg._core_deployments_text()
-    for name in deploy_cfg.PHASE2_CORE_DEPLOYMENTS:
+    for name in ("ai-api", "celery-worker", "processing-api"):
         block = deploy_cfg._deployment_block(text, name)
         assert deploy_cfg._has_secret_key_ref(
             block,
@@ -547,24 +547,44 @@ def test_phase2_finalization_evidence_smoke(tmp_path, monkeypatch, capsys):
     assert deploy_cfg._env_value(processing, "AUDIOMIND_USER_API_BASE_URL") == (
         "http://user-api:8083"
     )
-    for name in ("ai-api", "celery-worker", "celery-beat"):
+    for name in ("ai-api", "celery-worker"):
         block = deploy_cfg._deployment_block(text, name)
-        assert deploy_cfg._env_value(block, "APP_ENV") == "production"
+        assert deploy_cfg._env_value(block, "APP_COMPONENT") in {"api", "worker"}
         assert deploy_cfg._env_value(block, "MEETING_SERVICE_BASE_URL") == (
             "http://meeting-api:8081"
         )
-    evidence.append("1-k8s-token-urls")
+        assert deploy_cfg._env_value(block, "ANALYSIS_PROVIDER") == "gemini"
+        assert deploy_cfg._has_secret_key_ref(
+            block,
+            "GEMINI_API_KEY",
+            "audiomind-secrets",
+            "GEMINI_API_KEY",
+        )
+        # APP_ENV is overlay-owned (not base production).
+        assert deploy_cfg._env_value(block, "APP_ENV") is None
+    beat = deploy_cfg._deployment_block(text, "celery-beat")
+    assert deploy_cfg._env_value(beat, "APP_COMPONENT") == "beat"
+    assert deploy_cfg._env_value(beat, "MEETING_SERVICE_BASE_URL") is None
+    assert deploy_cfg._env_value(beat, "GEMINI_API_KEY") is None
+    evidence.append("1-k8s-token-urls-component-scoped")
 
-    # 2) Celery Beat production config load
-    test_celery_app_loads_under_valid_production_settings(monkeypatch)
-    test_production_settings_require_meeting_url_and_token(monkeypatch, "meeting_url")
-    test_production_settings_require_meeting_url_and_token(monkeypatch, "internal_token")
+    # 2) Celery Beat production config load (no Gemini/CORS/meeting required)
+    test_celery_app_loads_under_beat_production_settings(monkeypatch)
+    test_api_and_worker_production_require_meeting_url_and_token(
+        monkeypatch, "api", "meeting_url"
+    )
+    test_api_and_worker_production_require_meeting_url_and_token(
+        monkeypatch, "worker", "internal_token"
+    )
     # Restore non-production so later get_settings() calls in this test succeed.
     # Keep membership URL only while running membership client tests below, then clear.
     monkeypatch.setenv("APP_ENV", "development")
+    monkeypatch.setenv("APP_COMPONENT", "api")
     monkeypatch.setenv("INTERNAL_SERVICE_TOKEN", "phase2-evidence-token")
     monkeypatch.setenv("MEETING_SERVICE_BASE_URL", "http://meeting-api:8081")
     monkeypatch.setenv("CORS_ALLOWED_ORIGINS", "http://localhost:5173")
+    monkeypatch.setenv("ANALYSIS_PROVIDER", "fake")
+    monkeypatch.setenv("AI_PROVIDER", "fake")
     get_settings.cache_clear()
     evidence.append("2-celery-beat-production")
 
