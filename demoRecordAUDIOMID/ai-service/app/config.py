@@ -458,6 +458,17 @@ class Settings(BaseSettings):
                 "Invalid production gemini_api_key: empty secret is not allowed when analysis_provider=gemini"
             )
 
+        if not (self.meeting_service_base_url or "").strip():
+            raise ValueError(
+                "Invalid production meeting_service_base_url: required for Phase 2 "
+                "subject membership guards before Gemini"
+            )
+        if not (self.internal_service_token or "").strip():
+            raise ValueError(
+                "Invalid production internal_service_token: required for meeting membership "
+                "and internal study APIs"
+            )
+
         native_deepgram_diarization_enabled = bool(
             self.enable_speaker_diarization and self.deepgram_diarize
         )
