@@ -79,6 +79,11 @@ def _patch_sources(monkeypatch, sources=None):
         )
 
     monkeypatch.setattr(study_service, "compute_current_source_hash", _compute)
+    monkeypatch.setattr(
+        study_service,
+        "fetch_subject_meeting_ids",
+        lambda subject_id, owner_user_id: [int(s["meetingId"]) for s in src],
+    )
 
 
 def _sqlite_engine(tmp_path: Path):

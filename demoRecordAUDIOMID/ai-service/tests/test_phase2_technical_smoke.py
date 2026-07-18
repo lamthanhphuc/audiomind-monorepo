@@ -595,6 +595,11 @@ def test_phase2_technical_smoke_synthesis_and_artifacts(smoke_client, monkeypatc
         return original_gemini(prompt=prompt, system_prompt=system_prompt, response_schema=response_schema)
 
     monkeypatch.setattr(study_service, "_gemini_caller", lambda: flaky_gemini)
+    monkeypatch.setattr(
+        study_service,
+        "fetch_subject_meeting_ids",
+        lambda subject_id, owner_user_id: [101, 102],
+    )
     with pytest.raises(StudyTransientError):
         study_service.process_artifact_job(db, retry_id)
     row = study_service._live_artifact_query(db).filter_by(id=retry_id).first()
@@ -629,6 +634,11 @@ def test_phase2_technical_smoke_synthesis_and_artifacts(smoke_client, monkeypatc
         return original_gemini(prompt=prompt, system_prompt=system_prompt, response_schema=response_schema)
 
     monkeypatch.setattr(study_service, "_gemini_caller", lambda: counting_gemini)
+    monkeypatch.setattr(
+        study_service,
+        "fetch_subject_meeting_ids",
+        lambda subject_id, owner_user_id: [101, 102],
+    )
 
     def changed_hash(db_arg, *, owner_user_id, subject_id, source_selection_mode, meeting_ids, require_ready=True):
         return ("hash-changed", READY_SOURCES, READY_SOURCES)

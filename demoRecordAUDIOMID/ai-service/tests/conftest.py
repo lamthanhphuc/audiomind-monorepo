@@ -22,6 +22,16 @@ def asgi_test_client():
 
 
 @pytest.fixture(autouse=True)
+def clear_settings_cache_between_tests():
+    """Avoid cross-test Settings pollution (e.g. MEETING_SERVICE_BASE_URL left in lru_cache)."""
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
+@pytest.fixture(autouse=True)
 def disable_gemini_http_proxy_for_unit_tests(monkeypatch):
     from app.config import get_settings
 
