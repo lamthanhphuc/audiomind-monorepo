@@ -203,6 +203,11 @@ def smoke_client(monkeypatch):
                 processing_started_at DATETIME,
                 attempt_count INTEGER NOT NULL DEFAULT 0,
                 last_heartbeat_at DATETIME,
+                quota_confirmed_at DATETIME,
+                dispatch_attempt_count INTEGER NOT NULL DEFAULT 0,
+                last_dispatch_error TEXT,
+                last_dispatch_error_at DATETIME,
+                next_dispatch_retry_at DATETIME,
                 created_at DATETIME NOT NULL,
                 updated_at DATETIME NOT NULL,
                 deleted_at DATETIME
@@ -251,6 +256,11 @@ def smoke_client(monkeypatch):
                 processing_started_at DATETIME,
                 attempt_count INTEGER NOT NULL DEFAULT 0,
                 last_heartbeat_at DATETIME,
+                quota_confirmed_at DATETIME,
+                dispatch_attempt_count INTEGER NOT NULL DEFAULT 0,
+                last_dispatch_error TEXT,
+                last_dispatch_error_at DATETIME,
+                next_dispatch_retry_at DATETIME,
                 created_at DATETIME NOT NULL,
                 updated_at DATETIME NOT NULL,
                 deleted_at DATETIME
@@ -326,9 +336,26 @@ def smoke_client(monkeypatch):
     engine.dispose()
 
 
-def test_phase2_technical_smoke_synthesis_and_artifacts(smoke_client):
-    client, db, dispatch_calls = smoke_client
+def _confirm_quota(client, *, synthesis_ids=None, artifact_ids=None):
+    resp = client.post(
+        "/api/internal/study/confirm-quota",
+        headers=HEADERS,
+        json={
+            "ownerUserId": 1,
+            "synthesisIds": synthesis_ids or [],
+            "artifactIds": artifact_ids or [],
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    return resp
 
+
+def test_phase2_technical_smoke_synthesis_and_artifacts(smoke_client, monkeypatch):
+    """11-item Phase 2 smoke checklist (HTTP + unit edges)."""
+    client, db, dispatch_calls = smoke_client
+    passed: list[str] = []
+
+    # 1) Internal auth denial
     denied = client.post(
         "/api/internal/subjects/10/synthesis/prepare",
         headers={"X-Internal-Service-Token": "wrong"},
@@ -340,7 +367,9 @@ def test_phase2_technical_smoke_synthesis_and_artifacts(smoke_client):
         },
     )
     assert denied.status_code in {401, 403}
+    passed.append("1-auth-denied")
 
+    # 2) Synthesis prepare → confirm-quota → dispatch → COMPLETED
     prep = client.post(
         "/api/internal/subjects/10/synthesis/prepare",
         headers=HEADERS,
@@ -356,6 +385,7 @@ def test_phase2_technical_smoke_synthesis_and_artifacts(smoke_client):
     synthesis_id = int(prep.json()["synthesis"]["id"])
     assert prep.json()["synthesis"]["status"] == "QUEUED"
 
+    _confirm_quota(client, synthesis_ids=[synthesis_id])
     dispatched = client.post(
         "/api/internal/study/dispatch",
         headers=HEADERS,
@@ -374,7 +404,9 @@ def test_phase2_technical_smoke_synthesis_and_artifacts(smoke_client):
     assert syn["content"]["subjectOverview"]
     assert syn.get("promptVersion") or syn.get("prompt_version")
     assert syn["sources"]
+    passed.append("2-synthesis-completed")
 
+    # 3) All five artifact types COMPLETED
     types = [
         "MIND_MAP",
         "FLASHCARDS",
@@ -404,6 +436,7 @@ def test_phase2_technical_smoke_synthesis_and_artifacts(smoke_client):
     artifact_ids = [int(x) for x in prep_a.json()["newlyCreatedArtifactIds"]]
     assert len(artifact_ids) == 5
 
+    _confirm_quota(client, artifact_ids=artifact_ids)
     before_art = len([c for c in dispatch_calls if c[0] == "artifact"])
     disp = client.post(
         "/api/internal/study/dispatch",
@@ -422,7 +455,9 @@ def test_phase2_technical_smoke_synthesis_and_artifacts(smoke_client):
         payload = resp.json()
         assert payload["status"] == "COMPLETED", payload
         assert payload["content"]
+    passed.append("3-artifacts-completed")
 
+    # 4) Cache hit (no new dispatch)
     before = len([c for c in dispatch_calls if c[0] == "artifact"])
     prep_cache = client.post(
         "/api/internal/study-artifacts/prepare",
@@ -445,7 +480,9 @@ def test_phase2_technical_smoke_synthesis_and_artifacts(smoke_client):
     assert prep_cache.json()["cacheHitArtifactIds"]
     assert not prep_cache.json()["newlyCreatedArtifactIds"]
     assert len([c for c in dispatch_calls if c[0] == "artifact"]) == before
+    passed.append("4-cache-hit")
 
+    # 5) Force regen version bump
     regen = client.post(
         "/api/internal/study-artifacts/prepare",
         headers=HEADERS,
@@ -467,6 +504,7 @@ def test_phase2_technical_smoke_synthesis_and_artifacts(smoke_client):
     assert regen.status_code == 200
     new_id = int(regen.json()["newlyCreatedArtifactIds"][0])
     assert new_id not in artifact_ids
+    _confirm_quota(client, artifact_ids=[new_id])
     client.post(
         "/api/internal/study/dispatch",
         headers=HEADERS,
@@ -478,7 +516,9 @@ def test_phase2_technical_smoke_synthesis_and_artifacts(smoke_client):
     )
     assert regen_get.json()["status"] == "COMPLETED"
     assert regen_get.json()["version"] >= 2
+    passed.append("5-force-regen")
 
+    # 6) Soft delete
     deleted = client.delete(
         f"/api/internal/study-artifacts/{new_id}?ownerUserId=1",
         headers=HEADERS,
@@ -489,7 +529,9 @@ def test_phase2_technical_smoke_synthesis_and_artifacts(smoke_client):
         headers=HEADERS,
     )
     assert missing.status_code in {403, 404}
+    passed.append("6-soft-delete")
 
+    # 7) Recreate after delete
     recreate = client.post(
         "/api/internal/study-artifacts/prepare",
         headers=HEADERS,
@@ -510,9 +552,172 @@ def test_phase2_technical_smoke_synthesis_and_artifacts(smoke_client):
     )
     assert recreate.status_code == 200
     assert recreate.json()["newlyCreatedArtifactIds"]
+    passed.append("7-recreate-after-delete")
 
+    # 8) IDOR protection
     idor = client.get(
         f"/api/internal/study-artifacts/{artifact_ids[0]}?ownerUserId=999",
         headers=HEADERS,
     )
     assert idor.status_code in {403, 404}
+    passed.append("8-idor")
+
+    # 9) Transient retry → second success
+    from app.services.study import StudyTransientError, STATUS_COMPLETED, STATUS_QUEUED
+    from app.services.study import service as study_service
+
+    retry_prep = client.post(
+        "/api/internal/study-artifacts/prepare",
+        headers=HEADERS,
+        json={
+            "ownerUserId": 1,
+            "subjectId": 10,
+            "meetingIds": [101, 102],
+            "artifactTypes": ["EXAM_BRIEF"],
+            "sourceSelectionMode": "EXPLICIT",
+            "options": {"language": "vi"},
+            "force": True,
+        },
+    )
+    assert retry_prep.status_code == 200
+    retry_id = int(retry_prep.json()["newlyCreatedArtifactIds"][0])
+    _confirm_quota(client, artifact_ids=[retry_id])
+
+    provider_calls: list[str] = []
+    original_gemini = study_service._gemini_caller()
+
+    def flaky_gemini(*, prompt: str, system_prompt: str, response_schema=None) -> str:
+        provider_calls.append("call")
+        if len(provider_calls) == 1:
+            raise StudyTransientError("transient")
+        return original_gemini(prompt=prompt, system_prompt=system_prompt, response_schema=response_schema)
+
+    monkeypatch.setattr(study_service, "_gemini_caller", lambda: flaky_gemini)
+    with pytest.raises(StudyTransientError):
+        study_service.process_artifact_job(db, retry_id)
+    row = study_service._live_artifact_query(db).filter_by(id=retry_id).first()
+    assert row.status == STATUS_QUEUED
+    study_service.process_artifact_job(db, retry_id)
+    db.refresh(row)
+    assert row.status == STATUS_COMPLETED
+    assert len(provider_calls) == 2
+    monkeypatch.setattr(study_service, "_gemini_caller", lambda: original_gemini)
+    passed.append("9-transient-retry")
+
+    # 10) Source changed after prepare aborts provider
+    stale_prep = client.post(
+        "/api/internal/study-artifacts/prepare",
+        headers=HEADERS,
+        json={
+            "ownerUserId": 1,
+            "subjectId": 10,
+            "meetingIds": [101, 102],
+            "artifactTypes": ["MIND_MAP"],
+            "sourceSelectionMode": "EXPLICIT",
+            "options": {"language": "vi"},
+            "force": True,
+        },
+    )
+    stale_id = int(stale_prep.json()["newlyCreatedArtifactIds"][0])
+    _confirm_quota(client, artifact_ids=[stale_id])
+    stale_calls: list[str] = []
+
+    def counting_gemini(*, prompt: str, system_prompt: str, response_schema=None) -> str:
+        stale_calls.append("call")
+        return original_gemini(prompt=prompt, system_prompt=system_prompt, response_schema=response_schema)
+
+    monkeypatch.setattr(study_service, "_gemini_caller", lambda: counting_gemini)
+
+    def changed_hash(db_arg, *, owner_user_id, subject_id, source_selection_mode, meeting_ids, require_ready=True):
+        return ("hash-changed", READY_SOURCES, READY_SOURCES)
+
+    monkeypatch.setattr(study_service, "compute_current_source_hash", changed_hash)
+    study_service.process_artifact_job(db, stale_id)
+    stale_row = study_service._live_artifact_query(db).filter_by(id=stale_id).first()
+    assert stale_row.status == "STALE"
+    assert stale_row.error_code == "SOURCE_CHANGED_AFTER_PREPARE"
+    assert stale_calls == []
+    _patch_ready_sources(monkeypatch)
+    monkeypatch.setattr(study_service, "_gemini_caller", lambda: original_gemini)
+    passed.append("10-source-changed-abort")
+
+    # 11) Confirm-quota + dispatchable redispatch (broker fail then succeed)
+    from types import SimpleNamespace
+    from datetime import datetime, timedelta
+
+    redis_prep = client.post(
+        "/api/internal/study-artifacts/prepare",
+        headers=HEADERS,
+        json={
+            "ownerUserId": 1,
+            "subjectId": 10,
+            "meetingIds": [101, 102],
+            "artifactTypes": ["ESSAY_QUESTIONS"],
+            "sourceSelectionMode": "EXPLICIT",
+            "options": {"language": "vi", "essayQuestionCount": 1},
+            "force": True,
+        },
+    )
+    redis_id = int(redis_prep.json()["newlyCreatedArtifactIds"][0])
+    _confirm_quota(client, artifact_ids=[redis_id])
+    redis_row = study_service._live_artifact_query(db).filter_by(id=redis_id).first()
+    quota_at = redis_row.quota_confirmed_at
+    assert quota_at is not None
+
+    apply_calls: list[str] = []
+
+    def flaky_apply(*args, **kwargs):
+        apply_calls.append("x")
+        if len(apply_calls) == 1:
+            raise RuntimeError("broker down")
+        return SimpleNamespace(id=kwargs.get("task_id"))
+
+    monkeypatch.setattr("app.tasks.generate_study_artifact.apply_async", flaky_apply)
+    with pytest.raises(RuntimeError):
+        study_service.dispatch_study_jobs(
+            db, owner_user_id=1, synthesis_ids=[], artifact_ids=[redis_id]
+        )
+    db.refresh(redis_row)
+    assert redis_row.quota_confirmed_at == quota_at
+    redis_row.next_dispatch_retry_at = datetime.utcnow() - timedelta(seconds=1)
+    db.commit()
+    second = study_service.dispatch_study_jobs(
+        db, owner_user_id=1, synthesis_ids=[], artifact_ids=[redis_id]
+    )
+    assert second["dispatchedArtifactIds"] == [redis_id]
+    assert len(apply_calls) == 2
+    db.refresh(redis_row)
+    assert redis_row.quota_confirmed_at == quota_at
+    passed.append("11-confirm-quota-redispatch")
+
+    # MCQ duplicate option IDs rejected (unit assertion in smoke)
+    from app.services.study.artifacts import validate_mcq
+    from app.services.study import StudyValidationError
+
+    with pytest.raises(StudyValidationError) as mcq_exc:
+        validate_mcq(
+            {
+                "questions": [
+                    {
+                        "id": "dup",
+                        "question": "Bad?",
+                        "options": [
+                            {"id": "A", "text": "a1"},
+                            {"id": "A", "text": "a2"},
+                            {"id": "B", "text": "b"},
+                            {"id": "C", "text": "c"},
+                        ],
+                        "correctOptionId": "A",
+                        "explanation": "x",
+                        "sourceMeetingIds": [101],
+                        "sourceSegmentIds": ["seg-1"],
+                    }
+                ]
+            },
+            max_count=5,
+            allowed_segments_by_meeting={101: {"seg-1"}},
+        )
+    assert mcq_exc.value.code == "INVALID_MCQ"
+
+    assert len(passed) == 11, passed
+    print("PHASE2_SMOKE_PASS: " + ",".join(passed))
