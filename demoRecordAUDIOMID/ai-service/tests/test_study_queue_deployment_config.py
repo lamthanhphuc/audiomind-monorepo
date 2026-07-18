@@ -142,7 +142,140 @@ def test_celery_app_registers_reconcile_task() -> None:
     assert reconcile_study_generation.name == "app.tasks.reconcile_study_generation"
     # Task is bound into the app registry used by workers/beat.
     assert "app.tasks.reconcile_study_generation" in celery_app.tasks
+    assert "study-generation-reconcile" in celery_app.conf.beat_schedule
 
+
+PHASE2_CORE_DEPLOYMENTS = (
+    "meeting-api",
+    "processing-api",
+    "user-api",
+    "ai-api",
+    "celery-worker",
+    "celery-beat",
+)
+
+PHASE2_SERVICE_URL_ENV_NAMES = (
+    "AUDIOMIND_USER_API_BASE_URL",
+    "AUDIOMIND_AI_API_BASE_URL",
+    "AUDIOMIND_MEETING_API_BASE_URL",
+    "MEETING_SERVICE_BASE_URL",
+)
+
+
+def _core_deployments_text() -> str:
+    manifest_path = REPO_ROOT / "k8s" / "deployments" / "core-deployments.yaml"
+    assert manifest_path.is_file(), f"expected {manifest_path}"
+    return manifest_path.read_text(encoding="utf-8")
+
+
+def _deployment_block(text: str, short_name: str) -> str:
+    """Extract one Deployment document by metadata.name `<short>-deployment`."""
+    deployment_name = f"{short_name}-deployment"
+    match = re.search(
+        rf"name: {re.escape(deployment_name)}[\s\S]*?(?=\n---\n|\Z)",
+        text,
+    )
+    assert match, f"{deployment_name} block not found in core-deployments.yaml"
+    return match.group(0)
+
+
+def _env_value(block: str, name: str) -> str | None:
+    """Return literal `value:` for an env var, or None if only valueFrom / missing."""
+    match = re.search(
+        rf"- name: {re.escape(name)}\s*\n\s*value:\s*(.+?)(?:\n|$)",
+        block,
+    )
+    if not match:
+        return None
+    return match.group(1).strip().strip('"').strip("'")
+
+
+def _has_secret_key_ref(block: str, env_name: str, secret_name: str, key: str) -> bool:
+    pattern = re.compile(
+        rf"- name: {re.escape(env_name)}\s*\n"
+        rf"\s*valueFrom:\s*\n"
+        rf"\s*secretKeyRef:\s*\n"
+        rf"\s*name:\s*{re.escape(secret_name)}\s*\n"
+        rf"\s*key:\s*{re.escape(key)}",
+        re.MULTILINE,
+    )
+    return bool(pattern.search(block))
+
+
+def _has_configmap_key_ref(block: str, env_name: str) -> bool:
+    pattern = re.compile(
+        rf"- name: {re.escape(env_name)}\s*\n"
+        rf"\s*valueFrom:\s*\n"
+        rf"\s*configMapKeyRef:",
+        re.MULTILINE,
+    )
+    return bool(pattern.search(block))
+
+
+def _compose_service_block(text: str, service_name: str) -> str:
+    match = re.search(
+        rf"^  {re.escape(service_name)}:\n((?:^ {{4}}.*\n|^\n)*)",
+        text,
+        re.MULTILINE,
+    )
+    assert match, f"service '{service_name}' not found in compose file"
+    return match.group(0)
+
+
+@pytest.mark.parametrize("short_name", PHASE2_CORE_DEPLOYMENTS)
+def test_k8s_core_deployments_wire_internal_service_token(short_name: str) -> None:
+    text = _core_deployments_text()
+    block = _deployment_block(text, short_name)
+    assert _has_secret_key_ref(
+        block, "INTERNAL_SERVICE_TOKEN", "audiomind-secrets", "INTERNAL_SERVICE_TOKEN"
+    ), (
+        f"{short_name}-deployment must set INTERNAL_SERVICE_TOKEN via "
+        "secretKeyRef to audiomind-secrets"
+    )
+
+
+def test_k8s_processing_api_service_urls() -> None:
+    block = _deployment_block(_core_deployments_text(), "processing-api")
+    user_url = _env_value(block, "AUDIOMIND_USER_API_BASE_URL")
+    assert user_url == "http://user-api:8083", (
+        f"processing-api AUDIOMIND_USER_API_BASE_URL must be "
+        f"http://user-api:8083, got {user_url!r}"
+    )
+    assert "localhost" not in (user_url or "").lower()
+    assert (
+        _has_configmap_key_ref(block, "AUDIOMIND_AI_API_BASE_URL")
+        or _env_value(block, "AUDIOMIND_AI_API_BASE_URL")
+    ), "processing-api must define AUDIOMIND_AI_API_BASE_URL (configMap or value)"
+
+
+@pytest.mark.parametrize("short_name", ("ai-api", "celery-worker", "celery-beat"))
+def test_k8s_ai_celery_deployments_production_meeting_env(short_name: str) -> None:
+    block = _deployment_block(_core_deployments_text(), short_name)
+    assert _env_value(block, "APP_ENV") == "production", (
+        f"{short_name} must set APP_ENV=production"
+    )
+    meeting_url = _env_value(block, "MEETING_SERVICE_BASE_URL")
+    assert meeting_url == "http://meeting-api:8081", (
+        f"{short_name} MEETING_SERVICE_BASE_URL must be "
+        f"http://meeting-api:8081, got {meeting_url!r}"
+    )
+    assert "localhost" not in (meeting_url or "").lower()
+    assert _has_secret_key_ref(
+        block, "INTERNAL_SERVICE_TOKEN", "audiomind-secrets", "INTERNAL_SERVICE_TOKEN"
+    )
+
+
+def test_k8s_phase2_service_urls_have_no_localhost() -> None:
+    text = _core_deployments_text()
+    for short_name in PHASE2_CORE_DEPLOYMENTS:
+        block = _deployment_block(text, short_name)
+        for env_name in PHASE2_SERVICE_URL_ENV_NAMES:
+            value = _env_value(block, env_name)
+            if value is None:
+                continue
+            assert "localhost" not in value.lower(), (
+                f"{short_name} {env_name}={value!r} must not use localhost"
+            )
 
 
 def test_k8s_core_deployment_sets_study_generation_queue_env() -> None:
@@ -207,4 +340,31 @@ def test_k8s_overlay_patches_do_not_override_worker_command(patch_path: Path) ->
         f"{patch_path} patches celery-worker-deployment with a `command` "
         f"override; this would drop the '-Q audio_processing,study_generation' "
         f"queue flags unless the override itself includes them"
+    )
+
+
+COMPOSE_PHASE2_SERVICES = ("ai-api", "celery-worker", "celery-beat")
+COMPOSE_FILES_WITH_MEETING_TOKEN = (
+    REPO_ROOT / "infra" / "docker-compose.dev.yml",
+    REPO_ROOT / "infra" / "docker-compose.mvp.yml",
+)
+
+
+@pytest.mark.parametrize(
+    "compose_path",
+    COMPOSE_FILES_WITH_MEETING_TOKEN,
+    ids=lambda p: str(p.relative_to(REPO_ROOT)),
+)
+@pytest.mark.parametrize("service_name", COMPOSE_PHASE2_SERVICES)
+def test_compose_ai_celery_include_meeting_url_and_internal_token(
+    compose_path: Path, service_name: str
+) -> None:
+    assert compose_path.is_file(), f"expected compose file at {compose_path}"
+    text = compose_path.read_text(encoding="utf-8")
+    block = _compose_service_block(text, service_name)
+    assert "MEETING_SERVICE_BASE_URL" in block, (
+        f"{compose_path.name} service '{service_name}' must set MEETING_SERVICE_BASE_URL"
+    )
+    assert "INTERNAL_SERVICE_TOKEN" in block, (
+        f"{compose_path.name} service '{service_name}' must set INTERNAL_SERVICE_TOKEN"
     )

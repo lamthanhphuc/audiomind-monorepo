@@ -55,6 +55,11 @@ def test_process_artifact_job_lifecycle_queued_to_completed(monkeypatch):
     monkeypatch.setattr(study_service, "claim_processing_artifact", lambda *_a, **_k: row)
     monkeypatch.setattr(
         study_service,
+        "fetch_subject_meeting_ids",
+        lambda subject_id, owner_user_id: [101],
+    )
+    monkeypatch.setattr(
+        study_service,
         "compute_current_source_hash",
         lambda *a, **k: (
             "hash",
@@ -103,6 +108,11 @@ def test_process_artifact_job_validation_does_not_raise_retryable(monkeypatch):
     )
     db = MagicMock()
     monkeypatch.setattr(study_service, "claim_processing_artifact", lambda *_a, **_k: row)
+    monkeypatch.setattr(
+        study_service,
+        "fetch_subject_meeting_ids",
+        lambda subject_id, owner_user_id: [101],
+    )
     monkeypatch.setattr(
         study_service,
         "compute_current_source_hash",
