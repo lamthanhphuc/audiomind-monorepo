@@ -246,6 +246,19 @@ def test_k8s_core_deployments_wire_internal_service_token(short_name: str) -> No
     )
 
 
+@pytest.mark.parametrize("short_name", ("meeting-api", "processing-api", "user-api"))
+def test_k8s_java_services_wire_jwt_secret_from_audiomind_secrets(short_name: str) -> None:
+    block = _deployment_block(_core_deployments_text(), short_name)
+    assert _has_secret_key_ref(
+        block, "JWT_SECRET", "audiomind-secrets", "JWT_SECRET"
+    ), (
+        f"{short_name}-deployment must set JWT_SECRET via "
+        "secretKeyRef to audiomind-secrets/JWT_SECRET"
+    )
+    assert "jwt-secret" not in block
+    assert "USER_JWT_SECRET" not in block
+
+
 def test_k8s_processing_api_service_urls() -> None:
     block = _deployment_block(_core_deployments_text(), "processing-api")
     user_url = _env_value(block, "AUDIOMIND_USER_API_BASE_URL")
