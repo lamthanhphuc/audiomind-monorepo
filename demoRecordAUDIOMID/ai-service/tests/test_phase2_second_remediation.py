@@ -426,13 +426,17 @@ def test_validate_mcq_rejects_duplicate_option_ids():
 def test_hierarchical_reducer_multi_round_calls_gemini(monkeypatch):
     settings = get_settings()
     monkeypatch.setattr(settings, "subject_synthesis_max_meetings_per_batch", 1)
-    monkeypatch.setattr(settings, "subject_synthesis_max_input_tokens", 1)
+    # Large enough for a single compacted batch prompt, small enough to force
+    # multi-round reduce across 4 batch intermediates.
+    monkeypatch.setattr(settings, "subject_synthesis_max_input_tokens", 400)
     monkeypatch.setattr(settings, "subject_synthesis_max_parallel_batches", 1)
     monkeypatch.setattr(settings, "subject_synthesis_chars_per_token", 4)
 
     gemini_calls: list[str] = []
+    prompts: list[str] = []
 
     def call_gemini(*, prompt: str, system_prompt: str, response_schema=None) -> str:
+        prompts.append(prompt)
         # build_reducer_prompt starts with "Merge batch synthesis..."
         kind = "reduce" if "Merge batch" in prompt else "batch"
         gemini_calls.append(kind)
@@ -480,6 +484,10 @@ def test_hierarchical_reducer_multi_round_calls_gemini(monkeypatch):
     assert batch_calls >= 4
     assert reduce_calls >= 1
     assert len(gemini_calls) > batch_calls  # multi-round reduce path invoked gemini again
+    from app.services.study.evidence import estimate_tokens
+
+    for prompt in prompts:
+        assert estimate_tokens(prompt, chars_per_token=4) <= 400
 
 
 def test_get_artifact_empty_subject_is_stale(db_session, monkeypatch):
