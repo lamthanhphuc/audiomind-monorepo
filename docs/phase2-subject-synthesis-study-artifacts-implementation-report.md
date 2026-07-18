@@ -1,8 +1,8 @@
 # Phase 2 — Implementation Report
 
-**Verdict (this session):** **Ready to merge**
+**Verdict (this session):** see **Q.10 Merge gate** (runtime deployment closure).
 
-Final distributed-systems remediation (section **N**) completed. All mandatory gates green.
+Final distributed-systems remediation (section **N**) completed. Runtime deployment closure is section **Q**.
 
 ## A. Git
 
@@ -227,4 +227,64 @@ Final distributed-systems remediation (section **N**) completed. All mandatory g
 
 ## P. Merge gate (final)
 
-**Ready to merge:** **Yes** — quota UNKNOWN≠DENIED, timeout-after-commit single charge, advisory-lock usage counters, partial batch dispatch, internal membership auth+pagination, system+user prompt ceilings, malformed JSON/schema → validation (no retry), programming errors no-retry, quota 4xx no-retry / 429+5xx retry, Postgres concurrency in default `mvn test`, Beat production fail-fast, K8s/compose wiring, full matrix green.
+**Ready to merge:** **Superseded by section Q** — earlier gates remain necessary but insufficient without component-scoped Settings, rendered-manifest startup, quota 5xx retry, and required Postgres concurrency CI.
+
+## Q. Runtime deployment closure
+
+### Q.1 `APP_COMPONENT` architecture
+| Component | Env | Validates in production |
+|-----------|-----|-------------------------|
+| API | `APP_COMPONENT=api` (default if unset) | DB, Redis/broker, CORS (no localhost), internal token, meeting-service URL, analysis provider + credentials, study queue, HF diarization when enabled |
+| Worker | `APP_COMPONENT=worker` (explicit in K8s) | DB, Redis/broker, meeting URL, internal token, analysis provider + credentials, `study_generation` queue — **no CORS** |
+| Beat | `APP_COMPONENT=beat` (explicit in K8s) | Broker/Redis URLs non-local only — **no CORS, Gemini, meeting URL, or internal token** |
+
+### Q.2 Provider source of truth
+- **SoT:** `ANALYSIS_PROVIDER` (`gemini` \| `ollama` \| `fake` only in non-prod).
+- If both `AI_PROVIDER` and `ANALYSIS_PROVIDER` are set and differ → fail-fast.
+- Production K8s: `ANALYSIS_PROVIDER=gemini` + `GEMINI_API_KEY` from `audiomind-secrets` on **ai-api** and **celery-worker** only.
+- Beat does not receive provider env/secrets.
+
+### Q.3 K8s base / overlays
+- Base: `APP_COMPONENT`, Gemini wiring (api/worker), meeting URL + internal token (api/worker); **APP_ENV removed from base**.
+- Overlay `app-env-patch.yaml`: `dev=development`, `staging/prod=production`.
+- CORS: staging `https://staging.audiomind.example`, prod `https://app.audiomind.example`, dev may use localhost.
+- Secrets templates include `GEMINI_API_KEY` / `INTERNAL_SERVICE_TOKEN` placeholders (`REPLACE_ME*`); no real secrets committed.
+
+### Q.4 Rendered manifest Settings startup
+- Test: `tests/test_k8s_rendered_component_settings.py` — kustomize each overlay → resolve env → `Settings()` for api/worker/beat.
+- Offline structural script: `scripts/validate-rendered-k8s.py` (selectors, dup env/ports, ConfigMap refs, Beat replicas=1).
+- `kubectl apply --dry-run=client` on this host still probes a live API/CRD discovery endpoint and fails offline; structural + Settings tests are the merge gate substitute.
+
+### Q.5 Quota HTTP 500 retry
+- `UserQuotaClient`: retryable = `429 || (500..599)`; 4xx definitive (except 429) → single attempt; never map 5xx → DENIED.
+
+### Q.6 Required PostgreSQL concurrency CI gate
+- Local default: soft-skip without Docker (`@Testcontainers(disabledWithoutDocker=true)` still allowed for DX).
+- Required: `REQUIRE_POSTGRES_CONCURRENCY_TESTS=true` and/or Maven `-Pquota-postgres-it` → Docker missing **fails**; CI job `quota-postgres-concurrency` + `scripts/verify-quota-concurrency-results.mjs` asserts tests=3, skipped=0.
+
+### Q.7 Membership cross-service contract smoke
+- `tests/test_membership_cross_service_contract.py` + fixture `tests/fixtures/meeting_membership_page.json` (OpenAPI camelCase page serialization) covering auth headers, pagination (250 IDs / 3 pages), wrong token/owner, empty subject, and AI not calling public endpoints.
+
+### Q.8 Matrix / smoke (this closure)
+| Gate | Result |
+|------|--------|
+| AI pytest | **640 passed**, 0 failed, 23 skipped, exit **0** |
+| Processing / Meeting / User Maven | **PASS** |
+| QuotaConcurrencyTest required gate (`-Pquota-postgres-it` + verify script) | **tests=3 skipped=0** |
+| FE lint/test/build | **PASS** |
+| Contracts validate/generate/typecheck/openapi | **PASS** |
+| Structural rendered K8s (`scripts/validate-rendered-k8s.py`) | **PASS** |
+| Rendered component Settings (dev/staging/prod × api/worker/beat) | **PASS** |
+| Membership cross-service contract | **PASS** |
+| Technical fake-provider smoke | **PASS** |
+| Real Gemini smoke | **NOT RUN** |
+| `kubectl apply --dry-run=client` | **BLOCKED offline** (CRD discovery); structural + Settings tests substitute |
+
+### Q.9 Remaining risks
+1. Real Gemini key + staging smoke before production cutover.
+2. Operators must replace sealed-secret / secret placeholders; empty `REPLACE_ME` must be rejected by production guards.
+3. Offline kubectl client dry-run still needs a cluster or kubeconform in CI images that ship CRD schemas.
+
+### Q.10 Merge gate (runtime closure)
+
+**Ready to merge:** **Yes** — rendered api/worker/beat Settings PASS; Beat without CORS/Gemini; provider SoT consistent; overlay APP_ENV correct; staging/prod CORS non-localhost; quota 5xx retry + 4xx no-retry; Postgres concurrency CI skipped=0; membership contract PASS; structural K8s PASS; AI/FE/contracts green; tracked tree clean after commits.
