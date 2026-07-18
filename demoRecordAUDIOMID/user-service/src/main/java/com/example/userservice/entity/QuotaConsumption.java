@@ -34,7 +34,13 @@ public class QuotaConsumption {
 
     public static final String TYPE_LEGACY = "LEGACY";
     public static final String TYPE_STUDY_ARTIFACT = "STUDY_ARTIFACT";
-    public static final String TYPE_STUDY_SYNTHESIS = "STUDY_SYNTHESIS";
+    public static final String TYPE_SUBJECT_SYNTHESIS = "SUBJECT_SYNTHESIS";
+
+    /** @deprecated prefer {@link #TYPE_SUBJECT_SYNTHESIS} */
+    @Deprecated
+    public static final String TYPE_STUDY_SYNTHESIS = TYPE_SUBJECT_SYNTHESIS;
+
+    public static final String CONSTRAINT_OWNER_KEY = "uq_quota_consumption_owner_key";
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
