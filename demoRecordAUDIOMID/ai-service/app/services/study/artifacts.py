@@ -736,13 +736,23 @@ def _prepare_artifact_prompt(
     ready_sources: list[dict[str, Any]],
     max_input_tokens: int,
     chars_per_token: int,
+    system_prompt: str = "",
 ) -> str:
-    """Build an artifact prompt that fits the hard token ceiling, or raise."""
+    """Build an artifact prompt that fits the hard token ceiling, or raise.
+
+    Compaction budget reserves room for ``system_prompt + "\\n\\n"`` so the
+    combined prompt never exceeds ``max_input_tokens``.
+    """
+    system_reserve = estimate_tokens(
+        (system_prompt or "") + "\n\n", chars_per_token=chars_per_token
+    )
+    user_token_budget = max(1, max_input_tokens - system_reserve)
+
     meetings = [_compact_artifact_meeting(s) for s in ready_sources]
     synthesis = dict(synthesis_content) if isinstance(synthesis_content, dict) else synthesis_content
 
-    # Leave headroom for the prompt wrapper text.
-    payload_budget = max(1, int(max_input_tokens * 0.85))
+    # Leave headroom for the prompt wrapper text within the user budget.
+    payload_budget = max(1, int(user_token_budget * 0.85))
     meeting_budget = max(1, payload_budget // max(1, len(meetings) + (1 if synthesis else 0)))
 
     if isinstance(synthesis, dict):
@@ -776,7 +786,7 @@ def _prepare_artifact_prompt(
             source_payload=source_payload,
         )
         tokens = estimate_tokens(prompt, chars_per_token=chars_per_token)
-        if tokens <= max_input_tokens:
+        if tokens <= user_token_budget:
             return prompt
 
         # Shrink further: prefer trimming educationStudy / synthesis list fields.
@@ -834,7 +844,7 @@ def _prepare_artifact_prompt(
         source_payload=source_payload,
     )
     assert_prompt_within_limit(
-        prompt, max_input_tokens=max_input_tokens, chars_per_token=chars_per_token
+        prompt, max_input_tokens=user_token_budget, chars_per_token=chars_per_token
     )
     return prompt
 
@@ -861,6 +871,7 @@ def generate_artifact_content(
         ARTIFACT_ESSAY_QUESTIONS: options["essayQuestionCount"],
     }.get(artifact_type)
 
+    system_prompt = artifact_system_instruction(artifact_type)
     user_prompt = _prepare_artifact_prompt(
         artifact_type=artifact_type,
         prompt_version=prompt_version,
@@ -871,44 +882,55 @@ def generate_artifact_content(
         ready_sources=ready_sources,
         max_input_tokens=max_input_tokens,
         chars_per_token=chars_per_token,
+        system_prompt=system_prompt,
     )
-    # Hard ceiling: never call Gemini when the prompt still exceeds the limit.
+    # Hard ceiling on system + user: never call Gemini when combined prompt exceeds limit.
     assert_prompt_within_limit(
-        user_prompt, max_input_tokens=max_input_tokens, chars_per_token=chars_per_token
+        system_prompt + "\n\n" + user_prompt,
+        max_input_tokens=max_input_tokens,
+        chars_per_token=chars_per_token,
     )
 
     try:
         raw_text = call_gemini(
             prompt=user_prompt,
-            system_prompt=artifact_system_instruction(artifact_type),
+            system_prompt=system_prompt,
             response_schema=artifact_gemini_schema(artifact_type),
         )
-        parsed = json.loads(raw_text) if isinstance(raw_text, str) else raw_text
+        try:
+            parsed = json.loads(raw_text) if isinstance(raw_text, str) else raw_text
+        except json.JSONDecodeError as exc:
+            raise StudyValidationError(
+                "INVALID_PROVIDER_JSON",
+                "Provider response is not valid JSON",
+            ) from exc
         if not isinstance(parsed, dict):
             raise StudyValidationError("INVALID_ARTIFACT_JSON", "Artifact JSON invalid")
+
+        if artifact_type == ARTIFACT_MIND_MAP:
+            return validate_mind_map(parsed, allowed_segments_by_meeting=allowed_segments_by_meeting)
+        if artifact_type == ARTIFACT_FLASHCARDS:
+            return validate_flashcards(
+                parsed,
+                max_count=options["flashcardCount"],
+                allowed_segments_by_meeting=allowed_segments_by_meeting,
+            )
+        if artifact_type == ARTIFACT_MULTIPLE_CHOICE:
+            return validate_mcq(
+                parsed,
+                max_count=options["multipleChoiceCount"],
+                allowed_segments_by_meeting=allowed_segments_by_meeting,
+            )
+        if artifact_type == ARTIFACT_ESSAY_QUESTIONS:
+            return validate_essay(
+                parsed,
+                max_count=options["essayQuestionCount"],
+                allowed_segments_by_meeting=allowed_segments_by_meeting,
+            )
+        if artifact_type == ARTIFACT_EXAM_BRIEF:
+            return validate_exam_brief(parsed, allowed_segments_by_meeting=allowed_segments_by_meeting)
+        raise StudyValidationError("UNKNOWN_ARTIFACT_TYPE", artifact_type)
+    except StudyValidationError:
+        raise
     except Exception as exc:  # noqa: BLE001
         raise classify_provider_exception(exc) from exc
-
-    if artifact_type == ARTIFACT_MIND_MAP:
-        return validate_mind_map(parsed, allowed_segments_by_meeting=allowed_segments_by_meeting)
-    if artifact_type == ARTIFACT_FLASHCARDS:
-        return validate_flashcards(
-            parsed,
-            max_count=options["flashcardCount"],
-            allowed_segments_by_meeting=allowed_segments_by_meeting,
-        )
-    if artifact_type == ARTIFACT_MULTIPLE_CHOICE:
-        return validate_mcq(
-            parsed,
-            max_count=options["multipleChoiceCount"],
-            allowed_segments_by_meeting=allowed_segments_by_meeting,
-        )
-    if artifact_type == ARTIFACT_ESSAY_QUESTIONS:
-        return validate_essay(
-            parsed,
-            max_count=options["essayQuestionCount"],
-            allowed_segments_by_meeting=allowed_segments_by_meeting,
-        )
-    if artifact_type == ARTIFACT_EXAM_BRIEF:
-        return validate_exam_brief(parsed, allowed_segments_by_meeting=allowed_segments_by_meeting)
-    raise StudyValidationError("UNKNOWN_ARTIFACT_TYPE", artifact_type)

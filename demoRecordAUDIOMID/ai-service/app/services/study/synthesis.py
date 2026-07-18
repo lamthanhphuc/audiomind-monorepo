@@ -658,14 +658,23 @@ def _build_prompt_within_limit(
     language: str,
     max_input_tokens: int,
     chars_per_token: int,
+    system_prompt: str = "",
 ) -> tuple[str, list[dict[str, Any]]]:
-    """Build a prompt that fits the token ceiling by compacting payload items."""
+    """Build a prompt that fits the token ceiling by compacting payload items.
+
+    Reserves tokens for ``system_prompt + "\\n\\n"`` so system+user stays under the limit.
+    """
+    system_reserve = estimate_tokens(
+        (system_prompt or "") + "\n\n", chars_per_token=chars_per_token
+    )
+    user_token_budget = max(1, max_input_tokens - system_reserve)
+
     items = [dict(item) for item in payload_items]
-    per_item = max(1, (max_input_tokens * 3) // max(4, len(items) + 1))
+    per_item = max(1, (user_token_budget * 3) // max(4, len(items) + 1))
     for round_idx in range(32):
         prompt = build_prompt(items, language=language)
         tokens = estimate_tokens(prompt, chars_per_token=chars_per_token)
-        if tokens <= max_input_tokens:
+        if tokens <= user_token_budget:
             return prompt, items
         budget = max(1, per_item // (2 ** min(round_idx, 8)))
         items = [
@@ -694,7 +703,7 @@ def _build_prompt_within_limit(
             ]
     prompt = build_prompt(items, language=language)
     assert_prompt_within_limit(
-        prompt, max_input_tokens=max_input_tokens, chars_per_token=chars_per_token
+        prompt, max_input_tokens=user_token_budget, chars_per_token=chars_per_token
     )
     return prompt, items
 
@@ -728,6 +737,7 @@ def run_hierarchical_synthesis(
 
     def run_batch(batch: list[dict[str, Any]]) -> dict[str, Any]:
         compact_batch = [_compact_source(item) for item in batch]
+        system_prompt = build_synthesis_system_instruction()
         prompt, _ = _build_prompt_within_limit(
             build_prompt=lambda items, language: (
                 f"Language: {language}\n"
@@ -739,14 +749,26 @@ def run_hierarchical_synthesis(
             language=language,
             max_input_tokens=max_input_tokens,
             chars_per_token=chars_per_token,
+            system_prompt=system_prompt,
+        )
+        assert_prompt_within_limit(
+            system_prompt + "\n\n" + prompt,
+            max_input_tokens=max_input_tokens,
+            chars_per_token=chars_per_token,
         )
         try:
             raw_text = call_gemini(
                 prompt=prompt,
-                system_prompt=build_synthesis_system_instruction(),
+                system_prompt=system_prompt,
                 response_schema=subject_synthesis_gemini_schema(),
             )
-            parsed = json.loads(raw_text) if isinstance(raw_text, str) else raw_text
+            try:
+                parsed = json.loads(raw_text) if isinstance(raw_text, str) else raw_text
+            except json.JSONDecodeError as exc:
+                raise StudyValidationError(
+                    "INVALID_PROVIDER_JSON",
+                    "Provider response is not valid JSON",
+                ) from exc
             if not isinstance(parsed, dict):
                 raise StudyValidationError("INVALID_BATCH_JSON", "Batch JSON invalid")
             parsed["sourceMeetingIds"] = [int(s["meetingId"]) for s in batch]
@@ -755,6 +777,8 @@ def run_hierarchical_synthesis(
                 len(batch),
             )
             return parsed
+        except StudyValidationError:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise classify_provider_exception(exc) from exc
 
@@ -935,20 +959,33 @@ def _reduce_intermediate_batch(
                 chars_per_token=cpt,
             )
 
+    system_prompt = build_synthesis_system_instruction()
     prompt, fitted = _build_prompt_within_limit(
         build_prompt=lambda items, language: build_reducer_prompt(items, language=language),
         payload_items=fitted,
         language=language,
         max_input_tokens=limit,
         chars_per_token=cpt,
+        system_prompt=system_prompt,
+    )
+    assert_prompt_within_limit(
+        system_prompt + "\n\n" + prompt,
+        max_input_tokens=limit,
+        chars_per_token=cpt,
     )
     try:
         raw_text = call_gemini(
             prompt=prompt,
-            system_prompt=build_synthesis_system_instruction(),
+            system_prompt=system_prompt,
             response_schema=subject_synthesis_gemini_schema(),
         )
-        merged = json.loads(raw_text) if isinstance(raw_text, str) else raw_text
+        try:
+            merged = json.loads(raw_text) if isinstance(raw_text, str) else raw_text
+        except json.JSONDecodeError as exc:
+            raise StudyValidationError(
+                "INVALID_PROVIDER_JSON",
+                "Provider response is not valid JSON",
+            ) from exc
         if not isinstance(merged, dict):
             raise StudyValidationError("INVALID_FINAL_JSON", "Final JSON invalid")
         meeting_ids: list[int] = []
@@ -965,5 +1002,7 @@ def _reduce_intermediate_batch(
         if meeting_ids:
             merged["sourceMeetingIds"] = meeting_ids
         return merged
+    except StudyValidationError:
+        raise
     except Exception as exc:  # noqa: BLE001
         raise classify_provider_exception(exc) from exc

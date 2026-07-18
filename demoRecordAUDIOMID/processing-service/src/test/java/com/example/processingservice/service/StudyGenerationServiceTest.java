@@ -374,6 +374,42 @@ class StudyGenerationServiceTest {
     }
 
     @Test
+    void createArtifacts_nonRetryableUnknown_leavesQueuedWithoutQuotaExceeded() {
+        when(meetingServiceClient.getSubjectById(eq(12L), anyString(), anyString()))
+                .thenReturn(Map.of("id", 12));
+        when(meetingServiceClient.listAllSubjectMeetings(eq(12L), anyString(), anyString()))
+                .thenReturn(List.of(Map.of("id", 101L)));
+        when(meetingServiceClient.getMeetingById(eq(101L), anyString(), anyString()))
+                .thenReturn(Map.of("id", 101, "ownerUserId", 1L));
+        when(aiServiceClient.prepareStudyArtifacts(any(), anyString()))
+                .thenReturn(Map.of(
+                        "newlyCreatedArtifactIds", List.of(1003),
+                        "status", "QUEUED"
+                ));
+        when(userQuotaClient.consume(
+                        eq(1L), eq(0L), eq(8000L),
+                        eq("study-artifact:1003:quota"),
+                        eq(StudyGenerationService.QUOTA_TYPE_STUDY_ARTIFACT)))
+                .thenReturn(QuotaConsumeResult.unknown(
+                        "study-artifact:1003:quota",
+                        StudyGenerationService.QUOTA_TYPE_STUDY_ARTIFACT,
+                        "QUOTA_CLIENT_UNCONFIGURED",
+                        false));
+
+        ResponseStatusException ex = assertThrows(
+                ResponseStatusException.class,
+                () -> studyGenerationService.createStudyArtifacts(
+                        1L, 12L, List.of(101L), List.of("FLASHCARDS"), "EXPLICIT",
+                        Map.of(), null, false, "trace", "Bearer t"));
+
+        assertEquals(HttpStatus.BAD_GATEWAY, ex.getStatusCode());
+        assertEquals("QUOTA_CLIENT_UNCONFIGURED", ex.getReason());
+        verify(aiServiceClient, never()).markStudyQuotaFailed(any(), anyString());
+        verify(aiServiceClient, never()).confirmStudyQuota(any(), anyString());
+        verify(aiServiceClient, never()).dispatchStudyJobs(any(), anyString());
+    }
+
+    @Test
     void createArtifacts_retrySameKey_allowedFromLedger() {
         when(meetingServiceClient.getSubjectById(eq(12L), anyString(), anyString()))
                 .thenReturn(Map.of("id", 12));
