@@ -140,7 +140,12 @@ def _iter_container_env(docs: list[dict[str, Any]]):
 
 
 def validate_docs(
-    docs: list[dict[str, Any]], label: str, environment: str | None = None
+    docs: list[dict[str, Any]],
+    label: str,
+    environment: str | None = None,
+    *,
+    deploy_ready: bool = False,
+    code_only: bool = False,
 ) -> bool:
     ok = True
     env = (environment or "").strip().lower() or None
@@ -150,6 +155,34 @@ def validate_docs(
         for d in docs
         if d.get("kind") == "ConfigMap"
     }
+
+    # Never allow REPLACE_WITH_SEALED / CHANGE_ME in rendered staging/prod.
+    if env in {"staging", "prod"}:
+        blob = yaml.safe_dump_all(docs)
+        for token in (
+            "REPLACE_WITH_SEALED",
+            "REPLACE_ME",
+            "CHANGE_ME",
+            "your-managed-db-host",
+            "your_username",
+            "your_password",
+        ):
+            if token in blob:
+                print(f"FAIL {label}: rendered {env} contains forbidden token {token}")
+                ok = False
+
+    # postgres-data-pvc is dev-only
+    pvc_names = {
+        (d.get("metadata") or {}).get("name")
+        for d in docs
+        if d.get("kind") == "PersistentVolumeClaim"
+    }
+    if env == "dev" and "postgres-data-pvc" not in pvc_names:
+        print(f"FAIL {label}: dev must render postgres-data-pvc")
+        ok = False
+    if env in {"staging", "prod"} and "postgres-data-pvc" in pvc_names:
+        print(f"FAIL {label}: postgres-data-pvc must not render in {env}")
+        ok = False
 
     producers: dict[str, list[tuple[str, set[str], dict[str, Any]]]] = defaultdict(list)
     for d in docs:
@@ -168,6 +201,8 @@ def validate_docs(
                 f"(producers={kinds})"
             )
             ok = False
+
+    require_secret_producers = not code_only or env == "dev" or deploy_ready
 
     for d in deploys:
         dn = d["metadata"]["name"]
@@ -191,6 +226,22 @@ def validate_docs(
             if len(ports) != len(set(ports)):
                 print(f"FAIL {label}/{dn} dup ports {ports}")
                 ok = False
+            # Core APIs must expose readiness + liveness (+ startup for Java/AI APIs)
+            if dn in {
+                "meeting-api-deployment",
+                "user-api-deployment",
+                "processing-api-deployment",
+                "ai-api-deployment",
+            }:
+                if not c.get("readinessProbe"):
+                    print(f"FAIL {label}/{dn}: missing readinessProbe")
+                    ok = False
+                if not c.get("livenessProbe"):
+                    print(f"FAIL {label}/{dn}: missing livenessProbe")
+                    ok = False
+                if not c.get("startupProbe"):
+                    print(f"FAIL {label}/{dn}: missing startupProbe")
+                    ok = False
             for e in c.get("env") or []:
                 vf = e.get("valueFrom") or {}
                 cm = vf.get("configMapKeyRef") or {}
@@ -203,7 +254,7 @@ def validate_docs(
                     elif ckey not in cms[cname]:
                         print(f"FAIL {label}/{dn} missing ConfigMap key {cname}/{ckey}")
                         ok = False
-                if sk:
+                if sk and require_secret_producers:
                     sname, skey = sk.get("name"), sk.get("key")
                     owners = producers.get(sname or "", [])
                     if not owners:
@@ -234,6 +285,14 @@ def validate_docs(
                             f"encryptedData.{required}"
                         )
                         ok = False
+                if deploy_ready:
+                    for key, value in ((doc.get("spec") or {}).get("encryptedData") or {}).items():
+                        if str(value).startswith("REPLACE_WITH_SEALED"):
+                            print(
+                                f"FAIL {label}: deploy-ready requires real ciphertext "
+                                f"for audiomind-secrets/{key}"
+                            )
+                            ok = False
             if kind == "Secret":
                 jwt = (doc.get("stringData") or {}).get("JWT_SECRET")
                 if jwt is not None:
@@ -244,8 +303,14 @@ def validate_docs(
 
     # Database secret required keys
     db_owners = producers.get("audiomind-db-secrets", [])
-    if not db_owners and env in {"dev", "staging", "prod"}:
+    if not db_owners and env == "dev":
         print(f"FAIL {label}: missing audiomind-db-secrets producer")
+        ok = False
+    if not db_owners and deploy_ready and env in {"staging", "prod"}:
+        print(
+            f"FAIL {label}: deploy-ready requires audiomind-db-secrets producer "
+            f"(apply sealed-db-secret.yaml from generate-sealed-secrets)"
+        )
         ok = False
     for kind, keys, doc in db_owners:
         required = {
@@ -278,23 +343,39 @@ def validate_docs(
                 print(f"FAIL {label}: USER_DATABASE_URL must be jdbc:postgresql://")
                 ok = False
             if ai and not (
-                ai.startswith("postgresql://")
-                or ai.startswith("postgresql+psycopg://")
-                or ai.startswith("postgresql+asyncpg://")
+                ai.startswith("postgresql://") or ai.startswith("postgresql+psycopg2://")
             ):
                 print(
-                    f"FAIL {label}: AI_DATABASE_URL must be SQLAlchemy postgresql scheme"
+                    f"FAIL {label}: AI_DATABASE_URL must be postgresql:// or "
+                    f"postgresql+psycopg2:// (psycopg2 runtime)"
                 )
                 ok = False
-            if ai.startswith("jdbc:"):
-                print(f"FAIL {label}: AI_DATABASE_URL must not be JDBC")
+            if ai.startswith("jdbc:") or ai.startswith("postgresql+psycopg://") or ai.startswith(
+                "postgresql+asyncpg://"
+            ):
+                print(f"FAIL {label}: AI_DATABASE_URL incompatible with psycopg2 runtime")
                 ok = False
+            if env in {"staging", "prod"}:
+                for label_url, url in (("MEETING", meeting), ("USER", user), ("AI", ai)):
+                    lowered = url.lower()
+                    if url and "sslmode=require" not in lowered and "sslmode=verify-full" not in lowered:
+                        print(
+                            f"FAIL {label}: {label_url}_DATABASE_URL must include "
+                            f"sslmode=require or verify-full in {env}"
+                        )
+                        ok = False
         if kind == "SealedSecret":
             for key, value in ((doc.get("spec") or {}).get("encryptedData") or {}).items():
                 text = str(value)
-                if _contains_db_placeholder(text) and not text.startswith(
-                    "REPLACE_WITH_SEALED_"
+                if text.startswith("REPLACE_WITH_SEALED") and (
+                    deploy_ready or env in {"staging", "prod"}
                 ):
+                    print(
+                        f"FAIL {label}: SealedSecret audiomind-db-secrets "
+                        f"encryptedData.{key} is still a REPLACE_WITH_SEALED placeholder"
+                    )
+                    ok = False
+                if _contains_db_placeholder(text):
                     print(
                         f"FAIL {label}: SealedSecret audiomind-db-secrets "
                         f"encryptedData.{key} looks like plaintext placeholder"
@@ -312,7 +393,6 @@ def validate_docs(
                 print(f"FAIL {label}: raw Secret {name} contains DB placeholder text")
                 ok = False
             if name in {"db-creds", "audiomind-db-secrets"}:
-                # Only SealedSecret should produce audiomind-db-secrets in staging/prod
                 if name == "audiomind-db-secrets":
                     print(
                         f"FAIL {label}: raw Secret audiomind-db-secrets must not "
@@ -340,9 +420,7 @@ def validate_docs(
                     f"while db-deployment disabled: {literal}"
                 )
                 ok = False
-            # Resolved secret stringData already checked; sealed placeholders OK
 
-        # Ensure DB-using deployments reference audiomind-db-secrets (not audiomind-secrets)
         for d in deploys:
             dn = d["metadata"]["name"]
             for c in (d.get("spec") or {}).get("template", {}).get("spec", {}).get(
@@ -364,6 +442,34 @@ def validate_docs(
                         )
                         ok = False
 
+        # Migration jobs must exist for ordered rollout
+        job_names = {
+            (d.get("metadata") or {}).get("name")
+            for d in docs
+            if d.get("kind") == "Job"
+        }
+        for required_job in ("user-db-migrate", "meeting-db-migrate", "ai-db-migrate"):
+            if required_job not in job_names:
+                print(f"FAIL {label}: missing migration Job {required_job}")
+                ok = False
+
+        # Meeting must wait for app_users
+        meeting = next(
+            (d for d in deploys if (d.get("metadata") or {}).get("name") == "meeting-api-deployment"),
+            None,
+        )
+        if meeting:
+            inits = (
+                (meeting.get("spec") or {})
+                .get("template", {})
+                .get("spec", {})
+                .get("initContainers")
+                or []
+            )
+            if not any(c.get("name") == "wait-user-schema" for c in inits):
+                print(f"FAIL {label}: meeting-api missing wait-user-schema initContainer")
+                ok = False
+
     # Beat schedules only — must not set DATABASE_URL in any environment
     for d in deploys:
         if (d.get("metadata") or {}).get("name") != "celery-beat-deployment":
@@ -379,7 +485,10 @@ def validate_docs(
                     )
                     ok = False
 
-    print(f"{label}: docs={len(docs)} deployments={len(deploys)} ok={ok}")
+    print(
+        f"{label}: docs={len(docs)} deployments={len(deploys)} "
+        f"deploy_ready={deploy_ready} code_only={code_only} ok={ok}"
+    )
     return ok
 
 
@@ -390,6 +499,16 @@ def main(argv: list[str] | None = None) -> int:
         "--environment",
         choices=("dev", "staging", "prod"),
         help="Enable environment-specific managed-DB guards",
+    )
+    parser.add_argument(
+        "--deploy-ready",
+        action="store_true",
+        help="Require real SealedSecret ciphertext and secret producers (staging deploy gate)",
+    )
+    parser.add_argument(
+        "--code-only",
+        action="store_true",
+        help="Merge-CI mode: allow missing sealed secret producers in staging/prod",
     )
     args = parser.parse_args(argv)
     if args.files:
@@ -408,7 +527,16 @@ def main(argv: list[str] | None = None) -> int:
                 if candidate in stem:
                     env = candidate
                     break
-        if not validate_docs(_load_docs(path), path.stem, env):
+        code_only = args.code_only
+        if env in {"staging", "prod"} and not args.deploy_ready:
+            code_only = True
+        if not validate_docs(
+            _load_docs(path),
+            path.stem,
+            env,
+            deploy_ready=args.deploy_ready,
+            code_only=code_only,
+        ):
             ok = False
     print("structural_k8s_validate:", "PASS" if ok else "FAIL")
     return 0 if ok else 1
