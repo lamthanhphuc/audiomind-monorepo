@@ -376,13 +376,48 @@ class Settings(BaseSettings):
                 "Invalid production celery_result_backend: localhost is not allowed"
             )
 
+    def validate_database_url_scheme(self) -> "Settings":
+        """Enforce schemes compatible with installed driver (psycopg2-binary)."""
+        url = (self.database_url or "").strip()
+        if not url:
+            raise ValueError("Invalid database_url: empty")
+        if url.startswith("jdbc:"):
+            raise ValueError(
+                "Invalid database_url: JDBC scheme is not supported by AI SQLAlchemy runtime"
+            )
+        if url.startswith("postgresql+psycopg://"):
+            raise ValueError(
+                "Invalid database_url: postgresql+psycopg:// requires psycopg v3; "
+                "runtime installs psycopg2-binary — use postgresql:// or postgresql+psycopg2://"
+            )
+        if url.startswith("postgresql+asyncpg://"):
+            raise ValueError(
+                "Invalid database_url: postgresql+asyncpg:// is async-only; "
+                "runtime uses synchronous create_engine with psycopg2"
+            )
+        if not (
+            url.startswith("postgresql://") or url.startswith("postgresql+psycopg2://")
+        ):
+            raise ValueError(
+                "Invalid database_url: must start with postgresql:// or postgresql+psycopg2://"
+            )
+        return self
+
     def _validate_database_url_production(self) -> None:
+        self.validate_database_url_scheme()
         if (
             _is_local(self.database_url)
             or "postgres:postgres@" in (self.database_url or "").lower()
         ):
             raise ValueError(
                 "Invalid production database_url: localhost/default credentials are not allowed"
+            )
+        # Staging/prod managed Postgres must negotiate TLS (APP_ENV=production covers staging overlays).
+        lowered = (self.database_url or "").lower()
+        if "sslmode=require" not in lowered and "sslmode=verify-full" not in lowered:
+            raise ValueError(
+                "Invalid production database_url: sslmode=require "
+                "or sslmode=verify-full is required"
             )
 
     def _validate_meeting_and_token_production(self) -> None:
@@ -544,6 +579,9 @@ class Settings(BaseSettings):
         self.audio_enhancement_timeout_seconds = max(
             1, int(self.audio_enhancement_timeout_seconds or 120)
         )
+
+        if self.app_component != AppComponent.BEAT.value:
+            self.validate_database_url_scheme()
 
         return self
 
