@@ -41,6 +41,7 @@ def test_process_artifact_job_lifecycle_queued_to_completed(monkeypatch):
         synthesis_id=None,
         artifact_type="FLASHCARDS",
         status=STATUS_QUEUED,
+        source_hash="hash",
         source_selection_mode="EXPLICIT",
         options_json={"language": "vi", "flashcardCount": 5, "multipleChoiceCount": 5, "essayQuestionCount": 1, "difficulty": "MIXED"},
         sources=[SimpleNamespace(meeting_id=101)],
@@ -51,11 +52,7 @@ def test_process_artifact_job_lifecycle_queued_to_completed(monkeypatch):
         updated_at=None,
     )
     db = MagicMock()
-    query = MagicMock()
-    db.query.return_value = query
-    query.filter.return_value = query
-    query.first.return_value = row
-
+    monkeypatch.setattr(study_service, "claim_processing_artifact", lambda *_a, **_k: row)
     monkeypatch.setattr(
         study_service,
         "compute_current_source_hash",
@@ -81,7 +78,7 @@ def test_process_artifact_job_lifecycle_queued_to_completed(monkeypatch):
     study_service.process_artifact_job(db, 7)
     assert row.status == STATUS_COMPLETED
     assert row.content_json is not None
-    assert db.commit.call_count >= 2
+    assert db.commit.call_count >= 1
 
 
 def test_process_artifact_job_validation_does_not_raise_retryable(monkeypatch):
@@ -94,6 +91,7 @@ def test_process_artifact_job_validation_does_not_raise_retryable(monkeypatch):
         synthesis_id=None,
         artifact_type="FLASHCARDS",
         status=STATUS_QUEUED,
+        source_hash="hash",
         source_selection_mode="EXPLICIT",
         options_json={"language": "vi", "flashcardCount": 5, "multipleChoiceCount": 5, "essayQuestionCount": 1, "difficulty": "MIXED"},
         sources=[SimpleNamespace(meeting_id=101)],
@@ -104,10 +102,7 @@ def test_process_artifact_job_validation_does_not_raise_retryable(monkeypatch):
         updated_at=None,
     )
     db = MagicMock()
-    query = MagicMock()
-    db.query.return_value = query
-    query.filter.return_value = query
-    query.first.return_value = row
+    monkeypatch.setattr(study_service, "claim_processing_artifact", lambda *_a, **_k: row)
     monkeypatch.setattr(
         study_service,
         "compute_current_source_hash",
@@ -133,6 +128,7 @@ def test_process_artifact_job_transient_raises(monkeypatch):
         synthesis_id=None,
         artifact_type="FLASHCARDS",
         status=STATUS_QUEUED,
+        source_hash="hash",
         source_selection_mode="EXPLICIT",
         options_json={"language": "vi", "flashcardCount": 5, "multipleChoiceCount": 5, "essayQuestionCount": 1, "difficulty": "MIXED"},
         sources=[SimpleNamespace(meeting_id=101)],
@@ -143,10 +139,7 @@ def test_process_artifact_job_transient_raises(monkeypatch):
         updated_at=None,
     )
     db = MagicMock()
-    query = MagicMock()
-    db.query.return_value = query
-    query.filter.return_value = query
-    query.first.return_value = row
+    monkeypatch.setattr(study_service, "claim_processing_artifact", lambda *_a, **_k: row)
     monkeypatch.setattr(
         study_service,
         "compute_current_source_hash",
@@ -160,6 +153,27 @@ def test_process_artifact_job_transient_raises(monkeypatch):
     with pytest.raises(StudyTransientError):
         study_service.process_artifact_job(db, 9)
     assert row.status == STATUS_FAILED
+
+
+def test_worker_skips_when_claim_fails(monkeypatch):
+    from app.services.study import service as study_service
+
+    existing = SimpleNamespace(id=9, status=STATUS_COMPLETED)
+    db = MagicMock()
+    monkeypatch.setattr(study_service, "claim_processing_artifact", lambda *_a, **_k: None)
+    query = MagicMock()
+    db.query.return_value = query
+    query.filter.return_value = query
+    query.first.return_value = existing
+    called = {"gemini": False}
+
+    def boom(*_a, **_k):
+        called["gemini"] = True
+        return {}
+
+    monkeypatch.setattr(study_service, "generate_artifact_content", boom)
+    study_service.process_artifact_job(db, 9)
+    assert called["gemini"] is False
 
 
 def test_generate_study_artifact_task_retries_transient(monkeypatch):

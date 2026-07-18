@@ -55,7 +55,7 @@ READY_SOURCES = [
 
 
 def _patch_ready_sources(monkeypatch):
-    def _compute(db, *, owner_user_id, subject_id, source_selection_mode, meeting_ids):
+    def _compute(db, *, owner_user_id, subject_id, source_selection_mode, meeting_ids, require_ready=True):
         from app.services.study import build_source_hash
 
         source_hash = build_source_hash(
@@ -88,60 +88,53 @@ def _fake_gemini(*, prompt: str, system_prompt: str, response_schema=None) -> st
             }
         )
     if "Generate FLASHCARDS" in prompt or "type FLASHCARDS" in system_prompt:
-        return json.dumps(
+        cards = [
             {
-                "cards": [
-                    {
-                        "id": "c1",
-                        "front": "OSI layer 1?",
-                        "back": "Physical",
-                        "difficulty": "EASY",
-                        "sourceMeetingIds": [101],
-                        "sourceSegmentIds": ["seg-1"],
-                    }
-                ]
-            },
-            ensure_ascii=False,
-        )
+                "id": f"c{i}",
+                "front": f"OSI layer {i}?",
+                "back": f"Answer {i}",
+                "difficulty": "EASY",
+                "sourceMeetingIds": [101],
+                "sourceSegmentIds": ["seg-1"],
+            }
+            for i in range(1, 6)
+        ]
+        return json.dumps({"cards": cards}, ensure_ascii=False)
     if "Generate MULTIPLE_CHOICE" in prompt or "type MULTIPLE_CHOICE" in system_prompt:
-        return json.dumps(
+        questions = [
             {
-                "questions": [
-                    {
-                        "id": "q1",
-                        "question": "TCP handshake steps?",
-                        "options": [
-                            {"id": "a", "text": "1"},
-                            {"id": "b", "text": "2"},
-                            {"id": "c", "text": "3"},
-                            {"id": "d", "text": "4"},
-                        ],
-                        "correctOptionId": "c",
-                        "explanation": "SYN SYN-ACK ACK",
-                        "difficulty": "MEDIUM",
-                        "sourceMeetingIds": [102],
-                        "sourceSegmentIds": ["seg-2"],
-                    }
-                ]
+                "id": f"q{i}",
+                "question": f"TCP question {i}?",
+                "options": [
+                    {"id": "a", "text": f"opt-a-{i}"},
+                    {"id": "b", "text": f"opt-b-{i}"},
+                    {"id": "c", "text": f"opt-c-{i}"},
+                    {"id": "d", "text": f"opt-d-{i}"},
+                ],
+                "correctOptionId": "c",
+                "explanation": "SYN SYN-ACK ACK",
+                "difficulty": "MEDIUM",
+                "sourceMeetingIds": [102],
+                "sourceSegmentIds": ["seg-2"],
             }
-        )
+            for i in range(1, 6)
+        ]
+        return json.dumps({"questions": questions})
     if "Generate ESSAY_QUESTIONS" in prompt or "type ESSAY_QUESTIONS" in system_prompt:
-        return json.dumps(
+        questions = [
             {
-                "questions": [
-                    {
-                        "id": "e1",
-                        "question": "Explain OSI",
-                        "suggestedOutline": ["layers"],
-                        "keyPoints": ["7 layers"],
-                        "rubric": [{"criterion": "clarity", "points": 5}],
-                        "difficulty": "MEDIUM",
-                        "sourceMeetingIds": [101],
-                        "sourceSegmentIds": ["seg-1"],
-                    }
-                ]
+                "id": f"e{i}",
+                "question": f"Explain OSI part {i}",
+                "suggestedOutline": ["layers"],
+                "keyPoints": ["7 layers"],
+                "rubric": [{"criterion": f"clarity-{i}", "points": 5}],
+                "difficulty": "MEDIUM",
+                "sourceMeetingIds": [101],
+                "sourceSegmentIds": ["seg-1"],
             }
-        )
+            for i in range(1, 4)
+        ]
+        return json.dumps({"questions": questions})
     if "Generate EXAM_BRIEF" in prompt or "type EXAM_BRIEF" in system_prompt:
         return json.dumps(
             {
@@ -193,6 +186,7 @@ def smoke_client(monkeypatch):
                 version INTEGER NOT NULL DEFAULT 1,
                 title VARCHAR(255),
                 content_json JSON,
+                options_json JSON,
                 source_hash VARCHAR(64) NOT NULL,
                 options_hash VARCHAR(64),
                 source_selection_mode VARCHAR(20) NOT NULL,
@@ -204,6 +198,11 @@ def smoke_client(monkeypatch):
                 error_message TEXT,
                 warnings_json JSON,
                 generated_at DATETIME,
+                dispatch_requested_at DATETIME,
+                celery_task_id VARCHAR(128),
+                processing_started_at DATETIME,
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                last_heartbeat_at DATETIME,
                 created_at DATETIME NOT NULL,
                 updated_at DATETIME NOT NULL,
                 deleted_at DATETIME
@@ -247,6 +246,11 @@ def smoke_client(monkeypatch):
                 error_message TEXT,
                 warnings_json JSON,
                 generated_at DATETIME,
+                dispatch_requested_at DATETIME,
+                celery_task_id VARCHAR(128),
+                processing_started_at DATETIME,
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                last_heartbeat_at DATETIME,
                 created_at DATETIME NOT NULL,
                 updated_at DATETIME NOT NULL,
                 deleted_at DATETIME
@@ -291,19 +295,23 @@ def smoke_client(monkeypatch):
     dispatch_calls: list[tuple[str, int]] = []
     from app import tasks as tasks_module
 
-    original_syn_delay = tasks_module.generate_subject_synthesis.delay
-    original_art_delay = tasks_module.generate_study_artifact.delay
+    original_syn = tasks_module.generate_subject_synthesis.apply_async
+    original_art = tasks_module.generate_study_artifact.apply_async
 
-    def syn_delay(synthesis_id: int):
+    def syn_apply_async(*args, **kwargs):
+        call_args = kwargs.get("args") or (args[0] if args else [])
+        synthesis_id = call_args[0] if call_args else None
         dispatch_calls.append(("synthesis", int(synthesis_id)))
-        return original_syn_delay(synthesis_id)
+        return original_syn(*args, **kwargs)
 
-    def art_delay(artifact_id: int):
+    def art_apply_async(*args, **kwargs):
+        call_args = kwargs.get("args") or (args[0] if args else [])
+        artifact_id = call_args[0] if call_args else None
         dispatch_calls.append(("artifact", int(artifact_id)))
-        return original_art_delay(artifact_id)
+        return original_art(*args, **kwargs)
 
-    monkeypatch.setattr(tasks_module.generate_subject_synthesis, "delay", syn_delay)
-    monkeypatch.setattr(tasks_module.generate_study_artifact, "delay", art_delay)
+    monkeypatch.setattr(tasks_module.generate_subject_synthesis, "apply_async", syn_apply_async)
+    monkeypatch.setattr(tasks_module.generate_study_artifact, "apply_async", art_apply_async)
 
     # Tasks use SessionLocal from app.database — point them at our smoke DB.
     monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
