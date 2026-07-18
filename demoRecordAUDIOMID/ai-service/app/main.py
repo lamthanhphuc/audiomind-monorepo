@@ -355,6 +355,9 @@ instrument_fastapi_app(app)
 
 app.include_router(internal_meetings_router)
 app.include_router(config_lexicon_router)
+from app.study_routes import router as study_router
+
+app.include_router(study_router)
 
 _stt_adapter: DeepgramSTTAdapter | None = None
 _stt_stream_sessions: dict[str, MeetingSessionActor] = {}

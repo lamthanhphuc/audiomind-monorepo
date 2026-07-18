@@ -261,7 +261,7 @@ services:
       args:
         INSTALL_OFFLINE_STT: "false"
     container_name: celery-worker
-    command: sh -c "celery -A app.celery_app.celery_app worker --loglevel=INFO --concurrency=${CELERY_CONCURRENCY:-4} --prefetch-multiplier=${CELERY_PREFETCH_MULTIPLIER:-1}"
+    command: sh -c "celery -A app.celery_app.celery_app worker --loglevel=INFO --concurrency=${CELERY_CONCURRENCY:-4} --prefetch-multiplier=${CELERY_PREFETCH_MULTIPLIER:-1} -Q audio_processing,study_generation"
     environment:
       - JWT_SECRET=${JWT_SECRET}
       - DATABASE_URL=postgresql://${POSTGRES_USER:-audiomind}:${POSTGRES_PASSWORD:-audiomind}@db:5432/${POSTGRES_DB:-audiomind}
