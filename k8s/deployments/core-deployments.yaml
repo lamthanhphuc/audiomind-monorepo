@@ -442,6 +442,13 @@ spec:
               value: "1"
             - name: CELERY_STUDY_GENERATION_QUEUE
               value: study_generation
+            - name: MEETING_SERVICE_BASE_URL
+              value: http://meeting-api:8081
+            - name: INTERNAL_SERVICE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: audiomind-secrets
+                  key: INTERNAL_SERVICE_TOKEN
             - name: WORKER_HEALTH_PORT
               value: "8080"
           volumeMounts:
