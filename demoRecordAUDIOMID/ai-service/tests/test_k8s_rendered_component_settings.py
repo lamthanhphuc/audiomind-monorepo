@@ -149,13 +149,13 @@ def _index_config_and_secrets(
                 # Synthetic plaintext for Settings/wiring checks (not real ciphertext).
                 synthetic = {
                     "MEETING_DATABASE_URL": (
-                        "jdbc:postgresql://managed-db.test:5432/audiomind"
+                        "jdbc:postgresql://managed-db.test:5432/audiomind?sslmode=require"
                     ),
                     "USER_DATABASE_URL": (
-                        "jdbc:postgresql://managed-db.test:5432/audiomind"
+                        "jdbc:postgresql://managed-db.test:5432/audiomind?sslmode=require"
                     ),
                     "AI_DATABASE_URL": (
-                        "postgresql://audiomind:secure-pass@managed-db.test:5432/audiomind"
+                        "postgresql://audiomind:secure-pass@managed-db.test:5432/audiomind?sslmode=require"
                     ),
                     "DB_USERNAME": "audiomind",
                     "DB_PASSWORD": "secure-pass",
@@ -257,6 +257,42 @@ def rendered_overlays() -> dict[str, list[dict[str, Any]]]:
     return {overlay: _kustomize(overlay) for overlay in OVERLAYS}
 
 
+def _ensure_synthetic_managed_secrets(
+    secrets: dict[str, dict[str, str]], overlay: str
+) -> None:
+    """Staging/prod apply SealedSecrets out-of-band; inject synthetic values for Settings checks."""
+    if overlay not in {"staging", "prod"}:
+        return
+    secrets.setdefault(
+        "audiomind-db-secrets",
+        {
+            "MEETING_DATABASE_URL": (
+                "jdbc:postgresql://managed-db.test:5432/audiomind?sslmode=require"
+            ),
+            "USER_DATABASE_URL": (
+                "jdbc:postgresql://managed-db.test:5432/audiomind?sslmode=require"
+            ),
+            "AI_DATABASE_URL": (
+                "postgresql://audiomind:secure-pass@managed-db.test:5432/audiomind"
+                "?sslmode=require"
+            ),
+            "DB_USERNAME": "audiomind",
+            "DB_PASSWORD": "secure-pass",
+        },
+    )
+    secrets.setdefault(
+        "audiomind-secrets",
+        {
+            "JWT_SECRET": "sealed-placeholder-value-at-least-32-chars",
+            "INTERNAL_SERVICE_TOKEN": "sealed-placeholder-value-at-least-32-chars",
+            "GEMINI_API_KEY": "sealed-placeholder-gemini-key-value",
+            "HUGGINGFACE_TOKEN": "hf-sealed-placeholder-token-value",
+            "GF_SECURITY_ADMIN_USER": "admin",
+            "GF_SECURITY_ADMIN_PASSWORD": "admin-password-value",
+        },
+    )
+
+
 @pytest.mark.parametrize("overlay", OVERLAYS)
 def test_no_legacy_jwt_secret_or_user_jwt_secret(rendered_overlays, overlay: str) -> None:
     docs = rendered_overlays[overlay]
@@ -281,13 +317,11 @@ def test_no_duplicate_audiomind_secrets_ownership(
 ) -> None:
     producers = _secret_producers(rendered_overlays[overlay])
     owners = producers.get("audiomind-secrets", [])
-    assert len(owners) == 1, (
-        f"{overlay}: Duplicate ownership for Secret audiomind-secrets: {owners}"
-    )
     if overlay == "dev":
         assert owners == ["Secret"]
     else:
-        assert owners == ["SealedSecret"]
+        # Staging/prod apply SealedSecrets out-of-band (not in kustomize resources).
+        assert owners == []
 
 
 @pytest.mark.parametrize("overlay", OVERLAYS)
@@ -297,6 +331,7 @@ def test_java_deployments_wire_jwt_from_audiomind_secrets(
 ) -> None:
     docs = rendered_overlays[overlay]
     config, secrets = _index_config_and_secrets(docs)
+    _ensure_synthetic_managed_secrets(secrets, overlay)
     deployment = _find_deployment(docs, deployment_name)
     container = deployment["spec"]["template"]["spec"]["containers"][0]
     resolved = _resolve_container_env(container, config, secrets)
@@ -353,6 +388,7 @@ def test_rendered_component_settings(
 ) -> None:
     docs = rendered_overlays[overlay]
     config, secrets = _index_config_and_secrets(docs)
+    _ensure_synthetic_managed_secrets(secrets, overlay)
     deployment = _find_deployment(docs, deployment_name)
     containers = deployment["spec"]["template"]["spec"]["containers"]
     assert containers, f"{deployment_name} has no containers"
@@ -397,9 +433,13 @@ def test_rendered_component_settings(
         )
         db_url = resolved["DATABASE_URL"]
         assert db_url.startswith("postgresql://") or db_url.startswith(
-            "postgresql+psycopg://"
-        ) or db_url.startswith("postgresql+asyncpg://")
+            "postgresql+psycopg2://"
+        )
         assert not db_url.startswith("jdbc:")
+        assert not db_url.startswith("postgresql+psycopg://")
+        assert not db_url.startswith("postgresql+asyncpg://")
+        if overlay in {"staging", "prod"}:
+            assert "sslmode=require" in db_url.lower() or "sslmode=verify-full" in db_url.lower()
 
     _apply_resolved_env(monkeypatch, resolved)
 

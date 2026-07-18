@@ -91,6 +91,13 @@ def _producers(docs: list[dict[str, Any]]) -> dict[str, list[str]]:
     return out
 
 
+def _find_job(docs: list[dict[str, Any]], name: str) -> dict[str, Any]:
+    for doc in docs:
+        if doc.get("kind") == "Job" and (doc.get("metadata") or {}).get("name") == name:
+            return doc
+    raise AssertionError(f"missing Job {name}")
+
+
 def _db_replicas(docs: list[dict[str, Any]]) -> int | None:
     for doc in docs:
         if (
@@ -124,14 +131,14 @@ def rendered() -> dict[str, list[dict[str, Any]]]:
 @pytest.mark.parametrize("overlay", OVERLAYS)
 def test_audiomind_db_secrets_single_owner(rendered, overlay: str) -> None:
     owners = _producers(rendered[overlay]).get("audiomind-db-secrets", [])
-    assert len(owners) == 1, owners
     if overlay == "dev":
         assert owners == ["Secret"]
     else:
-        assert owners == ["SealedSecret"]
+        # Applied out-of-band by deploy-staging after generate-sealed-secrets.
+        assert owners == []
 
 
-@pytest.mark.parametrize("overlay", OVERLAYS)
+@pytest.mark.parametrize("overlay", ("dev",))
 def test_db_secret_keys_present(rendered, overlay: str) -> None:
     keys = _secret_keys(rendered[overlay], "audiomind-db-secrets")
     for required in (
@@ -142,6 +149,55 @@ def test_db_secret_keys_present(rendered, overlay: str) -> None:
         "DB_PASSWORD",
     ):
         assert required in keys
+
+
+@pytest.mark.parametrize("overlay", ("staging", "prod"))
+def test_staging_prod_no_postgres_pvc(rendered, overlay: str) -> None:
+    docs = rendered[overlay]
+    assert not any(
+        d.get("kind") == "PersistentVolumeClaim"
+        and (d.get("metadata") or {}).get("name") == "postgres-data-pvc"
+        for d in docs
+    )
+    assert any(d.get("kind") == "Job" and (d.get("metadata") or {}).get("name") == "user-db-migrate" for d in docs)
+    assert any(d.get("kind") == "Job" and (d.get("metadata") or {}).get("name") == "meeting-db-migrate" for d in docs)
+    assert any(d.get("kind") == "Job" and (d.get("metadata") or {}).get("name") == "ai-db-migrate" for d in docs)
+
+
+@pytest.mark.parametrize("overlay", OVERLAYS)
+def test_meeting_api_waits_for_user_schema(rendered, overlay: str) -> None:
+    deployment = _find_deployment(rendered[overlay], "meeting-api-deployment")
+    init_names = {
+        c.get("name")
+        for c in (deployment.get("spec") or {})
+        .get("template", {})
+        .get("spec", {})
+        .get("initContainers")
+        or []
+    }
+    assert "wait-user-schema" in init_names
+
+
+@pytest.mark.parametrize("overlay", ("staging", "prod"))
+def test_meeting_db_migrate_job_waits_for_user_schema(rendered, overlay: str) -> None:
+    job = _find_job(rendered[overlay], "meeting-db-migrate")
+    init_names = {
+        c.get("name")
+        for c in (job.get("spec") or {})
+        .get("template", {})
+        .get("spec", {})
+        .get("initContainers")
+        or []
+    }
+    assert "wait-user-schema" in init_names
+
+
+def test_dev_has_postgres_pvc(rendered) -> None:
+    assert any(
+        d.get("kind") == "PersistentVolumeClaim"
+        and (d.get("metadata") or {}).get("name") == "postgres-data-pvc"
+        for d in rendered["dev"]
+    )
 
 
 @pytest.mark.parametrize("overlay", ("staging", "prod"))
