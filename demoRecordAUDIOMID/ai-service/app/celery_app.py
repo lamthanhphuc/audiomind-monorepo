@@ -21,6 +21,14 @@ celery_app.conf.update(
     task_time_limit=settings.celery_task_time_limit_seconds,
     task_soft_time_limit=settings.celery_task_soft_time_limit_seconds,
     task_default_retry_delay=2,
+    task_routes={
+        "app.tasks.generate_subject_synthesis": {
+            "queue": settings.celery_study_generation_queue,
+        },
+        "app.tasks.generate_study_artifact": {
+            "queue": settings.celery_study_generation_queue,
+        },
+    },
     beat_schedule={
         "analysis-retry-scheduled": {
             "task": "app.tasks.analysis_retry_scheduled",
