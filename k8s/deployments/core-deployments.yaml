@@ -31,7 +31,10 @@ spec:
             - containerPort: 8081
           env:
             - name: SPRING_DATASOURCE_URL
-              value: jdbc:postgresql://db:5432/audiomind
+              valueFrom:
+                secretKeyRef:
+                  name: audiomind-db-secrets
+                  key: MEETING_DATABASE_URL
             - name: OTEL_SERVICE_NAME
               value: meeting-api
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
@@ -45,13 +48,13 @@ spec:
             - name: SPRING_DATASOURCE_USERNAME
               valueFrom:
                 secretKeyRef:
-                  name: audiomind-secrets
-                  key: POSTGRES_USER
+                  name: audiomind-db-secrets
+                  key: DB_USERNAME
             - name: SPRING_DATASOURCE_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: audiomind-secrets
-                  key: POSTGRES_PASSWORD
+                  name: audiomind-db-secrets
+                  key: DB_PASSWORD
             - name: CORS_ALLOWED_ORIGINS
               valueFrom:
                 configMapKeyRef:
@@ -225,17 +228,20 @@ spec:
             - containerPort: 8083
           env:
             - name: SPRING_DATASOURCE_URL
-              value: jdbc:postgresql://db:5432/audiomind
+              valueFrom:
+                secretKeyRef:
+                  name: audiomind-db-secrets
+                  key: USER_DATABASE_URL
             - name: SPRING_DATASOURCE_USERNAME
               valueFrom:
                 secretKeyRef:
-                  name: audiomind-secrets
-                  key: POSTGRES_USER
+                  name: audiomind-db-secrets
+                  key: DB_USERNAME
             - name: SPRING_DATASOURCE_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: audiomind-secrets
-                  key: POSTGRES_PASSWORD
+                  name: audiomind-db-secrets
+                  key: DB_PASSWORD
             - name: REDIS_HOST
               value: redis
             - name: REDIS_PORT
@@ -326,8 +332,8 @@ spec:
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
-                  name: audiomind-secrets
-                  key: DATABASE_URL
+                  name: audiomind-db-secrets
+                  key: AI_DATABASE_URL
             - name: APP_COMPONENT
               value: api
             - name: OTEL_SERVICE_NAME
@@ -449,8 +455,8 @@ spec:
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
-                  name: audiomind-secrets
-                  key: DATABASE_URL
+                  name: audiomind-db-secrets
+                  key: AI_DATABASE_URL
             - name: APP_COMPONENT
               value: worker
             - name: ANALYSIS_PROVIDER
@@ -559,11 +565,6 @@ spec:
               drop: ["ALL"]
           command: ["sh", "-c", "celery -A app.celery_app.celery_app beat --loglevel=INFO"]
           env:
-            - name: DATABASE_URL
-              valueFrom:
-                secretKeyRef:
-                  name: audiomind-secrets
-                  key: DATABASE_URL
             - name: APP_COMPONENT
               value: beat
             - name: CELERY_BROKER_URL
@@ -827,68 +828,6 @@ spec:
         - name: ollama-cache
           persistentVolumeClaim:
             claimName: ollama-cache-pvc
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: db-deployment
-  namespace: audiomind
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: db
-  template:
-    metadata:
-      labels:
-        app: db
-    spec:
-      containers:
-        - name: db
-          image: postgres:15.8
-          imagePullPolicy: IfNotPresent
-          ports:
-            - containerPort: 5432
-          env:
-            - name: POSTGRES_DB
-              valueFrom:
-                configMapKeyRef:
-                  name: audiomind-config
-                  key: POSTGRES_DB
-            - name: POSTGRES_USER
-              valueFrom:
-                secretKeyRef:
-                  name: audiomind-secrets
-                  key: POSTGRES_USER
-            - name: POSTGRES_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: audiomind-secrets
-                  key: POSTGRES_PASSWORD
-          volumeMounts:
-            - name: postgres-data
-              mountPath: /var/lib/postgresql/data
-          resources:
-            requests:
-              cpu: 200m
-              memory: 512Mi
-            limits:
-              cpu: 1000m
-              memory: 2Gi
-          readinessProbe:
-            exec:
-              command: ["/bin/sh", "-c", "pg_isready -U $POSTGRES_USER -d $POSTGRES_DB"]
-            initialDelaySeconds: 15
-            periodSeconds: 10
-          livenessProbe:
-            exec:
-              command: ["/bin/sh", "-c", "pg_isready -U $POSTGRES_USER -d $POSTGRES_DB"]
-            initialDelaySeconds: 30
-            periodSeconds: 15
-      volumes:
-        - name: postgres-data
-          persistentVolumeClaim:
-            claimName: postgres-data-pvc
 ---
 apiVersion: apps/v1
 kind: StatefulSet
