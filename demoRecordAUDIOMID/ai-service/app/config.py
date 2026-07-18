@@ -68,6 +68,18 @@ class Settings(BaseSettings):
             "GOOGLE_INTERNAL_SERVICE_TOKEN",
         ),
     )
+    meeting_service_base_url: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "MEETING_SERVICE_BASE_URL",
+            "MEETING_API_BASE_URL",
+            "AUDIOMIND_MEETING_API_BASE_URL",
+        ),
+    )
+    meeting_service_timeout_seconds: float = Field(
+        default=10.0,
+        validation_alias=AliasChoices("MEETING_SERVICE_TIMEOUT_SECONDS"),
+    )
     quota_fail_open: bool = Field(
         default=True,
         validation_alias=AliasChoices(
