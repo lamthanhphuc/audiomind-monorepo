@@ -26,6 +26,61 @@ from app.services.study.evidence import (
 
 logger = logging.getLogger(__name__)
 
+# Hard ceiling for hierarchical reduce rounds to prevent infinite loops.
+MAX_REDUCER_ROUNDS = 8
+# Deterministic cap on evidence segment ids embedded in prompts.
+MAX_ALLOWED_SEGMENT_IDS = 64
+
+
+def assert_prompt_within_limit(
+    prompt: str,
+    *,
+    max_input_tokens: int | None = None,
+    chars_per_token: int | None = None,
+) -> None:
+    """Raise StudyValidationError when estimated prompt tokens exceed the ceiling."""
+    settings = get_settings()
+    limit = max(
+        1,
+        int(
+            max_input_tokens
+            if max_input_tokens is not None
+            else settings.subject_synthesis_max_input_tokens
+        ),
+    )
+    cpt = max(
+        1,
+        int(
+            chars_per_token
+            if chars_per_token is not None
+            else settings.subject_synthesis_chars_per_token
+        ),
+    )
+    tokens = estimate_tokens(prompt, chars_per_token=cpt)
+    if tokens > limit:
+        raise StudyValidationError(
+            "PROMPT_TOKEN_LIMIT_EXCEEDED",
+            f"Prompt estimate {tokens} exceeds MAX_INPUT_TOKENS={limit}",
+        )
+
+
+def _cap_allowed_segment_ids(
+    segment_ids: list[Any] | None, *, max_ids: int = MAX_ALLOWED_SEGMENT_IDS
+) -> tuple[list[str], bool]:
+    """Deterministically cap allowedSegmentIds (sorted unique), return (ids, truncated)."""
+    unique: list[str] = []
+    seen: set[str] = set()
+    for raw in segment_ids or []:
+        value = str(raw).strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        unique.append(value)
+    unique.sort()
+    if len(unique) <= max_ids:
+        return unique, False
+    return unique[:max_ids], True
+
 
 class EvidencePair(BaseModel):
     meetingId: int
@@ -117,6 +172,16 @@ def build_synthesis_system_instruction() -> str:
 
 def _compact_source(meeting: dict[str, Any]) -> dict[str, Any]:
     study = meeting.get("educationStudy") or {}
+    # Prefer nested study fields when educationStudy was already compacted.
+    if not study and any(k in meeting for k in ("overview", "sections", "keyPoints")):
+        study = meeting
+    capped_ids, truncated = _cap_allowed_segment_ids(meeting.get("allowedSegmentIds") or [])
+    if truncated:
+        logger.warning(
+            "event=SUBJECT_SYNTHESIS_SEGMENT_IDS_CAPPED meetingId=%s kept=%s",
+            meeting.get("meetingId"),
+            len(capped_ids),
+        )
     return {
         "meetingId": meeting.get("meetingId"),
         "overview": study.get("overview") or study.get("title") or "",
@@ -126,7 +191,7 @@ def _compact_source(meeting: dict[str, Any]) -> dict[str, Any]:
         "glossary": study.get("glossary") or [],
         "mustRemember": study.get("mustRemember") or [],
         "keywords": study.get("keywords") or [],
-        "allowedSegmentIds": meeting.get("allowedSegmentIds") or [],
+        "allowedSegmentIds": capped_ids,
     }
 
 
@@ -137,6 +202,13 @@ _TRIMMABLE_LIST_KEYS = (
     "mustRemember",
     "keywords",
     "learningObjectives",
+    "chapters",
+    "importantTerms",
+    "knowledgeGaps",
+    "examFocus",
+    "allowedSegmentIds",
+    "sourceMeetingIds",
+    "sourceSegmentIds",
 )
 
 
@@ -146,7 +218,7 @@ def _fit_within_token_budget(
     """Shrink a compacted source dict until it fits the token budget.
 
     Trims list fields first (biggest contributors), then falls back to
-    truncating the overview text. Returns ``(possibly_shrunk, was_truncated)``.
+    truncating overview / string fields. Returns ``(possibly_shrunk, was_truncated)``.
     """
     max_chars = max(1, max_tokens * chars_per_token)
     text = json.dumps(compact, ensure_ascii=False)
@@ -165,15 +237,50 @@ def _fit_within_token_budget(
                 keep = max(1, len(values) - max(1, len(values) // 4))
                 shrunk[key] = values[:keep]
                 did_shrink = True
+            elif isinstance(values, list) and len(values) == 1:
+                # Truncate nested string payloads inside the sole remaining item.
+                only = values[0]
+                if isinstance(only, dict):
+                    nested = dict(only)
+                    for nk, nv in list(nested.items()):
+                        if isinstance(nv, str) and len(nv) > 32:
+                            nested[nk] = nv[: max(16, len(nv) // 2)]
+                            did_shrink = True
+                        elif isinstance(nv, list) and len(nv) > 1:
+                            nested[nk] = nv[: max(1, len(nv) // 2)]
+                            did_shrink = True
+                    shrunk[key] = [nested]
+                elif isinstance(only, str) and len(only) > 32:
+                    shrunk[key] = [only[: max(16, len(only) // 2)]]
+                    did_shrink = True
+        for key in ("overview", "subjectOverview", "summary", "content", "definition"):
+            value = shrunk.get(key)
+            if isinstance(value, str) and len(value) > 32:
+                shrunk[key] = value[: max(16, len(value) // 2)]
+                did_shrink = True
         if not did_shrink:
             break
 
     text = json.dumps(shrunk, ensure_ascii=False)
     if len(text) > max_chars:
-        overview = str(shrunk.get("overview") or "")
+        overview_key = "overview" if "overview" in shrunk else "subjectOverview"
+        overview = str(shrunk.get(overview_key) or "")
         overhead = max(0, len(text) - len(overview))
         overview_budget = max(0, max_chars - overhead)
-        shrunk["overview"] = overview[:overview_budget]
+        shrunk[overview_key] = overview[:overview_budget]
+        # Absolute last resort: drop remaining list fields.
+        text = json.dumps(shrunk, ensure_ascii=False)
+        if len(text) > max_chars:
+            for key in _TRIMMABLE_LIST_KEYS:
+                if key in shrunk and isinstance(shrunk[key], list):
+                    shrunk[key] = []
+            text = json.dumps(shrunk, ensure_ascii=False)
+            if len(text) > max_chars:
+                # Keep only provenance + a tiny overview stub.
+                keep_keys = {"meetingId", "sourceMeetingIds", "sourceSegmentIds", overview_key}
+                stub = {k: shrunk[k] for k in keep_keys if k in shrunk}
+                stub[overview_key] = str(stub.get(overview_key) or "")[: max(0, max_chars // 2)]
+                shrunk = stub
     return shrunk, True
 
 
@@ -521,6 +628,77 @@ def normalize_synthesis(
     return content
 
 
+def _compact_intermediate_for_prompt(
+    item: dict[str, Any],
+    *,
+    max_tokens: int,
+    chars_per_token: int,
+) -> dict[str, Any]:
+    """Shrink a batch/reducer intermediate so it can fit into a prompt budget."""
+    tokens = estimate_tokens(
+        json.dumps(item, ensure_ascii=False), chars_per_token=chars_per_token
+    )
+    if tokens <= max_tokens:
+        return item
+    # Prefer section-level compaction on known list fields.
+    shrunk, _ = _fit_within_token_budget(
+        dict(item), max_tokens=max_tokens, chars_per_token=chars_per_token
+    )
+    # Preserve provenance keys even after trim.
+    for key in ("sourceMeetingIds", "sourceSegmentIds"):
+        if key in item and key not in shrunk:
+            shrunk[key] = item[key]
+    return shrunk
+
+
+def _build_prompt_within_limit(
+    *,
+    build_prompt,
+    payload_items: list[dict[str, Any]],
+    language: str,
+    max_input_tokens: int,
+    chars_per_token: int,
+) -> tuple[str, list[dict[str, Any]]]:
+    """Build a prompt that fits the token ceiling by compacting payload items."""
+    items = [dict(item) for item in payload_items]
+    per_item = max(1, (max_input_tokens * 3) // max(4, len(items) + 1))
+    for round_idx in range(32):
+        prompt = build_prompt(items, language=language)
+        tokens = estimate_tokens(prompt, chars_per_token=chars_per_token)
+        if tokens <= max_input_tokens:
+            return prompt, items
+        budget = max(1, per_item // (2 ** min(round_idx, 8)))
+        items = [
+            _compact_intermediate_for_prompt(
+                item, max_tokens=budget, chars_per_token=chars_per_token
+            )
+            for item in items
+        ]
+        # Absolute floor: keep only tiny provenance stubs.
+        if round_idx >= 16:
+            items = [
+                {
+                    "subjectOverview": str(item.get("subjectOverview") or item.get("overview") or "")[
+                        :40
+                    ],
+                    "sourceMeetingIds": (item.get("sourceMeetingIds") or [])[:8],
+                    "chapters": [],
+                    "importantTerms": [],
+                    "mustRemember": [],
+                    "learningObjectives": [],
+                    "knowledgeGaps": [],
+                    "examFocus": [],
+                    "meetingId": item.get("meetingId"),
+                }
+                for item in items
+            ]
+    prompt = build_prompt(items, language=language)
+    assert_prompt_within_limit(
+        prompt, max_input_tokens=max_input_tokens, chars_per_token=chars_per_token
+    )
+    return prompt, items
+
+
 def run_hierarchical_synthesis(
     ready_sources: list[dict[str, Any]],
     *,
@@ -536,18 +714,32 @@ def run_hierarchical_synthesis(
     max_parallel_batches = max(1, int(settings.subject_synthesis_max_parallel_batches))
     chars_per_token = max(1, int(settings.subject_synthesis_chars_per_token))
 
+    # Leave headroom so prompt wrappers (language / instructions) still fit.
+    source_budget = max(1, int(max_input_tokens * 0.85))
     prepared_sources, warnings = _prepare_batch_sources(
-        ready_sources, max_input_tokens=max_input_tokens, chars_per_token=chars_per_token
+        ready_sources, max_input_tokens=source_budget, chars_per_token=chars_per_token
     )
     batches = _build_batches(
         prepared_sources,
         max_meetings_per_batch=max_meetings_per_batch,
-        max_input_tokens=max_input_tokens,
+        max_input_tokens=source_budget,
         chars_per_token=chars_per_token,
     )
 
     def run_batch(batch: list[dict[str, Any]]) -> dict[str, Any]:
-        prompt = build_batch_prompt(batch, language=language)
+        compact_batch = [_compact_source(item) for item in batch]
+        prompt, _ = _build_prompt_within_limit(
+            build_prompt=lambda items, language: (
+                f"Language: {language}\n"
+                "Synthesize this batch of meeting educationStudy objects into one batch JSON.\n"
+                "Preserve sourceMeetingIds and only use allowedSegmentIds for evidence.\n"
+                f"SOURCES:\n{json.dumps(items, ensure_ascii=False)}"
+            ),
+            payload_items=compact_batch,
+            language=language,
+            max_input_tokens=max_input_tokens,
+            chars_per_token=chars_per_token,
+        )
         try:
             raw_text = call_gemini(
                 prompt=prompt,
@@ -590,23 +782,38 @@ def run_hierarchical_synthesis(
         reduce_round = 0
         while len(level) > 1:
             reduce_round += 1
+            if reduce_round > MAX_REDUCER_ROUNDS:
+                raise StudyValidationError(
+                    "REDUCER_MAX_ROUNDS_EXCEEDED",
+                    f"Hierarchical reducer exceeded {MAX_REDUCER_ROUNDS} rounds",
+                )
             next_level: list[dict[str, Any]] = []
             chunk: list[dict[str, Any]] = []
             chunk_tokens = 0
             for item in level:
-                item_tokens = estimate_tokens(
-                    json.dumps(item, ensure_ascii=False),
+                fitted = _compact_intermediate_for_prompt(
+                    item,
+                    max_tokens=source_budget,
                     chars_per_token=chars_per_token,
                 )
-                # Single oversized intermediate: still reduce alone rather than truncate evidence.
-                if chunk and chunk_tokens + item_tokens > max_input_tokens:
-                    next_level.append(_reduce_intermediate_batch(
-                        chunk, language=language, call_gemini=call_gemini
-                    ))
-                    chunk = [item]
+                item_tokens = estimate_tokens(
+                    json.dumps(fitted, ensure_ascii=False),
+                    chars_per_token=chars_per_token,
+                )
+                if chunk and chunk_tokens + item_tokens > source_budget:
+                    next_level.append(
+                        _reduce_intermediate_batch(
+                            chunk,
+                            language=language,
+                            call_gemini=call_gemini,
+                            max_input_tokens=max_input_tokens,
+                            chars_per_token=chars_per_token,
+                        )
+                    )
+                    chunk = [fitted]
                     chunk_tokens = item_tokens
                 else:
-                    chunk.append(item)
+                    chunk.append(fitted)
                     chunk_tokens += item_tokens
             if chunk:
                 if len(chunk) == 1:
@@ -614,20 +821,34 @@ def run_hierarchical_synthesis(
                 else:
                     next_level.append(
                         _reduce_intermediate_batch(
-                            chunk, language=language, call_gemini=call_gemini
+                            chunk,
+                            language=language,
+                            call_gemini=call_gemini,
+                            max_input_tokens=max_input_tokens,
+                            chars_per_token=chars_per_token,
                         )
                     )
             if len(next_level) >= len(level):
-                # Safety: force pairwise merge if chunking did not reduce.
                 forced: list[dict[str, Any]] = []
                 for i in range(0, len(level), 2):
-                    pair = level[i : i + 2]
+                    pair = [
+                        _compact_intermediate_for_prompt(
+                            x,
+                            max_tokens=max(1, source_budget // 2),
+                            chars_per_token=chars_per_token,
+                        )
+                        for x in level[i : i + 2]
+                    ]
                     if len(pair) == 1:
                         forced.append(pair[0])
                     else:
                         forced.append(
                             _reduce_intermediate_batch(
-                                pair, language=language, call_gemini=call_gemini
+                                pair,
+                                language=language,
+                                call_gemini=call_gemini,
+                                max_input_tokens=max_input_tokens,
+                                chars_per_token=chars_per_token,
                             )
                         )
                 next_level = forced
@@ -664,19 +885,74 @@ def _reduce_intermediate_batch(
     *,
     language: str,
     call_gemini,
+    max_input_tokens: int | None = None,
+    chars_per_token: int | None = None,
 ) -> dict[str, Any]:
     if len(batches) == 1:
         return batches[0]
+    settings = get_settings()
+    limit = max(
+        1,
+        int(
+            max_input_tokens
+            if max_input_tokens is not None
+            else settings.subject_synthesis_max_input_tokens
+        ),
+    )
+    cpt = max(
+        1,
+        int(
+            chars_per_token
+            if chars_per_token is not None
+            else settings.subject_synthesis_chars_per_token
+        ),
+    )
+    fitted = list(batches)
+    if len(fitted) > 2:
+        # Prefer recursive pairwise when a multi-item merge would likely overflow.
+        est = estimate_tokens(
+            build_reducer_prompt(fitted, language=language), chars_per_token=cpt
+        )
+        if est > limit:
+            mid = len(fitted) // 2
+            left = _reduce_intermediate_batch(
+                fitted[:mid],
+                language=language,
+                call_gemini=call_gemini,
+                max_input_tokens=limit,
+                chars_per_token=cpt,
+            )
+            right = _reduce_intermediate_batch(
+                fitted[mid:],
+                language=language,
+                call_gemini=call_gemini,
+                max_input_tokens=limit,
+                chars_per_token=cpt,
+            )
+            return _reduce_intermediate_batch(
+                [left, right],
+                language=language,
+                call_gemini=call_gemini,
+                max_input_tokens=limit,
+                chars_per_token=cpt,
+            )
+
+    prompt, fitted = _build_prompt_within_limit(
+        build_prompt=lambda items, language: build_reducer_prompt(items, language=language),
+        payload_items=fitted,
+        language=language,
+        max_input_tokens=limit,
+        chars_per_token=cpt,
+    )
     try:
         raw_text = call_gemini(
-            prompt=build_reducer_prompt(batches, language=language),
+            prompt=prompt,
             system_prompt=build_synthesis_system_instruction(),
             response_schema=subject_synthesis_gemini_schema(),
         )
         merged = json.loads(raw_text) if isinstance(raw_text, str) else raw_text
         if not isinstance(merged, dict):
             raise StudyValidationError("INVALID_FINAL_JSON", "Final JSON invalid")
-        # Preserve union of source meeting ids across intermediates.
         meeting_ids: list[int] = []
         seen: set[int] = set()
         for batch in batches:

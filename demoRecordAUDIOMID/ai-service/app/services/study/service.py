@@ -28,6 +28,7 @@ from app.services.study import (
     STATUS_FAILED,
     STATUS_PROCESSING,
     STATUS_QUEUED,
+    STATUS_STALE,
     STATUS_QUOTA_EXCEEDED,
     STATUS_STALE,
     StudyAuthorizationError,
@@ -40,6 +41,11 @@ from app.services.study import (
     build_source_hash,
 )
 from app.services.study.artifacts import generate_artifact_content, validate_options
+from app.services.study.membership import (
+    MeetingMembershipUnavailableError,
+    fetch_subject_meeting_ids,
+    hash_membership,
+)
 from app.services.study.source_resolve import resolve_study_sources
 from app.services.study.synthesis import run_hierarchical_synthesis, synthesis_versions
 
@@ -290,43 +296,131 @@ def _guard_source_hash_unchanged(
     row: Any,
     meeting_ids: list[int],
 ) -> None:
-    """Fail fast if sources changed after prepare; marks STALE and raises."""
+    """Fail fast if sources/membership changed after prepare; marks STALE and raises."""
+    stored_ids = [int(m) for m in meeting_ids]
+    mode = row.source_selection_mode
+
+    try:
+        current_membership = fetch_subject_meeting_ids(
+            int(row.subject_id), int(row.owner_user_id)
+        )
+    except MeetingMembershipUnavailableError:
+        # Unit tests / local without meeting-service: fall back to stored ids.
+        current_membership = list(stored_ids)
+
+    membership_set = {int(x) for x in current_membership}
+    stored_membership_hash = getattr(row, "subject_membership_hash", None)
+
+    if mode == MODE_ALL_READY:
+        hash_ids = list(current_membership)
+        if stored_membership_hash and hash_membership(current_membership) != stored_membership_hash:
+            _mark_source_changed(db, row)
+            raise StudyValidationError(
+                "SOURCE_CHANGED_AFTER_PREPARE",
+                "Subject membership changed after prepare",
+            )
+    else:
+        # EXPLICIT: selection is fixed; new meetings outside selection do not change hash.
+        # Meetings that left the subject are stale.
+        if any(m not in membership_set for m in stored_ids):
+            _mark_source_changed(db, row)
+            raise StudyValidationError(
+                "SOURCE_CHANGED_AFTER_PREPARE",
+                "Explicit source meeting left subject membership",
+            )
+        hash_ids = list(stored_ids)
+
     current_hash, _, _ = compute_current_source_hash(
         db,
         owner_user_id=int(row.owner_user_id),
         subject_id=int(row.subject_id),
-        source_selection_mode=row.source_selection_mode,
-        meeting_ids=meeting_ids,
+        source_selection_mode=mode,
+        meeting_ids=hash_ids,
         require_ready=False,
     )
     if current_hash == row.source_hash:
         return
-    row.status = STATUS_STALE
-    row.error_code = "SOURCE_CHANGED_AFTER_PREPARE"
-    row.error_message = "Source hash changed after prepare"
-    row.updated_at = _now()
-    db.commit()
+    _mark_source_changed(db, row)
     raise StudyValidationError(
         "SOURCE_CHANGED_AFTER_PREPARE",
         "Source hash changed after prepare",
     )
 
 
+def _mark_source_changed(db: Session, row: Any) -> None:
+    row.status = STATUS_STALE
+    row.error_code = "SOURCE_CHANGED_AFTER_PREPARE"
+    row.error_message = "Source hash changed after prepare"
+    row.updated_at = _now()
+    db.commit()
+
+
 def _record_dispatch_broker_failure(row: Any, error_message: str) -> None:
-    """After releasing a claim: backoff or terminal DISPATCH_EXHAUSTED."""
+    """After releasing a claim: backoff or terminal DISPATCH_EXHAUSTED.
+
+    Does NOT increment dispatch_attempt_count — claim_dispatch already counted
+    the publish attempt.
+    """
     settings = get_settings()
-    row.dispatch_attempt_count = int(getattr(row, "dispatch_attempt_count", 0) or 0) + 1
+    count = int(getattr(row, "dispatch_attempt_count", 0) or 0)
     row.last_dispatch_error = (error_message or "")[:500]
     row.last_dispatch_error_at = _now()
-    if row.dispatch_attempt_count >= settings.study_dispatch_max_attempts:
+    if count >= settings.study_dispatch_max_attempts:
         row.status = STATUS_FAILED
         row.error_code = "DISPATCH_EXHAUSTED"
         row.error_message = "Dispatch attempts exhausted"
         row.next_dispatch_retry_at = None
     else:
-        backoff = settings.study_dispatch_retry_backoff_seconds * int(row.dispatch_attempt_count)
+        backoff = settings.study_dispatch_retry_backoff_seconds * max(1, count)
         row.next_dispatch_retry_at = _now() + timedelta(seconds=backoff)
     row.updated_at = _now()
+
+
+def _is_transient_provider_error(exc: BaseException) -> bool:
+    """True when the failure looks like a retryable provider/network error."""
+    if isinstance(exc, (TimeoutError, ConnectionError, BrokenPipeError, ConnectionResetError)):
+        return True
+
+    name = type(exc).__name__.lower()
+    module = (type(exc).__module__ or "").lower()
+    msg = str(exc).lower()
+
+    if "httpx" in module or "requests" in module or "urllib3" in module or "urllib" in module:
+        if any(
+            token in name
+            for token in ("timeout", "connect", "network", "remote", "httpstatus", "protocol")
+        ):
+            return True
+        if any(
+            token in msg
+            for token in ("timeout", "timed out", "connection", "temporarily", "reset")
+        ):
+            return True
+
+    transient_tokens = (
+        "timeout",
+        "timed out",
+        "connection reset",
+        "connection refused",
+        "connection aborted",
+        "temporarily unavailable",
+        "service unavailable",
+        "too many requests",
+        "rate limit",
+        "429",
+        " 502",
+        " 503",
+        " 504",
+        "http 5",
+        "status code 5",
+        "status=5",
+        "deadline exceeded",
+    )
+    if any(token in msg for token in transient_tokens):
+        return True
+    if "429" in name or "ratelimit" in name or "timeout" in name:
+        return True
+    return False
 
 
 def _soft_delete_for_retry(db: Session, row: Any) -> None:
@@ -556,6 +650,7 @@ def prepare_synthesis(
         source_hash=current_hash,
         options_hash=options_hash,
         source_selection_mode=mode,
+        subject_membership_hash=hash_membership(meeting_ids),
         prompt_version=versions["promptVersion"],
         schema_version=versions["schemaVersion"],
         idempotency_key=idem,
@@ -745,6 +840,7 @@ def prepare_artifacts(
             source_hash=current_hash,
             options_hash=options_hash,
             source_selection_mode=mode,
+            subject_membership_hash=hash_membership(meeting_ids),
             prompt_version=prompt_version,
             schema_version=schema_version,
             idempotency_key=idem,
@@ -941,6 +1037,7 @@ def claim_dispatch_synthesis(
             UPDATE subject_synthesis
             SET dispatch_requested_at = :now,
                 celery_task_id = :task_id,
+                dispatch_attempt_count = COALESCE(dispatch_attempt_count, 0) + 1,
                 updated_at = :now
             WHERE id = :id
               AND owner_user_id = :owner
@@ -956,6 +1053,7 @@ def claim_dispatch_synthesis(
                     next_dispatch_retry_at IS NULL
                     OR next_dispatch_retry_at <= :now
                   )
+              AND COALESCE(dispatch_attempt_count, 0) < :max_attempts
             """
         ),
         {
@@ -964,6 +1062,7 @@ def claim_dispatch_synthesis(
             "id": synthesis_id,
             "owner": owner_user_id,
             "lease_cutoff": lease_cutoff,
+            "max_attempts": int(settings.study_dispatch_max_attempts),
         },
     )
     db.commit()
@@ -986,6 +1085,7 @@ def claim_dispatch_artifact(
             UPDATE study_artifact
             SET dispatch_requested_at = :now,
                 celery_task_id = :task_id,
+                dispatch_attempt_count = COALESCE(dispatch_attempt_count, 0) + 1,
                 updated_at = :now
             WHERE id = :id
               AND owner_user_id = :owner
@@ -1001,6 +1101,7 @@ def claim_dispatch_artifact(
                     next_dispatch_retry_at IS NULL
                     OR next_dispatch_retry_at <= :now
                   )
+              AND COALESCE(dispatch_attempt_count, 0) < :max_attempts
             """
         ),
         {
@@ -1009,6 +1110,7 @@ def claim_dispatch_artifact(
             "id": artifact_id,
             "owner": owner_user_id,
             "lease_cutoff": lease_cutoff,
+            "max_attempts": int(settings.study_dispatch_max_attempts),
         },
     )
     db.commit()
@@ -1096,8 +1198,17 @@ def dispatch_study_jobs(
         if not claim_dispatch_synthesis(
             db, synthesis_id=int(synth.id), owner_user_id=owner_user_id, task_id=task_id
         ):
-            idempotent_synthesis.append(int(synth.id))
             db.refresh(synth)
+            if int(synth.dispatch_attempt_count or 0) >= settings.study_dispatch_max_attempts:
+                _mark_terminal_failed(
+                    synth,
+                    error_code="DISPATCH_EXHAUSTED",
+                    error_message="Dispatch attempts exhausted",
+                )
+                db.commit()
+                failed_dispatch.append(int(synth.id))
+                continue
+            idempotent_synthesis.append(int(synth.id))
             if synth.celery_task_id:
                 task_ids[f"synthesis:{synth.id}"] = synth.celery_task_id
             continue
@@ -1145,8 +1256,17 @@ def dispatch_study_jobs(
         if not claim_dispatch_artifact(
             db, artifact_id=int(art.id), owner_user_id=owner_user_id, task_id=task_id
         ):
-            idempotent_artifacts.append(int(art.id))
             db.refresh(art)
+            if int(art.dispatch_attempt_count or 0) >= settings.study_dispatch_max_attempts:
+                _mark_terminal_failed(
+                    art,
+                    error_code="DISPATCH_EXHAUSTED",
+                    error_message="Dispatch attempts exhausted",
+                )
+                db.commit()
+                failed_dispatch.append(int(art.id))
+                continue
+            idempotent_artifacts.append(int(art.id))
             if art.celery_task_id:
                 task_ids[f"artifact:{art.id}"] = art.celery_task_id
             continue
@@ -1337,6 +1457,15 @@ def reconcile_study_generation_jobs(db: Session) -> dict[str, int]:
             owner_user_id=int(synth.owner_user_id),
             task_id=task_id,
         ):
+            db.refresh(synth)
+            if int(synth.dispatch_attempt_count or 0) >= settings.study_dispatch_max_attempts:
+                _mark_terminal_failed(
+                    synth,
+                    error_code="DISPATCH_EXHAUSTED",
+                    error_message="Dispatch attempts exhausted",
+                )
+                db.commit()
+                exhausted_synthesis += 1
             continue
         try:
             generate_subject_synthesis.apply_async(
@@ -1386,6 +1515,15 @@ def reconcile_study_generation_jobs(db: Session) -> dict[str, int]:
             owner_user_id=int(art.owner_user_id),
             task_id=task_id,
         ):
+            db.refresh(art)
+            if int(art.dispatch_attempt_count or 0) >= settings.study_dispatch_max_attempts:
+                _mark_terminal_failed(
+                    art,
+                    error_code="DISPATCH_EXHAUSTED",
+                    error_message="Dispatch attempts exhausted",
+                )
+                db.commit()
+                exhausted_artifact += 1
             continue
         try:
             generate_study_artifact.apply_async(
@@ -1587,12 +1725,21 @@ def process_synthesis_job(db: Session, synthesis_id: int) -> None:
     meeting_ids = [s.meeting_id for s in row.sources]
     try:
         _guard_source_hash_unchanged(db, row, meeting_ids)
+        # Recompute ready sources with the same membership rules as the guard.
+        mode = row.source_selection_mode
+        if mode == MODE_ALL_READY:
+            try:
+                hash_ids = fetch_subject_meeting_ids(int(row.subject_id), int(row.owner_user_id))
+            except MeetingMembershipUnavailableError:
+                hash_ids = list(meeting_ids)
+        else:
+            hash_ids = list(meeting_ids)
         _, ready, _ = compute_current_source_hash(
             db,
             owner_user_id=row.owner_user_id,
             subject_id=row.subject_id,
-            source_selection_mode=row.source_selection_mode,
-            meeting_ids=meeting_ids,
+            source_selection_mode=mode,
+            meeting_ids=hash_ids,
         )
         options = row.options_json if isinstance(row.options_json, dict) else {}
         language = str(options.get("language") or "vi")
@@ -1636,11 +1783,32 @@ def process_synthesis_job(db: Session, synthesis_id: int) -> None:
         _requeue_for_transient_retry(row, "TRANSIENT_AI_ERROR", "Transient AI error")
         db.commit()
         raise
-    except Exception as exc:  # noqa: BLE001
-        _requeue_for_transient_retry(row, "SYNTHESIS_FAILED", str(exc)[:500])
+    except (TypeError, AttributeError, KeyError, ValueError) as exc:
+        _mark_terminal_failed(
+            row,
+            error_code="PROGRAMMING_ERROR",
+            error_message=f"INTERNAL_ERROR: {type(exc).__name__}: {exc}"[:500],
+        )
         db.commit()
-        logger.info("event=SUBJECT_SYNTHESIS_REQUEUED synthesisId=%s", synthesis_id)
-        raise StudyTransientError(str(exc)) from exc
+        logger.info(
+            "event=SUBJECT_SYNTHESIS_FAILED synthesisId=%s code=PROGRAMMING_ERROR",
+            synthesis_id,
+        )
+        return
+    except Exception as exc:  # noqa: BLE001
+        if _is_transient_provider_error(exc):
+            _requeue_for_transient_retry(row, "TRANSIENT_AI_ERROR", str(exc)[:500])
+            db.commit()
+            logger.info("event=SUBJECT_SYNTHESIS_REQUEUED synthesisId=%s", synthesis_id)
+            raise StudyTransientError(str(exc)) from exc
+        _mark_terminal_failed(
+            row,
+            error_code="INTERNAL_ERROR",
+            error_message=str(exc)[:500],
+        )
+        db.commit()
+        logger.info("event=SUBJECT_SYNTHESIS_FAILED synthesisId=%s code=INTERNAL_ERROR", synthesis_id)
+        return
 
 
 def process_artifact_job(db: Session, artifact_id: int) -> None:
@@ -1663,12 +1831,20 @@ def process_artifact_job(db: Session, artifact_id: int) -> None:
     meeting_ids = [s.meeting_id for s in row.sources]
     try:
         _guard_source_hash_unchanged(db, row, meeting_ids)
+        mode = row.source_selection_mode
+        if mode == MODE_ALL_READY:
+            try:
+                hash_ids = fetch_subject_meeting_ids(int(row.subject_id), int(row.owner_user_id))
+            except MeetingMembershipUnavailableError:
+                hash_ids = list(meeting_ids)
+        else:
+            hash_ids = list(meeting_ids)
         _, ready, _ = compute_current_source_hash(
             db,
             owner_user_id=row.owner_user_id,
             subject_id=row.subject_id,
-            source_selection_mode=row.source_selection_mode,
-            meeting_ids=meeting_ids,
+            source_selection_mode=mode,
+            meeting_ids=hash_ids,
         )
         # Prefer stored synthesis_id when still compatible; on mismatch fall back
         # to educationStudy-only generation (synthesis_id=None → auto or None).
@@ -1743,7 +1919,28 @@ def process_artifact_job(db: Session, artifact_id: int) -> None:
         _requeue_for_transient_retry(row, "TRANSIENT_AI_ERROR", "Transient AI error")
         db.commit()
         raise
-    except Exception as exc:  # noqa: BLE001
-        _requeue_for_transient_retry(row, "ARTIFACT_FAILED", str(exc)[:500])
+    except (TypeError, AttributeError, KeyError, ValueError) as exc:
+        _mark_terminal_failed(
+            row,
+            error_code="PROGRAMMING_ERROR",
+            error_message=f"INTERNAL_ERROR: {type(exc).__name__}: {exc}"[:500],
+        )
         db.commit()
-        raise StudyTransientError(str(exc)) from exc
+        logger.info(
+            "event=STUDY_ARTIFACT_FAILED artifactId=%s code=PROGRAMMING_ERROR",
+            artifact_id,
+        )
+        return
+    except Exception as exc:  # noqa: BLE001
+        if _is_transient_provider_error(exc):
+            _requeue_for_transient_retry(row, "TRANSIENT_AI_ERROR", str(exc)[:500])
+            db.commit()
+            raise StudyTransientError(str(exc)) from exc
+        _mark_terminal_failed(
+            row,
+            error_code="INTERNAL_ERROR",
+            error_message=str(exc)[:500],
+        )
+        db.commit()
+        logger.info("event=STUDY_ARTIFACT_FAILED artifactId=%s code=INTERNAL_ERROR", artifact_id)
+        return
