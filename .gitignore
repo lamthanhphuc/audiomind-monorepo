@@ -90,3 +90,5 @@ contextcaddy-config.json
 /*-review-bundle.zip
 /working-tree.patch
 /staged.patch
+/rendered-*.yaml
+rendered-*.yaml
