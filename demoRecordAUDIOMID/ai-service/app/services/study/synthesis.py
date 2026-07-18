@@ -13,7 +13,6 @@ from app.config import get_settings
 from app.services.study import (
     SYNTHESIS_PROMPT_VERSION,
     SYNTHESIS_SCHEMA_VERSION,
-    StudyTransientError,
     StudyValidationError,
 )
 from app.services.study.evidence import (
@@ -23,6 +22,7 @@ from app.services.study.evidence import (
     pairs_to_meeting_ids,
     pairs_to_segment_ids,
 )
+from app.services.study.exceptions import classify_provider_exception
 
 logger = logging.getLogger(__name__)
 
@@ -755,10 +755,8 @@ def run_hierarchical_synthesis(
                 len(batch),
             )
             return parsed
-        except StudyValidationError:
-            raise
         except Exception as exc:  # noqa: BLE001
-            raise StudyTransientError(str(exc)) from exc
+            raise classify_provider_exception(exc) from exc
 
     batch_results: list[dict[str, Any] | None] = [None] * len(batches)
     if len(batches) <= 1 or max_parallel_batches <= 1:
@@ -967,7 +965,5 @@ def _reduce_intermediate_batch(
         if meeting_ids:
             merged["sourceMeetingIds"] = meeting_ids
         return merged
-    except StudyValidationError:
-        raise
     except Exception as exc:  # noqa: BLE001
-        raise StudyTransientError(str(exc)) from exc
+        raise classify_provider_exception(exc) from exc

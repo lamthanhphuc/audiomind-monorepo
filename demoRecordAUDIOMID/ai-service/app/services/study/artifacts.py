@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, Callable
 
 from pydantic import BaseModel, Field
@@ -15,15 +16,24 @@ from app.services.study import (
     ARTIFACT_MIND_MAP,
     ARTIFACT_MULTIPLE_CHOICE,
     ARTIFACT_VERSIONS,
-    StudyTransientError,
     StudyValidationError,
 )
 from app.services.study.evidence import (
     build_allowed_segments_by_meeting,
+    estimate_tokens,
     normalize_evidence_pairs,
     pairs_to_meeting_ids,
     pairs_to_segment_ids,
 )
+from app.services.study.exceptions import classify_provider_exception
+from app.services.study.synthesis import (
+    MAX_ALLOWED_SEGMENT_IDS,
+    _cap_allowed_segment_ids,
+    _fit_within_token_budget,
+    assert_prompt_within_limit,
+)
+
+logger = logging.getLogger(__name__)
 
 _DIFFICULTIES = {"EASY", "MEDIUM", "HARD"}
 
@@ -677,6 +687,158 @@ def validate_exam_brief(
     return content.model_dump()
 
 
+def _compact_artifact_meeting(source: dict[str, Any]) -> dict[str, Any]:
+    """Cap segment ids and return a compact meeting payload for artifact prompts."""
+    capped_ids, truncated = _cap_allowed_segment_ids(
+        source.get("allowedSegmentIds") or [], max_ids=MAX_ALLOWED_SEGMENT_IDS
+    )
+    if truncated:
+        logger.warning(
+            "event=STUDY_ARTIFACT_SEGMENT_IDS_CAPPED meetingId=%s kept=%s",
+            source.get("meetingId"),
+            len(capped_ids),
+        )
+    study = source.get("educationStudy")
+    if not isinstance(study, dict):
+        study = {}
+    return {
+        "meetingId": source.get("meetingId"),
+        "educationStudy": study,
+        "allowedSegmentIds": capped_ids,
+    }
+
+
+def _build_artifact_user_prompt(
+    *,
+    artifact_type: str,
+    prompt_version: str,
+    schema_version: str,
+    count_hint: int | None,
+    options: dict[str, Any],
+    source_payload: dict[str, Any],
+) -> str:
+    return (
+        f"Generate {artifact_type} JSON. prompt={prompt_version} schema={schema_version}. "
+        f"Requested count={count_hint}. Difficulty={options['difficulty']}. "
+        f"Language={options['language']}.\n"
+        f"SOURCE:\n{json.dumps(source_payload, ensure_ascii=False)}"
+    )
+
+
+def _prepare_artifact_prompt(
+    *,
+    artifact_type: str,
+    prompt_version: str,
+    schema_version: str,
+    count_hint: int | None,
+    options: dict[str, Any],
+    synthesis_content: dict[str, Any] | None,
+    ready_sources: list[dict[str, Any]],
+    max_input_tokens: int,
+    chars_per_token: int,
+) -> str:
+    """Build an artifact prompt that fits the hard token ceiling, or raise."""
+    meetings = [_compact_artifact_meeting(s) for s in ready_sources]
+    synthesis = dict(synthesis_content) if isinstance(synthesis_content, dict) else synthesis_content
+
+    # Leave headroom for the prompt wrapper text.
+    payload_budget = max(1, int(max_input_tokens * 0.85))
+    meeting_budget = max(1, payload_budget // max(1, len(meetings) + (1 if synthesis else 0)))
+
+    if isinstance(synthesis, dict):
+        synthesis, _ = _fit_within_token_budget(
+            synthesis, max_tokens=meeting_budget, chars_per_token=chars_per_token
+        )
+
+    compacted_meetings: list[dict[str, Any]] = []
+    for meeting in meetings:
+        study = meeting.get("educationStudy") or {}
+        if isinstance(study, dict) and study:
+            fitted_study, _ = _fit_within_token_budget(
+                dict(study), max_tokens=meeting_budget, chars_per_token=chars_per_token
+            )
+            meeting = {**meeting, "educationStudy": fitted_study}
+        compacted_meetings.append(meeting)
+
+    source_payload: dict[str, Any] = {
+        "synthesis": synthesis,
+        "meetings": compacted_meetings,
+        "options": options,
+    }
+
+    for round_idx in range(24):
+        prompt = _build_artifact_user_prompt(
+            artifact_type=artifact_type,
+            prompt_version=prompt_version,
+            schema_version=schema_version,
+            count_hint=count_hint,
+            options=options,
+            source_payload=source_payload,
+        )
+        tokens = estimate_tokens(prompt, chars_per_token=chars_per_token)
+        if tokens <= max_input_tokens:
+            return prompt
+
+        # Shrink further: prefer trimming educationStudy / synthesis list fields.
+        shrink_budget = max(1, meeting_budget // (2 ** min(round_idx, 8)))
+        if isinstance(source_payload.get("synthesis"), dict):
+            source_payload["synthesis"], _ = _fit_within_token_budget(
+                dict(source_payload["synthesis"]),
+                max_tokens=shrink_budget,
+                chars_per_token=chars_per_token,
+            )
+        next_meetings: list[dict[str, Any]] = []
+        for meeting in source_payload["meetings"]:
+            study = meeting.get("educationStudy") or {}
+            if isinstance(study, dict) and study:
+                fitted, _ = _fit_within_token_budget(
+                    dict(study), max_tokens=shrink_budget, chars_per_token=chars_per_token
+                )
+                meeting = {**meeting, "educationStudy": fitted}
+            # Cap segment ids harder on later rounds.
+            if round_idx >= 8:
+                ids = list(meeting.get("allowedSegmentIds") or [])
+                keep = max(1, len(ids) // 2) if ids else 0
+                meeting = {**meeting, "allowedSegmentIds": ids[:keep]}
+            next_meetings.append(meeting)
+        source_payload["meetings"] = next_meetings
+
+        if round_idx >= 16:
+            # Absolute floor: provenance + tiny stubs only.
+            source_payload["synthesis"] = (
+                {
+                    "subjectOverview": str(
+                        (source_payload.get("synthesis") or {}).get("subjectOverview") or ""
+                    )[:40]
+                }
+                if isinstance(source_payload.get("synthesis"), dict)
+                else None
+            )
+            source_payload["meetings"] = [
+                {
+                    "meetingId": m.get("meetingId"),
+                    "educationStudy": {
+                        "overview": str((m.get("educationStudy") or {}).get("overview") or "")[:40]
+                    },
+                    "allowedSegmentIds": (m.get("allowedSegmentIds") or [])[:8],
+                }
+                for m in source_payload["meetings"]
+            ]
+
+    prompt = _build_artifact_user_prompt(
+        artifact_type=artifact_type,
+        prompt_version=prompt_version,
+        schema_version=schema_version,
+        count_hint=count_hint,
+        options=options,
+        source_payload=source_payload,
+    )
+    assert_prompt_within_limit(
+        prompt, max_input_tokens=max_input_tokens, chars_per_token=chars_per_token
+    )
+    return prompt
+
+
 def generate_artifact_content(
     artifact_type: str,
     *,
@@ -689,30 +851,32 @@ def generate_artifact_content(
     prompt_version, schema_version = ARTIFACT_VERSIONS[artifact_type]
     allowed_segments_by_meeting = build_allowed_segments_by_meeting(ready_sources)
 
-    source_payload = {
-        "synthesis": synthesis_content,
-        "meetings": [
-            {
-                "meetingId": s["meetingId"],
-                "educationStudy": s.get("educationStudy"),
-                "allowedSegmentIds": s.get("allowedSegmentIds") or [],
-            }
-            for s in ready_sources
-        ],
-        "options": options,
-    }
+    settings = get_settings()
+    max_input_tokens = max(1, int(settings.subject_synthesis_max_input_tokens))
+    chars_per_token = max(1, int(settings.subject_synthesis_chars_per_token))
+
     count_hint = {
         ARTIFACT_FLASHCARDS: options["flashcardCount"],
         ARTIFACT_MULTIPLE_CHOICE: options["multipleChoiceCount"],
         ARTIFACT_ESSAY_QUESTIONS: options["essayQuestionCount"],
     }.get(artifact_type)
 
-    user_prompt = (
-        f"Generate {artifact_type} JSON. prompt={prompt_version} schema={schema_version}. "
-        f"Requested count={count_hint}. Difficulty={options['difficulty']}. "
-        f"Language={options['language']}.\n"
-        f"SOURCE:\n{json.dumps(source_payload, ensure_ascii=False)}"
+    user_prompt = _prepare_artifact_prompt(
+        artifact_type=artifact_type,
+        prompt_version=prompt_version,
+        schema_version=schema_version,
+        count_hint=count_hint,
+        options=options,
+        synthesis_content=synthesis_content,
+        ready_sources=ready_sources,
+        max_input_tokens=max_input_tokens,
+        chars_per_token=chars_per_token,
     )
+    # Hard ceiling: never call Gemini when the prompt still exceeds the limit.
+    assert_prompt_within_limit(
+        user_prompt, max_input_tokens=max_input_tokens, chars_per_token=chars_per_token
+    )
+
     try:
         raw_text = call_gemini(
             prompt=user_prompt,
@@ -722,10 +886,8 @@ def generate_artifact_content(
         parsed = json.loads(raw_text) if isinstance(raw_text, str) else raw_text
         if not isinstance(parsed, dict):
             raise StudyValidationError("INVALID_ARTIFACT_JSON", "Artifact JSON invalid")
-    except StudyValidationError:
-        raise
     except Exception as exc:  # noqa: BLE001
-        raise StudyTransientError(str(exc)) from exc
+        raise classify_provider_exception(exc) from exc
 
     if artifact_type == ARTIFACT_MIND_MAP:
         return validate_mind_map(parsed, allowed_segments_by_meeting=allowed_segments_by_meeting)

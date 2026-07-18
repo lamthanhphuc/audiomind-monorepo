@@ -75,6 +75,11 @@ class StudySourceNotReadyError(Exception):
 class StudyTransientError(Exception):
     """Retryable AI/network failure."""
 
+    def __init__(self, message: str = "transient", code: str | None = None):
+        super().__init__(message)
+        self.message = message
+        self.code = code or "TRANSIENT_ERROR"
+
 
 def canonical_json_dumps(payload: Any) -> str:
     return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))

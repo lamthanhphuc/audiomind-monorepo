@@ -41,6 +41,7 @@ from app.services.study import (
     build_source_hash,
 )
 from app.services.study.artifacts import generate_artifact_content, validate_options
+from app.services.study.exceptions import is_transient_provider_error
 from app.services.study.membership import (
     MeetingMembershipUnavailableError,
     fetch_subject_meeting_ids,
@@ -376,51 +377,8 @@ def _record_dispatch_broker_failure(row: Any, error_message: str) -> None:
     row.updated_at = _now()
 
 
-def _is_transient_provider_error(exc: BaseException) -> bool:
-    """True when the failure looks like a retryable provider/network error."""
-    if isinstance(exc, (TimeoutError, ConnectionError, BrokenPipeError, ConnectionResetError)):
-        return True
-
-    name = type(exc).__name__.lower()
-    module = (type(exc).__module__ or "").lower()
-    msg = str(exc).lower()
-
-    if "httpx" in module or "requests" in module or "urllib3" in module or "urllib" in module:
-        if any(
-            token in name
-            for token in ("timeout", "connect", "network", "remote", "httpstatus", "protocol")
-        ):
-            return True
-        if any(
-            token in msg
-            for token in ("timeout", "timed out", "connection", "temporarily", "reset")
-        ):
-            return True
-
-    transient_tokens = (
-        "timeout",
-        "timed out",
-        "connection reset",
-        "connection refused",
-        "connection aborted",
-        "temporarily unavailable",
-        "service unavailable",
-        "too many requests",
-        "rate limit",
-        "429",
-        " 502",
-        " 503",
-        " 504",
-        "http 5",
-        "status code 5",
-        "status=5",
-        "deadline exceeded",
-    )
-    if any(token in msg for token in transient_tokens):
-        return True
-    if "429" in name or "ratelimit" in name or "timeout" in name:
-        return True
-    return False
+# Shared classifier lives in exceptions.py; keep private alias for call sites.
+_is_transient_provider_error = is_transient_provider_error
 
 
 def _soft_delete_for_retry(db: Session, row: Any) -> None:
