@@ -2,7 +2,7 @@
 
 **Verdict (this session):** **Ready to merge**
 
-Second post-review remediation completed on top of prior Phase 2 commits. All mandatory gates green.
+Third post-review remediation completed. All mandatory gates green.
 
 ## A. Git
 
@@ -10,8 +10,8 @@ Second post-review remediation completed on top of prior Phase 2 commits. All ma
 |------|--------|
 | Branch | `feature/phase2-subject-synthesis-study-artifacts` |
 | Base | `origin/main` @ `e7ba389` |
-| Prior HEAD | `00ca68a` (23 commits) |
-| New commits | second post-review remediation (see log) |
+| Prior HEAD | `2e37baa` (27 commits) |
+| New commits | third post-review remediation (see log) |
 | History | No reset / rebase / force-push of prior commits |
 
 ## B. AI full suite
@@ -19,90 +19,88 @@ Second post-review remediation completed on top of prior Phase 2 commits. All ma
 | Item | Detail |
 |------|--------|
 | Command | `pytest` (`demoRecordAUDIOMID/ai-service`) |
-| Result | **561 passed, 0 failed, 23 skipped**, exit **0** |
+| Result | **571 passed, 0 failed, 23 skipped**, exit **0** |
 
 ## K. Post-review remediation
 
-(See prior section K for first remediation: synthesisId security, dispatch lease, queue deployment, cache policy, stale modes, language, FE regenerate, evidence pairing, schemas, batch token budget, Celery timeouts, list pagination.)
+(See prior section K for first remediation.)
 
 ## L. Second post-review remediation
 
-### L.1 Retry state machine
-- Transient errors (`StudyTransientError`: Gemini 429/5xx, timeout, network) requeue the row to `QUEUED`, clear `processing_started_at` / `last_heartbeat_at`, keep `attempt_count` + error fields, then `self.retry()`.
-- Terminal `FAILED` only when `self.request.retries >= max_retries`.
-- Non-transient validation/source/auth errors fail immediately without retry.
-- Applies to `generate_subject_synthesis` and `generate_study_artifact`.
-- Tests prove second claim succeeds and provider is called again.
+(See prior section L: retry state machine, migration 014, Beat, source hash, savepoints, regenerate null synthesisId, empty-subject stale, MCQ IDs, reducer multi-round, evidence pairs.)
 
-### L.2 Dispatch recovery + migration 014
-- Migration `014_phase2_dispatch_recovery.py`: `quota_confirmed_at`, `dispatch_attempt_count`, `last_dispatch_error`, `last_dispatch_error_at`, `next_dispatch_retry_at` on synthesis + artifact.
-- Prepare returns `dispatchableIds` / `dispatchableArtifactIds` / `dispatchableSynthesisIds`.
-- Flow: prepare → quota for newlyCreated → `confirm-quota` (`quota_confirmed_at`) → dispatch.
-- Dispatch requires `quota_confirmed_at IS NOT NULL`; broker failure releases lease, records backoff; orphan QUEUED remains redispatchable without re-charging quota.
-- Reconciliation enqueues orphans (not lease-clear-only); marks `DISPATCH_EXHAUSTED` past max attempts.
+## M. Third post-review remediation
 
-### L.3 Celery Beat deployment
-- K8s: `celery-beat-deployment` (replicas: 1) in `k8s/deployments/core-deployments.yaml`.
-- Compose: `celery-beat` / `beat` in infra dev/MVP and ai-service standalone compose.
-- Beat schedule includes `study-generation-reconcile`; config guards assert Beat + queue + task registration.
+### M.1 Quota idempotency architecture
+- Durable ledger in **user-service**: table `quota_consumption` with `UNIQUE(owner_user_id, idempotency_key)` (Flyway `V11`).
+- Keys: `subject-synthesis:{id}:quota`, `study-artifact:{id}:quota` (new version → new id → new key).
+- Same key: charge once; concurrent races resolve via unique-constraint recovery.
+- DENIED keys re-evaluate after top-up (not permanently locked).
+- Processing `UserQuotaClient.consume(..., idempotencyKey)` per newlyCreated id.
+- AI `confirm-quota` remains idempotent when `quota_confirmed_at` already set.
 
-### L.4 Source hash pre-worker check
-- `_guard_source_hash_unchanged` before Gemini; mismatch → `STALE` + `SOURCE_CHANGED_AFTER_PREPARE`, no provider call.
+### M.2 ALL_READY / EXPLICIT regenerate
+- ALL_READY regenerate passes empty `meetingIds`; processing resolves current subject membership.
+- EXPLICIT regenerate keeps stored explicit meeting list (validated still in subject).
+- `normalizeMode` no longer flips empty+ALL_READY to EXPLICIT.
 
-### L.5 Multi-artifact savepoints
-- Each artifact create uses `db.begin_nested()`; IntegrityError rolls back only the savepoint; response IDs are verified as live rows.
+### M.3 Dispatch attempt accounting
+- Every successful `claim_dispatch_*` increments `dispatch_attempt_count` and refuses when `>= max`.
+- Broker failure does **not** double-increment; sets error/backoff; `DISPATCH_EXHAUSTED` at max.
+- Reconciliation uses the same claim path → orphan redispatches are bounded.
 
-### L.6 Stale regenerate policy
-- Processing `regenerateArtifact` passes `synthesisId = null`.
-- Worker falls back to educationStudy-only generation on `SYNTHESIS_SOURCE_MISMATCH`.
-- FE keeps prior content until the new version reaches a terminal status.
+### M.4 Membership pre-worker guard
+- `fetch_subject_meeting_ids` via meeting-service (`MEETING_SERVICE_BASE_URL` + internal token).
+- ALL_READY: current membership vs `subject_membership_hash` / source hash.
+- EXPLICIT: meeting left subject → STALE; new meetings outside selection do not stale.
+- Migration **015**: `subject_membership_hash` on synthesis + artifact.
 
-### L.7 Empty-subject stale
-- `None` = no stale context; `[]` = empty subject.
-- ALL_READY with non-empty stored sources and current `[]` → STALE on GET/LIST; FE stale banners cover synthesis + artifacts.
+### M.5 Reducer hard token ceiling
+- `assert_prompt_within_limit` before every Gemini call.
+- Oversized intermediate compacted/chunked; segment-id cap; max reducer rounds = 8.
+- `PROMPT_TOKEN_LIMIT_EXCEEDED` if still over limit.
 
-### L.8 MCQ option ID validation
-- Exactly 4 options; option IDs unique and constrained to A–D; option texts unique; `correctOptionId` present once. Duplicate IDs (A,A,B,C) rejected.
+### M.6 Exception retry whitelist
+- Retry only transient provider/network (timeout, connection, 429, 5xx).
+- `TypeError`/`AttributeError`/`KeyError`/`ValueError` → `PROGRAMMING_ERROR` FAILED, no requeue.
+- Other unknown → `INTERNAL_ERROR` FAILED unless classified transient.
 
-### L.9 Reducer token budget
-- Hierarchical / multi-round reducer when intermediate JSON exceeds `SUBJECT_SYNTHESIS_MAX_INPUT_TOKENS`.
-- Preserves `sourceMeetingIds` / evidence; emits warnings when forced pairwise merge is required.
+### M.7 Migrations
+- AI Alembic **015** (membership hash): upgrade/downgrade lifecycle PASS.
+- User Flyway **V11** (`quota_consumption` ledger).
 
-### L.10 Synthesis evidence pairs
-- Synthesis schema/normalize/storage use `evidence[{meetingId,segmentId}]`.
-- FE `SubjectSynthesisPanel` navigates via `pickStudyEvidence` (not independent array zip).
-
-### L.11 Tests / smoke
-- New: `tests/test_phase2_second_remediation.py`.
-- Technical smoke updated (confirm-quota, 11-item PASS banner).
-- Processing `StudyGenerationServiceTest` covers quota/confirm/dispatch/orphan/503 paths.
+### M.8 Tests / smoke
+- New: `test_phase2_third_remediation.py`.
+- Technical smoke covers quota redispatch attempts, programming-error no-retry, confirm-quota.
+- QuotaServiceTest concurrent same-key; StudyGenerationControllerTest ALL_READY/EXPLICIT regenerate.
 
 ## H. Full matrix
 
 | Module | Command | Exit | Passed | Failed | Skipped | Result |
 |--------|---------|------|--------|--------|---------|--------|
-| AI | `pytest` | 0 | 561 | 0 | 23 | PASS |
+| AI | `pytest` | 0 | 571 | 0 | 23 | PASS |
 | Processing | `.\mvnw.cmd -q test` | 0 | suite | 0 | — | PASS |
 | Meeting | `.\mvnw.cmd -q test` | 0 | suite | 0 | — | PASS |
+| User/Quota | `mvnw -pl user-service test` | 0 | suite | 0 | — | PASS |
 | FE lint | `npm run lint` | 0 | — | — | — | PASS |
 | FE test | `npm run test` | 0 | 727 | 0 | — | PASS |
 | FE build | `npm run build` | 0 | — | — | — | PASS |
 | Contracts | validate/generate/typecheck/check:openapi | 0 | — | — | — | PASS |
-| Migration | `alembic upgrade/downgrade/upgrade` through **014** | 0 | — | — | — | PASS |
+| Migration | Alembic through **015** (+ Flyway V11 added) | 0 | — | — | — | PASS |
 | `git diff --check` | origin/main...HEAD | 0 | — | — | — | PASS |
 
 ## Smoke
 
 | Kind | Result |
 |------|--------|
-| Technical fake-provider smoke | **PASS** (retry, redispatch, source-changed, MCQ, reducer, evidence, Beat guards) |
+| Technical fake-provider smoke | **PASS** |
 | Real Gemini smoke | **NOT RUN** |
 
 ## I. Remaining risks
 
-1. Real Gemini staging smoke still recommended (1 synthesis + 1 flashcard/MCQ).
-2. Multi-service JWT Docker E2E loop still piecewise.
-3. Concurrent multi-artifact race default DB remains SQLite file; prefer Postgres URL in CI.
+1. Real Gemini staging smoke still recommended.
+2. Meeting-service membership path may require JWT vs internal-token alignment in some envs — verify staging wiring of `MEETING_SERVICE_BASE_URL`.
+3. Concurrent multi-artifact race still strongest on Postgres (`PHASE2_CONCURRENT_DATABASE_URL`).
 
 ## J. Status
 
