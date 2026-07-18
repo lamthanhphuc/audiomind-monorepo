@@ -57,6 +57,11 @@ spec:
                 configMapKeyRef:
                   name: audiomind-config
                   key: CORS_ALLOWED_ORIGINS
+            - name: INTERNAL_SERVICE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: audiomind-secrets
+                  key: INTERNAL_SERVICE_TOKEN
           resources:
             requests:
               cpu: 100m
@@ -118,6 +123,13 @@ spec:
                 configMapKeyRef:
                   name: audiomind-config
                   key: AUDIOMIND_AI_API_BASE_URL
+            - name: AUDIOMIND_USER_API_BASE_URL
+              value: http://user-api:8083
+            - name: INTERNAL_SERVICE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: audiomind-secrets
+                  key: INTERNAL_SERVICE_TOKEN
             - name: OTEL_SERVICE_NAME
               value: processing-api
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
@@ -240,6 +252,11 @@ spec:
               value: production
             - name: OTEL_ENABLED
               value: "true"
+            - name: INTERNAL_SERVICE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: audiomind-secrets
+                  key: INTERNAL_SERVICE_TOKEN
           resources:
             requests:
               cpu: 50m
@@ -334,6 +351,15 @@ spec:
                 configMapKeyRef:
                   name: audiomind-config
                   key: CORS_ALLOWED_ORIGINS
+            - name: APP_ENV
+              value: production
+            - name: MEETING_SERVICE_BASE_URL
+              value: http://meeting-api:8081
+            - name: INTERNAL_SERVICE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: audiomind-secrets
+                  key: INTERNAL_SERVICE_TOKEN
           volumeMounts:
             - name: model-cache
               mountPath: /app/models
@@ -442,6 +468,8 @@ spec:
               value: "1"
             - name: CELERY_STUDY_GENERATION_QUEUE
               value: study_generation
+            - name: APP_ENV
+              value: production
             - name: MEETING_SERVICE_BASE_URL
               value: http://meeting-api:8081
             - name: INTERNAL_SERVICE_TOKEN
@@ -530,6 +558,13 @@ spec:
               value: redis://redis:6379/1
             - name: JOB_STATE_REDIS_URL
               value: redis://redis:6379/2
+            - name: MEETING_SERVICE_BASE_URL
+              value: http://meeting-api:8081
+            - name: INTERNAL_SERVICE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: audiomind-secrets
+                  key: INTERNAL_SERVICE_TOKEN
           resources:
             requests:
               cpu: 50m
