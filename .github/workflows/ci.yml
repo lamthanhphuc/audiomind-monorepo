@@ -268,9 +268,9 @@ jobs:
 
       - name: Structural Secret/ConfigMap validation
         run: |
-          python scripts/validate-rendered-k8s.py rendered-dev.yaml
-          python scripts/validate-rendered-k8s.py rendered-staging.yaml
-          python scripts/validate-rendered-k8s.py rendered-prod.yaml
+          python scripts/validate-rendered-k8s.py rendered-dev.yaml --environment dev
+          python scripts/validate-rendered-k8s.py rendered-staging.yaml --environment staging
+          python scripts/validate-rendered-k8s.py rendered-prod.yaml --environment prod
 
       - name: Required rendered component Settings tests
         env:
@@ -291,3 +291,72 @@ jobs:
           chmod +x ./mvnw
           ./mvnw -pl meeting-service,processing-service,user-service \
             -Dtest=StartupConfigValidatorTest test --no-transfer-progress
+
+  k8s-managed-database-validation:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install Python deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyyaml pytest
+          if [ -f demoRecordAUDIOMID/ai-service/requirements.txt ]; then
+            pip install -r demoRecordAUDIOMID/ai-service/requirements.txt
+          fi
+          if [ -f demoRecordAUDIOMID/ai-service/requirements-dev.txt ]; then
+            pip install -r demoRecordAUDIOMID/ai-service/requirements-dev.txt
+          fi
+
+      - name: Verify kubectl client
+        run: kubectl version --client
+
+      - name: Render overlays
+        run: |
+          kubectl kustomize k8s/overlays/dev --load-restrictor=LoadRestrictionsNone > rendered-dev.yaml
+          kubectl kustomize k8s/overlays/staging --load-restrictor=LoadRestrictionsNone > rendered-staging.yaml
+          kubectl kustomize k8s/overlays/prod --load-restrictor=LoadRestrictionsNone > rendered-prod.yaml
+
+      - name: Structural managed database validation
+        run: |
+          python scripts/validate-rendered-k8s.py rendered-dev.yaml --environment dev
+          python scripts/validate-rendered-k8s.py rendered-staging.yaml --environment staging
+          python scripts/validate-rendered-k8s.py rendered-prod.yaml --environment prod
+
+      - name: Required managed database render tests
+        env:
+          REQUIRE_K8S_RENDER_TESTS: "true"
+        working-directory: demoRecordAUDIOMID/ai-service
+        run: |
+          pytest tests/test_k8s_rendered_component_settings.py \
+            tests/test_k8s_managed_database_wiring.py -q --tb=short
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Spring datasource context + Flyway tests
+        env:
+          REQUIRE_DATASOURCE_CONTEXT_TESTS: "true"
+        run: |
+          cd demoRecordAUDIOMID
+          chmod +x ./mvnw
+          ./mvnw -pl meeting-service,user-service \
+            -Dtest=DatasourceContextStartupTest,DatasourceContextFailureTest,StartupConfigValidatorTest \
+            test --no-transfer-progress
+
+      - name: AI SQLAlchemy + Alembic database startup
+        env:
+          REQUIRE_DATASOURCE_CONTEXT_TESTS: "true"
+        working-directory: demoRecordAUDIOMID/ai-service
+        run: |
+          pytest tests/test_database_startup.py -q --tb=short
