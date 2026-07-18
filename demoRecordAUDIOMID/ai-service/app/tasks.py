@@ -364,3 +364,62 @@ def canonicalize_deferred_retry(meeting_id: int, attempt: int = 1) -> dict:
             return canonicalize_and_persist(meeting_id, run_id)
         finally:
             db.close()
+
+
+@celery_app.task(
+    bind=True,
+    name="app.tasks.generate_subject_synthesis",
+    queue="study_generation",
+    autoretry_for=(Exception,),
+    dont_autoretry_for=(),
+    retry_backoff=True,
+    retry_backoff_max=32,
+    retry_jitter=True,
+    max_retries=5,
+    soft_time_limit=900,
+    time_limit=1200,
+)
+def generate_subject_synthesis(self, synthesis_id: int) -> None:
+    from app.services.study import StudyTransientError, StudyValidationError, StudySourceNotReadyError
+    from app.services.study.service import process_synthesis_job
+
+    settings = get_settings()
+    self.soft_time_limit = settings.study_generation_soft_time_limit_seconds
+    self.time_limit = settings.study_generation_time_limit_seconds
+    db = SessionLocal()
+    try:
+        process_synthesis_job(db, synthesis_id)
+    except (StudyValidationError, StudySourceNotReadyError):
+        return
+    except StudyTransientError as exc:
+        raise self.retry(exc=exc, max_retries=settings.study_generation_max_retries) from exc
+    finally:
+        db.close()
+
+
+@celery_app.task(
+    bind=True,
+    name="app.tasks.generate_study_artifact",
+    queue="study_generation",
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    retry_backoff_max=32,
+    retry_jitter=True,
+    max_retries=5,
+    soft_time_limit=900,
+    time_limit=1200,
+)
+def generate_study_artifact(self, artifact_id: int) -> None:
+    from app.services.study import StudyTransientError, StudyValidationError, StudySourceNotReadyError
+    from app.services.study.service import process_artifact_job
+
+    settings = get_settings()
+    db = SessionLocal()
+    try:
+        process_artifact_job(db, artifact_id)
+    except (StudyValidationError, StudySourceNotReadyError):
+        return
+    except StudyTransientError as exc:
+        raise self.retry(exc=exc, max_retries=settings.study_generation_max_retries) from exc
+    finally:
+        db.close()
