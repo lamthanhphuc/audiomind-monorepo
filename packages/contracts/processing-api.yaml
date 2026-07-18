@@ -964,6 +964,41 @@ components:
           type: string
         sourceSelectionMode:
           $ref: "#/components/schemas/SourceSelectionMode"
+    QuotaConsumeStatus:
+      type: string
+      enum:
+        - ALLOWED
+        - DENIED
+        - UNKNOWN
+    StudyQuotaItemDetail:
+      type: object
+      additionalProperties: true
+      properties:
+        id:
+          type: integer
+          format: int64
+        artifactId:
+          type: integer
+          format: int64
+        quotaStatus:
+          $ref: "#/components/schemas/QuotaConsumeStatus"
+        idempotencyKey:
+          type: string
+        quotaType:
+          type: string
+          enum:
+            - SUBJECT_SYNTHESIS
+            - STUDY_ARTIFACT
+        errorCode:
+          type: string
+          nullable: true
+        retryable:
+          type: boolean
+        status:
+          $ref: "#/components/schemas/StudyJobStatus"
+        dispatchStatus:
+          type: string
+          nullable: true
     SubjectSynthesisResponse:
       type: object
       additionalProperties: true
@@ -991,6 +1026,12 @@ components:
           type: object
           additionalProperties: true
           nullable: true
+        partialQuota:
+          type: boolean
+        quotaDetails:
+          type: array
+          items:
+            $ref: "#/components/schemas/StudyQuotaItemDetail"
     StudyArtifactsRequest:
       type: object
       required:
@@ -1068,6 +1109,12 @@ components:
             format: int64
         status:
           $ref: "#/components/schemas/StudyJobStatus"
+        partialQuota:
+          type: boolean
+        quotaDetails:
+          type: array
+          items:
+            $ref: "#/components/schemas/StudyQuotaItemDetail"
         artifacts:
           type: array
           items:

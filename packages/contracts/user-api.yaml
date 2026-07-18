@@ -349,8 +349,105 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/GoogleIntegrationStatus"
+  /internal/quota/consume:
+    post:
+      summary: Consume quota (internal, idempotent)
+      operationId: consumeInternalQuota
+      description: >
+        Service-to-service quota charge. Returns tri-state status ALLOWED | DENIED | UNKNOWN.
+        Same idempotencyKey returns the prior ledger outcome without double-charging.
+      parameters:
+        - in: header
+          name: X-Internal-Service-Token
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/QuotaConsumeRequest"
+      responses:
+        "200":
+          description: Quota decision
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QuotaConsumeResponse"
+        "401":
+          description: Invalid or missing internal token
+        "503":
+          description: Internal token not configured
 components:
   schemas:
+    QuotaConsumeRequest:
+      type: object
+      required:
+        - userId
+      properties:
+        userId:
+          type: integer
+          format: int64
+          minimum: 1
+        sttSecondsDelta:
+          type: integer
+          format: int64
+          minimum: 0
+        geminiCharsDelta:
+          type: integer
+          format: int64
+          minimum: 0
+        idempotencyKey:
+          type: string
+          nullable: true
+        quotaType:
+          type: string
+          nullable: true
+          enum:
+            - SUBJECT_SYNTHESIS
+            - STUDY_ARTIFACT
+            - STT
+            - GEMINI
+    QuotaConsumeResponse:
+      type: object
+      required:
+        - allowed
+        - status
+      properties:
+        allowed:
+          type: boolean
+        status:
+          type: string
+          enum:
+            - ALLOWED
+            - DENIED
+            - UNKNOWN
+        periodYyyymm:
+          type: string
+        sttSecondsUsed:
+          type: integer
+          format: int64
+        geminiInputCharsUsed:
+          type: integer
+          format: int64
+        sttSecondsLimit:
+          type: integer
+          format: int64
+        geminiInputCharsLimit:
+          type: integer
+          format: int64
+        idempotencyKey:
+          type: string
+          nullable: true
+        quotaType:
+          type: string
+          nullable: true
+        errorCode:
+          type: string
+          nullable: true
+        retryable:
+          type: boolean
     RegisterRequest:
       type: object
       required: [username, password, email]

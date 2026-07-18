@@ -647,6 +647,24 @@ export interface components {
             language?: string;
             sourceSelectionMode?: components["schemas"]["SourceSelectionMode"];
         };
+        /** @enum {string} */
+        QuotaConsumeStatus: "ALLOWED" | "DENIED" | "UNKNOWN";
+        StudyQuotaItemDetail: {
+            /** Format: int64 */
+            id?: number;
+            /** Format: int64 */
+            artifactId?: number;
+            quotaStatus?: components["schemas"]["QuotaConsumeStatus"];
+            idempotencyKey?: string;
+            /** @enum {string} */
+            quotaType?: "SUBJECT_SYNTHESIS" | "STUDY_ARTIFACT";
+            errorCode?: string | null;
+            retryable?: boolean;
+            status?: components["schemas"]["StudyJobStatus"];
+            dispatchStatus?: string | null;
+        } & {
+            [key: string]: unknown;
+        };
         SubjectSynthesisResponse: {
             /** Format: int64 */
             id?: number;
@@ -660,6 +678,8 @@ export interface components {
             content?: {
                 [key: string]: unknown;
             } | null;
+            partialQuota?: boolean;
+            quotaDetails?: components["schemas"]["StudyQuotaItemDetail"][];
         } & {
             [key: string]: unknown;
         };
@@ -697,6 +717,8 @@ export interface components {
             cacheHitArtifactIds?: number[];
             inFlightArtifactIds?: number[];
             status?: components["schemas"]["StudyJobStatus"];
+            partialQuota?: boolean;
+            quotaDetails?: components["schemas"]["StudyQuotaItemDetail"][];
             artifacts?: components["schemas"]["StudyArtifactResponse"][];
         } & {
             [key: string]: unknown;

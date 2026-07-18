@@ -498,10 +498,59 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/internal/quota/consume": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Consume quota (internal, idempotent)
+         * @description Service-to-service quota charge. Returns tri-state status ALLOWED | DENIED | UNKNOWN. Same idempotencyKey returns the prior ledger outcome without double-charging.
+         */
+        post: operations["consumeInternalQuota"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        QuotaConsumeRequest: {
+            /** Format: int64 */
+            userId: number;
+            /** Format: int64 */
+            sttSecondsDelta?: number;
+            /** Format: int64 */
+            geminiCharsDelta?: number;
+            idempotencyKey?: string | null;
+            /** @enum {string|null} */
+            quotaType?: "SUBJECT_SYNTHESIS" | "STUDY_ARTIFACT" | "STT" | "GEMINI" | null;
+        };
+        QuotaConsumeResponse: {
+            allowed: boolean;
+            /** @enum {string} */
+            status: "ALLOWED" | "DENIED" | "UNKNOWN";
+            periodYyyymm?: string;
+            /** Format: int64 */
+            sttSecondsUsed?: number;
+            /** Format: int64 */
+            geminiInputCharsUsed?: number;
+            /** Format: int64 */
+            sttSecondsLimit?: number;
+            /** Format: int64 */
+            geminiInputCharsLimit?: number;
+            idempotencyKey?: string | null;
+            quotaType?: string | null;
+            errorCode?: string | null;
+            retryable?: boolean;
+        };
         RegisterRequest: {
             username: string;
             password: string;
@@ -1192,6 +1241,46 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["GoogleIntegrationStatus"];
                 };
+            };
+        };
+    };
+    consumeInternalQuota: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Internal-Service-Token": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["QuotaConsumeRequest"];
+            };
+        };
+        responses: {
+            /** @description Quota decision */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QuotaConsumeResponse"];
+                };
+            };
+            /** @description Invalid or missing internal token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Internal token not configured */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
