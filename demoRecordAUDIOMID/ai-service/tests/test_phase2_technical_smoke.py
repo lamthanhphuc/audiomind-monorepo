@@ -760,5 +760,11 @@ def test_phase2_technical_smoke_synthesis_and_artifacts(smoke_client, monkeypatc
 
     assert len(passed) >= 12, passed
     print("PHASE2_SMOKE_PASS: " + ",".join(passed))
+    print("Technical fake-provider smoke: PASS")
     print("Technical smoke: PASS")
     print("Real Gemini smoke: NOT RUN")
+    print(
+        "Final remediation coverage notes: quota UNKNOWN vs DENIED, "
+        "membership internal pagination, artifact prompt ceilings, "
+        "helper TypeError→PROGRAMMING_ERROR — see test_phase2_final_hardening.py"
+    )
