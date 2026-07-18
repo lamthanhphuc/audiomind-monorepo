@@ -8,6 +8,8 @@ import com.example.userservice.repository.QuotaConsumptionRepository;
 import com.example.userservice.repository.UsageCounterRepository;
 import com.example.userservice.repository.UserAccountRepository;
 import com.example.userservice.quota.QuotaService.QuotaConsumeResult;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.Query;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -36,14 +38,23 @@ import org.springframework.test.util.ReflectionTestUtils;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+/**
+ * Unit tests for {@link QuotaService}.
+ *
+ * <p>Real PostgreSQL concurrent coverage lives in {@link QuotaConcurrencyIT}
+ * (Testcontainers + {@code @DataJpaTest}).
+ */
 @ExtendWith(MockitoExtension.class)
 class QuotaServiceTest {
 
@@ -61,6 +72,12 @@ class QuotaServiceTest {
   @Mock
   private QuotaConsumptionRepository quotaConsumptionRepository;
 
+  @Mock
+  private EntityManager entityManager;
+
+  @Mock
+  private Query nativeQuery;
+
   @InjectMocks
   private QuotaService quotaService;
 
@@ -69,27 +86,68 @@ class QuotaServiceTest {
     Clock fixedClock = Clock.fixed(Instant.parse("2026-06-15T12:00:00Z"), ZoneOffset.UTC);
     ReflectionTestUtils.setField(quotaService, "clock", fixedClock);
     ReflectionTestUtils.setField(quotaService, "self", quotaService);
-    when(userPlanService.refreshExpiredPlan(any(UserAccount.class)))
+    lenient().when(userPlanService.refreshExpiredPlan(any(UserAccount.class)))
         .thenAnswer(invocation -> invocation.getArgument(0));
-    when(userPlanService.resolveEffectivePlan(any(UserAccount.class)))
+    lenient().when(userPlanService.resolveEffectivePlan(any(UserAccount.class)))
         .thenAnswer(invocation -> {
           UserAccount account = invocation.getArgument(0);
           return account.getPlan();
         });
+    stubAdvisoryLockAndUpsert();
+  }
+
+  private void stubAdvisoryLockAndUpsert() {
+    lenient().when(entityManager.createNativeQuery(anyString())).thenReturn(nativeQuery);
+    lenient().when(nativeQuery.setParameter(anyString(), any())).thenReturn(nativeQuery);
+    lenient().when(nativeQuery.getSingleResult()).thenReturn(1);
+    lenient().when(nativeQuery.executeUpdate()).thenReturn(1);
+  }
+
+  @Test
+  void advisoryLockKey_isStableForUserAndPeriod() {
+    assertEquals(
+        QuotaService.advisoryLockKey(7L, "202606"),
+        QuotaService.advisoryLockKey(7L, "202606"));
+    assertTrue(QuotaService.advisoryLockKey(7L, "202606") != QuotaService.advisoryLockKey(8L, "202606"));
+    assertTrue(QuotaService.advisoryLockKey(7L, "202606") != QuotaService.advisoryLockKey(7L, "202607"));
+  }
+
+  @Test
+  void consume_takesAdvisoryLockBeforeUsageCounter() {
+    UserAccount user = userWithPlan("FREE");
+    when(userAccountRepository.findById(7L)).thenReturn(Optional.of(user));
+    UsageCounter counter = new UsageCounter();
+    counter.setUserId(7L);
+    counter.setPeriodYyyymm(currentPeriod());
+    counter.setSttSecondsUsed(0);
+    counter.setGeminiInputCharsUsed(0);
+    when(usageCounterRepository.lockByUserAndPeriod(7L, currentPeriod()))
+        .thenReturn(Optional.of(counter));
+    when(usageCounterRepository.save(any(UsageCounter.class)))
+        .thenAnswer(invocation -> invocation.getArgument(0));
+
+    quotaService.consume(7L, 10L, 0L);
+
+    verify(entityManager, times(2)).createNativeQuery(anyString());
+    verify(nativeQuery).getSingleResult();
+    verify(nativeQuery).executeUpdate();
+    verify(usageCounterRepository).lockByUserAndPeriod(7L, currentPeriod());
   }
 
   @Test
   void consume_shouldAllowAndPersistWhenWithinFreePlanLimits() {
     UserAccount user = userWithPlan("FREE");
     when(userAccountRepository.findById(7L)).thenReturn(Optional.of(user));
+    UsageCounter counter = emptyCounter(7L);
     when(usageCounterRepository.lockByUserAndPeriod(7L, currentPeriod()))
-        .thenReturn(Optional.empty());
+        .thenReturn(Optional.of(counter));
     when(usageCounterRepository.save(any(UsageCounter.class)))
         .thenAnswer(invocation -> invocation.getArgument(0));
 
     QuotaConsumeResult result = quotaService.consume(7L, 120L, 1_000L);
 
     assertTrue(result.allowed());
+    assertEquals("ALLOWED", result.status());
     assertEquals(120L, result.sttSecondsUsed());
     assertEquals(1_000L, result.geminiInputCharsUsed());
     ArgumentCaptor<UsageCounter> captor = ArgumentCaptor.forClass(UsageCounter.class);
@@ -115,6 +173,7 @@ class QuotaServiceTest {
     QuotaConsumeResult result = quotaService.consume(8L, 0, 1_000L);
 
     assertFalse(result.allowed());
+    assertEquals("DENIED", result.status());
     verify(usageCounterRepository, never()).save(any());
   }
 
@@ -123,7 +182,7 @@ class QuotaServiceTest {
     UserAccount user = userWithPlan("PRO");
     when(userAccountRepository.findById(9L)).thenReturn(Optional.of(user));
     when(usageCounterRepository.lockByUserAndPeriod(9L, currentPeriod()))
-        .thenReturn(Optional.empty());
+        .thenReturn(Optional.of(emptyCounter(9L)));
     when(usageCounterRepository.save(any(UsageCounter.class)))
         .thenAnswer(invocation -> invocation.getArgument(0));
 
@@ -138,7 +197,7 @@ class QuotaServiceTest {
     UserAccount user = userWithPlan("FREE");
     when(userAccountRepository.findById(10L)).thenReturn(Optional.of(user));
     when(usageCounterRepository.lockByUserAndPeriod(10L, currentPeriod()))
-        .thenReturn(Optional.empty());
+        .thenReturn(Optional.of(emptyCounter(10L)));
     when(usageCounterRepository.save(any(UsageCounter.class)))
         .thenAnswer(invocation -> invocation.getArgument(0));
     when(usageCounterRepository.findByUserIdAndPeriodYyyymm(10L, currentPeriod()))
@@ -173,6 +232,34 @@ class QuotaServiceTest {
     assertEquals(60L, second.sttSecondsUsed());
     verify(usageCounterRepository, times(1)).save(any(UsageCounter.class));
     verify(quotaConsumptionRepository, times(1)).saveAndFlush(any(QuotaConsumption.class));
+    assertEquals(QuotaConsumption.TYPE_STUDY_ARTIFACT, stored.get().getQuotaType());
+  }
+
+  @Test
+  void consume_persistsCallerQuotaType_subjectSynthesis() {
+    UserAccount user = userWithPlan("FREE");
+    when(userAccountRepository.findById(20L)).thenReturn(Optional.of(user));
+    when(usageCounterRepository.lockByUserAndPeriod(20L, currentPeriod()))
+        .thenReturn(Optional.of(emptyCounter(20L)));
+    when(usageCounterRepository.save(any(UsageCounter.class)))
+        .thenAnswer(invocation -> invocation.getArgument(0));
+
+    AtomicReference<QuotaConsumption> stored = new AtomicReference<>();
+    when(quotaConsumptionRepository.findByOwnerUserIdAndIdempotencyKey(20L, "syn-key"))
+        .thenAnswer(invocation -> Optional.ofNullable(stored.get()));
+    when(quotaConsumptionRepository.saveAndFlush(any(QuotaConsumption.class)))
+        .thenAnswer(invocation -> {
+          QuotaConsumption row = invocation.getArgument(0);
+          row.setId(1L);
+          stored.set(row);
+          return row;
+        });
+
+    QuotaConsumeResult result = quotaService.consume(
+        20L, 0, 100L, "syn-key", QuotaConsumption.TYPE_SUBJECT_SYNTHESIS);
+
+    assertTrue(result.allowed());
+    assertEquals(QuotaConsumption.TYPE_SUBJECT_SYNTHESIS, stored.get().getQuotaType());
   }
 
   @Test
@@ -182,11 +269,7 @@ class QuotaServiceTest {
 
     // Simulate pessimistic usage-counter lock so concurrent same-key callers serialize.
     ReentrantLock dbLock = new ReentrantLock(true);
-    UsageCounter sharedCounter = new UsageCounter();
-    sharedCounter.setUserId(11L);
-    sharedCounter.setPeriodYyyymm(currentPeriod());
-    sharedCounter.setSttSecondsUsed(0);
-    sharedCounter.setGeminiInputCharsUsed(0);
+    UsageCounter sharedCounter = emptyCounter(11L);
 
     org.mockito.Mockito.lenient()
         .when(usageCounterRepository.findByUserIdAndPeriodYyyymm(11L, currentPeriod()))
@@ -272,7 +355,7 @@ class QuotaServiceTest {
     UserAccount user = userWithPlan("FREE");
     when(userAccountRepository.findById(14L)).thenReturn(Optional.of(user));
     when(usageCounterRepository.lockByUserAndPeriod(14L, currentPeriod()))
-        .thenReturn(Optional.empty());
+        .thenReturn(Optional.of(emptyCounter(14L)));
     when(usageCounterRepository.save(any(UsageCounter.class)))
         .thenAnswer(invocation -> invocation.getArgument(0));
     when(usageCounterRepository.findByUserIdAndPeriodYyyymm(14L, currentPeriod()))
@@ -316,6 +399,32 @@ class QuotaServiceTest {
   }
 
   @Test
+  void consume_nonLedgerConstraint_throwsClearInternalError() {
+    UserAccount user = userWithPlan("FREE");
+    when(userAccountRepository.findById(15L)).thenReturn(Optional.of(user));
+    when(usageCounterRepository.lockByUserAndPeriod(15L, currentPeriod()))
+        .thenReturn(Optional.of(emptyCounter(15L)));
+    when(quotaConsumptionRepository.findByOwnerUserIdAndIdempotencyKey(15L, "other-key"))
+        .thenReturn(Optional.empty());
+    when(quotaConsumptionRepository.saveAndFlush(any(QuotaConsumption.class)))
+        .thenThrow(new DataIntegrityViolationException("fk_some_other_constraint"));
+
+    IllegalStateException ex = assertThrows(
+        IllegalStateException.class,
+        () -> quotaService.consume(15L, 1L, 1L, "other-key"));
+    assertTrue(ex.getMessage().contains("non-ledger"));
+    assertFalse(ex.getMessage().contains("ledger race lost"));
+  }
+
+  @Test
+  void isLedgerOwnerKeyViolation_detectsConstraintName() {
+    assertTrue(QuotaService.isLedgerOwnerKeyViolation(
+        new DataIntegrityViolationException("ERROR: uq_quota_consumption_owner_key")));
+    assertFalse(QuotaService.isLedgerOwnerKeyViolation(
+        new DataIntegrityViolationException("ERROR: ux_usage_counters_user_period")));
+  }
+
+  @Test
   void consume_deniedThenTopUpSameKey_canSucceed() {
     AtomicReference<String> plan = new AtomicReference<>("FREE");
     when(userAccountRepository.findById(12L)).thenAnswer(invocation -> {
@@ -348,16 +457,17 @@ class QuotaServiceTest {
         });
 
     QuotaConsumeResult denied = quotaService.consume(
-        12L, 0, 1_000L, "syn-1", QuotaConsumption.TYPE_STUDY_SYNTHESIS);
+        12L, 0, 1_000L, "syn-1", QuotaConsumption.TYPE_SUBJECT_SYNTHESIS);
     assertFalse(denied.allowed());
     assertEquals(QuotaConsumption.STATUS_DENIED, stored.get().getStatus());
+    assertEquals(QuotaConsumption.TYPE_SUBJECT_SYNTHESIS, stored.get().getQuotaType());
     verify(usageCounterRepository, never()).save(any());
 
     // Top-up: plan upgraded to PRO — same key re-evaluates and may become ALLOWED.
     plan.set("PRO");
 
     QuotaConsumeResult allowed = quotaService.consume(
-        12L, 0, 1_000L, "syn-1", QuotaConsumption.TYPE_STUDY_SYNTHESIS);
+        12L, 0, 1_000L, "syn-1", QuotaConsumption.TYPE_SUBJECT_SYNTHESIS);
     assertTrue(allowed.allowed());
     assertEquals(QuotaConsumption.STATUS_ALLOWED, stored.get().getStatus());
     verify(usageCounterRepository, times(1)).save(any(UsageCounter.class));
@@ -368,14 +478,7 @@ class QuotaServiceTest {
     UserAccount user = userWithPlan("FREE");
     when(userAccountRepository.findById(13L)).thenReturn(Optional.of(user));
     when(usageCounterRepository.lockByUserAndPeriod(13L, currentPeriod()))
-        .thenAnswer(invocation -> {
-          UsageCounter c = new UsageCounter();
-          c.setUserId(13L);
-          c.setPeriodYyyymm(currentPeriod());
-          c.setSttSecondsUsed(0);
-          c.setGeminiInputCharsUsed(0);
-          return Optional.of(c);
-        });
+        .thenAnswer(invocation -> Optional.of(emptyCounter(13L)));
     when(usageCounterRepository.save(any(UsageCounter.class)))
         .thenAnswer(invocation -> invocation.getArgument(0));
 
@@ -402,9 +505,7 @@ class QuotaServiceTest {
     QuotaConsumeResult a = quotaService.consume(13L, 10L, 100L, "key-a");
     when(usageCounterRepository.lockByUserAndPeriod(13L, currentPeriod()))
         .thenAnswer(invocation -> {
-          UsageCounter c = new UsageCounter();
-          c.setUserId(13L);
-          c.setPeriodYyyymm(currentPeriod());
+          UsageCounter c = emptyCounter(13L);
           c.setSttSecondsUsed(10L);
           c.setGeminiInputCharsUsed(100L);
           return Optional.of(c);
@@ -417,6 +518,15 @@ class QuotaServiceTest {
     assertEquals(20L, b.sttSecondsUsed());
     verify(usageCounterRepository, times(2)).save(any(UsageCounter.class));
     verify(quotaConsumptionRepository, times(2)).saveAndFlush(any(QuotaConsumption.class));
+  }
+
+  private static UsageCounter emptyCounter(long userId) {
+    UsageCounter counter = new UsageCounter();
+    counter.setUserId(userId);
+    counter.setPeriodYyyymm(currentPeriod());
+    counter.setSttSecondsUsed(0);
+    counter.setGeminiInputCharsUsed(0);
+    return counter;
   }
 
   private static UserAccount userWithPlan(String plan) {

@@ -2,6 +2,7 @@ package com.example.processingservice.service;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -20,6 +21,7 @@ import org.springframework.web.server.ResponseStatusException;
 import com.example.processingservice.client.AIServiceClient;
 import com.example.processingservice.client.MeetingServiceClient;
 import com.example.processingservice.client.UserQuotaClient;
+import com.example.processingservice.client.UserQuotaClient.QuotaConsumeStatus;
 import com.example.processingservice.controller.ErrorCode;
 
 import lombok.RequiredArgsConstructor;
@@ -29,6 +31,9 @@ import lombok.RequiredArgsConstructor;
 public class StudyGenerationService {
 
     private static final Logger log = LoggerFactory.getLogger(StudyGenerationService.class);
+
+    static final String QUOTA_TYPE_SUBJECT_SYNTHESIS = "SUBJECT_SYNTHESIS";
+    static final String QUOTA_TYPE_STUDY_ARTIFACT = "STUDY_ARTIFACT";
 
     private final MeetingServiceClient meetingServiceClient;
     private final AIServiceClient aiServiceClient;
@@ -61,7 +66,7 @@ public class StudyGenerationService {
 
         Map<String, Object> prepared;
         try {
-            prepared = aiServiceClient.prepareSubjectSynthesis(prepareBody, traceId);
+            prepared = new HashMap<>(aiServiceClient.prepareSubjectSynthesis(prepareBody, traceId));
         } catch (HttpStatusCodeException ex) {
             throw mapAiException(ex);
         }
@@ -70,22 +75,19 @@ public class StudyGenerationService {
         List<Long> dispatchableIds = extractLongIds(
                 prepared, "dispatchableIds", "dispatchableSynthesisIds");
 
+        List<Long> allowedNewlyCreated = List.of();
         if (!newlyCreatedIds.isEmpty()) {
-            List<Long> deniedIds = consumeQuotaPerId(ownerUserId, newlyCreatedIds, true);
-            if (!deniedIds.isEmpty()) {
-                aiServiceClient.markStudyQuotaFailed(
-                        Map.of(
-                                "ownerUserId", ownerUserId,
-                                "synthesisIds", deniedIds,
-                                "artifactIds", List.of()),
-                        traceId);
-                throw new ResponseStatusException(HttpStatus.PAYMENT_REQUIRED, ErrorCode.QUOTA_EXCEEDED.name());
+            QuotaBatchOutcome outcome = consumeQuotaPerId(ownerUserId, newlyCreatedIds, true);
+            applyQuotaOutcome(ownerUserId, outcome, true, traceId);
+            annotatePreparedWithQuota(prepared, outcome);
+            allowedNewlyCreated = outcome.allowedIds();
+            if (!allowedNewlyCreated.isEmpty()) {
+                confirmQuota(ownerUserId, allowedNewlyCreated, List.of(), traceId);
             }
-            confirmQuota(ownerUserId, newlyCreatedIds, List.of(), traceId);
         }
 
         LinkedHashSet<Long> toDispatch = new LinkedHashSet<>(dispatchableIds);
-        toDispatch.addAll(newlyCreatedIds);
+        toDispatch.addAll(allowedNewlyCreated);
         if (!toDispatch.isEmpty()) {
             dispatchJobs(ownerUserId, new ArrayList<>(toDispatch), List.of(), traceId);
         }
@@ -98,6 +100,15 @@ public class StudyGenerationService {
                 @SuppressWarnings("unchecked")
                 Map<String, Object> synthesis = new HashMap<>((Map<String, Object>) newlyCreated.get(0));
                 synthesis.put("cacheHit", false);
+                if (prepared.containsKey("partialQuota")) {
+                    synthesis.put("partialQuota", prepared.get("partialQuota"));
+                }
+                if (prepared.containsKey("quotaDetails")) {
+                    synthesis.put("quotaDetails", prepared.get("quotaDetails"));
+                }
+                if (prepared.containsKey("status")) {
+                    synthesis.put("status", prepared.get("status"));
+                }
                 return synthesis;
             }
         }
@@ -152,7 +163,7 @@ public class StudyGenerationService {
 
         Map<String, Object> prepared;
         try {
-            prepared = aiServiceClient.prepareStudyArtifacts(prepareBody, traceId);
+            prepared = new HashMap<>(aiServiceClient.prepareStudyArtifacts(prepareBody, traceId));
         } catch (HttpStatusCodeException ex) {
             throw mapAiException(ex);
         }
@@ -163,22 +174,19 @@ public class StudyGenerationService {
                 prepared, "dispatchableIds", "dispatchableArtifactIds");
 
         // Orphan dispatchable rows already have quota confirmed — consume only for newlyCreated.
+        List<Long> allowedNewlyCreated = List.of();
         if (!newlyCreatedIds.isEmpty()) {
-            List<Long> deniedIds = consumeQuotaPerId(ownerUserId, newlyCreatedIds, false);
-            if (!deniedIds.isEmpty()) {
-                aiServiceClient.markStudyQuotaFailed(
-                        Map.of(
-                                "ownerUserId", ownerUserId,
-                                "synthesisIds", List.of(),
-                                "artifactIds", deniedIds),
-                        traceId);
-                throw new ResponseStatusException(HttpStatus.PAYMENT_REQUIRED, ErrorCode.QUOTA_EXCEEDED.name());
+            QuotaBatchOutcome outcome = consumeQuotaPerId(ownerUserId, newlyCreatedIds, false);
+            applyQuotaOutcome(ownerUserId, outcome, false, traceId);
+            annotatePreparedWithQuota(prepared, outcome);
+            allowedNewlyCreated = outcome.allowedIds();
+            if (!allowedNewlyCreated.isEmpty()) {
+                confirmQuota(ownerUserId, List.of(), allowedNewlyCreated, traceId);
             }
-            confirmQuota(ownerUserId, List.of(), newlyCreatedIds, traceId);
         }
 
         LinkedHashSet<Long> toDispatch = new LinkedHashSet<>(dispatchableIds);
-        toDispatch.addAll(newlyCreatedIds);
+        toDispatch.addAll(allowedNewlyCreated);
         if (!toDispatch.isEmpty()) {
             dispatchJobs(ownerUserId, List.of(), new ArrayList<>(toDispatch), traceId);
         }
@@ -310,20 +318,36 @@ public class StudyGenerationService {
     /**
      * Consumes quota once per newly created id with a stable idempotency key.
      * Keys: {@code subject-synthesis:{id}:quota} or {@code study-artifact:{id}:quota}.
-     * Retries with the same key are safe at the client; user-service enforces once-per-key.
-     *
-     * @return ids for which consume was denied (empty on full success)
      */
-    private List<Long> consumeQuotaPerId(Long ownerUserId, List<Long> newlyCreatedIds, boolean synthesis) {
+    private QuotaBatchOutcome consumeQuotaPerId(
+            Long ownerUserId, List<Long> newlyCreatedIds, boolean synthesis) {
         long chars = Math.max(0, geminiCharsPerArtifact);
+        String quotaType = synthesis ? QUOTA_TYPE_SUBJECT_SYNTHESIS : QUOTA_TYPE_STUDY_ARTIFACT;
+        List<Long> allowed = new ArrayList<>();
         List<Long> denied = new ArrayList<>();
+        List<Long> unknown = new ArrayList<>();
+        List<Map<String, Object>> details = new ArrayList<>();
+
         for (Long id : newlyCreatedIds) {
             String idempotencyKey = synthesis
                     ? "subject-synthesis:" + id + ":quota"
                     : "study-artifact:" + id + ":quota";
-            UserQuotaClient.QuotaConsumeResult result =
-                    userQuotaClient.consume(ownerUserId, 0, chars, idempotencyKey);
-            if (!result.allowed()) {
+            UserQuotaClient.QuotaConsumeResult result = userQuotaClient.consume(
+                    ownerUserId, 0, chars, idempotencyKey, quotaType);
+
+            Map<String, Object> detail = new LinkedHashMap<>();
+            detail.put("id", id);
+            detail.put("quotaStatus", result.status().name());
+            detail.put("idempotencyKey", idempotencyKey);
+            detail.put("quotaType", quotaType);
+            if (result.errorCode() != null) {
+                detail.put("errorCode", result.errorCode());
+            }
+            details.add(detail);
+
+            if (result.status() == QuotaConsumeStatus.ALLOWED) {
+                allowed.add(id);
+            } else if (result.status() == QuotaConsumeStatus.DENIED) {
                 denied.add(id);
                 log.warn(
                         "event=STUDY_QUOTA_DENIED userId={} id={} key={} synthesis={}",
@@ -331,9 +355,70 @@ public class StudyGenerationService {
                         id,
                         idempotencyKey,
                         synthesis);
+            } else {
+                unknown.add(id);
+                log.warn(
+                        "event=STUDY_QUOTA_UNKNOWN userId={} id={} key={} synthesis={} errorCode={}",
+                        ownerUserId,
+                        id,
+                        idempotencyKey,
+                        synthesis,
+                        result.errorCode());
             }
         }
-        return denied;
+        return new QuotaBatchOutcome(allowed, denied, unknown, details);
+    }
+
+    /**
+     * Marks denied ids, throws when the whole newlyCreated batch cannot proceed.
+     * UNKNOWN ids stay QUEUED (no confirm, no QUOTA_EXCEEDED).
+     */
+    private void applyQuotaOutcome(
+            Long ownerUserId, QuotaBatchOutcome outcome, boolean synthesis, String traceId) {
+        if (!outcome.deniedIds().isEmpty()) {
+            Map<String, Object> body = new HashMap<>();
+            body.put("ownerUserId", ownerUserId);
+            if (synthesis) {
+                body.put("synthesisIds", outcome.deniedIds());
+                body.put("artifactIds", List.of());
+            } else {
+                body.put("synthesisIds", List.of());
+                body.put("artifactIds", outcome.deniedIds());
+            }
+            aiServiceClient.markStudyQuotaFailed(body, traceId);
+        }
+
+        boolean noneAllowed = outcome.allowedIds().isEmpty();
+        boolean allUnknown = noneAllowed
+                && outcome.deniedIds().isEmpty()
+                && !outcome.unknownIds().isEmpty();
+        boolean allDenied = noneAllowed
+                && outcome.unknownIds().isEmpty()
+                && !outcome.deniedIds().isEmpty();
+        boolean deniedAndUnknown = noneAllowed
+                && !outcome.deniedIds().isEmpty()
+                && !outcome.unknownIds().isEmpty();
+
+        if (allUnknown || deniedAndUnknown) {
+            throw new ResponseStatusException(
+                    HttpStatus.SERVICE_UNAVAILABLE, ErrorCode.SERVICE_UNAVAILABLE.name());
+        }
+        if (allDenied) {
+            throw new ResponseStatusException(HttpStatus.PAYMENT_REQUIRED, ErrorCode.QUOTA_EXCEEDED.name());
+        }
+        // some allowed (+ optional denied/unknown) → continue with allowed only
+    }
+
+    private void annotatePreparedWithQuota(Map<String, Object> prepared, QuotaBatchOutcome outcome) {
+        boolean partial = !outcome.deniedIds().isEmpty() || !outcome.unknownIds().isEmpty();
+        prepared.put("partialQuota", partial);
+        prepared.put("quotaDetails", outcome.details());
+        if (partial && !outcome.allowedIds().isEmpty()) {
+            prepared.put("status", "PARTIALLY_FAILED");
+        } else if (partial && outcome.allowedIds().isEmpty()) {
+            // Should have thrown in applyQuotaOutcome; leave as-is if somehow reached.
+            prepared.put("status", "PARTIAL");
+        }
     }
 
     private String normalizeMode(String sourceSelectionMode, List<Long> meetingIds) {
@@ -431,5 +516,13 @@ public class StudyGenerationService {
             return new ResponseStatusException(HttpStatus.BAD_REQUEST, ErrorCode.VALIDATION_ERROR.name(), ex);
         }
         return new ResponseStatusException(HttpStatus.BAD_GATEWAY, ErrorCode.AI_SERVICE_UNAVAILABLE.name(), ex);
+    }
+
+    private record QuotaBatchOutcome(
+            List<Long> allowedIds,
+            List<Long> deniedIds,
+            List<Long> unknownIds,
+            List<Map<String, Object>> details
+    ) {
     }
 }

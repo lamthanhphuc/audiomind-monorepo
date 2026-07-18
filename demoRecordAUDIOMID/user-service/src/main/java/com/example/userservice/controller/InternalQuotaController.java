@@ -5,6 +5,7 @@ import com.example.userservice.quota.QuotaService.QuotaConsumeResult;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
@@ -39,14 +40,15 @@ public class InternalQuotaController {
                 request.idempotencyKey(),
                 request.quotaType()
         );
-        return Map.of(
-                "allowed", result.allowed(),
-                "periodYyyymm", result.periodYyyymm(),
-                "sttSecondsUsed", result.sttSecondsUsed(),
-                "geminiInputCharsUsed", result.geminiInputCharsUsed(),
-                "sttSecondsLimit", result.sttSecondsLimit(),
-                "geminiInputCharsLimit", result.geminiInputCharsLimit()
-        );
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("allowed", result.allowed());
+        body.put("status", result.status());
+        body.put("periodYyyymm", result.periodYyyymm());
+        body.put("sttSecondsUsed", result.sttSecondsUsed());
+        body.put("geminiInputCharsUsed", result.geminiInputCharsUsed());
+        body.put("sttSecondsLimit", result.sttSecondsLimit());
+        body.put("geminiInputCharsLimit", result.geminiInputCharsLimit());
+        return body;
     }
 
     private void requireInternalToken(String token) {

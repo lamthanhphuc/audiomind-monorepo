@@ -7,10 +7,13 @@ import com.example.userservice.plan.UserPlanService;
 import com.example.userservice.repository.QuotaConsumptionRepository;
 import com.example.userservice.repository.UsageCounterRepository;
 import com.example.userservice.repository.UserAccountRepository;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.Query;
 import java.time.Clock;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
+import java.util.Objects;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Lazy;
@@ -24,11 +27,13 @@ import org.springframework.util.StringUtils;
 public class QuotaService {
 
     private static final DateTimeFormatter YYYYMM = DateTimeFormatter.ofPattern("yyyyMM");
+    private static final int NON_LEDGER_INTEGRITY_RETRIES = 2;
 
     private final UsageCounterRepository usageCounterRepository;
     private final UserAccountRepository userAccountRepository;
     private final UserPlanService userPlanService;
     private final QuotaConsumptionRepository quotaConsumptionRepository;
+    private final EntityManager entityManager;
     private final Clock clock = Clock.systemUTC();
 
     /**
@@ -84,11 +89,20 @@ public class QuotaService {
         }
         String key = idempotencyKey.trim();
         String resolvedType = resolveQuotaType(key, quotaType);
-        try {
-            return self.consumeIdempotent(userId, sttSecondsDelta, geminiCharsDelta, key, resolvedType);
-        } catch (DataIntegrityViolationException ex) {
-            return self.resultFromExistingLedger(userId, key);
+        DataIntegrityViolationException lastNonLedger = null;
+        for (int attempt = 0; attempt < NON_LEDGER_INTEGRITY_RETRIES; attempt++) {
+            try {
+                return self.consumeIdempotent(userId, sttSecondsDelta, geminiCharsDelta, key, resolvedType);
+            } catch (DataIntegrityViolationException ex) {
+                if (isLedgerOwnerKeyViolation(ex)) {
+                    return self.resultFromExistingLedger(userId, key);
+                }
+                lastNonLedger = ex;
+            }
         }
+        throw new IllegalStateException(
+                "Quota consume data-integrity failure (non-ledger) for userId=" + userId,
+                lastNonLedger);
     }
 
     @Transactional
@@ -122,7 +136,8 @@ public class QuotaService {
         QuotaConsumption existing = quotaConsumptionRepository
                 .findByOwnerUserIdAndIdempotencyKey(userId, idempotencyKey)
                 .orElseThrow(() -> new IllegalStateException(
-                        "Quota ledger race lost but row missing for userId=" + userId));
+                        "Quota consumption unique conflict but ledger row missing for userId="
+                                + userId + " key=" + idempotencyKey));
         if (QuotaConsumption.STATUS_ALLOWED.equals(existing.getStatus())) {
             return snapshotAfterPriorAllow(userId);
         }
@@ -149,15 +164,7 @@ public class QuotaService {
         String effectivePlan = userPlanService.resolveEffectivePlan(currentUser);
 
         String period = currentPeriod();
-        UsageCounter counter = usageCounterRepository.lockByUserAndPeriod(userId, period)
-                .orElseGet(() -> {
-                    UsageCounter created = new UsageCounter();
-                    created.setUserId(userId);
-                    created.setPeriodYyyymm(period);
-                    created.setSttSecondsUsed(0);
-                    created.setGeminiInputCharsUsed(0);
-                    return created;
-                });
+        UsageCounter counter = lockOrCreateUsageCounter(userId, period);
 
         // After acquiring the usage lock, re-check ledger so concurrent same-key callers
         // that serialized on the counter only deduct once.
@@ -230,6 +237,60 @@ public class QuotaService {
                 limits.sttSecondsMonthly(),
                 limits.geminiInputCharsMonthly()
         );
+    }
+
+    /**
+     * Take a PostgreSQL advisory transaction lock keyed by (userId, period), upsert the
+     * usage_counters row if missing, then SELECT FOR UPDATE.
+     */
+    UsageCounter lockOrCreateUsageCounter(Long userId, String period) {
+        long lockKey = advisoryLockKey(userId, period);
+        Query lockQuery = entityManager.createNativeQuery("SELECT pg_advisory_xact_lock(:k)");
+        lockQuery.setParameter("k", lockKey);
+        lockQuery.getSingleResult();
+
+        entityManager.createNativeQuery(
+                        "INSERT INTO usage_counters "
+                                + "(user_id, period_yyyymm, stt_seconds_used, gemini_input_chars_used, created_at, updated_at) "
+                                + "VALUES (:userId, :period, 0, 0, NOW(), NOW()) "
+                                + "ON CONFLICT (user_id, period_yyyymm) DO NOTHING")
+                .setParameter("userId", userId)
+                .setParameter("period", period)
+                .executeUpdate();
+
+        return usageCounterRepository.lockByUserAndPeriod(userId, period)
+                .orElseThrow(() -> new IllegalStateException(
+                        "Usage counter missing after upsert for userId=" + userId + " period=" + period));
+    }
+
+    /**
+     * Stable advisory-lock key for (userId, periodYyyymm). Package-visible for unit tests.
+     */
+    static long advisoryLockKey(Long userId, String periodYyyymm) {
+        Objects.requireNonNull(userId, "userId");
+        Objects.requireNonNull(periodYyyymm, "periodYyyymm");
+        long periodNum;
+        try {
+            periodNum = Long.parseLong(periodYyyymm);
+        } catch (NumberFormatException ex) {
+            periodNum = periodYyyymm.hashCode() & 0xffffffffL;
+        }
+        return (userId * 1_000_000L) + periodNum;
+    }
+
+    static boolean isLedgerOwnerKeyViolation(DataIntegrityViolationException ex) {
+        String message = ex.getMessage();
+        if (message != null && message.contains(QuotaConsumption.CONSTRAINT_OWNER_KEY)) {
+            return true;
+        }
+        Throwable cause = ex.getMostSpecificCause();
+        if (cause != null) {
+            String causeMsg = cause.getMessage();
+            if (causeMsg != null && causeMsg.contains(QuotaConsumption.CONSTRAINT_OWNER_KEY)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private void upsertLedger(
@@ -349,6 +410,9 @@ public class QuotaService {
             long sttSecondsLimit,
             long geminiInputCharsLimit
     ) {
+        public String status() {
+            return allowed ? QuotaConsumption.STATUS_ALLOWED : QuotaConsumption.STATUS_DENIED;
+        }
     }
 
     public record QuotaSnapshot(
