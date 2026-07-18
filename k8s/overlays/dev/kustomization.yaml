@@ -6,6 +6,7 @@ resources:
   - ../../services/core-services.yaml
   - ../../hpa/core-hpa.yaml
   - ../../observability/stack.yaml
-  - sealed-secret.yaml
-patchesStrategicMerge:
-  - configmap-patch.yaml
+patches:
+  - path: configmap-patch.yaml
+  - path: secret-patch.yaml
+  - path: app-env-patch.yaml

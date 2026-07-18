@@ -222,7 +222,19 @@ def _compose_service_block(text: str, service_name: str) -> str:
     return match.group(0)
 
 
-@pytest.mark.parametrize("short_name", PHASE2_CORE_DEPLOYMENTS)
+# Beat only needs broker URLs; API/worker (and other core services) need the token.
+PHASE2_DEPLOYMENTS_WITH_INTERNAL_TOKEN = tuple(
+    name for name in PHASE2_CORE_DEPLOYMENTS if name != "celery-beat"
+)
+
+APP_ENV_OVERLAY_PATCHES = (
+    REPO_ROOT / "k8s" / "overlays" / "dev" / "app-env-patch.yaml",
+    REPO_ROOT / "k8s" / "overlays" / "staging" / "app-env-patch.yaml",
+    REPO_ROOT / "k8s" / "overlays" / "prod" / "app-env-patch.yaml",
+)
+
+
+@pytest.mark.parametrize("short_name", PHASE2_DEPLOYMENTS_WITH_INTERNAL_TOKEN)
 def test_k8s_core_deployments_wire_internal_service_token(short_name: str) -> None:
     text = _core_deployments_text()
     block = _deployment_block(text, short_name)
@@ -249,11 +261,30 @@ def test_k8s_processing_api_service_urls() -> None:
 
 
 @pytest.mark.parametrize("short_name", ("ai-api", "celery-worker", "celery-beat"))
-def test_k8s_ai_celery_deployments_production_meeting_env(short_name: str) -> None:
+def test_k8s_ai_celery_base_has_app_component_not_app_env(short_name: str) -> None:
+    """APP_ENV lives in overlay app-env-patch.yaml; base only pins APP_COMPONENT."""
     block = _deployment_block(_core_deployments_text(), short_name)
-    assert _env_value(block, "APP_ENV") == "production", (
-        f"{short_name} must set APP_ENV=production"
+    expected_component = {
+        "ai-api": "api",
+        "celery-worker": "worker",
+        "celery-beat": "beat",
+    }[short_name]
+    assert _env_value(block, "APP_COMPONENT") == expected_component, (
+        f"{short_name} must set APP_COMPONENT={expected_component} in base"
     )
+    assert _env_value(block, "APP_ENV") is None, (
+        f"{short_name} must not hard-code APP_ENV in base core-deployments.yaml; "
+        "overlays set APP_ENV via app-env-patch.yaml"
+    )
+
+
+@pytest.mark.parametrize("short_name", ("ai-api", "celery-worker"))
+def test_k8s_ai_api_and_worker_gemini_and_meeting_env(short_name: str) -> None:
+    block = _deployment_block(_core_deployments_text(), short_name)
+    assert _env_value(block, "ANALYSIS_PROVIDER") == "gemini"
+    assert _has_secret_key_ref(
+        block, "GEMINI_API_KEY", "audiomind-secrets", "GEMINI_API_KEY"
+    ), f"{short_name} must set GEMINI_API_KEY via secretKeyRef"
     meeting_url = _env_value(block, "MEETING_SERVICE_BASE_URL")
     assert meeting_url == "http://meeting-api:8081", (
         f"{short_name} MEETING_SERVICE_BASE_URL must be "
@@ -263,6 +294,36 @@ def test_k8s_ai_celery_deployments_production_meeting_env(short_name: str) -> No
     assert _has_secret_key_ref(
         block, "INTERNAL_SERVICE_TOKEN", "audiomind-secrets", "INTERNAL_SERVICE_TOKEN"
     )
+
+
+def test_k8s_celery_beat_base_omits_meeting_and_token() -> None:
+    block = _deployment_block(_core_deployments_text(), "celery-beat")
+    assert _env_value(block, "MEETING_SERVICE_BASE_URL") is None
+    assert not _has_secret_key_ref(
+        block, "INTERNAL_SERVICE_TOKEN", "audiomind-secrets", "INTERNAL_SERVICE_TOKEN"
+    )
+    assert "MEETING_SERVICE_BASE_URL" not in block
+    assert "INTERNAL_SERVICE_TOKEN" not in block
+
+
+@pytest.mark.parametrize(
+    "patch_path",
+    APP_ENV_OVERLAY_PATCHES,
+    ids=lambda p: str(p.relative_to(REPO_ROOT)),
+)
+def test_k8s_overlay_app_env_patch_sets_app_env_for_ai_components(
+    patch_path: Path,
+) -> None:
+    assert patch_path.is_file(), f"expected overlay patch at {patch_path}"
+    text = patch_path.read_text(encoding="utf-8")
+    expected_env = (
+        "development" if patch_path.parent.name == "dev" else "production"
+    )
+    for short_name in ("ai-api", "celery-worker", "celery-beat"):
+        block = _deployment_block(text, short_name)
+        assert _env_value(block, "APP_ENV") == expected_env, (
+            f"{patch_path.name} must set APP_ENV={expected_env} on {short_name}"
+        )
 
 
 def test_k8s_phase2_service_urls_have_no_localhost() -> None:

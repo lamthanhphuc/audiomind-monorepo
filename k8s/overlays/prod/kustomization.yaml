@@ -2,7 +2,6 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
   - ../../base
-  - ../../base/secret.yaml
   - ../../deployments/core-deployments.yaml
   - ../../services/core-services.yaml
   - ../../hpa/core-hpa.yaml
@@ -18,3 +17,4 @@ patches:
   - path: replicas-patch.yaml
   - path: resource-patch.yaml
   - path: db-managed-patch.yaml
+  - path: app-env-patch.yaml

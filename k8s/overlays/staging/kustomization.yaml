@@ -3,7 +3,6 @@ kind: Kustomization
 namespace: audiomind-staging
 resources:
   - ../../base
-  - ../../base/secret.yaml
   - ../../deployments/core-deployments.yaml
   - ../../services/core-services.yaml
   - ../../hpa/core-hpa.yaml
@@ -21,3 +20,4 @@ patches:
   - path: replicas-patch.yaml
   - path: resource-patch.yaml
   - path: db-managed-patch.yaml
+  - path: app-env-patch.yaml

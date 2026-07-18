@@ -1,0 +1,41 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ai-api-deployment
+  namespace: audiomind
+spec:
+  template:
+    spec:
+      containers:
+        - name: ai-api
+          env:
+            - name: APP_ENV
+              value: development
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: celery-worker-deployment
+  namespace: audiomind
+spec:
+  template:
+    spec:
+      containers:
+        - name: celery-worker
+          env:
+            - name: APP_ENV
+              value: development
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: celery-beat-deployment
+  namespace: audiomind
+spec:
+  template:
+    spec:
+      containers:
+        - name: celery-beat
+          env:
+            - name: APP_ENV
+              value: development
