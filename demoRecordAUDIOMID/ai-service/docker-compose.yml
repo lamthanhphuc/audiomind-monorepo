@@ -61,7 +61,7 @@ services:
     depends_on:
       - db
       - redis
-    command: celery -A app.celery_app.celery_app worker --loglevel=INFO --concurrency=2
+    command: celery -A app.celery_app.celery_app worker --loglevel=INFO --concurrency=2 -Q audio_processing,study_generation
     environment:
       DATABASE_URL: ${DATABASE_URL}
       HUGGINGFACE_TOKEN: ${HUGGINGFACE_TOKEN}

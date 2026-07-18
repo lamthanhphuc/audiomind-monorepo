@@ -399,7 +399,7 @@ spec:
             allowPrivilegeEscalation: false
             capabilities:
               drop: ["ALL"]
-          command: ["sh", "-c", "celery -A app.celery_app.celery_app worker --loglevel=INFO --concurrency=${CELERY_CONCURRENCY} --prefetch-multiplier=${CELERY_PREFETCH_MULTIPLIER}"]
+          command: ["sh", "-c", "celery -A app.celery_app.celery_app worker --loglevel=INFO --concurrency=${CELERY_CONCURRENCY} --prefetch-multiplier=${CELERY_PREFETCH_MULTIPLIER} -Q audio_processing,study_generation"]
           ports:
             - containerPort: 8080
           env:
@@ -440,6 +440,8 @@ spec:
               value: "4"
             - name: CELERY_PREFETCH_MULTIPLIER
               value: "1"
+            - name: CELERY_STUDY_GENERATION_QUEUE
+              value: study_generation
             - name: WORKER_HEALTH_PORT
               value: "8080"
           volumeMounts:
