@@ -10,11 +10,15 @@ import httpx
 from loguru import logger
 
 from app.config import get_settings
-from app.services.study import StudyTransientError
+from app.services.study import StudyTransientError, StudyValidationError
+from app.services.study.exceptions import classify_provider_exception
 
 
 class MeetingMembershipUnavailableError(Exception):
     """Meeting-service base URL / token not configured (unit-test / local fallback)."""
+
+
+_MEMBERSHIP_UNAVAILABLE = "MEETING_MEMBERSHIP_SERVICE_UNAVAILABLE"
 
 
 def hash_membership(meeting_ids: list[int] | None) -> str:
@@ -27,10 +31,10 @@ def hash_membership(meeting_ids: list[int] | None) -> str:
 def fetch_subject_meeting_ids(subject_id: int, owner_user_id: int) -> list[int]:
     """Fetch current subject membership from meeting-service.
 
-    Mirrors processing ``MeetingServiceClient.listAllSubjectMeetings``:
-    ``GET /subjects/{subjectId}/meetings?page=&pageSize=`` with pagination.
+    Calls the authenticated internal endpoint only:
+    ``GET /internal/subjects/{subjectId}/meetings?page=&pageSize=``
+    with ``X-Internal-Service-Token`` and ``X-Owner-User-Id``.
 
-    Prefer ``MEETING_SERVICE_BASE_URL`` + ``INTERNAL_SERVICE_TOKEN``.
     Monkeypatch this function in unit tests when meeting-service is unavailable.
     """
     settings = get_settings()
@@ -60,41 +64,41 @@ def fetch_subject_meeting_ids(subject_id: int, owner_user_id: int) -> list[int]:
     try:
         with httpx.Client(timeout=timeout) as client:
             while page <= 500:
-                # Prefer internal path when present; fall back to public subjects path.
-                urls = (
+                url = (
                     f"{base}/internal/subjects/{int(subject_id)}/meetings"
-                    f"?page={page}&pageSize={page_size}&ownerUserId={int(owner_user_id)}",
-                    f"{base}/subjects/{int(subject_id)}/meetings"
-                    f"?page={page}&pageSize={page_size}",
+                    f"?page={page}&pageSize={page_size}"
                 )
-                body: dict[str, Any] | None = None
-                last_status = 0
-                for url in urls:
-                    response = client.get(url, headers=headers)
-                    last_status = response.status_code
-                    if response.status_code == 404 and url is urls[0]:
-                        continue
-                    if response.status_code >= 500:
-                        raise StudyTransientError(
-                            f"meeting-service membership HTTP {response.status_code}"
-                        )
-                    if response.status_code >= 400:
-                        if url is urls[0]:
-                            continue
-                        raise StudyTransientError(
-                            f"meeting-service membership HTTP {response.status_code}"
-                        )
-                    payload = response.json()
-                    body = payload if isinstance(payload, dict) else None
-                    break
-                if body is None:
+                response = client.get(url, headers=headers)
+                status = response.status_code
+
+                if status >= 500:
                     raise StudyTransientError(
-                        f"meeting-service membership unavailable status={last_status}"
+                        f"meeting-service membership HTTP {status}",
+                        code=_MEMBERSHIP_UNAVAILABLE,
+                    )
+                if status in (401, 403):
+                    # Auth/token failure between services is retryable (rotation / misconfig).
+                    raise StudyTransientError(
+                        f"meeting-service membership HTTP {status}",
+                        code=_MEMBERSHIP_UNAVAILABLE,
+                    )
+                if status == 404:
+                    raise StudyValidationError(
+                        "SUBJECT_NOT_FOUND",
+                        f"Subject {subject_id} not found for owner",
+                    )
+                if status >= 400:
+                    raise StudyValidationError(
+                        "MEETING_MEMBERSHIP_REJECTED",
+                        f"meeting-service membership HTTP {status}",
                     )
 
-                items = body.get("items")
-                if not isinstance(items, list) or not items:
+                payload = response.json()
+                body = payload if isinstance(payload, dict) else {}
+                items = _extract_items(body)
+                if not items:
                     break
+
                 for item in items:
                     mid = _extract_meeting_id(item)
                     if mid is None or mid in seen:
@@ -109,8 +113,10 @@ def fetch_subject_meeting_ids(subject_id: int, owner_user_id: int) -> list[int]:
                     pages = page
                 if page >= pages:
                     break
+                if len(items) < page_size and total_pages is None:
+                    break
                 page += 1
-    except StudyTransientError:
+    except (StudyTransientError, StudyValidationError, MeetingMembershipUnavailableError):
         raise
     except (httpx.TimeoutException, httpx.TransportError, httpx.HTTPError) as exc:
         logger.warning(
@@ -119,22 +125,39 @@ def fetch_subject_meeting_ids(subject_id: int, owner_user_id: int) -> list[int]:
             owner_user_id,
             exc,
         )
-        raise StudyTransientError(f"meeting-service membership transient: {exc}") from exc
+        raise StudyTransientError(
+            f"meeting-service membership transient: {exc}",
+            code=_MEMBERSHIP_UNAVAILABLE,
+        ) from exc
     except Exception as exc:  # noqa: BLE001
+        classified = classify_provider_exception(exc)
         logger.warning(
             "event=STUDY_MEMBERSHIP_FETCH_FAILED subjectId={} ownerUserId={} err={}",
             subject_id,
             owner_user_id,
             exc,
         )
-        raise StudyTransientError(f"meeting-service membership failed: {exc}") from exc
+        if isinstance(classified, StudyTransientError):
+            raise StudyTransientError(
+                f"meeting-service membership failed: {exc}",
+                code=_MEMBERSHIP_UNAVAILABLE,
+            ) from exc
+        raise classified from exc
 
     return all_ids
 
 
+def _extract_items(body: dict[str, Any]) -> list[Any]:
+    for key in ("items", "content", "meetings"):
+        value = body.get(key)
+        if isinstance(value, list):
+            return value
+    return []
+
+
 def _extract_meeting_id(item: Any) -> int | None:
     if isinstance(item, dict):
-        for key in ("id", "meetingId", "meeting_id"):
+        for key in ("meetingId", "id", "meeting_id"):
             if key in item and item[key] is not None:
                 try:
                     return int(item[key])
