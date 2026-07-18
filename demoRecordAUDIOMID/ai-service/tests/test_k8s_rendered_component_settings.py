@@ -1,14 +1,17 @@
 """Startup Settings checks against kubectl-kustomize rendered overlay manifests.
 
-Resolves Deployment container env (literal / ConfigMap / Secret) from
-``kubectl kustomize k8s/overlays/{dev,staging,prod}`` and instantiates
-``Settings(_env_file=None)`` the same way each component would at boot.
+Resolves Deployment container env (literal / ConfigMap / Secret / SealedSecret)
+from ``kubectl kustomize`` / ``kustomize build`` and instantiates ``Settings``
+the same way each AI component would at boot.
+
+Also asserts Java service JWT_SECRET wiring for meeting/processing/user.
 """
 
 from __future__ import annotations
 
 import base64
 import importlib
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -26,9 +29,12 @@ TARGET_DEPLOYMENTS = {
     "celery-worker-deployment": "worker",
     "celery-beat-deployment": "beat",
 }
+JAVA_DEPLOYMENTS = (
+    "meeting-api-deployment",
+    "processing-api-deployment",
+    "user-api-deployment",
+)
 
-# Env keys Settings may read; cleared before applying a rendered component env
-# so ambient / prior-test values cannot leak into production validators.
 _SETTINGS_ENV_KEYS = (
     "APP_ENV",
     "APP_COMPONENT",
@@ -63,21 +69,39 @@ _SETTINGS_ENV_KEYS = (
 )
 
 _kubectl = shutil.which("kubectl")
-if not _kubectl:
-    pytest.skip(
-        "kubectl not found on PATH; skipping K8s rendered component Settings tests",
-        allow_module_level=True,
+_kustomize_bin = shutil.which("kustomize")
+_REQUIRE = os.environ.get("REQUIRE_K8S_RENDER_TESTS", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+}
+
+if not _kubectl and not _kustomize_bin:
+    _msg = (
+        "kubectl/kustomize not found on PATH; required for rendered K8s Settings tests"
     )
+    if _REQUIRE:
+        pytest.fail(_msg)
+    pytest.skip(_msg, allow_module_level=True)
 
 
 def _kustomize(overlay: str) -> list[dict[str, Any]]:
-    result = subprocess.run(
-        [
+    if _kubectl:
+        cmd = [
             _kubectl,
             "kustomize",
             f"k8s/overlays/{overlay}",
             "--load-restrictor=LoadRestrictionsNone",
-        ],
+        ]
+    else:
+        cmd = [
+            _kustomize_bin,
+            "build",
+            f"k8s/overlays/{overlay}",
+            "--load-restrictor=LoadRestrictionsNone",
+        ]
+    result = subprocess.run(
+        cmd,
         cwd=REPO_ROOT,
         check=False,
         capture_output=True,
@@ -85,7 +109,7 @@ def _kustomize(overlay: str) -> list[dict[str, Any]]:
     )
     if result.returncode != 0:
         raise AssertionError(
-            f"kubectl kustomize k8s/overlays/{overlay} failed "
+            f"kustomize k8s/overlays/{overlay} failed "
             f"(exit {result.returncode}): {result.stderr or result.stdout}"
         )
     return [doc for doc in yaml.safe_load_all(result.stdout) if doc]
@@ -93,34 +117,46 @@ def _kustomize(overlay: str) -> list[dict[str, Any]]:
 
 def _index_config_and_secrets(
     docs: list[dict[str, Any]],
-) -> tuple[dict[str, str], dict[str, str]]:
+) -> tuple[dict[str, str], dict[str, dict[str, str]]]:
     config: dict[str, str] = {}
-    secrets: dict[str, str] = {}
+    secrets: dict[str, dict[str, str]] = {}
     for doc in docs:
         kind = doc.get("kind")
         name = (doc.get("metadata") or {}).get("name")
         if kind == "ConfigMap" and name == "audiomind-config":
             for key, value in (doc.get("data") or {}).items():
                 config[str(key)] = "" if value is None else str(value)
-        elif kind == "Secret" and name == "audiomind-secrets":
+        elif kind == "Secret" and name:
+            bucket = secrets.setdefault(str(name), {})
             for key, value in (doc.get("stringData") or {}).items():
-                secrets[str(key)] = "" if value is None else str(value)
+                bucket[str(key)] = "" if value is None else str(value)
             for key, value in (doc.get("data") or {}).items():
                 if value is None:
-                    secrets[str(key)] = ""
+                    bucket[str(key)] = ""
                     continue
                 raw = str(value)
                 try:
-                    secrets[str(key)] = base64.b64decode(raw).decode("utf-8")
-                except Exception:  # noqa: BLE001 — keep raw if not valid b64
-                    secrets[str(key)] = raw
+                    bucket[str(key)] = base64.b64decode(raw).decode("utf-8")
+                except Exception:  # noqa: BLE001
+                    bucket[str(key)] = raw
+        elif kind == "SealedSecret":
+            tmpl = ((doc.get("spec") or {}).get("template") or {}).get("metadata") or {}
+            target = tmpl.get("name") or name
+            if not target:
+                continue
+            bucket = secrets.setdefault(str(target), {})
+            for key in (doc.get("spec") or {}).get("encryptedData") or {}:
+                bucket.setdefault(
+                    str(key),
+                    "sealed-placeholder-value-at-least-32-chars",
+                )
     return config, secrets
 
 
 def _resolve_container_env(
     container: dict[str, Any],
     config: dict[str, str],
-    secrets: dict[str, str],
+    secrets: dict[str, dict[str, str]],
 ) -> dict[str, str]:
     resolved: dict[str, str] = {}
     for entry in container.get("env") or []:
@@ -142,12 +178,18 @@ def _resolve_container_env(
             continue
         secret_ref = value_from.get("secretKeyRef") or {}
         if secret_ref:
-            key = secret_ref.get("key")
-            assert key in secrets, (
-                f"env {name}: secretKeyRef key {key!r} missing from "
-                f"Secret audiomind-secrets"
+            sname = str(secret_ref.get("name") or "")
+            key = str(secret_ref.get("key") or "")
+            assert sname != "jwt-secret", (
+                f"env {name}: legacy Secret jwt-secret must not be referenced"
             )
-            resolved[str(name)] = secrets[str(key)]
+            assert sname in secrets, (
+                f"env {name}: secretKeyRef Secret {sname!r} has no producer in render"
+            )
+            assert key in secrets[sname], (
+                f"env {name}: secretKeyRef key {key!r} missing from Secret {sname}"
+            )
+            resolved[str(name)] = secrets[sname][key]
             continue
     return resolved
 
@@ -159,7 +201,7 @@ def _find_deployment(docs: list[dict[str, Any]], name: str) -> dict[str, Any]:
             and (doc.get("metadata") or {}).get("name") == name
         ):
             return doc
-    raise AssertionError(f"Deployment {name} not found in rendered docs")
+    raise AssertionError(f"Deployment {name} not found in rendered overlay")
 
 
 def _apply_resolved_env(
@@ -167,7 +209,6 @@ def _apply_resolved_env(
 ) -> None:
     for key in _SETTINGS_ENV_KEYS:
         monkeypatch.delenv(key, raising=False)
-    # Keep ANALYSIS_PROVIDER / AI_PROVIDER in lockstep (Settings fail-fasts on conflict).
     synced = dict(resolved)
     if "ANALYSIS_PROVIDER" in synced and "AI_PROVIDER" not in synced:
         synced["AI_PROVIDER"] = synced["ANALYSIS_PROVIDER"]
@@ -178,9 +219,103 @@ def _apply_resolved_env(
     get_settings.cache_clear()
 
 
+def _secret_producers(docs: list[dict[str, Any]]) -> dict[str, list[str]]:
+    out: dict[str, list[str]] = {}
+    for doc in docs:
+        kind = doc.get("kind")
+        meta = doc.get("metadata") or {}
+        if kind == "Secret":
+            name = meta.get("name")
+            if name:
+                out.setdefault(str(name), []).append("Secret")
+        elif kind == "SealedSecret":
+            tmpl = ((doc.get("spec") or {}).get("template") or {}).get("metadata") or {}
+            name = tmpl.get("name") or meta.get("name")
+            if name:
+                out.setdefault(str(name), []).append("SealedSecret")
+    return out
+
+
 @pytest.fixture(scope="module")
 def rendered_overlays() -> dict[str, list[dict[str, Any]]]:
     return {overlay: _kustomize(overlay) for overlay in OVERLAYS}
+
+
+@pytest.mark.parametrize("overlay", OVERLAYS)
+def test_no_legacy_jwt_secret_or_user_jwt_secret(rendered_overlays, overlay: str) -> None:
+    docs = rendered_overlays[overlay]
+    blob = yaml.safe_dump_all(docs)
+    assert "name: jwt-secret" not in blob
+    assert "USER_JWT_SECRET" not in blob
+    # secretKeyRef name must never be the removed jwt-secret resource
+    for doc in docs:
+        if doc.get("kind") != "Deployment":
+            continue
+        for c in (doc.get("spec") or {}).get("template", {}).get("spec", {}).get(
+            "containers"
+        ) or []:
+            for e in c.get("env") or []:
+                sk = ((e.get("valueFrom") or {}).get("secretKeyRef") or {})
+                assert sk.get("name") != "jwt-secret"
+
+
+@pytest.mark.parametrize("overlay", OVERLAYS)
+def test_no_duplicate_audiomind_secrets_ownership(
+    rendered_overlays, overlay: str
+) -> None:
+    producers = _secret_producers(rendered_overlays[overlay])
+    owners = producers.get("audiomind-secrets", [])
+    assert len(owners) == 1, (
+        f"{overlay}: Duplicate ownership for Secret audiomind-secrets: {owners}"
+    )
+    if overlay == "dev":
+        assert owners == ["Secret"]
+    else:
+        assert owners == ["SealedSecret"]
+
+
+@pytest.mark.parametrize("overlay", OVERLAYS)
+@pytest.mark.parametrize("deployment_name", JAVA_DEPLOYMENTS)
+def test_java_deployments_wire_jwt_from_audiomind_secrets(
+    rendered_overlays, overlay: str, deployment_name: str
+) -> None:
+    docs = rendered_overlays[overlay]
+    config, secrets = _index_config_and_secrets(docs)
+    deployment = _find_deployment(docs, deployment_name)
+    container = deployment["spec"]["template"]["spec"]["containers"][0]
+    resolved = _resolve_container_env(container, config, secrets)
+
+    assert "JWT_SECRET" in resolved
+    assert resolved["JWT_SECRET"].strip()
+    assert "INTERNAL_SERVICE_TOKEN" in resolved
+    assert resolved["INTERNAL_SERVICE_TOKEN"].strip()
+
+    # Explicit secretKeyRef shape
+    env_by_name = {
+        e["name"]: e for e in (container.get("env") or []) if e.get("name")
+    }
+    jwt = env_by_name["JWT_SECRET"]["valueFrom"]["secretKeyRef"]
+    assert jwt["name"] == "audiomind-secrets"
+    assert jwt["key"] == "JWT_SECRET"
+
+    if deployment_name == "meeting-api-deployment":
+        assert resolved.get("SPRING_DATASOURCE_URL") or env_by_name.get(
+            "SPRING_DATASOURCE_USERNAME"
+        )
+        cors = resolved.get("CORS_ALLOWED_ORIGINS", "")
+        if overlay in {"staging", "prod"}:
+            assert "localhost" not in cors.lower()
+    if deployment_name == "processing-api-deployment":
+        user_url = resolved.get("AUDIOMIND_USER_API_BASE_URL", "")
+        assert user_url
+        if overlay in {"staging", "prod"}:
+            assert "localhost" not in user_url.lower()
+            ai_url = resolved.get("AUDIOMIND_AI_API_BASE_URL", "")
+            assert ai_url and "localhost" not in ai_url.lower()
+    if deployment_name == "user-api-deployment":
+        assert env_by_name.get("SPRING_DATASOURCE_URL") or resolved.get(
+            "SPRING_DATASOURCE_URL"
+        )
 
 
 @pytest.mark.parametrize("overlay", OVERLAYS)
