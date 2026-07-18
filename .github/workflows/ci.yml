@@ -205,3 +205,32 @@ jobs:
 
       - name: Run Gate-A verification
         run: bash scripts/ci/gate-a-verify.sh
+
+  quota-postgres-concurrency:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Run QuotaConcurrencyTest (required Postgres / Docker)
+        env:
+          REQUIRE_POSTGRES_CONCURRENCY_TESTS: "true"
+        run: |
+          cd demoRecordAUDIOMID
+          chmod +x ./mvnw
+          ./mvnw -pl user-service -Pquota-postgres-it test --no-transfer-progress
+
+      - name: Verify QuotaConcurrencyTest Surefire results
+        run: node scripts/verify-quota-concurrency-results.mjs

@@ -24,6 +24,9 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.ImportAutoConfiguration;
@@ -35,9 +38,8 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import org.testcontainers.DockerClientFactory;
 import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
 
 /**
@@ -46,6 +48,9 @@ import org.testcontainers.utility.DockerImageName;
  * <p>Uses {@code @DataJpaTest} + Flyway + Testcontainers so Redis / security / Google OAuth
  * beans are not required. Test methods run without an outer transaction so concurrent
  * {@link QuotaService} calls can commit independently.
+ *
+ * <p>Docker gate: when {@code REQUIRE_POSTGRES_CONCURRENCY_TESTS=true} and Docker is unavailable,
+ * the class fails hard. Otherwise missing Docker skips via {@link Assumptions#assumeTrue}.
  */
 @DataJpaTest(
         properties = {
@@ -57,25 +62,50 @@ import org.testcontainers.utility.DockerImageName;
 @ImportAutoConfiguration(FlywayAutoConfiguration.class)
 @Import({QuotaService.class, UserPlanService.class})
 @Transactional(propagation = Propagation.NOT_SUPPORTED)
-@Testcontainers(disabledWithoutDocker = true)
 class QuotaConcurrencyTest {
 
     private static final DateTimeFormatter YYYYMM = DateTimeFormatter.ofPattern("yyyyMM");
     private static final long FREE_GEMINI_LIMIT = 50_000L;
 
-    @Container
     @SuppressWarnings("resource")
-    static final PostgreSQLContainer<?> POSTGRES =
-            new PostgreSQLContainer<>(DockerImageName.parse("postgres:16-alpine"))
-                    .withDatabaseName("user_quota_it")
-                    .withUsername("test")
-                    .withPassword("test");
+    static PostgreSQLContainer<?> POSTGRES;
+
+    @BeforeAll
+    static void requireDockerWhenForced() {
+        boolean required =
+                Boolean.parseBoolean(
+                        System.getenv()
+                                .getOrDefault(
+                                        "REQUIRE_POSTGRES_CONCURRENCY_TESTS",
+                                        System.getProperty(
+                                                "REQUIRE_POSTGRES_CONCURRENCY_TESTS", "false")));
+        boolean docker = DockerClientFactory.instance().isDockerAvailable();
+        if (required && !docker) {
+            throw new IllegalStateException(
+                    "REQUIRE_POSTGRES_CONCURRENCY_TESTS=true but Docker is unavailable");
+        }
+        Assumptions.assumeTrue(docker, "Docker required for QuotaConcurrencyTest");
+
+        POSTGRES =
+                new PostgreSQLContainer<>(DockerImageName.parse("postgres:16-alpine"))
+                        .withDatabaseName("user_quota_it")
+                        .withUsername("test")
+                        .withPassword("test");
+        POSTGRES.start();
+    }
+
+    @AfterAll
+    static void stopPostgres() {
+        if (POSTGRES != null) {
+            POSTGRES.stop();
+        }
+    }
 
     @DynamicPropertySource
     static void registerDatasource(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
-        registry.add("spring.datasource.username", POSTGRES::getUsername);
-        registry.add("spring.datasource.password", POSTGRES::getPassword);
+        registry.add("spring.datasource.url", () -> POSTGRES.getJdbcUrl());
+        registry.add("spring.datasource.username", () -> POSTGRES.getUsername());
+        registry.add("spring.datasource.password", () -> POSTGRES.getPassword());
         registry.add("spring.datasource.driver-class-name", () -> "org.postgresql.Driver");
         registry.add(
                 "spring.jpa.properties.hibernate.dialect",
