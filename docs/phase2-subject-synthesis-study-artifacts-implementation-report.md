@@ -1,8 +1,8 @@
 # Phase 2 — Implementation Report
 
-**Verdict (this session):** see **Q.10 Merge gate** (runtime deployment closure).
+**Verdict (this session):** see **R.7 Merge gate** (Kubernetes Java runtime closure).
 
-Final distributed-systems remediation (section **N**) completed. Runtime deployment closure is section **Q**.
+Final distributed-systems remediation (section **N**) and runtime deployment closure (**Q**) completed. Java JWT / Secret ownership closure is section **R**.
 
 ## A. Git
 
@@ -287,4 +287,54 @@ Final distributed-systems remediation (section **N**) completed. Runtime deploym
 
 ### Q.10 Merge gate (runtime closure)
 
-**Ready to merge:** **Yes** — rendered api/worker/beat Settings PASS; Beat without CORS/Gemini; provider SoT consistent; overlay APP_ENV correct; staging/prod CORS non-localhost; quota 5xx retry + 4xx no-retry; Postgres concurrency CI skipped=0; membership contract PASS; structural K8s PASS; AI/FE/contracts green; tracked tree clean after commits.
+**Ready to merge:** **Superseded by section R** — earlier gates remain necessary; Java JWT Secret wiring and Secret/SealedSecret ownership are required for cluster boot.
+
+## R. Kubernetes Java runtime closure
+
+### R.1 JWT secret convention
+- Kubernetes Secret name: `audiomind-secrets`
+- Key: `JWT_SECRET` (min 32 chars at Java startup)
+- Env on meeting-api / processing-api / user-api:
+  `secretKeyRef.name=audiomind-secrets`, `key=JWT_SECRET`
+- Removed: Secret `jwt-secret`, key `USER_JWT_SECRET`
+
+### R.2 Overlay secret strategy
+| Overlay | Producer for `audiomind-secrets` |
+|---------|----------------------------------|
+| Dev | Raw `Secret` (`k8s/overlays/dev/secret.yaml`) with >=32-char JWT placeholder |
+| Staging | `SealedSecret` only (`encryptedData.JWT_SECRET` + token + Gemini) |
+| Prod | `SealedSecret` only |
+
+Base no longer includes `secret.yaml` in kustomization resources (template file retained for docs only). Staging/prod do **not** patch a raw Secret alongside SealedSecret.
+
+### R.3 Validators
+- `scripts/validate-rendered-k8s.py` fails on missing Secret/SealedSecret producer or key, and on **Duplicate ownership for Secret audiomind-secrets**
+- `REQUIRE_K8S_RENDER_TESTS=true` → missing kubectl/kustomize **fails** (CI); local may soft-skip
+- CI job `k8s-runtime-validation` renders overlays, runs structural validator + pytest + `StartupConfigValidatorTest`
+
+### R.4 Java startup tests
+`StartupConfigValidatorTest` × meeting/processing/user: valid ≥32 PASS; empty FAIL; short FAIL.
+
+### R.5 Matrix / smoke (this closure)
+| Gate | Result |
+|------|--------|
+| AI pytest | **658 passed**, 23 skipped, exit **0** |
+| Meeting / Processing / User Maven | **PASS** |
+| QuotaConcurrencyTest required gate | **tests=3 skipped=0** |
+| FE lint/test/build | **PASS** |
+| Contracts | **PASS** |
+| Rendered JWT wiring (meeting/processing/user × overlays) | **PASS** |
+| Duplicate ownership check | **PASS** (one producer per overlay) |
+| Structural validator | **PASS** |
+| Java StartupConfigValidatorTest | **PASS** (3×3) |
+| Technical fake-provider smoke | **PASS** |
+| Real Gemini smoke | **NOT RUN** |
+
+### R.6 Remaining risks
+1. SealedSecret placeholders must be replaced with `kubeseal` ciphertext before cluster apply.
+2. Real Gemini + live sealed secrets smoke on staging.
+3. Offline `kubectl apply --dry-run=client` may still need API/CRD discovery; CI uses render + structural validator.
+
+### R.7 Merge gate
+
+**Ready to merge:** **Yes** — JWT wiring for meeting/processing/user via `audiomind-secrets/JWT_SECRET`; no `jwt-secret` / `USER_JWT_SECRET`; dev raw Secret vs staging/prod SealedSecret only; structural producer/key + duplicate ownership FAIL correctly; required K8s CI gate; Java startup tests; prior Phase 2 gates green; tracked tree clean.
