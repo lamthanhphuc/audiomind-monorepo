@@ -197,12 +197,24 @@ public class StudyGenerationService {
             Long ownerUserId,
             String artifactType,
             String status,
+            Integer page,
+            Integer size,
+            String sort,
             String traceId,
             String authorization) {
-        // ownership check via subject fetch
         meetingServiceClient.getSubjectById(subjectId, traceId, authorization);
+        List<Long> meetingIds = listSubjectMeetingIds(subjectId, traceId, authorization);
         try {
-            return aiServiceClient.listStudyArtifacts(subjectId, ownerUserId, artifactType, status, traceId);
+            return aiServiceClient.listStudyArtifacts(
+                    subjectId,
+                    ownerUserId,
+                    artifactType,
+                    status,
+                    meetingIds,
+                    page,
+                    size,
+                    sort,
+                    traceId);
         } catch (HttpStatusCodeException ex) {
             throw mapAiException(ex);
         }

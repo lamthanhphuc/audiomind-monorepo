@@ -57,6 +57,7 @@ export type Flashcard = {
   hint?: string | null
   tags?: string[]
   difficulty?: string
+  evidence?: StudyEvidenceRef[]
   sourceMeetingIds?: number[]
   sourceSegmentIds?: string[]
 }
@@ -70,6 +71,11 @@ export type McqOption = {
   text: string
 }
 
+export type StudyEvidenceRef = {
+  meetingId: number
+  segmentId: string
+}
+
 export type McqQuestion = {
   id: string
   question: string
@@ -77,6 +83,7 @@ export type McqQuestion = {
   correctOptionId: string
   explanation?: string
   difficulty?: string
+  evidence?: StudyEvidenceRef[]
   sourceMeetingIds?: number[]
   sourceSegmentIds?: string[]
 }
@@ -97,6 +104,7 @@ export type EssayQuestion = {
   keyPoints?: string[]
   rubric?: RubricItem[]
   difficulty?: string
+  evidence?: StudyEvidenceRef[]
   sourceMeetingIds?: number[]
   sourceSegmentIds?: string[]
 }
@@ -170,6 +178,33 @@ export type StudyArtifactsCreateResponse = {
   artifacts: StudyArtifact[]
   status: AggregateStudyStatus | string
   generationRequestId?: string | null
+}
+
+export type StudyEvidenceSourceLike = {
+  evidence?: StudyEvidenceRef[]
+  sourceMeetingIds?: number[]
+  sourceSegmentIds?: string[]
+}
+
+/**
+ * Prefer the first `evidence[]` pair (meetingId + segmentId already
+ * correlated by the backend) over independently-indexed
+ * `sourceMeetingIds[0]`/`sourceSegmentIds[0]`, which can point at unrelated
+ * meeting/segment combinations when the two arrays aren't aligned.
+ */
+export const pickStudyEvidence = (
+  item: StudyEvidenceSourceLike,
+): StudyEvidenceRef | null => {
+  const first = item.evidence?.[0]
+  if (first && first.meetingId != null && first.segmentId) {
+    return { meetingId: first.meetingId, segmentId: first.segmentId }
+  }
+  const meetingId = item.sourceMeetingIds?.[0]
+  const segmentId = item.sourceSegmentIds?.[0]
+  if (meetingId != null && segmentId) {
+    return { meetingId, segmentId }
+  }
+  return null
 }
 
 export const STUDY_ARTIFACT_TERMINAL_SUCCESS = new Set(['COMPLETED', 'STALE'])

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { aggregateStudyStatuses, isStudyArtifactTerminal } from '../types/studyArtifacts'
+import { aggregateStudyStatuses, isStudyArtifactTerminal, pickStudyEvidence } from '../types/studyArtifacts'
 import {
   createFlashcardFlipState,
   flipFlashcard,
@@ -35,6 +35,31 @@ describe('aggregateStudyStatuses', () => {
   it('detects terminal statuses', () => {
     expect(isStudyArtifactTerminal('COMPLETED')).toBe(true)
     expect(isStudyArtifactTerminal('QUEUED')).toBe(false)
+  })
+})
+
+describe('pickStudyEvidence', () => {
+  it('prefers the first evidence[] pair over independent source arrays', () => {
+    const result = pickStudyEvidence({
+      evidence: [{ meetingId: 1, segmentId: 'seg-1' }],
+      sourceMeetingIds: [2, 3],
+      sourceSegmentIds: ['seg-9'],
+    })
+    expect(result).toEqual({ meetingId: 1, segmentId: 'seg-1' })
+  })
+
+  it('falls back to sourceMeetingIds/sourceSegmentIds when evidence is absent', () => {
+    const result = pickStudyEvidence({
+      sourceMeetingIds: [4],
+      sourceSegmentIds: ['seg-4'],
+    })
+    expect(result).toEqual({ meetingId: 4, segmentId: 'seg-4' })
+  })
+
+  it('returns null when neither evidence nor a complete source pair is available', () => {
+    expect(pickStudyEvidence({})).toBeNull()
+    expect(pickStudyEvidence({ sourceMeetingIds: [1] })).toBeNull()
+    expect(pickStudyEvidence({ evidence: [] })).toBeNull()
   })
 })
 

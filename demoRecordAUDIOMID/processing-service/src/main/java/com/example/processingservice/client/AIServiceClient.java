@@ -1738,7 +1738,15 @@ public class AIServiceClient {
     }
 
     public Map<String, Object> listStudyArtifacts(
-            Long subjectId, Long ownerUserId, String artifactType, String status, String traceId) {
+            Long subjectId,
+            Long ownerUserId,
+            String artifactType,
+            String status,
+            List<Long> meetingIds,
+            Integer page,
+            Integer size,
+            String sort,
+            String traceId) {
         UriComponentsBuilder builder = UriComponentsBuilder
                 .fromUriString(aiUrl + "/api/internal/subjects/" + subjectId + "/study-artifacts")
                 .queryParam("ownerUserId", ownerUserId);
@@ -1747,6 +1755,21 @@ public class AIServiceClient {
         }
         if (StringUtils.hasText(status)) {
             builder.queryParam("status", status);
+        }
+        if (meetingIds != null && !meetingIds.isEmpty()) {
+            builder.queryParam(
+                    "meetingIds",
+                    meetingIds.stream().map(String::valueOf).reduce((a, b) -> a + "," + b).orElse("")
+            );
+        }
+        if (page != null) {
+            builder.queryParam("page", page);
+        }
+        if (size != null) {
+            builder.queryParam("size", size);
+        }
+        if (StringUtils.hasText(sort)) {
+            builder.queryParam("sort", sort);
         }
         ResponseEntity<Map<String, Object>> response = restTemplate.exchange(
                 builder.toUriString(),

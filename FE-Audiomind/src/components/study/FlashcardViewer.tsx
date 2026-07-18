@@ -1,4 +1,5 @@
 import type { Flashcard } from '../../types/studyArtifacts'
+import { pickStudyEvidence } from '../../types/studyArtifacts'
 import './study.css'
 
 export type FlashcardViewerProps = {
@@ -9,8 +10,9 @@ export type FlashcardViewerProps = {
 }
 
 export function FlashcardViewer({ card, flipped, onFlip, onOpenEvidence }: FlashcardViewerProps) {
-  const meetingId = card.sourceMeetingIds?.[0]
-  const segmentId = card.sourceSegmentIds?.[0]
+  const evidence = pickStudyEvidence(card)
+  const meetingId = evidence?.meetingId
+  const segmentId = evidence?.segmentId
 
   return (
     <button
