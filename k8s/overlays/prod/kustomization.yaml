@@ -13,7 +13,6 @@ resources:
   - ingress.yaml
 patches:
   - path: configmap-patch.yaml
-  - path: secret-patch.yaml
   - path: replicas-patch.yaml
   - path: resource-patch.yaml
   - path: db-managed-patch.yaml
