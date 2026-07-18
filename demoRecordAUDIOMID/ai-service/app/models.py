@@ -220,6 +220,7 @@ class SubjectSynthesis(Base):
     version = Column(Integer, nullable=False, default=1)
     title = Column(String(255), nullable=True)
     content_json = Column(JSON, nullable=True)
+    options_json = Column(JSON, nullable=True)
     source_hash = Column(String(64), nullable=False)
     options_hash = Column(String(64), nullable=True)
     source_selection_mode = Column(String(20), nullable=False, default="ALL_READY")
@@ -231,6 +232,11 @@ class SubjectSynthesis(Base):
     error_message = Column(Text, nullable=True)
     warnings_json = Column(JSON, nullable=True)
     generated_at = Column(DateTime, nullable=True)
+    dispatch_requested_at = Column(DateTime, nullable=True)
+    celery_task_id = Column(String(128), nullable=True)
+    processing_started_at = Column(DateTime, nullable=True)
+    attempt_count = Column(Integer, nullable=False, default=0)
+    last_heartbeat_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
@@ -284,6 +290,11 @@ class StudyArtifact(Base):
     error_message = Column(Text, nullable=True)
     warnings_json = Column(JSON, nullable=True)
     generated_at = Column(DateTime, nullable=True)
+    dispatch_requested_at = Column(DateTime, nullable=True)
+    celery_task_id = Column(String(128), nullable=True)
+    processing_started_at = Column(DateTime, nullable=True)
+    attempt_count = Column(Integer, nullable=False, default=0)
+    last_heartbeat_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
