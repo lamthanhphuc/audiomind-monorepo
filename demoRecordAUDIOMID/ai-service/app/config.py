@@ -263,6 +263,16 @@ class Settings(BaseSettings):
         default=1200,
         validation_alias=AliasChoices("STUDY_GENERATION_TIME_LIMIT_SECONDS"),
     )
+    study_dispatch_lease_seconds: int = Field(
+        default=120,
+        validation_alias=AliasChoices("STUDY_DISPATCH_LEASE_SECONDS"),
+    )
+    study_processing_timeout_seconds: int = Field(
+        default=1800,
+        validation_alias=AliasChoices("STUDY_PROCESSING_TIMEOUT_SECONDS"),
+    )
+    study_artifact_list_default_size: int = Field(default=20)
+    study_artifact_list_max_size: int = Field(default=100)
     subject_synthesis_max_meetings_per_batch: int = Field(
         default=8,
         validation_alias=AliasChoices("SUBJECT_SYNTHESIS_MAX_MEETINGS_PER_BATCH"),
@@ -274,6 +284,10 @@ class Settings(BaseSettings):
     subject_synthesis_max_parallel_batches: int = Field(
         default=2,
         validation_alias=AliasChoices("SUBJECT_SYNTHESIS_MAX_PARALLEL_BATCHES"),
+    )
+    subject_synthesis_chars_per_token: int = Field(
+        default=4,
+        validation_alias=AliasChoices("SUBJECT_SYNTHESIS_CHARS_PER_TOKEN"),
     )
     study_flashcard_count_min: int = 5
     study_flashcard_count_max: int = 100

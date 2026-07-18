@@ -370,22 +370,17 @@ def canonicalize_deferred_retry(meeting_id: int, attempt: int = 1) -> dict:
     bind=True,
     name="app.tasks.generate_subject_synthesis",
     queue="study_generation",
-    autoretry_for=(Exception,),
-    dont_autoretry_for=(),
+    autoretry_for=(),
     retry_backoff=True,
     retry_backoff_max=32,
     retry_jitter=True,
     max_retries=5,
-    soft_time_limit=900,
-    time_limit=1200,
 )
 def generate_subject_synthesis(self, synthesis_id: int) -> None:
     from app.services.study import StudyTransientError, StudyValidationError, StudySourceNotReadyError
     from app.services.study.service import process_synthesis_job
 
     settings = get_settings()
-    self.soft_time_limit = settings.study_generation_soft_time_limit_seconds
-    self.time_limit = settings.study_generation_time_limit_seconds
     db = SessionLocal()
     try:
         process_synthesis_job(db, synthesis_id)
@@ -401,13 +396,11 @@ def generate_subject_synthesis(self, synthesis_id: int) -> None:
     bind=True,
     name="app.tasks.generate_study_artifact",
     queue="study_generation",
-    autoretry_for=(Exception,),
+    autoretry_for=(),
     retry_backoff=True,
     retry_backoff_max=32,
     retry_jitter=True,
     max_retries=5,
-    soft_time_limit=900,
-    time_limit=1200,
 )
 def generate_study_artifact(self, artifact_id: int) -> None:
     from app.services.study import StudyTransientError, StudyValidationError, StudySourceNotReadyError
@@ -421,5 +414,16 @@ def generate_study_artifact(self, artifact_id: int) -> None:
         return
     except StudyTransientError as exc:
         raise self.retry(exc=exc, max_retries=settings.study_generation_max_retries) from exc
+    finally:
+        db.close()
+
+
+@celery_app.task(name="app.tasks.reconcile_study_generation")
+def reconcile_study_generation() -> dict:
+    from app.services.study.service import reconcile_study_generation_jobs
+
+    db = SessionLocal()
+    try:
+        return reconcile_study_generation_jobs(db)
     finally:
         db.close()
