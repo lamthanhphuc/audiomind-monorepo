@@ -17,7 +17,7 @@ export type SubjectMindMapViewProps = {
   testId?: string
 }
 
-const hasCycleOrOrphan = (rootId: string, nodes: MindMapNode[]): boolean => {
+export const hasCycleOrOrphan = (rootId: string, nodes: MindMapNode[]): boolean => {
   const ids = new Set(nodes.map((n) => n.id))
   ids.add(rootId)
   const parents = new Map(nodes.map((n) => [n.id, n.parentId ?? null]))
