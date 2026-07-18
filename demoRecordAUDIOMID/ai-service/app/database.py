@@ -1,21 +1,72 @@
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.orm import declarative_base
-from sqlalchemy import text
+from __future__ import annotations
+
+from typing import Any
+
+from sqlalchemy import create_engine, text
+from sqlalchemy.engine import Engine
+from sqlalchemy.orm import declarative_base, sessionmaker
 from tenacity import retry, stop_after_attempt, wait_fixed
+
 from app.config import get_settings
 
-settings = get_settings()
-
-engine = create_engine(settings.database_url, pool_pre_ping=True)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
 Base = declarative_base()
+
+_engine: Engine | None = None
+_SessionLocal: Any | None = None
+
+
+def _is_beat_component() -> bool:
+    return (get_settings().app_component or "").strip().lower() == "beat"
+
+
+def get_engine() -> Engine:
+    """Lazy engine — Beat must not create a SQLAlchemy engine at import time."""
+    global _engine, _SessionLocal
+    if _is_beat_component():
+        raise RuntimeError(
+            "DATABASE engine is not available for APP_COMPONENT=beat "
+            "(schedules only; workers own DB access)"
+        )
+    if _engine is None:
+        settings = get_settings()
+        settings.validate_database_url_scheme()
+        _engine = create_engine(settings.database_url, pool_pre_ping=True)
+        _SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=_engine)
+    return _engine
+
+
+def SessionLocal():  # noqa: N802 — keep call-site compatibility with sessionmaker()
+    if _SessionLocal is None:
+        get_engine()
+    assert _SessionLocal is not None
+    return _SessionLocal()
+
+
+# Lazy proxy so `from app.database import engine` does not connect at import time.
+class _EngineProxy:
+    def connect(self, *args: Any, **kwargs: Any):
+        return get_engine().connect(*args, **kwargs)
+
+    def begin(self, *args: Any, **kwargs: Any):
+        return get_engine().begin(*args, **kwargs)
+
+    def dispose(self, *args: Any, **kwargs: Any):
+        return get_engine().dispose(*args, **kwargs)
+
+    @property
+    def dialect(self):
+        return get_engine().dialect
+
+    def __getattr__(self, item: str) -> Any:
+        return getattr(get_engine(), item)
+
+
+engine = _EngineProxy()
 
 
 @retry(stop=stop_after_attempt(10), wait=wait_fixed(3), reraise=True)
 def wait_for_database() -> None:
-    with engine.connect() as connection:
+    with get_engine().connect() as connection:
         connection.execute(text("SELECT 1"))
 
 

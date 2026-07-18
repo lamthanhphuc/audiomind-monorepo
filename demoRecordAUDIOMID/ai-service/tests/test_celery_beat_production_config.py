@@ -39,7 +39,7 @@ def _set_api_worker_production_env(
     monkeypatch.setenv("APP_COMPONENT", component)
     monkeypatch.setenv(
         "DATABASE_URL",
-        "postgresql://audiomind:secure-pass@db.prod.internal:5432/audiomind",
+        "postgresql://audiomind:secure-pass@db.prod.internal:5432/audiomind?sslmode=require",
     )
     monkeypatch.setenv("CELERY_BROKER_URL", "redis://redis.prod.internal:6379/0")
     monkeypatch.setenv("CELERY_RESULT_BACKEND", "redis://redis.prod.internal:6379/1")
