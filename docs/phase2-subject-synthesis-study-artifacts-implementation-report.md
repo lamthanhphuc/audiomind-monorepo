@@ -480,4 +480,3 @@ Removed from staging/prod resources: `db-secret-placeholder.yaml`, raw `db-creds
 | Ready for production cutover | **NO** (requires Gemini smoke + observation + backup + prod seals) |
 
 Remaining operator actions: run generate-sealed-secrets against cluster cert; point URLs at managed Postgres with TLS; execute deploy-staging; run managed-DB + Phase 2 smokes; optionally RUN_REAL_GEMINI_SMOKE=true.
-
