@@ -244,6 +244,47 @@ class Settings(BaseSettings):
     celery_retry_jitter: bool = True
     celery_prefetch_multiplier: int = 1
     celery_concurrency: int = 4
+    celery_study_generation_queue: str = Field(
+        default="study_generation",
+        validation_alias=AliasChoices(
+            "CELERY_STUDY_GENERATION_QUEUE",
+            "STUDY_GENERATION_QUEUE",
+        ),
+    )
+    study_generation_max_retries: int = Field(
+        default=5,
+        validation_alias=AliasChoices("STUDY_GENERATION_MAX_RETRIES"),
+    )
+    study_generation_soft_time_limit_seconds: int = Field(
+        default=900,
+        validation_alias=AliasChoices("STUDY_GENERATION_SOFT_TIME_LIMIT_SECONDS"),
+    )
+    study_generation_time_limit_seconds: int = Field(
+        default=1200,
+        validation_alias=AliasChoices("STUDY_GENERATION_TIME_LIMIT_SECONDS"),
+    )
+    subject_synthesis_max_meetings_per_batch: int = Field(
+        default=8,
+        validation_alias=AliasChoices("SUBJECT_SYNTHESIS_MAX_MEETINGS_PER_BATCH"),
+    )
+    subject_synthesis_max_input_tokens: int = Field(
+        default=24000,
+        validation_alias=AliasChoices("SUBJECT_SYNTHESIS_MAX_INPUT_TOKENS"),
+    )
+    subject_synthesis_max_parallel_batches: int = Field(
+        default=2,
+        validation_alias=AliasChoices("SUBJECT_SYNTHESIS_MAX_PARALLEL_BATCHES"),
+    )
+    study_flashcard_count_min: int = 5
+    study_flashcard_count_max: int = 100
+    study_mcq_count_min: int = 5
+    study_mcq_count_max: int = 50
+    study_essay_count_min: int = 1
+    study_essay_count_max: int = 20
+    study_quota_gemini_chars_per_artifact: int = Field(
+        default=8000,
+        validation_alias=AliasChoices("STUDY_QUOTA_GEMINI_CHARS_PER_ARTIFACT"),
+    )
 
     # Worker monitor
     timeout_monitor_interval_seconds: int = 60
