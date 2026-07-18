@@ -13,7 +13,9 @@ def test_distributed_ownership_rollback_alias_disables_stt_ownership(monkeypatch
     assert settings.stt_ownership_enabled is False
 
 
-def test_provider_defaults_load_for_mvp():
+def test_provider_defaults_load_for_mvp(monkeypatch):
+    monkeypatch.delenv("AI_PROVIDER", raising=False)
+    monkeypatch.delenv("ANALYSIS_PROVIDER", raising=False)
     settings = Settings(_env_file=None)
 
     assert settings.stt_provider == "deepgram"

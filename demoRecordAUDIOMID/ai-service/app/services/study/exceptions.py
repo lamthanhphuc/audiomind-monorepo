@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 from app.services.study import StudyTransientError, StudyValidationError
 
@@ -44,15 +45,23 @@ def is_transient_provider_error(exc: BaseException) -> bool:
         "too many requests",
         "rate limit",
         "429",
+        " 500",
+        " 501",
         " 502",
         " 503",
         " 504",
+        " 505",
         "http 5",
         "status code 5",
         "status=5",
         "deadline exceeded",
     )
     if any(token in msg for token in transient_tokens):
+        return True
+    # Any HTTP 5xx status mentioned in the message (e.g. "500 Internal Server Error").
+    if re.search(r"(?<!\d)5\d{2}(?!\d)", msg) and any(
+        token in msg for token in ("http", "status", "error", "code", "server")
+    ):
         return True
     if "429" in name or "ratelimit" in name or "timeout" in name:
         return True

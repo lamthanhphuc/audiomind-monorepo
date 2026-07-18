@@ -1,3 +1,4 @@
+from enum import Enum
 from functools import lru_cache
 from pathlib import Path
 from urllib.parse import urlparse
@@ -8,6 +9,23 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
 
 
+class AppComponent(str, Enum):
+    API = "api"
+    WORKER = "worker"
+    BEAT = "beat"
+
+
+def _is_local(value: str | None) -> bool:
+    if not value:
+        return True
+    parsed = urlparse(value)
+    host = (parsed.hostname or "").strip().lower()
+    raw = value.strip().lower()
+    return (
+        host in {"localhost", "127.0.0.1", "0.0.0.0", "::1"} or "localhost" in raw
+    )
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=str(ENV_FILE),
@@ -16,6 +34,10 @@ class Settings(BaseSettings):
     )
 
     app_env: str = "development"
+    app_component: str = Field(
+        default="api",
+        validation_alias=AliasChoices("APP_COMPONENT", "app_component"),
+    )
 
     # Database
     database_url: str = "postgresql://postgres:postgres@db:5432/audiomind"
@@ -326,17 +348,136 @@ class Settings(BaseSettings):
     chunk_processing_stale_seconds: int = 180
     worker_health_port: int = 8080
 
+    @staticmethod
+    def _normalize_analysis_provider(value: str | None) -> str:
+        provider = (value or "gemini").strip().lower()
+        if provider == "local":
+            provider = "ollama"
+        # fake is allowed in non-production; production validators reject it.
+        if provider not in {"gemini", "ollama", "fake"}:
+            return "gemini"
+        return provider
+
+    def _validate_broker_urls_production(self) -> None:
+        if not (self.celery_broker_url or "").strip():
+            raise ValueError(
+                "Invalid production celery_broker_url: empty broker URL is not allowed"
+            )
+        if _is_local(self.celery_broker_url):
+            raise ValueError(
+                "Invalid production celery_broker_url: localhost is not allowed"
+            )
+        if not (self.celery_result_backend or "").strip():
+            raise ValueError(
+                "Invalid production celery_result_backend: empty result backend is not allowed"
+            )
+        if _is_local(self.celery_result_backend):
+            raise ValueError(
+                "Invalid production celery_result_backend: localhost is not allowed"
+            )
+
+    def _validate_database_url_production(self) -> None:
+        if (
+            _is_local(self.database_url)
+            or "postgres:postgres@" in (self.database_url or "").lower()
+        ):
+            raise ValueError(
+                "Invalid production database_url: localhost/default credentials are not allowed"
+            )
+
+    def _validate_meeting_and_token_production(self) -> None:
+        if not (self.meeting_service_base_url or "").strip():
+            raise ValueError(
+                "Invalid production meeting_service_base_url: required for Phase 2 "
+                "subject membership guards before Gemini"
+            )
+        if not (self.internal_service_token or "").strip():
+            raise ValueError(
+                "Invalid production internal_service_token: required for meeting membership "
+                "and internal study APIs"
+            )
+
+    def _validate_analysis_provider_credentials_production(self) -> None:
+        provider = (self.analysis_provider or "gemini").strip().lower()
+        if provider == "fake":
+            raise ValueError(
+                "Invalid production analysis_provider: fake is not allowed in production"
+            )
+        if provider == "gemini" and not (self.gemini_api_key or "").strip() and not (
+            bool(self.gemini_multi_key_enabled)
+            and (self.gemini_api_keys or "").strip()
+        ):
+            raise ValueError(
+                "Invalid production gemini_api_key: empty secret is not allowed when analysis_provider=gemini"
+            )
+        if provider == "ollama" and _is_local(self.ollama_base_url):
+            raise ValueError(
+                "Invalid production ollama_base_url: localhost is not allowed when analysis_provider=ollama"
+            )
+
+    def _validate_study_generation_queue_production(self) -> None:
+        if not (self.celery_study_generation_queue or "").strip():
+            raise ValueError(
+                "Invalid production celery_study_generation_queue: empty queue name is not allowed"
+            )
+
+    def _validate_cors_production(self) -> None:
+        if "localhost" in (self.cors_allowed_origins or "").lower():
+            raise ValueError(
+                "Invalid production cors_allowed_origins: localhost is not allowed"
+            )
+
+    def _validate_huggingface_diarization_production(self) -> None:
+        native_deepgram_diarization_enabled = bool(
+            self.enable_speaker_diarization and self.deepgram_diarize
+        )
+        if (
+            self.enable_speaker_diarization
+            and not native_deepgram_diarization_enabled
+            and not (self.huggingface_token or "").strip()
+        ):
+            raise ValueError(
+                "Invalid production huggingface_token: empty secret is not allowed when local diarization is enabled"
+            )
+
     @model_validator(mode="after")
     def normalize_provider_settings(self) -> "Settings":
+        self.app_component = (self.app_component or "api").strip().lower()
+        if self.app_component not in {
+            AppComponent.API.value,
+            AppComponent.WORKER.value,
+            AppComponent.BEAT.value,
+        }:
+            self.app_component = AppComponent.API.value
+
         self.stt_provider = (self.stt_provider or "deepgram").strip().lower()
         if self.stt_provider == "whisper":
             self.stt_provider = "local_whisper"
         if self.stt_provider not in {"deepgram", "local_whisper"}:
             self.stt_provider = "deepgram"
 
-        self.analysis_provider = (self.analysis_provider or "gemini").strip().lower()
-        if self.analysis_provider not in {"gemini", "ollama", "local"}:
-            self.analysis_provider = "gemini"
+        analysis_set = "analysis_provider" in self.model_fields_set
+        ai_set = "ai_provider" in self.model_fields_set
+
+        analysis_norm = self._normalize_analysis_provider(self.analysis_provider)
+        ai_norm = self._normalize_analysis_provider(self.ai_provider)
+
+        if analysis_set and ai_set and analysis_norm != ai_norm:
+            raise ValueError(
+                "ai_provider and analysis_provider conflict: "
+                f"ai_provider={ai_norm!r} analysis_provider={analysis_norm!r}. "
+                "Set both to the same value, or set only analysis_provider "
+                "(source of truth for Phase 2 generation)."
+            )
+
+        # analysis_provider is source of truth; sync ai_provider for backward compat.
+        # Legacy sole AI_PROVIDER still seeds analysis_provider when ANALYSIS_PROVIDER unset.
+        if analysis_set or not ai_set:
+            self.analysis_provider = analysis_norm
+            self.ai_provider = analysis_norm
+        else:
+            self.analysis_provider = ai_norm
+            self.ai_provider = ai_norm
 
         self.gemini_analysis_domain_mode = (
             (self.gemini_analysis_domain_mode or "it").strip().lower()
@@ -388,11 +529,6 @@ class Settings(BaseSettings):
             0, int(self.analysis_background_retry_max_attempts or 4)
         )
 
-        # Backward-compatible normalization for legacy variable usage.
-        self.ai_provider = (self.ai_provider or "gemini").strip().lower()
-        if self.ai_provider not in {"gemini", "ollama", "local"}:
-            self.ai_provider = "gemini"
-
         self.audio_enhancement_provider = (
             (self.audio_enhancement_provider or "").strip().lower()
         )
@@ -417,70 +553,25 @@ class Settings(BaseSettings):
         if env not in {"prod", "production"}:
             return self
 
-        def _is_local(value: str | None) -> bool:
-            if not value:
-                return True
-            parsed = urlparse(value)
-            host = (parsed.hostname or "").strip().lower()
-            raw = value.strip().lower()
-            return (
-                host in {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
-                or "localhost" in raw
-            )
+        component = (self.app_component or AppComponent.API.value).strip().lower()
 
-        if (
-            _is_local(self.database_url)
-            or "postgres:postgres@" in self.database_url.lower()
-        ):
-            raise ValueError(
-                "Invalid production database_url: localhost/default credentials are not allowed"
-            )
+        if component == AppComponent.BEAT.value:
+            self._validate_broker_urls_production()
+            return self
 
-        if _is_local(self.ollama_base_url):
-            raise ValueError(
-                "Invalid production ollama_base_url: localhost is not allowed"
-            )
+        # Worker and API share DB / meeting / provider / study-queue checks.
+        self._validate_database_url_production()
+        self._validate_broker_urls_production()
+        self._validate_meeting_and_token_production()
+        self._validate_analysis_provider_credentials_production()
+        self._validate_study_generation_queue_production()
 
-        if "localhost" in (self.cors_allowed_origins or "").lower():
-            raise ValueError(
-                "Invalid production cors_allowed_origins: localhost is not allowed"
-            )
+        if component == AppComponent.WORKER.value:
+            return self
 
-        if (
-            self.analysis_provider == "gemini"
-            and not (self.gemini_api_key or "").strip()
-            and not (
-                bool(self.gemini_multi_key_enabled)
-                and (self.gemini_api_keys or "").strip()
-            )
-        ):
-            raise ValueError(
-                "Invalid production gemini_api_key: empty secret is not allowed when analysis_provider=gemini"
-            )
-
-        if not (self.meeting_service_base_url or "").strip():
-            raise ValueError(
-                "Invalid production meeting_service_base_url: required for Phase 2 "
-                "subject membership guards before Gemini"
-            )
-        if not (self.internal_service_token or "").strip():
-            raise ValueError(
-                "Invalid production internal_service_token: required for meeting membership "
-                "and internal study APIs"
-            )
-
-        native_deepgram_diarization_enabled = bool(
-            self.enable_speaker_diarization and self.deepgram_diarize
-        )
-        if (
-            self.enable_speaker_diarization
-            and not native_deepgram_diarization_enabled
-            and not (self.huggingface_token or "").strip()
-        ):
-            raise ValueError(
-                "Invalid production huggingface_token: empty secret is not allowed when local diarization is enabled"
-            )
-
+        # API (default): CORS + diarization token checks.
+        self._validate_cors_production()
+        self._validate_huggingface_diarization_production()
         return self
 
 
