@@ -186,6 +186,8 @@ public class StudyGenerationController {
         Map<String, Object> options = existing.get("options") instanceof Map<?, ?> map
                 ? (Map<String, Object>) map
                 : Map.of();
+        // Pass null synthesisId so AI regenerates from educationStudy sources
+        // instead of reusing a potentially stale subject synthesis.
         return studyGenerationService.createStudyArtifacts(
                 principal.userId(),
                 subjectId,
@@ -193,7 +195,7 @@ public class StudyGenerationController {
                 List.of(artifactType),
                 mode,
                 options,
-                existing.get("synthesisId") instanceof Number n ? n.longValue() : null,
+                null,
                 true,
                 ensureTraceId(traceId),
                 authorization);

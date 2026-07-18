@@ -249,6 +249,8 @@ services:
 
   celery-beat:
     <<: *mvp-restart-policy
+    # Exactly one beat instance schedules study-generation-reconcile + analysis retries.
+    command: sh -c "celery -A app.celery_app.celery_app beat --loglevel=INFO"
     env_file: !reset []
     environment:
       APP_ENV: ${APP_ENV:-development}

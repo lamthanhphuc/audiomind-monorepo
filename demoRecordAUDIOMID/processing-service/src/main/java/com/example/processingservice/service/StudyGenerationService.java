@@ -5,7 +5,6 @@ import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -15,6 +14,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.HttpStatusCodeException;
+import org.springframework.web.client.RestClientException;
 import org.springframework.web.server.ResponseStatusException;
 
 import com.example.processingservice.client.AIServiceClient;
@@ -66,41 +66,50 @@ public class StudyGenerationService {
             throw mapAiException(ex);
         }
 
-        @SuppressWarnings("unchecked")
-        List<Map<String, Object>> newlyCreated = (List<Map<String, Object>>) prepared.getOrDefault(
-                "newlyCreated", List.of());
-        if (newlyCreated == null || newlyCreated.isEmpty()) {
-            Object synthesis = prepared.get("synthesis");
-            if (synthesis instanceof Map<?, ?> map) {
-                @SuppressWarnings("unchecked")
-                Map<String, Object> cast = new HashMap<>((Map<String, Object>) map);
-                cast.put("cacheHit", Boolean.TRUE.equals(cast.get("cacheHit"))
-                        || "cacheHit".equals(prepared.get("kind")));
-                return cast;
+        List<Long> newlyCreatedIds = extractLongIds(prepared, "newlyCreated", "newlyCreatedSynthesisIds");
+        List<Long> dispatchableIds = extractLongIds(
+                prepared, "dispatchableIds", "dispatchableSynthesisIds");
+
+        if (!newlyCreatedIds.isEmpty()) {
+            if (!consumeQuota(ownerUserId, newlyCreatedIds.size())) {
+                aiServiceClient.markStudyQuotaFailed(
+                        Map.of(
+                                "ownerUserId", ownerUserId,
+                                "synthesisIds", newlyCreatedIds,
+                                "artifactIds", List.of()),
+                        traceId);
+                throw new ResponseStatusException(HttpStatus.PAYMENT_REQUIRED, ErrorCode.QUOTA_EXCEEDED.name());
             }
-            return prepared;
+            confirmQuota(ownerUserId, newlyCreatedIds, List.of(), traceId);
         }
 
-        Object idObj = newlyCreated.get(0).get("id");
-        Long synthesisId = idObj instanceof Number n ? n.longValue() : null;
-        if (!consumeQuota(ownerUserId, 1)) {
-            if (synthesisId != null) {
-                aiServiceClient.markStudyQuotaFailed(
-                        Map.of("ownerUserId", ownerUserId, "synthesisIds", List.of(synthesisId), "artifactIds", List.of()),
-                        traceId);
-            }
-            throw new ResponseStatusException(HttpStatus.PAYMENT_REQUIRED, ErrorCode.QUOTA_EXCEEDED.name());
+        LinkedHashSet<Long> toDispatch = new LinkedHashSet<>(dispatchableIds);
+        toDispatch.addAll(newlyCreatedIds);
+        if (!toDispatch.isEmpty()) {
+            dispatchJobs(ownerUserId, new ArrayList<>(toDispatch), List.of(), traceId);
         }
-        aiServiceClient.dispatchStudyJobs(
-                Map.of(
-                        "ownerUserId", ownerUserId,
-                        "synthesisIds", List.of(synthesisId),
-                        "artifactIds", List.of()),
-                traceId);
-        @SuppressWarnings("unchecked")
-        Map<String, Object> synthesis = new HashMap<>((Map<String, Object>) newlyCreated.get(0));
-        synthesis.put("cacheHit", false);
-        return synthesis;
+
+        if (!newlyCreatedIds.isEmpty()) {
+            @SuppressWarnings("unchecked")
+            List<Map<String, Object>> newlyCreated = (List<Map<String, Object>>) prepared.getOrDefault(
+                    "newlyCreated", List.of());
+            if (newlyCreated != null && !newlyCreated.isEmpty()) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> synthesis = new HashMap<>((Map<String, Object>) newlyCreated.get(0));
+                synthesis.put("cacheHit", false);
+                return synthesis;
+            }
+        }
+
+        Object synthesis = prepared.get("synthesis");
+        if (synthesis instanceof Map<?, ?> map) {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> cast = new HashMap<>((Map<String, Object>) map);
+            cast.put("cacheHit", Boolean.TRUE.equals(cast.get("cacheHit"))
+                    || "cacheHit".equals(prepared.get("kind")));
+            return cast;
+        }
+        return prepared;
     }
 
     public Map<String, Object> getSynthesis(
@@ -147,28 +156,29 @@ public class StudyGenerationService {
             throw mapAiException(ex);
         }
 
-        @SuppressWarnings("unchecked")
-        List<Number> newlyCreatedIds = (List<Number>) prepared.getOrDefault("newlyCreatedArtifactIds", List.of());
-        List<Long> toDispatch = newlyCreatedIds == null
-                ? List.of()
-                : newlyCreatedIds.stream().filter(Objects::nonNull).map(Number::longValue).toList();
+        List<Long> newlyCreatedIds = extractLongIds(
+                prepared, "newlyCreatedArtifactIds", "newlyCreated");
+        List<Long> dispatchableIds = extractLongIds(
+                prepared, "dispatchableIds", "dispatchableArtifactIds");
 
-        if (!toDispatch.isEmpty()) {
-            if (!consumeQuota(ownerUserId, toDispatch.size())) {
+        // Orphan dispatchable rows already have quota confirmed — consume only for newlyCreated.
+        if (!newlyCreatedIds.isEmpty()) {
+            if (!consumeQuota(ownerUserId, newlyCreatedIds.size())) {
                 aiServiceClient.markStudyQuotaFailed(
                         Map.of(
                                 "ownerUserId", ownerUserId,
                                 "synthesisIds", List.of(),
-                                "artifactIds", toDispatch),
+                                "artifactIds", newlyCreatedIds),
                         traceId);
                 throw new ResponseStatusException(HttpStatus.PAYMENT_REQUIRED, ErrorCode.QUOTA_EXCEEDED.name());
             }
-            aiServiceClient.dispatchStudyJobs(
-                    Map.of(
-                            "ownerUserId", ownerUserId,
-                            "synthesisIds", List.of(),
-                            "artifactIds", toDispatch),
-                    traceId);
+            confirmQuota(ownerUserId, List.of(), newlyCreatedIds, traceId);
+        }
+
+        LinkedHashSet<Long> toDispatch = new LinkedHashSet<>(dispatchableIds);
+        toDispatch.addAll(newlyCreatedIds);
+        if (!toDispatch.isEmpty()) {
+            dispatchJobs(ownerUserId, List.of(), new ArrayList<>(toDispatch), traceId);
         }
         return prepared;
     }
@@ -229,6 +239,70 @@ public class StudyGenerationService {
         } catch (HttpStatusCodeException ex) {
             throw mapAiException(ex);
         }
+    }
+
+    private void confirmQuota(
+            Long ownerUserId,
+            List<Long> synthesisIds,
+            List<Long> artifactIds,
+            String traceId) {
+        aiServiceClient.confirmStudyQuota(
+                Map.of(
+                        "ownerUserId", ownerUserId,
+                        "synthesisIds", synthesisIds,
+                        "artifactIds", artifactIds),
+                traceId);
+    }
+
+    private void dispatchJobs(
+            Long ownerUserId,
+            List<Long> synthesisIds,
+            List<Long> artifactIds,
+            String traceId) {
+        try {
+            aiServiceClient.dispatchStudyJobs(
+                    Map.of(
+                            "ownerUserId", ownerUserId,
+                            "synthesisIds", synthesisIds,
+                            "artifactIds", artifactIds),
+                    traceId);
+        } catch (RestClientException | IllegalStateException ex) {
+            log.warn(
+                    "event=STUDY_DISPATCH_FAILED userId={} synthesisIds={} artifactIds={} error={}",
+                    ownerUserId,
+                    synthesisIds,
+                    artifactIds,
+                    ex.getClass().getSimpleName());
+            // Quota already confirmed — leave rows dispatchable so the client can retry.
+            throw new ResponseStatusException(
+                    HttpStatus.SERVICE_UNAVAILABLE,
+                    ErrorCode.SERVICE_UNAVAILABLE.name(),
+                    ex);
+        }
+    }
+
+    private List<Long> extractLongIds(Map<String, Object> prepared, String... keys) {
+        LinkedHashSet<Long> ids = new LinkedHashSet<>();
+        if (prepared == null) {
+            return List.of();
+        }
+        for (String key : keys) {
+            Object raw = prepared.get(key);
+            if (!(raw instanceof List<?> list)) {
+                continue;
+            }
+            for (Object item : list) {
+                if (item instanceof Number n) {
+                    ids.add(n.longValue());
+                } else if (item instanceof Map<?, ?> map) {
+                    Object id = map.get("id");
+                    if (id instanceof Number n) {
+                        ids.add(n.longValue());
+                    }
+                }
+            }
+        }
+        return new ArrayList<>(ids);
     }
 
     private boolean consumeQuota(Long ownerUserId, int newlyCreatedCount) {

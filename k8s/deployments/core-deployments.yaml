@@ -476,6 +476,61 @@ spec:
           persistentVolumeClaim:
             claimName: uploads-pvc
 ---
+# Only one celery-beat instance should ever run at a time: beat owns the
+# periodic schedule (see app/celery_app.py beat_schedule) and running more
+# than one replica would cause duplicate task dispatch.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: celery-beat-deployment
+  namespace: audiomind
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: celery-beat
+  template:
+    metadata:
+      labels:
+        app: celery-beat
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: celery-beat
+          image: audiomind/ai-api:0.1.0
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          command: ["sh", "-c", "celery -A app.celery_app.celery_app beat --loglevel=INFO"]
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: audiomind-secrets
+                  key: DATABASE_URL
+            - name: APP_ENV
+              value: production
+            - name: CELERY_BROKER_URL
+              value: redis://redis:6379/0
+            - name: CELERY_RESULT_BACKEND
+              value: redis://redis:6379/1
+            - name: JOB_STATE_REDIS_URL
+              value: redis://redis:6379/2
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 250m
+              memory: 512Mi
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
