@@ -7,6 +7,7 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -79,13 +80,13 @@ class StudyGenerationServiceTest {
                 "Bearer t");
 
         assertEquals("COMPLETED", result.get("status"));
-        verify(userQuotaClient, never()).consume(anyLong(), anyLong(), anyLong());
+        verify(userQuotaClient, never()).consume(anyLong(), anyLong(), anyLong(), any());
         verify(aiServiceClient, never()).confirmStudyQuota(any(), anyString());
         verify(aiServiceClient, never()).dispatchStudyJobs(any(), anyString());
     }
 
     @Test
-    void createArtifacts_newlyCreated_consumesQuotaConfirmsThenDispatch() {
+    void createArtifacts_newlyCreated_consumesQuotaPerIdWithIdempotencyKey() {
         when(meetingServiceClient.getSubjectById(eq(12L), anyString(), anyString()))
                 .thenReturn(Map.of("id", 12));
         when(meetingServiceClient.listAllSubjectMeetings(eq(12L), anyString(), anyString()))
@@ -102,7 +103,7 @@ class StudyGenerationServiceTest {
                         "status", "QUEUED",
                         "artifacts", List.of(Map.of("id", 1002, "status", "QUEUED"))
                 ));
-        when(userQuotaClient.consume(eq(1L), eq(0L), eq(8000L)))
+        when(userQuotaClient.consume(eq(1L), eq(0L), eq(8000L), eq("study-artifact:1002:quota")))
                 .thenReturn(new UserQuotaClient.QuotaConsumeResult(true, Map.of(), null));
         when(aiServiceClient.confirmStudyQuota(any(), anyString()))
                 .thenReturn(Map.of("status", "ok"));
@@ -122,7 +123,7 @@ class StudyGenerationServiceTest {
                 "Bearer t");
 
         assertEquals("QUEUED", result.get("status"));
-        verify(userQuotaClient).consume(1L, 0L, 8000L);
+        verify(userQuotaClient).consume(1L, 0L, 8000L, "study-artifact:1002:quota");
 
         @SuppressWarnings("unchecked")
         ArgumentCaptor<Map<String, Object>> confirmCaptor = ArgumentCaptor.forClass(Map.class);
@@ -134,6 +135,44 @@ class StudyGenerationServiceTest {
         ArgumentCaptor<Map<String, Object>> dispatchCaptor = ArgumentCaptor.forClass(Map.class);
         verify(aiServiceClient).dispatchStudyJobs(dispatchCaptor.capture(), eq("trace"));
         assertEquals(List.of(1002L), dispatchCaptor.getValue().get("artifactIds"));
+    }
+
+    @Test
+    void createArtifacts_multipleNewlyCreated_consumesOncePerIdWithDistinctKeys() {
+        when(meetingServiceClient.getSubjectById(eq(12L), anyString(), anyString()))
+                .thenReturn(Map.of("id", 12));
+        when(meetingServiceClient.listAllSubjectMeetings(eq(12L), anyString(), anyString()))
+                .thenReturn(List.of(Map.of("id", 101L)));
+        when(meetingServiceClient.getMeetingById(eq(101L), anyString(), anyString()))
+                .thenReturn(Map.of("id", 101, "ownerUserId", 1L));
+        when(aiServiceClient.prepareStudyArtifacts(any(), anyString()))
+                .thenReturn(Map.of(
+                        "newlyCreatedArtifactIds", List.of(1002, 1003),
+                        "status", "QUEUED"
+                ));
+        when(userQuotaClient.consume(eq(1L), eq(0L), eq(8000L), eq("study-artifact:1002:quota")))
+                .thenReturn(new UserQuotaClient.QuotaConsumeResult(true, Map.of(), null));
+        when(userQuotaClient.consume(eq(1L), eq(0L), eq(8000L), eq("study-artifact:1003:quota")))
+                .thenReturn(new UserQuotaClient.QuotaConsumeResult(true, Map.of(), null));
+        when(aiServiceClient.confirmStudyQuota(any(), anyString()))
+                .thenReturn(Map.of("status", "ok"));
+        when(aiServiceClient.dispatchStudyJobs(any(), anyString()))
+                .thenReturn(Map.of("status", "ok"));
+
+        studyGenerationService.createStudyArtifacts(
+                1L,
+                12L,
+                List.of(101L),
+                List.of("FLASHCARDS", "MIND_MAP"),
+                "EXPLICIT",
+                Map.of(),
+                null,
+                false,
+                "trace",
+                "Bearer t");
+
+        verify(userQuotaClient).consume(1L, 0L, 8000L, "study-artifact:1002:quota");
+        verify(userQuotaClient).consume(1L, 0L, 8000L, "study-artifact:1003:quota");
     }
 
     @Test
@@ -167,7 +206,7 @@ class StudyGenerationServiceTest {
                 "trace",
                 "Bearer t");
 
-        verify(userQuotaClient, never()).consume(anyLong(), anyLong(), anyLong());
+        verify(userQuotaClient, never()).consume(anyLong(), anyLong(), anyLong(), any());
         verify(aiServiceClient, never()).confirmStudyQuota(any(), anyString());
         verify(aiServiceClient, never()).markStudyQuotaFailed(any(), anyString());
 
@@ -191,7 +230,7 @@ class StudyGenerationServiceTest {
                         "dispatchableIds", List.of(1005),
                         "status", "QUEUED"
                 ));
-        when(userQuotaClient.consume(eq(1L), eq(0L), eq(8000L)))
+        when(userQuotaClient.consume(eq(1L), eq(0L), eq(8000L), eq("study-artifact:2001:quota")))
                 .thenReturn(new UserQuotaClient.QuotaConsumeResult(true, Map.of(), null));
         when(aiServiceClient.confirmStudyQuota(any(), anyString()))
                 .thenReturn(Map.of("status", "ok"));
@@ -210,7 +249,7 @@ class StudyGenerationServiceTest {
                 "trace",
                 "Bearer t");
 
-        verify(userQuotaClient).consume(1L, 0L, 8000L);
+        verify(userQuotaClient).consume(1L, 0L, 8000L, "study-artifact:2001:quota");
         verify(aiServiceClient).confirmStudyQuota(any(), anyString());
 
         @SuppressWarnings("unchecked")
@@ -233,7 +272,7 @@ class StudyGenerationServiceTest {
                         "artifactIds", List.of(1003),
                         "status", "QUEUED"
                 ));
-        when(userQuotaClient.consume(eq(1L), eq(0L), eq(8000L)))
+        when(userQuotaClient.consume(eq(1L), eq(0L), eq(8000L), eq("study-artifact:1003:quota")))
                 .thenReturn(new UserQuotaClient.QuotaConsumeResult(false, null, "QUOTA_EXCEEDED"));
 
         assertThrows(ResponseStatusException.class, () -> studyGenerationService.createStudyArtifacts(
@@ -248,7 +287,10 @@ class StudyGenerationServiceTest {
                 "trace",
                 "Bearer t"));
 
-        verify(aiServiceClient).markStudyQuotaFailed(any(), anyString());
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Map<String, Object>> failedCaptor = ArgumentCaptor.forClass(Map.class);
+        verify(aiServiceClient).markStudyQuotaFailed(failedCaptor.capture(), anyString());
+        assertEquals(List.of(1003L), failedCaptor.getValue().get("artifactIds"));
         verify(aiServiceClient, never()).confirmStudyQuota(any(), anyString());
         verify(aiServiceClient, never()).dispatchStudyJobs(any(), anyString());
     }
@@ -266,7 +308,7 @@ class StudyGenerationServiceTest {
                         "newlyCreatedArtifactIds", List.of(1004),
                         "status", "QUEUED"
                 ));
-        when(userQuotaClient.consume(eq(1L), eq(0L), eq(8000L)))
+        when(userQuotaClient.consume(eq(1L), eq(0L), eq(8000L), eq("study-artifact:1004:quota")))
                 .thenReturn(new UserQuotaClient.QuotaConsumeResult(true, Map.of(), null));
         when(aiServiceClient.confirmStudyQuota(any(), anyString()))
                 .thenReturn(Map.of("status", "ok"));
@@ -292,6 +334,52 @@ class StudyGenerationServiceTest {
         verify(aiServiceClient, never()).markStudyQuotaFailed(any(), anyString());
     }
 
+    /**
+     * Timeout/retry may call consume again with the same idempotency key.
+     * Client-level allowed=true on both calls is fine; user-service enforces once-per-key.
+     */
+    @Test
+    void createArtifacts_timeoutRetry_sameIdempotencyKeyDoesNotDoubleChargeAtClient() {
+        when(meetingServiceClient.getSubjectById(eq(12L), anyString(), anyString()))
+                .thenReturn(Map.of("id", 12));
+        when(meetingServiceClient.listAllSubjectMeetings(eq(12L), anyString(), anyString()))
+                .thenReturn(List.of(Map.of("id", 101L)));
+        when(meetingServiceClient.getMeetingById(eq(101L), anyString(), anyString()))
+                .thenReturn(Map.of("id", 101, "ownerUserId", 1L));
+        when(aiServiceClient.prepareStudyArtifacts(any(), anyString()))
+                .thenReturn(Map.of(
+                        "newlyCreatedArtifactIds", List.of(1004),
+                        "status", "QUEUED"
+                ));
+        when(userQuotaClient.consume(eq(1L), eq(0L), eq(8000L), eq("study-artifact:1004:quota")))
+                .thenReturn(new UserQuotaClient.QuotaConsumeResult(true, Map.of(), null));
+        when(aiServiceClient.confirmStudyQuota(any(), anyString()))
+                .thenReturn(Map.of("status", "ok"));
+        when(aiServiceClient.dispatchStudyJobs(any(), anyString()))
+                .thenThrow(new RestClientException("timeout"))
+                .thenReturn(Map.of("status", "ok"));
+
+        assertThrows(
+                ResponseStatusException.class,
+                () -> studyGenerationService.createStudyArtifacts(
+                        1L, 12L, List.of(101L), List.of("FLASHCARDS"), "EXPLICIT",
+                        Map.of(), null, false, "trace", "Bearer t"));
+
+        // Client retry after timeout: same key; user-service dedupes — mock may return allowed twice.
+        when(aiServiceClient.prepareStudyArtifacts(any(), anyString()))
+                .thenReturn(Map.of(
+                        "newlyCreatedArtifactIds", List.of(1004),
+                        "dispatchableArtifactIds", List.of(1004),
+                        "status", "QUEUED"
+                ));
+
+        studyGenerationService.createStudyArtifacts(
+                1L, 12L, List.of(101L), List.of("FLASHCARDS"), "EXPLICIT",
+                Map.of(), null, false, "trace", "Bearer t");
+
+        verify(userQuotaClient, times(2)).consume(1L, 0L, 8000L, "study-artifact:1004:quota");
+    }
+
     @Test
     void createArtifacts_regenerateForce_alwaysConsumesQuota() {
         when(meetingServiceClient.getSubjectById(eq(12L), anyString(), anyString()))
@@ -309,7 +397,7 @@ class StudyGenerationServiceTest {
                         "status", "QUEUED",
                         "artifacts", List.of(Map.of("id", 2001, "status", "QUEUED"))
                 ));
-        when(userQuotaClient.consume(eq(1L), eq(0L), eq(8000L)))
+        when(userQuotaClient.consume(eq(1L), eq(0L), eq(8000L), eq("study-artifact:2001:quota")))
                 .thenReturn(new UserQuotaClient.QuotaConsumeResult(true, Map.of(), null));
         when(aiServiceClient.confirmStudyQuota(any(), anyString()))
                 .thenReturn(Map.of("status", "ok"));
@@ -328,7 +416,7 @@ class StudyGenerationServiceTest {
                 "trace",
                 "Bearer t");
 
-        verify(userQuotaClient).consume(1L, 0L, 8000L);
+        verify(userQuotaClient).consume(1L, 0L, 8000L, "study-artifact:2001:quota");
         verify(aiServiceClient).confirmStudyQuota(any(), anyString());
         verify(aiServiceClient).dispatchStudyJobs(any(), anyString());
 
@@ -336,6 +424,44 @@ class StudyGenerationServiceTest {
         ArgumentCaptor<Map<String, Object>> prepareCaptor = ArgumentCaptor.forClass(Map.class);
         verify(aiServiceClient).prepareStudyArtifacts(prepareCaptor.capture(), eq("trace"));
         assertEquals(null, prepareCaptor.getValue().get("synthesisId"));
+        assertEquals(true, prepareCaptor.getValue().get("force"));
+    }
+
+    @Test
+    void createArtifacts_allReady_emptyMeetingIds_keepsAllReadyModeInPrepare() {
+        when(meetingServiceClient.getSubjectById(eq(12L), anyString(), anyString()))
+                .thenReturn(Map.of("id", 12));
+        when(meetingServiceClient.listAllSubjectMeetings(eq(12L), anyString(), anyString()))
+                .thenReturn(List.of(Map.of("id", 101L), Map.of("id", 102L)));
+        when(aiServiceClient.prepareStudyArtifacts(any(), anyString()))
+                .thenReturn(Map.of(
+                        "newlyCreatedArtifactIds", List.of(3001),
+                        "status", "QUEUED"
+                ));
+        when(userQuotaClient.consume(eq(1L), eq(0L), eq(8000L), eq("study-artifact:3001:quota")))
+                .thenReturn(new UserQuotaClient.QuotaConsumeResult(true, Map.of(), null));
+        when(aiServiceClient.confirmStudyQuota(any(), anyString()))
+                .thenReturn(Map.of("status", "ok"));
+        when(aiServiceClient.dispatchStudyJobs(any(), anyString()))
+                .thenReturn(Map.of("status", "ok"));
+
+        studyGenerationService.createStudyArtifacts(
+                1L,
+                12L,
+                List.of(),
+                List.of("FLASHCARDS"),
+                "ALL_READY",
+                Map.of(),
+                null,
+                true,
+                "trace",
+                "Bearer t");
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Map<String, Object>> prepareCaptor = ArgumentCaptor.forClass(Map.class);
+        verify(aiServiceClient).prepareStudyArtifacts(prepareCaptor.capture(), eq("trace"));
+        assertEquals("ALL_READY", prepareCaptor.getValue().get("sourceSelectionMode"));
+        assertEquals(List.of(101L, 102L), prepareCaptor.getValue().get("meetingIds"));
         assertEquals(true, prepareCaptor.getValue().get("force"));
     }
 
@@ -429,7 +555,7 @@ class StudyGenerationServiceTest {
     }
 
     @Test
-    void createSynthesis_newlyCreated_consumesConfirmsAndDispatches() {
+    void createSynthesis_newlyCreated_consumesConfirmsAndDispatchesWithIdempotencyKey() {
         when(meetingServiceClient.getSubjectById(eq(12L), anyString(), anyString()))
                 .thenReturn(Map.of("id", 12));
         when(meetingServiceClient.listAllSubjectMeetings(eq(12L), anyString(), anyString()))
@@ -441,7 +567,7 @@ class StudyGenerationServiceTest {
                         "dispatchableSynthesisIds", List.of(),
                         "synthesis", Map.of("id", 77, "status", "QUEUED")
                 ));
-        when(userQuotaClient.consume(eq(1L), eq(0L), eq(8000L)))
+        when(userQuotaClient.consume(eq(1L), eq(0L), eq(8000L), eq("subject-synthesis:77:quota")))
                 .thenReturn(new UserQuotaClient.QuotaConsumeResult(true, Map.of(), null));
         when(aiServiceClient.confirmStudyQuota(any(), anyString()))
                 .thenReturn(Map.of("status", "ok"));
@@ -452,7 +578,7 @@ class StudyGenerationServiceTest {
                 12L, 1L, null, "ALL_READY", "vi", false, "trace", "Bearer t");
 
         assertEquals(false, result.get("cacheHit"));
-        verify(userQuotaClient).consume(1L, 0L, 8000L);
+        verify(userQuotaClient).consume(1L, 0L, 8000L, "subject-synthesis:77:quota");
 
         @SuppressWarnings("unchecked")
         ArgumentCaptor<Map<String, Object>> confirmCaptor = ArgumentCaptor.forClass(Map.class);
@@ -463,5 +589,10 @@ class StudyGenerationServiceTest {
         ArgumentCaptor<Map<String, Object>> dispatchCaptor = ArgumentCaptor.forClass(Map.class);
         verify(aiServiceClient).dispatchStudyJobs(dispatchCaptor.capture(), eq("trace"));
         assertEquals(List.of(77L), dispatchCaptor.getValue().get("synthesisIds"));
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Map<String, Object>> prepareCaptor = ArgumentCaptor.forClass(Map.class);
+        verify(aiServiceClient).prepareSubjectSynthesis(prepareCaptor.capture(), eq("trace"));
+        assertEquals("ALL_READY", prepareCaptor.getValue().get("sourceSelectionMode"));
     }
 }
