@@ -237,6 +237,11 @@ class SubjectSynthesis(Base):
     processing_started_at = Column(DateTime, nullable=True)
     attempt_count = Column(Integer, nullable=False, default=0)
     last_heartbeat_at = Column(DateTime, nullable=True)
+    quota_confirmed_at = Column(DateTime, nullable=True)
+    dispatch_attempt_count = Column(Integer, nullable=False, default=0)
+    last_dispatch_error = Column(Text, nullable=True)
+    last_dispatch_error_at = Column(DateTime, nullable=True)
+    next_dispatch_retry_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
@@ -295,6 +300,11 @@ class StudyArtifact(Base):
     processing_started_at = Column(DateTime, nullable=True)
     attempt_count = Column(Integer, nullable=False, default=0)
     last_heartbeat_at = Column(DateTime, nullable=True)
+    quota_confirmed_at = Column(DateTime, nullable=True)
+    dispatch_attempt_count = Column(Integer, nullable=False, default=0)
+    last_dispatch_error = Column(Text, nullable=True)
+    last_dispatch_error_at = Column(DateTime, nullable=True)
+    next_dispatch_retry_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
@@ -322,4 +332,3 @@ class StudyArtifactSource(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     artifact = relationship("StudyArtifact", back_populates="sources")
-

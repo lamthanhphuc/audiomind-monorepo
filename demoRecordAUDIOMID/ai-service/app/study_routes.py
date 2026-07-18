@@ -69,8 +69,21 @@ class QuotaFailRequest(BaseModel):
     artifactIds: list[int] = Field(default_factory=list)
 
 
+class ConfirmQuotaRequest(BaseModel):
+    ownerUserId: int
+    synthesisIds: list[int] = Field(default_factory=list)
+    artifactIds: list[int] = Field(default_factory=list)
+
+
 class StaleContext(BaseModel):
     meetingIds: list[int] = Field(default_factory=list)
+
+
+def _parse_meeting_ids_for_stale(meeting_ids: str | None) -> list[int] | None:
+    """None = omit stale context; [] = empty subject (may mark ALL_READY stale)."""
+    if meeting_ids is None:
+        return None
+    return [int(x) for x in meeting_ids.split(",") if x.strip().isdigit()]
 
 
 @router.post("/api/internal/study-sources/resolve")
@@ -203,21 +216,37 @@ def quota_failed(
     return {"status": "ok"}
 
 
+@router.post("/api/internal/study/confirm-quota")
+def confirm_quota(
+    body: ConfirmQuotaRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> dict[str, str]:
+    """Mark QUEUED jobs as quota-confirmed so claim_dispatch can enqueue them."""
+    _require_internal(request)
+    study_service.confirm_quota_for_jobs(
+        db,
+        owner_user_id=body.ownerUserId,
+        synthesis_ids=body.synthesisIds,
+        artifact_ids=body.artifactIds,
+    )
+    return {"status": "ok"}
+
+
 @router.get("/api/internal/subjects/{subject_id}/synthesis")
 def get_synthesis(
     subject_id: int,
     request: Request,
     ownerUserId: int,
-    meetingIds: str = "",
+    meetingIds: str | None = None,
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     _require_internal(request)
-    meeting_ids = [int(x) for x in meetingIds.split(",") if x.strip().isdigit()]
     result = study_service.get_synthesis_for_owner(
         db,
         subject_id=subject_id,
         owner_user_id=ownerUserId,
-        meeting_ids_for_stale=meeting_ids,
+        meeting_ids_for_stale=_parse_meeting_ids_for_stale(meetingIds),
     )
     if result is None:
         raise HTTPException(status_code=404, detail={"error_code": "NOT_FOUND"})
@@ -229,17 +258,16 @@ def get_artifact(
     artifact_id: int,
     request: Request,
     ownerUserId: int,
-    meetingIds: str = "",
+    meetingIds: str | None = None,
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     _require_internal(request)
-    meeting_ids = [int(x) for x in meetingIds.split(",") if x.strip().isdigit()]
     try:
         return study_service.get_artifact_for_owner(
             db,
             artifact_id=artifact_id,
             owner_user_id=ownerUserId,
-            meeting_ids_for_stale=meeting_ids if meeting_ids else None,
+            meeting_ids_for_stale=_parse_meeting_ids_for_stale(meetingIds),
         )
     except StudyAuthorizationError as exc:
         raise HTTPException(status_code=404, detail={"error_code": "NOT_FOUND"}) from exc
@@ -255,11 +283,10 @@ def list_artifacts(
     page: int = 1,
     size: int | None = None,
     sort: str = "updated_at_desc",
-    meetingIds: str = "",
+    meetingIds: str | None = None,
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     _require_internal(request)
-    meeting_ids = [int(x) for x in meetingIds.split(",") if x.strip().isdigit()]
     return study_service.list_artifacts_for_subject(
         db,
         subject_id=subject_id,
@@ -269,7 +296,7 @@ def list_artifacts(
         page=page,
         size=size,
         sort=sort,
-        meeting_ids_for_stale=meeting_ids,
+        meeting_ids_for_stale=_parse_meeting_ids_for_stale(meetingIds),
     )
 
 

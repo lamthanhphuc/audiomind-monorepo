@@ -510,17 +510,40 @@ def validate_mcq(
         if not q.question.strip() or not q.explanation.strip():
             continue
         option_texts: set[str] = set()
-        options: list[McqOption] = []
+        filtered_options: list[McqOption] = []
         for opt in q.options:
             text = opt.text.strip()
             if not text or text.lower() in option_texts:
                 continue
             option_texts.add(text.lower())
-            options.append(McqOption(id=opt.id or chr(65 + len(options)), text=text))
+            filtered_options.append(McqOption(id=(opt.id or "").strip(), text=text))
+        if len(filtered_options) != 4:
+            continue
+
+        # Reject colliding option ids (e.g. A,A,B,C) and non A-D ids.
+        provided_ids = [(o.id or "").strip().upper() for o in filtered_options]
+        if any(oid not in {"A", "B", "C", "D"} for oid in provided_ids if oid):
+            continue
+        if len([oid for oid in provided_ids if oid]) != len(set(oid for oid in provided_ids if oid)):
+            continue
+
+        used_ids = {oid for oid in provided_ids if oid}
+        available_letters = iter(letter for letter in "ABCD" if letter not in used_ids)
+        options: list[McqOption] = []
+        for opt, raw_id in zip(filtered_options, provided_ids):
+            option_id = raw_id or next(available_letters, "")
+            if option_id not in {"A", "B", "C", "D"}:
+                options = []
+                break
+            options.append(McqOption(id=option_id, text=opt.text))
         if len(options) != 4:
             continue
-        option_ids = {o.id for o in options}
-        if q.correctOptionId not in option_ids:
+
+        option_ids = [o.id for o in options]
+        if len(set(option_ids)) != 4:
+            continue
+        correct_id = (q.correctOptionId or "").strip().upper()
+        if option_ids.count(correct_id) != 1:
             continue
         mids, sids, pairs = _resolve_evidence(
             evidence=q.evidence,
@@ -533,7 +556,7 @@ def validate_mcq(
                 id=q.id or f"mcq-{idx}",
                 question=q.question.strip(),
                 options=options,
-                correctOptionId=q.correctOptionId,
+                correctOptionId=correct_id,
                 explanation=q.explanation.strip(),
                 difficulty=_normalize_difficulty(q.difficulty),
                 evidence=pairs,

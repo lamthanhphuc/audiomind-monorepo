@@ -27,10 +27,16 @@ from app.services.study.evidence import (
 logger = logging.getLogger(__name__)
 
 
+class EvidencePair(BaseModel):
+    meetingId: int
+    segmentId: str
+
+
 class EvidencedItem(BaseModel):
     content: str = ""
     importance: str = "MEDIUM"
     reason: str | None = None
+    evidence: list[EvidencePair] = Field(default_factory=list)
     sourceMeetingIds: list[int] = Field(default_factory=list)
     sourceSegmentIds: list[str] = Field(default_factory=list)
 
@@ -39,6 +45,7 @@ class GlossaryItem(BaseModel):
     term: str = ""
     definition: str = ""
     example: str | None = None
+    evidence: list[EvidencePair] = Field(default_factory=list)
     sourceMeetingIds: list[int] = Field(default_factory=list)
     sourceSegmentIds: list[str] = Field(default_factory=list)
 
@@ -51,6 +58,7 @@ class Chapter(BaseModel):
     keywords: list[str] = Field(default_factory=list)
     glossary: list[GlossaryItem] = Field(default_factory=list)
     mustRemember: list[EvidencedItem] = Field(default_factory=list)
+    evidence: list[EvidencePair] = Field(default_factory=list)
     sourceMeetingIds: list[int] = Field(default_factory=list)
     sourceSegmentIds: list[str] = Field(default_factory=list)
 
@@ -58,6 +66,7 @@ class Chapter(BaseModel):
 class KnowledgeGap(BaseModel):
     content: str = ""
     reason: str = ""
+    evidence: list[EvidencePair] = Field(default_factory=list)
     sourceMeetingIds: list[int] = Field(default_factory=list)
     sourceSegmentIds: list[str] = Field(default_factory=list)
 
@@ -65,7 +74,9 @@ class KnowledgeGap(BaseModel):
 class ExamFocus(BaseModel):
     content: str = ""
     reason: str = ""
+    evidence: list[EvidencePair] = Field(default_factory=list)
     sourceMeetingIds: list[int] = Field(default_factory=list)
+    sourceSegmentIds: list[str] = Field(default_factory=list)
 
 
 class SubjectSynthesisContent(BaseModel):
@@ -249,8 +260,22 @@ def build_reducer_prompt(batches: list[dict[str, Any]], *, language: str) -> str
     )
 
 
+EVIDENCE_SCHEMA: dict[str, Any] = {
+    "type": "ARRAY",
+    "items": {
+        "type": "OBJECT",
+        "properties": {
+            "meetingId": {"type": "INTEGER"},
+            "segmentId": {"type": "STRING"},
+        },
+        "required": ["meetingId", "segmentId"],
+    },
+}
+
+
 def _evidence_fields_schema(*, include_segments: bool = True) -> dict[str, Any]:
     props: dict[str, Any] = {
+        "evidence": EVIDENCE_SCHEMA,
         "sourceMeetingIds": {"type": "ARRAY", "items": {"type": "INTEGER"}},
     }
     if include_segments:
@@ -302,7 +327,7 @@ def _exam_focus_schema() -> dict[str, Any]:
         "properties": {
             "content": {"type": "STRING"},
             "reason": {"type": "STRING"},
-            **_evidence_fields_schema(include_segments=False),
+            **_evidence_fields_schema(),
         },
         "required": ["content"],
     }
@@ -349,6 +374,31 @@ def subject_synthesis_gemini_schema() -> dict[str, Any]:
     }
 
 
+def _resolve_evidence(
+    *,
+    evidence: list[EvidencePair],
+    meeting_ids: list[int],
+    segment_ids: list[str],
+    allowed_segments_by_meeting: dict[int, set[str]],
+) -> tuple[list[int], list[str], list[EvidencePair]]:
+    """Resolve an item's evidence via meeting-scoped pairs (never a positional zip).
+
+    Prefers the model-supplied ``evidence[]`` pairs over the legacy
+    ``sourceMeetingIds``/``sourceSegmentIds`` arrays when both are present.
+    """
+    pairs = normalize_evidence_pairs(
+        evidence=[p.model_dump() for p in evidence] if evidence else None,
+        meeting_ids=meeting_ids,
+        segment_ids=segment_ids,
+        allowed_segments_by_meeting=allowed_segments_by_meeting,
+    )
+    return (
+        pairs_to_meeting_ids(pairs),
+        pairs_to_segment_ids(pairs),
+        [EvidencePair(**p) for p in pairs],
+    )
+
+
 def normalize_synthesis(
     raw: dict[str, Any],
     *,
@@ -357,15 +407,15 @@ def normalize_synthesis(
 ) -> SubjectSynthesisContent:
     content = SubjectSynthesisContent.model_validate(raw or {})
 
-    def paired(meeting_ids: list[int], segment_ids: list[str]) -> tuple[list[int], list[str]]:
-        # Never zip meetingIds/segmentIds by index: resolve each pair through
-        # the meeting-scoped allow-list so cross-meeting evidence is dropped.
-        pairs = normalize_evidence_pairs(
+    def paired(
+        evidence: list[EvidencePair], meeting_ids: list[int], segment_ids: list[str]
+    ) -> tuple[list[int], list[str], list[EvidencePair]]:
+        return _resolve_evidence(
+            evidence=evidence,
             meeting_ids=meeting_ids,
             segment_ids=segment_ids,
             allowed_segments_by_meeting=allowed_segments_by_meeting,
         )
-        return pairs_to_meeting_ids(pairs), pairs_to_segment_ids(pairs)
 
     def filter_meeting_only(meeting_ids: list[int]) -> list[int]:
         seen: set[int] = set()
@@ -381,31 +431,31 @@ def normalize_synthesis(
         return result
 
     for chapter in content.chapters:
-        chapter.sourceMeetingIds, chapter.sourceSegmentIds = paired(
-            chapter.sourceMeetingIds, chapter.sourceSegmentIds
+        chapter.sourceMeetingIds, chapter.sourceSegmentIds, chapter.evidence = paired(
+            chapter.evidence, chapter.sourceMeetingIds, chapter.sourceSegmentIds
         )
         for kp in chapter.keyPoints:
-            kp.sourceMeetingIds, kp.sourceSegmentIds = paired(
-                kp.sourceMeetingIds, kp.sourceSegmentIds
+            kp.sourceMeetingIds, kp.sourceSegmentIds, kp.evidence = paired(
+                kp.evidence, kp.sourceMeetingIds, kp.sourceSegmentIds
             )
         for g in chapter.glossary:
-            g.sourceMeetingIds, g.sourceSegmentIds = paired(
-                g.sourceMeetingIds, g.sourceSegmentIds
+            g.sourceMeetingIds, g.sourceSegmentIds, g.evidence = paired(
+                g.evidence, g.sourceMeetingIds, g.sourceSegmentIds
             )
         for m in chapter.mustRemember:
-            m.sourceMeetingIds, m.sourceSegmentIds = paired(
-                m.sourceMeetingIds, m.sourceSegmentIds
+            m.sourceMeetingIds, m.sourceSegmentIds, m.evidence = paired(
+                m.evidence, m.sourceMeetingIds, m.sourceSegmentIds
             )
 
     new_terms: list[GlossaryItem] = []
     for t in content.importantTerms:
         if not t.term.strip():
             continue
-        mids, sids = paired(t.sourceMeetingIds, t.sourceSegmentIds)
+        mids, sids, pairs = paired(t.evidence, t.sourceMeetingIds, t.sourceSegmentIds)
         new_terms.append(
             GlossaryItem(
                 term=t.term, definition=t.definition, example=t.example,
-                sourceMeetingIds=mids, sourceSegmentIds=sids,
+                evidence=pairs, sourceMeetingIds=mids, sourceSegmentIds=sids,
             )
         )
     content.importantTerms = new_terms
@@ -414,11 +464,11 @@ def normalize_synthesis(
     for m in content.mustRemember:
         if not m.content.strip():
             continue
-        mids, sids = paired(m.sourceMeetingIds, m.sourceSegmentIds)
+        mids, sids, pairs = paired(m.evidence, m.sourceMeetingIds, m.sourceSegmentIds)
         new_must_remember.append(
             EvidencedItem(
                 content=m.content, importance=m.importance, reason=m.reason,
-                sourceMeetingIds=mids, sourceSegmentIds=sids,
+                evidence=pairs, sourceMeetingIds=mids, sourceSegmentIds=sids,
             )
         )
     content.mustRemember = new_must_remember
@@ -427,9 +477,12 @@ def normalize_synthesis(
     for g in content.knowledgeGaps:
         if not g.content.strip():
             continue
-        mids, sids = paired(g.sourceMeetingIds, g.sourceSegmentIds)
+        mids, sids, pairs = paired(g.evidence, g.sourceMeetingIds, g.sourceSegmentIds)
         new_gaps.append(
-            KnowledgeGap(content=g.content, reason=g.reason, sourceMeetingIds=mids, sourceSegmentIds=sids)
+            KnowledgeGap(
+                content=g.content, reason=g.reason,
+                evidence=pairs, sourceMeetingIds=mids, sourceSegmentIds=sids,
+            )
         )
     content.knowledgeGaps = new_gaps
 
@@ -437,11 +490,19 @@ def normalize_synthesis(
     for e in content.examFocus:
         if not e.content.strip():
             continue
+        mids, sids, pairs = paired(e.evidence, e.sourceMeetingIds, e.sourceSegmentIds)
+        if not mids:
+            # Exam focus items don't require segment-level evidence like
+            # chapters/glossary do; fall back to meeting-only allow-listing
+            # when no evidence pairs or matching segments were supplied.
+            mids = filter_meeting_only(e.sourceMeetingIds)
         new_focus.append(
             ExamFocus(
                 content=e.content,
                 reason=e.reason or "Chủ đề nên ưu tiên ôn từ tài liệu đã ghi, không phải dự đoán đề thi.",
-                sourceMeetingIds=filter_meeting_only(e.sourceMeetingIds),
+                evidence=pairs,
+                sourceMeetingIds=mids,
+                sourceSegmentIds=sids,
             )
         )
     content.examFocus = new_focus
@@ -524,19 +585,66 @@ def run_hierarchical_synthesis(
     if len(ordered_results) == 1:
         merged = ordered_results[0]
     else:
-        try:
-            raw_text = call_gemini(
-                prompt=build_reducer_prompt(ordered_results, language=language),
-                system_prompt=build_synthesis_system_instruction(),
-                response_schema=subject_synthesis_gemini_schema(),
+        # Hierarchical reducer: keep intermediate prompts under max_input_tokens.
+        level = ordered_results
+        reduce_round = 0
+        while len(level) > 1:
+            reduce_round += 1
+            next_level: list[dict[str, Any]] = []
+            chunk: list[dict[str, Any]] = []
+            chunk_tokens = 0
+            for item in level:
+                item_tokens = estimate_tokens(
+                    json.dumps(item, ensure_ascii=False),
+                    chars_per_token=chars_per_token,
+                )
+                # Single oversized intermediate: still reduce alone rather than truncate evidence.
+                if chunk and chunk_tokens + item_tokens > max_input_tokens:
+                    next_level.append(_reduce_intermediate_batch(
+                        chunk, language=language, call_gemini=call_gemini
+                    ))
+                    chunk = [item]
+                    chunk_tokens = item_tokens
+                else:
+                    chunk.append(item)
+                    chunk_tokens += item_tokens
+            if chunk:
+                if len(chunk) == 1:
+                    next_level.append(chunk[0])
+                else:
+                    next_level.append(
+                        _reduce_intermediate_batch(
+                            chunk, language=language, call_gemini=call_gemini
+                        )
+                    )
+            if len(next_level) >= len(level):
+                # Safety: force pairwise merge if chunking did not reduce.
+                forced: list[dict[str, Any]] = []
+                for i in range(0, len(level), 2):
+                    pair = level[i : i + 2]
+                    if len(pair) == 1:
+                        forced.append(pair[0])
+                    else:
+                        forced.append(
+                            _reduce_intermediate_batch(
+                                pair, language=language, call_gemini=call_gemini
+                            )
+                        )
+                next_level = forced
+                warnings.append(
+                    "REDUCER_FORCED_PAIRWISE: intermediate results required pairwise merge"
+                )
+            level = next_level
+            logger.info(
+                "event=SUBJECT_SYNTHESIS_REDUCER_ROUND round=%s remaining=%s",
+                reduce_round,
+                len(level),
             )
-            merged = json.loads(raw_text) if isinstance(raw_text, str) else raw_text
-            if not isinstance(merged, dict):
-                raise StudyValidationError("INVALID_FINAL_JSON", "Final JSON invalid")
-        except StudyValidationError:
-            raise
-        except Exception as exc:  # noqa: BLE001
-            raise StudyTransientError(str(exc)) from exc
+        merged = level[0]
+        if reduce_round > 1:
+            warnings.append(
+                f"HIERARCHICAL_REDUCER: used {reduce_round} reduce rounds to stay under token budget"
+            )
 
     allowed_meeting_ids = {int(s["meetingId"]) for s in ready_sources}
     allowed_segments_by_meeting = build_allowed_segments_by_meeting(ready_sources)
@@ -549,3 +657,41 @@ def run_hierarchical_synthesis(
     if warnings:
         result["warnings"] = warnings
     return result
+
+
+def _reduce_intermediate_batch(
+    batches: list[dict[str, Any]],
+    *,
+    language: str,
+    call_gemini,
+) -> dict[str, Any]:
+    if len(batches) == 1:
+        return batches[0]
+    try:
+        raw_text = call_gemini(
+            prompt=build_reducer_prompt(batches, language=language),
+            system_prompt=build_synthesis_system_instruction(),
+            response_schema=subject_synthesis_gemini_schema(),
+        )
+        merged = json.loads(raw_text) if isinstance(raw_text, str) else raw_text
+        if not isinstance(merged, dict):
+            raise StudyValidationError("INVALID_FINAL_JSON", "Final JSON invalid")
+        # Preserve union of source meeting ids across intermediates.
+        meeting_ids: list[int] = []
+        seen: set[int] = set()
+        for batch in batches:
+            for mid in batch.get("sourceMeetingIds") or []:
+                try:
+                    value = int(mid)
+                except (TypeError, ValueError):
+                    continue
+                if value not in seen:
+                    seen.add(value)
+                    meeting_ids.append(value)
+        if meeting_ids:
+            merged["sourceMeetingIds"] = meeting_ids
+        return merged
+    except StudyValidationError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise StudyTransientError(str(exc)) from exc
