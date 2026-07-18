@@ -2,114 +2,114 @@
 
 **Verdict (this session):** **Ready to merge**
 
-Mandatory automated gates are green. Residual risks (multi-service JWT Docker smoke, live Gemini) are documented and do not block merge per acceptance rules.
+Post-review remediation completed on top of the prior 16 commits. All mandatory gates green.
 
 ## A. Git
 
 | Item | Value |
 |------|--------|
 | Branch | `feature/phase2-subject-synthesis-study-artifacts` |
-| Base | `origin/main` @ `e7ba389` (Phase 1 via PR #122 / #123) |
-| Prior HEAD (start of this pass) | `36c16a7` (10 commits) |
-| Working tree (pre-commit this pass) | dirty with test/fix/docs only — no secrets |
-| History | No reset / rebase / force-push of prior 10 commits |
-
-New commits this pass (see git log after commit): ASGI client fix, concurrent idempotency, technical smoke, alembic lifecycle test, FE evidence paths + teardown race fix, docs finalize.
+| Base | `origin/main` @ `e7ba389` |
+| Prior HEAD | `565c53e` (16 commits) |
+| New commits | post-review remediation (see log) |
+| History | No reset / rebase / force-push of prior commits |
 
 ## B. AI full suite
 
 | Item | Detail |
 |------|--------|
-| Old failure | `test_api.py` — `TypeError: Client.__init__() got an unexpected keyword argument 'app'` (httpx 0.28 ASGITransport is async-only) |
-| Fix | `tests/httpx_asgi.py` `CompatTestClient` via `AsyncClient` + `asyncio.run`; root `conftest.py` patches Starlette `TestClient`; `test_api.py` uses `asgi_client` |
-| Command | `pytest` (cwd `demoRecordAUDIOMID/ai-service`) |
-| Result | **521 passed, 0 failed, 23 skipped**, exit **0** |
+| Command | `pytest` (`demoRecordAUDIOMID/ai-service`) |
+| Result | **548 passed, 0 failed, 23 skipped**, exit **0** |
 
-## C. Concurrent idempotency
+## K. Post-review remediation
 
-| Item | Detail |
-|------|--------|
-| File | `tests/test_study_concurrent_idempotency.py` |
-| Design | Two threads + `threading.Barrier` after empty live lookup so both transactions race the partial unique index; SQLite file DB with INTEGER PKs + `WHERE deleted_at IS NULL` unique indexes (Postgres URL optional via `PHASE2_CONCURRENT_DATABASE_URL`) |
-| Scope | Synthesis **and** study artifact concurrent prepare |
-| Soft-delete | Soft-delete A → recreate B (new id); list/get/cache hide A; one live row |
-| Result | **PASS** — one live row, shared artifact/synthesis id, no unhandled IntegrityError |
-| Dispatch/quota | Covered by prepare-layer race (single active row); processing quota/dispatch counters covered by Java unit tests |
+### K.1 synthesisId security
+- `resolve_compatible_synthesis` requires owner + subject + `deleted_at IS NULL` + `COMPLETED` + matching `source_hash` + `source_selection_mode`.
+- Hint `synthesisId` still validated; auto-select latest compatible COMPLETED when omitted.
+- Worker re-checks via `_load_compatible_synthesis_content` before injecting synthesis into prompts.
+- Errors: `SYNTHESIS_NOT_FOUND` / `SYNTHESIS_NOT_OWNED` / `SYNTHESIS_SUBJECT_MISMATCH` / `SYNTHESIS_SOURCE_MISMATCH` / `SYNTHESIS_NOT_READY` (no foreign content leak).
 
-## D. Technical smoke (fake AI provider)
+### K.2 Dispatch / worker idempotency
+- Migration `013_phase2_dispatch_idempotency.py`: `dispatch_requested_at`, `celery_task_id`, `processing_started_at`, `attempt_count`, `last_heartbeat_at`, plus synthesis `options_json`.
+- Conditional claim dispatch (QUEUED + lease expired or null).
+- Deterministic Celery task IDs: `study-artifact-{id}-v{version}`, `subject-synthesis-{id}-v{version}`.
+- Worker conditional `QUEUED → PROCESSING`; skip without Gemini if claim fails.
+- Broker enqueue failure releases dispatch claim for safe retry.
+- Reconcile beat task clears expired QUEUED dispatch leases; marks stuck PROCESSING as `PROCESSING_TIMEOUT`.
 
-| Scenario | Result | Evidence |
-|----------|--------|----------|
-| 1 Synthesis QUEUED→COMPLETED | **PASS** | `test_phase2_technical_smoke.py` HTTP prepare → dispatch → eager Celery → fake `_gemini_caller` → GET COMPLETED |
-| 2 Five artifact types | **PASS** | MIND_MAP / FLASHCARDS / MULTIPLE_CHOICE / ESSAY_QUESTIONS / EXAM_BRIEF terminal + schema checks |
-| 3 Cache hit | **PASS** | Second prepare → cacheHit; no extra dispatch |
-| 4 Regenerate | **PASS** | New version + dispatch |
-| 5 Lazy stale ALL_READY/EXPLICIT | **PASS** (unit/critical suite) | `test_study_service_critical` + phase2 hash tests; smoke focuses HTTP lifecycle |
-| 6 Delete + recreate | **PASS** | Soft-delete then prepare succeeds |
-| 7 IDOR | **PASS** | Owner B denied; no content leak |
-| 8 Invalid internal token | **PASS** | 401/403; no prepare |
+### K.3 Queue deployment
+- Fixed: `k8s/deployments/core-deployments.yaml`, `demoRecordAUDIOMID/ai-service/docker-compose.yml`.
+- Dev/MVP already had `-Q audio_processing,study_generation`.
+- Config guard: `tests/test_study_queue_deployment_config.py`.
 
-**Scope note:** Smoke is AI-service ASGI HTTP + Celery **eager** + fake Gemini (`AI_PROVIDER=fake` / monkeypatched caller). Not a browser JWT → processing → meeting → Redis → live worker loop. Processing orchestration and membership are covered by Java tests; live Celery queues verified separately (§E).
+### K.4 Cache policy
+- Only `COMPLETED` → `cacheHit`.
+- `QUEUED`/`PROCESSING` → `inFlight`.
+- `FAILED`/`QUOTA_EXCEEDED` soft-deleted and replaced (new version), never cacheHit.
 
-## E. Celery
+### K.5 Stale ALL_READY / EXPLICIT
+- Empty current ALL_READY meeting set is stale (no empty-list skip).
+- EXPLICIT: new meetings outside selection do not stale; source leaving subject does.
+- List API computes stale with subject meeting IDs (processing passes membership set).
 
-| Item | Value |
-|------|--------|
-| Queues (live `celery-worker`) | `audio_processing`, `study_generation` |
-| Registered tasks | `generate_subject_synthesis`, `generate_study_artifact`, plus existing audio tasks |
-| Worker command | `celery … -Q audio_processing,study_generation` (dev/mvp compose) |
-| Compose/env | `CELERY_STUDY_GENERATION_QUEUE=study_generation` |
-| Unregistered task | Not observed on inspect |
-| Smoke dispatch | Eager path in technical smoke; routing unit tests for queue binding |
+### K.6 Language
+- Synthesis persists `options_json.language`; worker reads stored language (no hard-coded `vi`).
+- Options hash includes language → `vi`/`en` caches are distinct.
 
-## F. Migration
+### K.7 Frontend regenerate
+- `regenerateStudyArtifact` → `StudyArtifactsCreateResponse`.
+- `pickRegeneratedArtifact` + poll `artifactIds`; keep prior content until terminal.
 
-| Step | Result |
-|------|--------|
-| Live DB `alembic current` | `012 (head)` |
-| `alembic downgrade -1` | → `011` |
-| `alembic upgrade head` | → `012` |
-| Tables | `subject_synthesis`, `subject_synthesis_source`, `study_artifact`, `study_artifact_source` |
-| Partial unique | `uq_subject_synthesis_idempotency_live`, `uq_study_artifact_idempotency_live` (`WHERE deleted_at IS NULL`) |
-| Columns verified | `deleted_at`, `generation_request_id`, `source_selection_mode`, versions, hashes |
-| Pytest harness | `tests/test_alembic_012_phase2_study.py` (skips without admin DB URL; docker CLI is authoritative) |
+### K.8 Evidence pairing
+- `evidence.py` meeting→segment map; never positional zip across meetings.
+- Artifacts/synthesis normalize to `evidence[{meetingId,segmentId}]` (+ legacy arrays derived).
+- FE `pickStudyEvidence` prefers evidence pairs.
 
-## G. Frontend evidence tests
+### K.9 Structured schemas + validators
+- Per-type Gemini `response_schema` (nested).
+- Min counts → `FAILED_VALIDATION` when below config mins.
+- Mind-map duplicate IDs fail; orphan/cycle pruned.
 
-| Case | Result |
-|------|--------|
-| Missing segment | **PASS** — warning toast; no scroll |
-| Wait-for-transcript | **PASS** — scroll/highlight after load |
-| Unauthorized meeting | **PASS** — no `pushState` / no transcript leak |
-| Regression | Phase 1 meetings tab + no auto-generate on tab switch (existing SubjectDetail tests) |
-| Teardown race | Fixed `StudyWorkspaceProvider` mountedRef so catalog fetch cannot setState after unmount |
+### K.10 Token budget
+- Batch by `MAX_MEETINGS_PER_BATCH` + `MAX_INPUT_TOKENS` (`estimate_tokens`).
+- Parallelism capped by `MAX_PARALLEL_BATCHES`.
+- Oversized single meeting truncated with warning.
+
+### K.11 Celery timeouts / retry
+- Timeouts via `task_annotations` (not mutating `self.soft_time_limit` at runtime).
+- No broad `autoretry_for=(Exception,)`; only `StudyTransientError` retries.
+
+### K.12 List pagination
+- `page` / `size` / `sort` with defaults and max size; soft-deleted excluded; stale on list.
+- OpenAPI + generated client updated.
 
 ## H. Full matrix
 
 | Module | Command | Exit | Passed | Failed | Skipped | Result |
 |--------|---------|------|--------|--------|---------|--------|
-| AI | `pytest` | 0 | 521 | 0 | 23 | PASS |
-| AI concurrent+smoke | `pytest tests/test_study_concurrent_idempotency.py tests/test_phase2_technical_smoke.py tests/test_alembic_012_phase2_study.py -v` | 0 | 4 | 0 | 1 | PASS (alembic skipped without admin URL) |
-| Processing | `.\mvnw.cmd -q test` | 0 | (suite) | 0 | — | PASS |
-| Meeting | `.\mvnw.cmd -q test` | 0 | (suite) | 0 | — | PASS |
+| AI | `pytest` | 0 | 548 | 0 | 23 | PASS |
+| Processing | `.\mvnw.cmd -q test` | 0 | suite | 0 | — | PASS |
+| Meeting | `.\mvnw.cmd -q test` | 0 | suite | 0 | — | PASS |
 | FE lint | `npm run lint` | 0 | — | — | — | PASS |
-| FE test | `npm run test` | 0 | 719 | 0 | — | PASS |
+| FE test | `npm run test` | 0 | 727 | 0 | — | PASS |
 | FE build | `npm run build` | 0 | — | — | — | PASS |
-| Contracts validate | `npm run validate:contracts` | 0 | — | — | — | PASS |
-| Contracts generate | `npm run generate:client` | 0 | — | — | — | PASS |
-| Contracts typecheck | `npm run typecheck:client` | 0 | — | — | — | PASS |
-| Contracts openapi | `npm run check:openapi` | 0 | — | — | — | PASS |
-| Migration docker | `alembic downgrade -1` + `upgrade head` | 0 | — | — | — | PASS |
+| Contracts | validate/generate/typecheck/check:openapi | 0 | — | — | — | PASS |
+| Migration | `alembic upgrade/downgrade/upgrade` through 013 | 0 | — | — | — | PASS |
+| `git diff --check` | origin/main...HEAD | 0 | — | — | — | PASS |
+
+## Smoke
+
+| Kind | Result |
+|------|--------|
+| Technical fake-provider smoke | **PASS** (updated for dispatch claim + schemas + min counts) |
+| Real Gemini smoke | **NOT RUN** |
 
 ## I. Remaining risks
 
-1. **Real Gemini smoke:** NotRun — not required for merge when technical fake-provider smoke + suites pass; staging should run 1 synthesis + 1 flashcard/MCQ with real key.
-2. **Multi-service JWT Docker E2E:** NotRun as a single scripted FE→processing→meeting→Redis→worker loop; covered piecewise (Java + AI HTTP smoke + live queue inspect).
-3. **Concurrent race DB:** Default CI uses SQLite file + barrier; prefer Postgres URL in CI for stronger race fidelity.
-4. **PDF/DOCX export:** Out of scope (Phase 3).
+1. Real Gemini staging smoke still recommended (1 synthesis + 1 flashcard/MCQ).
+2. Multi-service JWT Docker E2E loop still piecewise (AI HTTP smoke + Java orchestration + live queue inspect).
+3. Concurrent race default DB remains SQLite file; prefer Postgres URL in CI.
 
 ## J. Status
-
-**Phase 2 Completed (feature scope):** Yes for planned Phase 2 deliverables.
 
 **Ready to merge:** **Yes**
