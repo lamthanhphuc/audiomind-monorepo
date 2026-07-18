@@ -246,6 +246,127 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/processing/subjects/{subjectId}/synthesis": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get current subject synthesis */
+        get: operations["getSubjectSynthesis"];
+        put?: never;
+        /** Prepare or create subject synthesis job */
+        post: operations["createSubjectSynthesis"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/processing/subjects/{subjectId}/synthesis/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get subject synthesis status */
+        get: operations["getSubjectSynthesisStatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/processing/subjects/{subjectId}/synthesis/regenerate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Force regenerate subject synthesis */
+        post: operations["regenerateSubjectSynthesis"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/processing/study-artifacts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Prepare or create study artifacts */
+        post: operations["createStudyArtifacts"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/processing/study-artifacts/{artifactId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get study artifact by id */
+        get: operations["getStudyArtifact"];
+        put?: never;
+        post?: never;
+        /** Soft-delete study artifact */
+        delete: operations["deleteStudyArtifact"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/processing/study-artifacts/{artifactId}/regenerate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Force regenerate one study artifact */
+        post: operations["regenerateStudyArtifact"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/processing/subjects/{subjectId}/study-artifacts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List study artifacts for a subject */
+        get: operations["listSubjectStudyArtifacts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/config/transcript-quality": {
         parameters: {
             query?: never;
@@ -514,6 +635,77 @@ export interface components {
             meetings?: {
                 [key: string]: unknown;
             }[];
+        };
+        /** @enum {string} */
+        StudyArtifactType: "MIND_MAP" | "FLASHCARDS" | "MULTIPLE_CHOICE" | "ESSAY_QUESTIONS" | "EXAM_BRIEF";
+        /** @enum {string} */
+        SourceSelectionMode: "ALL_READY" | "EXPLICIT";
+        /** @enum {string} */
+        StudyJobStatus: "QUEUED" | "PROCESSING" | "COMPLETED" | "FAILED" | "STALE" | "QUOTA_EXCEEDED" | "PARTIALLY_FAILED";
+        SubjectSynthesisRequest: {
+            meetingIds?: number[];
+            language?: string;
+            sourceSelectionMode?: components["schemas"]["SourceSelectionMode"];
+        };
+        SubjectSynthesisResponse: {
+            /** Format: int64 */
+            id?: number;
+            /** Format: int64 */
+            subjectId?: number;
+            status?: components["schemas"]["StudyJobStatus"];
+            version?: number;
+            cacheHit?: boolean;
+            stale?: boolean;
+            sourceMeetingIds?: number[];
+            content?: {
+                [key: string]: unknown;
+            } | null;
+        } & {
+            [key: string]: unknown;
+        };
+        StudyArtifactsRequest: {
+            /** Format: int64 */
+            subjectId: number;
+            meetingIds?: number[];
+            artifactTypes: components["schemas"]["StudyArtifactType"][];
+            sourceSelectionMode?: components["schemas"]["SourceSelectionMode"];
+            options?: {
+                [key: string]: unknown;
+            };
+            /** Format: int64 */
+            synthesisId?: number | null;
+        };
+        StudyArtifactResponse: {
+            /** Format: int64 */
+            id?: number;
+            /** Format: int64 */
+            subjectId?: number;
+            artifactType?: components["schemas"]["StudyArtifactType"];
+            status?: components["schemas"]["StudyJobStatus"];
+            version?: number;
+            cacheHit?: boolean;
+            stale?: boolean;
+            content?: {
+                [key: string]: unknown;
+            } | null;
+        } & {
+            [key: string]: unknown;
+        };
+        StudyArtifactsResponse: {
+            artifactIds?: number[];
+            newlyCreatedArtifactIds?: number[];
+            cacheHitArtifactIds?: number[];
+            inFlightArtifactIds?: number[];
+            status?: components["schemas"]["StudyJobStatus"];
+            artifacts?: components["schemas"]["StudyArtifactResponse"][];
+        } & {
+            [key: string]: unknown;
+        };
+        StudyArtifactsListResponse: {
+            items?: components["schemas"]["StudyArtifactResponse"][];
+            status?: components["schemas"]["StudyJobStatus"];
+        } & {
+            [key: string]: unknown;
         };
     };
     responses: never;
@@ -868,6 +1060,219 @@ export interface operations {
                 content: {
                     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": string;
                     "application/pdf": string;
+                };
+            };
+        };
+    };
+    getSubjectSynthesis: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                subjectId: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current synthesis */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SubjectSynthesisResponse"];
+                };
+            };
+        };
+    };
+    createSubjectSynthesis: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                subjectId: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["SubjectSynthesisRequest"];
+            };
+        };
+        responses: {
+            /** @description Synthesis job or cache hit */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SubjectSynthesisResponse"];
+                };
+            };
+        };
+    };
+    getSubjectSynthesisStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                subjectId: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Synthesis status payload */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SubjectSynthesisResponse"];
+                };
+            };
+        };
+    };
+    regenerateSubjectSynthesis: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                subjectId: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["SubjectSynthesisRequest"];
+            };
+        };
+        responses: {
+            /** @description New synthesis version queued */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SubjectSynthesisResponse"];
+                };
+            };
+        };
+    };
+    createStudyArtifacts: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StudyArtifactsRequest"];
+            };
+        };
+        responses: {
+            /** @description Artifact prepare response with ids and statuses */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StudyArtifactsResponse"];
+                };
+            };
+        };
+    };
+    getStudyArtifact: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                artifactId: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Study artifact */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StudyArtifactResponse"];
+                };
+            };
+        };
+    };
+    deleteStudyArtifact: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                artifactId: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+        };
+    };
+    regenerateStudyArtifact: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                artifactId: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Regenerated artifact batch response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StudyArtifactsResponse"];
+                };
+            };
+        };
+    };
+    listSubjectStudyArtifacts: {
+        parameters: {
+            query?: {
+                artifactType?: components["schemas"]["StudyArtifactType"];
+                status?: string;
+            };
+            header?: never;
+            path: {
+                subjectId: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Artifact list */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StudyArtifactsListResponse"];
                 };
             };
         };

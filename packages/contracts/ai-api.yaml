@@ -303,6 +303,148 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+  /api/internal/study-sources/resolve:
+    post:
+      summary: Bulk resolve education study sources (internal)
+      operationId: resolveStudySources
+      parameters:
+        - in: header
+          name: X-Internal-Service-Token
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - ownerUserId
+                - meetingIds
+              properties:
+                ownerUserId:
+                  type: integer
+                  format: int64
+                meetingIds:
+                  type: array
+                  items:
+                    type: integer
+                    format: int64
+      responses:
+        "200":
+          description: Resolved sources
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /api/internal/subjects/{subject_id}/synthesis/prepare:
+    post:
+      summary: Prepare subject synthesis without enqueue (internal)
+      operationId: prepareSubjectSynthesis
+      parameters:
+        - in: path
+          name: subject_id
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - in: header
+          name: X-Internal-Service-Token
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        "200":
+          description: Prepare result
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /api/internal/study-artifacts/prepare:
+    post:
+      summary: Prepare study artifacts without enqueue (internal)
+      operationId: prepareStudyArtifacts
+      parameters:
+        - in: header
+          name: X-Internal-Service-Token
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        "200":
+          description: Prepare result
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /api/internal/study/dispatch:
+    post:
+      summary: Dispatch study Celery jobs (internal)
+      operationId: dispatchStudyJobs
+      parameters:
+        - in: header
+          name: X-Internal-Service-Token
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        "200":
+          description: Dispatched ids
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /api/internal/study/quota-failed:
+    post:
+      summary: Mark reserved study records as quota exceeded (internal)
+      operationId: markStudyQuotaFailed
+      parameters:
+        - in: header
+          name: X-Internal-Service-Token
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
   /health:
     get:
       summary: Health check
