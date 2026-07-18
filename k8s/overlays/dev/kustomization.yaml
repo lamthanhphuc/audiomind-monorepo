@@ -8,7 +8,10 @@ resources:
   - ../../observability/stack.yaml
   - secret.yaml
   - db-secret.yaml
+  - postgres-pvc.yaml
   - db.yaml
+  - ../../jobs/db-migrate-jobs.yaml
 patches:
   - path: configmap-patch.yaml
   - path: app-env-patch.yaml
+  - path: meeting-wait-user-schema-patch.yaml

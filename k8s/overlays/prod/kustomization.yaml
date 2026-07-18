@@ -6,8 +6,9 @@ resources:
   - ../../services/core-services.yaml
   - ../../hpa/core-hpa.yaml
   - ../../observability/stack.yaml
-  - sealed-secret.yaml
-  - sealed-db-secret.yaml
+  # SealedSecrets are applied by deploy after generate-sealed-secrets
+  # (see sealed-secret.example.yaml / sealed-db-secret.example.yaml).
+  - ../../jobs/db-migrate-jobs.yaml
   - hpa.yaml
   - pdb.yaml
   - ingress.yaml
@@ -16,3 +17,5 @@ patches:
   - path: replicas-patch.yaml
   - path: resource-patch.yaml
   - path: app-env-patch.yaml
+  - path: meeting-wait-user-schema-patch.yaml
+  - path: rollout-strategy-patch.yaml
