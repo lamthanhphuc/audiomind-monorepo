@@ -73,6 +73,8 @@ import {
   pushStudioRoute,
   type ParsedStudioRoute,
 } from '../utils/studioRouting'
+import { DEFAULT_SUBJECT_TAB, type SubjectDetailTab } from '../utils/subjectTabs'
+import { navigateToSubjectEvidence, readEvidenceSegmentId } from '../utils/subjectEvidence'
 import type { MeetingResultScope } from '../utils/meetingResultScope'
 import { scopeCacheKey } from '../utils/meetingResultScope'
 import {
@@ -180,9 +182,23 @@ const isUploadDebugLoggingEnabled = (): boolean => {
 
 const readInitialStudioRoute = (): ParsedStudioRoute => {
   if (typeof window === 'undefined') {
-    return { scene: 'upload', meetingId: null, subjectId: null, resultScope: null }
+    return {
+      scene: 'upload',
+      meetingId: null,
+      subjectId: null,
+      subjectTab: null,
+      resultScope: null,
+      evidenceSegmentId: null,
+    }
   }
-  return parseStudioRouteFromLocation() ?? { scene: 'upload', meetingId: null, subjectId: null, resultScope: null }
+  return parseStudioRouteFromLocation() ?? {
+    scene: 'upload',
+    meetingId: null,
+    subjectId: null,
+    subjectTab: null,
+    resultScope: null,
+    evidenceSegmentId: null,
+  }
 }
 
 export const REALTIME_LANGUAGE_OPTIONS: Array<{ value: RealtimeLanguage; label: string }> = [
@@ -1163,6 +1179,9 @@ export default function App() {
   const initialStudioRoute = readInitialStudioRoute()
   const [featureScene, setFeatureScene] = useState<DashboardScene>(initialStudioRoute.scene)
   const [selectedSubjectId, setSelectedSubjectId] = useState<number | null>(initialStudioRoute.subjectId ?? null)
+  const [selectedSubjectTab, setSelectedSubjectTab] = useState<SubjectDetailTab | null>(
+    initialStudioRoute.subjectTab ?? null,
+  )
   const [selectedUploadSubjectId, setSelectedUploadSubjectId] = useState<number | null>(null)
   const [selectedRealtimeSubjectId, setSelectedRealtimeSubjectId] = useState<number | null>(null)
   const {
@@ -1391,7 +1410,9 @@ export default function App() {
     options?: {
       meetingId?: number | null
       subjectId?: number | null
+      subjectTab?: SubjectDetailTab | null
       resultScope?: MeetingResultScope | null
+      evidenceSegmentId?: string | null
       replace?: boolean
     },
   ) => {
@@ -1411,13 +1432,19 @@ export default function App() {
     }
     if (subjectId != null && Number.isFinite(subjectId) && subjectId > 0) {
       setSelectedSubjectId(subjectId)
+      setSelectedSubjectTab(options?.subjectTab ?? DEFAULT_SUBJECT_TAB)
     } else if (scene !== 'subjectDetail') {
       setSelectedSubjectId(null)
+      setSelectedSubjectTab(null)
+    } else if (options?.subjectTab) {
+      setSelectedSubjectTab(options.subjectTab)
     }
     pushStudioRoute(scene, {
       meetingId,
       subjectId,
+      subjectTab: options?.subjectTab,
       resultScope: options?.resultScope ?? null,
+      evidenceSegmentId: options?.evidenceSegmentId,
       replace: options?.replace,
     })
   }, [])
@@ -1582,6 +1609,7 @@ export default function App() {
       setMindmapSelectedMeetingId,
       setMindmapSelectedScope,
       setSelectedSubjectId,
+      setSelectedSubjectTab,
     },
     {
       setGoogleIntegrationNotice,
@@ -2345,6 +2373,7 @@ export default function App() {
             meetingTitle={historyAnalysisTitle ?? undefined}
             resultScope={historyAnalysisScope}
             hydrateFromApi
+            evidenceSegmentId={readEvidenceSegmentId() ?? undefined}
             onBackToHistory={handleBackToHistory}
             preferredDomainMode={selectedDomainMode}
           />
@@ -2379,7 +2408,22 @@ export default function App() {
       return (
         <SubjectDetailScene
           subjectId={selectedSubjectId}
+          activeTab={selectedSubjectTab ?? DEFAULT_SUBJECT_TAB}
+          onTabChange={(tab) => {
+            setSelectedSubjectTab(tab)
+            navigateFeatureScene('subjectDetail', {
+              subjectId: selectedSubjectId,
+              subjectTab: tab,
+              replace: true,
+            })
+          }}
           onOpenMeeting={(meetingId) => navigateFeatureScene('analysis', { meetingId })}
+          onOpenEvidence={(meetingId, segmentId) => {
+            navigateToSubjectEvidence({ meetingId, segmentId })
+            setHistoryAnalysisMeetingId(meetingId)
+            setHistoryAnalysisScope(null)
+            setFeatureScene('analysis')
+          }}
           onBack={() => navigateFeatureScene('subjects')}
         />
       )
