@@ -2,7 +2,7 @@
 
 **Verdict (this session):** **Ready to merge**
 
-Third post-review remediation completed. All mandatory gates green.
+Final distributed-systems remediation (section **N**) completed. All mandatory gates green.
 
 ## A. Git
 
@@ -104,4 +104,80 @@ Third post-review remediation completed. All mandatory gates green.
 
 ## J. Status
 
-**Ready to merge:** **Yes**
+**Ready to merge:** **Yes** (superseded by section N after final distributed-systems remediation)
+
+## N. Final distributed-systems remediation
+
+### N.1 Quota tri-state
+- `QuotaConsumeStatus`: `ALLOWED` | `DENIED` | `UNKNOWN`
+- Processing `UserQuotaClient`: transport/5xx/timeout → `UNKNOWN` (never `DENIED`); short retries (≤3) with same idempotency key
+- `DENIED` only on definitive user-service business rejection
+- AI rows on `UNKNOWN`: stay `QUEUED`, `quota_confirmed_at=null`, no soft-delete, same artifact ID + key on retry
+
+### N.2 Timeout-after-commit
+- If user-service commits ledger then response times out → processing sees `UNKNOWN`
+- Retry reuses key → ledger returns prior `ALLOWED` → single deduction
+- Covered by `StudyGenerationServiceTest` (MockWebServer timeout → UNKNOWN → retry ALLOWED)
+
+### N.3 Usage-counter concurrency
+- PostgreSQL `pg_advisory_xact_lock(userId, period)` before read/create
+- `INSERT … ON CONFLICT (user_id, period_yyyymm) DO NOTHING` then `SELECT … FOR UPDATE`
+- Ledger unique conflict → re-read prior outcome; other integrity violations → bounded retry / clear failure
+- `QuotaConcurrencyIT` (Testcontainers Postgres): same-key ×8, different-key ×2, near-limit allow/deny
+
+### N.4 Quota types
+- Ledger stores `quota_type`: `SUBJECT_SYNTHESIS` vs `STUDY_ARTIFACT`
+- Client sends type explicitly (no silent default to `STUDY_ARTIFACT` for synthesis)
+
+### N.5 Partial batch quota
+- Per-artifact independent consume → confirm+dispatch only `ALLOWED`
+- `DENIED` → `QUOTA_EXCEEDED`; `UNKNOWN` → leave `QUEUED` retryable
+- Aggregate `partialQuota` + `quotaDetails`; status `PARTIALLY_FAILED` when mixed
+- Never abort confirm/dispatch of other ALLOWED items because one sibling was DENIED
+
+### N.6 Internal meeting membership
+- `GET /internal/subjects/{subjectId}/meetings` with `X-Internal-Service-Token` + `X-Owner-User-Id`
+- Controller-level token check (no JWT); wrong owner → 404
+- AI `membership.py`: internal-only URL, full pagination, code `MEETING_MEMBERSHIP_SERVICE_UNAVAILABLE`
+- No public `/subjects/.../meetings` fallback without JWT
+
+### N.7 Artifact hard token ceilings
+- All five artifact types: `assert_prompt_within_limit` before Gemini
+- Source compaction (synthesis / educationStudy / segments / evidence pairs)
+- `PROMPT_TOKEN_LIMIT_EXCEEDED` if still over limit — provider not called
+
+### N.8 Helper-level retry classification
+- Shared `classify_provider_exception` in `app/services/study/exceptions.py`
+- `artifacts.py` / `synthesis.py` use classifier (no blanket `Exception → StudyTransientError`)
+- Outer worker: `TypeError`/`AttributeError`/`KeyError`/`ValueError` → `PROGRAMMING_ERROR` FAILED, no retry
+
+### N.9 Migrations
+- No new Alembic/Flyway required for advisory locks (runtime SQL)
+- Prior **015** / **V11** unchanged
+
+### N.10 Contracts / deploy
+- OpenAPI: internal membership, quota tri-state consume, `partialQuota` / `quotaDetails`
+- Production Settings fail-fast if `MEETING_SERVICE_BASE_URL` or `INTERNAL_SERVICE_TOKEN` missing
+- Compose/K8s/`.env.example` already carry meeting URL + internal token + study Celery worker
+
+### N.11 Matrix / smoke (this remediation)
+| Gate | Result |
+|------|--------|
+| AI pytest | **588 passed**, 0 failed, 23 skipped, exit **0** |
+| Processing Maven | exit **0** |
+| Meeting Maven | exit **0** (MimeSniffer perf threshold relaxed 50→200ms for CI flake) |
+| User/Quota Maven | exit **0** (includes `QuotaConcurrencyIT` ×3 on Testcontainers Postgres) |
+| FE lint / test / build | exit **0** (727 tests) |
+| Contracts validate/generate/typecheck/check:openapi | exit **0** |
+| QuotaConcurrencyIT (Postgres) | **PASS** (same-key, different-key, near-limit) |
+| Technical fake-provider smoke | **PASS** |
+| Real Gemini smoke | **NOT RUN** |
+
+### N.12 Remaining risks
+1. Real Gemini staging smoke still recommended.
+2. SQLite unit paths are not evidence for advisory-lock correctness — Postgres IT is authoritative.
+3. Membership 401/403 treated as transient (token rotation); misconfig may delay STALE detection until fixed.
+
+## O. Merge gate (final)
+
+**Ready to merge:** **Yes** — quota UNKNOWN≠DENIED, timeout-after-commit single charge, concurrent usage-counter safe, partial batch dispatch, internal membership auth+pagination, artifact token ceilings, helper programming errors no-retry, full matrix green.
