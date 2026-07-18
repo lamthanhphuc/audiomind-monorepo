@@ -71,11 +71,12 @@ public class StudyGenerationService {
                 prepared, "dispatchableIds", "dispatchableSynthesisIds");
 
         if (!newlyCreatedIds.isEmpty()) {
-            if (!consumeQuota(ownerUserId, newlyCreatedIds.size())) {
+            List<Long> deniedIds = consumeQuotaPerId(ownerUserId, newlyCreatedIds, true);
+            if (!deniedIds.isEmpty()) {
                 aiServiceClient.markStudyQuotaFailed(
                         Map.of(
                                 "ownerUserId", ownerUserId,
-                                "synthesisIds", newlyCreatedIds,
+                                "synthesisIds", deniedIds,
                                 "artifactIds", List.of()),
                         traceId);
                 throw new ResponseStatusException(HttpStatus.PAYMENT_REQUIRED, ErrorCode.QUOTA_EXCEEDED.name());
@@ -163,12 +164,13 @@ public class StudyGenerationService {
 
         // Orphan dispatchable rows already have quota confirmed — consume only for newlyCreated.
         if (!newlyCreatedIds.isEmpty()) {
-            if (!consumeQuota(ownerUserId, newlyCreatedIds.size())) {
+            List<Long> deniedIds = consumeQuotaPerId(ownerUserId, newlyCreatedIds, false);
+            if (!deniedIds.isEmpty()) {
                 aiServiceClient.markStudyQuotaFailed(
                         Map.of(
                                 "ownerUserId", ownerUserId,
                                 "synthesisIds", List.of(),
-                                "artifactIds", newlyCreatedIds),
+                                "artifactIds", deniedIds),
                         traceId);
                 throw new ResponseStatusException(HttpStatus.PAYMENT_REQUIRED, ErrorCode.QUOTA_EXCEEDED.name());
             }
@@ -305,16 +307,47 @@ public class StudyGenerationService {
         return new ArrayList<>(ids);
     }
 
-    private boolean consumeQuota(Long ownerUserId, int newlyCreatedCount) {
-        long chars = Math.max(0, newlyCreatedCount) * Math.max(0, geminiCharsPerArtifact);
-        UserQuotaClient.QuotaConsumeResult result = userQuotaClient.consume(ownerUserId, 0, chars);
-        if (!result.allowed()) {
-            log.warn("event=STUDY_QUOTA_DENIED userId={} newlyCreated={}", ownerUserId, newlyCreatedCount);
+    /**
+     * Consumes quota once per newly created id with a stable idempotency key.
+     * Keys: {@code subject-synthesis:{id}:quota} or {@code study-artifact:{id}:quota}.
+     * Retries with the same key are safe at the client; user-service enforces once-per-key.
+     *
+     * @return ids for which consume was denied (empty on full success)
+     */
+    private List<Long> consumeQuotaPerId(Long ownerUserId, List<Long> newlyCreatedIds, boolean synthesis) {
+        long chars = Math.max(0, geminiCharsPerArtifact);
+        List<Long> denied = new ArrayList<>();
+        for (Long id : newlyCreatedIds) {
+            String idempotencyKey = synthesis
+                    ? "subject-synthesis:" + id + ":quota"
+                    : "study-artifact:" + id + ":quota";
+            UserQuotaClient.QuotaConsumeResult result =
+                    userQuotaClient.consume(ownerUserId, 0, chars, idempotencyKey);
+            if (!result.allowed()) {
+                denied.add(id);
+                log.warn(
+                        "event=STUDY_QUOTA_DENIED userId={} id={} key={} synthesis={}",
+                        ownerUserId,
+                        id,
+                        idempotencyKey,
+                        synthesis);
+            }
         }
-        return result.allowed();
+        return denied;
     }
 
     private String normalizeMode(String sourceSelectionMode, List<Long> meetingIds) {
+        // Preserve explicit ALL_READY even when meetingIds is empty (force regenerate path).
+        // Do not treat empty+ALL_READY as EXPLICIT.
+        if (sourceSelectionMode != null && !sourceSelectionMode.isBlank()) {
+            String mode = sourceSelectionMode.trim().toUpperCase();
+            if ("ALL_READY".equals(mode)) {
+                return "ALL_READY";
+            }
+            if ("EXPLICIT".equals(mode)) {
+                return "EXPLICIT";
+            }
+        }
         if (meetingIds != null && !meetingIds.isEmpty()) {
             return "EXPLICIT";
         }

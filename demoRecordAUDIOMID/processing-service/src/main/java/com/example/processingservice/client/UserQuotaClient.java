@@ -1,5 +1,6 @@
 package com.example.processingservice.client;
 
+import java.util.HashMap;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -30,6 +31,11 @@ public class UserQuotaClient {
     private boolean quotaFailOpen;
 
     public QuotaConsumeResult consume(Long userId, long sttSecondsDelta, long geminiCharsDelta) {
+        return consume(userId, sttSecondsDelta, geminiCharsDelta, null);
+    }
+
+    public QuotaConsumeResult consume(
+            Long userId, long sttSecondsDelta, long geminiCharsDelta, String idempotencyKey) {
         if (!StringUtils.hasText(internalServiceToken)) {
             if (quotaFailOpen) {
                 log.warn("event=QUOTA_CLIENT_SKIPPED reason=missing_internal_token userId={}", userId);
@@ -43,11 +49,13 @@ public class UserQuotaClient {
         headers.setContentType(MediaType.APPLICATION_JSON);
         headers.add("X-Internal-Service-Token", internalServiceToken);
 
-        Map<String, Object> body = Map.of(
-                "userId", userId,
-                "sttSecondsDelta", Math.max(0, sttSecondsDelta),
-                "geminiCharsDelta", Math.max(0, geminiCharsDelta)
-        );
+        Map<String, Object> body = new HashMap<>();
+        body.put("userId", userId);
+        body.put("sttSecondsDelta", Math.max(0, sttSecondsDelta));
+        body.put("geminiCharsDelta", Math.max(0, geminiCharsDelta));
+        if (StringUtils.hasText(idempotencyKey)) {
+            body.put("idempotencyKey", idempotencyKey);
+        }
 
         try {
             ResponseEntity<Map> response = restTemplate.exchange(

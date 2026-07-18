@@ -93,11 +93,13 @@ public class StudyGenerationController {
             @RequestHeader(HttpHeaders.AUTHORIZATION) String authorization) {
         UserPrincipal principal = requirePrincipal();
         SynthesisRequest body = request == null ? new SynthesisRequest(null, "vi", "ALL_READY") : request;
+        String mode = normalizeSynthesisRegenerateMode(body.sourceSelectionMode());
+        List<Long> meetingIds = "ALL_READY".equals(mode) ? List.of() : body.meetingIds();
         return studyGenerationService.createOrGetSynthesis(
                 subjectId,
                 principal.userId(),
-                body.meetingIds(),
-                body.sourceSelectionMode(),
+                meetingIds,
+                mode,
                 body.language(),
                 true,
                 ensureTraceId(traceId),
@@ -181,7 +183,11 @@ public class StudyGenerationController {
                         .map(Number::longValue)
                         .toList()
                 : List.of();
-        String mode = existing.get("sourceSelectionMode") instanceof String m ? m : "EXPLICIT";
+        String mode = normalizeArtifactRegenerateMode(
+                existing.get("sourceSelectionMode") instanceof String m ? m : null);
+        // ALL_READY → empty meetings so prepare path keeps ALL_READY (not EXPLICIT).
+        // EXPLICIT → keep stored sourceMeetingIds.
+        List<Long> meetingIds = "ALL_READY".equals(mode) ? List.of() : sourceMeetingIds;
         @SuppressWarnings("unchecked")
         Map<String, Object> options = existing.get("options") instanceof Map<?, ?> map
                 ? (Map<String, Object>) map
@@ -191,7 +197,7 @@ public class StudyGenerationController {
         return studyGenerationService.createStudyArtifacts(
                 principal.userId(),
                 subjectId,
-                sourceMeetingIds,
+                meetingIds,
                 List.of(artifactType),
                 mode,
                 options,
@@ -216,6 +222,28 @@ public class StudyGenerationController {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, ErrorCode.UNAUTHORIZED.name());
         }
         return principal;
+    }
+
+    private static String normalizeSynthesisRegenerateMode(String sourceSelectionMode) {
+        if (sourceSelectionMode == null || sourceSelectionMode.isBlank()) {
+            return "ALL_READY";
+        }
+        String mode = sourceSelectionMode.trim().toUpperCase();
+        if ("ALL_READY".equals(mode)) {
+            return "ALL_READY";
+        }
+        return "EXPLICIT";
+    }
+
+    private static String normalizeArtifactRegenerateMode(String sourceSelectionMode) {
+        if (sourceSelectionMode == null || sourceSelectionMode.isBlank()) {
+            return "EXPLICIT";
+        }
+        String mode = sourceSelectionMode.trim().toUpperCase();
+        if ("ALL_READY".equals(mode)) {
+            return "ALL_READY";
+        }
+        return "EXPLICIT";
     }
 
     private String ensureTraceId(String traceId) {
