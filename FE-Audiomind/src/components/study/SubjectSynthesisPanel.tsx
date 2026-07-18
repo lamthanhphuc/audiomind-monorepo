@@ -4,6 +4,8 @@ import type {
   SubjectSynthesis,
   SynthesisChapter,
 } from '../../types/subjectSynthesis'
+import type { StudyEvidenceSourceLike } from '../../types/studyArtifacts'
+import { pickStudyEvidence } from '../../types/studyArtifacts'
 import { navigateToSubjectEvidence } from '../../utils/subjectEvidence'
 import { EmptyState } from '../ui/EmptyState'
 import { ErrorState } from '../ui/ErrorState'
@@ -21,19 +23,19 @@ export type SubjectSynthesisPanelProps = {
 }
 
 const EvidenceLinks = ({
-  meetingIds,
-  segmentIds,
+  source,
   onOpenEvidence,
 }: {
-  meetingIds?: number[]
-  segmentIds?: string[]
+  source: StudyEvidenceSourceLike
   onOpenEvidence?: (meetingId: number, segmentId: string) => void
 }) => {
-  if (!meetingIds?.length || !segmentIds?.length) {
+  // Prefer the first evidence[] pair (already correlated by the backend)
+  // over independently-indexed sourceMeetingIds[0]/sourceSegmentIds[0].
+  const evidence = pickStudyEvidence(source)
+  if (!evidence) {
     return null
   }
-  const meetingId = meetingIds[0]
-  const segmentId = segmentIds[0]
+  const { meetingId, segmentId } = evidence
   return (
     <button
       type="button"
@@ -68,11 +70,7 @@ const EvidencedList = ({
         {items.map((item, index) => (
           <li key={`${title}-${index}`}>
             <div>{item.content}</div>
-            <EvidenceLinks
-              meetingIds={item.sourceMeetingIds}
-              segmentIds={item.sourceSegmentIds}
-              onOpenEvidence={onOpenEvidence}
-            />
+            <EvidenceLinks source={item} onOpenEvidence={onOpenEvidence} />
           </li>
         ))}
       </ul>
@@ -97,11 +95,7 @@ const GlossaryList = ({
         {items.map((item) => (
           <li key={item.term}>
             <strong>{item.term}</strong>: {item.definition}
-            <EvidenceLinks
-              meetingIds={item.sourceMeetingIds}
-              segmentIds={item.sourceSegmentIds}
-              onOpenEvidence={onOpenEvidence}
-            />
+            <EvidenceLinks source={item} onOpenEvidence={onOpenEvidence} />
           </li>
         ))}
       </ul>

@@ -1684,6 +1684,17 @@ public class AIServiceClient {
         return requireBody(response, "dispatchStudyJobs", 0L);
     }
 
+    public Map<String, Object> confirmStudyQuota(Map<String, Object> body, String traceId) {
+        ResponseEntity<Map<String, Object>> response = restTemplate.exchange(
+                aiUrl + "/api/internal/study/confirm-quota",
+                HttpMethod.POST,
+                new HttpEntity<>(body, internalJsonHeaders(traceId)),
+                new ParameterizedTypeReference<>() {
+                }
+        );
+        return requireBody(response, "confirmStudyQuota", 0L);
+    }
+
     public Map<String, Object> markStudyQuotaFailed(Map<String, Object> body, String traceId) {
         ResponseEntity<Map<String, Object>> response = restTemplate.exchange(
                 aiUrl + "/api/internal/study/quota-failed",
@@ -1796,4 +1807,3 @@ public class AIServiceClient {
     }
 
 }
-

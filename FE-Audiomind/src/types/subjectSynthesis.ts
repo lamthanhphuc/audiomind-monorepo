@@ -15,10 +15,16 @@ export type StudySourceRef = {
   analysisVersion?: string | null
 }
 
+export type EvidencePair = {
+  meetingId: number
+  segmentId: string
+}
+
 export type EvidencedItem = {
   content: string
   importance?: string
   reason?: string | null
+  evidence?: EvidencePair[]
   sourceMeetingIds?: number[]
   sourceSegmentIds?: string[]
 }
@@ -27,6 +33,7 @@ export type GlossaryItem = {
   term: string
   definition: string
   example?: string | null
+  evidence?: EvidencePair[]
   sourceMeetingIds?: number[]
   sourceSegmentIds?: string[]
 }
@@ -39,6 +46,7 @@ export type SynthesisChapter = {
   keywords?: string[]
   glossary?: GlossaryItem[]
   mustRemember?: EvidencedItem[]
+  evidence?: EvidencePair[]
   sourceMeetingIds?: number[]
   sourceSegmentIds?: string[]
 }
@@ -46,6 +54,7 @@ export type SynthesisChapter = {
 export type KnowledgeGap = {
   content: string
   reason: string
+  evidence?: EvidencePair[]
   sourceMeetingIds?: number[]
   sourceSegmentIds?: string[]
 }
@@ -53,7 +62,9 @@ export type KnowledgeGap = {
 export type ExamFocus = {
   content: string
   reason: string
+  evidence?: EvidencePair[]
   sourceMeetingIds?: number[]
+  sourceSegmentIds?: string[]
 }
 
 export type SubjectSynthesisContent = {
