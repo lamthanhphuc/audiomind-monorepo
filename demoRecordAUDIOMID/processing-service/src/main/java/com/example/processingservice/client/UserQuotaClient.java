@@ -192,7 +192,7 @@ public class UserQuotaClient {
 
     /**
      * Study-path HTTP classification. NEVER maps UNKNOWN to DENIED.
-     * Retryable: 429 / 502 / 503 / 504. Non-retryable client/config errors otherwise.
+     * Retryable: 429 and any 5xx (500–599). Non-retryable: 400/401/403/404/405/422 etc.
      */
     private QuotaConsumeResult classifyHttpStatus(
             Long userId,
@@ -201,7 +201,7 @@ public class UserQuotaClient {
             boolean legacyFailOpen,
             HttpStatusCodeException ex) {
         int code = ex.getStatusCode().value();
-        if (code == 429 || code == 502 || code == 503 || code == 504) {
+        if (code == 429 || (code >= 500 && code <= 599)) {
             return handleTransportFailure(
                     userId, key, type, legacyFailOpen, "QUOTA_HTTP_" + code, ex);
         }

@@ -91,26 +91,32 @@ class UserQuotaClientTest {
 
     @Test
     void http429_retriesSameKey_upToThree() {
-        server.expect(ExpectedCount.times(3), requestTo(CONSUME_URL))
-                .andExpect(method(HttpMethod.POST))
-                .andRespond(withStatus(HttpStatus.TOO_MANY_REQUESTS));
+        expectHttpRetries(HttpStatus.TOO_MANY_REQUESTS, "QUOTA_HTTP_429");
+    }
 
-        QuotaConsumeResult result = client.consume(1L, 0, 100, KEY, TYPE);
+    @Test
+    void http500_retriesSameKey_upToThree_unknownRetryable() {
+        expectHttpRetries(HttpStatus.INTERNAL_SERVER_ERROR, "QUOTA_HTTP_500");
+    }
 
-        assertUnknown(result, "QUOTA_HTTP_429", true);
-        server.verify();
+    @Test
+    void http501_retries() {
+        expectHttpRetries(HttpStatus.NOT_IMPLEMENTED, "QUOTA_HTTP_501");
+    }
+
+    @Test
+    void http502_retries() {
+        expectHttpRetries(HttpStatus.BAD_GATEWAY, "QUOTA_HTTP_502");
     }
 
     @Test
     void http503_retries() {
-        server.expect(ExpectedCount.times(3), requestTo(CONSUME_URL))
-                .andExpect(method(HttpMethod.POST))
-                .andRespond(withStatus(HttpStatus.SERVICE_UNAVAILABLE));
+        expectHttpRetries(HttpStatus.SERVICE_UNAVAILABLE, "QUOTA_HTTP_503");
+    }
 
-        QuotaConsumeResult result = client.consume(1L, 0, 100, KEY, TYPE);
-
-        assertUnknown(result, "QUOTA_HTTP_503", true);
-        server.verify();
+    @Test
+    void http504_retries() {
+        expectHttpRetries(HttpStatus.GATEWAY_TIMEOUT, "QUOTA_HTTP_504");
     }
 
     @Test
@@ -188,6 +194,17 @@ class UserQuotaClientTest {
         server.expect(ExpectedCount.once(), requestTo(CONSUME_URL))
                 .andExpect(method(HttpMethod.POST))
                 .andRespond(withStatus(status));
+    }
+
+    private void expectHttpRetries(HttpStatus status, String errorCode) {
+        server.expect(ExpectedCount.times(3), requestTo(CONSUME_URL))
+                .andExpect(method(HttpMethod.POST))
+                .andRespond(withStatus(status));
+
+        QuotaConsumeResult result = client.consume(1L, 0, 100, KEY, TYPE);
+
+        assertUnknown(result, errorCode, true);
+        server.verify();
     }
 
     private static void assertUnknown(QuotaConsumeResult result, String errorCode, boolean retryable) {
