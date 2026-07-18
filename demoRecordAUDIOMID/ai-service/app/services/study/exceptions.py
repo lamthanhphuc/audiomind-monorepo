@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
+import json
+
 from app.services.study import StudyTransientError, StudyValidationError
+
+try:
+    from pydantic import ValidationError as PydanticValidationError
+except ImportError:  # pragma: no cover
+    PydanticValidationError = None
 
 
 def is_transient_provider_error(exc: BaseException) -> bool:
@@ -56,12 +63,25 @@ def classify_provider_exception(exc: BaseException) -> BaseException:
     """Classify helper/provider failures for study generation.
 
     - StudyValidationError / StudyTransientError → returned as-is
+    - json.JSONDecodeError → StudyValidationError INVALID_PROVIDER_JSON
+    - pydantic ValidationError → StudyValidationError INVALID_PROVIDER_SCHEMA
     - Transient network/provider → StudyTransientError
     - TypeError / AttributeError / KeyError → returned as-is (programming)
     - Else → returned as-is (caller may mark INTERNAL; not transient)
     """
     if isinstance(exc, (StudyValidationError, StudyTransientError)):
         return exc
+    if isinstance(exc, json.JSONDecodeError):
+        return StudyValidationError(
+            "INVALID_PROVIDER_JSON",
+            "Provider response is not valid JSON",
+        )
+    if PydanticValidationError is not None and isinstance(exc, PydanticValidationError):
+        return StudyValidationError(
+            "INVALID_PROVIDER_SCHEMA",
+            "Provider response does not match expected schema",
+        )
+    # Do NOT convert programming errors to transient (JSONDecodeError is ValueError).
     if isinstance(exc, (TypeError, AttributeError, KeyError)):
         return exc
     if is_transient_provider_error(exc):

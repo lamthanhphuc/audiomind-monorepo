@@ -78,8 +78,8 @@ public class StudyGenerationService {
         List<Long> allowedNewlyCreated = List.of();
         if (!newlyCreatedIds.isEmpty()) {
             QuotaBatchOutcome outcome = consumeQuotaPerId(ownerUserId, newlyCreatedIds, true);
-            applyQuotaOutcome(ownerUserId, outcome, true, traceId);
             annotatePreparedWithQuota(prepared, outcome);
+            applyQuotaOutcome(ownerUserId, outcome, true, traceId);
             allowedNewlyCreated = outcome.allowedIds();
             if (!allowedNewlyCreated.isEmpty()) {
                 confirmQuota(ownerUserId, allowedNewlyCreated, List.of(), traceId);
@@ -177,8 +177,8 @@ public class StudyGenerationService {
         List<Long> allowedNewlyCreated = List.of();
         if (!newlyCreatedIds.isEmpty()) {
             QuotaBatchOutcome outcome = consumeQuotaPerId(ownerUserId, newlyCreatedIds, false);
-            applyQuotaOutcome(ownerUserId, outcome, false, traceId);
             annotatePreparedWithQuota(prepared, outcome);
+            applyQuotaOutcome(ownerUserId, outcome, false, traceId);
             allowedNewlyCreated = outcome.allowedIds();
             if (!allowedNewlyCreated.isEmpty()) {
                 confirmQuota(ownerUserId, List.of(), allowedNewlyCreated, traceId);
@@ -325,8 +325,10 @@ public class StudyGenerationService {
         String quotaType = synthesis ? QUOTA_TYPE_SUBJECT_SYNTHESIS : QUOTA_TYPE_STUDY_ARTIFACT;
         List<Long> allowed = new ArrayList<>();
         List<Long> denied = new ArrayList<>();
-        List<Long> unknown = new ArrayList<>();
+        List<Long> unknownRetryable = new ArrayList<>();
+        List<Long> unknownNonRetryable = new ArrayList<>();
         List<Map<String, Object>> details = new ArrayList<>();
+        String firstNonRetryableError = null;
 
         for (Long id : newlyCreatedIds) {
             String idempotencyKey = synthesis
@@ -343,6 +345,9 @@ public class StudyGenerationService {
             if (result.errorCode() != null) {
                 detail.put("errorCode", result.errorCode());
             }
+            if (result.status() == QuotaConsumeStatus.UNKNOWN) {
+                detail.put("retryable", result.retryable());
+            }
             details.add(detail);
 
             if (result.status() == QuotaConsumeStatus.ALLOWED) {
@@ -355,10 +360,22 @@ public class StudyGenerationService {
                         id,
                         idempotencyKey,
                         synthesis);
-            } else {
-                unknown.add(id);
+            } else if (result.retryable()) {
+                unknownRetryable.add(id);
                 log.warn(
-                        "event=STUDY_QUOTA_UNKNOWN userId={} id={} key={} synthesis={} errorCode={}",
+                        "event=STUDY_QUOTA_UNKNOWN userId={} id={} key={} synthesis={} errorCode={} retryable=true",
+                        ownerUserId,
+                        id,
+                        idempotencyKey,
+                        synthesis,
+                        result.errorCode());
+            } else {
+                unknownNonRetryable.add(id);
+                if (firstNonRetryableError == null && result.errorCode() != null) {
+                    firstNonRetryableError = result.errorCode();
+                }
+                log.warn(
+                        "event=STUDY_QUOTA_UNKNOWN userId={} id={} key={} synthesis={} errorCode={} retryable=false",
                         ownerUserId,
                         id,
                         idempotencyKey,
@@ -366,12 +383,19 @@ public class StudyGenerationService {
                         result.errorCode());
             }
         }
-        return new QuotaBatchOutcome(allowed, denied, unknown, details);
+        return new QuotaBatchOutcome(
+                allowed,
+                denied,
+                unknownRetryable,
+                unknownNonRetryable,
+                details,
+                firstNonRetryableError);
     }
 
     /**
      * Marks denied ids, throws when the whole newlyCreated batch cannot proceed.
      * UNKNOWN ids stay QUEUED (no confirm, no QUOTA_EXCEEDED).
+     * Non-retryable UNKNOWN must never use markStudyQuotaFailed (that path is QUOTA_EXCEEDED-only).
      */
     private void applyQuotaOutcome(
             Long ownerUserId, QuotaBatchOutcome outcome, boolean synthesis, String traceId) {
@@ -389,17 +413,22 @@ public class StudyGenerationService {
         }
 
         boolean noneAllowed = outcome.allowedIds().isEmpty();
-        boolean allUnknown = noneAllowed
-                && outcome.deniedIds().isEmpty()
-                && !outcome.unknownIds().isEmpty();
+        boolean hasUnknown = !outcome.unknownIds().isEmpty();
+        boolean hasNonRetryableUnknown = !outcome.unknownNonRetryableIds().isEmpty();
         boolean allDenied = noneAllowed
                 && outcome.unknownIds().isEmpty()
                 && !outcome.deniedIds().isEmpty();
-        boolean deniedAndUnknown = noneAllowed
-                && !outcome.deniedIds().isEmpty()
-                && !outcome.unknownIds().isEmpty();
 
-        if (allUnknown || deniedAndUnknown) {
+        if (noneAllowed && hasNonRetryableUnknown) {
+            // Leave AI rows QUEUED; surface config/client error without QUOTA_EXCEEDED.
+            String code = outcome.firstNonRetryableErrorCode() != null
+                    ? outcome.firstNonRetryableErrorCode()
+                    : "QUOTA_CLIENT_ERROR";
+            HttpStatus status = mapNonRetryableQuotaHttpStatus(code);
+            throw new ResponseStatusException(status, code);
+        }
+        if (noneAllowed && hasUnknown) {
+            // Retryable UNKNOWN (optionally mixed with DENIED): keep QUEUED, ask client to retry.
             throw new ResponseStatusException(
                     HttpStatus.SERVICE_UNAVAILABLE, ErrorCode.SERVICE_UNAVAILABLE.name());
         }
@@ -407,6 +436,18 @@ public class StudyGenerationService {
             throw new ResponseStatusException(HttpStatus.PAYMENT_REQUIRED, ErrorCode.QUOTA_EXCEEDED.name());
         }
         // some allowed (+ optional denied/unknown) → continue with allowed only
+    }
+
+    private static HttpStatus mapNonRetryableQuotaHttpStatus(String errorCode) {
+        if (errorCode == null) {
+            return HttpStatus.BAD_GATEWAY;
+        }
+        return switch (errorCode) {
+            case "QUOTA_REQUEST_INVALID" -> HttpStatus.BAD_REQUEST;
+            case "QUOTA_SERVICE_UNAUTHORIZED", "QUOTA_SERVICE_FORBIDDEN",
+                    "QUOTA_ENDPOINT_NOT_FOUND", "QUOTA_CLIENT_UNCONFIGURED" -> HttpStatus.BAD_GATEWAY;
+            default -> HttpStatus.BAD_GATEWAY;
+        };
     }
 
     private void annotatePreparedWithQuota(Map<String, Object> prepared, QuotaBatchOutcome outcome) {
@@ -521,8 +562,16 @@ public class StudyGenerationService {
     private record QuotaBatchOutcome(
             List<Long> allowedIds,
             List<Long> deniedIds,
-            List<Long> unknownIds,
-            List<Map<String, Object>> details
+            List<Long> unknownRetryableIds,
+            List<Long> unknownNonRetryableIds,
+            List<Map<String, Object>> details,
+            String firstNonRetryableErrorCode
     ) {
+        List<Long> unknownIds() {
+            List<Long> all = new ArrayList<>(unknownRetryableIds.size() + unknownNonRetryableIds.size());
+            all.addAll(unknownRetryableIds);
+            all.addAll(unknownNonRetryableIds);
+            return all;
+        }
     }
 }

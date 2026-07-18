@@ -69,8 +69,18 @@ public class UserQuotaClient {
 
         public static QuotaConsumeResult unknown(
                 String idempotencyKey, String quotaType, String errorCode) {
+            return unknown(idempotencyKey, quotaType, errorCode, true);
+        }
+
+        public static QuotaConsumeResult unknown(
+                String idempotencyKey, String quotaType, String errorCode, boolean retryable) {
             return new QuotaConsumeResult(
-                    QuotaConsumeStatus.UNKNOWN, idempotencyKey, quotaType, null, errorCode, true);
+                    QuotaConsumeStatus.UNKNOWN,
+                    idempotencyKey,
+                    quotaType,
+                    null,
+                    errorCode,
+                    retryable);
         }
     }
 
@@ -131,9 +141,9 @@ public class UserQuotaClient {
                 return QuotaConsumeResult.allowed(key, type, null);
             }
             if (!legacyFailOpen) {
-                // Study path: never fail-open to ALLOWED.
+                // Study path: never fail-open to ALLOWED; config error is not retryable.
                 log.error("event=QUOTA_CLIENT_UNKNOWN reason=missing_internal_token userId={}", userId);
-                return QuotaConsumeResult.unknown(key, type, "QUOTA_CLIENT_UNCONFIGURED");
+                return QuotaConsumeResult.unknown(key, type, "QUOTA_CLIENT_UNCONFIGURED", false);
             }
             log.error("event=QUOTA_CLIENT_DENIED reason=missing_internal_token userId={}", userId);
             return QuotaConsumeResult.denied(key, type, null, "QUOTA_CLIENT_UNCONFIGURED");
@@ -172,25 +182,50 @@ public class UserQuotaClient {
         } catch (ResourceAccessException ex) {
             return handleTransportFailure(userId, key, type, legacyFailOpen, "QUOTA_TRANSPORT_ERROR", ex);
         } catch (HttpStatusCodeException ex) {
-            int code = ex.getStatusCode().value();
-            if (code == 502 || code == 503 || code == 504) {
-                return handleTransportFailure(
-                        userId, key, type, legacyFailOpen, "QUOTA_HTTP_" + code, ex);
-            }
-            if (legacyFailOpen && quotaFailOpen) {
-                log.warn(
-                        "event=QUOTA_CLIENT_FAIL_OPEN userId={} httpStatus={}",
-                        userId,
-                        code);
-                return QuotaConsumeResult.allowed(key, type, null);
-            }
-            log.error("event=QUOTA_CLIENT_HTTP_ERROR userId={} httpStatus={}", userId, code);
-            return QuotaConsumeResult.unknown(key, type, "QUOTA_HTTP_" + code);
+            return classifyHttpStatus(userId, key, type, legacyFailOpen, ex);
         } catch (RestClientException ex) {
             return handleTransportFailure(userId, key, type, legacyFailOpen, "QUOTA_CLIENT_ERROR", ex);
         } catch (Exception ex) {
             return handleTransportFailure(userId, key, type, legacyFailOpen, "QUOTA_CLIENT_ERROR", ex);
         }
+    }
+
+    /**
+     * Study-path HTTP classification. NEVER maps UNKNOWN to DENIED.
+     * Retryable: 429 / 502 / 503 / 504. Non-retryable client/config errors otherwise.
+     */
+    private QuotaConsumeResult classifyHttpStatus(
+            Long userId,
+            String key,
+            String type,
+            boolean legacyFailOpen,
+            HttpStatusCodeException ex) {
+        int code = ex.getStatusCode().value();
+        if (code == 429 || code == 502 || code == 503 || code == 504) {
+            return handleTransportFailure(
+                    userId, key, type, legacyFailOpen, "QUOTA_HTTP_" + code, ex);
+        }
+        if (legacyFailOpen && quotaFailOpen) {
+            log.warn("event=QUOTA_CLIENT_FAIL_OPEN userId={} httpStatus={}", userId, code);
+            return QuotaConsumeResult.allowed(key, type, null);
+        }
+        String errorCode = mapNonRetryableHttpError(code);
+        log.error(
+                "event=QUOTA_CLIENT_HTTP_ERROR userId={} httpStatus={} errorCode={} retryable=false",
+                userId,
+                code,
+                errorCode);
+        return QuotaConsumeResult.unknown(key, type, errorCode, false);
+    }
+
+    private static String mapNonRetryableHttpError(int code) {
+        return switch (code) {
+            case 400, 405, 422 -> "QUOTA_REQUEST_INVALID";
+            case 401 -> "QUOTA_SERVICE_UNAUTHORIZED";
+            case 403 -> "QUOTA_SERVICE_FORBIDDEN";
+            case 404 -> "QUOTA_ENDPOINT_NOT_FOUND";
+            default -> "QUOTA_HTTP_" + code;
+        };
     }
 
     private QuotaConsumeResult parseSuccess(

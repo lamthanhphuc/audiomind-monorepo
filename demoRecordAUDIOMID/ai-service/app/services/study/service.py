@@ -41,7 +41,7 @@ from app.services.study import (
     build_source_hash,
 )
 from app.services.study.artifacts import generate_artifact_content, validate_options
-from app.services.study.exceptions import is_transient_provider_error
+from app.services.study.exceptions import classify_provider_exception, is_transient_provider_error
 from app.services.study.membership import (
     MeetingMembershipUnavailableError,
     fetch_subject_meeting_ids,
@@ -379,6 +379,43 @@ def _record_dispatch_broker_failure(row: Any, error_message: str) -> None:
 
 # Shared classifier lives in exceptions.py; keep private alias for call sites.
 _is_transient_provider_error = is_transient_provider_error
+
+
+def _mark_or_requeue_classified(
+    db: Session,
+    row: Any,
+    *,
+    exc: BaseException,
+    event_name: str,
+    entity_id: int,
+) -> BaseException | None:
+    """Handle ValueError-family errors after classification.
+
+    JSONDecodeError is a ValueError subclass; classify before PROGRAMMING_ERROR.
+    Returns a StudyTransientError to re-raise, or None when terminal handling is done.
+    """
+    classified = classify_provider_exception(exc)
+    if isinstance(classified, StudyValidationError):
+        _mark_terminal_failed(
+            row,
+            error_code=getattr(classified, "code", "VALIDATION_ERROR"),
+            error_message=str(classified),
+        )
+        db.commit()
+        logger.info("event=%s entityId=%s code=%s", event_name, entity_id, row.error_code)
+        return None
+    if isinstance(classified, StudyTransientError):
+        _requeue_for_transient_retry(row, "TRANSIENT_AI_ERROR", str(classified)[:500])
+        db.commit()
+        return classified
+    _mark_terminal_failed(
+        row,
+        error_code="PROGRAMMING_ERROR",
+        error_message=f"INTERNAL_ERROR: {type(exc).__name__}: {exc}"[:500],
+    )
+    db.commit()
+    logger.info("event=%s entityId=%s code=PROGRAMMING_ERROR", event_name, entity_id)
+    return None
 
 
 def _soft_delete_for_retry(db: Session, row: Any) -> None:
@@ -1742,16 +1779,12 @@ def process_synthesis_job(db: Session, synthesis_id: int) -> None:
         db.commit()
         raise
     except (TypeError, AttributeError, KeyError, ValueError) as exc:
-        _mark_terminal_failed(
-            row,
-            error_code="PROGRAMMING_ERROR",
-            error_message=f"INTERNAL_ERROR: {type(exc).__name__}: {exc}"[:500],
+        # json.JSONDecodeError is a ValueError subclass — classify before PROGRAMMING_ERROR.
+        reraise = _mark_or_requeue_classified(
+            db, row, exc=exc, event_name="SUBJECT_SYNTHESIS_FAILED", entity_id=synthesis_id
         )
-        db.commit()
-        logger.info(
-            "event=SUBJECT_SYNTHESIS_FAILED synthesisId=%s code=PROGRAMMING_ERROR",
-            synthesis_id,
-        )
+        if reraise is not None:
+            raise reraise
         return
     except Exception as exc:  # noqa: BLE001
         if _is_transient_provider_error(exc):
@@ -1878,16 +1911,12 @@ def process_artifact_job(db: Session, artifact_id: int) -> None:
         db.commit()
         raise
     except (TypeError, AttributeError, KeyError, ValueError) as exc:
-        _mark_terminal_failed(
-            row,
-            error_code="PROGRAMMING_ERROR",
-            error_message=f"INTERNAL_ERROR: {type(exc).__name__}: {exc}"[:500],
+        # json.JSONDecodeError is a ValueError subclass — classify before PROGRAMMING_ERROR.
+        reraise = _mark_or_requeue_classified(
+            db, row, exc=exc, event_name="STUDY_ARTIFACT_FAILED", entity_id=artifact_id
         )
-        db.commit()
-        logger.info(
-            "event=STUDY_ARTIFACT_FAILED artifactId=%s code=PROGRAMMING_ERROR",
-            artifact_id,
-        )
+        if reraise is not None:
+            raise reraise
         return
     except Exception as exc:  # noqa: BLE001
         if _is_transient_provider_error(exc):
