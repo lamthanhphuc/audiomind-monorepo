@@ -103,14 +103,18 @@ def test_validate_mind_map_rejects_orphan_and_keeps_root():
             ],
             "edges": [{"source": "root", "target": "t1", "relation": "CONTAINS"}],
         },
-        allowed_meetings={1},
-        allowed_segments={"seg-1"},
+        allowed_segments_by_meeting={1: {"seg-1"}},
     )
     assert content["root"]["label"] == "SWP"
     assert len(content["nodes"]) == 1
 
 
-def test_validate_flashcards_and_mcq():
+def test_validate_flashcards_and_mcq(monkeypatch):
+    from app.config import get_settings
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "study_flashcard_count_min", 1)
+    monkeypatch.setattr(settings, "study_mcq_count_min", 1)
     cards = validate_flashcards(
         {
             "cards": [
@@ -126,8 +130,7 @@ def test_validate_flashcards_and_mcq():
             ]
         },
         max_count=10,
-        allowed_meetings={1},
-        allowed_segments={"s1"},
+        allowed_segments_by_meeting={1: {"s1"}},
     )
     assert len(cards["cards"]) == 1
 
@@ -151,8 +154,7 @@ def test_validate_flashcards_and_mcq():
             ]
         },
         max_count=5,
-        allowed_meetings={1},
-        allowed_segments={"s1"},
+        allowed_segments_by_meeting={1: {"s1"}},
     )
     assert len(mcq["questions"]) == 1
 
@@ -169,10 +171,26 @@ def test_exam_brief_formulas_empty_ok():
             "lastMinuteChecklist": [],
             "sourceMeetingIds": [1],
         },
-        allowed_meetings={1},
+        allowed_segments_by_meeting={1: set()},
     )
     assert brief["formulas"] == []
     assert "ưu tiên" in brief["likelyExamTopics"][0].lower() or "ôn" in brief["likelyExamTopics"][0].lower()
+
+
+def test_evidence_rejects_cross_meeting_segment():
+    from app.services.study.evidence import normalize_evidence_pairs
+
+    pairs = normalize_evidence_pairs(
+        meeting_ids=[101],
+        segment_ids=["seg-b"],
+        allowed_segments_by_meeting={101: {"seg-a"}, 102: {"seg-b"}},
+    )
+    assert pairs == []
+    pairs_ok = normalize_evidence_pairs(
+        evidence=[{"meetingId": 102, "segmentId": "seg-b"}],
+        allowed_segments_by_meeting={101: {"seg-a"}, 102: {"seg-b"}},
+    )
+    assert pairs_ok == [{"meetingId": 102, "segmentId": "seg-b"}]
 
 
 def test_normalize_synthesis_filters_invalid_evidence():
