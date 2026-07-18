@@ -2,7 +2,7 @@
 
 **Verdict (this session):** **Ready to merge**
 
-Post-review remediation completed on top of the prior 16 commits. All mandatory gates green.
+Second post-review remediation completed on top of prior Phase 2 commits. All mandatory gates green.
 
 ## A. Git
 
@@ -10,8 +10,8 @@ Post-review remediation completed on top of the prior 16 commits. All mandatory 
 |------|--------|
 | Branch | `feature/phase2-subject-synthesis-study-artifacts` |
 | Base | `origin/main` @ `e7ba389` |
-| Prior HEAD | `565c53e` (16 commits) |
-| New commits | post-review remediation (see log) |
+| Prior HEAD | `00ca68a` (23 commits) |
+| New commits | second post-review remediation (see log) |
 | History | No reset / rebase / force-push of prior commits |
 
 ## B. AI full suite
@@ -19,96 +19,90 @@ Post-review remediation completed on top of the prior 16 commits. All mandatory 
 | Item | Detail |
 |------|--------|
 | Command | `pytest` (`demoRecordAUDIOMID/ai-service`) |
-| Result | **548 passed, 0 failed, 23 skipped**, exit **0** |
+| Result | **561 passed, 0 failed, 23 skipped**, exit **0** |
 
 ## K. Post-review remediation
 
-### K.1 synthesisId security
-- `resolve_compatible_synthesis` requires owner + subject + `deleted_at IS NULL` + `COMPLETED` + matching `source_hash` + `source_selection_mode`.
-- Hint `synthesisId` still validated; auto-select latest compatible COMPLETED when omitted.
-- Worker re-checks via `_load_compatible_synthesis_content` before injecting synthesis into prompts.
-- Errors: `SYNTHESIS_NOT_FOUND` / `SYNTHESIS_NOT_OWNED` / `SYNTHESIS_SUBJECT_MISMATCH` / `SYNTHESIS_SOURCE_MISMATCH` / `SYNTHESIS_NOT_READY` (no foreign content leak).
+(See prior section K for first remediation: synthesisId security, dispatch lease, queue deployment, cache policy, stale modes, language, FE regenerate, evidence pairing, schemas, batch token budget, Celery timeouts, list pagination.)
 
-### K.2 Dispatch / worker idempotency
-- Migration `013_phase2_dispatch_idempotency.py`: `dispatch_requested_at`, `celery_task_id`, `processing_started_at`, `attempt_count`, `last_heartbeat_at`, plus synthesis `options_json`.
-- Conditional claim dispatch (QUEUED + lease expired or null).
-- Deterministic Celery task IDs: `study-artifact-{id}-v{version}`, `subject-synthesis-{id}-v{version}`.
-- Worker conditional `QUEUED → PROCESSING`; skip without Gemini if claim fails.
-- Broker enqueue failure releases dispatch claim for safe retry.
-- Reconcile beat task clears expired QUEUED dispatch leases; marks stuck PROCESSING as `PROCESSING_TIMEOUT`.
+## L. Second post-review remediation
 
-### K.3 Queue deployment
-- Fixed: `k8s/deployments/core-deployments.yaml`, `demoRecordAUDIOMID/ai-service/docker-compose.yml`.
-- Dev/MVP already had `-Q audio_processing,study_generation`.
-- Config guard: `tests/test_study_queue_deployment_config.py`.
+### L.1 Retry state machine
+- Transient errors (`StudyTransientError`: Gemini 429/5xx, timeout, network) requeue the row to `QUEUED`, clear `processing_started_at` / `last_heartbeat_at`, keep `attempt_count` + error fields, then `self.retry()`.
+- Terminal `FAILED` only when `self.request.retries >= max_retries`.
+- Non-transient validation/source/auth errors fail immediately without retry.
+- Applies to `generate_subject_synthesis` and `generate_study_artifact`.
+- Tests prove second claim succeeds and provider is called again.
 
-### K.4 Cache policy
-- Only `COMPLETED` → `cacheHit`.
-- `QUEUED`/`PROCESSING` → `inFlight`.
-- `FAILED`/`QUOTA_EXCEEDED` soft-deleted and replaced (new version), never cacheHit.
+### L.2 Dispatch recovery + migration 014
+- Migration `014_phase2_dispatch_recovery.py`: `quota_confirmed_at`, `dispatch_attempt_count`, `last_dispatch_error`, `last_dispatch_error_at`, `next_dispatch_retry_at` on synthesis + artifact.
+- Prepare returns `dispatchableIds` / `dispatchableArtifactIds` / `dispatchableSynthesisIds`.
+- Flow: prepare → quota for newlyCreated → `confirm-quota` (`quota_confirmed_at`) → dispatch.
+- Dispatch requires `quota_confirmed_at IS NOT NULL`; broker failure releases lease, records backoff; orphan QUEUED remains redispatchable without re-charging quota.
+- Reconciliation enqueues orphans (not lease-clear-only); marks `DISPATCH_EXHAUSTED` past max attempts.
 
-### K.5 Stale ALL_READY / EXPLICIT
-- Empty current ALL_READY meeting set is stale (no empty-list skip).
-- EXPLICIT: new meetings outside selection do not stale; source leaving subject does.
-- List API computes stale with subject meeting IDs (processing passes membership set).
+### L.3 Celery Beat deployment
+- K8s: `celery-beat-deployment` (replicas: 1) in `k8s/deployments/core-deployments.yaml`.
+- Compose: `celery-beat` / `beat` in infra dev/MVP and ai-service standalone compose.
+- Beat schedule includes `study-generation-reconcile`; config guards assert Beat + queue + task registration.
 
-### K.6 Language
-- Synthesis persists `options_json.language`; worker reads stored language (no hard-coded `vi`).
-- Options hash includes language → `vi`/`en` caches are distinct.
+### L.4 Source hash pre-worker check
+- `_guard_source_hash_unchanged` before Gemini; mismatch → `STALE` + `SOURCE_CHANGED_AFTER_PREPARE`, no provider call.
 
-### K.7 Frontend regenerate
-- `regenerateStudyArtifact` → `StudyArtifactsCreateResponse`.
-- `pickRegeneratedArtifact` + poll `artifactIds`; keep prior content until terminal.
+### L.5 Multi-artifact savepoints
+- Each artifact create uses `db.begin_nested()`; IntegrityError rolls back only the savepoint; response IDs are verified as live rows.
 
-### K.8 Evidence pairing
-- `evidence.py` meeting→segment map; never positional zip across meetings.
-- Artifacts/synthesis normalize to `evidence[{meetingId,segmentId}]` (+ legacy arrays derived).
-- FE `pickStudyEvidence` prefers evidence pairs.
+### L.6 Stale regenerate policy
+- Processing `regenerateArtifact` passes `synthesisId = null`.
+- Worker falls back to educationStudy-only generation on `SYNTHESIS_SOURCE_MISMATCH`.
+- FE keeps prior content until the new version reaches a terminal status.
 
-### K.9 Structured schemas + validators
-- Per-type Gemini `response_schema` (nested).
-- Min counts → `FAILED_VALIDATION` when below config mins.
-- Mind-map duplicate IDs fail; orphan/cycle pruned.
+### L.7 Empty-subject stale
+- `None` = no stale context; `[]` = empty subject.
+- ALL_READY with non-empty stored sources and current `[]` → STALE on GET/LIST; FE stale banners cover synthesis + artifacts.
 
-### K.10 Token budget
-- Batch by `MAX_MEETINGS_PER_BATCH` + `MAX_INPUT_TOKENS` (`estimate_tokens`).
-- Parallelism capped by `MAX_PARALLEL_BATCHES`.
-- Oversized single meeting truncated with warning.
+### L.8 MCQ option ID validation
+- Exactly 4 options; option IDs unique and constrained to A–D; option texts unique; `correctOptionId` present once. Duplicate IDs (A,A,B,C) rejected.
 
-### K.11 Celery timeouts / retry
-- Timeouts via `task_annotations` (not mutating `self.soft_time_limit` at runtime).
-- No broad `autoretry_for=(Exception,)`; only `StudyTransientError` retries.
+### L.9 Reducer token budget
+- Hierarchical / multi-round reducer when intermediate JSON exceeds `SUBJECT_SYNTHESIS_MAX_INPUT_TOKENS`.
+- Preserves `sourceMeetingIds` / evidence; emits warnings when forced pairwise merge is required.
 
-### K.12 List pagination
-- `page` / `size` / `sort` with defaults and max size; soft-deleted excluded; stale on list.
-- OpenAPI + generated client updated.
+### L.10 Synthesis evidence pairs
+- Synthesis schema/normalize/storage use `evidence[{meetingId,segmentId}]`.
+- FE `SubjectSynthesisPanel` navigates via `pickStudyEvidence` (not independent array zip).
+
+### L.11 Tests / smoke
+- New: `tests/test_phase2_second_remediation.py`.
+- Technical smoke updated (confirm-quota, 11-item PASS banner).
+- Processing `StudyGenerationServiceTest` covers quota/confirm/dispatch/orphan/503 paths.
 
 ## H. Full matrix
 
 | Module | Command | Exit | Passed | Failed | Skipped | Result |
 |--------|---------|------|--------|--------|---------|--------|
-| AI | `pytest` | 0 | 548 | 0 | 23 | PASS |
+| AI | `pytest` | 0 | 561 | 0 | 23 | PASS |
 | Processing | `.\mvnw.cmd -q test` | 0 | suite | 0 | — | PASS |
 | Meeting | `.\mvnw.cmd -q test` | 0 | suite | 0 | — | PASS |
 | FE lint | `npm run lint` | 0 | — | — | — | PASS |
 | FE test | `npm run test` | 0 | 727 | 0 | — | PASS |
 | FE build | `npm run build` | 0 | — | — | — | PASS |
 | Contracts | validate/generate/typecheck/check:openapi | 0 | — | — | — | PASS |
-| Migration | `alembic upgrade/downgrade/upgrade` through 013 | 0 | — | — | — | PASS |
+| Migration | `alembic upgrade/downgrade/upgrade` through **014** | 0 | — | — | — | PASS |
 | `git diff --check` | origin/main...HEAD | 0 | — | — | — | PASS |
 
 ## Smoke
 
 | Kind | Result |
 |------|--------|
-| Technical fake-provider smoke | **PASS** (updated for dispatch claim + schemas + min counts) |
+| Technical fake-provider smoke | **PASS** (retry, redispatch, source-changed, MCQ, reducer, evidence, Beat guards) |
 | Real Gemini smoke | **NOT RUN** |
 
 ## I. Remaining risks
 
 1. Real Gemini staging smoke still recommended (1 synthesis + 1 flashcard/MCQ).
-2. Multi-service JWT Docker E2E loop still piecewise (AI HTTP smoke + Java orchestration + live queue inspect).
-3. Concurrent race default DB remains SQLite file; prefer Postgres URL in CI.
+2. Multi-service JWT Docker E2E loop still piecewise.
+3. Concurrent multi-artifact race default DB remains SQLite file; prefer Postgres URL in CI.
 
 ## J. Status
 
