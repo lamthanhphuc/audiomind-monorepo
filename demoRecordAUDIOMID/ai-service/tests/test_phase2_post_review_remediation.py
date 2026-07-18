@@ -233,6 +233,12 @@ def test_dispatch_twice_enqueues_once(db_session, monkeypatch):
         options={"language": "vi", "flashcardCount": 5},
     )
     artifact_id = int(prep["newlyCreatedArtifactIds"][0])
+    study_service.confirm_quota_for_jobs(
+        db_session,
+        owner_user_id=1,
+        synthesis_ids=[],
+        artifact_ids=[artifact_id],
+    )
     calls: list[str] = []
 
     class FakeAsync:
@@ -421,9 +427,12 @@ def test_worker_ignores_foreign_synthesis_id(monkeypatch):
         error_message=None,
         generated_at=None,
         updated_at=None,
+        processing_started_at=None,
+        last_heartbeat_at=None,
     )
     db = MagicMock()
     monkeypatch.setattr(study_service, "claim_processing_artifact", lambda *_a, **_k: row)
+    monkeypatch.setattr(study_service, "_guard_source_hash_unchanged", lambda *_a, **_k: None)
     monkeypatch.setattr(
         study_service,
         "compute_current_source_hash",
@@ -433,7 +442,11 @@ def test_worker_ignores_foreign_synthesis_id(monkeypatch):
             [],
         ),
     )
-    monkeypatch.setattr(study_service, "_load_compatible_synthesis_content", lambda *a, **k: None)
+    monkeypatch.setattr(
+        study_service,
+        "resolve_compatible_synthesis",
+        MagicMock(side_effect=StudyValidationError("SYNTHESIS_NOT_OWNED", "Synthesis not found")),
+    )
     captured = {}
 
     def gen(artifact_type, *, synthesis_content, ready_sources, options, call_gemini):

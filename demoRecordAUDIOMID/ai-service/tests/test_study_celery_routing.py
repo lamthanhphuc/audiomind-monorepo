@@ -137,6 +137,8 @@ def test_process_artifact_job_transient_raises(monkeypatch):
         error_message=None,
         generated_at=None,
         updated_at=None,
+        processing_started_at="started",
+        last_heartbeat_at="beat",
     )
     db = MagicMock()
     monkeypatch.setattr(study_service, "claim_processing_artifact", lambda *_a, **_k: row)
@@ -145,6 +147,11 @@ def test_process_artifact_job_transient_raises(monkeypatch):
         "compute_current_source_hash",
         lambda *a, **k: ("hash", [{"meetingId": 101, "ready": True, "educationStudy": {}, "allowedSegmentIds": []}], []),
     )
+    monkeypatch.setattr(
+        study_service,
+        "_load_compatible_synthesis_content",
+        lambda *a, **k: None,
+    )
 
     def boom(*_a, **_k):
         raise StudyTransientError("network")
@@ -152,7 +159,10 @@ def test_process_artifact_job_transient_raises(monkeypatch):
     monkeypatch.setattr(study_service, "generate_artifact_content", boom)
     with pytest.raises(StudyTransientError):
         study_service.process_artifact_job(db, 9)
-    assert row.status == STATUS_FAILED
+    # Transient errors requeue to QUEUED so Celery retry can re-claim.
+    assert row.status == STATUS_QUEUED
+    assert row.processing_started_at is None
+    assert row.error_code == "TRANSIENT_AI_ERROR"
 
 
 def test_worker_skips_when_claim_fails(monkeypatch):

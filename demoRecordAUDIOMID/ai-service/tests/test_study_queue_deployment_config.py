@@ -80,6 +80,71 @@ def test_celery_worker_command_consumes_required_queues(manifest_path: Path) -> 
         )
 
 
+def test_k8s_core_deployment_has_celery_beat_deployment() -> None:
+    manifest_path = REPO_ROOT / "k8s" / "deployments" / "core-deployments.yaml"
+    text = manifest_path.read_text(encoding="utf-8")
+
+    assert "name: celery-beat-deployment" in text, (
+        "k8s/deployments/core-deployments.yaml must define a "
+        "celery-beat-deployment so the periodic study-generation-reconcile "
+        "schedule (and other beat_schedule entries) actually gets dispatched"
+    )
+
+    beat_block_match = re.search(
+        r"name: celery-beat-deployment[\s\S]*?(?=\n---\n|\Z)", text
+    )
+    assert beat_block_match, "celery-beat-deployment block not found"
+    block = beat_block_match.group(0)
+
+    beat_command_match = re.search(
+        r"celery -A app\.celery_app\.celery_app beat[^\"'\n]*", block
+    )
+    assert beat_command_match, (
+        "celery-beat-deployment command must invoke "
+        "'celery -A app.celery_app.celery_app beat'"
+    )
+
+    assert "replicas: 1" in block, (
+        "celery-beat-deployment must run exactly one replica; running more "
+        "than one beat instance causes duplicate periodic task dispatch"
+    )
+
+    # Beat must not be given the worker's `-Q` queue subscription flags.
+    assert "-Q" not in beat_command_match.group(0), (
+        "celery-beat-deployment command should not pass worker `-Q` queue "
+        "flags; beat only schedules tasks, it does not consume queues"
+    )
+
+
+def test_compose_files_define_celery_beat_service() -> None:
+    """Beat must exist in every environment that runs study reconciliation."""
+    compose_paths = (
+        REPO_ROOT / "infra" / "docker-compose.dev.yml",
+        REPO_ROOT / "infra" / "docker-compose.mvp.yml",
+        REPO_ROOT / "demoRecordAUDIOMID" / "ai-service" / "docker-compose.yml",
+    )
+    for path in compose_paths:
+        assert path.is_file(), f"missing compose file {path}"
+        text = path.read_text(encoding="utf-8")
+        assert re.search(r"(celery-beat|^\s+beat:)", text, re.MULTILINE), (
+            f"{path} must define a celery beat service so "
+            "study-generation-reconcile is scheduled"
+        )
+        assert "celery -A app.celery_app.celery_app beat" in text, (
+            f"{path} beat service must invoke celery beat"
+        )
+
+
+def test_celery_app_registers_reconcile_task() -> None:
+    from app.celery_app import celery_app
+    from app.tasks import reconcile_study_generation
+
+    assert reconcile_study_generation.name == "app.tasks.reconcile_study_generation"
+    # Task is bound into the app registry used by workers/beat.
+    assert "app.tasks.reconcile_study_generation" in celery_app.tasks
+
+
+
 def test_k8s_core_deployment_sets_study_generation_queue_env() -> None:
     manifest_path = REPO_ROOT / "k8s" / "deployments" / "core-deployments.yaml"
     text = manifest_path.read_text(encoding="utf-8")
