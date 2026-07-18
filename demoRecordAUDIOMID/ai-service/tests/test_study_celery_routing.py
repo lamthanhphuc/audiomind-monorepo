@@ -1,0 +1,197 @@
+"""Celery routing and study job lifecycle without real Gemini."""
+
+from __future__ import annotations
+
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from app.celery_app import celery_app
+from app.config import get_settings
+from app.services.study import (
+    STATUS_COMPLETED,
+    STATUS_FAILED,
+    STATUS_PROCESSING,
+    STATUS_QUEUED,
+    StudyTransientError,
+    StudyValidationError,
+)
+from app.tasks import generate_study_artifact, generate_subject_synthesis
+
+
+def test_study_tasks_are_bound_to_study_generation_queue():
+    settings = get_settings()
+    queue = settings.celery_study_generation_queue
+    assert queue == "study_generation"
+    routes = celery_app.conf.task_routes or {}
+    assert routes["app.tasks.generate_subject_synthesis"]["queue"] == queue
+    assert routes["app.tasks.generate_study_artifact"]["queue"] == queue
+    assert generate_subject_synthesis.name == "app.tasks.generate_subject_synthesis"
+    assert generate_study_artifact.name == "app.tasks.generate_study_artifact"
+
+
+def test_process_artifact_job_lifecycle_queued_to_completed(monkeypatch):
+    from app.services.study import service as study_service
+
+    row = SimpleNamespace(
+        id=7,
+        owner_user_id=1,
+        subject_id=12,
+        synthesis_id=None,
+        artifact_type="FLASHCARDS",
+        status=STATUS_QUEUED,
+        source_selection_mode="EXPLICIT",
+        options_json={"language": "vi", "flashcardCount": 5, "multipleChoiceCount": 5, "essayQuestionCount": 1, "difficulty": "MIXED"},
+        sources=[SimpleNamespace(meeting_id=101)],
+        content_json=None,
+        error_code=None,
+        error_message=None,
+        generated_at=None,
+        updated_at=None,
+    )
+    db = MagicMock()
+    query = MagicMock()
+    db.query.return_value = query
+    query.filter.return_value = query
+    query.first.return_value = row
+
+    monkeypatch.setattr(
+        study_service,
+        "compute_current_source_hash",
+        lambda *a, **k: (
+            "hash",
+            [
+                {
+                    "meetingId": 101,
+                    "ready": True,
+                    "educationStudy": {"overview": "o", "sections": [{"title": "t", "summary": "s"}]},
+                    "allowedSegmentIds": ["seg-1"],
+                }
+            ],
+            [],
+        ),
+    )
+    monkeypatch.setattr(
+        study_service,
+        "generate_artifact_content",
+        lambda *a, **k: {"cards": [{"id": "c1", "front": "q", "back": "a"}]},
+    )
+
+    study_service.process_artifact_job(db, 7)
+    assert row.status == STATUS_COMPLETED
+    assert row.content_json is not None
+    assert db.commit.call_count >= 2
+
+
+def test_process_artifact_job_validation_does_not_raise_retryable(monkeypatch):
+    from app.services.study import service as study_service
+
+    row = SimpleNamespace(
+        id=8,
+        owner_user_id=1,
+        subject_id=12,
+        synthesis_id=None,
+        artifact_type="FLASHCARDS",
+        status=STATUS_QUEUED,
+        source_selection_mode="EXPLICIT",
+        options_json={"language": "vi", "flashcardCount": 5, "multipleChoiceCount": 5, "essayQuestionCount": 1, "difficulty": "MIXED"},
+        sources=[SimpleNamespace(meeting_id=101)],
+        content_json=None,
+        error_code=None,
+        error_message=None,
+        generated_at=None,
+        updated_at=None,
+    )
+    db = MagicMock()
+    query = MagicMock()
+    db.query.return_value = query
+    query.filter.return_value = query
+    query.first.return_value = row
+    monkeypatch.setattr(
+        study_service,
+        "compute_current_source_hash",
+        lambda *a, **k: ("hash", [{"meetingId": 101, "ready": True, "educationStudy": {}, "allowedSegmentIds": []}], []),
+    )
+
+    def boom(*_a, **_k):
+        raise StudyValidationError("INVALID_FLASHCARDS", "bad")
+
+    monkeypatch.setattr(study_service, "generate_artifact_content", boom)
+    study_service.process_artifact_job(db, 8)
+    assert row.status == STATUS_FAILED
+    assert row.error_code == "INVALID_FLASHCARDS"
+
+
+def test_process_artifact_job_transient_raises(monkeypatch):
+    from app.services.study import service as study_service
+
+    row = SimpleNamespace(
+        id=9,
+        owner_user_id=1,
+        subject_id=12,
+        synthesis_id=None,
+        artifact_type="FLASHCARDS",
+        status=STATUS_QUEUED,
+        source_selection_mode="EXPLICIT",
+        options_json={"language": "vi", "flashcardCount": 5, "multipleChoiceCount": 5, "essayQuestionCount": 1, "difficulty": "MIXED"},
+        sources=[SimpleNamespace(meeting_id=101)],
+        content_json=None,
+        error_code=None,
+        error_message=None,
+        generated_at=None,
+        updated_at=None,
+    )
+    db = MagicMock()
+    query = MagicMock()
+    db.query.return_value = query
+    query.filter.return_value = query
+    query.first.return_value = row
+    monkeypatch.setattr(
+        study_service,
+        "compute_current_source_hash",
+        lambda *a, **k: ("hash", [{"meetingId": 101, "ready": True, "educationStudy": {}, "allowedSegmentIds": []}], []),
+    )
+
+    def boom(*_a, **_k):
+        raise StudyTransientError("network")
+
+    monkeypatch.setattr(study_service, "generate_artifact_content", boom)
+    with pytest.raises(StudyTransientError):
+        study_service.process_artifact_job(db, 9)
+    assert row.status == STATUS_FAILED
+
+
+def test_generate_study_artifact_task_retries_transient(monkeypatch):
+    task = generate_study_artifact
+    monkeypatch.setattr(
+        "app.services.study.service.process_artifact_job",
+        lambda *_a, **_k: (_ for _ in ()).throw(StudyTransientError("boom")),
+    )
+    monkeypatch.setattr("app.tasks.SessionLocal", lambda: MagicMock(close=lambda: None))
+    with patch.object(task, "retry", side_effect=StudyTransientError("retry")) as retry:
+        with pytest.raises(StudyTransientError):
+            task.run(55)
+        retry.assert_called()
+
+
+def test_generate_study_artifact_task_no_retry_on_validation(monkeypatch):
+    task = generate_study_artifact
+
+    def fail_validation(db, artifact_id):
+        # process_artifact_job swallows validation; simulate by returning
+        return None
+
+    monkeypatch.setattr("app.services.study.service.process_artifact_job", fail_validation)
+    monkeypatch.setattr("app.tasks.SessionLocal", lambda: MagicMock(close=lambda: None))
+    with patch.object(task, "retry") as retry:
+        task.run(56)
+        retry.assert_not_called()
+
+
+def test_status_transitions_queued_processing_completed():
+    """Document expected status progression for smoke/stub verification."""
+    statuses = [STATUS_QUEUED, STATUS_PROCESSING, STATUS_COMPLETED]
+    assert statuses[0] == "QUEUED"
+    assert statuses[1] == "PROCESSING"
+    assert statuses[2] == "COMPLETED"
