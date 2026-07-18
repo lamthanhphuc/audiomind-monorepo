@@ -116,6 +116,13 @@ public enum ErrorCode {
             "upgrade_plan",
             "Xem gói & thanh toán"
     ),
+    SOURCE_MEETINGS_NOT_READY(
+            409,
+            "Source meetings not ready",
+            "Một số buổi học chưa có transcript hoặc phân tích giáo dục sẵn sàng.",
+            "run_analysis",
+            "Chạy phân tích"
+    ),
     EXPORT_ANALYSIS_REQUIRED(
             409,
             "Analysis is required before export",

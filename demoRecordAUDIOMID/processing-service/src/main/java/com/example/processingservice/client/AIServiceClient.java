@@ -1636,4 +1636,141 @@ public class AIServiceClient {
         };
     }
 
+    private HttpHeaders internalJsonHeaders(String traceId) {
+        HttpHeaders headers = new HttpHeaders();
+        String resolvedTraceId = resolveTraceId(traceId);
+        headers.add(TRACE_HEADER, resolvedTraceId);
+        headers.add(REQUEST_HEADER, resolvedTraceId);
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        String normalizedInternalToken = StringUtils.hasText(internalServiceToken)
+                ? internalServiceToken.trim()
+                : "";
+        if (StringUtils.hasText(normalizedInternalToken)) {
+            headers.add("X-Internal-Service-Token", normalizedInternalToken);
+        }
+        return headers;
+    }
+
+    public Map<String, Object> prepareSubjectSynthesis(Map<String, Object> body, String traceId) {
+        ResponseEntity<Map<String, Object>> response = restTemplate.exchange(
+                aiUrl + "/api/internal/subjects/" + body.get("subjectId") + "/synthesis/prepare",
+                HttpMethod.POST,
+                new HttpEntity<>(body, internalJsonHeaders(traceId)),
+                new ParameterizedTypeReference<>() {
+                }
+        );
+        return requireBody(response, "prepareSubjectSynthesis", 0L);
+    }
+
+    public Map<String, Object> prepareStudyArtifacts(Map<String, Object> body, String traceId) {
+        ResponseEntity<Map<String, Object>> response = restTemplate.exchange(
+                aiUrl + "/api/internal/study-artifacts/prepare",
+                HttpMethod.POST,
+                new HttpEntity<>(body, internalJsonHeaders(traceId)),
+                new ParameterizedTypeReference<>() {
+                }
+        );
+        return requireBody(response, "prepareStudyArtifacts", 0L);
+    }
+
+    public Map<String, Object> dispatchStudyJobs(Map<String, Object> body, String traceId) {
+        ResponseEntity<Map<String, Object>> response = restTemplate.exchange(
+                aiUrl + "/api/internal/study/dispatch",
+                HttpMethod.POST,
+                new HttpEntity<>(body, internalJsonHeaders(traceId)),
+                new ParameterizedTypeReference<>() {
+                }
+        );
+        return requireBody(response, "dispatchStudyJobs", 0L);
+    }
+
+    public Map<String, Object> markStudyQuotaFailed(Map<String, Object> body, String traceId) {
+        ResponseEntity<Map<String, Object>> response = restTemplate.exchange(
+                aiUrl + "/api/internal/study/quota-failed",
+                HttpMethod.POST,
+                new HttpEntity<>(body, internalJsonHeaders(traceId)),
+                new ParameterizedTypeReference<>() {
+                }
+        );
+        return requireBody(response, "markStudyQuotaFailed", 0L);
+    }
+
+    public Map<String, Object> getSubjectSynthesis(
+            Long subjectId, Long ownerUserId, List<Long> meetingIds, String traceId) {
+        UriComponentsBuilder builder = UriComponentsBuilder
+                .fromUriString(aiUrl + "/api/internal/subjects/" + subjectId + "/synthesis")
+                .queryParam("ownerUserId", ownerUserId);
+        if (meetingIds != null && !meetingIds.isEmpty()) {
+            builder.queryParam(
+                    "meetingIds",
+                    meetingIds.stream().map(String::valueOf).reduce((a, b) -> a + "," + b).orElse("")
+            );
+        }
+        ResponseEntity<Map<String, Object>> response = restTemplate.exchange(
+                builder.toUriString(),
+                HttpMethod.GET,
+                new HttpEntity<>(internalJsonHeaders(traceId)),
+                new ParameterizedTypeReference<>() {
+                }
+        );
+        return requireBody(response, "getSubjectSynthesis", 0L);
+    }
+
+    public Map<String, Object> getStudyArtifact(
+            Long artifactId, Long ownerUserId, List<Long> meetingIds, String traceId) {
+        UriComponentsBuilder builder = UriComponentsBuilder
+                .fromUriString(aiUrl + "/api/internal/study-artifacts/" + artifactId)
+                .queryParam("ownerUserId", ownerUserId);
+        if (meetingIds != null && !meetingIds.isEmpty()) {
+            builder.queryParam(
+                    "meetingIds",
+                    meetingIds.stream().map(String::valueOf).reduce((a, b) -> a + "," + b).orElse("")
+            );
+        }
+        ResponseEntity<Map<String, Object>> response = restTemplate.exchange(
+                builder.toUriString(),
+                HttpMethod.GET,
+                new HttpEntity<>(internalJsonHeaders(traceId)),
+                new ParameterizedTypeReference<>() {
+                }
+        );
+        return requireBody(response, "getStudyArtifact", 0L);
+    }
+
+    public Map<String, Object> listStudyArtifacts(
+            Long subjectId, Long ownerUserId, String artifactType, String status, String traceId) {
+        UriComponentsBuilder builder = UriComponentsBuilder
+                .fromUriString(aiUrl + "/api/internal/subjects/" + subjectId + "/study-artifacts")
+                .queryParam("ownerUserId", ownerUserId);
+        if (StringUtils.hasText(artifactType)) {
+            builder.queryParam("artifactType", artifactType);
+        }
+        if (StringUtils.hasText(status)) {
+            builder.queryParam("status", status);
+        }
+        ResponseEntity<Map<String, Object>> response = restTemplate.exchange(
+                builder.toUriString(),
+                HttpMethod.GET,
+                new HttpEntity<>(internalJsonHeaders(traceId)),
+                new ParameterizedTypeReference<>() {
+                }
+        );
+        return requireBody(response, "listStudyArtifacts", 0L);
+    }
+
+    public Map<String, Object> deleteStudyArtifact(Long artifactId, Long ownerUserId, String traceId) {
+        UriComponentsBuilder builder = UriComponentsBuilder
+                .fromUriString(aiUrl + "/api/internal/study-artifacts/" + artifactId)
+                .queryParam("ownerUserId", ownerUserId);
+        ResponseEntity<Map<String, Object>> response = restTemplate.exchange(
+                builder.toUriString(),
+                HttpMethod.DELETE,
+                new HttpEntity<>(internalJsonHeaders(traceId)),
+                new ParameterizedTypeReference<>() {
+                }
+        );
+        return requireBody(response, "deleteStudyArtifact", 0L);
+    }
+
 }
+
