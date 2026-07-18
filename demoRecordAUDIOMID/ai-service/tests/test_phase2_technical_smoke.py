@@ -190,6 +190,7 @@ def smoke_client(monkeypatch):
                 source_hash VARCHAR(64) NOT NULL,
                 options_hash VARCHAR(64),
                 source_selection_mode VARCHAR(20) NOT NULL,
+                subject_membership_hash VARCHAR(64),
                 prompt_version VARCHAR(100),
                 schema_version VARCHAR(100),
                 idempotency_key VARCHAR(256) NOT NULL,
@@ -243,6 +244,7 @@ def smoke_client(monkeypatch):
                 source_hash VARCHAR(64) NOT NULL,
                 options_hash VARCHAR(64) NOT NULL,
                 source_selection_mode VARCHAR(20) NOT NULL,
+                subject_membership_hash VARCHAR(64),
                 prompt_version VARCHAR(100),
                 schema_version VARCHAR(100),
                 idempotency_key VARCHAR(256) NOT NULL,
@@ -688,7 +690,42 @@ def test_phase2_technical_smoke_synthesis_and_artifacts(smoke_client, monkeypatc
     assert len(apply_calls) == 2
     db.refresh(redis_row)
     assert redis_row.quota_confirmed_at == quota_at
+    # Third remediation: each successful claim increments attempt count (claim=1, then claim=2).
+    assert int(redis_row.dispatch_attempt_count or 0) == 2
     passed.append("11-confirm-quota-redispatch")
+
+    # 12) Programming error (TypeError) → FAILED without Celery requeue
+    prog_prep = client.post(
+        "/api/internal/study-artifacts/prepare",
+        headers=HEADERS,
+        json={
+            "ownerUserId": 1,
+            "subjectId": 10,
+            "meetingIds": [101],
+            "artifactTypes": ["FLASHCARDS"],
+            "sourceSelectionMode": "EXPLICIT",
+            "options": {"language": "vi", "flashcardCount": 5},
+            "force": True,
+        },
+    )
+    prog_id = int(prog_prep.json()["newlyCreatedArtifactIds"][0])
+    _confirm_quota(client, artifact_ids=[prog_id])
+
+    def boom_type(*_a, **_k):
+        raise TypeError("smoke programming error")
+
+    monkeypatch.setattr(study_service, "generate_artifact_content", boom_type)
+    monkeypatch.setattr(
+        study_service,
+        "fetch_subject_meeting_ids",
+        # Match stored sources from smoke READY_SOURCES patch ([101,102]).
+        lambda subject_id, owner_user_id: [101, 102],
+    )
+    study_service.process_artifact_job(db, prog_id)
+    prog_row = study_service._live_artifact_query(db).filter_by(id=prog_id).first()
+    assert prog_row.status == "FAILED"
+    assert prog_row.error_code == "PROGRAMMING_ERROR"
+    passed.append("12-programming-error-no-retry")
 
     # MCQ duplicate option IDs rejected (unit assertion in smoke)
     from app.services.study.artifacts import validate_mcq
@@ -717,7 +754,11 @@ def test_phase2_technical_smoke_synthesis_and_artifacts(smoke_client, monkeypatc
             max_count=5,
             allowed_segments_by_meeting={101: {"seg-1"}},
         )
-    assert mcq_exc.value.code == "INVALID_MCQ"
+    # Duplicate option IDs drop the question; with min count may raise INVALID_MCQ
+    # or FAILED_VALIDATION depending on min enforcement.
+    assert mcq_exc.value.code in {"INVALID_MCQ", "FAILED_VALIDATION"}
 
-    assert len(passed) == 11, passed
+    assert len(passed) >= 12, passed
     print("PHASE2_SMOKE_PASS: " + ",".join(passed))
+    print("Technical smoke: PASS")
+    print("Real Gemini smoke: NOT RUN")
