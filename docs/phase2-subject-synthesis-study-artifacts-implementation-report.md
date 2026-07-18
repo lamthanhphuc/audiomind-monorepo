@@ -123,7 +123,7 @@ Final distributed-systems remediation (section **N**) completed. All mandatory g
 - PostgreSQL `pg_advisory_xact_lock(userId, period)` before read/create
 - `INSERT … ON CONFLICT (user_id, period_yyyymm) DO NOTHING` then `SELECT … FOR UPDATE`
 - Ledger unique conflict → re-read prior outcome; other integrity violations → bounded retry / clear failure
-- `QuotaConcurrencyIT` (Testcontainers Postgres): same-key ×8, different-key ×2, near-limit allow/deny
+- `QuotaConcurrencyTest` (Testcontainers Postgres): same-key ×8, different-key ×2, near-limit allow/deny
 
 ### N.4 Quota types
 - Ledger stores `quota_type`: `SUBJECT_SYNTHESIS` vs `STUDY_ARTIFACT`
@@ -163,13 +163,15 @@ Final distributed-systems remediation (section **N**) completed. All mandatory g
 ### N.11 Matrix / smoke (this remediation)
 | Gate | Result |
 |------|--------|
-| AI pytest | **588 passed**, 0 failed, 23 skipped, exit **0** |
+| AI pytest | **614 passed**, 0 failed, 23 skipped, exit **0** |
 | Processing Maven | exit **0** |
 | Meeting Maven | exit **0** (MimeSniffer perf threshold relaxed 50→200ms for CI flake) |
-| User/Quota Maven | exit **0** (includes `QuotaConcurrencyIT` ×3 on Testcontainers Postgres) |
+| User/Quota Maven | exit **0** (includes `QuotaConcurrencyTest` ×3 on Testcontainers Postgres in default `mvn test`) |
 | FE lint / test / build | exit **0** (727 tests) |
 | Contracts validate/generate/typecheck/check:openapi | exit **0** |
-| QuotaConcurrencyIT (Postgres) | **PASS** (same-key, different-key, near-limit) |
+| QuotaConcurrencyTest (Postgres) | **PASS** (same-key, different-key, near-limit) |
+| Alembic upgrade → downgrade -1 → upgrade | **PASS** (head **015**) |
+| K8s YAML parse | **PASS** (no live cluster; `yaml.safe_load_all`) |
 | Technical fake-provider smoke | **PASS** |
 | Real Gemini smoke | **NOT RUN** |
 
@@ -178,6 +180,51 @@ Final distributed-systems remediation (section **N**) completed. All mandatory g
 2. SQLite unit paths are not evidence for advisory-lock correctness — Postgres IT is authoritative.
 3. Membership 401/403 treated as transient (token rotation); misconfig may delay STALE detection until fixed.
 
-## O. Merge gate (final)
+## O. Deployment and validation finalization
 
-**Ready to merge:** **Yes** — quota UNKNOWN≠DENIED, timeout-after-commit single charge, concurrent usage-counter safe, partial batch dispatch, internal membership auth+pagination, artifact token ceilings, helper programming errors no-retry, full matrix green.
+### O.1 K8s token + service URL wiring
+- Every Phase-2-critical deployment (`meeting-api`, `processing-api`, `user-api`, `ai-api`, `celery-worker`, `celery-beat`) wires `INTERNAL_SERVICE_TOKEN` via `secretKeyRef` → `audiomind-secrets`.
+- `processing-api`: `AUDIOMIND_USER_API_BASE_URL=http://user-api:8083` (not localhost); `AUDIOMIND_AI_API_BASE_URL` from configMap.
+- `ai-api` / `celery-worker` / `celery-beat`: `APP_ENV=production`, `MEETING_SERVICE_BASE_URL=http://meeting-api:8081`, `INTERNAL_SERVICE_TOKEN` secret.
+- Guard tests assert Phase-2 USER/MEETING/AI base URL literals in `core-deployments.yaml` never use `localhost`.
+- Compose (`infra/docker-compose.dev.yml`, `infra/docker-compose.mvp.yml`): `ai-api`, `celery-worker`, and `celery-beat` each include `MEETING_SERVICE_BASE_URL` + `INTERNAL_SERVICE_TOKEN` (beat confirmed).
+
+### O.2 Celery Beat production startup
+- `test_celery_beat_production_config.py`: with valid production Settings (`database_url` non-local, `ollama` non-local, CORS without localhost, Gemini key, meeting URL, internal token), `app.celery_app` loads and `beat_schedule` contains `study-generation-reconcile`.
+- Missing `MEETING_SERVICE_BASE_URL` or `INTERNAL_SERVICE_TOKEN` → Settings validation fails (fail-fast before Beat/worker boot).
+- `celery-beat-deployment` replicas remain `1`.
+
+### O.3 Prompt ceiling + provider exception classification
+- Full prompt ceiling: system + user combined tokens gated (`PROMPT_TOKEN_LIMIT_EXCEEDED`, no provider call).
+- Malformed provider JSON → validation error codes, status `FAILED`, no Celery requeue.
+- Valid JSON / wrong schema → validation `FAILED`, no requeue.
+- Helper `TypeError` → `PROGRAMMING_ERROR` `FAILED`, no requeue; timeouts/429 remain transient.
+
+### O.4 Quota retry + Postgres concurrency + partial batch
+- Quota 4xx (auth / business DENIED): no retry as ALLOWED; transport/5xx/timeout → `UNKNOWN` with short same-key retry — covered by Java `UserQuotaClientTest` / `StudyGenerationServiceTest`.
+- Postgres concurrency in default user-service gate: `QuotaConcurrencyTest` (Testcontainers).
+- Partial batch: `StudyGenerationServiceTest` (`PARTIALLY_FAILED`, per-item confirm+dispatch).
+
+### O.5 Membership HTTP integration
+- `InternalSubjectControllerIntegrationTest` (MockMvc): valid token → 200 JSON with `items` / `page` / `pageSize` / `total` / `totalPages`; bad/missing token → 401; wrong owner → 404 via controller + `GlobalExceptionHandler`.
+- AI client unit coverage remains in `test_membership.py` (valid parse, 404 validation, pagination).
+
+### O.6 Matrix / smoke (this finalization)
+| Gate | Result |
+|------|--------|
+| Full AI pytest | **614 passed**, 0 failed, 23 skipped, exit **0** |
+| Processing / Meeting / User Maven | exit **0** (`QuotaConcurrencyTest` ×3 in default gate) |
+| FE lint/test/build | exit **0** (727) |
+| Contracts | exit **0** |
+| Meeting `InternalSubjectControllerIntegrationTest` + unit | **PASS** |
+| Technical fake-provider smoke | **PASS** (evidence checklist in `test_phase2_finalization_evidence_smoke`) |
+| Real Gemini smoke | **NOT RUN** |
+
+### O.7 Remaining risks
+1. Real Gemini staging smoke still recommended before production cutover.
+2. Compose/dev still allows empty `GOOGLE_INTERNAL_SERVICE_TOKEN` defaults — operators must set a real token for membership to work.
+3. `kubectl apply --dry-run` needs a live API server; YAML parse + deployment guard tests are the offline substitute.
+
+## P. Merge gate (final)
+
+**Ready to merge:** **Yes** — quota UNKNOWN≠DENIED, timeout-after-commit single charge, advisory-lock usage counters, partial batch dispatch, internal membership auth+pagination, system+user prompt ceilings, malformed JSON/schema → validation (no retry), programming errors no-retry, quota 4xx no-retry / 429+5xx retry, Postgres concurrency in default `mvn test`, Beat production fail-fast, K8s/compose wiring, full matrix green.
