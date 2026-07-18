@@ -360,3 +360,96 @@ jobs:
         working-directory: demoRecordAUDIOMID/ai-service
         run: |
           pytest tests/test_database_startup.py -q --tb=short
+
+      - name: Migration order integration + Beat subprocess
+        env:
+          REQUIRE_DATASOURCE_CONTEXT_TESTS: "true"
+        working-directory: demoRecordAUDIOMID/ai-service
+        run: |
+          pytest tests/test_migration_order_integration.py \
+            tests/test_beat_subprocess_startup.py -q --tb=short
+
+  k8s-schema-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyyaml
+
+      - name: Verify kubectl client
+        run: kubectl version --client
+
+      - name: Install kubeconform
+        run: |
+          curl -sSL -o /tmp/kubeconform.tgz \
+            https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz
+          tar -xzf /tmp/kubeconform.tgz -C /tmp
+          sudo mv /tmp/kubeconform /usr/local/bin/kubeconform
+          kubeconform -v
+
+      - name: Render overlays
+        run: |
+          kubectl kustomize k8s/overlays/dev --load-restrictor=LoadRestrictionsNone > rendered-dev.yaml
+          kubectl kustomize k8s/overlays/staging --load-restrictor=LoadRestrictionsNone > rendered-staging.yaml
+          kubectl kustomize k8s/overlays/prod --load-restrictor=LoadRestrictionsNone > rendered-prod.yaml
+
+      - name: Structural validation (merge / code-only for staging/prod)
+        run: |
+          python scripts/validate-rendered-k8s.py rendered-dev.yaml --environment dev
+          python scripts/validate-rendered-k8s.py rendered-staging.yaml --environment staging
+          python scripts/validate-rendered-k8s.py rendered-prod.yaml --environment prod
+
+      - name: kubeconform (built-in resources)
+        run: |
+          kubeconform -strict -summary -ignore-missing-schemas rendered-dev.yaml
+          kubeconform -strict -summary -ignore-missing-schemas rendered-staging.yaml
+          kubeconform -strict -summary -ignore-missing-schemas rendered-prod.yaml
+
+  staging-deploy-preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyyaml
+
+      - name: Verify kubectl client
+        run: kubectl version --client
+
+      - name: Render staging
+        run: |
+          kubectl kustomize k8s/overlays/staging --load-restrictor=LoadRestrictionsNone > rendered-staging.yaml
+
+      - name: Deploy-ready gate must fail closed without real SealedSecrets
+        run: |
+          set +e
+          python scripts/validate-rendered-k8s.py rendered-staging.yaml \
+            --environment staging --deploy-ready
+          code=$?
+          set -e
+          if [ "$code" -eq 0 ]; then
+            echo "FAIL: --deploy-ready unexpectedly passed without sealed ciphertext"
+            exit 1
+          fi
+          echo "PASS: staging --deploy-ready fail-closed without real SealedSecrets (exit=$code)"
+
+      - name: Merge-mode staging render still valid
+        run: |
+          python scripts/validate-rendered-k8s.py rendered-staging.yaml --environment staging
