@@ -1,11 +1,24 @@
 import pytest
 
 from app.services.gemini_fault_injection import GeminiFaultInjectionClient
+from tests.httpx_asgi import create_asgi_client, patch_starlette_testclient
 
 # Spec alias for fault-injection doubles used in test_gemini_analyzer profiles.
 FakeGeminiClient = GeminiFaultInjectionClient
 
 _GROUPED_ACTION_PLAN_TEST = "test_grouped_action_plan.py"
+
+patch_starlette_testclient()
+
+
+@pytest.fixture
+def asgi_test_client():
+    """httpx 0.28+ compatible ASGI client for FastAPI apps."""
+
+    def _factory(app):
+        return create_asgi_client(app)
+
+    return _factory
 
 
 @pytest.fixture(autouse=True)
