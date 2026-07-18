@@ -1,6 +1,6 @@
 # Phase 2 — Implementation Report
 
-**Verdict (this session):** see **R.7 Merge gate** (Kubernetes Java runtime closure).
+**Verdict (this session):** see **T. Staging deployment readiness closure** (latest gate).
 
 Final distributed-systems remediation (section **N**) and runtime deployment closure (**Q**) completed. Java JWT / Secret ownership closure is section **R**.
 
@@ -420,3 +420,64 @@ Removed from staging/prod resources: `db-secret-placeholder.yaml`, raw `db-creds
 ### S.9 Merge gate
 
 **Ready to merge:** **Yes** — meeting/user/AI/worker staging/prod use managed `audiomind-db-secrets` (not host `db`); processing has no fake datasource; beat has no `DATABASE_URL`; internal DB is dev-only; no raw placeholder DB Secret in staging/prod; JDBC vs SQLAlchemy schemes enforced; Spring + AI context startup tests pass; managed-DB CI gate required; prior Phase 2 gates green; tracked tree clean after commits.
+
+## T. Staging deployment readiness closure
+
+### T.1 Three readiness states (do not collapse)
+
+| State | Meaning |
+|-------|---------|
+| **Ready to merge** | Code/tests/CI merge gates green; overlays render; validators pass in code-only mode |
+| **Ready to deploy staging** | Real SealedSecret ciphertext, managed PostgreSQL TLS URLs, ordered migrations, rollout, health, managed-DB + Phase 2 smokes |
+| **Ready for production cutover** | Staging deploy ready + real Gemini smoke + observation window + DB backup + rollback procedure + prod SealedSecrets |
+
+### T.2 AI database driver / scheme
+
+- Runtime installs **psycopg2-binary** only.
+- Allowed: postgresql://, postgresql+psycopg2://.
+- Rejected: jdbc:postgresql://, postgresql+psycopg://, postgresql+asyncpg://.
+- Staging/prod production Settings require sslmode=require or sslmode=verify-full.
+
+### T.3 Migration dependency and ordering
+
+- Meeting Flyway **V15** hard-depends on public.app_users (user-service V1).
+- Method A: Jobs user-db-migrate → meeting-db-migrate → i-db-migrate applied **sequentially** by scripts/deploy-staging.* with kubectl wait --for=condition=complete.
+- Java migration profile: SPRING_PROFILES_ACTIVE=migration + MigrationShutdownRunner + pplication-migration.yml (web-application-type: none).
+- AI: lembic upgrade head in i-db-migrate Job.
+- Fallback: meeting-api (and meeting migrate Job) wait-user-schema initContainer logs WAITING_FOR_USER_SCHEMA / USER_SCHEMA_READY / USER_SCHEMA_WAIT_TIMEOUT.
+
+### T.4 SealedSecret workflow
+
+- Active staging/prod kustomization **does not** include placeholder SealedSecrets.
+- Templates: sealed-secret.example.yaml, sealed-db-secret.example.yaml (outside resources).
+- Generate real ciphertext: scripts/generate-sealed-secrets.sh / .ps1 (requires kubeseal + cert).
+- Output: sealed-secret.generated.yaml / sealed-db-secret.generated.yaml (gitignored; apply out-of-band).
+- **No fake ciphertext** is checked in.
+
+### T.5 Placeholder / PVC / TLS / probes
+
+- alidate-rendered-k8s.py: staging/prod forbid REPLACE_WITH_SEALED etc.; --deploy-ready requires real ciphertext; auto --code-only for merge CI.
+- postgres-data-pvc moved to **dev-only** (k8s/overlays/dev/postgres-pvc.yaml).
+- API deployments: readiness + liveness + startup probes.
+- Staging/prod rolling update: maxUnavailable: 0, maxSurge: 1, progress/revision/grace limits.
+
+### T.6 Beat no-database startup
+
+- Beat skips DB Settings validation; database.py lazy engine refuses APP_COMPONENT=beat.
+- Subprocess coverage: 	ests/test_beat_subprocess_startup.py.
+
+### T.7 Deploy scripts and smokes
+
+- scripts/deploy-staging.sh / .ps1: ordered migrate → rollout → health → optional smokes.
+- scripts/smoke-managed-db.py, smoke-phase2-staging.py, smoke-real-gemini.py (RUN_REAL_GEMINI_SMOKE).
+
+### T.8 Honest status (this closure)
+
+| Gate | Status |
+|------|--------|
+| Ready to merge | **YES** (when full matrix green on this branch) |
+| Ready to deploy staging | **NO** until real SealedSecret ciphertext + managed DB credentials + cluster apply/smoke succeed |
+| Ready for production cutover | **NO** (requires Gemini smoke + observation + backup + prod seals) |
+
+Remaining operator actions: run generate-sealed-secrets against cluster cert; point URLs at managed Postgres with TLS; execute deploy-staging; run managed-DB + Phase 2 smokes; optionally RUN_REAL_GEMINI_SMOKE=true.
+
