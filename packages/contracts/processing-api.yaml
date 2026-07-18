@@ -524,6 +524,25 @@ paths:
           name: status
           schema:
             type: string
+        - in: query
+          name: page
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - in: query
+          name: size
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - in: query
+          name: sort
+          schema:
+            type: string
+            enum: [updated_at_desc, created_at_desc, version_desc]
+            default: updated_at_desc
       responses:
         "200":
           description: Artifact list
@@ -1063,4 +1082,11 @@ components:
         status:
           $ref: "#/components/schemas/StudyJobStatus"
           nullable: true
+        page:
+          type: integer
+        size:
+          type: integer
+        total:
+          type: integer
+          format: int64
       additionalProperties: true

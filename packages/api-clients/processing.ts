@@ -704,6 +704,10 @@ export interface components {
         StudyArtifactsListResponse: {
             items?: components["schemas"]["StudyArtifactResponse"][];
             status?: components["schemas"]["StudyJobStatus"];
+            page?: number;
+            size?: number;
+            /** Format: int64 */
+            total?: number;
         } & {
             [key: string]: unknown;
         };
@@ -1257,6 +1261,9 @@ export interface operations {
             query?: {
                 artifactType?: components["schemas"]["StudyArtifactType"];
                 status?: string;
+                page?: number;
+                size?: number;
+                sort?: "updated_at_desc" | "created_at_desc" | "version_desc";
             };
             header?: never;
             path: {

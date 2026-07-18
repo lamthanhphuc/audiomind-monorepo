@@ -1,4 +1,5 @@
 import type { McqQuestion } from '../../types/studyArtifacts'
+import { pickStudyEvidence } from '../../types/studyArtifacts'
 import './study.css'
 
 export type QuizQuestionProps = {
@@ -18,8 +19,9 @@ export function QuizQuestion({
   onSelect,
   onOpenEvidence,
 }: QuizQuestionProps) {
-  const meetingId = question.sourceMeetingIds?.[0]
-  const segmentId = question.sourceSegmentIds?.[0]
+  const evidence = pickStudyEvidence(question)
+  const meetingId = evidence?.meetingId
+  const segmentId = evidence?.segmentId
 
   return (
     <article className="study-quiz-question" data-testid="quiz-question">

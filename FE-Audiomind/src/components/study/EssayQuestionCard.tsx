@@ -1,4 +1,5 @@
 import type { EssayQuestion } from '../../types/studyArtifacts'
+import { pickStudyEvidence } from '../../types/studyArtifacts'
 import { EssayRubricView } from './EssayRubricView'
 import './study.css'
 
@@ -8,8 +9,9 @@ export type EssayQuestionCardProps = {
 }
 
 export function EssayQuestionCard({ question, onOpenEvidence }: EssayQuestionCardProps) {
-  const meetingId = question.sourceMeetingIds?.[0]
-  const segmentId = question.sourceSegmentIds?.[0]
+  const evidence = pickStudyEvidence(question)
+  const meetingId = evidence?.meetingId
+  const segmentId = evidence?.segmentId
 
   return (
     <article className="study-essay-card" data-testid="essay-question-card">

@@ -3,7 +3,9 @@ import type { StudyArtifact, StudyArtifactOptions, StudyArtifactType } from '../
 import type { StudySourceSelectionMode } from '../../types/subjectSynthesis'
 import {
   createStudyArtifacts,
+  isStudyArtifactTerminal,
   listSubjectStudyArtifacts,
+  pickRegeneratedArtifact,
   pollStudyArtifactsUntilTerminal,
   regenerateStudyArtifact,
 } from '../../services/studyArtifacts'
@@ -85,7 +87,11 @@ export function StudyArtifactTabPanel({
         onUpdate: (snapshot) => {
           setAggregateStatus(snapshot.aggregateStatus)
           const match = snapshot.artifacts.find((row) => row.artifactType === artifactType)
-          if (match) {
+          // Only swap the displayed artifact once the regenerated/newly
+          // generated version reaches a terminal status; otherwise keep
+          // showing the previous (stale) content instead of a content-less
+          // QUEUED/PROCESSING row.
+          if (match && isStudyArtifactTerminal(String(match.status))) {
             setArtifact(match)
           }
         },
@@ -149,12 +155,18 @@ export function StudyArtifactTabPanel({
     setBusy(true)
     setError(null)
     try {
-      const updated = await regenerateStudyArtifact(artifact.id)
-      setArtifact(updated)
-      const status = String(updated.status).toUpperCase()
-      if (status === 'QUEUED' || status === 'PROCESSING') {
-        await startPoll([updated.id])
+      const response = await regenerateStudyArtifact(artifact.id)
+      setAggregateStatus(String(response.status))
+      const { artifact: regenerated, pollIds } = pickRegeneratedArtifact(response)
+      if (pollIds.length > 0) {
+        // Keep showing the current (stale) content while the regenerated
+        // artifact is still QUEUED/PROCESSING; the poll's onUpdate callback
+        // swaps `artifact` in once it reaches a terminal status.
+        await startPoll(pollIds)
       } else {
+        if (regenerated) {
+          setArtifact(regenerated)
+        }
         setBusy(false)
       }
     } catch (updateError) {

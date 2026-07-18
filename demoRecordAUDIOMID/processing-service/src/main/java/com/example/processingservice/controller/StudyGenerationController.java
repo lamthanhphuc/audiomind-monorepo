@@ -141,6 +141,9 @@ public class StudyGenerationController {
             @PathVariable Long subjectId,
             @RequestParam(required = false) String artifactType,
             @RequestParam(required = false) String status,
+            @RequestParam(required = false) Integer page,
+            @RequestParam(required = false) Integer size,
+            @RequestParam(required = false) String sort,
             @RequestHeader(value = "x-trace-id", required = false) String traceId,
             @RequestHeader(HttpHeaders.AUTHORIZATION) String authorization) {
         UserPrincipal principal = requirePrincipal();
@@ -149,6 +152,9 @@ public class StudyGenerationController {
                 principal.userId(),
                 artifactType,
                 status,
+                page,
+                size,
+                sort,
                 ensureTraceId(traceId),
                 authorization);
     }

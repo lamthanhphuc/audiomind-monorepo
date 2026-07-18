@@ -61,7 +61,13 @@ export const getStudyArtifact = async (artifactId: number): Promise<StudyArtifac
 
 export const listSubjectStudyArtifacts = async (
   subjectId: number,
-  filters?: { artifactType?: string; status?: string },
+  filters?: {
+    artifactType?: string
+    status?: string
+    page?: number
+    size?: number
+    sort?: string
+  },
 ): Promise<StudyArtifact[]> => {
   const params = new URLSearchParams()
   if (filters?.artifactType) {
@@ -69,6 +75,15 @@ export const listSubjectStudyArtifacts = async (
   }
   if (filters?.status) {
     params.set('status', filters.status)
+  }
+  if (filters?.page != null) {
+    params.set('page', String(filters.page))
+  }
+  if (filters?.size != null) {
+    params.set('size', String(filters.size))
+  }
+  if (filters?.sort) {
+    params.set('sort', filters.sort)
   }
   const query = params.toString()
   const response = await fetchJson<StudyArtifact[] | { items: StudyArtifact[]; artifacts?: StudyArtifact[] }>(
@@ -89,14 +104,41 @@ export const listSubjectStudyArtifacts = async (
 export const regenerateStudyArtifact = async (
   artifactId: number,
   body?: { force?: boolean },
-): Promise<StudyArtifact> => {
-  return fetchJson<StudyArtifact>(
+): Promise<StudyArtifactsCreateResponse> => {
+  return fetchJson<StudyArtifactsCreateResponse>(
     `${PROCESSING_API_BASE}/processing/study-artifacts/${artifactId}/regenerate`,
     {
       method: 'POST',
       body: JSON.stringify({ force: true, ...body }),
     },
   )
+}
+
+export type PickRegeneratedArtifactResult = {
+  artifact: StudyArtifact | null
+  pollIds: number[]
+}
+
+/**
+ * Extract the regenerated artifact (if already known) and the artifact ids
+ * that still need polling from a batch-shaped regenerate/create response.
+ * Regenerate requests always target a single artifactType, so the response
+ * carries at most one artifact, but we still treat `artifacts`/`artifactIds`
+ * as the source of truth rather than assuming array shape/length.
+ */
+export const pickRegeneratedArtifact = (
+  response: StudyArtifactsCreateResponse,
+): PickRegeneratedArtifactResult => {
+  const artifacts = response.artifacts ?? []
+  const artifact = artifacts[0] ?? null
+  const ids = response.artifactIds ?? []
+  const pollIds = ids.filter((id) => {
+    const row = artifacts.find((a) => a.id === id)
+    if (!row) return true
+    const rowStatus = String(row.status).toUpperCase()
+    return rowStatus === 'QUEUED' || rowStatus === 'PROCESSING'
+  })
+  return { artifact, pollIds }
 }
 
 export const deleteStudyArtifact = async (artifactId: number): Promise<void> => {
