@@ -267,6 +267,14 @@ class Settings(BaseSettings):
         default=120,
         validation_alias=AliasChoices("STUDY_DISPATCH_LEASE_SECONDS"),
     )
+    study_dispatch_max_attempts: int = Field(
+        default=8,
+        validation_alias=AliasChoices("STUDY_DISPATCH_MAX_ATTEMPTS"),
+    )
+    study_dispatch_retry_backoff_seconds: int = Field(
+        default=30,
+        validation_alias=AliasChoices("STUDY_DISPATCH_RETRY_BACKOFF_SECONDS"),
+    )
     study_processing_timeout_seconds: int = Field(
         default=1800,
         validation_alias=AliasChoices("STUDY_PROCESSING_TIMEOUT_SECONDS"),
