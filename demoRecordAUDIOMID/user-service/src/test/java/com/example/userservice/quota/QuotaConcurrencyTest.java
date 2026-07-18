@@ -58,7 +58,7 @@ import org.testcontainers.utility.DockerImageName;
 @Import({QuotaService.class, UserPlanService.class})
 @Transactional(propagation = Propagation.NOT_SUPPORTED)
 @Testcontainers(disabledWithoutDocker = true)
-class QuotaConcurrencyIT {
+class QuotaConcurrencyTest {
 
     private static final DateTimeFormatter YYYYMM = DateTimeFormatter.ofPattern("yyyyMM");
     private static final long FREE_GEMINI_LIMIT = 50_000L;

@@ -52,7 +52,7 @@ import static org.mockito.Mockito.when;
 /**
  * Unit tests for {@link QuotaService}.
  *
- * <p>Real PostgreSQL concurrent coverage lives in {@link QuotaConcurrencyIT}
+ * <p>Real PostgreSQL concurrent coverage lives in {@link QuotaConcurrencyTest}
  * (Testcontainers + {@code @DataJpaTest}).
  */
 @ExtendWith(MockitoExtension.class)
