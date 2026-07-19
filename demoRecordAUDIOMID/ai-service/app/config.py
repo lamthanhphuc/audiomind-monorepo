@@ -557,10 +557,16 @@ class Settings(BaseSettings):
             )
 
     def _validate_cors_production(self) -> None:
-        if "localhost" in (self.cors_allowed_origins or "").lower():
-            raise ValueError(
-                "Invalid production cors_allowed_origins: localhost is not allowed"
-            )
+        origins = (self.cors_allowed_origins or "").lower()
+        if "localhost" not in origins and "127.0.0.1" not in origins:
+            return
+        # Local VPS compose may expose the app on localhost / 127.0.0.1.
+        if (self.deployment_mode or "").strip().lower() == DeploymentMode.VPS.value:
+            return
+        raise ValueError(
+            "Invalid production cors_allowed_origins: localhost/127.0.0.1 "
+            "is not allowed (set DEPLOYMENT_MODE=vps for private VPS compose)"
+        )
 
     def _validate_huggingface_diarization_production(self) -> None:
         native_deepgram_diarization_enabled = bool(
