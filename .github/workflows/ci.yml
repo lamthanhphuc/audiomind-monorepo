@@ -89,6 +89,36 @@ jobs:
         run: |
           echo "Full-stack E2E runs in smoke-test.yml (PR/nightly) when E2E_USERNAME/E2E_PASSWORD secrets are set."
 
+  compose-unified:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Compose config (local + VPS examples)
+        run: |
+          docker compose --env-file infra/.env.local.example \
+            -f infra/docker-compose.dev.yml -f infra/docker-compose.mvp.yml config --quiet
+          docker compose --env-file infra/.env.vps.example \
+            -f infra/docker-compose.dev.yml -f infra/docker-compose.mvp.yml \
+            -f infra/docker-compose.prod.yml config --quiet
+
+      - name: Unified compose + migration graph tests
+        run: |
+          pip install pytest
+          python -m pytest \
+            tests/test_compose_unified_layers.py \
+            tests/test_generate_vps_db_url.py \
+            tests/test_smoke_vps_public_rules.py \
+            tests/test_deploy_vps_build_once.py \
+            tests/test_vps_shared_uploads_volume.py \
+            tests/test_migration_history_completeness.py \
+            -q
+
   contract-check:
     runs-on: ubuntu-latest
 

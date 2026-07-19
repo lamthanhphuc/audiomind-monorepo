@@ -59,23 +59,42 @@ From the deployment checkout:
 
 ```bash
 cd /opt/audiomind/phase3-worktree
-cp infra/.env.production.example infra/.env
+cp infra/.env.vps.example infra/.env
 ```
 
-Edit `infra/.env` on the VPS and replace placeholders. Keep all bind addresses
-on `127.0.0.1`.
+Edit `infra/.env` on the VPS once (domain, JWT, provider keys, PayOS/OAuth as needed).
+Never commit that file. Project name is `audiomind-prod` (volumes are not shared with Local).
 
-Render the final Compose configuration before starting anything:
+Official bring-up (no `--profile migrate`, no manual migration step):
 
 ```bash
-docker compose --env-file infra/.env -f infra/docker-compose.dev.yml -f infra/docker-compose.mvp.yml -f infra/docker-compose.prod.yml config
+docker compose --env-file infra/.env \
+  -f infra/docker-compose.dev.yml \
+  -f infra/docker-compose.mvp.yml \
+  -f infra/docker-compose.prod.yml \
+  build
+
+docker compose --env-file infra/.env \
+  -f infra/docker-compose.dev.yml \
+  -f infra/docker-compose.mvp.yml \
+  -f infra/docker-compose.prod.yml \
+  up -d
+```
+
+Optional helper: `./scripts/deploy-vps.sh`. `scripts/vps-migrate.sh` is troubleshooting only.
+
+Render the final Compose configuration before starting anything (do not paste the
+full output into tickets — it contains secrets):
+
+```bash
+docker compose --env-file infra/.env -f infra/docker-compose.dev.yml -f infra/docker-compose.mvp.yml -f infra/docker-compose.prod.yml config --quiet
 ```
 
 Verify in the rendered config:
 
-- `web`, `meeting-api`, `processing-api`, and `user-api` publish only
+- `web`, `meeting-api`, `processing-api`, `user-api`, and `ai-api` publish only
   `127.0.0.1` host bindings.
-- `db`, `redis`, `ai-api`, and `celery-worker` have no public host port.
+- `db` and `redis` have no published host ports.
 - `ai-api` and `celery-worker` do not use `demoRecordAUDIOMID/ai-service/.env`.
 - `celery-worker.environment.CORS_ALLOWED_ORIGINS` is present and comes from
   `infra/.env`.
