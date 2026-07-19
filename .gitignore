@@ -42,6 +42,11 @@ logs/ci-fix/
 .env.local
 !.env.example
 !.env.production.example
+!.env.local.example
+!.env.vps.example
+!**/.env.example
+!**/.env.local.example
+!**/.env.vps.example
 
 # Temp artifacts
 **/temp/
