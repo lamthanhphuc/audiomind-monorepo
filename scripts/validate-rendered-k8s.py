@@ -62,6 +62,12 @@ _PYTHON_DB_DEPLOYMENTS = {
     "ai-api-deployment",
     "celery-worker-deployment",
 }
+_STT_WIRED_DEPLOYMENTS = {
+    "ai-api-deployment",
+    "celery-worker-deployment",
+}
+_IMMUTABLE_IMAGE_SUFFIX = ":0.1.0"
+_STAGING_NAMESPACE = "audiomind-staging"
 
 
 def _load_docs(path: Path) -> list[dict[str, Any]]:
@@ -139,6 +145,37 @@ def _iter_container_env(docs: list[dict[str, Any]]):
                 yield dn, e
 
 
+def _deployment_env_map(docs: list[dict[str, Any]], deployment_name: str) -> dict[str, Any]:
+    for d in docs:
+        if d.get("kind") != "Deployment":
+            continue
+        if (d.get("metadata") or {}).get("name") != deployment_name:
+            continue
+        env_map: dict[str, Any] = {}
+        for c in (d.get("spec") or {}).get("template", {}).get("spec", {}).get(
+            "containers"
+        ) or []:
+            for e in c.get("env") or []:
+                name = e.get("name")
+                if name:
+                    env_map[str(name)] = e
+        return env_map
+    return {}
+
+
+def _configmap_value(cms: dict[str, set[str]], docs: list[dict[str, Any]], key: str) -> str | None:
+    if "audiomind-config" in cms and key in cms["audiomind-config"]:
+        for d in docs:
+            if d.get("kind") != "ConfigMap":
+                continue
+            if (d.get("metadata") or {}).get("name") != "audiomind-config":
+                continue
+            value = (d.get("data") or {}).get(key)
+            if value is not None:
+                return str(value)
+    return None
+
+
 def validate_docs(
     docs: list[dict[str, Any]],
     label: str,
@@ -146,6 +183,7 @@ def validate_docs(
     *,
     deploy_ready: bool = False,
     code_only: bool = False,
+    require_immutable_images: bool = False,
 ) -> bool:
     ok = True
     env = (environment or "").strip().lower() or None
@@ -155,6 +193,53 @@ def validate_docs(
         for d in docs
         if d.get("kind") == "ConfigMap"
     }
+
+    immutable_gate = deploy_ready or require_immutable_images
+    if env in {"staging", "prod"}:
+        deploy_names = {(d.get("metadata") or {}).get("name") for d in deploys}
+        if "frontend-deployment" not in deploy_names:
+            print(f"FAIL {label}: {env} must render frontend-deployment")
+            ok = False
+
+        if env == "staging":
+            for d in docs:
+                meta = d.get("metadata") or {}
+                ns = meta.get("namespace")
+                if ns and ns != _STAGING_NAMESPACE:
+                    print(
+                        f"FAIL {label}: staging resource {meta.get('name')} "
+                        f"namespace={ns} expected {_STAGING_NAMESPACE}"
+                    )
+                    ok = False
+
+        for dn in _STT_WIRED_DEPLOYMENTS:
+            env_map = _deployment_env_map(docs, dn)
+            stt_env = env_map.get("STT_PROVIDER")
+            if not stt_env:
+                print(f"FAIL {label}/{dn}: missing STT_PROVIDER env")
+                ok = False
+                continue
+            cm_ref = ((stt_env.get("valueFrom") or {}).get("configMapKeyRef") or {})
+            if cm_ref.get("name") != "audiomind-config" or cm_ref.get("key") != "STT_PROVIDER":
+                print(f"FAIL {label}/{dn}: STT_PROVIDER must come from audiomind-config/STT_PROVIDER")
+                ok = False
+            if "STT_PROVIDER" not in cms.get("audiomind-config", set()):
+                print(f"FAIL {label}: audiomind-config missing STT_PROVIDER key")
+                ok = False
+
+        if immutable_gate:
+            for d in deploys:
+                dn = (d.get("metadata") or {}).get("name") or "deployment"
+                for c in (d.get("spec") or {}).get("template", {}).get("spec", {}).get(
+                    "containers"
+                ) or []:
+                    image = str(c.get("image") or "")
+                    if image.endswith(_IMMUTABLE_IMAGE_SUFFIX):
+                        print(
+                            f"FAIL {label}/{dn}: image {image} uses forbidden "
+                            f"placeholder tag {_IMMUTABLE_IMAGE_SUFFIX}"
+                        )
+                        ok = False
 
     # Never allow REPLACE_WITH_SEALED / CHANGE_ME in rendered staging/prod.
     if env in {"staging", "prod"}:
@@ -203,6 +288,26 @@ def validate_docs(
             ok = False
 
     require_secret_producers = not code_only or env == "dev" or deploy_ready
+
+    if env in {"staging", "prod"}:
+        diarization_value = (
+            _configmap_value(cms, docs, "ENABLE_SPEAKER_DIARIZATION") or ""
+        ).lower()
+        hf_owners = producers.get("audiomind-secrets", [])
+        hf_key_present = any(
+            "HUGGINGFACE_TOKEN" in keys or "*" in keys for _, keys, _ in hf_owners
+        )
+        if diarization_value == "true" and require_secret_producers and not hf_key_present:
+            print(
+                f"FAIL {label}: ENABLE_SPEAKER_DIARIZATION=true requires "
+                f"HUGGINGFACE_TOKEN in audiomind-secrets producer"
+            )
+            ok = False
+        elif diarization_value != "true" and require_secret_producers and not hf_key_present:
+            print(
+                f"WARN {label}: diarization disabled but audiomind-secrets lacks "
+                f"HUGGINGFACE_TOKEN (workloads still reference the key)"
+            )
 
     for d in deploys:
         dn = d["metadata"]["name"]
@@ -256,8 +361,11 @@ def validate_docs(
                         ok = False
                 if sk and require_secret_producers:
                     sname, skey = sk.get("name"), sk.get("key")
+                    optional_ref = sk.get("optional") in (True, "true", "True")
                     owners = producers.get(sname or "", [])
                     if not owners:
+                        if optional_ref:
+                            continue
                         print(
                             f"FAIL {label}/{dn} missing Secret producer for "
                             f"{sname}/{skey}"
@@ -265,7 +373,7 @@ def validate_docs(
                         ok = False
                         continue
                     key_ok = any(skey in keys or "*" in keys for _, keys, _ in owners)
-                    if not key_ok:
+                    if not key_ok and not optional_ref:
                         print(
                             f"FAIL {label}/{dn} missing Secret key {sname}/{skey} "
                             f"in producers {[k for k, _, _ in owners]}"
@@ -278,7 +386,12 @@ def validate_docs(
             continue
         for kind, keys, doc in owners:
             if kind == "SealedSecret":
-                for required in ("JWT_SECRET", "INTERNAL_SERVICE_TOKEN", "GEMINI_API_KEY"):
+                for required in (
+                    "JWT_SECRET",
+                    "INTERNAL_SERVICE_TOKEN",
+                    "GEMINI_API_KEY",
+                    "HUGGINGFACE_TOKEN",
+                ):
                     if required not in keys:
                         print(
                             f"FAIL {label}: SealedSecret audiomind-secrets missing "
@@ -510,6 +623,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Merge-CI mode: allow missing sealed secret producers in staging/prod",
     )
+    parser.add_argument(
+        "--require-immutable-images",
+        action="store_true",
+        help="Reject placeholder :0.1.0 image tags (CI after image patch simulation)",
+    )
     args = parser.parse_args(argv)
     if args.files:
         paths = [Path(p) for p in args.files]
@@ -536,6 +654,7 @@ def main(argv: list[str] | None = None) -> int:
             env,
             deploy_ready=args.deploy_ready,
             code_only=code_only,
+            require_immutable_images=args.require_immutable_images,
         ):
             ok = False
     print("structural_k8s_validate:", "PASS" if ok else "FAIL")

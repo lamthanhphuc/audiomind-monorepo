@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Managed PostgreSQL schema smoke for user/meeting/AI databases.
 
+Env gate:
+  RUN_MANAGED_DB_SMOKE=true -> run (FAIL if DSNs missing/invalid)
+  unset/false               -> NOT RUN (exit 0)
+
 Reads MEETING_DATABASE_URL, USER_DATABASE_URL, AI_DATABASE_URL (or DATABASE_URL)
 plus optional DB_USERNAME / DB_PASSWORD. Never logs credentials.
 """
@@ -8,6 +12,7 @@ plus optional DB_USERNAME / DB_PASSWORD. Never logs credentials.
 from __future__ import annotations
 
 import os
+import re
 import sys
 from urllib.parse import unquote, urlparse
 
@@ -39,13 +44,33 @@ MEETING_CHECKS = (
 AI_CHECKS = (
     ("alembic_version", "SELECT version_num FROM alembic_version LIMIT 1"),
     ("subject_synthesis", "SELECT to_regclass('public.subject_synthesis')"),
+    ("subject_synthesis_source", "SELECT to_regclass('public.subject_synthesis_source')"),
     ("study_artifact", "SELECT to_regclass('public.study_artifact')"),
+    ("study_artifact_source", "SELECT to_regclass('public.study_artifact_source')"),
+)
+
+_REDACT = re.compile(
+    r"((?:postgresql|jdbc:postgresql)://)[^@\s]+@",
+    re.I,
 )
 
 
+def _truthy(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _redact(message: str) -> str:
+    return _REDACT.sub(r"\1***@", message)
+
+
 def _fail(message: str) -> None:
-    print(f"FAIL smoke-managed-db: {message}", file=sys.stderr)
+    print(f"FAIL smoke-managed-db: {_redact(message)}", file=sys.stderr)
     sys.exit(1)
+
+
+def _not_run(reason: str) -> None:
+    print(f"NOT RUN smoke-managed-db: {reason}")
+    sys.exit(0)
 
 
 def _jdbc_to_psycopg2(url: str, username: str | None, password: str | None) -> str:
@@ -66,10 +91,17 @@ def _jdbc_to_psycopg2(url: str, username: str | None, password: str | None) -> s
     if user:
         auth = user
         if password_val:
-            auth += f":{password_val}"
+            auth += ":***"
         auth += "@"
+    # Build real DSN for connect (not logged).
+    real_auth = ""
+    if user:
+        real_auth = user
+        if password_val:
+            real_auth += f":{password_val}"
+        real_auth += "@"
     query = parsed.query
-    return f"postgresql://{auth}{host}:{port}/{dbname}" + (f"?{query}" if query else "")
+    return f"postgresql://{real_auth}{host}:{port}/{dbname}" + (f"?{query}" if query else "")
 
 
 def _resolve_dsn(env_name: str) -> str:
@@ -90,7 +122,7 @@ def _connect(dsn: str):
     try:
         return psycopg2.connect(dsn)
     except psycopg2.Error as exc:
-        _fail(f"connection failed: {exc.__class__.__name__}")
+        _fail(f"connection failed: {exc.__class__.__name__}: {_redact(str(exc))}")
 
 
 def _scalar(conn, sql: str):
@@ -123,6 +155,9 @@ def _check_group(label: str, dsn: str, checks: tuple[tuple[str, str], ...]) -> N
 
 
 def main() -> int:
+    if not _truthy("RUN_MANAGED_DB_SMOKE"):
+        _not_run("set RUN_MANAGED_DB_SMOKE=true to enable")
+
     print("smoke-managed-db: connecting (credentials not logged)")
     user_dsn = _resolve_dsn("USER_DATABASE_URL")
     meeting_dsn = _resolve_dsn("MEETING_DATABASE_URL")
