@@ -1017,6 +1017,16 @@ class ProcessingPipeline:
             aligned_segments = self._deduplicate_repeated_segments(aligned_segments)
             aligned_segments = assign_stable_segment_ids(meeting_id, aligned_segments)
 
+            # Persist transcript before Gemini so analysis failures still leave
+            # rerunable saved transcript for "Phân tích lại".
+            self._persist_aligned_transcript_segments(meeting_id, aligned_segments, db)
+            db.commit()
+            logger.info(
+                "event=BATCH_TRANSCRIPT_PERSISTED_BEFORE_ANALYSIS meetingId={} segments={}",
+                meeting_id,
+                len(aligned_segments),
+            )
+
             # Step 5: AI Analysis
             logger.info("Step 5: AI analysis")
             mode = normalize_analysis_mode(analysis_mode)
@@ -1254,6 +1264,56 @@ class ProcessingPipeline:
                         enhanced_path.name,
                     )
 
+    def _persist_aligned_transcript_segments(
+        self,
+        meeting_id: int,
+        aligned_segments: List[Dict],
+        db: Session,
+    ) -> None:
+        """Persist aligned STT segments independently of analysis success."""
+
+        def _to_builtin(value):
+            if value is None or isinstance(value, (str, int, float, bool, datetime)):
+                return value
+            if hasattr(value, "item"):
+                try:
+                    return _to_builtin(value.item())
+                except Exception:
+                    pass
+            if isinstance(value, dict):
+                return {str(k): _to_builtin(v) for k, v in value.items()}
+            if isinstance(value, (list, tuple)):
+                return [_to_builtin(v) for v in value]
+            return str(value)
+
+        transcript_repository = TranscriptPersistenceRepository(db)
+        for index, segment in enumerate(aligned_segments, start=1):
+            seq_raw = segment.get("seq")
+            seq = int(_to_builtin(seq_raw)) if seq_raw is not None else index
+            if seq <= 0:
+                seq = index
+            fragment_input = TranscriptFragmentInput(
+                meeting_id=meeting_id,
+                seq=seq,
+                speaker=str(segment.get("speaker", "UNKNOWN")),
+                start_time=float(_to_builtin(segment.get("start", 0.0))),
+                end_time=float(_to_builtin(segment.get("end", 0.0))),
+                text=str(segment.get("text", "")),
+                event_id=(
+                    str(segment.get("segment_id") or segment.get("event_id"))
+                    if (segment.get("segment_id") or segment.get("event_id"))
+                    else None
+                ),
+                # Batch STT segments are complete once aligned.
+                is_final=bool(segment.get("is_final", True)),
+                confidence=(
+                    float(_to_builtin(segment.get("confidence")))
+                    if segment.get("confidence") is not None
+                    else None
+                ),
+            )
+            transcript_repository.append_fragment(fragment_input)
+
     def _save_results(
         self,
         meeting_id: int,
@@ -1300,33 +1360,9 @@ class ProcessingPipeline:
 
                 return str(value)
 
-            # Save transcripts
-            transcript_repository = TranscriptPersistenceRepository(db)
-            for segment in aligned_segments:
-                fragment_input = TranscriptFragmentInput(
-                    meeting_id=meeting_id,
-                    seq=(
-                        int(_to_builtin(segment.get("seq", 0)))
-                        if segment.get("seq") is not None
-                        else len(transcript_repository.list_fragments(meeting_id)) + 1
-                    ),
-                    speaker=str(segment.get("speaker", "UNKNOWN")),
-                    start_time=float(_to_builtin(segment.get("start", 0.0))),
-                    end_time=float(_to_builtin(segment.get("end", 0.0))),
-                    text=str(segment.get("text", "")),
-                    event_id=(
-                        str(segment.get("segment_id") or segment.get("event_id"))
-                        if (segment.get("segment_id") or segment.get("event_id"))
-                        else None
-                    ),
-                    is_final=bool(segment.get("is_final", False)),
-                    confidence=(
-                        float(_to_builtin(segment.get("confidence")))
-                        if segment.get("confidence") is not None
-                        else None
-                    ),
-                )
-                transcript_repository.append_fragment(fragment_input)
+            # Save transcripts (idempotent via fragment dedupe if already
+            # persisted before analysis).
+            self._persist_aligned_transcript_segments(meeting_id, aligned_segments, db)
 
             # Save analysis
             clean_analysis = _to_builtin(analysis_result or {})
