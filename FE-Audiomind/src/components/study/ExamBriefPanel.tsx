@@ -4,6 +4,11 @@ import './study.css'
 
 export type ExamBriefPanelProps = {
   content: ExamBriefContent | null | undefined
+  // Note: ExamBriefContent has no per-item sourceSegmentIds or evidence fields
+  // (only a top-level sourceMeetingIds array). Per-item evidence buttons cannot
+  // be wired because there is no segmentId to navigate to. If the backend ever
+  // adds evidence[] or sourceSegmentIds to individual ExamBrief items, wire
+  // onOpenEvidence here analogously to FlashcardViewer / QuizQuestion.
 }
 
 const ListSection = ({ title, items }: { title: string; items?: string[] }) => {

@@ -3,12 +3,14 @@ import type { StudyArtifact, StudyArtifactOptions, StudyArtifactType } from '../
 import type { StudySourceSelectionMode } from '../../types/subjectSynthesis'
 import {
   createStudyArtifacts,
+  deleteStudyArtifact,
   isStudyArtifactTerminal,
   listSubjectStudyArtifacts,
   pickRegeneratedArtifact,
   pollStudyArtifactsUntilTerminal,
   regenerateStudyArtifact,
 } from '../../services/studyArtifacts'
+import { ConfirmDialog } from '../subjects/ConfirmDialog'
 import { StudyArtifactGenerator } from './StudyArtifactGenerator'
 import { SubjectMindMapView } from './SubjectMindMapView'
 import { FlashcardDeck } from './FlashcardDeck'
@@ -54,7 +56,12 @@ export function StudyArtifactTabPanel({
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [aggregateStatus, setAggregateStatus] = useState<string | null>(null)
+  const [pollingArtifacts, setPollingArtifacts] = useState<StudyArtifact[]>([])
   const pollAbortRef = useRef<AbortController | null>(null)
+
+  const [deleteOpen, setDeleteOpen] = useState(false)
+  const [deleteBusy, setDeleteBusy] = useState(false)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
 
   const loadLatest = useCallback(async () => {
     setLoading(true)
@@ -81,11 +88,13 @@ export function StudyArtifactTabPanel({
     const controller = new AbortController()
     pollAbortRef.current = controller
     setBusy(true)
+    setPollingArtifacts([])
     try {
       const result = await pollStudyArtifactsUntilTerminal(artifactIds, {
         signal: controller.signal,
         onUpdate: (snapshot) => {
           setAggregateStatus(snapshot.aggregateStatus)
+          setPollingArtifacts(snapshot.artifacts)
           const match = snapshot.artifacts.find((row) => row.artifactType === artifactType)
           // Only swap the displayed artifact once the regenerated/newly
           // generated version reaches a terminal status; otherwise keep
@@ -97,6 +106,7 @@ export function StudyArtifactTabPanel({
         },
       })
       setAggregateStatus(result.aggregateStatus)
+      setPollingArtifacts([])
       const match = result.artifacts.find((row) => row.artifactType === artifactType) ?? result.artifacts[0]
       if (match) {
         setArtifact(match)
@@ -108,6 +118,7 @@ export function StudyArtifactTabPanel({
       setError(pollError instanceof Error ? pollError.message : 'Poll học liệu thất bại')
     } finally {
       setBusy(false)
+      setPollingArtifacts([])
     }
   }, [artifactType])
 
@@ -175,13 +186,34 @@ export function StudyArtifactTabPanel({
     }
   }
 
+  const handleDeleteConfirm = async () => {
+    if (!artifact || deleteBusy) return
+    setDeleteBusy(true)
+    setDeleteError(null)
+    try {
+      await deleteStudyArtifact(artifact.id)
+      setDeleteOpen(false)
+      setArtifact(null)
+      await loadLatest()
+    } catch (deleteErr) {
+      setDeleteError(deleteErr instanceof Error ? deleteErr.message : 'Không xóa được học liệu')
+    } finally {
+      setDeleteBusy(false)
+    }
+  }
+
   const contentView = useMemo(() => {
     if (!artifact?.content) {
       return null
     }
     switch (artifactType) {
       case 'MIND_MAP':
-        return <SubjectMindMapView content={artifact.content as MindMapContent} />
+        return (
+          <SubjectMindMapView
+            content={artifact.content as MindMapContent}
+            onOpenEvidence={onOpenEvidence}
+          />
+        )
       case 'FLASHCARDS':
         return (
           <FlashcardDeck
@@ -233,6 +265,42 @@ export function StudyArtifactTabPanel({
         </div>
       ) : null}
 
+      {/* Toolbar shown when an artifact is loaded — provides delete action */}
+      {!loading && artifact ? (
+        <div className="study-panel-toolbar" data-testid="artifact-toolbar">
+          <span className="study-muted">
+            {artifact.title ?? artifact.artifactType}
+            {artifact.version > 1 ? ` (v${artifact.version})` : ''}
+          </span>
+          <div className="study-panel-toolbar__actions">
+            <button
+              type="button"
+              className="btn btn--danger btn--compact"
+              data-testid="artifact-delete-btn"
+              disabled={busy || deleteBusy}
+              onClick={() => {
+                setDeleteError(null)
+                setDeleteOpen(true)
+              }}
+            >
+              Xóa học liệu
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {/* Per-artifact status list during polling so users see individual progress */}
+      {busy && pollingArtifacts.length > 0 ? (
+        <ul className="study-polling-status" data-testid="polling-status-list">
+          {pollingArtifacts.map((row) => (
+            <li key={row.id} data-testid={`polling-status-item-${row.artifactType}`}>
+              <span className="study-muted">{row.artifactType}:</span>{' '}
+              <span>{String(row.status)}</span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+
       {loading ? <LoadingState message="Đang tải học liệu…" /> : null}
       {!loading && error ? <ErrorState message={error} title="Lỗi học liệu" /> : null}
       {!loading && !error && !artifact && !busy ? (
@@ -243,6 +311,24 @@ export function StudyArtifactTabPanel({
       ) : null}
       {busy && !artifact?.content ? <LoadingState message="Đang tạo học liệu…" /> : null}
       {contentView}
+
+      <ConfirmDialog
+        open={deleteOpen}
+        title="Xóa học liệu"
+        message="Bạn có chắc muốn xóa học liệu này? Hành động không thể hoàn tác."
+        confirmLabel="Xóa"
+        tone="danger"
+        busy={deleteBusy}
+        error={deleteError}
+        onConfirm={() => void handleDeleteConfirm()}
+        onCancel={() => {
+          if (!deleteBusy) {
+            setDeleteOpen(false)
+            setDeleteError(null)
+          }
+        }}
+        testId="artifact-delete-dialog"
+      />
     </div>
   )
 }
