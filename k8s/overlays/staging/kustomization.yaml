@@ -4,6 +4,7 @@ namespace: audiomind-staging
 resources:
   - ../../base
   - ../../deployments/core-deployments.yaml
+  - ../../deployments/frontend-deployment.yaml
   - ../../services/core-services.yaml
   - ../../hpa/core-hpa.yaml
   - ../../observability/stack.yaml
