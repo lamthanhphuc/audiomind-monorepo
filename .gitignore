@@ -103,4 +103,3 @@ k8s/overlays/*/sealed-db-secret.generated.yaml
 **/sealed-db-secret.generated.yaml
 
 .env.production.test
-
