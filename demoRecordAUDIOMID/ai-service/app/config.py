@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     gemini_summary_model: str = "gemini-2.5-flash"
     gemini_analysis_domain_mode: str = "it"
     gemini_analysis_max_input_tokens: int = 12000
-    gemini_analysis_max_output_tokens: int = 4096
+    gemini_analysis_max_output_tokens: int = 8192
     gemini_analysis_thinking_budget: int = 0
     gemini_analysis_retry_max_attempts: int = 3
     gemini_timeout_seconds: int = 300
@@ -279,8 +279,10 @@ class Settings(BaseSettings):
         self.gemini_analysis_max_input_tokens = max(
             1, int(self.gemini_analysis_max_input_tokens or 12000)
         )
-        self.gemini_analysis_max_output_tokens = max(
-            1, int(self.gemini_analysis_max_output_tokens or 4096)
+        # Clamp to a sane model budget: avoid tiny wasteful requests and unbounded growth.
+        self.gemini_analysis_max_output_tokens = min(
+            16384,
+            max(1024, int(self.gemini_analysis_max_output_tokens or 8192)),
         )
         self.gemini_analysis_thinking_budget = max(
             0, int(self.gemini_analysis_thinking_budget or 0)

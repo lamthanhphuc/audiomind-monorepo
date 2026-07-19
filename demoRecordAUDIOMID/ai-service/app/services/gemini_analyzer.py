@@ -15,7 +15,7 @@ class GeminiAnalyzer(AIAnalyzer):
         summary_model: str = "gemini-2.5-flash",
         analysis_domain_mode: str = "it",
         analysis_max_input_tokens: int = 12000,
-        analysis_max_output_tokens: int = 4096,
+        analysis_max_output_tokens: int = 8192,
         analysis_thinking_budget: int | None = 0,
         analysis_retry_max_attempts: int = 3,
         gemini_rate_limit_retry_base_seconds: float = 30.0,

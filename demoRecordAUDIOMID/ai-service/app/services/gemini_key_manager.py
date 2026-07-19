@@ -129,6 +129,10 @@ class GeminiKeyManager:
         self._lock = threading.RLock()
         self._states = {entry.alias: _KeyState() for entry in self._entries}
         self._next_index = 0
+        # Process-local: alias -> models this key cannot serve (not Redis rate-limit).
+        self._unsupported_models_by_alias: dict[str, set[str]] = {
+            entry.alias: set() for entry in self._entries
+        }
 
     @classmethod
     def from_config(
@@ -165,14 +169,71 @@ class GeminiKeyManager:
     def has_keys(self) -> bool:
         return bool(self._entries)
 
-    def select_key(self) -> GeminiKeySelection:
+    @staticmethod
+    def normalize_model_name(model: str | None) -> str:
+        raw = str(model or "").strip()
+        if not raw:
+            return ""
+        lowered = raw.lower()
+        if lowered.startswith("models/"):
+            lowered = lowered[len("models/") :]
+        # Strip method suffixes such as ":generateContent"
+        if ":" in lowered:
+            lowered = lowered.split(":", 1)[0]
+        return lowered.strip()
+
+    def mark_model_unsupported(self, alias: str, model: str) -> None:
+        normalized_alias = str(alias or "").strip()
+        model_name = self.normalize_model_name(model)
+        if not normalized_alias or not model_name:
+            return
+        with self._lock:
+            unsupported = self._unsupported_models_by_alias.setdefault(
+                normalized_alias, set()
+            )
+            unsupported.add(model_name)
+
+    def is_model_unsupported(self, alias: str, model: str | None) -> bool:
+        model_name = self.normalize_model_name(model)
+        if not model_name:
+            return False
+        with self._lock:
+            return model_name in self._unsupported_models_by_alias.get(alias, set())
+
+    def _eligible_for_model(
+        self, alias: str, *, now: float, model: str | None
+    ) -> bool:
+        if self._cooldown_remaining(alias, now=now) > 0:
+            return False
+        model_name = self.normalize_model_name(model)
+        if model_name and model_name in self._unsupported_models_by_alias.get(
+            alias, set()
+        ):
+            return False
+        return True
+
+    def select_key(
+        self,
+        preferred_alias: str | None = None,
+        model: str | None = None,
+    ) -> GeminiKeySelection:
         with self._lock:
             now = self._clock()
+            preferred = str(preferred_alias or "").strip()
+            if preferred:
+                for entry in self._entries:
+                    if entry.alias != preferred:
+                        continue
+                    if self._eligible_for_model(entry.alias, now=now, model=model):
+                        # Sticky logical request: reuse the same key without advancing RR.
+                        return GeminiKeySelection(available=True, entry=entry)
+                    break
+
             size = len(self._entries)
             for offset in range(size):
                 index = (self._next_index + offset) % size
                 entry = self._entries[index]
-                if self._cooldown_remaining(entry.alias, now=now) <= 0:
+                if self._eligible_for_model(entry.alias, now=now, model=model):
                     self._next_index = (index + 1) % size
                     return GeminiKeySelection(available=True, entry=entry)
 
@@ -181,6 +242,20 @@ class GeminiKeyManager:
                 for entry in self._entries
                 if self._cooldown_remaining(entry.alias, now=now) > 0
             ]
+            # Keys blocked only by model incompatibility still count as exhausted
+            # for this request, but do not invent a fake cooldown retry-after.
+            if not retry_after_values and model:
+                model_blocked = any(
+                    self.normalize_model_name(model)
+                    in self._unsupported_models_by_alias.get(entry.alias, set())
+                    for entry in self._entries
+                )
+                if model_blocked:
+                    return GeminiKeySelection(
+                        available=False,
+                        retry_after_seconds=0,
+                        cooldown_active=0,
+                    )
             retry_after = min(retry_after_values) if retry_after_values else 0
             return GeminiKeySelection(
                 available=False,
