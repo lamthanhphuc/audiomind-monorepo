@@ -133,6 +133,69 @@ def test_soft_delete_requires_owner(monkeypatch):
         study_service.soft_delete_artifact(db, artifact_id=1, owner_user_id=2)
 
 
+def test_bulk_resolve_projects_it_domain_analysis_as_ready(monkeypatch):
+    """IT/business analysis without educationStudy still feeds study generation."""
+    from datetime import datetime
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    it_run = SimpleNamespace(
+        id=42,
+        owner_id="1",
+        status="COMPLETED",
+        prompt_version="it-analysis-v1",
+        schema_version="analysis-v1",
+        canonical_transcript_hash="hash-it",
+        analysis_payload_json={
+            "domainMode": "it",
+            "summary": "Giới thiệu Spring Boot và REST API.",
+            "keywords": ["Spring Boot", "REST"],
+            "actionItems": [{"title": "Ôn lại DI container"}],
+            "painPoints": [{"title": "Confusion around annotations"}],
+        },
+        canonical_transcript_rows=[],
+        completed_at=datetime.utcnow(),
+    )
+
+    class FakeQuery:
+        def __init__(self, rows):
+            self.rows = rows
+
+        def filter(self, *a, **k):
+            return self
+
+        def order_by(self, *a, **k):
+            return self
+
+        def limit(self, n):
+            return self
+
+        def first(self):
+            return self.rows[0] if self.rows else None
+
+        def __iter__(self):
+            return iter(self.rows)
+
+    db = MagicMock()
+    monkeypatch.setattr(
+        "app.services.study.source_resolve.latest_completed_analysis_run",
+        lambda *_a, **_k: it_run,
+    )
+    monkeypatch.setattr(
+        "app.services.study.source_resolve.analysis_payload_from_run",
+        lambda run, cache_hit=False: run.analysis_payload_json,
+    )
+    db.query.side_effect = lambda model: FakeQuery([it_run])
+
+    items = resolve_study_sources(db, owner_user_id=1, meeting_ids=[101])
+    assert items[0]["ready"] is True
+    assert items[0]["analysisRunId"] == 42
+    study = items[0]["educationStudy"]
+    assert study is not None
+    assert "Spring" in (study.get("overview") or "") or study.get("keywords")
+    assert study.get("keyPoints") or study.get("sections")
+
+
 def test_bulk_resolve_filters_other_owner_education_runs(monkeypatch):
     """Owner-scoped lookup must not return another user's education run as ready."""
     other_run = SimpleNamespace(

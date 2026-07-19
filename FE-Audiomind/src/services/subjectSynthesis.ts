@@ -22,12 +22,44 @@ const buildHeaders = (contentType = 'application/json'): HeadersInit => {
 
 class StudyHttpError extends Error {
   status: number
+  errorCode?: string
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, errorCode?: string) {
     super(message)
     this.name = 'StudyHttpError'
     this.status = status
+    this.errorCode = errorCode
   }
+}
+
+const parseStudyError = async (response: Response): Promise<StudyHttpError> => {
+  const text = await response.text().catch(() => response.statusText)
+  let message = text || `Request failed (${response.status})`
+  let errorCode: string | undefined
+  try {
+    const parsed = JSON.parse(text) as {
+      message?: string
+      error?: string
+      errorCode?: string
+      error_code?: string
+      detail?: string | { message?: string }
+    }
+    const detail =
+      parsed.detail && typeof parsed.detail === 'object' ? parsed.detail.message : undefined
+    const detailText = typeof parsed.detail === 'string' ? parsed.detail : undefined
+    message =
+      detailText ||
+      detail ||
+      parsed.message ||
+      parsed.errorCode ||
+      parsed.error_code ||
+      parsed.error ||
+      message
+    errorCode = parsed.errorCode || parsed.error_code || parsed.error
+  } catch {
+    // keep raw text
+  }
+  return new StudyHttpError(message, response.status, errorCode)
 }
 
 const fetchJson = async <T>(url: string, init?: RequestInit): Promise<T> => {
@@ -39,8 +71,7 @@ const fetchJson = async <T>(url: string, init?: RequestInit): Promise<T> => {
     },
   })
   if (!response.ok) {
-    const message = await response.text().catch(() => response.statusText)
-    throw new StudyHttpError(message || `Request failed (${response.status})`, response.status)
+    throw await parseStudyError(response)
   }
   if (response.status === 204) {
     return undefined as T

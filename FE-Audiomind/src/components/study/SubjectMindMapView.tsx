@@ -11,6 +11,8 @@ import {
 import '@xyflow/react/dist/style.css'
 import type { MindMapContent, MindMapNode } from '../../types/studyArtifacts'
 import { pickStudyEvidence } from '../../types/studyArtifacts'
+import MindmapFlowNode from '../mindmap/MindmapFlowNode'
+import '../mindmap/mindmap-flow.css'
 import { EmptyState } from '../ui/EmptyState'
 import './study.css'
 
@@ -18,6 +20,19 @@ export type SubjectMindMapViewProps = {
   content: MindMapContent | null | undefined
   onOpenEvidence?: (meetingId: number, segmentId: string) => void
   testId?: string
+}
+
+const nodeTypes = { mindmap: MindmapFlowNode }
+
+const resolveKind = (
+  depth: number,
+  type: string | undefined,
+  hasChildren: boolean,
+): 'root' | 'hub' | 'leaf' => {
+  const normalized = (type || '').toUpperCase()
+  if (normalized === 'SUBJECT' || depth === 0) return 'root'
+  if (normalized === 'TOPIC' || normalized === 'CHAPTER' || hasChildren) return 'hub'
+  return 'leaf'
 }
 
 export const hasCycleOrOrphan = (rootId: string, nodes: MindMapNode[]): boolean => {
@@ -58,8 +73,8 @@ export const layoutNodes = (content: MindMapContent): { nodes: Node[]; edges: Ed
 
   const flowNodes: Node[] = []
   const flowEdges: Edge[] = []
-  const levelGapX = 220
-  const levelGapY = 72
+  const levelGapX = 260
+  const levelGapY = 88
 
   const walk = (parentId: string, depth: number, yStart: number): number => {
     const kids = children.get(parentId) ?? []
@@ -70,31 +85,32 @@ export const layoutNodes = (content: MindMapContent): { nodes: Node[]; edges: Ed
     for (const child of kids) {
       const subtreeStart = y
       const subtreeEnd = walk(child.id, depth + 1, y)
-      const midY = kids.length === 1 ? subtreeStart : (subtreeStart + Math.max(subtreeEnd - levelGapY, subtreeStart)) / 2
+      const midY =
+        kids.length === 1
+          ? subtreeStart
+          : (subtreeStart + Math.max(subtreeEnd - levelGapY, subtreeStart)) / 2
       const childEvidence = pickStudyEvidence(child)
+      const hasChildren = (children.get(child.id) ?? []).length > 0
+      const kind = resolveKind(depth, child.type, hasChildren)
       flowNodes.push({
         id: child.id,
+        type: 'mindmap',
         position: { x: depth * levelGapX, y: midY },
         data: {
           label: child.label || child.id,
+          kind,
+          title: child.description || child.label || child.id,
           evidenceMeetingId: childEvidence?.meetingId,
           evidenceSegmentId: childEvidence?.segmentId,
         },
-        style: {
-          padding: '8px 12px',
-          borderRadius: 8,
-          border: '1px solid #cbd5e1',
-          background: '#fff',
-          fontSize: 12,
-          maxWidth: 180,
-          cursor: childEvidence ? 'pointer' : undefined,
-        },
+        style: childEvidence ? { cursor: 'pointer' } : undefined,
       })
       flowEdges.push({
         id: `${parentId}->${child.id}`,
         source: parentId,
         target: child.id,
         type: 'smoothstep',
+        className: depth === 1 ? 'mindmap-flow-edge mindmap-flow-edge--primary' : 'mindmap-flow-edge',
       })
       y = Math.max(subtreeEnd, midY + levelGapY)
     }
@@ -103,30 +119,31 @@ export const layoutNodes = (content: MindMapContent): { nodes: Node[]; edges: Ed
 
   flowNodes.push({
     id: rootId,
+    type: 'mindmap',
     position: { x: 0, y: 0 },
-    data: { label: content.root.label || 'Subject' },
-    style: {
-      padding: '10px 14px',
-      borderRadius: 10,
-      border: '2px solid #334155',
-      background: '#f8fafc',
-      fontWeight: 700,
-      fontSize: 13,
+    data: {
+      label: content.root.label || 'Subject',
+      kind: 'root',
+      title: content.root.label || 'Subject',
     },
   })
 
-  // Also accept explicit edges if present
   for (const edge of content.edges ?? []) {
     if (!edge.source || !edge.target) continue
     const id = `${edge.source}->${edge.target}`
     if (!flowEdges.some((e) => e.id === id)) {
-      flowEdges.push({ id, source: edge.source, target: edge.target, type: 'smoothstep' })
+      flowEdges.push({
+        id,
+        source: edge.source,
+        target: edge.target,
+        type: 'smoothstep',
+        className: 'mindmap-flow-edge',
+      })
     }
   }
 
   walk(rootId, 1, 0)
 
-  // If only root + edges from payload without parent tree, place orphans in a column
   const placed = new Set(flowNodes.map((n) => n.id))
   let orphanY = 0
   for (const node of validNodes) {
@@ -134,9 +151,12 @@ export const layoutNodes = (content: MindMapContent): { nodes: Node[]; edges: Ed
     const orphanEvidence = pickStudyEvidence(node)
     flowNodes.push({
       id: node.id,
+      type: 'mindmap',
       position: { x: levelGapX, y: orphanY },
       data: {
         label: node.label || node.id,
+        kind: 'leaf',
+        title: node.description || node.label || node.id,
         evidenceMeetingId: orphanEvidence?.meetingId,
         evidenceSegmentId: orphanEvidence?.segmentId,
       },
@@ -185,22 +205,45 @@ export function SubjectMindMapView({
 
   return (
     <div className="study-mindmap" data-testid={testId}>
-      <div className="study-mindmap__canvas">
-        <ReactFlow
-          nodes={nodes}
-          edges={edges}
-          fitView
-          fitViewOptions={{ padding: 0.2 }}
-          nodesDraggable
-          nodesConnectable={false}
-          elementsSelectable
-          onNodeClick={onOpenEvidence ? handleNodeClick : undefined}
-          proOptions={{ hideAttribution: true }}
-        >
-          <Background gap={16} size={1} />
-          <Controls />
-          <MiniMap pannable zoomable />
-        </ReactFlow>
+      <div className="mindmap-flow-view study-mindmap__shell">
+        <p className="mindmap-flow-view__hint">
+          Sơ đồ cây trái → phải · kéo node để sắp xếp · zoom bằng nút điều khiển · bấm node có bằng
+          chứng để mở transcript
+        </p>
+        <div className="mindmap-flow-view__canvas study-mindmap__canvas">
+          <ReactFlow
+            nodes={nodes}
+            edges={edges}
+            nodeTypes={nodeTypes}
+            nodeOrigin={[0.5, 0.5]}
+            fitView
+            fitViewOptions={{ padding: 0.24 }}
+            nodesDraggable
+            nodesConnectable={false}
+            elementsSelectable
+            minZoom={0.2}
+            maxZoom={1.75}
+            defaultEdgeOptions={{
+              type: 'smoothstep',
+              className: 'mindmap-flow-edge',
+            }}
+            onNodeClick={onOpenEvidence ? handleNodeClick : undefined}
+            proOptions={{ hideAttribution: true }}
+          >
+            <Background gap={20} size={1} color="rgba(148,163,184,0.18)" />
+            <Controls showInteractive />
+            <MiniMap
+              pannable
+              zoomable
+              nodeColor={(node) => {
+                const kind = (node.data as { kind?: string } | undefined)?.kind
+                if (kind === 'root') return '#4338ca'
+                if (kind === 'hub') return '#1e293b'
+                return '#334155'
+              }}
+            />
+          </ReactFlow>
+        </div>
       </div>
     </div>
   )

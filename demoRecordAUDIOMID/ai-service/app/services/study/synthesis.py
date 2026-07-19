@@ -163,7 +163,8 @@ def synthesis_versions() -> dict[str, str]:
 
 def build_synthesis_system_instruction() -> str:
     return (
-        "You are AudioMind subject synthesis. Use ONLY provided educationStudy sources. "
+        "You are AudioMind subject synthesis. Use ONLY provided meeting study sources "
+        "(educationStudy-shaped inputs from any analysis domain). "
         "Do not invent facts, exams, or segment IDs. Empty arrays must be []. "
         "Respond with pure JSON matching the schema. Vietnamese Unicode when language=vi; "
         "keep English terms when needed and explain in Vietnamese."
