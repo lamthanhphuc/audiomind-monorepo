@@ -224,6 +224,34 @@ jobs:
           pip install pyyaml pytest
           pytest scripts/test_validate_rendered_k8s.py -q --tb=short
 
+  vps-compose-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Docker Compose config (VPS)
+        run: |
+          docker compose \
+            --env-file .env.production.example \
+            -f infra/docker-compose.vps.yml \
+            --profile migrate \
+            config >/tmp/vps-compose.resolved.yml
+          test -s /tmp/vps-compose.resolved.yml
+          grep -q 'audiomind-network' /tmp/vps-compose.resolved.yml
+          grep -q 'celery-beat' /tmp/vps-compose.resolved.yml
+          grep -q 'frontend' /tmp/vps-compose.resolved.yml
+          # Postgres/Redis must not publish host ports in the VPS file source
+          ! grep -E '^\s+ports:' -A2 infra/docker-compose.vps.yml | grep -E '5432:5432|6379:6379' \
+            && echo "PASS: postgres/redis not publicly published"
+
+      - name: Bash syntax for VPS scripts
+        run: |
+          bash -n scripts/deploy-vps.sh
+          bash -n scripts/vps-migrate.sh
+          bash -n scripts/smoke-vps.sh
+          bash -n scripts/backup-vps.sh
+
   gate-a:
     runs-on: ubuntu-latest
 
