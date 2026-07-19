@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     )
 
     app_env: str = "development"
+    # api | worker | beat — beat is broker-only and must not require DB/provider secrets.
+    app_component: str = "api"
 
     # Database
     database_url: str = "postgresql://postgres:postgres@db:5432/audiomind"
@@ -340,6 +342,10 @@ class Settings(BaseSettings):
     def validate_production_settings(self) -> "Settings":
         env = (self.app_env or "").strip().lower()
         if env not in {"prod", "production"}:
+            return self
+
+        # Celery Beat schedules only; it must start without DATABASE_URL / Gemini / Deepgram.
+        if (self.app_component or "").strip().lower() == "beat":
             return self
 
         def _is_local(value: str | None) -> bool:
