@@ -7,10 +7,11 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import urlparse
 
 import pytest
 from sqlalchemy import create_engine, text
+from testcontainers.core.network import Network
+from testcontainers.postgres import PostgresContainer
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 AI_SERVICE_ROOT = REPO_ROOT / "demoRecordAUDIOMID" / "ai-service"
@@ -37,6 +38,8 @@ MEETING_SQL_DIR = (
 
 AI_ALEMBIC_HEAD = "015"
 FLYWAY_IMAGE = "flyway/flyway:10"
+FLYWAY_HOST = "postgres"
+FLYWAY_PORT = 5432
 
 _REQUIRE = os.environ.get("REQUIRE_DATASOURCE_CONTEXT_TESTS", "").strip().lower() in {
     "1",
@@ -65,8 +68,6 @@ if not _docker_available():
         pytest.fail(_msg)
     pytest.skip(_msg, allow_module_level=True)
 
-from testcontainers.postgres import PostgresContainer  # noqa: E402
-
 
 @dataclass(frozen=True)
 class PostgresTarget:
@@ -75,12 +76,11 @@ class PostgresTarget:
     database: str
     username: str
     password: str
+    network: str
 
     @property
     def jdbc_url(self) -> str:
-        return (
-            f"jdbc:postgresql://{self.host}:{self.port}/{self.database}"
-        )
+        return f"jdbc:postgresql://{self.host}:{self.port}/{self.database}"
 
     @property
     def sqlalchemy_url(self) -> str:
@@ -94,27 +94,8 @@ def _docker_volume_mount(local_dir: Path) -> str:
     """Return a Docker Desktop–friendly bind source path (notably on Windows)."""
     resolved = local_dir.resolve()
     if os.name == "nt":
-        # Docker Desktop accepts drive:/path with forward slashes.
         return resolved.as_posix()
     return str(resolved)
-
-
-def _flyway_container_host() -> str:
-    # Flyway runs in its own container; reach testcontainers via the host gateway.
-    if sys.platform in ("win32", "darwin"):
-        return "host.docker.internal"
-    return "host.docker.internal"
-
-
-def _postgres_target(postgres: PostgresContainer) -> PostgresTarget:
-    port = int(postgres.get_exposed_port(5432))
-    return PostgresTarget(
-        host=_flyway_container_host(),
-        port=port,
-        database=postgres.dbname,
-        username=postgres.username,
-        password=postgres.password,
-    )
 
 
 def _run_flyway(
@@ -129,6 +110,8 @@ def _run_flyway(
         "docker",
         "run",
         "--rm",
+        "--network",
+        target.network,
     ]
     if sql_dir is not None:
         mount = _docker_volume_mount(sql_dir)
@@ -229,21 +212,35 @@ def _flyway_all_success(engine_url: str, history_table: str) -> bool:
 
 
 @pytest.fixture(scope="module")
-def postgres_url() -> str:
-    with PostgresContainer("postgres:16-alpine") as postgres:
-        yield _normalize_sqlalchemy_url(postgres.get_connection_url())
+def migration_network() -> Network:
+    with Network() as network:
+        yield network
 
 
 @pytest.fixture(scope="module")
-def postgres_target(postgres_url: str) -> PostgresTarget:
-    parsed = urlparse(postgres_url)
-    assert parsed.hostname and parsed.port and parsed.path
+def postgres(migration_network: Network) -> PostgresContainer:
+    with (
+        PostgresContainer("postgres:16-alpine")
+        .with_network(migration_network)
+        .with_network_aliases(FLYWAY_HOST)
+    ) as container:
+        yield container
+
+
+@pytest.fixture(scope="module")
+def postgres_url(postgres: PostgresContainer) -> str:
+    return _normalize_sqlalchemy_url(postgres.get_connection_url())
+
+
+@pytest.fixture(scope="module")
+def postgres_target(migration_network: Network, postgres: PostgresContainer) -> PostgresTarget:
     return PostgresTarget(
-        host=_flyway_container_host(),
-        port=int(parsed.port),
-        database=parsed.path.lstrip("/").split("?", 1)[0],
-        username=parsed.username or "",
-        password=parsed.password or "",
+        host=FLYWAY_HOST,
+        port=FLYWAY_PORT,
+        database=postgres.dbname,
+        username=postgres.username,
+        password=postgres.password,
+        network=migration_network.name,
     )
 
 
