@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useCallback, useMemo } from 'react'
 import {
   Background,
   Controls,
@@ -6,14 +6,17 @@ import {
   ReactFlow,
   type Edge,
   type Node,
+  type NodeMouseHandler,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import type { MindMapContent, MindMapNode } from '../../types/studyArtifacts'
+import { pickStudyEvidence } from '../../types/studyArtifacts'
 import { EmptyState } from '../ui/EmptyState'
 import './study.css'
 
 export type SubjectMindMapViewProps = {
   content: MindMapContent | null | undefined
+  onOpenEvidence?: (meetingId: number, segmentId: string) => void
   testId?: string
 }
 
@@ -38,7 +41,7 @@ export const hasCycleOrOrphan = (rootId: string, nodes: MindMapNode[]): boolean 
   return false
 }
 
-const layoutNodes = (content: MindMapContent): { nodes: Node[]; edges: Edge[] } => {
+export const layoutNodes = (content: MindMapContent): { nodes: Node[]; edges: Edge[] } => {
   const rootId = content.root.id || 'root'
   const validNodes = content.nodes.filter((node) => node.id && node.id !== rootId)
   if (hasCycleOrOrphan(rootId, validNodes)) {
@@ -68,10 +71,15 @@ const layoutNodes = (content: MindMapContent): { nodes: Node[]; edges: Edge[] } 
       const subtreeStart = y
       const subtreeEnd = walk(child.id, depth + 1, y)
       const midY = kids.length === 1 ? subtreeStart : (subtreeStart + Math.max(subtreeEnd - levelGapY, subtreeStart)) / 2
+      const childEvidence = pickStudyEvidence(child)
       flowNodes.push({
         id: child.id,
         position: { x: depth * levelGapX, y: midY },
-        data: { label: child.label || child.id },
+        data: {
+          label: child.label || child.id,
+          evidenceMeetingId: childEvidence?.meetingId,
+          evidenceSegmentId: childEvidence?.segmentId,
+        },
         style: {
           padding: '8px 12px',
           borderRadius: 8,
@@ -79,6 +87,7 @@ const layoutNodes = (content: MindMapContent): { nodes: Node[]; edges: Edge[] } 
           background: '#fff',
           fontSize: 12,
           maxWidth: 180,
+          cursor: childEvidence ? 'pointer' : undefined,
         },
       })
       flowEdges.push({
@@ -122,10 +131,16 @@ const layoutNodes = (content: MindMapContent): { nodes: Node[]; edges: Edge[] } 
   let orphanY = 0
   for (const node of validNodes) {
     if (placed.has(node.id)) continue
+    const orphanEvidence = pickStudyEvidence(node)
     flowNodes.push({
       id: node.id,
       position: { x: levelGapX, y: orphanY },
-      data: { label: node.label || node.id },
+      data: {
+        label: node.label || node.id,
+        evidenceMeetingId: orphanEvidence?.meetingId,
+        evidenceSegmentId: orphanEvidence?.segmentId,
+      },
+      style: orphanEvidence ? { cursor: 'pointer' } : undefined,
     })
     orphanY += levelGapY
   }
@@ -135,6 +150,7 @@ const layoutNodes = (content: MindMapContent): { nodes: Node[]; edges: Edge[] } 
 
 export function SubjectMindMapView({
   content,
+  onOpenEvidence,
   testId = 'subject-mind-map-view',
 }: SubjectMindMapViewProps) {
   const { nodes, edges } = useMemo(() => {
@@ -143,6 +159,17 @@ export function SubjectMindMapView({
     }
     return layoutNodes(content)
   }, [content])
+
+  const handleNodeClick = useCallback<NodeMouseHandler>(
+    (_event, node) => {
+      if (!onOpenEvidence) return
+      const data = node.data as { evidenceMeetingId?: number; evidenceSegmentId?: string }
+      if (data.evidenceMeetingId != null && data.evidenceSegmentId) {
+        onOpenEvidence(data.evidenceMeetingId, data.evidenceSegmentId)
+      }
+    },
+    [onOpenEvidence],
+  )
 
   if (!content?.root) {
     return <EmptyState message="Chưa có mind map cho môn học này." />
@@ -167,6 +194,7 @@ export function SubjectMindMapView({
           nodesDraggable
           nodesConnectable={false}
           elementsSelectable
+          onNodeClick={onOpenEvidence ? handleNodeClick : undefined}
           proOptions={{ hideAttribution: true }}
         >
           <Background gap={16} size={1} />
