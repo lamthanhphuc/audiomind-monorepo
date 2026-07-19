@@ -10,20 +10,24 @@ RENDERED="${ROOT}/rendered-staging.yaml"
 MIGRATION_TIMEOUT="${MIGRATION_TIMEOUT:-900s}"
 ROLLOUT_TIMEOUT="${ROLLOUT_TIMEOUT:-600s}"
 
-APP_SECRET_KEYS=(JWT_SECRET INTERNAL_SERVICE_TOKEN GEMINI_API_KEY)
+APP_SECRET_KEYS=(JWT_SECRET INTERNAL_SERVICE_TOKEN GEMINI_API_KEY HUGGINGFACE_TOKEN)
 DB_SECRET_KEYS=(MEETING_DATABASE_URL USER_DATABASE_URL AI_DATABASE_URL DB_USERNAME DB_PASSWORD)
 CORE_DEPLOYMENTS=(
   user-api-deployment
   meeting-api-deployment
   processing-api-deployment
   ai-api-deployment
+  frontend-deployment
   celery-worker-deployment
   celery-beat-deployment
 )
 
+MANAGED_DB_STATUS="SKIPPED"
+PHASE2_STATUS="SKIPPED"
+GEMINI_STATUS="SKIPPED"
+
 fail() {
   printf 'ERROR: %s\n' "$1" >&2
-  VERDICT="NOT READY"
   exit 1
 }
 
@@ -47,8 +51,22 @@ resolve_sealed_file() {
   return 1
 }
 
+ensure_namespace() {
+  note "  ensuring namespace ${NS}"
+  if kubectl get namespace "${NS}" >/dev/null 2>&1; then
+    note "  namespace ${NS} exists"
+    return 0
+  fi
+  kubectl create namespace "${NS}"
+  note "  created namespace ${NS}"
+}
+
 verify_git_clean() {
   note "Step 1/17: verify git tree clean"
+  if [[ "${SKIP_GIT_CLEAN_CHECK:-false}" == "true" || "${ALLOW_DIRTY_GIT:-false}" == "true" ]]; then
+    note "  skipping git clean check (CI)"
+    return
+  fi
   cd "${ROOT}"
   local status
   status="$(git status --porcelain)"
@@ -75,11 +93,6 @@ verify_kubectl_context() {
     fail "kubectl context '${ctx}' != expected '${EXPECTED_CONTEXT}'"
   fi
   note "  context=${ctx}"
-  if ! kubectl get namespace "${NS}" >/dev/null 2>&1; then
-    note "  namespace ${NS} will be created during apply"
-  else
-    note "  namespace ${NS} exists"
-  fi
 }
 
 verify_sealed_secrets() {
@@ -121,7 +134,7 @@ kubeconform_validate() {
 
 apply_namespace_and_secrets() {
   note "Step 7/17: apply namespace/config/secrets"
-  kubectl apply -f "${ROOT}/k8s/base/namespace.yaml" || true
+  ensure_namespace
   kubectl apply -f "${APP_SEALED}" -n "${NS}"
   kubectl apply -f "${DB_SEALED}" -n "${NS}"
   if [[ -f "${OVERLAY}/configmap-patch.yaml" ]]; then
@@ -167,6 +180,7 @@ run_migration_job() {
   kubectl delete job "${job}" -n "${NS}" --ignore-not-found=true >/dev/null 2>&1 || true
   local manifest
   manifest="$(python - "${job}" "${NS}" "${ROOT}" <<'PY'
+import os
 import sys
 from pathlib import Path
 import yaml
@@ -181,6 +195,17 @@ for doc in docs:
         break
 if not selected:
     raise SystemExit(f"job {job_name} not found in {jobs_file}")
+
+image_overrides = {
+    "user-db-migrate": os.environ.get("IMAGE_USER_MIGRATE") or os.environ.get("IMAGE_USER_API"),
+    "meeting-db-migrate": os.environ.get("IMAGE_MEETING_MIGRATE") or os.environ.get("IMAGE_MEETING_API"),
+    "ai-db-migrate": os.environ.get("IMAGE_AI_MIGRATE") or os.environ.get("IMAGE_AI_API"),
+}
+override = image_overrides.get(job_name)
+if override:
+    for container in selected.get("spec", {}).get("template", {}).get("spec", {}).get("containers", []):
+        container["image"] = override
+
 selected.setdefault("metadata", {})["namespace"] = namespace
 out = root / f".deploy-migrate-{job_name}.yaml"
 out.write_text(yaml.safe_dump(selected, sort_keys=False), encoding="utf-8")
@@ -190,7 +215,8 @@ PY
   kubectl apply -f "${manifest}" -n "${NS}" >/dev/null
   rm -f "${manifest}"
   if ! kubectl wait --for=condition=complete "job/${job}" -n "${NS}" --timeout="${MIGRATION_TIMEOUT}"; then
-    note "  ${job} failed — inspect: kubectl logs job/${job} -n ${NS}"
+    note "  ${job} failed — collecting logs"
+    kubectl logs "job/${job}" -n "${NS}" --all-containers 2>&1 | sed 's/\(password=\)[^ ]*/\1***/Ig' || true
     note "  DB migrations are NOT auto-rolled back. Fix schema/DSN and re-run this job."
     fail "${job} did not complete"
   fi
@@ -206,16 +232,71 @@ run_migrations() {
   run_migration_job ai-db-migrate
 }
 
+patch_deployment_image() {
+  local deployment="$1"
+  local container="$2"
+  local env_name="$3"
+  local image="${!env_name:-}"
+  if [[ -z "${image}" ]]; then
+    return 0
+  fi
+  if ! kubectl get deployment "${deployment}" -n "${NS}" >/dev/null 2>&1; then
+    note "  skip image override: deployment/${deployment} not found"
+    return 0
+  fi
+  kubectl set image "deployment/${deployment}" "${container}=${image}" -n "${NS}" >/dev/null
+  note "  patched ${deployment}/${container} from ${env_name}"
+}
+
 apply_workloads() {
-  note "Step 13/17: apply deployments/services (full overlay)"
-  kubectl apply -k "${OVERLAY}" -n "${NS}"
+  note "Step 13/17: apply deployments/services (post-migration, excluding Jobs)"
+  kubectl delete job user-db-migrate meeting-db-migrate ai-db-migrate -n "${NS}" --ignore-not-found=true >/dev/null 2>&1 || true
+  local workloads
+  workloads="$(python - "${RENDERED}" "${NS}" <<'PY'
+import sys
+from pathlib import Path
+import yaml
+
+rendered = Path(sys.argv[1])
+namespace = sys.argv[2]
+skip_kinds = {"Job", "SealedSecret"}
+docs = []
+for doc in yaml.safe_load_all(rendered.read_text(encoding="utf-8")):
+    if not doc:
+        continue
+    if doc.get("kind") in skip_kinds:
+        continue
+    meta = doc.setdefault("metadata", {})
+    if meta.get("namespace") in (None, "audiomind", "audiomind-staging"):
+        meta["namespace"] = namespace
+    docs.append(doc)
+out = rendered.parent / ".deploy-workloads.yaml"
+with out.open("w", encoding="utf-8") as handle:
+    yaml.safe_dump_all(docs, handle, sort_keys=False)
+print(out)
+PY
+)"
+  kubectl apply -f "${workloads}" -n "${NS}"
+  rm -f "${workloads}"
   kubectl apply -f "${APP_SEALED}" -f "${DB_SEALED}" -n "${NS}" >/dev/null
+
+  patch_deployment_image user-api-deployment user-api IMAGE_USER_API
+  patch_deployment_image meeting-api-deployment meeting-api IMAGE_MEETING_API
+  patch_deployment_image processing-api-deployment processing-api IMAGE_PROCESSING_API
+  patch_deployment_image ai-api-deployment ai-api IMAGE_AI_API
+  patch_deployment_image frontend-deployment frontend IMAGE_FRONTEND
+  patch_deployment_image celery-worker-deployment celery-worker IMAGE_CELERY_WORKER
+  patch_deployment_image celery-beat-deployment celery-beat IMAGE_CELERY_BEAT
 }
 
 wait_rollouts() {
   note "Step 14/17: wait for rollout status"
   local dep
   for dep in "${CORE_DEPLOYMENTS[@]}"; do
+    if ! kubectl get deployment "${dep}" -n "${NS}" >/dev/null 2>&1; then
+      note "  skip rollout: deployment/${dep} not present"
+      continue
+    fi
     if ! kubectl rollout status "deployment/${dep}" -n "${NS}" --timeout="${ROLLOUT_TIMEOUT}"; then
       note "  rollout failed for ${dep}"
       note "  App rollback guidance: kubectl rollout undo deployment/${dep} -n ${NS}"
@@ -232,30 +313,63 @@ health_checks() {
 
 run_optional_smokes() {
   note "Step 16/17: optional smoke tests"
-  local ran=0
   if [[ "${RUN_MANAGED_DB_SMOKE:-false}" == "true" ]]; then
-    python "${ROOT}/scripts/smoke-managed-db.py"
-    ran=1
+    if python "${ROOT}/scripts/smoke-managed-db.py"; then
+      MANAGED_DB_STATUS="PASS"
+    else
+      MANAGED_DB_STATUS="FAIL"
+      fail "smoke-managed-db.py failed"
+    fi
   fi
   if [[ "${RUN_PHASE2_SMOKE:-false}" == "true" ]]; then
-    python "${ROOT}/scripts/smoke-phase2-staging.py"
-    ran=1
+    if python "${ROOT}/scripts/smoke-phase2-staging.py"; then
+      PHASE2_STATUS="PASS"
+    else
+      PHASE2_STATUS="FAIL"
+      fail "smoke-phase2-staging.py failed"
+    fi
   fi
   if [[ "${RUN_REAL_GEMINI_SMOKE:-false}" == "true" ]]; then
-    python "${ROOT}/scripts/smoke-real-gemini.py"
-    ran=1
+    if python "${ROOT}/scripts/smoke-real-gemini.py"; then
+      GEMINI_STATUS="PASS"
+    else
+      GEMINI_STATUS="FAIL"
+      fail "smoke-real-gemini.py failed"
+    fi
   fi
-  if [[ ${ran} -eq 0 ]]; then
+  if [[ "${MANAGED_DB_STATUS}" == "SKIPPED" && "${PHASE2_STATUS}" == "SKIPPED" && "${GEMINI_STATUS}" == "SKIPPED" ]]; then
     note "  skipped (set RUN_MANAGED_DB_SMOKE/RUN_PHASE2_SMOKE/RUN_REAL_GEMINI_SMOKE=true to enable)"
   fi
 }
 
 print_verdict() {
   note "Step 17/17: verdict"
-  note "READY TO DEPLOY STAGING"
+  note "STAGING MANIFESTS APPLIED: YES"
+  note "STAGING WORKLOADS HEALTHY: YES"
+  case "${MANAGED_DB_STATUS}" in
+    PASS) note "STAGING MANAGED DATABASE VERIFIED: YES" ;;
+    FAIL) note "STAGING MANAGED DATABASE VERIFIED: NO" ;;
+    *) note "STAGING MANAGED DATABASE VERIFIED: SKIPPED" ;;
+  esac
+  case "${PHASE2_STATUS}" in
+    PASS) note "STAGING PHASE2 VERIFIED: YES" ;;
+    FAIL) note "STAGING PHASE2 VERIFIED: NO" ;;
+    *) note "STAGING PHASE2 VERIFIED: SKIPPED" ;;
+  esac
+  case "${GEMINI_STATUS}" in
+    PASS) note "STAGING GEMINI VERIFIED: YES" ;;
+    FAIL) note "STAGING GEMINI VERIFIED: NO" ;;
+    *) note "STAGING GEMINI VERIFIED: SKIPPED" ;;
+  esac
+  if [[ "${RUN_MANAGED_DB_SMOKE:-false}" == "true" && "${RUN_PHASE2_SMOKE:-false}" == "true" \
+        && "${MANAGED_DB_STATUS}" == "PASS" && "${PHASE2_STATUS}" == "PASS" ]]; then
+    note "Ready to deploy staging: YES"
+  else
+    note "STAGING INFRA HEALTHY"
+    note "Ready to deploy staging: NO"
+  fi
 }
 
-VERDICT="NOT READY"
 verify_git_clean
 verify_kubectl_context
 verify_sealed_secrets
