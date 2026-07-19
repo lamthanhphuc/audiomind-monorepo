@@ -6,12 +6,14 @@ import {
   History,
   Lightbulb,
   LogOut,
+  Moon,
   Network,
   Plus,
   Puzzle,
   Radio,
   Search,
   Sparkles,
+  Sun,
   type LucideIcon,
 } from 'lucide-react'
 import SubjectSidebarSection from '../subjects/SubjectSidebarSection'
@@ -20,6 +22,8 @@ import { StudioAmbientBackground } from '../ui/StudioAmbientBackground'
 import ActiveJobsBanner from './ActiveJobsBanner'
 import NotificationCenter from './NotificationCenter'
 import type { HistoryLanguageFilter, HistoryStatusFilter } from '../../app/useHistorySearchFilters'
+import type { ThemeMode } from '../../utils/themeMode'
+import { themeToggleLabel } from '../../utils/themeMode'
 
 export type DashboardScene = 'upload' | 'realtime' | 'analysis' | 'files' | 'mindmap' | 'knowledge' | 'insights' | 'integrations' | 'billing' | 'subjects' | 'subjectDetail' | 'unclassified'
 
@@ -50,6 +54,8 @@ type DashboardLayoutProps = {
   onNavigateSubjects?: () => void
   onNavigateSubjectDetail?: (subjectId: number) => void
   onNavigateUnclassified?: () => void
+  theme?: ThemeMode
+  onToggleTheme?: () => void
 }
 
 type DashboardNavItem = {
@@ -85,9 +91,13 @@ export default function DashboardLayout({
   onNavigateSubjects,
   onNavigateSubjectDetail,
   onNavigateUnclassified,
+  theme = 'night',
+  onToggleTheme,
 }: DashboardLayoutProps) {
   const initial = user.name.trim()[0]?.toUpperCase() || 'A'
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const themeActionLabel = themeToggleLabel(theme)
+  const ThemeIcon = theme === 'night' ? Sun : Moon
 
   const handleNavigate = (scene: DashboardScene) => {
     onNavigate(scene)
@@ -266,6 +276,24 @@ export default function DashboardLayout({
                 </button>
               </li>
             ))}
+            {onToggleTheme ? (
+              <li className="dashboard-theme-toggle">
+                <button
+                  type="button"
+                  className="dashboard-nav-button"
+                  onClick={onToggleTheme}
+                  data-testid="theme-mode-toggle"
+                  aria-pressed={theme === 'night'}
+                  aria-label={`Switch to ${themeActionLabel} mode`}
+                  title={`Switch to ${themeActionLabel}`}
+                >
+                  <span className="dashboard-icon-badge" aria-hidden>
+                    <ThemeIcon size={16} strokeWidth={2.2} />
+                  </span>
+                  <span data-testid="theme-mode-toggle-label">{themeActionLabel}</span>
+                </button>
+              </li>
+            ) : null}
             <li className="dashboard-logout">
               <button type="button" className="dashboard-nav-button" onClick={onLogout}>
                 <span className="dashboard-icon-badge" aria-hidden>
@@ -279,7 +307,7 @@ export default function DashboardLayout({
       </aside>
 
       <main className="dashboard-main">
-        <StudioAmbientBackground variant="dashboard" />
+        <StudioAmbientBackground variant="dashboard" muted={theme === 'light'} />
         <div className="dashboard-main__topbar">
           {onGlobalMeetingSearchSubmit && (
             <GlobalMeetingSearch

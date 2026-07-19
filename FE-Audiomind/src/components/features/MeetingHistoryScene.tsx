@@ -18,6 +18,7 @@ import {
   type TranscriptHighlightRange,
 } from '../../utils/transcriptJump'
 import { listSpeakerProfiles, type SpeakerProfile } from '../../services/knowledgeLayer'
+import { ApiError, reanalyzeMeetingAnalysis, startProcessingByPath } from '../../services/api'
 import { type MeetingChatCitation } from '../../utils/meetingChatbot'
 import { EmptyState } from '../ui/EmptyState'
 import { ErrorState } from '../ui/ErrorState'
@@ -220,7 +221,7 @@ export default function MeetingHistoryScene({
   onNavigateUpload,
   onNavigateRealtime,
   onNavigateBilling,
-  preferredDomainMode: _preferredDomainMode,
+  preferredDomainMode,
   oauthRefreshTick = 0,
 }: MeetingHistorySceneProps) {
   const {
@@ -250,6 +251,7 @@ export default function MeetingHistoryScene({
     renameBusy,
     deleteBusy,
     reload,
+    reloadDetail,
     semanticResults,
     semanticState,
     availableScopes,
@@ -275,6 +277,67 @@ export default function MeetingHistoryScene({
   const [activeDetailTab, setActiveDetailTab] = useState<HistoryDetailTab>('overview')
   const [speakerDisplayMap, setSpeakerDisplayMap] = useState<Map<string, string>>(() => new Map())
   const [highlightRange, setHighlightRange] = useState<TranscriptHighlightRange | null>(null)
+  const [reanalyzeBusy, setReanalyzeBusy] = useState(false)
+  const [reanalyzeError, setReanalyzeError] = useState<string | null>(null)
+
+  const meetingStatus = String(selectedMeetingSummary?.status ?? '').trim().toLowerCase()
+  const canReanalyzeAnalysis = Boolean(selectedMeetingId)
+    && (
+      detail.analysisState === 'failed'
+      || detail.analysisState === 'failed_retryable'
+      || meetingStatus === 'failed'
+    )
+    && !isUserQuotaExceeded({
+      errorCode: detail.analysisMetadata?.errorCode,
+      analysisStatus: String(detail.analysisMetadata?.analysisStatus ?? detail.analysisMetadata?.status ?? ''),
+    })
+
+  const handleReanalyze = useCallback(async () => {
+    if (!selectedMeetingId || reanalyzeBusy) return
+    setReanalyzeBusy(true)
+    setReanalyzeError(null)
+    try {
+      await reanalyzeMeetingAnalysis(selectedMeetingId, {
+        mode: 'force',
+        reason: 'manual_reanalyze',
+        domainMode: preferredDomainMode,
+      })
+      reloadDetail()
+      reload()
+    } catch (firstError) {
+      let error: unknown = firstError
+      const missingTranscript = /saved transcript was not found/i.test(
+        error instanceof Error ? error.message : String(error ?? ''),
+      )
+      if (missingTranscript) {
+        try {
+          const language = selectedMeetingSummary
+            ? getMeetingLanguage(selectedMeetingSummary)
+            : 'vi'
+          await startProcessingByPath(selectedMeetingId, language, preferredDomainMode)
+          reloadDetail()
+          reload()
+          return
+        } catch (restartError) {
+          error = restartError
+        }
+      }
+      if (error instanceof ApiError) {
+        setReanalyzeError(error.message || 'Không phân tích lại được. Thử lại sau.')
+      } else {
+        setReanalyzeError(error instanceof Error ? error.message : 'Không phân tích lại được. Thử lại sau.')
+      }
+    } finally {
+      setReanalyzeBusy(false)
+    }
+  }, [
+    preferredDomainMode,
+    reanalyzeBusy,
+    reload,
+    reloadDetail,
+    selectedMeetingId,
+    selectedMeetingSummary,
+  ])
 
   const handleTimelineJump = useCallback((chapter: TimelineChapter) => {
     const range = { startTime: chapter.startTime, endTime: chapter.endTime }
@@ -344,6 +407,7 @@ export default function MeetingHistoryScene({
 
   useEffect(() => {
     setActiveDetailTab('overview')
+    setReanalyzeError(null)
   }, [selectedMeetingId])
 
   const applySpeakerProfiles = useCallback((profiles: SpeakerProfile[]) => {
@@ -648,6 +712,37 @@ export default function MeetingHistoryScene({
                         : undefined
                     }
                   />
+                )}
+
+                {(detail.analysisState === 'failed_retryable' || (meetingStatus === 'failed' && detail.analysisState !== 'failed')) && (
+                  <ErrorState
+                    title="Phân tích cần chạy lại"
+                    message={
+                      detail.analysisState === 'failed_retryable'
+                        ? 'Phân tích trước đó thất bại nhưng có thể thử lại.'
+                        : 'Meeting đã thất bại ở bước phân tích. Bạn có thể chạy lại phân tích nếu transcript đã có.'
+                    }
+                    errorCode={detail.analysisMetadata?.errorCode ?? undefined}
+                  />
+                )}
+
+                {canReanalyzeAnalysis && (
+                  <div className="history-reanalyze-row">
+                    <button
+                      type="button"
+                      className="btn btn--secondary"
+                      data-testid="history-reanalyze-button"
+                      disabled={reanalyzeBusy}
+                      onClick={() => void handleReanalyze()}
+                    >
+                      {reanalyzeBusy ? 'Đang phân tích lại…' : 'Phân tích lại'}
+                    </button>
+                    {reanalyzeError ? (
+                      <p className="history-reanalyze-error" data-testid="history-reanalyze-error">
+                        {reanalyzeError}
+                      </p>
+                    ) : null}
+                  </div>
                 )}
               </div>
 

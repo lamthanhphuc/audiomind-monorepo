@@ -64,6 +64,7 @@ describe('FeatureIntegrations', () => {
     expect(container.querySelector('[data-testid="integrations-teams-section"]')).toBeTruthy()
     expect(container.querySelector('[data-testid="mock-zoom-panel"]')).toBeTruthy()
     expect(container.querySelector('[data-testid="mock-teams-panel"]')).toBeTruthy()
+    expect(container.textContent).not.toContain('import cloud recording hoặc chọn file export thủ công')
   })
 })
 

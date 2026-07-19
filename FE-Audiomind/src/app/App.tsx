@@ -35,6 +35,8 @@ import { QuotaWarningBanner } from '../components/ui/QuotaWarningBanner'
 const BillingScene = lazy(() => import('../components/features/BillingScene'))
 const FeatureMindmap = lazy(() => import('../components/features/FeatureMindmap'))
 const KnowledgeVaultScene = lazy(() => import('../components/features/KnowledgeVaultScene'))
+import { useThemeMode } from '../hooks/useThemeMode'
+import { themeClassName } from '../utils/themeMode'
 import { useAudioRecorder } from '../hooks/useAudioRecorder'
 import { useDualAudioRecorder, type DualTabMicStreamId } from '../hooks/useDualAudioRecorder'
 import {
@@ -88,7 +90,7 @@ import {
   resolvePostAuthDestination,
 } from '../utils/inviteAuth'
 import { realtimeInfo, realtimeWarn } from '../utils/realtimeTelemetry'
-import { ApiError, getAnalysis, getProcessingStatus, getTranscript, getUserProfile, startProcessingByPath, updateUserPreferences, uploadToMeetingApi, type AnalysisScopeOptions } from '../services/api'
+import { ApiError, getAnalysis, getProcessingStatus, getTranscript, getUserProfile, reanalyzeMeetingAnalysis, startProcessingByPath, updateUserPreferences, uploadToMeetingApi, type AnalysisScopeOptions } from '../services/api'
 import { resolveBatchPipelineErrorCode, resolveErrorPresentation } from '../constants/errorCatalog'
 import { ERROR_UX_ENABLED } from '../services/config'
 import {
@@ -515,6 +517,52 @@ const isPendingAnalysisStatus = (status: string): boolean => {
     || status === 'QUEUED'
     || status === 'PENDING'
     || status === 'SKIPPED'
+}
+
+const pollAnalysisUntilSettled = async (
+  meetingId: number,
+  signal: AbortSignal,
+  maxAttempts = 90,
+): Promise<AiAnalysis> => {
+  let delayMs = 1000
+
+  for (let i = 0; i < maxAttempts; i += 1) {
+    if (signal.aborted) {
+      throw new DOMException('Polling aborted', 'AbortError')
+    }
+
+    const analysis = await getAnalysis(meetingId, { signal })
+    const analysisStatus = getAnalysisStatusValue(analysis)
+
+    if (hasStructuredAnalysisData(analysis) && !isPendingAnalysisStatus(analysisStatus)) {
+      if (isFailedAnalysisStatus(analysisStatus)) {
+        const detail = [analysis.errorCode, analysis.errorMessage].filter(Boolean).join(': ')
+        throw new Error(detail || 'Analysis failed after re-run')
+      }
+      return analysis
+    }
+
+    if (isFailedAnalysisStatus(analysisStatus)) {
+      const detail = [analysis.errorCode, analysis.errorMessage].filter(Boolean).join(': ')
+      throw new Error(detail || 'Analysis failed after re-run')
+    }
+
+    if (i < maxAttempts - 1) {
+      await waitWithSignal(delayMs, signal)
+      delayMs = Math.min(Math.floor(delayMs * 1.35), 8000)
+    }
+  }
+
+  throw new Error('Analysis re-run timeout exceeded')
+}
+
+const isMissingSavedTranscriptRerunError = (error: unknown): boolean => {
+  const message = error instanceof Error
+    ? error.message
+    : typeof error === 'string'
+      ? error
+      : ''
+  return /saved transcript was not found/i.test(message)
 }
 
 const getRealtimeAnalysisFailureMessage = (metadata: AiAnalysis | null, fallback?: string): string => {
@@ -1130,6 +1178,7 @@ export default function App() {
   const [status, setStatus] = useState('idle')
   const [result, setResult] = useState<ResultView | null>(null)
   const [uploadNotice, setUploadNotice] = useState<string | null>(null)
+  const [lastUploadMeetingId, setLastUploadMeetingId] = useState<number | null>(null)
   const [zoomIntegrationNotice, setZoomIntegrationNotice] = useState<string | null>(null)
   const [zoomIntegrationNoticeTone, setZoomIntegrationNoticeTone] = useState<'success' | 'error' | 'info'>('info')
   const [teamsIntegrationNotice, setTeamsIntegrationNotice] = useState<string | null>(null)
@@ -1196,6 +1245,7 @@ export default function App() {
   )
   const [mindmapDisplayScopeKey, setMindmapDisplayScopeKey] = useState<string | null>(null)
   const { recentMeetings, refreshRecentMeetings } = useRecentMeetingsSidebar(isAuthenticated)
+  const { theme, toggleTheme } = useThemeMode()
   const [joinMeetingIdInput, setJoinMeetingIdInput] = useState('')
   const [showJoinOtherMeeting, setShowJoinOtherMeeting] = useState(false)
   const [hydratedLiveTranscriptSegments, setHydratedLiveTranscriptSegments] = useState<TranscriptSegment[] | null>(null)
@@ -1951,6 +2001,7 @@ export default function App() {
     setUploadErrorCode(null)
     setUploadNotice(null)
     setResult(null)
+    setLastUploadMeetingId(null)
     abortControllerRef.current?.abort()
     abortControllerRef.current = new AbortController()
 
@@ -1973,6 +2024,7 @@ export default function App() {
       if (!Number.isFinite(meetingId) || meetingId <= 0) {
         throw new Error('Meeting ID trả về không hợp lệ')
       }
+      setLastUploadMeetingId(meetingId)
       const duplicateStatus = String(meeting.status ?? '').trim().toLowerCase()
       const isDuplicate = Boolean(meeting.duplicate)
 
@@ -2060,6 +2112,78 @@ export default function App() {
     abortControllerRef.current?.abort()
   }
 
+
+  const handleReanalyzeFailedUpload = async () => {
+    const meetingId = lastUploadMeetingId
+    if (!meetingId || busy) return
+
+    setBusy(true)
+    setErrorMessage(null)
+    setUploadErrorCode(null)
+    setUploadNotice('Đang phân tích lại…')
+    setStatus('processing')
+    abortControllerRef.current?.abort()
+    abortControllerRef.current = new AbortController()
+
+    const runFullPipelineRestart = async () => {
+      const effectiveUploadLanguage = normalizeRealtimeLanguage(selectedUploadLanguage)
+      setUploadNotice('Chưa có transcript đã lưu — đang chạy lại toàn bộ pipeline…')
+      await startProcessingByPath(meetingId, effectiveUploadLanguage, selectedDomainMode)
+      await pollUntilCompleted(meetingId, abortControllerRef.current!.signal)
+      await openAnalysisForMeeting(meetingId, 'COMPLETED')
+      setUploadNotice(null)
+    }
+
+    try {
+      const response = await reanalyzeMeetingAnalysis(meetingId, {
+        mode: 'force',
+        reason: 'manual_reanalyze',
+        domainMode: selectedDomainMode,
+      })
+      const responseStatus = getAnalysisStatusValue(response)
+      if (hasStructuredAnalysisData(response) && !isPendingAnalysisStatus(responseStatus) && !isFailedAnalysisStatus(responseStatus)) {
+        await openAnalysisForMeeting(meetingId, 'COMPLETED')
+        setUploadNotice(null)
+        return
+      }
+      if (isFailedAnalysisStatus(responseStatus)) {
+        const detail = [response.errorCode, response.errorMessage].filter(Boolean).join(': ')
+        throw new Error(detail || 'Analysis failed after re-run')
+      }
+      await pollAnalysisUntilSettled(meetingId, abortControllerRef.current.signal)
+      await openAnalysisForMeeting(meetingId, 'COMPLETED')
+      setUploadNotice(null)
+    } catch (error: any) {
+      if (isMissingSavedTranscriptRerunError(error)) {
+        try {
+          await runFullPipelineRestart()
+          return
+        } catch (restartError: any) {
+          error = restartError
+        }
+      }
+
+      setStatus('failed')
+      if (error instanceof ApiError) {
+        const resolvedCode = error.errorCode || (error.status === 402 ? 'QUOTA_EXCEEDED' : undefined)
+        const presentation = resolveErrorPresentation(resolvedCode, error.message, ERROR_UX_ENABLED)
+        setErrorMessage(presentation.message)
+        setUploadErrorCode(resolvedCode ?? null)
+      } else {
+        const pipelineErrorCode = resolveBatchPipelineErrorCode(error?.message)
+        if (pipelineErrorCode) {
+          const presentation = resolveErrorPresentation(pipelineErrorCode, error.message, ERROR_UX_ENABLED)
+          setErrorMessage(presentation.message)
+          setUploadErrorCode(pipelineErrorCode)
+        } else {
+          setErrorMessage(error?.message || 'Không phân tích lại được. Thử lại sau.')
+          setUploadErrorCode(null)
+        }
+      }
+    } finally {
+      setBusy(false)
+    }
+  }
 
   const handleDashboardUpload = async (_title: string, file: File) => {
     setSelectedFile(file)
@@ -2435,6 +2559,8 @@ export default function App() {
         errorCode={uploadErrorCode ?? undefined}
         onNavigateBilling={handleNavigateBilling}
         duplicateNotice={uploadNotice}
+        lastMeetingId={lastUploadMeetingId}
+        onReanalyze={handleReanalyzeFailedUpload}
         onUpload={handleDashboardUpload}
         onCancel={handleCancel}
       />
@@ -2491,7 +2617,7 @@ export default function App() {
 
   return (
     <StudyWorkspaceProvider>
-    <div className="app app--dashboard app--studio">
+    <div className={`app app--dashboard ${themeClassName(theme)}`} data-testid="app-root" data-theme={theme}>
       {authNotice ? (
         <p className="studio-auth__notice studio-auth__notice--dashboard" data-testid="auth-notice-banner" role="status">
           {authNotice}
@@ -2520,6 +2646,8 @@ export default function App() {
         onNavigateSubjects={() => navigateFeatureScene('subjects')}
         onNavigateSubjectDetail={(subjectId) => navigateFeatureScene('subjectDetail', { subjectId })}
         onNavigateUnclassified={() => navigateFeatureScene('unclassified')}
+        theme={theme}
+        onToggleTheme={toggleTheme}
       >
         <Suspense fallback={<LoadingState message="Đang tải màn hình..." />}>
           {renderDashboardScene()}
