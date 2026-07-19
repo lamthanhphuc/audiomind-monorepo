@@ -1,5 +1,6 @@
 from enum import Enum
 from functools import lru_cache
+from ipaddress import ip_address
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -8,11 +9,25 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
 
+# Private Docker Compose service hostnames allowed for DATABASE_TLS_MODE=disable.
+DEFAULT_PRIVATE_VPS_DB_HOSTS: frozenset[str] = frozenset({"postgres", "db"})
+
 
 class AppComponent(str, Enum):
     API = "api"
     WORKER = "worker"
     BEAT = "beat"
+
+
+class DeploymentMode(str, Enum):
+    VPS = "vps"
+    MANAGED = "managed"
+
+
+class DatabaseTlsMode(str, Enum):
+    REQUIRE = "require"
+    VERIFY_FULL = "verify-full"
+    DISABLE = "disable"
 
 
 def _is_local(value: str | None) -> bool:
@@ -26,6 +41,23 @@ def _is_local(value: str | None) -> bool:
     )
 
 
+def _database_hostname(database_url: str) -> str:
+    return (urlparse(database_url).hostname or "").strip().lower()
+
+
+def _is_disallowed_tls_disable_host(host: str) -> bool:
+    """Reject loopback / non-private IP addresses for TLS-disable production."""
+    if not host:
+        return True
+    if host in {"localhost", "127.0.0.1", "0.0.0.0", "::1"}:
+        return True
+    try:
+        addr = ip_address(host)
+    except ValueError:
+        return False
+    return not addr.is_private
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=str(ENV_FILE),
@@ -37,6 +69,21 @@ class Settings(BaseSettings):
     app_component: str = Field(
         default="api",
         validation_alias=AliasChoices("APP_COMPONENT", "app_component"),
+    )
+    deployment_mode: str = Field(
+        default="",
+        validation_alias=AliasChoices("DEPLOYMENT_MODE", "deployment_mode"),
+    )
+    database_tls_mode: str = Field(
+        default="",
+        validation_alias=AliasChoices("DATABASE_TLS_MODE", "database_tls_mode"),
+    )
+    database_tls_private_hosts: str = Field(
+        default="postgres,db",
+        validation_alias=AliasChoices(
+            "DATABASE_TLS_PRIVATE_HOSTS",
+            "database_tls_private_hosts",
+        ),
     )
 
     # Database
@@ -403,6 +450,13 @@ class Settings(BaseSettings):
             )
         return self
 
+    def _private_vps_db_hosts(self) -> frozenset[str]:
+        raw = (self.database_tls_private_hosts or "").strip()
+        if not raw:
+            return DEFAULT_PRIVATE_VPS_DB_HOSTS
+        hosts = {part.strip().lower() for part in raw.split(",") if part.strip()}
+        return frozenset(hosts) if hosts else DEFAULT_PRIVATE_VPS_DB_HOSTS
+
     def _validate_database_url_production(self) -> None:
         self.validate_database_url_scheme()
         if (
@@ -412,12 +466,58 @@ class Settings(BaseSettings):
             raise ValueError(
                 "Invalid production database_url: localhost/default credentials are not allowed"
             )
-        # Staging/prod managed Postgres must negotiate TLS (APP_ENV=production covers staging overlays).
+
         lowered = (self.database_url or "").lower()
-        if "sslmode=require" not in lowered and "sslmode=verify-full" not in lowered:
+        host = _database_hostname(self.database_url)
+        deployment_mode = (self.deployment_mode or "").strip().lower()
+        tls_mode = (self.database_tls_mode or "").strip().lower()
+        has_require = "sslmode=require" in lowered
+        has_verify_full = "sslmode=verify-full" in lowered
+
+        # Explicit VPS private Postgres: allow TLS disable only for allowlisted Docker hosts.
+        if tls_mode == DatabaseTlsMode.DISABLE.value:
+            if deployment_mode != DeploymentMode.VPS.value:
+                raise ValueError(
+                    "Invalid production DATABASE_TLS_MODE=disable: only allowed when "
+                    "DEPLOYMENT_MODE=vps"
+                )
+            if _is_disallowed_tls_disable_host(host):
+                raise ValueError(
+                    "Invalid production DATABASE_TLS_MODE=disable: host must be a private "
+                    "Docker service hostname (not localhost/public IP)"
+                )
+            if host not in self._private_vps_db_hosts():
+                raise ValueError(
+                    "Invalid production DATABASE_TLS_MODE=disable: "
+                    f"host {host!r} is not in DATABASE_TLS_PRIVATE_HOSTS allowlist"
+                )
+            return
+
+        # Managed / Kubernetes / remote: TLS required (backward compatible when mode unset).
+        if tls_mode and tls_mode not in {
+            DatabaseTlsMode.REQUIRE.value,
+            DatabaseTlsMode.VERIFY_FULL.value,
+            "",
+        }:
+            raise ValueError(
+                "Invalid production DATABASE_TLS_MODE: "
+                "expected require, verify-full, or disable"
+            )
+
+        if tls_mode == DatabaseTlsMode.VERIFY_FULL.value:
+            if not has_verify_full:
+                raise ValueError(
+                    "Invalid production database_url: sslmode=verify-full is required "
+                    "when DATABASE_TLS_MODE=verify-full"
+                )
+            return
+
+        if not has_require and not has_verify_full:
             raise ValueError(
                 "Invalid production database_url: sslmode=require "
-                "or sslmode=verify-full is required"
+                "or sslmode=verify-full is required "
+                "(set DEPLOYMENT_MODE=vps and DATABASE_TLS_MODE=disable only for "
+                "private Docker Postgres on allowlisted hosts)"
             )
 
     def _validate_meeting_and_token_production(self) -> None:
