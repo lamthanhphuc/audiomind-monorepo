@@ -53,11 +53,40 @@ server {
     }
 
     # --- User API ---
+    # Frontend SPA OAuth landing (must be exact + before /auth/).
+    location = /auth/google/success {
+        proxy_pass http://audiomind_frontend;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location = /auth/google/error {
+        proxy_pass http://audiomind_frontend;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
     location /auth/ {
         proxy_pass http://audiomind_user_api;
         include /etc/nginx/proxy_params;
         proxy_read_timeout 3600s;
         proxy_send_timeout 3600s;
+    }
+
+    # Integration controllers: /users/me/{google,zoom,teams} (not under /api/users).
+    location /users/ {
+        proxy_pass http://audiomind_user_api;
+        include /etc/nginx/proxy_params;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
     }
 
     location /api/users/ {
