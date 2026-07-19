@@ -4430,6 +4430,17 @@ async def readiness_check():
     if deepgram_required and not deepgram_configured:
         ready = False
 
+    native_deepgram_diarization = bool(
+        settings.enable_speaker_diarization and settings.deepgram_diarize
+    )
+    local_diarization_requires_hf = bool(
+        settings.enable_speaker_diarization and not native_deepgram_diarization
+    )
+    hf_configured = bool((settings.huggingface_token or "").strip())
+    dependencies["huggingfaceConfigured"] = _dependency_state(hf_configured)
+    if local_diarization_requires_hf and not hf_configured:
+        ready = False
+
     analysis_provider = (settings.analysis_provider or "").strip().lower()
     gemini_required = analysis_provider == "gemini"
     gemini_test_mode = (settings.gemini_client_test_mode or "").strip().lower()
