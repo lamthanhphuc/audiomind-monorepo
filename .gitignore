@@ -42,6 +42,11 @@ logs/ci-fix/
 .env.local
 !.env.example
 !.env.production.example
+.env.production
+
+# VPS backups
+backups/
+*.sql.gz
 
 # Temp artifacts
 **/temp/
