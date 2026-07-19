@@ -264,6 +264,36 @@ describe('MeetingHistoryScene', () => {
     expect(container.textContent).toContain('History item')
   })
 
+  it('shows Phân tích lại and calls analysis rerun for failed meetings', async () => {
+    const failedMeeting = { ...baseMeeting, status: 'failed' }
+    ;(api.listMeetingsPage as any).mockResolvedValue(mockMeetingListPage([failedMeeting]))
+    ;(api.getMeetingDetail as any).mockResolvedValue(failedMeeting)
+    ;(api.getSavedAnalysis as any).mockResolvedValue({
+      ...baseAnalysis,
+      status: 'FAILED',
+      analysisStatus: 'FAILED',
+      errorCode: 'AnalysisRateLimitError',
+      errorMessage: 'rate limited',
+      retryable: true,
+    })
+
+    await mountWithStoredSelection(7)
+
+    const button = container.querySelector('[data-testid="history-reanalyze-button"]') as HTMLButtonElement | null
+    expect(button).toBeTruthy()
+    expect(button?.textContent).toContain('Phân tích lại')
+
+    await act(async () => {
+      button?.click()
+    })
+    await flush()
+
+    expect(api.reanalyzeMeetingAnalysis).toHaveBeenCalledWith(7, expect.objectContaining({
+      mode: 'force',
+      reason: 'manual_reanalyze',
+    }))
+  })
+
   it('copies existing-user invite link with openMeeting on root path', async () => {
     await mountWithStoredSelection(7)
 
