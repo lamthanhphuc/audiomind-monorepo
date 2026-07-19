@@ -5,7 +5,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $PSScriptRoot
-if (-not $EnvFile) { $EnvFile = '.env.production' }
+if (-not $EnvFile) { $EnvFile = 'infra/.env' }
 
 $bashCandidates = @(
     (Get-Command bash -ErrorAction SilentlyContinue)?.Source,
@@ -28,8 +28,9 @@ if ($bash) {
 
 Write-Host '[vps-migrate] bash not found; running docker compose migration services directly' -ForegroundColor Yellow
 
-$composeFile = if ($env:COMPOSE_FILE) { $env:COMPOSE_FILE } else { 'infra/docker-compose.vps.yml' }
-$compose = @('compose', '--env-file', $EnvFile, '-f', $composeFile)
+$composeFiles = @('infra/docker-compose.dev.yml', 'infra/docker-compose.mvp.yml', 'infra/docker-compose.prod.yml')
+$compose = @('compose', '--env-file', $EnvFile)
+foreach ($f in $composeFiles) { $compose += @('-f', $f) }
 
 function Test-ComposeService([string]$Name) {
     $services = & docker @compose config --services 2>$null
@@ -45,24 +46,18 @@ function Invoke-ComposeRun([string]$Service) {
 Push-Location $Root
 try {
     if (-not (Test-Path $EnvFile)) { throw "missing $EnvFile" }
-    if (-not (Test-Path $composeFile)) { throw "missing $composeFile" }
+    foreach ($f in $composeFiles) {
+        if (-not (Test-Path $f)) { throw "missing $f" }
+    }
 
-    $postgres = if (Test-ComposeService 'postgres') { 'postgres' } elseif (Test-ComposeService 'db') { 'db' } else { throw 'no postgres/db service' }
+    $postgres = if (Test-ComposeService 'db') { 'db' } elseif (Test-ComposeService 'postgres') { 'postgres' } else { throw 'no db/postgres service' }
     & docker @compose up -d $postgres
     if ($LASTEXITCODE -ne 0) { throw "failed to start $postgres" }
 
     if (Test-ComposeService 'db-flyway-bootstrap') { Invoke-ComposeRun 'db-flyway-bootstrap' }
-    if (Test-ComposeService 'user-db-migrate') { Invoke-ComposeRun 'user-db-migrate' }
-    elseif (Test-ComposeService 'user-api') {
-        & docker @compose run --rm -e SPRING_PROFILES_ACTIVE=migration -e SPRING_FLYWAY_ENABLED=true -e SPRING_MAIN_WEB_APPLICATION_TYPE=none user-api
-        if ($LASTEXITCODE -ne 0) { throw 'user-api migration profile failed' }
-    }
-    if (Test-ComposeService 'meeting-db-migrate') { Invoke-ComposeRun 'meeting-db-migrate' }
-    elseif (Test-ComposeService 'meeting-api') {
-        & docker @compose run --rm -e SPRING_PROFILES_ACTIVE=migration -e SPRING_FLYWAY_ENABLED=true -e SPRING_MAIN_WEB_APPLICATION_TYPE=none meeting-api
-        if ($LASTEXITCODE -ne 0) { throw 'meeting-api migration profile failed' }
-    }
-    if (Test-ComposeService 'ai-db-migrate') { Invoke-ComposeRun 'ai-db-migrate' }
+    if (Test-ComposeService 'user-db-migrate') { Invoke-ComposeRun 'user-db-migrate' } else { throw 'no user-db-migrate service' }
+    if (Test-ComposeService 'meeting-db-migrate') { Invoke-ComposeRun 'meeting-db-migrate' } else { throw 'no meeting-db-migrate service' }
+    if (Test-ComposeService 'ai-db-migrate') { Invoke-ComposeRun 'ai-db-migrate' } else { throw 'no ai-db-migrate service' }
 
     Write-Host '[vps-migrate] all migrations completed successfully'
 }

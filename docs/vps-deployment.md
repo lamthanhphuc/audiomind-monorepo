@@ -1,6 +1,11 @@
 # VPS deployment guide (single-domain Docker Compose)
 
-This guide deploys AudioMind on a single VPS using `infra/docker-compose.vps.yml`, host Nginx for TLS/path routing, and the scripts under `scripts/`.
+This guide deploys AudioMind on a single VPS using the layered Docker Compose stack
+(`infra/docker-compose.dev.yml` + `infra/docker-compose.mvp.yml` + `infra/docker-compose.prod.yml`),
+a single `infra/.env` file, host Nginx for TLS/path routing, and the scripts under `scripts/`.
+
+There is no more `infra/docker-compose.vps.yml` — it has been replaced by the layered
+dev+mvp+prod overlay so the same base compose file is shared between local and VPS deploys.
 
 ## Prerequisites
 
@@ -23,30 +28,29 @@ docker compose version
 ```bash
 git clone <your-repo-url> audiomind
 cd audiomind
-cp .env.production.example .env.production
-chmod 600 .env.production
+cp infra/.env.vps.example infra/.env
+chmod 600 infra/.env
 ```
 
-Edit `.env.production`:
+Edit `infra/.env`:
 
 - Set `DEPLOYMENT_MODE=vps` and `DATABASE_TLS_MODE=disable` (private Docker Postgres only).
 - Set `PUBLIC_DOMAIN`, `PUBLIC_ORIGIN`, `CORS_ALLOWED_ORIGINS`, and `VITE_REALTIME_WS_BASE_URL`.
 - Replace every `CHANGE_ME*` secret (Postgres, JWT, internal token, Gemini, Deepgram, Google token encryption key).
-- Build `AI_DATABASE_URL` with a **URL-encoded** password (required; do not paste raw `${POSTGRES_PASSWORD}` into a Python URL):
+- Build `AI_DATABASE_URL` with a **URL-encoded** password and host `db` (the private Docker
+  service name in the layered compose stack; required — do not paste raw `${POSTGRES_PASSWORD}`
+  into a Python URL, and never use `localhost`/`127.0.0.1`/a public IP as the host):
 
 ```bash
-python3 scripts/generate-vps-db-url.py \
-  --user "$POSTGRES_USER" \
-  --password "$POSTGRES_PASSWORD" \
-  --host postgres \
-  --port 5432 \
-  --database "$POSTGRES_DB"
-# Copy printed URL into AI_DATABASE_URL=...
+python3 scripts/generate-vps-db-url.py --env-file infra/.env
+# Copy printed URL into AI_DATABASE_URL=... in infra/.env
 ```
 
 - Keep `REDIS_HOST=redis` / `USER_REDIS_DB=3` (user-api Bucket4j + Spring Data Redis).
 - Keep shared audio path `AUDIO_STORAGE_PATH=/app/uploads` and `FINAL_AUDIO_ALLOWED_ROOTS=/app/uploads`.
-- Keep loopback host ports (`FRONTEND_HOST_PORT=8080`, etc.) unless you changed bindings.
+- Keep loopback host ports (`FRONTEND_HOST_PORT`, `USER_HOST_PORT`, `MEETING_HOST_PORT`,
+  `PROCESSING_HOST_PORT`, `AI_HOST_PORT`) unless you changed bindings. Each also falls back to
+  the legacy `*_API_HOST_PORT` / `WEB_HOST_PORT` names if only those are set.
 
 Generate a 32-byte base64 encryption key:
 
@@ -73,13 +77,17 @@ chmod +x scripts/deploy-vps.sh scripts/vps-migrate.sh scripts/smoke-vps.sh scrip
 
 What the deploy script does:
 
-1. Validates Docker and required env vars via `scripts/load-compose-env.py` (no `source`/eval of the env file)
-2. Builds images **once** (`SKIP_BUILD=1` skips build; `up` never uses `--build`)
-3. Starts Postgres + Redis and waits for health
-4. Runs `./scripts/vps-migrate.sh` (Flyway bootstrap → user → meeting → AI Alembic)
-5. Starts user/meeting/processing/AI APIs, Celery worker/beat, and frontend
-6. Waits for loopback health on published ports
-7. Runs `./scripts/smoke-vps.sh` (`SKIP_SMOKE=1` to skip)
+1. Validates Docker/Compose and required env vars via `scripts/load-compose-env.py` (no
+   `source`/`eval` of the env file), including a hard `DATABASE_TLS_MODE`/`AI_DATABASE_URL`
+   host preflight (fails closed — never `disable` against localhost/127.0.0.1/a public IP).
+2. Builds images **once** (`SKIP_BUILD=1` skips the build step entirely — zero builds).
+3. Runs `docker compose up -d` across all three compose files. Flyway/Alembic migrations
+   (`db-flyway-bootstrap`, `user-db-migrate`, `meeting-db-migrate`, `ai-db-migrate`) run
+   automatically first via `depends_on: service_completed_successfully` — no compose
+   `--profile migrate` flag and no separate manual migration step are needed.
+4. Waits for container health (db, redis, web, user/meeting/processing/AI APIs, Celery worker/beat).
+5. Waits for loopback health on published ports.
+6. Runs `./scripts/smoke-vps.sh` (`SKIP_SMOKE=1` to skip).
 
 ```bash
 # Rebuild everything then start
@@ -89,12 +97,15 @@ What the deploy script does:
 SKIP_BUILD=1 ./scripts/deploy-vps.sh
 ```
 
-Re-run migrations only:
+Re-run migrations only (troubleshooting — normally not needed since `up -d` already runs them):
 
 ```bash
 ./scripts/vps-migrate.sh
 # Windows: ./scripts/vps-migrate.ps1
 ```
+
+For a local-only deploy (dev+mvp overlay, no public/VPS exposure), use `infra/.env.local.example`
+and `./scripts/deploy-local.sh` instead.
 
 ## 5. Host Nginx (path-based same-origin routing)
 
@@ -108,7 +119,7 @@ sudo ln -sf /etc/nginx/sites-available/audiomind /etc/nginx/sites-enabled/audiom
 Edit `/etc/nginx/sites-available/audiomind`:
 
 - Replace `your-domain.com`
-- Confirm upstream ports match `.env.production` loopback binds
+- Confirm upstream ports match `infra/.env` loopback binds
 
 Test and reload:
 
@@ -121,8 +132,8 @@ Routing summary (matches FE same-origin bases):
 
 | Path prefix | Backend |
 |-------------|---------|
-| `/`, static SPA | frontend `:8080` |
-| `=/auth/google/success`, `=/auth/google/error` | frontend (SPA OAuth landing) |
+| `/`, static SPA | web `:8080` |
+| `=/auth/google/success`, `=/auth/google/error` | web (SPA OAuth landing) |
 | `/auth/*` (callbacks/start/exchange) | user-api `:8083` |
 | `/users/*` (Google/Zoom/Teams integrations) | user-api `:8083` |
 | `/api/users/*`, `/api/billing/*` | user-api `:8083` |
@@ -148,14 +159,18 @@ sudo ufw enable
 sudo ufw status
 ```
 
-Only Nginx should be public; Docker services bind to `127.0.0.1` via `.env.production`.
+Only Nginx should be public; Docker services bind to `127.0.0.1` via `infra/.env`.
 
 ## 8. Logs and operations
 
 ```bash
-docker compose --env-file .env.production -f infra/docker-compose.vps.yml ps
-docker compose --env-file .env.production -f infra/docker-compose.vps.yml logs -f user-api
-docker compose --env-file .env.production -f infra/docker-compose.vps.yml logs --tail=200 processing-api
+docker compose --env-file infra/.env \
+  -f infra/docker-compose.dev.yml -f infra/docker-compose.mvp.yml -f infra/docker-compose.prod.yml ps
+docker compose --env-file infra/.env \
+  -f infra/docker-compose.dev.yml -f infra/docker-compose.mvp.yml -f infra/docker-compose.prod.yml logs -f user-api
+docker compose --env-file infra/.env \
+  -f infra/docker-compose.dev.yml -f infra/docker-compose.mvp.yml -f infra/docker-compose.prod.yml \
+  logs --tail=200 processing-api
 ```
 
 Optional authenticated / Phase 2 smoke:
@@ -164,14 +179,20 @@ Optional authenticated / Phase 2 smoke:
 SMOKE_JWT='<access-token>' SMOKE_SUBJECT_ID='12' ./scripts/smoke-vps.sh
 ```
 
-Public Nginx smoke runs automatically when `PUBLIC_ORIGIN` is a real domain (not `your-domain.com`). Skip with `SKIP_PUBLIC_SMOKE=1`.
+Public Nginx smoke against the real domain is **opt-in only** — set `RUN_PUBLIC_SMOKE=1`
+(default `0`). It never runs automatically just because `PUBLIC_ORIGIN` looks like a real domain,
+and every public check fails closed (no `curl ... || true` masking a failure as a pass):
+
+```bash
+RUN_PUBLIC_SMOKE=1 ./scripts/smoke-vps.sh
+```
 
 Smoke verdict lines:
 
 ```text
 VPS INFRA HEALTHY
 VPS LOOPBACK APPLICATION HEALTHY
-VPS PUBLIC NGINX HEALTHY   # or NOT RUN
+VPS PUBLIC NGINX HEALTHY   # or NOT RUN (RUN_PUBLIC_SMOKE=1 to enable)
 PHASE 2 FUNCTIONAL SMOKE PASS|NOT RUN
 ```
 
@@ -193,8 +214,9 @@ Restore (stop write traffic first; forward-only migrations do not replace restor
 
 ```bash
 gunzip -c backups/audiomind-postgres-YYYYMMDDTHHMMSSZ.sql.gz |
-  docker compose --env-file .env.production -f infra/docker-compose.vps.yml exec -T postgres \
-    psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"
+  docker compose --env-file infra/.env \
+    -f infra/docker-compose.dev.yml -f infra/docker-compose.mvp.yml -f infra/docker-compose.prod.yml \
+    exec -T db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"
 ```
 
 ## 10. Updates
@@ -216,20 +238,23 @@ Migrations are forward-only. Do not downgrade Flyway/Alembic versions on product
 
 | Gate | Meaning |
 |------|---------|
-| Compose config validated | `docker compose --env-file … config` succeeds |
+| Compose config validated | `docker compose --env-file infra/.env -f ... config` succeeds |
 | Images built | `docker compose … build` succeeds |
-| Local stack healthy | migrations + APIs/worker/beat/frontend up; loopback smoke pass |
+| Local stack healthy | migrations (via `depends_on`) + APIs/worker/beat/web up; loopback smoke pass |
 | Real VPS healthy | DNS + containers healthy on the VPS |
-| HTTPS functional | Certbot + public HTTPS smoke |
+| HTTPS functional | Certbot + public HTTPS smoke (`RUN_PUBLIC_SMOKE=1`) |
 | Phase 2 functional smoke | `SMOKE_JWT` + `SMOKE_SUBJECT_ID` synthesis/artifacts |
 
 ## Troubleshooting
 
-- **Migration failure**: `./scripts/vps-migrate.sh` then inspect migrate profile logs.
+- **Migration failure**: `./scripts/vps-migrate.sh` re-runs the migrate services explicitly
+  (no compose profile involved — they are always-defined, one-shot services); inspect their logs.
 - **user-api Redis errors**: confirm compose sets `REDIS_HOST=redis` (not localhost).
-- **AI TLS / sslmode errors on VPS**: `DEPLOYMENT_MODE=vps` + `DATABASE_TLS_MODE=disable` + host `postgres` in allowlist; managed DBs still require `sslmode=require|verify-full`.
+- **AI TLS / sslmode errors on VPS**: `DEPLOYMENT_MODE=vps` + `DATABASE_TLS_MODE=disable` +
+  `AI_DATABASE_URL` host must be exactly `db` (or `postgres`) — `scripts/deploy-vps.sh` fails
+  closed on localhost/127.0.0.1/public-IP hosts; managed DBs still require `sslmode=require|verify-full`.
 - **AI cannot open meeting audio**: mounts must be `uploads:/app/uploads` for meeting-api, ai-api, and celery-worker.
 - **502 from Nginx**: confirm loopback ports (`curl http://127.0.0.1:8080/`) and `docker compose ps`.
-- **OAuth success blank / API JSON**: ensure exact `location = /auth/google/success` proxies to frontend before `/auth/`.
+- **OAuth success blank / API JSON**: ensure exact `location = /auth/google/success` proxies to web before `/auth/`.
 - **CORS errors**: `CORS_ALLOWED_ORIGINS` must exactly match browser origin.
 - **WebSocket failures**: confirm `VITE_REALTIME_WS_BASE_URL` and Nginx `/ws/meetings` upgrade headers.

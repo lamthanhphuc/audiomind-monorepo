@@ -5,9 +5,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT}"
 
-ENV_FILE="${ENV_FILE:-.env.production}"
-COMPOSE_FILE="${COMPOSE_FILE:-infra/docker-compose.vps.yml}"
-COMPOSE=(docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}")
+ENV_FILE="${ENV_FILE:-infra/.env}"
+COMPOSE_FILES=(infra/docker-compose.dev.yml infra/docker-compose.mvp.yml infra/docker-compose.prod.yml)
+COMPOSE=(docker compose --env-file "${ENV_FILE}" -f infra/docker-compose.dev.yml -f infra/docker-compose.mvp.yml -f infra/docker-compose.prod.yml)
 LOAD_ENV_PY="${ROOT}/scripts/load-compose-env.py"
 PYTHON_BIN=""
 BACKUP_DIR="${BACKUP_DIR:-backups}"
@@ -46,9 +46,9 @@ service_exists() {
 }
 
 resolve_postgres_service() {
-  if service_exists postgres; then printf '%s' postgres; return; fi
   if service_exists db; then printf '%s' db; return; fi
-  fail 'compose file has no postgres or db service'
+  if service_exists postgres; then printf '%s' postgres; return; fi
+  fail 'compose files have no db or postgres service'
 }
 
 main() {
@@ -57,7 +57,10 @@ main() {
   resolve_python || fail 'python3/python >= 3.9 not found'
   command -v gzip >/dev/null 2>&1 || fail 'gzip not found'
   [[ -f "${ENV_FILE}" ]] || fail "missing ${ENV_FILE}"
-  [[ -f "${COMPOSE_FILE}" ]] || fail "missing ${COMPOSE_FILE}"
+  local f
+  for f in "${COMPOSE_FILES[@]}"; do
+    [[ -f "${f}" ]] || fail "missing ${f}"
+  done
   [[ -f "${LOAD_ENV_PY}" ]] || fail "missing ${LOAD_ENV_PY}"
 
   local postgres_service db_user db_name

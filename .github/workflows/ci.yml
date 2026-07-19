@@ -230,24 +230,25 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Docker Compose config (VPS)
+      - name: Docker Compose config (VPS layered stack)
         run: |
           docker compose \
-            --env-file .env.production.example \
-            -f infra/docker-compose.vps.yml \
-            --profile migrate \
+            --env-file infra/.env.vps.test \
+            -f infra/docker-compose.dev.yml \
+            -f infra/docker-compose.mvp.yml \
+            -f infra/docker-compose.prod.yml \
             config >/tmp/vps-compose.resolved.yml
           test -s /tmp/vps-compose.resolved.yml
-          grep -q 'audiomind-network' /tmp/vps-compose.resolved.yml
           grep -q 'celery-beat' /tmp/vps-compose.resolved.yml
-          grep -q 'frontend' /tmp/vps-compose.resolved.yml
-          # Postgres/Redis must not publish host ports in the VPS file source
-          ! grep -E '^\s+ports:' -A2 infra/docker-compose.vps.yml | grep -E '5432:5432|6379:6379' \
+          grep -q '  web:' /tmp/vps-compose.resolved.yml
+          # Postgres/Redis must not publish host ports once mvp/prod overlays are applied
+          ! grep -E '5432:5432|6379:6379' /tmp/vps-compose.resolved.yml \
             && echo "PASS: postgres/redis not publicly published"
 
       - name: Bash syntax for VPS scripts
         run: |
           bash -n scripts/deploy-vps.sh
+          bash -n scripts/deploy-local.sh
           bash -n scripts/vps-migrate.sh
           bash -n scripts/smoke-vps.sh
           bash -n scripts/backup-vps.sh

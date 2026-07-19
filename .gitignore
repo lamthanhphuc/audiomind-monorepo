@@ -42,6 +42,9 @@ logs/ci-fix/
 .env.local
 !.env.example
 !.env.production.example
+!infra/.env.local.example
+!infra/.env.vps.example
+!infra/.env.vps.test
 .env.production
 
 # VPS backups

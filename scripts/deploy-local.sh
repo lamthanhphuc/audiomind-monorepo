@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Single-domain VPS deploy orchestrator for the layered Docker Compose stack.
-# Source of truth: infra/.env + dev.yml + mvp.yml + prod.yml. Never logs secret values.
+# Local Docker Compose deploy orchestrator (dev + mvp overlay only, no VPS/prod overlay).
+# Source of truth: infra/.env + dev.yml + mvp.yml. Never logs secret values.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT}"
 
 ENV_FILE="${ENV_FILE:-infra/.env}"
-COMPOSE_FILES=(infra/docker-compose.dev.yml infra/docker-compose.mvp.yml infra/docker-compose.prod.yml)
-COMPOSE=(docker compose --env-file "${ENV_FILE}" -f infra/docker-compose.dev.yml -f infra/docker-compose.mvp.yml -f infra/docker-compose.prod.yml)
+COMPOSE_FILES=(infra/docker-compose.dev.yml infra/docker-compose.mvp.yml)
+COMPOSE=(docker compose --env-file "${ENV_FILE}" -f infra/docker-compose.dev.yml -f infra/docker-compose.mvp.yml)
 LOAD_ENV_PY="${ROOT}/scripts/load-compose-env.py"
 PYTHON_BIN=""
 
@@ -25,11 +25,11 @@ resolve_python() {
 }
 
 note() {
-  printf '[deploy-vps] %s\n' "$1"
+  printf '[deploy-local] %s\n' "$1"
 }
 
 fail() {
-  printf '[deploy-vps] ERROR: %s\n' "$1" >&2
+  printf '[deploy-local] ERROR: %s\n' "$1" >&2
   dump_failure_diagnostics
   exit 1
 }
@@ -49,7 +49,7 @@ require_command() {
 
 require_env_file() {
   if [[ ! -f "${ENV_FILE}" ]]; then
-    fail "missing ${ENV_FILE}; copy infra/.env.vps.example to infra/.env and fill secrets"
+    fail "missing ${ENV_FILE}; copy infra/.env.local.example to infra/.env and fill secrets"
   fi
 }
 
@@ -65,7 +65,6 @@ env_get() {
   "${PYTHON_BIN}" "${LOAD_ENV_PY}" --file "${ENV_FILE}" --get "${key}" 2>/dev/null || true
 }
 
-# Primary *_HOST_PORT names with fallback to legacy *_API_HOST_PORT / WEB_HOST_PORT.
 resolve_port() {
   local primary="$1" fallback="$2" default="$3"
   local value
@@ -76,72 +75,24 @@ resolve_port() {
   printf '%s' "${value:-${default}}"
 }
 
-validate_database_tls_mode() {
-  local deployment_mode tls_mode ai_db_url host
-  deployment_mode="$(env_get DEPLOYMENT_MODE)"
-  if [[ "${deployment_mode}" != "vps" ]]; then
-    fail "DEPLOYMENT_MODE must be exactly 'vps' for scripts/deploy-vps.sh (got '${deployment_mode:-<empty>}')"
-  fi
-
-  tls_mode="$(env_get DATABASE_TLS_MODE)"
-  if [[ "${tls_mode}" != "disable" ]]; then
-    fail "DATABASE_TLS_MODE must be exactly 'disable' for VPS private Docker Postgres (got '${tls_mode:-<empty>}')"
-  fi
-
-  ai_db_url="$(env_get AI_DATABASE_URL)"
-  [[ -n "${ai_db_url}" && "${ai_db_url}" != CHANGE_ME* ]] || fail 'AI_DATABASE_URL is required (postgresql://user:pass@host:port/db, URL-encoded password)'
-
-  if [[ "${ai_db_url}" =~ ^postgresql(\+psycopg2)?://[^@/]*@([^:/]+) ]]; then
-    host="${BASH_REMATCH[2]}"
-  else
-    fail 'AI_DATABASE_URL is malformed; expected postgresql://user:pass@host:port/db'
-  fi
-  host="$(printf '%s' "${host}" | tr '[:upper:]' '[:lower:]')"
-
-  case "${host}" in
-    postgres|db) ;;
-    *)
-      fail "AI_DATABASE_URL host must be a private Docker service name (postgres or db) when DATABASE_TLS_MODE=disable; got '${host}' (localhost/127.0.0.1/public IP hosts are never allowed here)"
-      ;;
-  esac
-}
-
 validate_required_vars() {
   local missing=()
   local value
 
   value="$(env_get POSTGRES_PASSWORD)"
-  [[ -n "${value}" && "${value}" != CHANGE_ME* ]] || missing+=('POSTGRES_PASSWORD')
+  [[ -n "${value}" ]] || missing+=('POSTGRES_PASSWORD')
 
   value="$(env_get JWT_SECRET)"
-  [[ -n "${value}" && "${#value}" -ge 32 && "${value}" != CHANGE_ME* ]] || missing+=('JWT_SECRET (>=32 chars)')
+  [[ -n "${value}" && "${#value}" -ge 32 ]] || missing+=('JWT_SECRET (>=32 chars)')
 
-  value="$(env_get INTERNAL_SERVICE_TOKEN)"
-  if [[ -z "${value}" || "${value}" == CHANGE_ME* ]]; then
-    value="$(env_get GOOGLE_INTERNAL_SERVICE_TOKEN)"
-  fi
-  [[ -n "${value}" && "${#value}" -ge 16 && "${value}" != CHANGE_ME* ]] || missing+=('INTERNAL_SERVICE_TOKEN')
-
-  value="$(env_get GOOGLE_TOKEN_ENCRYPTION_KEY)"
-  [[ -n "${value}" && "${value}" != CHANGE_ME* ]] || missing+=('GOOGLE_TOKEN_ENCRYPTION_KEY')
-
-  value="$(env_get GEMINI_API_KEY)"
-  [[ -n "${value}" && "${value}" != CHANGE_ME* ]] || missing+=('GEMINI_API_KEY')
-
-  value="$(env_get DEEPGRAM_API_KEY)"
-  [[ -n "${value}" && "${value}" != CHANGE_ME* ]] || missing+=('DEEPGRAM_API_KEY')
-
-  value="$(env_get PUBLIC_ORIGIN)"
-  if [[ -z "${value}" || "${value}" == https://your-domain.com ]]; then
-    value="$(env_get PUBLIC_FRONTEND_ORIGIN)"
-  fi
-  [[ -n "${value}" && "${value}" != https://your-domain.com ]] || missing+=('PUBLIC_ORIGIN')
+  value="$(env_get GOOGLE_INTERNAL_SERVICE_TOKEN)"
+  [[ -n "${value}" ]] || missing+=('GOOGLE_INTERNAL_SERVICE_TOKEN')
 
   value="$(env_get CORS_ALLOWED_ORIGINS)"
-  [[ -n "${value}" && "${value}" != https://your-domain.com ]] || missing+=('CORS_ALLOWED_ORIGINS')
+  [[ -n "${value}" ]] || missing+=('CORS_ALLOWED_ORIGINS')
 
   if ((${#missing[@]} > 0)); then
-    fail "invalid or placeholder env vars: ${missing[*]}"
+    fail "invalid or missing env vars: ${missing[*]}"
   fi
 }
 
@@ -240,62 +191,51 @@ wait_for_loopback_health() {
 }
 
 main() {
-  note 'Step 1/8: verify docker and compose'
+  note 'Step 1/6: verify docker and compose'
   require_command docker
   resolve_python || fail 'python3/python >= 3.9 not found'
   docker compose version >/dev/null 2>&1 || fail 'docker compose plugin not found'
 
-  note 'Step 2/8: verify env and compose files'
+  note 'Step 2/6: verify env and compose files'
   require_env_file
   require_compose_files
   [[ -f "${LOAD_ENV_PY}" ]] || fail "missing ${LOAD_ENV_PY}"
 
-  note 'Step 3/8: validate required env vars and DATABASE_TLS_MODE preflight'
+  note 'Step 3/6: validate required env vars'
   validate_required_vars
-  validate_database_tls_mode
 
   local db_service web_service
   db_service="$(resolve_db_service)"
   web_service="$(resolve_web_service)"
 
   if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
-    note 'Step 4/8: compose build once'
+    note 'Step 4/6: compose build once'
     "${COMPOSE[@]}" build
   else
-    note 'Step 4/8: SKIP_BUILD=1 (skipping compose build entirely; zero builds)'
+    note 'Step 4/6: SKIP_BUILD=1 (skipping compose build entirely; zero builds)'
   fi
 
-  note 'Step 5/8: compose up -d (Flyway/Alembic migrations run automatically via depends_on)'
+  note 'Step 5/6: compose up -d (Flyway/Alembic migrations run automatically via depends_on)'
   "${COMPOSE[@]}" up -d
 
-  note 'Step 6/8: wait for container health'
+  note 'Step 6/6: wait for container health and loopback checks'
   local svc
   for svc in "${db_service}" redis "${web_service}" user-api meeting-api processing-api ai-api celery-worker celery-beat; do
     if service_exists "${svc}"; then
       wait_for_service_health "${svc}"
     fi
   done
-
-  note 'Step 7/8: loopback HTTP checks'
   wait_for_loopback_health
-
-  if [[ "${SKIP_SMOKE:-0}" != "1" ]]; then
-    note 'Step 8/8: smoke-vps.sh (loopback + infra checks; public smoke opt-in via RUN_PUBLIC_SMOKE=1)'
-    ENV_FILE="${ENV_FILE}" "${ROOT}/scripts/smoke-vps.sh"
-  else
-    note 'Step 8/8: SKIP_SMOKE=1 (skipping smoke-vps.sh)'
-  fi
 
   cat <<EOF
 
-VPS DEPLOY VERDICT
-------------------
+LOCAL DEPLOY VERDICT
+---------------------
+Compose files: infra/docker-compose.dev.yml + infra/docker-compose.mvp.yml (no VPS/prod overlay).
 Compose build: $([[ "${SKIP_BUILD:-0}" == "1" ]] && echo skipped || echo once-before-up).
 Migrations: ran via depends_on (db-flyway-bootstrap, user-db-migrate, meeting-db-migrate, ai-db-migrate).
 Container + loopback health: passed.
-Local smoke: $([[ "${SKIP_SMOKE:-0}" == "1" ]] && echo skipped || echo passed via smoke-vps.sh).
-Real VPS / HTTPS: not verified here — confirm DNS/TLS/Nginx on the public domain separately
-(RUN_PUBLIC_SMOKE=1 ./scripts/smoke-vps.sh).
+No public smoke required for local deploys.
 
 EOF
 }

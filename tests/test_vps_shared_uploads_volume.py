@@ -86,7 +86,16 @@ def test_shared_uploads_volume_visible_at_canonical_path():
 
 
 def test_compose_source_mounts_uploads_at_app_uploads():
-    compose = (REPO_ROOT / "infra" / "docker-compose.vps.yml").read_text(encoding="utf-8")
+    # VPS deploys layer dev.yml + mvp.yml + prod.yml (infra/docker-compose.vps.yml was
+    # removed); the shared uploads path is defined across that layered stack.
+    compose = "\n".join(
+        (REPO_ROOT / "infra" / name).read_text(encoding="utf-8")
+        for name in (
+            "docker-compose.dev.yml",
+            "docker-compose.mvp.yml",
+            "docker-compose.prod.yml",
+        )
+    )
     assert "uploads:/app/uploads" in compose
     assert "uploads:/app/storage/audio" not in compose
     assert "AUDIO_STORAGE_PATH: /app/uploads" in compose
