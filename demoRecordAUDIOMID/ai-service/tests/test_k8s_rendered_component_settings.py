@@ -57,6 +57,8 @@ _SETTINGS_ENV_KEYS = (
     "OLLAMA_BASE_URL",
     "HUGGINGFACE_TOKEN",
     "ENABLE_SPEAKER_DIARIZATION",
+    "STT_PROVIDER",
+    "ALLOW_LEGACY_LOCAL_STT",
     "DEEPGRAM_DIARIZE",
     "JOB_STATE_REDIS_URL",
     "CELERY_CONCURRENCY",
@@ -196,15 +198,20 @@ def _resolve_container_env(
         if secret_ref:
             sname = str(secret_ref.get("name") or "")
             key = str(secret_ref.get("key") or "")
+            optional = secret_ref.get("optional") in (True, "true", "True")
             assert sname != "jwt-secret", (
                 f"env {name}: legacy Secret jwt-secret must not be referenced"
             )
-            assert sname in secrets, (
-                f"env {name}: secretKeyRef Secret {sname!r} has no producer in render"
-            )
-            assert key in secrets[sname], (
-                f"env {name}: secretKeyRef key {key!r} missing from Secret {sname}"
-            )
+            if sname not in secrets:
+                assert optional, (
+                    f"env {name}: secretKeyRef Secret {sname!r} has no producer in render"
+                )
+                continue
+            if key not in secrets[sname]:
+                assert optional, (
+                    f"env {name}: secretKeyRef key {key!r} missing from Secret {sname}"
+                )
+                continue
             resolved[str(name)] = secrets[sname][key]
             continue
     return resolved
