@@ -170,7 +170,7 @@ Final distributed-systems remediation (section **N**) and runtime deployment clo
 | FE lint / test / build | exit **0** (727 tests) |
 | Contracts validate/generate/typecheck/check:openapi | exit **0** |
 | QuotaConcurrencyTest (Postgres) | **PASS** (same-key, different-key, near-limit) |
-| Alembic upgrade → downgrade -1 → upgrade | **PASS** (head **015**) |
+| AAlembic upgrade → downgrade -1 → upgrade | **PASS** (head **015**) |
 | K8s YAML parse | **PASS** (no live cluster; `yaml.safe_load_all`) |
 | Technical fake-provider smoke | **PASS** |
 | Real Gemini smoke | **NOT RUN** |
@@ -391,7 +391,7 @@ Removed from staging/prod resources: `db-secret-placeholder.yaml`, raw `db-creds
 ### S.6 Context startup tests
 
 - Meeting / User: `DatasourceContextStartupTest` (`@DataJpaTest` + Testcontainers PostgreSQL + Flyway + `StartupConfigValidator`); `DatasourceContextFailureTest` for invalid/unreachable JDBC
-- AI: `test_database_startup.py` — Testcontainers PostgreSQL + Alembic upgrade head + SQLAlchemy connect; JDBC URL rejected for SQLAlchemy
+- AI: `test_database_startup.py` — Testcontainers PostgreSQL + AAlembic upgrade head + SQLAlchemy connect; JDBC URL rejected for SQLAlchemy
 - Processing: no datasource context test (by design)
 
 ### S.7 Matrix / smoke (this closure)
@@ -441,9 +441,9 @@ Removed from staging/prod resources: `db-secret-placeholder.yaml`, raw `db-creds
 ### T.3 Migration dependency and ordering
 
 - Meeting Flyway **V15** hard-depends on public.app_users (user-service V1).
-- Method A: Jobs user-db-migrate → meeting-db-migrate → i-db-migrate applied **sequentially** by scripts/deploy-staging.* with kubectl wait --for=condition=complete.
+- Method A: Jobs user-db-migrate → meeting-db-migrate → ai-db-migrate applied **sequentially** by scripts/deploy-staging.* with kubectl wait --for=condition=complete.
 - Java migration profile: SPRING_PROFILES_ACTIVE=migration + MigrationShutdownRunner + pplication-migration.yml (web-application-type: none).
-- AI: lembic upgrade head in i-db-migrate Job.
+- AI: Alembic upgrade head in ai-db-migrate Job.
 - Fallback: meeting-api (and meeting migrate Job) wait-user-schema initContainer logs WAITING_FOR_USER_SCHEMA / USER_SCHEMA_READY / USER_SCHEMA_WAIT_TIMEOUT.
 
 ### T.4 SealedSecret workflow
@@ -537,3 +537,56 @@ Remaining operator actions: run generate-sealed-secrets against cluster cert; po
 | Ready for production cutover | NO |
 
 Remaining operator actions: generate real SealedSecrets; configure KUBE_CONFIG + managed DB URLs; run deploy-staging with smokes; observe staging; Gemini smoke + backup before cutover.
+
+## V. VPS Docker Compose deployment closure
+
+### V.1 Scope
+
+Single-domain VPS path (Docker Compose + host Nginx + Certbot). Does not replace the Kubernetes staging/production overlays documented in sections T–U.
+
+### V.2 Deliverables
+
+| Artifact | Purpose |
+|----------|---------|
+| .env.production.example (repo root) | Single-domain env template with __SAME_ORIGIN__ FE build sentinels |
+| infra/.env.production.example | Header points to root template; legacy multi-domain vars retained |
+| infra/docker-compose.vps.yml | VPS compose stack (postgres, redis, APIs, Celery, frontend, migrate jobs) |
+| scripts/deploy-vps.sh | Build → DB → migrate → up stack → loopback health → smoke |
+| scripts/vps-migrate.sh / .ps1 | Ordered Flyway bootstrap + user/meeting/AI migrations |
+| scripts/smoke-vps.sh | Infra + application loopback readiness |
+| scripts/backup-vps.sh | pg_dump via compose exec → `backups/*.sql.gz` |
+| infra/nginx/audiomind-vps.conf.example | Same-origin path routing (resolves /api/config/upload vs /api/config/lexicon) |
+| docs/vps-deployment.md | Operator runbook (Docker, DNS, deploy, TLS, UFW, backup, rollback) |
+| FE `config.ts` / `auth.ts` | __SAME_ORIGIN__ → empty base URL for relative /api/* calls |
+
+### V.3 Migration order
+
+1. db-flyway-bootstrap (when defined)
+2. user-db-migrate (or user-api Spring migration profile one-shot)
+3. meeting-db-migrate (or meeting-api migration profile)
+4. ai-db-migrate (Alembic)
+
+Forward-only; rollback = restore `backups/*.sql.gz`, not down migrations.
+
+### V.4 Nginx routing notes
+
+- =/api/config/upload → meeting-api (upload policy)
+- /api/config/lexicon → ai-api (domain lexicon)
+- /api/config/transcript-quality → processing-api
+- /ws/meetings → processing-api with WebSocket upgrade headers
+- Broader /api/ → ai-api after more specific prefixes
+
+### V.5 Honest status
+
+| Gate | Status |
+|------|--------|
+| Code complete | **YES** — compose, scripts, env template, Nginx example, FE `__SAME_ORIGIN__`, docs |
+| Compose validated | **YES** — `docker compose --env-file .env.production.example -f infra/docker-compose.vps.yml --profile migrate config` passes; CI job `vps-compose-validation` added |
+| Local container smoke | **NOT RUN in this closure** — requires `./scripts/deploy-vps.sh` on a Docker host with a real filled `.env.production` |
+| Real VPS | **NO** — requires DNS + host Nginx + Certbot + filled secrets on the VPS |
+
+STT for VPS: `STT_PROVIDER=deepgram` with `INSTALL_OFFLINE_STT=false` (no torch/Whisper). Diarization default `false`.
+
+Phase 2 functional smoke (login → subjects → synthesis) is **NOT RUN** without `SMOKE_JWT` / real fixtures.
+
+Remaining operator actions: create/fill `.env.production`, run `./scripts/deploy-vps.sh`, install Nginx example + Certbot, schedule `./scripts/backup-vps.sh`, optionally `SMOKE_JWT=... ./scripts/smoke-vps.sh`.
