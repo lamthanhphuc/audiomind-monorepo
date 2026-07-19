@@ -266,6 +266,10 @@
   background: inherit;
 }
 
+.dashboard-theme-toggle .dashboard-nav-button {
+  width: 100%;
+}
+
 .dashboard-logout {
   color: #dc2626 !important;
 }

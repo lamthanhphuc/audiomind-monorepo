@@ -354,6 +354,18 @@
   line-height: 1.5;
 }
 
+.history-reanalyze-row {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.history-reanalyze-error {
+  margin: 0;
+  color: var(--studio-danger, #b91c1c);
+  font-size: 13px;
+}
+
 @media (max-width: 720px) {
   .history-actions__group {
     width: 100%;

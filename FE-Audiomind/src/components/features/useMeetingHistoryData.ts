@@ -235,6 +235,7 @@ export function useMeetingHistoryData({
   const [renameBusy, setRenameBusy] = useState(false)
   const [deleteBusy, setDeleteBusy] = useState(false)
   const [reloadTick, setReloadTick] = useState(0)
+  const [detailReloadTick, setDetailReloadTick] = useState(0)
   const [semanticResults, setSemanticResults] = useState<SemanticSearchResult[]>([])
   const [semanticState, setSemanticState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle')
   const [availableScopes, setAvailableScopes] = useState<MeetingResultScope[]>([])
@@ -589,7 +590,7 @@ export function useMeetingHistoryData({
 
     void loadDetail()
     return () => controller.abort()
-  }, [selectedMeetingSummary, selectedScope, scopeError, scopeState, selectedMeetingId])
+  }, [selectedMeetingSummary, selectedScope, scopeError, scopeState, selectedMeetingId, detailReloadTick])
 
   const handleRename = async () => {
     if (!selectedMeetingSummary) return
@@ -708,6 +709,12 @@ export function useMeetingHistoryData({
     renameBusy,
     deleteBusy,
     reload: () => setReloadTick((value) => value + 1),
+    reloadDetail: () => {
+      if (selectedMeetingId != null) {
+        invalidateDetailCacheForMeeting(selectedMeetingId)
+      }
+      setDetailReloadTick((value) => value + 1)
+    },
     semanticResults,
     semanticState,
     availableScopes,
