@@ -101,3 +101,6 @@ k8s/overlays/*/sealed-secret.generated.yaml
 k8s/overlays/*/sealed-db-secret.generated.yaml
 **/sealed-secret.generated.yaml
 **/sealed-db-secret.generated.yaml
+
+.env.production.test
+

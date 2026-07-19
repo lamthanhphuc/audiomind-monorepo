@@ -147,7 +147,9 @@ services:
       dockerfile: infra/docker/flyway/ai/Dockerfile
     restart: "no"
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-audiomind}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.production}@postgres:5432/${POSTGRES_DB:-audiomind}
+      DATABASE_URL: ${AI_DATABASE_URL:?Set AI_DATABASE_URL in .env.production}
+      DEPLOYMENT_MODE: ${DEPLOYMENT_MODE:-vps}
+      DATABASE_TLS_MODE: ${DATABASE_TLS_MODE:-disable}
     depends_on:
       postgres:
         condition: service_healthy
@@ -177,6 +179,9 @@ services:
       AUDIOMIND_PROCESSING_API_BASE_URL: http://processing-api:8082
       NOTIFICATION_FRONTEND_BASE_URL: ${NOTIFICATION_FRONTEND_BASE_URL:-${PUBLIC_ORIGIN:-http://127.0.0.1:8080}}
       MANAGEMENT_HEALTH_MAIL_ENABLED: "false"
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_DB: ${USER_REDIS_DB:-3}
       OTEL_ENABLED: "false"
       OTEL_SDK_DISABLED: "true"
     depends_on:
@@ -310,7 +315,9 @@ services:
     environment:
       APP_ENV: production
       APP_COMPONENT: api
-      DATABASE_URL: postgresql://${POSTGRES_USER:-audiomind}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.production}@postgres:5432/${POSTGRES_DB:-audiomind}
+      DEPLOYMENT_MODE: ${DEPLOYMENT_MODE:-vps}
+      DATABASE_TLS_MODE: ${DATABASE_TLS_MODE:-disable}
+      DATABASE_URL: ${AI_DATABASE_URL:?Set AI_DATABASE_URL in .env.production}
       CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/0}
       CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://redis:6379/1}
       JOB_STATE_REDIS_URL: redis://redis:6379/2
@@ -333,10 +340,12 @@ services:
       INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:?Set INTERNAL_SERVICE_TOKEN in .env.production}
       AUDIOMIND_USER_API_BASE_URL: http://user-api:8083
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env.production}
+      AUDIO_STORAGE_PATH: /app/uploads
+      FINAL_AUDIO_ALLOWED_ROOTS: /app/uploads
       OTEL_SDK_DISABLED: "true"
     volumes:
       - model-cache:/app/models
-      - uploads:/app/storage/audio
+      - uploads:/app/uploads
     depends_on:
       postgres:
         condition: service_healthy
@@ -384,7 +393,9 @@ services:
     environment:
       APP_ENV: production
       APP_COMPONENT: worker
-      DATABASE_URL: postgresql://${POSTGRES_USER:-audiomind}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.production}@postgres:5432/${POSTGRES_DB:-audiomind}
+      DEPLOYMENT_MODE: ${DEPLOYMENT_MODE:-vps}
+      DATABASE_TLS_MODE: ${DATABASE_TLS_MODE:-disable}
+      DATABASE_URL: ${AI_DATABASE_URL:?Set AI_DATABASE_URL in .env.production}
       CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/0}
       CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://redis:6379/1}
       JOB_STATE_REDIS_URL: redis://redis:6379/2
@@ -403,13 +414,15 @@ services:
       MEETING_SERVICE_BASE_URL: http://meeting-api:8081
       INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:?Set INTERNAL_SERVICE_TOKEN in .env.production}
       AUDIOMIND_USER_API_BASE_URL: http://user-api:8083
+      AUDIO_STORAGE_PATH: /app/uploads
+      FINAL_AUDIO_ALLOWED_ROOTS: /app/uploads
       CELERY_CONCURRENCY: ${CELERY_CONCURRENCY:-2}
       CELERY_PREFETCH_MULTIPLIER: ${CELERY_PREFETCH_MULTIPLIER:-1}
       WORKER_HEALTH_PORT: "8080"
       OTEL_SDK_DISABLED: "true"
     volumes:
       - model-cache:/app/models
-      - uploads:/app/storage/audio
+      - uploads:/app/uploads
     depends_on:
       postgres:
         condition: service_healthy
