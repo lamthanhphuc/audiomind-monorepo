@@ -13,8 +13,20 @@ if [[ -z "${TARGET_NAMESPACE}" ]]; then
   fi
 fi
 
-REQUIRED_APP_KEYS=(JWT_SECRET INTERNAL_SERVICE_TOKEN GEMINI_API_KEY)
+REQUIRED_APP_KEYS=(JWT_SECRET INTERNAL_SERVICE_TOKEN GEMINI_API_KEY HUGGINGFACE_TOKEN GF_SECURITY_ADMIN_USER GF_SECURITY_ADMIN_PASSWORD)
 REQUIRED_DB_KEYS=(MEETING_DATABASE_URL USER_DATABASE_URL AI_DATABASE_URL DB_USERNAME DB_PASSWORD)
+OPTIONAL_DEEPGRAM_KEYS=(DEEPGRAM_API_KEY)
+
+STT_PROVIDER="${STT_PROVIDER:-}"
+if [[ -z "${STT_PROVIDER}" ]]; then
+  if [[ "${TARGET_ENVIRONMENT}" == "staging" || "${TARGET_ENVIRONMENT}" == "prod" ]]; then
+    STT_PROVIDER="local_whisper"
+  else
+    STT_PROVIDER="deepgram"
+  fi
+fi
+
+ENABLE_SPEAKER_DIARIZATION="${ENABLE_SPEAKER_DIARIZATION:-false}"
 
 PLACEHOLDER_PATTERNS=(
   'REPLACE_'
@@ -109,11 +121,28 @@ validate_inputs() {
   [[ "${TARGET_ENVIRONMENT}" == "staging" || "${TARGET_ENVIRONMENT}" == "prod" ]] \
     || fail "TARGET_ENVIRONMENT must be staging or prod (got ${TARGET_ENVIRONMENT})"
 
-  for key in "${REQUIRED_APP_KEYS[@]}"; do
+  if [[ "${STT_PROVIDER}" == "deepgram" ]]; then
+    require_env DEEPGRAM_API_KEY
+    validate_non_placeholder DEEPGRAM_API_KEY "${DEEPGRAM_API_KEY}"
+  fi
+
+  for key in JWT_SECRET INTERNAL_SERVICE_TOKEN GEMINI_API_KEY GF_SECURITY_ADMIN_USER GF_SECURITY_ADMIN_PASSWORD; do
     require_env "$key"
     validate_non_placeholder "$key" "${!key}"
   done
   validate_jwt_secret
+
+  if [[ "${ENABLE_SPEAKER_DIARIZATION}" == "true" ]]; then
+    require_env HUGGINGFACE_TOKEN
+    if [[ -z "${HUGGINGFACE_TOKEN:-}" ]]; then
+      fail "HUGGINGFACE_TOKEN must be non-empty when ENABLE_SPEAKER_DIARIZATION=true"
+    fi
+    validate_non_placeholder HUGGINGFACE_TOKEN "${HUGGINGFACE_TOKEN}"
+  else
+    if [[ -z "${HUGGINGFACE_TOKEN+x}" ]]; then
+      HUGGINGFACE_TOKEN="disabled"
+    fi
+  fi
 
   for key in "${REQUIRED_DB_KEYS[@]}"; do
     require_env "$key"
@@ -226,10 +255,18 @@ DB_PLAIN="${TMPDIR}/audiomind-db-secrets.yaml"
 APP_SEALED="${OUT_DIR}/sealed-secret.generated.yaml"
 DB_SEALED="${OUT_DIR}/sealed-db-secret.generated.yaml"
 
-write_secret_yaml "${APP_PLAIN}" audiomind-secrets \
-  JWT_SECRET "${JWT_SECRET}" \
-  INTERNAL_SERVICE_TOKEN "${INTERNAL_SERVICE_TOKEN}" \
+APP_LITERALS=(
+  JWT_SECRET "${JWT_SECRET}"
+  INTERNAL_SERVICE_TOKEN "${INTERNAL_SERVICE_TOKEN}"
   GEMINI_API_KEY "${GEMINI_API_KEY}"
+  HUGGINGFACE_TOKEN "${HUGGINGFACE_TOKEN}"
+  GF_SECURITY_ADMIN_USER "${GF_SECURITY_ADMIN_USER}"
+  GF_SECURITY_ADMIN_PASSWORD "${GF_SECURITY_ADMIN_PASSWORD}"
+)
+if [[ "${STT_PROVIDER}" == "deepgram" ]]; then
+  APP_LITERALS+=(DEEPGRAM_API_KEY "${DEEPGRAM_API_KEY}")
+fi
+write_secret_yaml "${APP_PLAIN}" audiomind-secrets "${APP_LITERALS[@]}"
 
 write_secret_yaml "${DB_PLAIN}" audiomind-db-secrets \
   MEETING_DATABASE_URL "${MEETING_DATABASE_URL}" \
@@ -242,6 +279,9 @@ seal_secret "${APP_PLAIN}" "${APP_SEALED}"
 seal_secret "${DB_PLAIN}" "${DB_SEALED}"
 
 confirm_encrypted_keys "${APP_SEALED}" "${REQUIRED_APP_KEYS[@]}"
+if [[ "${STT_PROVIDER}" == "deepgram" ]]; then
+  confirm_encrypted_keys "${APP_SEALED}" DEEPGRAM_API_KEY
+fi
 confirm_encrypted_keys "${DB_SEALED}" "${REQUIRED_DB_KEYS[@]}"
 
 printf 'Sealed secrets written (no plaintext logged):\n'
