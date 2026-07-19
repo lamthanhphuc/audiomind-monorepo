@@ -1,6 +1,6 @@
 # Phase 2 — Implementation Report
 
-**Verdict (this session):** see **T. Staging deployment readiness closure** (latest gate).
+**Verdict (this session):** see **U. Full-stack staging deployment closure** (latest gate).
 
 Final distributed-systems remediation (section **N**) and runtime deployment closure (**Q**) completed. Java JWT / Secret ownership closure is section **R**.
 
@@ -441,9 +441,9 @@ Removed from staging/prod resources: `db-secret-placeholder.yaml`, raw `db-creds
 ### T.3 Migration dependency and ordering
 
 - Meeting Flyway **V15** hard-depends on public.app_users (user-service V1).
-- Method A: Jobs user-db-migrate → meeting-db-migrate → i-db-migrate applied **sequentially** by scripts/deploy-staging.* with kubectl wait --for=condition=complete.
-- Java migration profile: SPRING_PROFILES_ACTIVE=migration + MigrationShutdownRunner + pplication-migration.yml (web-application-type: none).
-- AI: lembic upgrade head in i-db-migrate Job.
+- Method A: Jobs user-db-migrate → meeting-db-migrate → i-db-migrate applied **sequentially** by scripts/deploy-staging.* with kubectl wait --for=condition=complete.
+- Java migration profile: SPRING_PROFILES_ACTIVE=migration + MigrationShutdownRunner + pplication-migration.yml (web-application-type: none).
+- AI: lembic upgrade head in i-db-migrate Job.
 - Fallback: meeting-api (and meeting migrate Job) wait-user-schema initContainer logs WAITING_FOR_USER_SCHEMA / USER_SCHEMA_READY / USER_SCHEMA_WAIT_TIMEOUT.
 
 ### T.4 SealedSecret workflow
@@ -456,7 +456,7 @@ Removed from staging/prod resources: `db-secret-placeholder.yaml`, raw `db-creds
 
 ### T.5 Placeholder / PVC / TLS / probes
 
-- alidate-rendered-k8s.py: staging/prod forbid REPLACE_WITH_SEALED etc.; --deploy-ready requires real ciphertext; auto --code-only for merge CI.
+- alidate-rendered-k8s.py: staging/prod forbid REPLACE_WITH_SEALED etc.; --deploy-ready requires real ciphertext; auto --code-only for merge CI.
 - postgres-data-pvc moved to **dev-only** (k8s/overlays/dev/postgres-pvc.yaml).
 - API deployments: readiness + liveness + startup probes.
 - Staging/prod rolling update: maxUnavailable: 0, maxSurge: 1, progress/revision/grace limits.
@@ -480,3 +480,60 @@ Removed from staging/prod resources: `db-secret-placeholder.yaml`, raw `db-creds
 | Ready for production cutover | **NO** (requires Gemini smoke + observation + backup + prod seals) |
 
 Remaining operator actions: run generate-sealed-secrets against cluster cert; point URLs at managed Postgres with TLS; execute deploy-staging; run managed-DB + Phase 2 smokes; optionally RUN_REAL_GEMINI_SMOKE=true.
+
+## U. Full-stack staging deployment closure
+
+### U.1 Three readiness states
+
+| State | Meaning |
+|-------|---------|
+| Ready to merge | Code/tests/CI merge gates green |
+| Ready to deploy staging | Real seals + managed DB + ordered migrate + rollouts + managed-DB smoke + Phase 2 E2E smoke |
+| Ready for production cutover | Staging deploy ready + real Gemini smoke + observation + backup + prod seals |
+
+### U.2 FE implementation status
+
+- Phase 2 UI: SubjectDetail, Synthesis, Mind map (evidence click), Flashcards/MCQ/Essay evidence, Exam brief (no per-item evidence in schema), regenerate, polling abort on unmount, per-artifact status, **delete artifact** with ConfirmDialog.
+- Exam brief: no per-item segment evidence in contract — intentionally not faked.
+
+### U.3 FE Kubernetes deployment
+
+- rontend-deployment + Service rontend wired into dev/staging/prod.
+- Ingress: API prefixes first, / → frontend last; unified host pp.audiomind.example.com.
+- Vite build-args use relative /api/* for staging CI web image.
+
+### U.4 CI/CD deployment path
+
+- .github/workflows/ci-cd.yaml deploy-staging **calls scripts/deploy-staging.sh only** (no direct full-overlay apply before migrations).
+- Image SHA overrides for user/meeting/processing/ai/frontend/worker/beat + migrate jobs.
+- Merge CI: bash LF/shellcheck, kubeconform+checksum, FE build, contracts, migration-order, staging --deploy-ready fail-closed.
+
+### U.5 Namespace / images / STT / diarization / secrets
+
+- Staging namespace: udiomind-staging; prod: udiomind.
+- STT Method B: staging/prod STT_PROVIDER=local_whisper + ALLOW_LEGACY_LOCAL_STT=true; Deepgram key optional.
+- Diarization: staging/prod ENABLE_SPEAKER_DIARIZATION=false until HF token provisioned.
+- Generator seals JWT/INTERNAL/GEMINI/HF/GF_* (+ DEEPGRAM when STT=deepgram). No fake ciphertext in-repo.
+
+### U.6 Migration / worker / beat / probes
+
+- Ordered Jobs user→meeting→AI; delete-before-apply; image inject; logs on failure.
+- Worker/Beat share AI image SHA; Beat no DATABASE_URL; Beat probe kill -0 1.
+- Java APIs: /actuator/health/liveness|readiness; AI /health|/ready; FE /.
+
+### U.7 Smokes / kubeconform / matrix notes
+
+- Phase 2 smoke fail-closed without fixture/creds; requires 5 COMPLETED artifacts + quota idempotency.
+- Managed DB smoke gated by RUN_MANAGED_DB_SMOKE.
+- Deploy verdict never claims Ready to deploy staging when smokes skipped.
+- Linux migration test uses shared Docker network (no host.docker.internal).
+
+### U.8 Honest status
+
+| Gate | Status |
+|------|--------|
+| Ready to merge | YES when full matrix green |
+| Ready to deploy staging | NO until cluster seals + DB + smokes |
+| Ready for production cutover | NO |
+
+Remaining operator actions: generate real SealedSecrets; configure KUBE_CONFIG + managed DB URLs; run deploy-staging with smokes; observe staging; Gemini smoke + backup before cutover.
