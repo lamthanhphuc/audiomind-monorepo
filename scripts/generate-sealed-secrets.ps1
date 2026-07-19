@@ -9,10 +9,19 @@ if (-not $TargetNamespace) {
     $TargetNamespace = if ($TargetEnvironment -eq "staging") { "audiomind-staging" } else { "audiomind" }
 }
 
-$RequiredAppKeys = @("JWT_SECRET", "INTERNAL_SERVICE_TOKEN", "GEMINI_API_KEY")
+$RequiredAppKeys = @(
+    "JWT_SECRET", "INTERNAL_SERVICE_TOKEN", "GEMINI_API_KEY", "HUGGINGFACE_TOKEN",
+    "GF_SECURITY_ADMIN_USER", "GF_SECURITY_ADMIN_PASSWORD"
+)
 $RequiredDbKeys = @(
     "MEETING_DATABASE_URL", "USER_DATABASE_URL", "AI_DATABASE_URL", "DB_USERNAME", "DB_PASSWORD"
 )
+
+$SttProvider = $env:STT_PROVIDER
+if (-not $SttProvider) {
+    $SttProvider = if ($TargetEnvironment -in @("staging", "prod")) { "local_whisper" } else { "deepgram" }
+}
+$EnableSpeakerDiarization = if ($env:ENABLE_SPEAKER_DIARIZATION) { $env:ENABLE_SPEAKER_DIARIZATION } else { "false" }
 $PlaceholderPatterns = @(
     "REPLACE_", "CHANGE_ME", "change-me", "changeme", "replace_me",
     "your-managed-db-host", "your_username", "your_password", "managed-db.example"
@@ -80,8 +89,25 @@ if ($TargetEnvironment -notin @("staging", "prod")) {
     Fail "TARGET_ENVIRONMENT must be staging or prod (got ${TargetEnvironment})"
 }
 
-foreach ($key in $RequiredAppKeys) { Require-Env $key; Test-Placeholder $key $env:$key }
+if ($SttProvider -eq "deepgram") {
+    Require-Env "DEEPGRAM_API_KEY"
+    Test-Placeholder "DEEPGRAM_API_KEY" $env:DEEPGRAM_API_KEY
+}
+
+foreach ($key in @("JWT_SECRET", "INTERNAL_SERVICE_TOKEN", "GEMINI_API_KEY", "GF_SECURITY_ADMIN_USER", "GF_SECURITY_ADMIN_PASSWORD")) {
+    Require-Env $key
+    Test-Placeholder $key $env:$key
+}
 if ($env:JWT_SECRET.Length -lt 32) { Fail "JWT_SECRET length $($env:JWT_SECRET.Length) < 32" }
+
+if ($EnableSpeakerDiarization -eq "true") {
+    Require-Env "HUGGINGFACE_TOKEN"
+    if (-not $env:HUGGINGFACE_TOKEN) { Fail "HUGGINGFACE_TOKEN must be non-empty when ENABLE_SPEAKER_DIARIZATION=true" }
+    Test-Placeholder "HUGGINGFACE_TOKEN" $env:HUGGINGFACE_TOKEN
+}
+elseif (-not $env:HUGGINGFACE_TOKEN) {
+    $env:HUGGINGFACE_TOKEN = "disabled"
+}
 
 foreach ($key in $RequiredDbKeys) { Require-Env $key; Test-Placeholder $key $env:$key }
 Test-JavaDbUrl "MEETING_DATABASE_URL" $env:MEETING_DATABASE_URL
@@ -119,8 +145,14 @@ try {
         "--namespace=$TargetNamespace", "--dry-run=client", "-o", "yaml",
         "--from-literal=JWT_SECRET=$($env:JWT_SECRET)",
         "--from-literal=INTERNAL_SERVICE_TOKEN=$($env:INTERNAL_SERVICE_TOKEN)",
-        "--from-literal=GEMINI_API_KEY=$($env:GEMINI_API_KEY)"
+        "--from-literal=GEMINI_API_KEY=$($env:GEMINI_API_KEY)",
+        "--from-literal=HUGGINGFACE_TOKEN=$($env:HUGGINGFACE_TOKEN)",
+        "--from-literal=GF_SECURITY_ADMIN_USER=$($env:GF_SECURITY_ADMIN_USER)",
+        "--from-literal=GF_SECURITY_ADMIN_PASSWORD=$($env:GF_SECURITY_ADMIN_PASSWORD)"
     )
+    if ($SttProvider -eq "deepgram") {
+        $appArgs += "--from-literal=DEEPGRAM_API_KEY=$($env:DEEPGRAM_API_KEY)"
+    }
     & kubectl @appArgs | Set-Content -Path $AppPlain -Encoding utf8
 
     $dbArgs = @(
@@ -140,6 +172,9 @@ try {
     if ($LASTEXITCODE -ne 0) { Fail "kubeseal failed for db secrets" }
 
     Confirm-EncryptedKeys $AppSealed $RequiredAppKeys
+    if ($SttProvider -eq "deepgram") {
+        Confirm-EncryptedKeys $AppSealed @("DEEPGRAM_API_KEY")
+    }
     Confirm-EncryptedKeys $DbSealed $RequiredDbKeys
 
     Write-Host "Sealed secrets written (no plaintext logged):"
