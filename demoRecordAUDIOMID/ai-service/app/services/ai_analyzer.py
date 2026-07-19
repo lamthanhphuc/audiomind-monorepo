@@ -106,7 +106,7 @@ class AIAnalyzer:
         summary_model: str | None = None,
         analysis_domain_mode: str = "it",
         analysis_max_input_tokens: int = 12000,
-        analysis_max_output_tokens: int = 4096,
+        analysis_max_output_tokens: int = 8192,
         analysis_thinking_budget: Optional[int] = 0,
         analysis_retry_max_attempts: int = 3,
         gemini_rate_limit_retry_base_seconds: float = 30.0,
@@ -1903,11 +1903,13 @@ NỘI DUNG:
                 schema_mode: str,
                 output_tokens: Any,
                 max_output_tokens: Optional[int],
+                key_alias: Optional[str] = None,
             ):
                 self.response_chars = response_chars
                 self.schema_mode = schema_mode
                 self.output_tokens = output_tokens
                 self.max_output_tokens = max_output_tokens
+                self.key_alias = key_alias
                 super().__init__("Gemini response incomplete: finish_reason=MAX_TOKENS")
 
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
@@ -1986,7 +1988,8 @@ NỘI DUNG:
         def _call_once(
             current_schema: Optional[Dict[str, Any]],
             request_max_output_tokens: Optional[int],
-        ) -> str:
+            preferred_key_alias: Optional[str],
+        ) -> tuple[str, Optional[str]]:
             request_payload = json.loads(json.dumps(base_payload))
             schema_mode = "schema" if current_schema is not None else "json"
             if current_schema is not None:
@@ -1999,13 +2002,14 @@ NỘI DUNG:
                 ] = request_max_output_tokens
 
             logger.info(
-                "Calling Gemini model={} response_json={} transcript_chars={} max_output_tokens={} schema_mode={} thinking_budget={}",
+                "Calling Gemini model={} response_json={} transcript_chars={} max_output_tokens={} schema_mode={} thinking_budget={} preferred_key={}",
                 model,
                 response_json,
                 len(prompt),
                 request_max_output_tokens,
                 schema_mode,
                 thinking_budget,
+                preferred_key_alias or "",
             )
 
             if self.gemini_client is None:
@@ -2014,11 +2018,15 @@ NỘI DUNG:
                     provider=self.provider,
                 )
 
-            response = self.gemini_client.post_json(
+            call_result = self.gemini_client.post_json(
                 url=url,
                 payload=request_payload,
                 timeout_seconds=self.timeout_seconds,
+                preferred_key_alias=preferred_key_alias,
+                model=model,
             )
+            response = call_result.response
+            key_alias = call_result.key_alias
             body = response.json()
             text, candidates, body_dict = _extract_response_text(body)
 
@@ -2039,10 +2047,11 @@ NỘI DUNG:
                     "totalTokenCount"
                 ) or usage_metadata.get("total_tokens")
                 logger.info(
-                    "GEMINI_ANALYSIS_TOKEN_USAGE input_tokens={} output_tokens={} total_tokens={}",
+                    "GEMINI_ANALYSIS_TOKEN_USAGE input_tokens={} output_tokens={} total_tokens={} key_alias={}",
                     input_tokens,
                     output_tokens,
                     total_tokens,
+                    key_alias,
                 )
 
             finish_reason = None
@@ -2052,38 +2061,46 @@ NỘI DUNG:
                 )
 
             logger.info(
-                "GEMINI_ANALYSIS_RESPONSE_META finish_reason={} response_chars={} schema_mode={} max_output_tokens={} thinking_budget={}",
+                "GEMINI_ANALYSIS_RESPONSE_META finish_reason={} response_chars={} schema_mode={} max_output_tokens={} thinking_budget={} key_alias={}",
                 finish_reason,
                 len(text),
                 schema_mode,
                 request_max_output_tokens,
                 thinking_budget,
+                key_alias,
             )
             if str(finish_reason or "").strip().upper() == "MAX_TOKENS":
                 logger.warning(
-                    "GEMINI_ANALYSIS_INCOMPLETE reason=max_tokens output_tokens={} max_output_tokens={} response_chars={} schema_mode={}",
+                    "GEMINI_ANALYSIS_INCOMPLETE reason=max_tokens output_tokens={} max_output_tokens={} response_chars={} schema_mode={} key_alias={}",
                     output_tokens,
                     request_max_output_tokens,
                     len(text),
                     schema_mode,
+                    key_alias,
                 )
                 raise _GeminiMaxTokensError(
                     response_chars=len(text),
                     schema_mode=schema_mode,
                     output_tokens=output_tokens,
                     max_output_tokens=request_max_output_tokens,
+                    key_alias=key_alias,
                 )
             logger.info(
                 f"Gemini response parse success model={model} response_chars={len(text)}"
             )
-            return text
+            return text, key_alias
 
         base_max_output_tokens = max_output_tokens
         if base_max_output_tokens is None:
             base_max_output_tokens = self.analysis_max_output_tokens
-        # Primary analysis defaults to 4096; retry must exceed that cap (gemini-2.5-flash allows 8192+).
+        # One doubling retry is allowed. Ceiling is the configured analysis max,
+        # but never below the historical 8192 analysis ceiling when the instance
+        # budget is lower (compat with 1024→2048 / 4096→8192), and never above 16384.
+        configured_cap = max(1, int(self.analysis_max_output_tokens or 8192))
+        retry_ceiling = min(16384, max(configured_cap, 8192))
         max_tokens_retry_output_budget = min(
-            8192, max(2048, int(base_max_output_tokens or 2048) * 2)
+            retry_ceiling,
+            max(2048, int(base_max_output_tokens or 2048) * 2),
         )
 
         attempt_variants: List[Dict[str, Any]] = [
@@ -2095,6 +2112,7 @@ NỘI DUNG:
         ]
         schema_retry_enqueued = False
         max_tokens_retry_enqueued = False
+        sticky_key_alias: Optional[str] = None
 
         last_exc: Optional[AnalysisProviderError] = None
         while attempt_variants:
@@ -2105,17 +2123,28 @@ NỘI DUNG:
             try:
                 if variant_reason == "http_400_without_schema":
                     logger.warning(
-                        "GEMINI_ANALYSIS_SCHEMA_RETRY reason=http_400_without_schema"
+                        "GEMINI_ANALYSIS_SCHEMA_RETRY reason=http_400_without_schema preferred_key={}",
+                        sticky_key_alias or "",
                     )
                 if variant_reason == "max_tokens_retry":
                     logger.warning(
-                        "GEMINI_ANALYSIS_SCHEMA_RETRY reason=max_tokens_response_retry_without_schema"
+                        "GEMINI_ANALYSIS_SCHEMA_RETRY reason=max_tokens_response_retry_without_schema preferred_key={}",
+                        sticky_key_alias or "",
                     )
-                return _call_once(current_schema, variant_max_output_tokens)
+                text, used_alias = _call_once(
+                    current_schema,
+                    variant_max_output_tokens,
+                    sticky_key_alias,
+                )
+                sticky_key_alias = used_alias or sticky_key_alias
+                return text
             except _GeminiMaxTokensError as exc:
+                if getattr(exc, "key_alias", None):
+                    sticky_key_alias = exc.key_alias
                 last_exc = AnalysisUnavailableError(
                     f"Gemini response incomplete due to MAX_TOKENS (output_tokens={exc.output_tokens}, max_output_tokens={exc.max_output_tokens}, response_chars={exc.response_chars})",
                     provider=self.provider,
+                    key_alias=sticky_key_alias,
                 )
                 if not self.gemini_max_tokens_retry_enabled:
                     logger.warning(
@@ -2129,10 +2158,11 @@ NỘI DUNG:
                     raise last_exc
                 max_tokens_retry_enqueued = True
                 logger.warning(
-                    "GEMINI_ANALYSIS_MAX_TOKENS_RETRY_ENQUEUED output_tokens={} max_output_tokens={} retry_max_output_tokens={}",
+                    "GEMINI_ANALYSIS_MAX_TOKENS_RETRY_ENQUEUED output_tokens={} max_output_tokens={} retry_max_output_tokens={} sticky_key={}",
                     exc.output_tokens,
                     exc.max_output_tokens,
                     max_tokens_retry_output_budget,
+                    sticky_key_alias or "",
                 )
                 attempt_variants.append(
                     {
@@ -2144,6 +2174,8 @@ NỘI DUNG:
                 continue
             except AnalysisUnavailableError as exc:
                 last_exc = exc
+                if getattr(exc, "key_alias", None):
+                    sticky_key_alias = exc.key_alias or sticky_key_alias
                 is_http_400 = (
                     "HTTP 400" in str(exc)
                     or getattr(exc, "error_code", "") == "GEMINI_INVALID_REQUEST"

@@ -175,7 +175,7 @@ def process_meeting(payload: dict) -> None:
         if analysis:
             result_data["analysis"] = analysis
             try:
-                from app.config import settings as app_settings
+                from app.config import get_settings
                 from app.services.embedding_service import index_meeting_for_search
 
                 summary_text = ""
@@ -184,7 +184,7 @@ def process_meeting(payload: dict) -> None:
                         analysis.get("summary") or analysis.get("meetingSummary") or ""
                     )
                 index_meeting_for_search(
-                    settings=app_settings,
+                    settings=get_settings(),
                     meeting_id=meeting_id,
                     user_id=int(payload.get("owner_user_id") or 0),
                     title=str(payload.get("topic") or ""),

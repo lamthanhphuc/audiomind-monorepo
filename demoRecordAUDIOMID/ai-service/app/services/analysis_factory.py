@@ -51,7 +51,7 @@ def build_analysis_analyzer(settings):
             settings, "gemini_analysis_max_input_tokens", 12000
         )
         analysis_max_output_tokens = getattr(
-            settings, "gemini_analysis_max_output_tokens", 4096
+            settings, "gemini_analysis_max_output_tokens", 8192
         )
         analysis_thinking_budget = getattr(
             settings, "gemini_analysis_thinking_budget", 0

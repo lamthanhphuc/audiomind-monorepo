@@ -20,7 +20,7 @@ def _build_settings(provider: str = "gemini", *, allow_legacy_local_ai: bool = F
         gemini_summary_model="gemini-2.5-flash",
         gemini_analysis_domain_mode="it",
         gemini_analysis_max_input_tokens=12000,
-        gemini_analysis_max_output_tokens=4096,
+        gemini_analysis_max_output_tokens=8192,
         gemini_analysis_thinking_budget=0,
         gemini_analysis_retry_max_attempts=3,
         gemini_max_single_request_chars=50000,
@@ -34,7 +34,7 @@ def test_build_analysis_analyzer_selects_gemini():
     assert isinstance(analyzer, GeminiAnalyzer)
     assert analyzer.provider == "gemini"
     assert analyzer.analysis_domain_mode == "it"
-    assert analyzer.analysis_max_output_tokens == 4096
+    assert analyzer.analysis_max_output_tokens == 8192
     assert analyzer.analysis_thinking_budget == 0
 
 
