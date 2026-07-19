@@ -590,3 +590,36 @@ STT for VPS: `STT_PROVIDER=deepgram` with `INSTALL_OFFLINE_STT=false` (no torch/
 Phase 2 functional smoke (login → subjects → synthesis) is **NOT RUN** without `SMOKE_JWT` / real fixtures.
 
 Remaining operator actions: create/fill `.env.production`, run `./scripts/deploy-vps.sh`, install Nginx example + Certbot, schedule `./scripts/backup-vps.sh`, optionally `SMOKE_JWT=... ./scripts/smoke-vps.sh`.
+
+## W. VPS runtime blocker closure
+
+### W.1 Fixes
+
+| Blocker | Resolution |
+|---------|------------|
+| user-api Redis default localhost | Compose sets `REDIS_HOST=redis`, `REDIS_PORT=6379`, `REDIS_DB=` for Spring Data Redis + Bucket4j |
+| Production AI tlsmode=require vs private Postgres | `DEPLOYMENT_MODE=vps` + `DATABASE_TLS_MODE=disable` allowlisted for hosts `postgres,db` only; managed/remote still require sslmode |
+| Password `@`/`%` break Alembic/ConfigParser | Operator-supplied `AI_DATABASE_URL` (URL-encoded) + alembic `env.py` escapes `%` / uses raw create_engine |
+| Meeting vs AI upload mount mismatch | Shared volume `uploads:/app/uploads` + `AUDIO_STORAGE_PATH` / `FINAL_AUDIO_ALLOWED_ROOTS=/app/uploads` |
+| Nginx `/users/*` integrations + OAuth success | Exact `/auth/google/success|error` → frontend; `/users/` → user-api before SPA |
+| Double `docker compose build` | `deploy-vps.sh` builds once; `up -d` never uses `--build`; `SKIP_BUILD=1` skips build |
+| `source .env.production` | `scripts/load-compose-env.py` literal parser; scripts resolve real `python`/python3` |
+
+### W.2 Local container evidence (this closure)
+
+| Gate | Status |
+|------|--------|
+| Compose config | PASS |
+| Image build | PASS (`.env.production.test`) |
+| Migrations (bootstrap → user → meeting → AI) | PASS |
+| Loopback smoke | PASS |
+| Backup gzip | PASS |
+| Public Nginx / HTTPS / real VPS | NOT RUN |
+| Phase 2 functional smoke | NOT RUN (no `SMOKE_JWT`) |
+
+### W.3 Remaining operator actions
+
+1. Create real `.env.production` on the VPS (not committed).
+2. Generate `AI_DATABASE_URL` via `scripts/generate-vps-db-url.py`.
+3. Point DNS, install host Nginx example + Certbot.
+4. `./scripts/deploy-vps.sh` then public `./scripts/smoke-vps.sh`.
