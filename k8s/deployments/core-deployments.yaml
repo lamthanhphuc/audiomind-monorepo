@@ -79,7 +79,7 @@ spec:
               memory: 512Mi
           readinessProbe:
             httpGet:
-              path: /ready
+              path: /actuator/health/readiness
               port: 8081
             initialDelaySeconds: 5
             periodSeconds: 10
@@ -87,7 +87,7 @@ spec:
             failureThreshold: 6
           livenessProbe:
             httpGet:
-              path: /health
+              path: /actuator/health/liveness
               port: 8081
             initialDelaySeconds: 45
             periodSeconds: 15
@@ -95,7 +95,7 @@ spec:
             failureThreshold: 5
           startupProbe:
             httpGet:
-              path: /health
+              path: /actuator/health/liveness
               port: 8081
             failureThreshold: 30
             periodSeconds: 5
@@ -185,7 +185,7 @@ spec:
               memory: 1Gi
           readinessProbe:
             httpGet:
-              path: /ready
+              path: /actuator/health/readiness
               port: 8082
             initialDelaySeconds: 5
             periodSeconds: 10
@@ -193,7 +193,7 @@ spec:
             failureThreshold: 6
           livenessProbe:
             httpGet:
-              path: /health
+              path: /actuator/health/liveness
               port: 8082
             initialDelaySeconds: 45
             periodSeconds: 15
@@ -201,7 +201,7 @@ spec:
             failureThreshold: 5
           startupProbe:
             httpGet:
-              path: /health
+              path: /actuator/health/liveness
               port: 8082
             failureThreshold: 30
             periodSeconds: 5
@@ -296,7 +296,7 @@ spec:
               memory: 768Mi
           readinessProbe:
             httpGet:
-              path: /ready
+              path: /actuator/health/readiness
               port: 8083
             initialDelaySeconds: 5
             periodSeconds: 10
@@ -304,7 +304,7 @@ spec:
             failureThreshold: 6
           livenessProbe:
             httpGet:
-              path: /health
+              path: /actuator/health/liveness
               port: 8083
             initialDelaySeconds: 45
             periodSeconds: 15
@@ -312,7 +312,7 @@ spec:
             failureThreshold: 5
           startupProbe:
             httpGet:
-              path: /health
+              path: /actuator/health/liveness
               port: 8083
             failureThreshold: 30
             periodSeconds: 5
@@ -367,6 +367,22 @@ spec:
               value: gemini
             - name: AI_PROVIDER
               value: gemini
+            - name: STT_PROVIDER
+              valueFrom:
+                configMapKeyRef:
+                  name: audiomind-config
+                  key: STT_PROVIDER
+            - name: ALLOW_LEGACY_LOCAL_STT
+              valueFrom:
+                configMapKeyRef:
+                  name: audiomind-config
+                  key: ALLOW_LEGACY_LOCAL_STT
+            - name: DEEPGRAM_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: audiomind-secrets
+                  key: DEEPGRAM_API_KEY
+                  optional: true
             - name: GEMINI_API_KEY
               valueFrom:
                 secretKeyRef:
@@ -491,6 +507,22 @@ spec:
               value: gemini
             - name: AI_PROVIDER
               value: gemini
+            - name: STT_PROVIDER
+              valueFrom:
+                configMapKeyRef:
+                  name: audiomind-config
+                  key: STT_PROVIDER
+            - name: ALLOW_LEGACY_LOCAL_STT
+              valueFrom:
+                configMapKeyRef:
+                  name: audiomind-config
+                  key: ALLOW_LEGACY_LOCAL_STT
+            - name: DEEPGRAM_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: audiomind-secrets
+                  key: DEEPGRAM_API_KEY
+                  optional: true
             - name: GEMINI_API_KEY
               valueFrom:
                 secretKeyRef:

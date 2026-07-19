@@ -14,5 +14,7 @@ data:
   OLLAMA_BASE_URL: http://ollama-service:11434
   OLLAMA_MODEL: qwen2.5:3b-instruct
   ENABLE_SPEAKER_DIARIZATION: "false"
+  STT_PROVIDER: deepgram
+  ALLOW_LEGACY_LOCAL_STT: "false"
   WHISPER_SERVICE_URL: http://whisper-service:8011
   DIARIZATION_SERVICE_URL: http://diarization-service:8012

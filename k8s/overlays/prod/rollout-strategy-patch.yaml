@@ -103,7 +103,7 @@ spec:
               command:
                 - /bin/sh
                 - -c
-                - pgrep -f "celery.*beat" >/dev/null
+                - kill -0 1
             initialDelaySeconds: 20
             periodSeconds: 30
             timeoutSeconds: 5
@@ -113,8 +113,25 @@ spec:
               command:
                 - /bin/sh
                 - -c
-                - pgrep -f "celery.*beat" >/dev/null
+                - kill -0 1
             initialDelaySeconds: 10
             periodSeconds: 15
             timeoutSeconds: 5
             failureThreshold: 3
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend-deployment
+  namespace: audiomind
+spec:
+  revisionHistoryLimit: 5
+  progressDeadlineSeconds: 300
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    spec:
+      terminationGracePeriodSeconds: 30

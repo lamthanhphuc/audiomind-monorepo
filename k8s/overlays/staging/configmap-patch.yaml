@@ -5,5 +5,7 @@ metadata:
   namespace: audiomind
 data:
   CORS_ALLOWED_ORIGINS: https://staging.audiomind.example
-  ENABLE_SPEAKER_DIARIZATION: "true"
+  STT_PROVIDER: local_whisper
+  ALLOW_LEGACY_LOCAL_STT: "true"
+  ENABLE_SPEAKER_DIARIZATION: "false"
   OLLAMA_MODEL: qwen2.5:7b-instruct
