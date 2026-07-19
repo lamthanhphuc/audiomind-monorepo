@@ -3,7 +3,21 @@ const resolveUserApiBase = (): string => {
   const fromLegacy = import.meta.env.VITE_USER_SERVICE_URL
   const fromUmbrella = import.meta.env.VITE_API_BASE
 
-  return fromPrimary || fromLegacy || fromUmbrella || 'http://localhost:8083'
+  const candidates = [fromPrimary, fromLegacy, fromUmbrella]
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'string') {
+      continue
+    }
+    const trimmed = candidate.trim()
+    if (trimmed === '__SAME_ORIGIN__') {
+      return ''
+    }
+    if (trimmed.length > 0) {
+      return trimmed
+    }
+  }
+
+  return 'http://localhost:8083'
 }
 
 export type LoginRequest = {
@@ -171,7 +185,10 @@ export const login = async (payload: LoginRequest): Promise<AuthResponse> => {
 }
 
 export const getGoogleLoginUrl = (redirectAfter = '/'): string => {
-  const url = new URL(`${USER_API_BASE}/auth/google/start`)
+  const startPath = '/auth/google/start'
+  const url = USER_API_BASE
+    ? new URL(`${USER_API_BASE}${startPath}`)
+    : new URL(startPath, typeof window !== 'undefined' ? window.location.origin : 'http://localhost')
   url.searchParams.set('redirect_after', redirectAfter)
   return url.toString()
 }
