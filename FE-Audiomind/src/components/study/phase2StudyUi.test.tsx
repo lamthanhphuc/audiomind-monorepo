@@ -128,6 +128,20 @@ describe('SubjectSynthesisPanel stale banner', () => {
     expect(container.querySelector('[data-testid="synthesis-stale-banner"]')).toBeTruthy()
     expect(container.textContent).toMatch(/Cập nhật|Nguồn đã đổi/)
   })
+
+  it('keeps generate button visible when error is set', () => {
+    const onGenerate = vi.fn()
+    act(() => {
+      root.render(
+        <SubjectSynthesisPanel
+          error="SOURCE_MEETINGS_NOT_READY"
+          onGenerate={onGenerate}
+        />,
+      )
+    })
+    expect(container.querySelector('[data-testid="synthesis-generate-button"]')).toBeTruthy()
+    expect(container.textContent).toMatch(/SOURCE_MEETINGS_NOT_READY|phân tích sẵn sàng/)
+  })
 })
 
 // ─── StudyArtifactTabPanel — delete flow ─────────────────────────────────────

@@ -134,9 +134,6 @@ export function SubjectSynthesisPanel({
   if (loading) {
     return <LoadingState message="Đang tải tổng hợp môn học…" />
   }
-  if (error) {
-    return <ErrorState message={error} title="Không tải được tổng hợp" />
-  }
 
   const status = String(synthesis?.status ?? '').toUpperCase()
   const inFlight = status === 'QUEUED' || status === 'PROCESSING' || generating
@@ -174,11 +171,21 @@ export function SubjectSynthesisPanel({
         </div>
       </div>
 
+      {error ? (
+        <ErrorState
+          message={error}
+          title={synthesis ? 'Không tạo được tổng hợp' : 'Không tải được tổng hợp'}
+          errorCode={
+            /SOURCE_MEETINGS_NOT_READY/i.test(error) ? 'SOURCE_MEETINGS_NOT_READY' : undefined
+          }
+        />
+      ) : null}
+
       {synthesis?.errorMessage ? (
         <ErrorState message={synthesis.errorMessage} title="Tổng hợp thất bại" />
       ) : null}
 
-      {!content && !inFlight ? (
+      {!content && !inFlight && !error ? (
         <EmptyState message="Chưa có tổng hợp kiến thức cho môn này. Nhấn tạo tổng hợp khi đã có buổi học sẵn sàng." />
       ) : null}
 

@@ -23,6 +23,34 @@ const buildHeaders = (contentType = 'application/json'): HeadersInit => {
   return headers
 }
 
+const parseStudyErrorMessage = async (response: Response): Promise<string> => {
+  const text = await response.text().catch(() => response.statusText)
+  try {
+    const parsed = JSON.parse(text) as {
+      message?: string
+      error?: string
+      errorCode?: string
+      error_code?: string
+      detail?: string | { message?: string }
+    }
+    const detail =
+      parsed.detail && typeof parsed.detail === 'object' ? parsed.detail.message : undefined
+    const detailText = typeof parsed.detail === 'string' ? parsed.detail : undefined
+    return (
+      detailText ||
+      detail ||
+      parsed.message ||
+      parsed.errorCode ||
+      parsed.error_code ||
+      parsed.error ||
+      text ||
+      `Request failed (${response.status})`
+    )
+  } catch {
+    return text || `Request failed (${response.status})`
+  }
+}
+
 const fetchJson = async <T>(url: string, init?: RequestInit): Promise<T> => {
   const response = await fetch(url, {
     ...init,
@@ -32,8 +60,7 @@ const fetchJson = async <T>(url: string, init?: RequestInit): Promise<T> => {
     },
   })
   if (!response.ok) {
-    const message = await response.text().catch(() => response.statusText)
-    throw new Error(message || `Request failed (${response.status})`)
+    throw new Error(await parseStudyErrorMessage(response))
   }
   if (response.status === 204) {
     return undefined as T
