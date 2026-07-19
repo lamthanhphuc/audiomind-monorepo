@@ -64,7 +64,7 @@ services:
       ai-db-migrate:
         condition: service_completed_successfully
     ports: !override
-      - "${MEETING_API_BIND_ADDRESS:-127.0.0.1}:${MEETING_API_HOST_PORT:-8081}:8081"
+      - "${MEETING_API_BIND_ADDRESS:-127.0.0.1}:${MEETING_HOST_PORT:-${MEETING_API_HOST_PORT:-8081}}:8081"
     healthcheck:
       <<: *http-healthcheck-defaults
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8081/ready"]
@@ -98,7 +98,7 @@ services:
       ai-api:
         condition: service_healthy
     ports: !override
-      - "${PROCESSING_API_BIND_ADDRESS:-127.0.0.1}:${PROCESSING_API_HOST_PORT:-8082}:8082"
+      - "${PROCESSING_API_BIND_ADDRESS:-127.0.0.1}:${PROCESSING_HOST_PORT:-${PROCESSING_API_HOST_PORT:-8082}}:8082"
     healthcheck:
       <<: *http-healthcheck-defaults
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8082/ready"]
@@ -169,7 +169,7 @@ services:
       ai-db-migrate:
         condition: service_completed_successfully
     ports: !override
-      - "${USER_API_BIND_ADDRESS:-127.0.0.1}:${USER_API_HOST_PORT:-8083}:8083"
+      - "${USER_API_BIND_ADDRESS:-127.0.0.1}:${USER_HOST_PORT:-${USER_API_HOST_PORT:-8083}}:8083"
     healthcheck:
       <<: *http-healthcheck-defaults
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8083/ready"]
@@ -179,8 +179,13 @@ services:
     env_file: !reset []
     environment:
       APP_ENV: ${APP_ENV:-development}
+      APP_COMPONENT: api
+      DEPLOYMENT_MODE: ${DEPLOYMENT_MODE:-local}
+      DATABASE_TLS_MODE: ${DATABASE_TLS_MODE:-disable}
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in infra/.env}
-      DATABASE_URL: postgresql://${POSTGRES_USER:?Set POSTGRES_USER in infra/.env}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in infra/.env}@db:5432/${POSTGRES_DB:?Set POSTGRES_DB in infra/.env}
+      DATABASE_URL: ${AI_DATABASE_URL:-postgresql://${POSTGRES_USER:?Set POSTGRES_USER in infra/.env}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in infra/.env}@db:5432/${POSTGRES_DB:?Set POSTGRES_DB in infra/.env}}
+      AUDIO_STORAGE_PATH: /app/uploads
+      FINAL_AUDIO_ALLOWED_ROOTS: /app/uploads
       STT_PROVIDER: ${STT_PROVIDER:-deepgram}
       DEEPGRAM_API_KEY: ${DEEPGRAM_API_KEY:?Set DEEPGRAM_API_KEY in infra/.env}
       DEEPGRAM_MODEL: ${DEEPGRAM_MODEL:-nova-3}
@@ -240,7 +245,10 @@ services:
         condition: service_healthy
       ai-db-migrate:
         condition: service_completed_successfully
-    ports: !reset []
+    volumes:
+      - uploads:/app/uploads
+    ports: !override
+      - "${AI_API_BIND_ADDRESS:-127.0.0.1}:${AI_HOST_PORT:-${AI_API_HOST_PORT:-8000}}:8000"
     healthcheck:
       <<: *http-healthcheck-defaults
       test:
@@ -251,10 +259,12 @@ services:
   celery-beat:
     <<: *mvp-restart-policy
     # Exactly one beat instance schedules study-generation-reconcile + analysis retries.
+    # Local layer may include JWT/meeting env; prod overlay strips them to broker-only.
     command: sh -c "celery -A app.celery_app.celery_app beat --loglevel=INFO"
     env_file: !reset []
     environment:
       APP_ENV: ${APP_ENV:-development}
+      APP_COMPONENT: beat
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in infra/.env}
       DATABASE_URL: postgresql://${POSTGRES_USER:?Set POSTGRES_USER in infra/.env}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in infra/.env}@db:5432/${POSTGRES_DB:?Set POSTGRES_DB in infra/.env}
       CELERY_BROKER_URL: redis://redis:6379/0
@@ -281,8 +291,13 @@ services:
     env_file: !reset []
     environment:
       APP_ENV: ${APP_ENV:-development}
+      APP_COMPONENT: worker
+      DEPLOYMENT_MODE: ${DEPLOYMENT_MODE:-local}
+      DATABASE_TLS_MODE: ${DATABASE_TLS_MODE:-disable}
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in infra/.env}
-      DATABASE_URL: postgresql://${POSTGRES_USER:?Set POSTGRES_USER in infra/.env}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in infra/.env}@db:5432/${POSTGRES_DB:?Set POSTGRES_DB in infra/.env}
+      DATABASE_URL: ${AI_DATABASE_URL:-postgresql://${POSTGRES_USER:?Set POSTGRES_USER in infra/.env}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in infra/.env}@db:5432/${POSTGRES_DB:?Set POSTGRES_DB in infra/.env}}
+      AUDIO_STORAGE_PATH: /app/uploads
+      FINAL_AUDIO_ALLOWED_ROOTS: /app/uploads
       STT_PROVIDER: ${STT_PROVIDER:-deepgram}
       DEEPGRAM_API_KEY: ${DEEPGRAM_API_KEY:?Set DEEPGRAM_API_KEY in infra/.env}
       DEEPGRAM_MODEL: ${DEEPGRAM_MODEL:-nova-3}
@@ -342,6 +357,8 @@ services:
         condition: service_completed_successfully
       ai-api:
         condition: service_healthy
+    volumes:
+      - uploads:/app/uploads
     ports: !reset []
     healthcheck:
       <<: *http-healthcheck-defaults
@@ -373,7 +390,7 @@ services:
       user-api:
         condition: service_healthy
     ports: !override
-      - "${WEB_BIND_ADDRESS:-127.0.0.1}:${WEB_HOST_PORT:-8080}:80"
+      - "${WEB_BIND_ADDRESS:-127.0.0.1}:${FRONTEND_HOST_PORT:-${WEB_HOST_PORT:-8080}}:80"
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/"]
       interval: 30s
