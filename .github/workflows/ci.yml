@@ -77,6 +77,7 @@ jobs:
         run: |
           cd FE-Audiomind
           npm test
+          npm run build
           npx tsc --noEmit
           cd ..
           cd demoRecordAUDIOMID
@@ -176,6 +177,52 @@ jobs:
           else
             npx commitlint --from HEAD~1 --to HEAD --verbose
           fi
+
+  bash-lf-shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Verify shell scripts are executable
+        run: |
+          status=0
+          while IFS= read -r script; do
+            if [ ! -x "$script" ]; then
+              echo "FAIL: $script is not executable (run: git update-index --chmod=+x $script)"
+              status=1
+            fi
+          done < <(git ls-files '*.sh' '*.bash')
+          exit "$status"
+
+      - name: Verify LF line endings for shell scripts
+        run: python scripts/check-bash-lf.py
+
+      - name: Bash syntax check
+        run: |
+          while IFS= read -r script; do
+            bash -n "$script"
+          done < <(git ls-files '*.sh' '*.bash')
+
+      - name: Install ShellCheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
+      - name: ShellCheck shell scripts
+        run: |
+          while IFS= read -r script; do
+            shellcheck "$script"
+          done < <(git ls-files '*.sh' '*.bash')
+
+      - name: Validate rendered-k8s unit tests
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyyaml pytest
+          pytest scripts/test_validate_rendered_k8s.py -q --tb=short
 
   gate-a:
     runs-on: ubuntu-latest
@@ -390,8 +437,12 @@ jobs:
 
       - name: Install kubeconform
         run: |
-          curl -sSL -o /tmp/kubeconform.tgz \
-            https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz
+          set -euo pipefail
+          KUBECONFORM_VERSION=v0.6.7
+          KUBECONFORM_SHA256=95f14e87aa28c09d5941f11bd024c1d02fdc0303ccaa23f61cef67bc92619d73
+          curl -fsSL -o /tmp/kubeconform.tgz \
+            "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
+          echo "${KUBECONFORM_SHA256}  /tmp/kubeconform.tgz" | sha256sum -c -
           tar -xzf /tmp/kubeconform.tgz -C /tmp
           sudo mv /tmp/kubeconform /usr/local/bin/kubeconform
           kubeconform -v
