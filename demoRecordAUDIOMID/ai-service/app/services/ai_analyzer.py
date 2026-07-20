@@ -194,14 +194,17 @@ class AIAnalyzer:
                         import redis
 
                         from app.services.gemini_key_cooldown_store import (
-                            RedisGeminiKeyCooldownStore,
+                            build_redis_gemini_cooldown_store,
                         )
 
                         redis_client = redis.Redis.from_url(
                             settings.job_state_redis_url,
                             decode_responses=True,
                         )
-                        cooldown_store = RedisGeminiKeyCooldownStore(redis_client)
+                        cooldown_store = build_redis_gemini_cooldown_store(
+                            redis_client,
+                            settings=settings,
+                        )
                 self.gemini_key_manager = GeminiKeyManager.from_config(
                     gemini_api_key=self.api_key,
                     gemini_api_keys=gemini_api_keys,

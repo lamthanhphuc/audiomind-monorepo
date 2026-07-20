@@ -162,43 +162,16 @@ def test_selection_is_thread_safe():
 
 
 def test_redis_cooldown_store_shares_state_across_managers():
-    class FakeRedis:
-        def __init__(self):
-            self.values: dict[str, tuple[int, str]] = {}
-            self.model_flags: set[str] = set()
-
-        def ttl(self, key):
-            entry = self.values.get(key)
-            if entry is None:
-                return -2
-            return entry[0]
-
-        def get(self, key):
-            entry = self.values.get(key)
-            if entry is None:
-                return None
-            return entry[1]
-
-        def setex(self, key, ttl, value):
-            current = self.values.get(key)
-            ttl_value = int(ttl)
-            if current is None or ttl_value > current[0]:
-                self.values[key] = (ttl_value, str(value))
-
-        def set(self, key, value):
-            self.model_flags.add(key)
-
-        def exists(self, key):
-            return 1 if key in self.model_flags else 0
-
-        def delete(self, key):
-            self.values.pop(key, None)
+    from tests.test_gemini_cooldown_store import FakeRedis, FakeWallClock
 
     from app.services.gemini_key_cooldown_store import RedisGeminiKeyCooldownStore
     from app.services.gemini_key_manager import GeminiKeyEntry
 
-    redis = FakeRedis()
-    store = RedisGeminiKeyCooldownStore(redis)
+    clock = FakeWallClock()
+    redis = FakeRedis(wall_clock=clock)
+    store = RedisGeminiKeyCooldownStore(
+        redis, namespace="test:ai-service", wall_clock_ms=clock.now_ms
+    )
     entry = GeminiKeyEntry(alias="primary", secret="key-a")
     manager_a = GeminiKeyManager([entry], clock=FakeClock(), cooldown_store=store)
     manager_b = GeminiKeyManager([entry], clock=FakeClock(), cooldown_store=store)
