@@ -212,11 +212,20 @@ class GeminiKeyManager:
                 normalized_alias, set()
             )
             unsupported.add(model_name)
+        if self._cooldown_store is not None and hasattr(
+            self._cooldown_store, "mark_model_unsupported"
+        ):
+            self._cooldown_store.mark_model_unsupported(normalized_alias, model_name)
 
     def is_model_unsupported(self, alias: str, model: str | None) -> bool:
         model_name = self.normalize_model_name(model)
         if not model_name:
             return False
+        if self._cooldown_store is not None and hasattr(
+            self._cooldown_store, "is_model_unsupported"
+        ):
+            if self._cooldown_store.is_model_unsupported(alias, model_name):
+                return True
         with self._lock:
             return model_name in self._unsupported_models_by_alias.get(alias, set())
 
@@ -227,8 +236,7 @@ class GeminiKeyManager:
             return False
         with self._lock:
             return all(
-                model_name
-                in self._unsupported_models_by_alias.get(entry.alias, set())
+                self.is_model_unsupported(entry.alias, model_name)
                 for entry in self._entries
             )
 
@@ -273,20 +281,36 @@ class GeminiKeyManager:
         self, alias: str, *, now: float, model: str | None
     ) -> str | None:
         """Return why an alias cannot be selected now (no secrets)."""
+        model_name = self.normalize_model_name(model)
+        if model_name and self.is_model_unsupported(alias, model_name):
+            return "model_unavailable"
+
+        shared_state = self._get_shared_cooldown_state(alias, now=now)
+        if shared_state is not None and shared_state.remaining_seconds > 0:
+            if shared_state.reason:
+                return shared_state.reason
+            return "cooldown"
+
         remaining = self._cooldown_remaining(alias, now=now)
         state = self._states.get(alias)
-        model_name = self.normalize_model_name(model)
-        unsupported = bool(
-            model_name
-            and model_name
-            in self._unsupported_models_by_alias.get(alias, set())
-        )
         if remaining > 0:
             code = str((state.last_error_code if state else None) or "").strip()
             return code or "cooldown"
-        if unsupported:
-            return "model_unavailable"
         return None
+
+    def _get_shared_cooldown_state(
+        self, alias: str, *, now: float
+    ):
+        if self._cooldown_store is None:
+            return None
+        if hasattr(self._cooldown_store, "get_cooldown_state"):
+            return self._cooldown_store.get_cooldown_state(alias, now=now)
+        remaining = self._cooldown_store.cooldown_remaining(alias, now=now)
+        if remaining <= 0:
+            return None
+        from app.services.gemini_key_cooldown_store import GeminiCooldownState
+
+        return GeminiCooldownState(remaining_seconds=remaining)
 
     def _selection_unavailable(
         self, *, now: float, model: str | None, retry_after: int, cooldown_active: int
@@ -318,9 +342,7 @@ class GeminiKeyManager:
         if self._cooldown_remaining(alias, now=now) > 0:
             return False
         model_name = self.normalize_model_name(model)
-        if model_name and model_name in self._unsupported_models_by_alias.get(
-            alias, set()
-        ):
+        if model_name and self.is_model_unsupported(alias, model_name):
             return False
         return True
 
@@ -358,8 +380,7 @@ class GeminiKeyManager:
             # for this request, but do not invent a fake cooldown retry-after.
             if not retry_after_values and model:
                 model_blocked = any(
-                    self.normalize_model_name(model)
-                    in self._unsupported_models_by_alias.get(entry.alias, set())
+                    self.is_model_unsupported(entry.alias, model)
                     for entry in self._entries
                 )
                 if model_blocked:
@@ -378,25 +399,54 @@ class GeminiKeyManager:
             )
 
     def cooldown_key(self, alias: str, *, seconds: float, reason: str) -> None:
-        self._set_cooldown(alias, seconds=seconds, reason=reason)
+        self._set_cooldown(
+            alias, seconds=seconds, reason=reason, cooldown_type="soft"
+        )
 
     def hard_cooldown_key(self, alias: str, *, seconds: float, reason: str) -> None:
-        self._set_cooldown(alias, seconds=seconds, reason=reason)
+        self._set_cooldown(
+            alias, seconds=seconds, reason=reason, cooldown_type="hard"
+        )
 
-    def _set_cooldown(self, alias: str, *, seconds: float, reason: str) -> None:
+    def clear_cooldown(self, alias: str) -> None:
+        with self._lock:
+            state = self._states.get(alias)
+            if state is not None:
+                state.disabled_until_monotonic = 0.0
+                state.last_error_code = None
+                state.last_retry_after_seconds = 0
+            if self._cooldown_store is not None and hasattr(
+                self._cooldown_store, "clear_cooldown"
+            ):
+                self._cooldown_store.clear_cooldown(alias)
+
+    def _set_cooldown(
+        self,
+        alias: str,
+        *,
+        seconds: float,
+        reason: str,
+        cooldown_type: str,
+    ) -> None:
         with self._lock:
             state = self._states.get(alias)
             if state is None:
                 return
             cooldown_seconds = max(0.0, float(seconds or 0.0))
+            normalized_reason = str(reason or "unknown").strip() or "unknown"
             if self._cooldown_store is not None:
-                self._cooldown_store.apply_cooldown(alias, seconds=cooldown_seconds)
+                self._cooldown_store.apply_cooldown(
+                    alias,
+                    seconds=cooldown_seconds,
+                    reason=normalized_reason,
+                    cooldown_type=cooldown_type,
+                )
             else:
                 state.disabled_until_monotonic = max(
                     state.disabled_until_monotonic,
                     self._clock() + cooldown_seconds,
                 )
-            state.last_error_code = str(reason or "unknown")
+            state.last_error_code = normalized_reason
             state.last_retry_after_seconds = int(ceil(cooldown_seconds))
             state.consecutive_failures += 1
 

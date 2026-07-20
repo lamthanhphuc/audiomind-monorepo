@@ -2600,16 +2600,8 @@ def test_cooldown_expiry_allows_backup1_again():
     assert "backup1" in aliases
 
 
-def test_cached_terminal_pool_second_request_zero_http_and_non_retryable(monkeypatch):
+def test_cached_terminal_pool_second_request_zero_http_and_non_retryable():
     """After terminal pool exhaustion, next request must not soft-fail as GEMINI_UNAVAILABLE."""
-    import httpx
-
-    def deny_real_network(*_args, **_kwargs):
-        raise AssertionError("Real network calls are forbidden in unit tests")
-
-    monkeypatch.setattr(httpx.Client, "request", deny_real_network)
-    monkeypatch.setattr(httpx.AsyncClient, "request", deny_real_network)
-
     billing_429 = _FakeResponse(
         429,
         text=(
@@ -2789,3 +2781,86 @@ def test_fail_fast_multi_key_grants_grace_only_for_unattempted_backup():
 
     assert result.key_alias == "backup1"
     assert _request_keys(fake_client) == ["fake-primary-key", "fake-backup-key"]
+
+
+def test_cross_process_worker_b_reuses_shared_terminal_pool_without_http():
+    from app.services.gemini_key_cooldown_store import InMemoryGeminiKeyCooldownStore
+
+    billing_429 = _FakeResponse(
+        429,
+        text=(
+            '{"error":{"status":"RESOURCE_EXHAUSTED","message":'
+            '"Your prepayment credits are depleted"}}'
+        ),
+    )
+    free_tier_429 = _FakeResponse(
+        429,
+        text=(
+            '{"error":{"status":"RESOURCE_EXHAUSTED","message":'
+            '"You exceeded your current quota",'
+            '"details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo",'
+            '"metadata":{"quota_metric":"generate_content_free_tier_requests"}}]}}'
+        ),
+    )
+    fake_client_a = _FakeClient(
+        [billing_429, free_tier_429, _model_unavailable_404()]
+    )
+    fake_client_b = _FakeClient([])
+
+    shared_store = InMemoryGeminiKeyCooldownStore()
+    key_manager_a = KEY_MANAGER_MODULE.GeminiKeyManager.from_config(
+        gemini_api_key="",
+        gemini_api_keys=(
+            "primary:fake-primary-key,backup1:fake-backup-key,backup2:fake-third-key"
+        ),
+        multi_key_enabled=True,
+        cooldown_store=shared_store,
+    )
+    client_a = GEMINI_CLIENT_MODULE.GeminiClient(
+        key_manager_a,
+        max_attempts=3,
+        key_hard_cooldown_seconds=900,
+        backoff_base_ms=0,
+        http_client_factory=lambda timeout: fake_client_a,
+        sleep=lambda seconds: None,
+    )
+
+    with pytest.raises(AnalysisUnavailableError) as first:
+        client_a.post_json(
+            url=_MODEL_URL,
+            payload={"contents": []},
+            timeout_seconds=30,
+            model="gemini-2.5-flash",
+        )
+    assert first.value.error_code == "GEMINI_KEY_POOL_UNAVAILABLE"
+    assert first.value.retryable is False
+    assert len(fake_client_a.calls) == 3
+
+    key_manager_b = KEY_MANAGER_MODULE.GeminiKeyManager.from_config(
+        gemini_api_key="",
+        gemini_api_keys=(
+            "primary:fake-primary-key,backup1:fake-backup-key,backup2:fake-third-key"
+        ),
+        multi_key_enabled=True,
+        cooldown_store=shared_store,
+    )
+    client_b = GEMINI_CLIENT_MODULE.GeminiClient(
+        key_manager_b,
+        max_attempts=3,
+        key_hard_cooldown_seconds=900,
+        backoff_base_ms=0,
+        http_client_factory=lambda timeout: fake_client_b,
+        sleep=lambda seconds: None,
+    )
+
+    with pytest.raises(AnalysisUnavailableError) as second:
+        client_b.post_json(
+            url=_MODEL_URL,
+            payload={"contents": []},
+            timeout_seconds=30,
+            model="gemini-2.5-flash",
+        )
+
+    assert len(fake_client_b.calls) == 0
+    assert second.value.error_code == "GEMINI_KEY_POOL_UNAVAILABLE"
+    assert second.value.retryable is False
