@@ -18,6 +18,9 @@ from app.services.analysis_errors import (
     AnalysisUnavailableError,
 )
 from app.services.gemini_key_manager import GeminiKeyManager
+from app.services.gemini_shared_state_contracts import AliasReusePolicy
+
+MAX_SAME_ALIAS_TRANSIENT_RETRIES = 2
 
 
 class GeminiKeyFailureReason(str, Enum):
@@ -355,6 +358,30 @@ def failure_reasons_from_unavailable(
     return mapped
 
 
+def _sanitize_proxy_for_log(proxy_url: str) -> str:
+    """Return a proxy descriptor safe for logs (no credentials)."""
+    raw = str(proxy_url or "").strip()
+    if not raw:
+        return ""
+    parsed = urlparse(raw)
+    host = (parsed.hostname or "").strip()
+    if not host:
+        return "<proxy>"
+    port = f":{parsed.port}" if parsed.port else ""
+    scheme = parsed.scheme or "http"
+    if parsed.username:
+        return f"{scheme}://***@{host}{port}"
+    return f"{scheme}://{host}{port}"
+
+
+class SafeProxyContext:
+    """Holds proxy URL for transport while exposing a credential-free log label."""
+
+    def __init__(self, proxy_url: str) -> None:
+        self.proxy_url = _normalize_gemini_proxy_url(proxy_url)
+        self.log_label = _sanitize_proxy_for_log(self.proxy_url)
+
+
 def _normalize_gemini_proxy_url(proxy_url: str) -> str:
     raw = str(proxy_url or "").strip()
     if not raw:
@@ -411,7 +438,10 @@ def resolve_http_client_factory(
     if not proxy_url:
         return base_factory, ""
 
-    logger.info("GEMINI_HTTP_PROXY_ENABLED proxy={}", proxy_url)
+    logger.info(
+        "GEMINI_HTTP_PROXY_ENABLED proxy={}",
+        _sanitize_proxy_for_log(proxy_url),
+    )
 
     def factory(**kwargs: Any) -> httpx.Client:
         return base_factory(proxies=proxy_url, **kwargs)
@@ -475,6 +505,7 @@ class GeminiClient:
         self.backoff_jitter = bool(backoff_jitter)
         self.fail_fast_seconds = max(0.0, float(fail_fast_seconds or 0.0))
         self.http_proxy = _normalize_gemini_proxy_url(http_proxy)
+        self.proxy_context = SafeProxyContext(self.http_proxy)
         self.http_client_factory = http_client_factory
         self.sleep = sleep
         self.clock = clock
@@ -493,6 +524,7 @@ class GeminiClient:
         last_error: Exception | None = None
         failures_by_alias: dict[str, GeminiKeyFailureReason] = {}
         attempted_aliases: set[str] = set()
+        same_alias_transient_retries: dict[str, int] = {}
         retry_after_seconds = 0
         sticky_alias = str(preferred_key_alias or "").strip() or None
         model_name = GeminiKeyManager.normalize_model_name(
@@ -672,10 +704,10 @@ class GeminiClient:
                     )
                     if self.http_proxy:
                         logger.warning(
-                            "GEMINI_PROXY_CONNECT_FAILED alias={} proxy={} error={}",
+                            "GEMINI_PROXY_CONNECT_FAILED alias={} proxy={} errorType={}",
                             entry.alias,
-                            self.http_proxy,
-                            exc,
+                            self.proxy_context.log_label,
+                            type(exc).__name__,
                         )
                         last_error = AnalysisUnavailableError(
                             "Cannot reach Gemini HTTP proxy. Start Clash/V2Ray, enable "
@@ -710,10 +742,7 @@ class GeminiClient:
 
                 status_code = int(getattr(response, "status_code", 0) or 0)
                 if status_code < 400:
-                    if model_name:
-                        self.key_manager.clear_model_unsupported(
-                            entry.alias, model_name
-                        )
+                    # HTTP 2xx must not clear shared cooldown or model marker.
                     logger.info(
                         "GEMINI_CALL_SUCCEEDED alias={} attempt={} model={}",
                         entry.alias,
@@ -905,7 +934,14 @@ class GeminiClient:
                     )
                     if attempt >= loop_attempts:
                         break
-                    if not selection.has_unattempted_eligible:
+                    if (
+                        not selection.has_unattempted_eligible
+                        and same_alias_transient_retries.get(entry.alias, 0)
+                        < MAX_SAME_ALIAS_TRANSIENT_RETRIES
+                    ):
+                        same_alias_transient_retries[entry.alias] = (
+                            same_alias_transient_retries.get(entry.alias, 0) + 1
+                        )
                         attempted_aliases.discard(entry.alias)
                     self._sleep_before_retry(attempt, started)
                     continue
