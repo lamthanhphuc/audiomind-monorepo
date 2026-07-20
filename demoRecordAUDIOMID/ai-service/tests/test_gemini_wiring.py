@@ -87,20 +87,21 @@ def test_build_store_does_not_embed_raw_key_in_redis_key() -> None:
 def test_single_key_mode_still_wires_shared_redis_store(monkeypatch) -> None:
     from app.config import get_settings
     from app.services.gemini_analyzer import GeminiAnalyzer
-    from app.services.gemini_key_cooldown_store import (
-        InMemoryGeminiKeyCooldownStore,
-    )
+    from app.services.gemini_shared_state_store import InMemoryV2GeminiKeyCooldownStore
 
     get_settings.cache_clear()
     monkeypatch.setenv("GEMINI_SHARED_COOLDOWN_ENABLED", "true")
-    shared_store = InMemoryGeminiKeyCooldownStore(namespace="test:single-key")
+    shared_store = InMemoryV2GeminiKeyCooldownStore(
+        namespace="test:single-key",
+        allowed_aliases=frozenset({"primary"}),
+    )
     redis_sentinel = object()
     monkeypatch.setattr(
         "app.services.gemini_key_cooldown_store.create_gemini_redis_client",
         lambda *args, **kwargs: redis_sentinel,
     )
     monkeypatch.setattr(
-        "app.services.gemini_key_cooldown_store.build_redis_gemini_cooldown_store",
+        "app.services.gemini_shared_state_store.build_v2_redis_gemini_cooldown_store",
         lambda client, **kwargs: shared_store
         if client is redis_sentinel
         else pytest.fail("unexpected Redis client"),
