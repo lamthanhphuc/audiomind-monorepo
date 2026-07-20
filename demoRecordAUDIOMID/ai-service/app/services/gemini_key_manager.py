@@ -24,12 +24,32 @@ class GeminiKeyEntry:
         return f"GeminiKeyEntry(alias={self.alias!r}, secret=<redacted>)"
 
 
+# Terminal provider reasons persisted on hard cooldown / model cache.
+# Soft "rate_limit" / network reasons stay retryable.
+_TERMINAL_UNAVAILABLE_REASONS = frozenset(
+    {
+        "billing_credits_depleted",
+        "free_tier_token_quota_exhausted",
+        "free_tier_quota_exhausted",
+        "model_unavailable",
+        "invalid_key",
+        "auth_error",
+        "region_blocked",
+        "invalid_request",
+    }
+)
+
+
 @dataclass(frozen=True)
 class GeminiKeySelection:
     available: bool
     entry: GeminiKeyEntry | None = None
     retry_after_seconds: int = 0
     cooldown_active: int = 0
+    # alias -> reason code (never contains raw API keys)
+    unavailable_reasons: dict[str, str] = field(default_factory=dict)
+    all_terminal: bool = False
+    all_model_unsupported: bool = False
 
 
 @dataclass
@@ -229,6 +249,69 @@ class GeminiKeyManager:
                     return True
         return False
 
+    def has_unattempted_eligible_key(
+        self,
+        model: str | None,
+        attempted_aliases: set[str] | frozenset[str],
+    ) -> bool:
+        """True when an eligible key exists that was not tried in this request."""
+        attempted = {
+            str(alias or "").strip()
+            for alias in (attempted_aliases or set())
+            if str(alias or "").strip()
+        }
+        with self._lock:
+            now = self._clock()
+            for entry in self._entries:
+                if entry.alias in attempted:
+                    continue
+                if self._eligible_for_model(entry.alias, now=now, model=model):
+                    return True
+        return False
+
+    def _unavailable_reason_for_alias(
+        self, alias: str, *, now: float, model: str | None
+    ) -> str | None:
+        """Return why an alias cannot be selected now (no secrets)."""
+        remaining = self._cooldown_remaining(alias, now=now)
+        state = self._states.get(alias)
+        model_name = self.normalize_model_name(model)
+        unsupported = bool(
+            model_name
+            and model_name
+            in self._unsupported_models_by_alias.get(alias, set())
+        )
+        if remaining > 0:
+            code = str((state.last_error_code if state else None) or "").strip()
+            return code or "cooldown"
+        if unsupported:
+            return "model_unavailable"
+        return None
+
+    def _selection_unavailable(
+        self, *, now: float, model: str | None, retry_after: int, cooldown_active: int
+    ) -> GeminiKeySelection:
+        reasons: dict[str, str] = {}
+        for entry in self._entries:
+            reason = self._unavailable_reason_for_alias(
+                entry.alias, now=now, model=model
+            )
+            if reason:
+                reasons[entry.alias] = reason
+        all_model_unsupported = bool(
+            model and self.all_keys_unsupported_for_model(model)
+        )
+        reason_values = set(reasons.values())
+        all_terminal = bool(reasons) and reason_values <= _TERMINAL_UNAVAILABLE_REASONS
+        return GeminiKeySelection(
+            available=False,
+            retry_after_seconds=retry_after,
+            cooldown_active=cooldown_active,
+            unavailable_reasons=dict(reasons),
+            all_terminal=all_terminal,
+            all_model_unsupported=all_model_unsupported,
+        )
+
     def _eligible_for_model(
         self, alias: str, *, now: float, model: str | None
     ) -> bool:
@@ -280,15 +363,17 @@ class GeminiKeyManager:
                     for entry in self._entries
                 )
                 if model_blocked:
-                    return GeminiKeySelection(
-                        available=False,
-                        retry_after_seconds=0,
+                    return self._selection_unavailable(
+                        now=now,
+                        model=model,
+                        retry_after=0,
                         cooldown_active=0,
                     )
             retry_after = min(retry_after_values) if retry_after_values else 0
-            return GeminiKeySelection(
-                available=False,
-                retry_after_seconds=retry_after,
+            return self._selection_unavailable(
+                now=now,
+                model=model,
+                retry_after=retry_after,
                 cooldown_active=len(retry_after_values),
             )
 

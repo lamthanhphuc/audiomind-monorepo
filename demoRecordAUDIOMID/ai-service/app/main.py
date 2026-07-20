@@ -3035,6 +3035,7 @@ async def get_analysis(
                     action_items=[],
                     status="NOT_FOUND",
                     analysisStatus=ANALYSIS_STATUS_UNAVAILABLE_FOR_SCOPE,
+                    created_at=datetime.now(timezone.utc),
                 )
             normalized = analysis_payload_from_run(scoped_run, cache_hit=True)
             run_metadata = analysis_run_response_metadata(scoped_run, cache_hit=True)

@@ -212,8 +212,6 @@ def process_meeting(payload: dict) -> None:
         )
         logger.info(f"[traceId={trace_id}] [jobId={meeting_id}] update COMPLETED")
     except Exception as processing_error:
-        from app.services.analysis_errors import AnalysisProviderError
-
         error_type = type(processing_error).__name__
         stage = _infer_batch_failure_stage(processing_error)
         logger.error(
@@ -233,10 +231,9 @@ def process_meeting(payload: dict) -> None:
             trace_id=trace_id,
             stage="failed",
         )
-        # Provider errors are pickle-safe and already recorded in job state.
-        # Do not re-raise them so the worker stays healthy (Celery task returns).
-        if isinstance(processing_error, AnalysisProviderError):
-            return
+        # Persist business/job FAILED first, then fail the Celery task.
+        # AnalysisProviderError is pickle-safe; swallowing it made Celery report
+        # success while the job was FAILED. Worker continues with the next task.
         raise
     finally:
         db.close()
