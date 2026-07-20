@@ -69,7 +69,9 @@ if expected_digest ~= nil and expected_digest ~= "" then
       cleared = true
     end
   end
-  if not raw or raw == "" or pttl <= 0 or cleared then
+  if cleared then
+    -- Tombstone at matching revision: republish is allowed (REDIS-11).
+  elseif not raw or raw == "" or pttl <= 0 then
     return cjson.encode({
       status="superseded",
       revision=current_revision,
@@ -267,7 +269,7 @@ local ttl_ms = tonumber(ARGV[3])
 local current_revision = tonumber(redis.call("GET", revision_key) or "0")
 if current_revision ~= expected_revision then
   return cjson.encode({{
-    status="rejected",
+    status="superseded",
     revision=current_revision,
     final_remaining_ms=0,
     merged_from_shared_stronger=false,
@@ -852,7 +854,9 @@ class InMemoryV2GeminiKeyCooldownStore(_V2StoreBase):
     ) -> SharedWriteResult | None:
         if not expected_digest:
             return None
-        missing = raw is None or int(pttl) <= 0 or _is_tombstone_payload(raw)
+        if raw is not None and _is_tombstone_payload(raw):
+            return None
+        missing = raw is None or int(pttl) <= 0
         if missing:
             return SharedWriteResult(
                 status=PendingOperationStatus.SUPERSEDED,
@@ -1052,7 +1056,7 @@ class InMemoryV2GeminiKeyCooldownStore(_V2StoreBase):
         raw, pttl, revision = self._read_slot(state_key, revision_key)
         if revision != int(expected_revision):
             return SharedWriteResult(
-                status=PendingOperationStatus.REJECTED,
+                status=PendingOperationStatus.SUPERSEDED,
                 revision=revision,
             )
         superseded = self._digest_guard(

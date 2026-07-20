@@ -667,6 +667,8 @@ class GeminiKeyManager:
             current_pending=pending,
             desired_intent=desired_intent,
             clock=self._clock,
+            publish_reason=publish_reason,
+            publish_cooldown_type=publish_cooldown_type,
         )
 
     def _route_v2_operation_result(

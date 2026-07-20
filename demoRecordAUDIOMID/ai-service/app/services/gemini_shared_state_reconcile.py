@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Callable, Protocol
+from typing import Callable, Literal, Protocol
 
 from app.services.gemini_shared_state_contracts import (
     MAX_RECONCILE_ATTEMPTS,
@@ -174,6 +174,8 @@ def apply_reconcile_business_locked(
     current_pending: PendingSharedOperation | None,
     desired_intent: DesiredIntent,
     clock: Callable[[], float],
+    publish_reason: str | None = None,
+    publish_cooldown_type: str | None = None,
 ) -> tuple[ApplyReconcileOutcome, PendingSharedOperation | None, ConvergenceWriteRequest | None]:
     """PHASE C — contract guard plus APPLIED/SUPERSEDED/FAILED routing."""
     base = apply_reconcile_plan_locked(
@@ -214,6 +216,8 @@ def apply_reconcile_business_locked(
             current_pending=current_pending,
             desired_intent=desired_intent,
             clock=clock,
+            publish_reason=publish_reason,
+            publish_cooldown_type=publish_cooldown_type,
         )
 
     if write.status is PendingOperationStatus.SUPERSEDED:
@@ -223,16 +227,26 @@ def apply_reconcile_business_locked(
             current_pending=current_pending,
             desired_intent=desired_intent,
             clock=clock,
+            publish_reason=publish_reason,
+            publish_cooldown_type=publish_cooldown_type,
         )
 
     if write.status is PendingOperationStatus.REJECTED:
+        snapshot = read_snapshot.shared_snapshot if read_snapshot else None
         return (
             ApplyReconcileOutcome(
                 status=ApplyReconcileStatus.OPERATION_ENQUEUED,
                 reason="rejected_retry",
             ),
             current_pending,
-            _convergence_write_from_pending(plan, current_pending, clock=clock),
+            _convergence_write_from_pending(
+                plan,
+                current_pending,
+                clock=clock,
+                read_snapshot=snapshot,
+                reason=publish_reason,
+                cooldown_type=publish_cooldown_type,
+            ),
         )
 
     return (
@@ -249,6 +263,8 @@ def _handle_applied_locked(
     current_pending: PendingSharedOperation | None,
     desired_intent: DesiredIntent,
     clock: Callable[[], float],
+    publish_reason: str | None = None,
+    publish_cooldown_type: str | None = None,
 ) -> tuple[ApplyReconcileOutcome, PendingSharedOperation | None, ConvergenceWriteRequest | None]:
     write = operation_result.write_result
     if write is None:
@@ -258,9 +274,80 @@ def _handle_applied_locked(
             None,
         )
 
+    if desired_intent is DesiredIntent.CLEAR:
+        if (
+            current_pending is not None
+            and current_pending.operation_type == "publish"
+            and write.revision is not None
+        ):
+            clear_op = PendingSharedOperation(
+                operation_id=new_operation_id(),
+                root_operation_id=plan.root_operation_id,
+                operation_type="clear",
+                scope=plan.scope,
+                local_revision=current_pending.local_revision,
+                intent_revision=current_pending.intent_revision,
+                expected_shared_revision=int(write.revision),
+                expected_value_digest=write.digest,
+                reconcile_attempts=current_pending.reconcile_attempts,
+                created_at_monotonic=current_pending.created_at_monotonic,
+                next_retry_at_monotonic=clock(),
+                operation_deadline_monotonic=current_pending.operation_deadline_monotonic,
+                protected_state_expires_at_monotonic=None,
+                last_error_type=None,
+            )
+            return (
+                ApplyReconcileOutcome(
+                    status=ApplyReconcileStatus.OPERATION_ENQUEUED,
+                    reason="publish_applied_desired_clear",
+                ),
+                None,
+                ConvergenceWriteRequest(operation=clear_op, remaining_ms=0),
+            )
+        return (
+            ApplyReconcileOutcome(status=ApplyReconcileStatus.CONVERGED),
+            None,
+            None,
+        )
+
     if desired_intent is DesiredIntent.PUBLISH:
-        updated_pending = current_pending
-        if current_pending is not None:
+        if (
+            current_pending is not None
+            and current_pending.operation_type == "clear"
+            and write.revision is not None
+        ):
+            protected = plan.protected_deadline_monotonic
+            remaining_ms = max(0, math.floor((protected - clock()) * 1000))
+            publish_op = PendingSharedOperation(
+                operation_id=new_operation_id(),
+                root_operation_id=plan.root_operation_id,
+                operation_type="publish",
+                scope=plan.scope,
+                local_revision=current_pending.local_revision,
+                intent_revision=current_pending.intent_revision,
+                expected_shared_revision=int(write.revision),
+                expected_value_digest=None,
+                reconcile_attempts=current_pending.reconcile_attempts,
+                created_at_monotonic=current_pending.created_at_monotonic,
+                next_retry_at_monotonic=clock(),
+                operation_deadline_monotonic=protected,
+                protected_state_expires_at_monotonic=protected,
+                last_error_type=None,
+            )
+            return (
+                ApplyReconcileOutcome(
+                    status=ApplyReconcileStatus.OPERATION_ENQUEUED,
+                    reason="clear_applied_desired_publish",
+                ),
+                None,
+                ConvergenceWriteRequest(
+                    operation=publish_op,
+                    remaining_ms=remaining_ms,
+                    reason=publish_reason or "billing_credits_depleted",
+                    cooldown_type=publish_cooldown_type or "hard",
+                ),
+            )
+        if current_pending is not None and current_pending.operation_type == "publish":
             protected = current_pending.protected_state_expires_at_monotonic
             if protected is not None:
                 anchored = apply_applied_publish_locked(
@@ -268,24 +355,6 @@ def _handle_applied_locked(
                     operation_result=operation_result,
                 )
                 current_pending.protected_state_expires_at_monotonic = anchored
-        if desired_intent is plan.desired_intent:
-            return (
-                ApplyReconcileOutcome(status=ApplyReconcileStatus.CONVERGED),
-                None,
-                None,
-            )
-        return (
-            ApplyReconcileOutcome(
-                status=ApplyReconcileStatus.OPERATION_ENQUEUED,
-                reason="intent_flipped_after_apply",
-            ),
-            updated_pending,
-            None,
-        )
-
-    if desired_intent is DesiredIntent.CLEAR:
-        if write.revision is not None and current_pending is not None:
-            current_pending.expected_shared_revision = int(write.revision)
         return (
             ApplyReconcileOutcome(status=ApplyReconcileStatus.CONVERGED),
             None,
@@ -306,15 +375,24 @@ def _handle_superseded_locked(
     current_pending: PendingSharedOperation | None,
     desired_intent: DesiredIntent,
     clock: Callable[[], float],
+    publish_reason: str | None = None,
+    publish_cooldown_type: str | None = None,
 ) -> tuple[ApplyReconcileOutcome, PendingSharedOperation | None, ConvergenceWriteRequest | None]:
-    del read_snapshot
     if desired_intent is DesiredIntent.NONE:
         return (
             ApplyReconcileOutcome(status=ApplyReconcileStatus.CONVERGED),
             None,
             None,
         )
-    convergence = _convergence_write_from_pending(plan, current_pending, clock=clock)
+    snapshot = read_snapshot.shared_snapshot if read_snapshot else None
+    convergence = _convergence_write_from_pending(
+        plan,
+        current_pending,
+        clock=clock,
+        read_snapshot=snapshot,
+        reason=publish_reason,
+        cooldown_type=publish_cooldown_type,
+    )
     if convergence is None:
         return (
             ApplyReconcileOutcome(
@@ -354,33 +432,52 @@ def _handle_failed_locked(
     )
 
 
+def _revision_from_snapshot(
+    pending: PendingSharedOperation,
+    read_snapshot: SharedScopeSnapshot | None,
+) -> tuple[int, str | None]:
+    expected_revision = pending.expected_shared_revision
+    expected_digest = pending.expected_value_digest
+    if read_snapshot is None:
+        return expected_revision, expected_digest
+    if pending.scope.is_model:
+        return read_snapshot.model_revision, read_snapshot.model_digest
+    return read_snapshot.cooldown_revision, read_snapshot.cooldown_digest
+
+
 def _convergence_write_from_pending(
     plan: ReconcilePlan,
     pending: PendingSharedOperation | None,
     *,
     clock: Callable[[], float],
+    read_snapshot: SharedScopeSnapshot | None = None,
+    operation_type: Literal["publish", "clear"] | None = None,
+    reason: str | None = None,
+    cooldown_type: str | None = None,
 ) -> ConvergenceWriteRequest | None:
     if pending is None:
         return None
     now = clock()
+    op_type = operation_type or pending.operation_type
     protected = pending.protected_state_expires_at_monotonic
-    if pending.operation_type == "publish" and protected is not None:
+    if op_type == "publish" and protected is not None:
         remaining_ms = max(0, math.floor((protected - now) * 1000))
-    elif pending.operation_type == "clear":
+    elif op_type == "clear":
         remaining_ms = 0
     else:
         remaining_ms = max(0, math.floor((plan.protected_deadline_monotonic - now) * 1000))
-    if pending.operation_type == "publish" and remaining_ms <= 0:
+    if op_type == "publish" and remaining_ms <= 0:
         return None
+    expected_revision, expected_digest = _revision_from_snapshot(pending, read_snapshot)
     next_op = PendingSharedOperation(
         operation_id=new_operation_id(),
         root_operation_id=pending.root_operation_id,
-        operation_type=pending.operation_type,
+        operation_type=op_type,
         scope=pending.scope,
         local_revision=pending.local_revision,
         intent_revision=pending.intent_revision,
-        expected_shared_revision=pending.expected_shared_revision,
-        expected_value_digest=pending.expected_value_digest,
+        expected_shared_revision=expected_revision,
+        expected_value_digest=expected_digest,
         reconcile_attempts=pending.reconcile_attempts + 1,
         created_at_monotonic=pending.created_at_monotonic,
         next_retry_at_monotonic=now,
@@ -391,6 +488,8 @@ def _convergence_write_from_pending(
     return ConvergenceWriteRequest(
         operation=next_op,
         remaining_ms=remaining_ms,
+        reason=reason,
+        cooldown_type=cooldown_type,
     )
 
 
@@ -406,6 +505,8 @@ def execute_convergence_write_unlocked(
     started = clock()
     op = request.operation
     scope = op.scope
+    effective_reason = reason or request.reason or "cooldown"
+    effective_cooldown_type = cooldown_type or request.cooldown_type or "soft"
     if op.operation_type == "publish":
         if scope.is_model:
             write = store.mark_model_unsupported_cas(
@@ -418,8 +519,8 @@ def execute_convergence_write_unlocked(
                 scope,
                 expected_revision=op.expected_shared_revision,
                 remaining_ms=request.remaining_ms,
-                reason=reason or "cooldown",
-                cooldown_type=cooldown_type or "soft",
+                reason=effective_reason,
+                cooldown_type=effective_cooldown_type,
                 expected_digest=op.expected_value_digest,
             )
     else:
