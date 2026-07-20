@@ -3,6 +3,52 @@ import pytest
 from app.services.gemini_fault_injection import GeminiFaultInjectionClient
 
 
+def _docker_available() -> bool:
+    try:
+        import docker
+    except ImportError:
+        return False
+    try:
+        docker.from_env().ping()
+        return True
+    except (docker.errors.DockerException, OSError):
+        return False
+
+
+@pytest.fixture(scope="module")
+def redis_client():
+    if not _docker_available():
+        pytest.skip("Docker/Redis integration unavailable")
+
+    try:
+        from testcontainers.redis import RedisContainer
+    except ImportError:
+        pytest.skip("testcontainers not installed")
+
+    import docker
+    import redis as redis_lib
+
+    container = RedisContainer("redis:7-alpine")
+    try:
+        try:
+            container.start()
+            host = container.get_container_host_ip()
+            port = container.get_exposed_port(6379)
+            client = redis_lib.Redis.from_url(
+                f"redis://{host}:{port}/0",
+                decode_responses=True,
+            )
+            client.ping()
+        except (docker.errors.DockerException, OSError):
+            pytest.skip("Docker/Redis integration unavailable")
+        yield client
+    finally:
+        try:
+            container.stop()
+        except (docker.errors.DockerException, OSError):
+            pass
+
+
 def pytest_configure(config):
     config.addinivalue_line(
         "markers",
