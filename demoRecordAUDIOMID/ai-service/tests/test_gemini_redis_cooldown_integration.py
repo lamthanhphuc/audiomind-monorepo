@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -82,11 +84,153 @@ def _store(redis_client, request, *, wall_clock_ms=None):
     return RedisGeminiKeyCooldownStore(redis_client, **kwargs)
 
 
-def test_redis_lua_soft_to_hard_merge_preserves_longer_ttl(redis_client, request) -> None:
+def _cost_namespace(request) -> str:
+    digest = hashlib.sha256(request.node.name.encode("utf-8")).hexdigest()[:12]
+    return f"integration-test-{digest}"
+
+
+def test_atomic_cost_guard_is_shared_between_instances(redis_client, request) -> None:
+    from app.services.gemini_cost_guard import GeminiCostGuard
+
+    kwargs = {
+        "namespace": _cost_namespace(request),
+        "daily_request_limit_per_user": 1,
+        "daily_reanalysis_limit_per_meeting": 1,
+        "daily_token_limit_per_user": 1000,
+        "max_concurrent_requests": 2,
+    }
+    first = GeminiCostGuard(redis_client, **kwargs)
+    second = GeminiCostGuard(redis_client, **kwargs)
+    reservation = first.reserve(
+        user_id=1,
+        meeting_id=10,
+        operation_id="first",
+        estimated_tokens=100,
+        is_reanalysis=True,
+    )
+    first.release(reservation)
+    denied = second.reserve(
+        user_id=1,
+        meeting_id=11,
+        operation_id="second",
+        estimated_tokens=100,
+        is_reanalysis=False,
+    )
+
+    assert reservation.allowed is True
+    assert denied.allowed is False
+    assert denied.reason == "daily_request_limit"
+
+
+def test_atomic_cost_guard_claims_one_concurrent_operation(
+    redis_client, request
+) -> None:
+    from app.services.gemini_cost_guard import GeminiCostGuard
+
+    kwargs = {
+        "namespace": _cost_namespace(request),
+        "daily_request_limit_per_user": 20,
+        "daily_reanalysis_limit_per_meeting": 20,
+        "daily_token_limit_per_user": 10000,
+        "max_concurrent_requests": 20,
+    }
+    guards = [GeminiCostGuard(redis_client, **kwargs) for _ in range(12)]
+
+    def reserve(index: int):
+        return guards[index].reserve(
+            user_id=8,
+            meeting_id=80,
+            operation_id="same-production-root",
+            estimated_tokens=10,
+            is_reanalysis=True,
+        )
+
+    with ThreadPoolExecutor(max_workers=len(guards)) as pool:
+        reservations = list(pool.map(reserve, range(len(guards))))
+
+    assert sum(item.allowed for item in reservations) == 1
+    assert sum(item.duplicate for item in reservations) == len(guards) - 1
+    winner = next(item for item in reservations if item.allowed)
+    guards[0].release(winner, success=True)
+
+
+def test_atomic_cost_guard_concurrency_limit_is_global_across_users(
+    redis_client, request
+) -> None:
+    from app.services.gemini_cost_guard import GeminiCostGuard
+
+    guard = GeminiCostGuard(
+        redis_client,
+        namespace=_cost_namespace(request),
+        daily_request_limit_per_user=20,
+        daily_reanalysis_limit_per_meeting=20,
+        daily_token_limit_per_user=10000,
+        max_concurrent_requests=1,
+    )
+    first = guard.reserve(
+        user_id=1,
+        meeting_id=1,
+        operation_id="shared-client-token",
+        estimated_tokens=10,
+        is_reanalysis=False,
+    )
+    blocked = guard.reserve(
+        user_id=2,
+        meeting_id=2,
+        operation_id="shared-client-token",
+        estimated_tokens=10,
+        is_reanalysis=False,
+    )
+    guard.release(first, success=True)
+    second = guard.reserve(
+        user_id=2,
+        meeting_id=2,
+        operation_id="shared-client-token",
+        estimated_tokens=10,
+        is_reanalysis=False,
+    )
+
+    assert first.allowed is True
+    assert blocked.reason == "concurrency_limit"
+    assert blocked.duplicate is False
+    assert second.allowed is True
+    guard.release(second, success=True)
+
+
+def test_v2_unknown_model_rejected_without_creating_redis_keys(
+    redis_client, request
+) -> None:
+    from app.services.gemini_shared_state_contracts import (
+        PendingOperationStatus,
+        SharedStateScope,
+    )
+    from app.services.gemini_shared_state_store import RedisV2GeminiKeyCooldownStore
+
+    store = RedisV2GeminiKeyCooldownStore(
+        redis_client,
+        namespace=_cost_namespace(request),
+        allowed_aliases=frozenset({"primary"}),
+    )
+    result = store.mark_model_unsupported_cas(
+        SharedStateScope(alias="primary", fingerprint="a" * 12, model="unknown/模型"),
+        expected_revision=0,
+    )
+
+    assert result.status is PendingOperationStatus.REJECTED
+    assert redis_client.dbsize() == 0
+
+
+def test_redis_lua_soft_to_hard_merge_preserves_longer_ttl(
+    redis_client, request
+) -> None:
     store = _store(redis_client, request)
     scope = _scope()
     store.apply_cooldown(
-        scope, seconds=0.9, reason="rate_limit", cooldown_type="soft", now_ms=1_700_000_000_000
+        scope,
+        seconds=0.9,
+        reason="rate_limit",
+        cooldown_type="soft",
+        now_ms=1_700_000_000_000,
     )
     store.apply_cooldown(
         scope,
@@ -151,10 +295,18 @@ def test_redis_lua_rate_limit_beats_generic_cooldown(redis_client, request) -> N
     store = _store(redis_client, request)
     scope = _scope()
     store.apply_cooldown(
-        scope, seconds=0.9, reason="cooldown", cooldown_type="soft", now_ms=1_700_000_000_000
+        scope,
+        seconds=0.9,
+        reason="cooldown",
+        cooldown_type="soft",
+        now_ms=1_700_000_000_000,
     )
     store.apply_cooldown(
-        scope, seconds=0.9, reason="rate_limit", cooldown_type="soft", now_ms=1_700_000_000_000
+        scope,
+        seconds=0.9,
+        reason="rate_limit",
+        cooldown_type="soft",
+        now_ms=1_700_000_000_000,
     )
     state = store.get_cooldown_state(scope, now=0.0, now_ms=1_700_000_000_000)
     assert state is not None
@@ -171,7 +323,11 @@ def test_redis_legacy_one_payload_with_pttl(redis_client, request) -> None:
     assert 0.2 <= state.remaining_seconds <= 0.35
     assert state.reason == "cooldown"
     store.apply_cooldown(
-        scope, seconds=0.2, reason="rate_limit", cooldown_type="soft", now_ms=1_700_000_000_000
+        scope,
+        seconds=0.2,
+        reason="rate_limit",
+        cooldown_type="soft",
+        now_ms=1_700_000_000_000,
     )
     raw = redis_client.get(key)
     assert raw is not None
@@ -233,14 +389,10 @@ def test_atomic_pool_snapshot_returns_cooldown_and_model_pttl(
     store = _store(redis_client, request)
     primary = _scope("primary", "fake-primary-key")
     backup = _scope("backup1", "fake-backup-key")
-    store.apply_cooldown(
-        primary, seconds=30, reason="rate_limit", cooldown_type="soft"
-    )
+    store.apply_cooldown(primary, seconds=30, reason="rate_limit", cooldown_type="soft")
     store.mark_model_unsupported(backup, "gemini-2.5-flash")
 
-    snapshot = store.read_pool_snapshot(
-        (primary, backup), "gemini-2.5-flash"
-    )
+    snapshot = store.read_pool_snapshot((primary, backup), "gemini-2.5-flash")
 
     assert snapshot.success is True
     assert len(snapshot.aliases) == 2
@@ -313,9 +465,7 @@ def test_final_validation_rejects_cross_process_stale_selection(
         cooldown_type="soft",
     )
 
-    assert manager.validate_selection(
-        selection, model="gemini-2.5-flash"
-    ) is False
+    assert manager.validate_selection(selection, model="gemini-2.5-flash") is False
     replacement = manager.select_key(
         model="gemini-2.5-flash", exclude_aliases={"primary"}
     )
