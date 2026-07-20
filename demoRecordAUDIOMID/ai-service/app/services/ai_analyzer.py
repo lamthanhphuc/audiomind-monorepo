@@ -191,16 +191,25 @@ class AIAnalyzer:
                 settings = get_settings()
                 if settings.gemini_shared_cooldown_enabled:
                     from app.services.gemini_key_cooldown_store import (
-                        build_redis_gemini_cooldown_store,
                         create_gemini_redis_client,
+                    )
+                    from app.services.gemini_key_manager import parse_gemini_api_keys
+                    from app.services.gemini_shared_state_store import (
+                        build_v2_redis_gemini_cooldown_store,
                     )
 
                     redis_client = create_gemini_redis_client(
                         settings.job_state_redis_url,
                         settings=settings,
                     )
-                    cooldown_store = build_redis_gemini_cooldown_store(
+                    parsed_entries = parse_gemini_api_keys(gemini_api_keys)
+                    if parsed_entries:
+                        allowed_aliases = frozenset(entry.alias for entry in parsed_entries)
+                    else:
+                        allowed_aliases = frozenset({"primary"})
+                    cooldown_store = build_v2_redis_gemini_cooldown_store(
                         redis_client,
+                        allowed_aliases=allowed_aliases,
                         settings=settings,
                     )
                 self.gemini_key_manager = GeminiKeyManager.from_config(
