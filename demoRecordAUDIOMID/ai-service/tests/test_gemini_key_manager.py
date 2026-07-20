@@ -1,3 +1,5 @@
+import threading
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -6,6 +8,11 @@ from app.services.gemini_key_manager import (
     GeminiKeyConfigError,
     GeminiKeyManager,
     parse_gemini_api_keys,
+)
+
+from app.services.gemini_key_cooldown_store import (
+    InMemoryGeminiKeyCooldownStore,
+    SharedPoolSnapshot,
 )
 
 
@@ -548,3 +555,210 @@ def test_clear_cooldown_makes_alias_eligible_in_other_manager():
         cooldown_store=shared_store,
     )
     assert manager_b.select_key().available is True
+
+
+def test_stale_shared_snapshot_cannot_erase_new_local_cooldown():
+    snapshot_read = threading.Event()
+    release_snapshot = threading.Event()
+
+    class BlockingSnapshotStore(InMemoryGeminiKeyCooldownStore):
+        def read_pool_snapshot(self, *args, **kwargs):
+            snapshot = super().read_pool_snapshot(*args, **kwargs)
+            snapshot_read.set()
+            assert release_snapshot.wait(timeout=2)
+            return snapshot
+
+    store = BlockingSnapshotStore()
+    manager = GeminiKeyManager.from_config(
+        gemini_api_key="fake-primary-key",
+        multi_key_enabled=False,
+        cooldown_store=store,
+    )
+    result = {}
+
+    thread = threading.Thread(
+        target=lambda: result.setdefault("selection", manager.select_key())
+    )
+    thread.start()
+    assert snapshot_read.wait(timeout=2)
+    manager.cooldown_key("primary", seconds=60, reason="rate_limit")
+    release_snapshot.set()
+    thread.join(timeout=2)
+
+    assert not thread.is_alive()
+    assert result["selection"].available is False
+    assert result["selection"].unavailable_reasons == {"primary": "rate_limit"}
+
+
+def test_concurrent_round_robin_reserves_unique_start_tickets():
+    snapshot_barrier = threading.Barrier(30)
+
+    class ConcurrentSnapshotStore(InMemoryGeminiKeyCooldownStore):
+        def read_pool_snapshot(self, *args, **kwargs):
+            snapshot_barrier.wait()
+            return super().read_pool_snapshot(*args, **kwargs)
+
+    manager = GeminiKeyManager.from_config(
+        gemini_api_key="",
+        gemini_api_keys="primary:key-a,backup1:key-b,backup2:key-c",
+        multi_key_enabled=True,
+        cooldown_store=ConcurrentSnapshotStore(),
+    )
+    barrier = threading.Barrier(30)
+
+    def select_alias(_index: int) -> str:
+        barrier.wait()
+        return manager.select_key().entry.alias
+
+    with ThreadPoolExecutor(max_workers=30) as executor:
+        aliases = list(executor.map(select_alias, range(30)))
+
+    counts = Counter(aliases)
+    assert counts == {"primary": 10, "backup1": 10, "backup2": 10}
+
+
+def test_redis_wait_does_not_hold_manager_lock_for_local_cooldown_update():
+    read_started = threading.Event()
+    release_read = threading.Event()
+    cooldown_updated = threading.Event()
+
+    class BlockingSnapshotStore(InMemoryGeminiKeyCooldownStore):
+        def read_pool_snapshot(self, *args, **kwargs):
+            read_started.set()
+            assert release_read.wait(timeout=2)
+            return super().read_pool_snapshot(*args, **kwargs)
+
+        def apply_cooldown(self, *args, **kwargs):
+            cooldown_updated.set()
+            return super().apply_cooldown(*args, **kwargs)
+
+    store = BlockingSnapshotStore()
+    manager = GeminiKeyManager.from_config(
+        gemini_api_key="fake-primary-key",
+        multi_key_enabled=False,
+        cooldown_store=store,
+    )
+    reader = threading.Thread(target=manager.has_eligible_key)
+    reader.start()
+    assert read_started.wait(timeout=2)
+
+    writer = threading.Thread(
+        target=lambda: manager.cooldown_key(
+            "primary", seconds=30, reason="rate_limit"
+        )
+    )
+    writer.start()
+    assert cooldown_updated.wait(timeout=0.5)
+    writer.join(timeout=1)
+    release_read.set()
+    reader.join(timeout=2)
+
+    assert not writer.is_alive()
+    assert not reader.is_alive()
+
+
+def test_positive_shared_cooldown_is_cached_for_redis_failure_fallback():
+    class FailingAfterFirstRead(InMemoryGeminiKeyCooldownStore):
+        fail_reads = False
+
+        def read_pool_snapshot(self, *args, **kwargs):
+            if self.fail_reads:
+                return SharedPoolSnapshot(
+                    success=False, error=TimeoutError("redis timeout")
+                )
+            return super().read_pool_snapshot(*args, **kwargs)
+
+    store = FailingAfterFirstRead()
+    scope = GeminiKeyManager.from_config(
+        gemini_api_key="fake-primary-key", multi_key_enabled=False
+    )._scope_for("primary")
+    store.apply_cooldown(
+        scope,
+        seconds=900,
+        reason="billing_credits_depleted",
+        cooldown_type="hard",
+    )
+    manager = GeminiKeyManager.from_config(
+        gemini_api_key="fake-primary-key",
+        multi_key_enabled=False,
+        cooldown_store=store,
+    )
+
+    assert manager.select_key().available is False
+    store.fail_reads = True
+    fallback = manager.select_key()
+
+    assert fallback.available is False
+    assert fallback.unavailable_reasons == {
+        "primary": "billing_credits_depleted"
+    }
+
+
+def test_positive_shared_model_marker_is_cached_for_redis_failure_fallback():
+    class FailingAfterFirstRead(InMemoryGeminiKeyCooldownStore):
+        fail_reads = False
+
+        def read_pool_snapshot(self, *args, **kwargs):
+            if self.fail_reads:
+                return SharedPoolSnapshot(
+                    success=False, error=TimeoutError("redis timeout")
+                )
+            return super().read_pool_snapshot(*args, **kwargs)
+
+    store = FailingAfterFirstRead(model_unsupported_ttl_seconds=60)
+    manager = GeminiKeyManager.from_config(
+        gemini_api_key="fake-primary-key",
+        multi_key_enabled=False,
+        cooldown_store=store,
+    )
+    scope = manager._scope_for("primary")
+    store.mark_model_unsupported(scope, "gemini-2.5-flash")
+
+    assert manager.select_key(model="gemini-2.5-flash").available is False
+    store.fail_reads = True
+    fallback = manager.select_key(model="gemini-2.5-flash")
+
+    assert fallback.available is False
+    assert fallback.all_model_unsupported is True
+
+
+def test_clear_failure_keeps_local_tombstone_and_retries_in_next_snapshot():
+    class FailClearOnceStore(InMemoryGeminiKeyCooldownStore):
+        allow_retry = False
+        clear_calls = 0
+
+        def clear_cooldown(self, scope):
+            self.clear_calls += 1
+            return False
+
+        def read_pool_snapshot(self, *args, **kwargs):
+            if kwargs.get("clear_cooldown_aliases") and not self.allow_retry:
+                return SharedPoolSnapshot(
+                    success=False, error=TimeoutError("redis timeout")
+                )
+            return super().read_pool_snapshot(*args, **kwargs)
+
+    store = FailClearOnceStore()
+    manager = GeminiKeyManager.from_config(
+        gemini_api_key="fake-primary-key",
+        multi_key_enabled=False,
+        cooldown_store=store,
+    )
+    manager.hard_cooldown_key(
+        "primary", seconds=900, reason="billing_credits_depleted"
+    )
+    manager.clear_cooldown("primary")
+
+    assert manager.select_key().available is True
+    assert "primary" in manager._pending_cooldown_clears
+
+    store.allow_retry = True
+    assert manager.select_key().available is True
+    assert "primary" not in manager._pending_cooldown_clears
+
+    fresh_manager = GeminiKeyManager.from_config(
+        gemini_api_key="fake-primary-key",
+        multi_key_enabled=False,
+        cooldown_store=store,
+    )
+    assert fresh_manager.select_key().available is True

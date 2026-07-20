@@ -2864,3 +2864,96 @@ def test_cross_process_worker_b_reuses_shared_terminal_pool_without_http():
     assert len(fake_client_b.calls) == 0
     assert second.value.error_code == "GEMINI_KEY_POOL_UNAVAILABLE"
     assert second.value.retryable is False
+
+
+def test_final_validation_reselects_when_cooldown_appears_before_http():
+    from app.services.gemini_key_cooldown_store import (
+        InMemoryGeminiKeyCooldownStore,
+    )
+
+    class CooldownBeforeValidationStore(InMemoryGeminiKeyCooldownStore):
+        snapshot_calls = 0
+
+        def read_pool_snapshot(self, scopes, model, **kwargs):
+            self.snapshot_calls += 1
+            if self.snapshot_calls == 2:
+                primary = next(scope for scope in scopes if scope.alias == "primary")
+                self.apply_cooldown(
+                    primary,
+                    seconds=60,
+                    reason="rate_limit",
+                    cooldown_type="soft",
+                )
+            return super().read_pool_snapshot(scopes, model, **kwargs)
+
+    store = CooldownBeforeValidationStore()
+    key_manager = KEY_MANAGER_MODULE.GeminiKeyManager.from_config(
+        gemini_api_key="",
+        gemini_api_keys="primary:key-a,backup1:key-b",
+        multi_key_enabled=True,
+        cooldown_store=store,
+    )
+    fake_client = _FakeClient([_success_response(summary="validated backup")])
+    client = GEMINI_CLIENT_MODULE.GeminiClient(
+        key_manager,
+        max_attempts=2,
+        backoff_base_ms=0,
+        http_client_factory=lambda timeout: fake_client,
+        sleep=lambda seconds: None,
+    )
+
+    result = client.post_json(
+        url=_MODEL_URL,
+        payload={"contents": []},
+        timeout_seconds=30,
+        model="gemini-2.5-flash",
+    )
+
+    assert result.key_alias == "backup1"
+    assert _request_keys(fake_client) == ["key-b"]
+    assert store.snapshot_calls == 4
+
+
+def test_gemini_client_hot_path_does_not_call_post_selection_helpers(monkeypatch):
+    key_manager = KEY_MANAGER_MODULE.GeminiKeyManager.from_config(
+        gemini_api_key="",
+        gemini_api_keys="primary:key-a,backup1:key-b",
+        multi_key_enabled=True,
+    )
+
+    def unexpected_helper(*args, **kwargs):
+        raise AssertionError("unexpected post-selection helper call")
+
+    for helper_name in (
+        "has_eligible_key",
+        "has_unattempted_eligible_key",
+        "all_keys_unsupported_for_model",
+    ):
+        monkeypatch.setattr(key_manager, helper_name, unexpected_helper)
+    fake_client = _FakeClient(
+        [
+            _FakeResponse(
+                429,
+                body={"error": {"message": "rate limited"}},
+                headers={"Retry-After": "30"},
+            ),
+            _success_response(summary="backup without helper reads"),
+        ]
+    )
+    client = GEMINI_CLIENT_MODULE.GeminiClient(
+        key_manager,
+        max_attempts=2,
+        backoff_base_ms=0,
+        http_client_factory=lambda timeout: fake_client,
+        sleep=lambda seconds: None,
+    )
+
+    result = client.post_json(
+        url=_MODEL_URL,
+        payload={"contents": []},
+        timeout_seconds=30,
+        model="gemini-2.5-flash",
+    )
+
+    assert result.key_alias == "backup1"
+    assert _request_keys(fake_client) == ["key-a", "key-b"]
