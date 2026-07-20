@@ -43,6 +43,7 @@ from app.services.gemini_shared_state_store import (
     InMemoryV2GeminiKeyCooldownStore,
     RedisV2GeminiKeyCooldownStore,
 )
+from app.services.gemini_policy import parse_project_groups
 
 ALIAS_PATTERN = re.compile(r"^[a-z0-9_-]+$")
 MAX_VALIDATION_REFRESH_ATTEMPTS = 2
@@ -235,11 +236,25 @@ class GeminiKeyManager:
         self,
         entries: list[GeminiKeyEntry],
         *,
+        project_groups: dict[str, str] | None = None,
         clock: Callable[[], float] | None = None,
         wall_clock: Callable[[], float] | None = None,
         cooldown_store: GeminiKeyCooldownStore | None = None,
     ):
         self._entries = _validate_entries(entries)
+        aliases = tuple(entry.alias for entry in self._entries)
+        self._project_groups = dict(
+            project_groups or parse_project_groups("", aliases=aliases)
+        )
+        if set(self._project_groups) != set(aliases):
+            raise GeminiKeyConfigError(
+                "Invalid GEMINI_KEY_PROJECT_GROUPS configuration: every alias must be mapped"
+            )
+        logger.info(
+            "GEMINI_KEY_POOL_CONFIGURED aliases={} project_groups={}",
+            list(aliases),
+            sorted(set(self._project_groups.values())),
+        )
         self._clock = clock or time.monotonic
         self._wall_clock = wall_clock or time.time
         self._cooldown_store = self._normalize_cooldown_store(cooldown_store)
@@ -257,9 +272,13 @@ class GeminiKeyManager:
         self._pending_cooldown_clears: dict[str, PendingClearState] = {}
         self._pending_model_clears: dict[tuple[str, str, str], PendingClearState] = {}
         self._pending_cooldown_publishes: dict[str, PendingPublishState] = {}
-        self._pending_model_publishes: dict[tuple[str, str, str], PendingPublishState] = {}
+        self._pending_model_publishes: dict[
+            tuple[str, str, str], PendingPublishState
+        ] = {}
         self._pending_cooldown_clear_v2: dict[str, PendingClearStateV2] = {}
-        self._pending_model_clear_v2: dict[tuple[str, str, str], PendingClearStateV2] = {}
+        self._pending_model_clear_v2: dict[
+            tuple[str, str, str], PendingClearStateV2
+        ] = {}
         self._intent_revisions: dict[str, int] = {}
         self._model_intent_revisions: dict[tuple[str, str, str], int] = {}
         self._model_unsupported_ttl_seconds = self._resolve_model_unsupported_ttl()
@@ -333,22 +352,31 @@ class GeminiKeyManager:
         gemini_api_key: str,
         gemini_api_keys: str = "",
         multi_key_enabled: bool = False,
+        key_project_groups: str = "",
         clock: Callable[[], float] | None = None,
         wall_clock: Callable[[], float] | None = None,
         cooldown_store: GeminiKeyCooldownStore | None = None,
     ) -> "GeminiKeyManager":
+        entries: list[GeminiKeyEntry] = []
         if multi_key_enabled:
             parsed_entries = parse_gemini_api_keys(gemini_api_keys)
             if parsed_entries:
-                return cls(
-                    parsed_entries,
-                    clock=clock,
-                    wall_clock=wall_clock,
-                    cooldown_store=cooldown_store,
-                )
-        primary = _validate_key(gemini_api_key)
+                entries = parsed_entries
+        if not entries:
+            primary = _validate_key(gemini_api_key)
+            entries = [GeminiKeyEntry(alias="primary", secret=primary)]
+        try:
+            project_groups = parse_project_groups(
+                key_project_groups,
+                aliases=(entry.alias for entry in entries),
+            )
+        except ValueError as exc:
+            raise GeminiKeyConfigError(
+                f"Invalid GEMINI_KEY_PROJECT_GROUPS configuration: {exc}"
+            ) from exc
         return cls(
-            [GeminiKeyEntry(alias="primary", secret=primary)],
+            entries,
+            project_groups=project_groups,
             clock=clock,
             wall_clock=wall_clock,
             cooldown_store=cooldown_store,
@@ -360,6 +388,21 @@ class GeminiKeyManager:
 
     def has_keys(self) -> bool:
         return bool(self._entries)
+
+    def project_group_for_alias(self, alias: str) -> str:
+        return self._project_groups.get(str(alias or "").strip(), "default-project")
+
+    def aliases_in_project_group(self, project_group: str) -> tuple[str, ...]:
+        normalized = str(project_group or "").strip().lower()
+        return tuple(
+            entry.alias
+            for entry in self._entries
+            if self.project_group_for_alias(entry.alias) == normalized
+        )
+
+    @property
+    def configured_aliases(self) -> tuple[str, ...]:
+        return tuple(entry.alias for entry in self._entries)
 
     @staticmethod
     def normalize_model_name(model: str | None) -> str:
@@ -389,9 +432,9 @@ class GeminiKeyManager:
     ) -> LocalStateRevision:
         return LocalStateRevision(
             alias_generation=self._alias_generation.get(alias, 0),
-            model_generation=self._model_generation.get((alias, model_name), 0)
-            if model_name
-            else 0,
+            model_generation=(
+                self._model_generation.get((alias, model_name), 0) if model_name else 0
+            ),
         )
 
     def _revision_changed_locked(
@@ -460,9 +503,7 @@ class GeminiKeyManager:
                     state.last_error_code = None
                     state.last_retry_after_seconds = 0
                 self._increment_alias_generation_locked(alias)
-        for cache_key, expires_at in tuple(
-            self._unsupported_expires_monotonic.items()
-        ):
+        for cache_key, expires_at in tuple(self._unsupported_expires_monotonic.items()):
             if expires_at <= now:
                 self._unsupported_expires_monotonic.pop(cache_key, None)
                 self._increment_model_generation_locked(cache_key[0], cache_key[2])
@@ -543,10 +584,7 @@ class GeminiKeyManager:
         if abs(existing_remaining - incoming_remaining) > TTL_SYNC_TOLERANCE_SECONDS:
             if incoming_remaining > existing_remaining + TTL_SYNC_TOLERANCE_SECONDS:
                 return True
-            if (
-                existing_remaining
-                > incoming_remaining + TTL_SYNC_TOLERANCE_SECONDS
-            ):
+            if existing_remaining > incoming_remaining + TTL_SYNC_TOLERANCE_SECONDS:
                 return True
         return False
 
@@ -565,10 +603,7 @@ class GeminiKeyManager:
         if not incoming_active:
             return False
         existing_remaining = max(0.0, existing_expires - now)
-        return (
-            abs(existing_remaining - incoming_remaining)
-            > TTL_SYNC_TOLERANCE_SECONDS
-        )
+        return abs(existing_remaining - incoming_remaining) > TTL_SYNC_TOLERANCE_SECONDS
 
     def _sync_alias_from_v2_snapshot_locked(
         self,
@@ -578,7 +613,10 @@ class GeminiKeyManager:
         model_name: str,
         now: float,
     ) -> None:
-        if alias in self._pending_cooldown_publishes or alias in self._pending_cooldown_clear_v2:
+        if (
+            alias in self._pending_cooldown_publishes
+            or alias in self._pending_cooldown_clear_v2
+        ):
             return
         pseudo = SharedAliasSnapshot(
             alias=alias,
@@ -587,9 +625,7 @@ class GeminiKeyManager:
             model_unsupported=shared.model_unsupported,
             model_pttl_ms=shared.model_pttl_ms,
         )
-        self._sync_alias_from_shared_locked(
-            pseudo, model_name=model_name, now=now
-        )
+        self._sync_alias_from_shared_locked(pseudo, model_name=model_name, now=now)
 
     def _v2_alias_snapshot(
         self, shared, *, model_name: str
@@ -651,7 +687,9 @@ class GeminiKeyManager:
         intent_revision = plan.captured_intent_revision
         if plan.scope.is_model:
             cache_key = self._model_cache_key(plan.scope.alias, plan.scope.model)
-            intent_revision = self._model_intent_revisions.get(cache_key, intent_revision)
+            intent_revision = self._model_intent_revisions.get(
+                cache_key, intent_revision
+            )
         else:
             intent_revision = self._intent_revisions.get(
                 plan.scope.alias, intent_revision
@@ -662,7 +700,9 @@ class GeminiKeyManager:
             operation_result,
             current_intent_revision=intent_revision,
             current_operation_id=(
-                pending.operation_id if pending is not None else plan.captured_operation_id or None
+                pending.operation_id
+                if pending is not None
+                else plan.captured_operation_id or None
             ),
             current_pending=pending,
             desired_intent=desired_intent,
@@ -716,12 +756,12 @@ class GeminiKeyManager:
                         self._pending_model_clear_v2.pop(cache_key, None)
                     elif updated_pending is not None:
                         if updated_pending.operation_type == "publish":
-                            self._pending_model_publishes[cache_key] = PendingPublishState(
-                                operation=updated_pending
+                            self._pending_model_publishes[cache_key] = (
+                                PendingPublishState(operation=updated_pending)
                             )
                         else:
-                            self._pending_model_clear_v2[cache_key] = PendingClearStateV2(
-                                operation=updated_pending
+                            self._pending_model_clear_v2[cache_key] = (
+                                PendingClearStateV2(operation=updated_pending)
                             )
                 else:
                     if outcome.status.value in ("converged", "terminal_failure"):
@@ -731,14 +771,16 @@ class GeminiKeyManager:
                             on_converged()
                     elif updated_pending is not None:
                         if updated_pending.operation_type == "publish":
-                            self._pending_cooldown_publishes[alias] = PendingPublishState(
-                                operation=updated_pending,
-                                reason=publish_reason,
-                                cooldown_type=publish_cooldown_type,
+                            self._pending_cooldown_publishes[alias] = (
+                                PendingPublishState(
+                                    operation=updated_pending,
+                                    reason=publish_reason,
+                                    cooldown_type=publish_cooldown_type,
+                                )
                             )
                         else:
-                            self._pending_cooldown_clear_v2[alias] = PendingClearStateV2(
-                                operation=updated_pending
+                            self._pending_cooldown_clear_v2[alias] = (
+                                PendingClearStateV2(operation=updated_pending)
                             )
                 if convergence is not None and op_result is None:
                     del convergence
@@ -752,7 +794,6 @@ class GeminiKeyManager:
             capture_plan_locked=capture_plan_locked,
             apply_locked=apply_locked,
         )
-
 
     def _sync_alias_from_shared_locked(
         self,
@@ -771,17 +812,13 @@ class GeminiKeyManager:
                 shared.cooldown_state is not None and shared.cooldown_pttl_ms > 0
             )
             incoming_remaining = (
-                max(0.0, shared.cooldown_pttl_ms / 1000.0)
-                if incoming_active
-                else 0.0
+                max(0.0, shared.cooldown_pttl_ms / 1000.0) if incoming_active else 0.0
             )
             incoming_reason = (
                 shared.cooldown_state.reason if shared.cooldown_state else None
             )
             incoming_type = (
-                shared.cooldown_state.cooldown_type
-                if shared.cooldown_state
-                else None
+                shared.cooldown_state.cooldown_type if shared.cooldown_state else None
             )
             if self._cooldown_logical_changed_locked(
                 alias,
@@ -819,13 +856,9 @@ class GeminiKeyManager:
                 cache_key not in self._pending_model_clears
                 and cache_key not in self._pending_model_publishes
             ):
-                incoming_active = (
-                    shared.model_unsupported and shared.model_pttl_ms > 0
-                )
+                incoming_active = shared.model_unsupported and shared.model_pttl_ms > 0
                 incoming_remaining = (
-                    max(0.0, shared.model_pttl_ms / 1000.0)
-                    if incoming_active
-                    else 0.0
+                    max(0.0, shared.model_pttl_ms / 1000.0) if incoming_active else 0.0
                 )
                 if self._model_unsupported_logical_changed_locked(
                     cache_key,
@@ -848,7 +881,9 @@ class GeminiKeyManager:
 
     def _pending_clear_capture_locked(
         self, model_name: str, now: float
-    ) -> tuple[dict[str, PendingClearState], dict[tuple[str, str, str], PendingClearState]]:
+    ) -> tuple[
+        dict[str, PendingClearState], dict[tuple[str, str, str], PendingClearState]
+    ]:
         self._expire_pending_clears_locked(now)
         cooldown = {
             alias: pending
@@ -874,10 +909,7 @@ class GeminiKeyManager:
         for alias, pending in cooldown_pending.items():
             v2_pending = self._pending_cooldown_clear_v2.get(alias)
             if v2_pending is not None:
-                if (
-                    succeeded
-                    and v2_pending.operation.operation_id not in succeeded
-                ):
+                if succeeded and v2_pending.operation.operation_id not in succeeded:
                     continue
                 self._pending_cooldown_clear_v2.pop(alias, None)
                 self._pending_cooldown_clears.pop(alias, None)
@@ -891,10 +923,7 @@ class GeminiKeyManager:
         for cache_key, pending in model_pending.items():
             v2_pending = self._pending_model_clear_v2.get(cache_key)
             if v2_pending is not None:
-                if (
-                    succeeded
-                    and v2_pending.operation.operation_id not in succeeded
-                ):
+                if succeeded and v2_pending.operation.operation_id not in succeeded:
                     continue
                 self._pending_model_clear_v2.pop(cache_key, None)
                 self._pending_model_clears.pop(cache_key, None)
@@ -994,11 +1023,12 @@ class GeminiKeyManager:
                     succeeded_operation_ids=frozenset(succeeded_operation_ids),
                 )
             snapshots: dict[str, GeminiAliasStateSnapshot] = {}
+            shared_fresh = True
             for entry in entries:
                 alias = entry.alias
-                if self._alias_generation.get(alias, 0) != captured_alias_generations.get(
+                if self._alias_generation.get(
                     alias, 0
-                ):
+                ) != captured_alias_generations.get(alias, 0):
                     snapshots[alias] = self._local_snapshots_locked(
                         (entry,), model_name=model_name, now=decision_now
                     )[alias]
@@ -1011,6 +1041,12 @@ class GeminiKeyManager:
                     )[alias]
                     continue
                 shared = shared_by_alias[alias]
+                if not shared.success:
+                    shared_fresh = False
+                    snapshots[alias] = self._local_snapshots_locked(
+                        (entry,), model_name=model_name, now=decision_now
+                    )[alias]
+                    continue
                 self._sync_alias_from_v2_snapshot_locked(
                     alias, shared, model_name=model_name, now=decision_now
                 )
@@ -1018,7 +1054,7 @@ class GeminiKeyManager:
                     shared, model_name=model_name
                 )
             self._cleanup_expired_locked(decision_now)
-            return snapshots, self._state_generation, True
+            return snapshots, self._state_generation, shared_fresh
 
     def _refresh_pool(
         self,
@@ -1092,9 +1128,9 @@ class GeminiKeyManager:
                 )
                 for shared in shared_snapshot.aliases:
                     alias = shared.alias
-                    if self._alias_generation.get(alias, 0) != captured_alias_generations.get(
+                    if self._alias_generation.get(
                         alias, 0
-                    ):
+                    ) != captured_alias_generations.get(alias, 0):
                         continue
                     if model_name and self._model_generation.get(
                         (alias, model_name), 0
@@ -1181,9 +1217,7 @@ class GeminiKeyManager:
         )
         reason_values = set(reasons.values())
         all_terminal = bool(reasons) and reason_values <= _TERMINAL_UNAVAILABLE_REASONS
-        retry_after = (
-            int(ceil(min(remaining_values))) if remaining_values else 0
-        )
+        retry_after = int(ceil(min(remaining_values))) if remaining_values else 0
         eligible_unattempted = any(
             entry.alias not in attempted
             and self._eligible_from_snapshot(snapshots[entry.alias])
@@ -1227,12 +1261,8 @@ class GeminiKeyManager:
         )
 
         if preferred and preferred not in excluded:
-            may_reuse_preferred = (
-                preferred not in attempted
-                or (
-                    allow_preferred_reuse
-                    and preferred not in excluded
-                )
+            may_reuse_preferred = preferred not in attempted or (
+                allow_preferred_reuse and preferred not in excluded
             )
             if may_reuse_preferred:
                 for entry in entries:
@@ -1290,9 +1320,7 @@ class GeminiKeyManager:
                             self._selection_ticket, ticket + offset + 1
                         )
                 with self._lock:
-                    revision = self._capture_revision_locked(
-                        entry.alias, model_name
-                    )
+                    revision = self._capture_revision_locked(entry.alias, model_name)
                 return self._selection_for_entry(
                     entry, snapshots, entries, attempted, revision
                 )
@@ -1347,6 +1375,43 @@ class GeminiKeyManager:
                     )
                     return self._eligible_from_snapshot(snapshots[alias])
 
+            v2_store = self._v2_store()
+            if v2_store is not None:
+                shared_v2 = v2_store.read_scope_snapshot(
+                    self._shared_scope(alias), model=model_name
+                )
+                decision_now = self._clock()
+                with self._lock:
+                    if not shared_v2.success:
+                        snapshots = self._local_snapshots_locked(
+                            (entry,), model_name=model_name, now=decision_now
+                        )
+                        return self._eligible_from_snapshot(snapshots[alias])
+
+                    current = self._v2_alias_snapshot(shared_v2, model_name=model_name)
+                    if not self._eligible_from_snapshot(current):
+                        if not self._revision_changed_locked(
+                            baseline_revision, alias, model_name
+                        ):
+                            self._sync_alias_from_v2_snapshot_locked(
+                                alias,
+                                shared_v2,
+                                model_name=model_name,
+                                now=decision_now,
+                            )
+                        return False
+                    if self._revision_changed_locked(
+                        baseline_revision, alias, model_name
+                    ):
+                        continue
+                    self._sync_alias_from_v2_snapshot_locked(
+                        alias,
+                        shared_v2,
+                        model_name=model_name,
+                        now=decision_now,
+                    )
+                    return True
+
             shared_snapshot = store.read_pool_snapshot(
                 (scope,),
                 model_name,
@@ -1364,7 +1429,11 @@ class GeminiKeyManager:
             with self._lock:
                 if shared_snapshot.success:
                     shared = next(
-                        (item for item in shared_snapshot.aliases if item.alias == alias),
+                        (
+                            item
+                            for item in shared_snapshot.aliases
+                            if item.alias == alias
+                        ),
                         None,
                     )
                     if shared is None:
@@ -1615,21 +1684,33 @@ class GeminiKeyManager:
                 self._pending_model_clears.pop(cache_key, None)
                 self._increment_model_generation_locked(normalized_alias, model_name)
             elif not success and pending is not None:
-                self._pending_model_clears[cache_key] = self._schedule_pending_clear_retry(
-                    pending,
-                    now=self._clock(),
-                    error_type="clear_failed",
+                self._pending_model_clears[cache_key] = (
+                    self._schedule_pending_clear_retry(
+                        pending,
+                        now=self._clock(),
+                        error_type="clear_failed",
+                    )
                 )
 
     def cooldown_key(self, alias: str, *, seconds: float, reason: str) -> None:
-        self._set_cooldown(
-            alias, seconds=seconds, reason=reason, cooldown_type="soft"
-        )
+        self._set_cooldown(alias, seconds=seconds, reason=reason, cooldown_type="soft")
 
     def hard_cooldown_key(self, alias: str, *, seconds: float, reason: str) -> None:
-        self._set_cooldown(
-            alias, seconds=seconds, reason=reason, cooldown_type="hard"
-        )
+        self._set_cooldown(alias, seconds=seconds, reason=reason, cooldown_type="hard")
+
+    def hard_cooldown_project_group(
+        self, alias: str, *, seconds: float, reason: str
+    ) -> tuple[str, ...]:
+        """Block every configured alias sharing billing/quota with ``alias``."""
+        project_group = self.project_group_for_alias(alias)
+        aliases = self.aliases_in_project_group(project_group)
+        for grouped_alias in aliases:
+            self.hard_cooldown_key(
+                grouped_alias,
+                seconds=seconds,
+                reason=reason,
+            )
+        return aliases
 
     def _set_cooldown(
         self,
@@ -1671,11 +1752,11 @@ class GeminiKeyManager:
                     protected_deadline_monotonic=expires_at,
                     expected_shared_revision=0,
                     expected_value_digest=None,
-                    current_pending=self._pending_cooldown_publishes.get(
-                        alias
-                    ).operation
-                    if alias in self._pending_cooldown_publishes
-                    else None,
+                    current_pending=(
+                        self._pending_cooldown_publishes.get(alias).operation
+                        if alias in self._pending_cooldown_publishes
+                        else None
+                    ),
                     clock=self._clock,
                     reason=normalized_reason,
                     cooldown_type=cooldown_type,
@@ -1745,7 +1826,9 @@ class GeminiKeyManager:
             self._local_cooldown.pop(alias, None)
             self._pending_cooldown_publishes.pop(alias, None)
             if store is not None:
-                self._pending_cooldown_clears[alias] = self._new_pending_clear_state(now)
+                self._pending_cooldown_clears[alias] = self._new_pending_clear_state(
+                    now
+                )
                 if v2_store is not None:
                     intent_revision = self._bump_cooldown_intent_locked(alias)
                     pending_op = build_clear_operation_locked(
@@ -1800,10 +1883,12 @@ class GeminiKeyManager:
                 self._pending_cooldown_clears.pop(alias, None)
                 self._increment_alias_generation_locked(alias)
             elif not success and pending is not None:
-                self._pending_cooldown_clears[alias] = self._schedule_pending_clear_retry(
-                    pending,
-                    now=self._clock(),
-                    error_type="clear_failed",
+                self._pending_cooldown_clears[alias] = (
+                    self._schedule_pending_clear_retry(
+                        pending,
+                        now=self._clock(),
+                        error_type="clear_failed",
+                    )
                 )
 
     def _cooldown_remaining(self, alias: str, *, now: float) -> float:

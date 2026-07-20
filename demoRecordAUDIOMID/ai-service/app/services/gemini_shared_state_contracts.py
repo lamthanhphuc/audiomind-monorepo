@@ -120,6 +120,8 @@ class SharedStateScope:
 @dataclass(frozen=True)
 class SharedScopeSnapshot:
     scope: SharedStateScope
+    success: bool = True
+    error: Exception | None = None
     cooldown_state: GeminiCooldownState | None = None
     cooldown_pttl_ms: int = -2
     cooldown_revision: int = 0
@@ -255,7 +257,9 @@ def build_v2_model_state_key(namespace: str, scope: GeminiKeyScope, model: str) 
     return f"{SHARED_STATE_V2_PREFIX}:{env}:model:{scope.alias}:{model_component}"
 
 
-def build_v2_model_revision_key(namespace: str, scope: GeminiKeyScope, model: str) -> str:
+def build_v2_model_revision_key(
+    namespace: str, scope: GeminiKeyScope, model: str
+) -> str:
     return f"{build_v2_model_state_key(namespace, scope, model)}:revision"
 
 

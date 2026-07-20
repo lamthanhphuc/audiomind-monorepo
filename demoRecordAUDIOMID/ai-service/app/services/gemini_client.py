@@ -11,6 +11,7 @@ from urllib.parse import urlparse, urlunparse
 import httpx
 from loguru import logger
 
+from app.metrics.gemini_metrics import gemini_metrics
 from app.services.analysis_errors import (
     AnalysisConfigError,
     AnalysisProviderError,
@@ -18,7 +19,7 @@ from app.services.analysis_errors import (
     AnalysisUnavailableError,
 )
 from app.services.gemini_key_manager import GeminiKeyManager
-from app.services.gemini_shared_state_contracts import AliasReusePolicy
+from app.services.gemini_policy import GeminiAttemptBudget
 
 MAX_SAME_ALIAS_TRANSIENT_RETRIES = 2
 
@@ -27,6 +28,7 @@ class GeminiKeyFailureReason(str, Enum):
     TRANSIENT_RATE_LIMIT = "transient_rate_limit"
     BILLING_CREDITS_DEPLETED = "billing_credits_depleted"
     FREE_TIER_TOKEN_QUOTA_EXHAUSTED = "free_tier_token_quota_exhausted"
+    DAILY_QUOTA_EXHAUSTED = "daily_quota_exhausted"
     MODEL_UNAVAILABLE = "model_unavailable"
     AUTH_ERROR = "auth_error"
     TRANSIENT_PROVIDER_ERROR = "transient_provider_error"
@@ -41,6 +43,9 @@ class GeminiCallResult:
 
     response: httpx.Response
     key_alias: str
+    project_group: str
+    network_attempts: int
+    root_operation_id: str
 
 
 _BILLING_CREDITS_MARKERS = (
@@ -60,6 +65,14 @@ _FREE_TIER_QUOTA_MARKERS = (
     "free_tier_input_token",
     "free_tier_requests",
     "free tier quota",
+)
+
+_DAILY_QUOTA_MARKERS = (
+    "requests_per_day",
+    "requests per day",
+    "per-day",
+    "per day quota",
+    "daily quota",
 )
 
 _MODEL_UNAVAILABLE_MARKERS = (
@@ -201,11 +214,22 @@ def _is_model_unavailable_message(message: str, *, reason: str = "") -> bool:
 
 def classify_http_429(response: Any) -> GeminiKeyFailureReason:
     haystack = _response_body_text(response)
-    if any(marker in haystack for marker in _BILLING_CREDITS_MARKERS):
+    if "billing_credits" in haystack or any(
+        marker in haystack for marker in _BILLING_CREDITS_MARKERS
+    ):
         return GeminiKeyFailureReason.BILLING_CREDITS_DEPLETED
+    if any(marker in haystack for marker in _DAILY_QUOTA_MARKERS):
+        return GeminiKeyFailureReason.DAILY_QUOTA_EXHAUSTED
     if any(marker in haystack for marker in _FREE_TIER_QUOTA_MARKERS):
         return GeminiKeyFailureReason.FREE_TIER_TOKEN_QUOTA_EXHAUSTED
     return GeminiKeyFailureReason.TRANSIENT_RATE_LIMIT
+
+
+def is_billing_depleted_response(response: Any) -> bool:
+    haystack = _response_body_text(response)
+    return "billing_credits" in haystack or any(
+        marker in haystack for marker in _BILLING_CREDITS_MARKERS
+    )
 
 
 def extract_model_from_gemini_url(url: str) -> str:
@@ -219,6 +243,7 @@ _TERMINAL_KEY_FAILURE_REASONS = frozenset(
     {
         GeminiKeyFailureReason.BILLING_CREDITS_DEPLETED,
         GeminiKeyFailureReason.FREE_TIER_TOKEN_QUOTA_EXHAUSTED,
+        GeminiKeyFailureReason.DAILY_QUOTA_EXHAUSTED,
         GeminiKeyFailureReason.MODEL_UNAVAILABLE,
         GeminiKeyFailureReason.AUTH_ERROR,
         GeminiKeyFailureReason.INVALID_REQUEST,
@@ -236,9 +261,7 @@ def conclude_key_pool_failure(
     """Map structured per-alias failures to a public error_code (no secrets)."""
     reasons = {reason for reason in failures_by_alias.values() if reason is not None}
     aliases = sorted(failures_by_alias.keys())
-    summary = ",".join(
-        f"{alias}={failures_by_alias[alias].value}" for alias in aliases
-    )
+    summary = ",".join(f"{alias}={failures_by_alias[alias].value}" for alias in aliases)
     logger.warning(
         "GEMINI_KEY_POOL_CONCLUSION aliases={} summary={} distinctReasons={}",
         aliases,
@@ -291,6 +314,15 @@ def conclude_key_pool_failure(
             key_alias=key_alias,
         )
 
+    if reasons == {GeminiKeyFailureReason.DAILY_QUOTA_EXHAUSTED}:
+        return AnalysisUnavailableError(
+            "Gemini daily project quota is exhausted",
+            provider="gemini",
+            error_code="GEMINI_DAILY_QUOTA_EXHAUSTED",
+            retryable=False,
+            key_alias=key_alias,
+        )
+
     if reasons == {GeminiKeyFailureReason.AUTH_ERROR}:
         return AnalysisConfigError(
             "Gemini API key was rejected or is missing",
@@ -330,6 +362,7 @@ _UNAVAILABLE_REASON_TO_FAILURE: dict[str, GeminiKeyFailureReason] = {
         GeminiKeyFailureReason.FREE_TIER_TOKEN_QUOTA_EXHAUSTED
     ),
     "free_tier_quota_exhausted": GeminiKeyFailureReason.FREE_TIER_TOKEN_QUOTA_EXHAUSTED,
+    "daily_quota_exhausted": GeminiKeyFailureReason.DAILY_QUOTA_EXHAUSTED,
     "model_unavailable": GeminiKeyFailureReason.MODEL_UNAVAILABLE,
     "invalid_key": GeminiKeyFailureReason.AUTH_ERROR,
     "auth_error": GeminiKeyFailureReason.AUTH_ERROR,
@@ -482,6 +515,7 @@ class GeminiClient:
         key_manager: GeminiKeyManager,
         *,
         max_attempts: int = 3,
+        cross_project_failover_enabled: bool = False,
         key_cooldown_seconds: float = 90.0,
         key_hard_cooldown_seconds: float = 900.0,
         backoff_base_ms: float = 500.0,
@@ -496,6 +530,7 @@ class GeminiClient:
     ):
         self.key_manager = key_manager
         self.max_attempts = max(1, int(max_attempts or 1))
+        self.cross_project_failover_enabled = bool(cross_project_failover_enabled)
         self.key_cooldown_seconds = max(0.0, float(key_cooldown_seconds or 0.0))
         self.key_hard_cooldown_seconds = max(
             0.0, float(key_hard_cooldown_seconds or 0.0)
@@ -519,6 +554,8 @@ class GeminiClient:
         timeout_seconds: int,
         preferred_key_alias: str | None = None,
         model: str | None = None,
+        attempt_budget: GeminiAttemptBudget | None = None,
+        workload: str = "unknown",
     ) -> GeminiCallResult:
         started = self.clock()
         last_error: Exception | None = None
@@ -527,12 +564,26 @@ class GeminiClient:
         same_alias_transient_retries: dict[str, int] = {}
         retry_after_seconds = 0
         sticky_alias = str(preferred_key_alias or "").strip() or None
+        budget = attempt_budget or GeminiAttemptBudget(
+            max_total_attempts=self.max_attempts,
+            deadline_monotonic=(
+                started + self.fail_fast_seconds if self.fail_fast_seconds > 0 else None
+            ),
+            clock=self.clock,
+        )
+        if budget.remaining <= 0 or budget.deadline_exhausted():
+            raise AnalysisUnavailableError(
+                "Gemini total attempt budget exhausted",
+                provider="gemini",
+                error_code="GEMINI_ATTEMPT_BUDGET_EXHAUSTED",
+                retryable=False,
+            )
+        blocked_aliases: set[str] = set()
+        last_attempt_alias: str | None = None
         model_name = GeminiKeyManager.normalize_model_name(
             model
         ) or extract_model_from_gemini_url(url)
-        # Always allow one attempt per configured key so backup keys are not
-        # skipped when gemini_max_attempts is smaller than the pool size.
-        loop_attempts = max(self.max_attempts, len(self.key_manager.entries))
+        loop_attempts = budget.remaining
 
         client_timeout = self._per_attempt_timeout(started, timeout_seconds)
         with self.http_client_factory(timeout=client_timeout) as client:
@@ -548,7 +599,7 @@ class GeminiClient:
                         preferred_alias=sticky_alias,
                         model=model_name or None,
                         attempted_aliases=attempted_aliases,
-                        exclude_aliases=stale_aliases,
+                        exclude_aliases=stale_aliases | blocked_aliases,
                         allow_preferred_reuse=allow_preferred_reuse,
                     )
                     if not selection.available or selection.entry is None:
@@ -570,7 +621,7 @@ class GeminiClient:
                         selection = self.key_manager.select_key(
                             model=model_name or None,
                             attempted_aliases=attempted_aliases,
-                            exclude_aliases=stale_aliases,
+                            exclude_aliases=stale_aliases | blocked_aliases,
                             allow_preferred_reuse=False,
                         )
                         break
@@ -587,8 +638,7 @@ class GeminiClient:
                         and selection.entry.alias not in attempted_aliases
                     )
                     if failures_by_alias and (
-                        selected_unattempted
-                        or selection.has_unattempted_eligible
+                        selected_unattempted or selection.has_unattempted_eligible
                     ):
                         per_attempt_timeout = min(
                             max(0.0, float(timeout_seconds or 0)), 15.0
@@ -675,6 +725,20 @@ class GeminiClient:
                     bool(preferred_key_alias and entry.alias == preferred_key_alias),
                     model_name or "",
                 )
+                provider_attempt = budget.reserve()
+                if provider_attempt is None:
+                    last_error = AnalysisUnavailableError(
+                        "Gemini total attempt budget exhausted",
+                        provider="gemini",
+                        error_code="GEMINI_ATTEMPT_BUDGET_EXHAUSTED",
+                        retryable=False,
+                        key_alias=entry.alias,
+                    )
+                    break
+                if last_attempt_alias is not None and last_attempt_alias != entry.alias:
+                    gemini_metrics.failover()
+                last_attempt_alias = entry.alias
+                gemini_metrics.network_attempt(workload, model_name)
                 try:
                     response = client.post(
                         url,
@@ -692,8 +756,18 @@ class GeminiClient:
                         "GEMINI_CALL_FAILED alias={} status=timeout reason=TIMEOUT",
                         entry.alias,
                     )
-                    if attempt >= loop_attempts:
+                    if attempt >= loop_attempts or budget.remaining <= 0:
                         break
+                    if (
+                        not selection.has_unattempted_eligible
+                        and same_alias_transient_retries.get(entry.alias, 0)
+                        < MAX_SAME_ALIAS_TRANSIENT_RETRIES
+                    ):
+                        same_alias_transient_retries[entry.alias] = (
+                            same_alias_transient_retries.get(entry.alias, 0) + 1
+                        )
+                        attempted_aliases.discard(entry.alias)
+                    gemini_metrics.retry("timeout")
                     self._sleep_before_retry(attempt, started)
                     continue
                 except httpx.ConnectError as exc:
@@ -721,8 +795,18 @@ class GeminiClient:
                             "GEMINI_CALL_FAILED alias={} status=network reason=CONNECT_ERROR",
                             entry.alias,
                         )
-                    if attempt >= loop_attempts:
+                    if attempt >= loop_attempts or budget.remaining <= 0:
                         break
+                    if (
+                        not selection.has_unattempted_eligible
+                        and same_alias_transient_retries.get(entry.alias, 0)
+                        < MAX_SAME_ALIAS_TRANSIENT_RETRIES
+                    ):
+                        same_alias_transient_retries[entry.alias] = (
+                            same_alias_transient_retries.get(entry.alias, 0) + 1
+                        )
+                        attempted_aliases.discard(entry.alias)
+                    gemini_metrics.retry("connect_error")
                     self._sleep_before_retry(attempt, started)
                     continue
                 except httpx.HTTPError as exc:
@@ -735,8 +819,18 @@ class GeminiClient:
                         "GEMINI_CALL_FAILED alias={} status=network reason=HTTP_ERROR",
                         entry.alias,
                     )
-                    if attempt >= loop_attempts:
+                    if attempt >= loop_attempts or budget.remaining <= 0:
                         break
+                    if (
+                        not selection.has_unattempted_eligible
+                        and same_alias_transient_retries.get(entry.alias, 0)
+                        < MAX_SAME_ALIAS_TRANSIENT_RETRIES
+                    ):
+                        same_alias_transient_retries[entry.alias] = (
+                            same_alias_transient_retries.get(entry.alias, 0) + 1
+                        )
+                        attempted_aliases.discard(entry.alias)
+                    gemini_metrics.retry("network_error")
                     self._sleep_before_retry(attempt, started)
                     continue
 
@@ -749,7 +843,15 @@ class GeminiClient:
                         attempt,
                         model_name or "",
                     )
-                    return GeminiCallResult(response=response, key_alias=entry.alias)
+                    return GeminiCallResult(
+                        response=response,
+                        key_alias=entry.alias,
+                        project_group=self.key_manager.project_group_for_alias(
+                            entry.alias
+                        ),
+                        network_attempts=budget.attempts_used,
+                        root_operation_id=budget.root_operation_id,
+                    )
 
                 reason = _response_reason(response)
                 error_message = _response_error_message(response)
@@ -767,12 +869,45 @@ class GeminiClient:
                     status_code in {429, 500, 502, 503, 504} or model_unavailable,
                 )
                 logger.warning(
-                    "GEMINI_CALL_FAILED alias={} status={} reason={} message={}",
+                    "GEMINI_CALL_FAILED alias={} status={} reason={} messagePresent={}",
                     entry.alias,
                     status_code,
                     reason,
-                    error_message[:240] if error_message else "",
+                    bool(error_message),
                 )
+
+                if is_billing_depleted_response(response):
+                    failure_reason = GeminiKeyFailureReason.BILLING_CREDITS_DEPLETED
+                    failures_by_alias[entry.alias] = failure_reason
+                    sticky_alias = None
+                    grouped_aliases = self.key_manager.hard_cooldown_project_group(
+                        entry.alias,
+                        seconds=self.key_hard_cooldown_seconds,
+                        reason=failure_reason.value,
+                    )
+                    blocked_aliases.update(grouped_aliases)
+                    gemini_metrics.billing_block()
+                    logger.warning(
+                        "GEMINI_KEY_HARD_COOLDOWN alias={} model={} cooldownMs={} reason={} quotaMetric={}",
+                        entry.alias,
+                        model_name or "",
+                        int(self.key_hard_cooldown_seconds * 1000),
+                        failure_reason.value,
+                        quota_metric,
+                    )
+                    billing_error = AnalysisUnavailableError(
+                        "Gemini project billing credits are depleted",
+                        provider="gemini",
+                        error_code="GEMINI_BILLING_CREDITS_DEPLETED",
+                        retryable=False,
+                        key_alias=entry.alias,
+                    )
+                    if not self.cross_project_failover_enabled:
+                        raise billing_error
+                    if attempt >= loop_attempts or budget.remaining <= 0:
+                        raise billing_error
+                    gemini_metrics.retry("cross_project_billing_failover")
+                    continue
 
                 if status_code == 400:
                     if _is_region_blocked_message(error_message):
@@ -792,20 +927,16 @@ class GeminiClient:
                             GeminiKeyFailureReason.MODEL_UNAVAILABLE
                         )
                         sticky_alias = None
-                        self.key_manager.mark_model_unsupported(
-                            entry.alias, model_name
-                        )
+                        self.key_manager.mark_model_unsupported(entry.alias, model_name)
                         last_error = AnalysisUnavailableError(
                             error_message
                             or "Gemini model is not available for this API key",
                             provider="gemini",
                             error_code="GEMINI_MODEL_UNAVAILABLE",
-                            retryable=True,
+                            retryable=False,
                             key_alias=entry.alias,
                         )
-                        if attempt >= loop_attempts:
-                            break
-                        continue
+                        raise last_error
                     failures_by_alias[entry.alias] = (
                         GeminiKeyFailureReason.INVALID_REQUEST
                     )
@@ -836,9 +967,18 @@ class GeminiClient:
                         error_code="GEMINI_INVALID_KEY",
                         key_alias=entry.alias,
                     )
+                    project_group = self.key_manager.project_group_for_alias(
+                        entry.alias
+                    )
+                    blocked_aliases.update(
+                        self.key_manager.aliases_in_project_group(project_group)
+                    )
                     sticky_alias = None
-                    if attempt >= loop_attempts:
+                    if not self.cross_project_failover_enabled:
+                        raise last_error
+                    if attempt >= loop_attempts or budget.remaining <= 0:
                         break
+                    gemini_metrics.retry("auth_failover")
                     continue
 
                 if status_code == 429:
@@ -846,15 +986,16 @@ class GeminiClient:
                     failures_by_alias[entry.alias] = failure_reason
                     sticky_alias = None
                     if failure_reason in {
-                        GeminiKeyFailureReason.BILLING_CREDITS_DEPLETED,
                         GeminiKeyFailureReason.FREE_TIER_TOKEN_QUOTA_EXHAUSTED,
+                        GeminiKeyFailureReason.DAILY_QUOTA_EXHAUSTED,
                     }:
                         cooldown = self.key_hard_cooldown_seconds
-                        self.key_manager.hard_cooldown_key(
+                        grouped_aliases = self.key_manager.hard_cooldown_project_group(
                             entry.alias,
                             seconds=cooldown,
                             reason=failure_reason.value,
                         )
+                        blocked_aliases.update(grouped_aliases)
                         logger.warning(
                             "GEMINI_KEY_HARD_COOLDOWN alias={} model={} cooldownMs={} reason={} quotaMetric={}",
                             entry.alias,
@@ -863,6 +1004,34 @@ class GeminiClient:
                             failure_reason.value,
                             quota_metric,
                         )
+                        quota_error = AnalysisUnavailableError(
+                            (
+                                "Gemini daily project quota is exhausted"
+                                if failure_reason
+                                is GeminiKeyFailureReason.DAILY_QUOTA_EXHAUSTED
+                                else "Gemini free-tier token quota is exhausted"
+                            ),
+                            provider="gemini",
+                            error_code=(
+                                "GEMINI_BILLING_CREDITS_DEPLETED"
+                                if failure_reason
+                                is GeminiKeyFailureReason.BILLING_CREDITS_DEPLETED
+                                else (
+                                    "GEMINI_DAILY_QUOTA_EXHAUSTED"
+                                    if failure_reason
+                                    is GeminiKeyFailureReason.DAILY_QUOTA_EXHAUSTED
+                                    else "GEMINI_FREE_TIER_TOKEN_QUOTA_EXHAUSTED"
+                                )
+                            ),
+                            retryable=False,
+                            key_alias=entry.alias,
+                        )
+                        if not self.cross_project_failover_enabled:
+                            raise quota_error
+                        if attempt >= loop_attempts or budget.remaining <= 0:
+                            raise quota_error
+                        gemini_metrics.retry("cross_project_billing_failover")
+                        continue
                     else:
                         retry_after = _bounded_retry_after(
                             response, self.key_cooldown_seconds
@@ -879,7 +1048,7 @@ class GeminiClient:
                             int(retry_after * 1000),
                             quota_metric,
                         )
-                    if attempt >= loop_attempts:
+                    if attempt >= loop_attempts or budget.remaining <= 0:
                         break
                     # Match VPS failover intent: try the next eligible key
                     # immediately inside this logical request (primary 429 →
@@ -891,7 +1060,9 @@ class GeminiClient:
                             entry.alias,
                             model_name or "",
                         )
+                        gemini_metrics.retry("rate_limit_failover")
                         continue
+                    gemini_metrics.retry("rate_limit")
                     self._sleep_before_retry(attempt, started)
                     continue
 
@@ -901,9 +1072,7 @@ class GeminiClient:
                     )
                     sticky_alias = None
                     if model_name:
-                        self.key_manager.mark_model_unsupported(
-                            entry.alias, model_name
-                        )
+                        self.key_manager.mark_model_unsupported(entry.alias, model_name)
                     logger.warning(
                         "GEMINI_KEY_MODEL_UNAVAILABLE alias={} model={} reason=model_unavailable",
                         entry.alias,
@@ -914,12 +1083,10 @@ class GeminiClient:
                         or "Gemini model is not available for this API key",
                         provider="gemini",
                         error_code="GEMINI_MODEL_UNAVAILABLE",
-                        retryable=True,
+                        retryable=False,
                         key_alias=entry.alias,
                     )
-                    if attempt >= loop_attempts:
-                        break
-                    continue
+                    raise last_error
 
                 if status_code in {500, 502, 503, 504}:
                     sticky_alias = None
@@ -932,7 +1099,7 @@ class GeminiClient:
                         error_code="GEMINI_UNAVAILABLE",
                         key_alias=entry.alias,
                     )
-                    if attempt >= loop_attempts:
+                    if attempt >= loop_attempts or budget.remaining <= 0:
                         break
                     if (
                         not selection.has_unattempted_eligible
@@ -943,6 +1110,7 @@ class GeminiClient:
                             same_alias_transient_retries.get(entry.alias, 0) + 1
                         )
                         attempted_aliases.discard(entry.alias)
+                    gemini_metrics.retry("provider_5xx")
                     self._sleep_before_retry(attempt, started)
                     continue
 

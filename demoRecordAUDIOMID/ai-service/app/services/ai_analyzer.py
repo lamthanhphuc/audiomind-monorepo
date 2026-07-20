@@ -14,6 +14,8 @@ from tenacity import (
 )
 
 from app.logging_utils import safe_error_message, transcript_hash_prefix
+from app.metrics.gemini_metrics import gemini_metrics
+from app.services.gemini_policy import GeminiAttemptBudget, GeminiWorkload
 from app.services.analysis_errors import (
     AnalysisConfigError,
     AnalysisNotImplementedError,
@@ -106,9 +108,15 @@ class AIAnalyzer:
         summary_model: str | None = None,
         analysis_domain_mode: str = "it",
         analysis_max_input_tokens: int = 12000,
-        analysis_max_output_tokens: int = 8192,
+        analysis_max_output_tokens: int = 4096,
         analysis_thinking_budget: Optional[int] = 0,
-        analysis_retry_max_attempts: int = 3,
+        thinking_level: str = "low",
+        temperature: float = 0.2,
+        chat_max_output_tokens: int = 1200,
+        summary_max_output_tokens: int = 2048,
+        structured_analysis_max_output_tokens: int | None = None,
+        study_artifact_max_output_tokens: int = 3072,
+        analysis_retry_max_attempts: int = 2,
         gemini_rate_limit_retry_base_seconds: float = 30.0,
         gemini_rate_limit_retry_max_seconds: float = 90.0,
         gemini_retry_quota_exceeded: bool = False,
@@ -117,7 +125,11 @@ class AIAnalyzer:
         gemini_request_delay_seconds: float = 15.0,
         gemini_api_keys: str = "",
         gemini_multi_key_enabled: bool = False,
-        gemini_max_attempts: int = 3,
+        gemini_max_attempts: int = 2,
+        gemini_max_schema_retries: int = 1,
+        gemini_max_token_retries: int = 1,
+        gemini_key_project_groups: str = "",
+        gemini_cross_project_failover_enabled: bool = False,
         gemini_key_cooldown_seconds: float = 90.0,
         gemini_key_hard_cooldown_seconds: float = 900.0,
         gemini_backoff_base_ms: float = 500.0,
@@ -150,6 +162,21 @@ class AIAnalyzer:
             if analysis_thinking_budget is None
             else max(0, int(analysis_thinking_budget))
         )
+        self.gemini_thinking_level = str(thinking_level or "low").strip().lower()
+        self.gemini_temperature = min(2.0, max(0.0, float(temperature or 0.2)))
+        self.chat_max_output_tokens = max(1, int(chat_max_output_tokens or 1200))
+        self.summary_max_output_tokens = max(1, int(summary_max_output_tokens or 2048))
+        self.structured_analysis_max_output_tokens = max(
+            1,
+            int(
+                structured_analysis_max_output_tokens
+                if structured_analysis_max_output_tokens is not None
+                else analysis_max_output_tokens or 4096
+            ),
+        )
+        self.study_artifact_max_output_tokens = max(
+            1, int(study_artifact_max_output_tokens or 3072)
+        )
         self.analysis_retry_max_attempts = max(1, int(analysis_retry_max_attempts or 1))
         self.gemini_rate_limit_retry_base_seconds = max(
             0.0, float(gemini_rate_limit_retry_base_seconds or 0.0)
@@ -167,6 +194,16 @@ class AIAnalyzer:
         )
         self.gemini_multi_key_enabled = bool(gemini_multi_key_enabled)
         self.gemini_max_attempts = max(1, int(gemini_max_attempts or 1))
+        self.gemini_max_schema_retries = min(
+            1, max(0, int(gemini_max_schema_retries or 0))
+        )
+        self.gemini_max_token_retries = min(
+            1, max(0, int(gemini_max_token_retries or 0))
+        )
+        self.gemini_key_project_groups = str(gemini_key_project_groups or "").strip()
+        self.gemini_cross_project_failover_enabled = bool(
+            gemini_cross_project_failover_enabled
+        )
         self.gemini_key_cooldown_seconds = max(
             0.0, float(gemini_key_cooldown_seconds or 0.0)
         )
@@ -204,7 +241,9 @@ class AIAnalyzer:
                     )
                     parsed_entries = parse_gemini_api_keys(gemini_api_keys)
                     if parsed_entries:
-                        allowed_aliases = frozenset(entry.alias for entry in parsed_entries)
+                        allowed_aliases = frozenset(
+                            entry.alias for entry in parsed_entries
+                        )
                     else:
                         allowed_aliases = frozenset({"primary"})
                     cooldown_store = build_v2_redis_gemini_cooldown_store(
@@ -216,6 +255,7 @@ class AIAnalyzer:
                     gemini_api_key=self.api_key,
                     gemini_api_keys=gemini_api_keys,
                     multi_key_enabled=self.gemini_multi_key_enabled,
+                    key_project_groups=self.gemini_key_project_groups,
                     cooldown_store=cooldown_store,
                 )
             except GeminiKeyConfigError as exc:
@@ -243,6 +283,7 @@ class AIAnalyzer:
             self.gemini_client = GeminiClient(
                 self.gemini_key_manager,
                 max_attempts=self.gemini_max_attempts,
+                cross_project_failover_enabled=self.gemini_cross_project_failover_enabled,
                 key_cooldown_seconds=self.gemini_key_cooldown_seconds,
                 key_hard_cooldown_seconds=self.gemini_key_hard_cooldown_seconds,
                 backoff_base_ms=self.gemini_backoff_base_ms,
@@ -1574,6 +1615,21 @@ TEXT:
 
         return 0
 
+    def _workload_output_budget(self, workload: GeminiWorkload) -> int:
+        budgets = {
+            GeminiWorkload.CHAT: self.chat_max_output_tokens,
+            GeminiWorkload.SUMMARY: self.summary_max_output_tokens,
+            GeminiWorkload.STRUCTURED_ANALYSIS: self.structured_analysis_max_output_tokens,
+            GeminiWorkload.STUDY_ARTIFACT: self.study_artifact_max_output_tokens,
+        }
+        return int(budgets[workload])
+
+    def _new_attempt_budget(self) -> GeminiAttemptBudget:
+        return GeminiAttemptBudget(
+            max_total_attempts=self.gemini_max_attempts,
+            deadline_monotonic=time.monotonic() + max(1, int(self.timeout_seconds)),
+        )
+
     def _normalize_action_items(self, values: Any) -> List[Dict[str, Any]]:
         normalized: List[Dict[str, Any]] = []
         for item in values or []:
@@ -1667,7 +1723,12 @@ TEXT:
     def _parse_gemini_analysis_content(self, content: str) -> Dict[str, Any]:
         return self._loads_json_strict(content)
 
-    def _repair_gemini_analysis_json(self, malformed_content: str) -> str:
+    def _repair_gemini_analysis_json(
+        self,
+        malformed_content: str,
+        *,
+        attempt_budget: GeminiAttemptBudget | None = None,
+    ) -> str:
         repair_system_prompt = (
             "Bạn là bộ sửa JSON. Chỉ được trả về đúng một object JSON hợp lệ, "
             "không markdown, không giải thích, không thêm field ngoài schema."
@@ -1684,7 +1745,9 @@ TEXT:
             temperature=0,
             response_json=True,
             response_schema=None,
-            max_output_tokens=self.analysis_max_output_tokens,
+            max_output_tokens=self.structured_analysis_max_output_tokens,
+            workload=GeminiWorkload.STRUCTURED_ANALYSIS,
+            attempt_budget=attempt_budget,
         )
 
     def _loads_json_strict(self, text: str) -> Dict[str, Any]:
@@ -1839,7 +1902,9 @@ NỘI DUNG:
             prompt=prompt,
             system_prompt=system_prompt,
             model=self.summary_model,
-            temperature=0.2,
+            temperature=self.gemini_temperature,
+            max_output_tokens=self.summary_max_output_tokens,
+            workload=GeminiWorkload.SUMMARY,
         )
 
     def _summarize_chunk_with_ollama(self, prompt: str) -> str:
@@ -1880,12 +1945,23 @@ NỘI DUNG:
         response_json: bool = False,
         response_schema: Optional[Dict[str, Any]] = None,
         max_output_tokens: Optional[int] = None,
+        workload: GeminiWorkload = GeminiWorkload.STRUCTURED_ANALYSIS,
+        attempt_budget: GeminiAttemptBudget | None = None,
     ) -> str:
         self._require_gemini_api_key()
+        operation_budget = attempt_budget or self._new_attempt_budget()
+        if operation_budget.mark_logical_started():
+            gemini_metrics.logical_operation(workload.value)
         thinking_budget = self._resolve_gemini_thinking_budget(
             model=model,
             response_json=response_json,
         )
+        if str(model or "").strip().lower().startswith("gemini-3"):
+            thinking_config: Dict[str, Any] = {
+                "thinkingLevel": self.gemini_thinking_level
+            }
+        else:
+            thinking_config = {"thinkingBudget": thinking_budget}
         base_payload: Dict[str, Any] = {
             "contents": [
                 {
@@ -1898,7 +1974,7 @@ NỘI DUNG:
             },
             "generationConfig": {
                 "temperature": temperature,
-                "thinkingConfig": {"thinkingBudget": thinking_budget},
+                "thinkingConfig": thinking_config,
             },
         }
         if max_output_tokens is not None:
@@ -2034,6 +2110,8 @@ NỘI DUNG:
                 timeout_seconds=self.timeout_seconds,
                 preferred_key_alias=preferred_key_alias,
                 model=model,
+                attempt_budget=operation_budget,
+                workload=workload.value,
             )
             response = call_result.response
             key_alias = call_result.key_alias
@@ -2043,6 +2121,8 @@ NỘI DUNG:
             input_tokens = None
             output_tokens = None
             total_tokens = None
+            thinking_tokens = None
+            cached_tokens = None
             usage_metadata = body_dict.get("usageMetadata") or body_dict.get(
                 "usage_metadata"
             )
@@ -2056,12 +2136,31 @@ NỘI DUNG:
                 total_tokens = usage_metadata.get(
                     "totalTokenCount"
                 ) or usage_metadata.get("total_tokens")
+                thinking_tokens = usage_metadata.get(
+                    "thoughtsTokenCount"
+                ) or usage_metadata.get("thinking_tokens")
+                cached_tokens = usage_metadata.get(
+                    "cachedContentTokenCount"
+                ) or usage_metadata.get("cached_tokens")
+                gemini_metrics.usage(
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    thinking_tokens=thinking_tokens,
+                    cached_tokens=cached_tokens,
+                )
                 logger.info(
-                    "GEMINI_ANALYSIS_TOKEN_USAGE input_tokens={} output_tokens={} total_tokens={} key_alias={}",
+                    "GEMINI_ANALYSIS_TOKEN_USAGE input_tokens={} output_tokens={} thinking_tokens={} cached_tokens={} total_tokens={} workload={} model={} key_alias={} project_group={} network_attempts={} root_operation_id={}",
                     input_tokens,
                     output_tokens,
+                    thinking_tokens,
+                    cached_tokens,
                     total_tokens,
+                    workload.value,
+                    model,
                     key_alias,
+                    call_result.project_group,
+                    call_result.network_attempts,
+                    call_result.root_operation_id,
                 )
 
             finish_reason = None
@@ -2098,19 +2197,21 @@ NỘI DUNG:
             logger.info(
                 f"Gemini response parse success model={model} response_chars={len(text)}"
             )
+            gemini_metrics.success(workload.value, model)
             return text, key_alias
 
         base_max_output_tokens = max_output_tokens
         if base_max_output_tokens is None:
-            base_max_output_tokens = self.analysis_max_output_tokens
-        # One doubling retry is allowed. Ceiling is the configured analysis max,
-        # but never below the historical 8192 analysis ceiling when the instance
-        # budget is lower (compat with 1024→2048 / 4096→8192), and never above 16384.
-        configured_cap = max(1, int(self.analysis_max_output_tokens or 8192))
-        retry_ceiling = min(16384, max(configured_cap, 8192))
+            base_max_output_tokens = self._workload_output_budget(workload)
+        # A controlled retry may only use remaining room in this workload's
+        # configured ceiling; it never raises the ceiling implicitly.
+        retry_ceiling = self._workload_output_budget(workload)
         max_tokens_retry_output_budget = min(
             retry_ceiling,
-            max(2048, int(base_max_output_tokens or 2048) * 2),
+            max(
+                int(base_max_output_tokens or 1) + 512,
+                int(base_max_output_tokens or 1) * 2,
+            ),
         )
 
         attempt_variants: List[Dict[str, Any]] = [
@@ -2156,7 +2257,10 @@ NỘI DUNG:
                     provider=self.provider,
                     key_alias=sticky_key_alias,
                 )
-                if not self.gemini_max_tokens_retry_enabled:
+                if (
+                    not self.gemini_max_tokens_retry_enabled
+                    or self.gemini_max_token_retries <= 0
+                ):
                     logger.warning(
                         "GEMINI_ANALYSIS_MAX_TOKENS_RETRY_SKIPPED reason=disabled output_tokens={} max_output_tokens={} response_chars={}",
                         exc.output_tokens,
@@ -2164,9 +2268,16 @@ NỘI DUNG:
                         exc.response_chars,
                     )
                     raise last_exc
-                if max_tokens_retry_enqueued:
+                if (
+                    max_tokens_retry_enqueued
+                    or operation_budget.remaining <= 0
+                    or operation_budget.deadline_exhausted()
+                    or max_tokens_retry_output_budget <= int(exc.max_output_tokens or 0)
+                ):
                     raise last_exc
                 max_tokens_retry_enqueued = True
+                gemini_metrics.retry("max_tokens")
+                gemini_metrics.max_tokens_retry()
                 logger.warning(
                     "GEMINI_ANALYSIS_MAX_TOKENS_RETRY_ENQUEUED output_tokens={} max_output_tokens={} retry_max_output_tokens={} sticky_key={}",
                     exc.output_tokens,
@@ -2191,8 +2302,14 @@ NỘI DUNG:
                     or getattr(exc, "error_code", "") == "GEMINI_INVALID_REQUEST"
                 )
                 if is_http_400 and current_schema is not None:
-                    if not schema_retry_enqueued:
+                    if (
+                        not schema_retry_enqueued
+                        and self.gemini_max_schema_retries > 0
+                        and operation_budget.remaining > 0
+                        and not operation_budget.deadline_exhausted()
+                    ):
                         schema_retry_enqueued = True
+                        gemini_metrics.retry("schema_invalid")
                         attempt_variants.append(
                             {
                                 "schema": None,
@@ -2249,14 +2366,17 @@ NỘI DUNG:
             is_realtime=is_realtime,
         )
 
+        operation_budget = self._new_attempt_budget()
         content = self._call_gemini_text(
             prompt=json_prompt,
             system_prompt=system_prompt,
             model=self.model,
-            temperature=0.1,
+            temperature=self.gemini_temperature,
             response_json=True,
             response_schema=self._build_gemini_response_schema(domain_mode),
-            max_output_tokens=self.analysis_max_output_tokens,
+            max_output_tokens=self.structured_analysis_max_output_tokens,
+            workload=GeminiWorkload.STRUCTURED_ANALYSIS,
+            attempt_budget=operation_budget,
         )
         try:
             parsed = self._parse_gemini_analysis_content(content)
@@ -2266,24 +2386,41 @@ NỘI DUNG:
                 exc,
                 len(content),
             )
+            if (
+                self.gemini_max_schema_retries <= 0
+                or operation_budget.remaining <= 0
+                or operation_budget.deadline_exhausted()
+            ):
+                raise
+            gemini_metrics.retry("schema_invalid")
             retry_content = self._call_gemini_text(
                 prompt=json_prompt,
                 system_prompt=system_prompt,
                 model=self.model,
-                temperature=0.1,
+                temperature=self.gemini_temperature,
                 response_json=True,
                 response_schema=None,
-                max_output_tokens=self.analysis_max_output_tokens,
+                max_output_tokens=self.structured_analysis_max_output_tokens,
+                workload=GeminiWorkload.STRUCTURED_ANALYSIS,
+                attempt_budget=operation_budget,
             )
             try:
                 parsed = self._parse_gemini_analysis_content(retry_content)
             except AnalysisParseError as retry_exc:
+                if (
+                    operation_budget.remaining <= 0
+                    or operation_budget.deadline_exhausted()
+                ):
+                    raise
                 logger.warning(
                     "GEMINI_ANALYSIS_PARSE_FAILED reason={} response_chars={} attempting_llm_json_repair=true",
                     retry_exc,
                     len(retry_content),
                 )
-                repaired_content = self._repair_gemini_analysis_json(retry_content)
+                repaired_content = self._repair_gemini_analysis_json(
+                    retry_content,
+                    attempt_budget=operation_budget,
+                )
                 parsed = self._parse_gemini_analysis_content(repaired_content)
         structured = self._normalize_gemini_structured_analysis(prompt, parsed)
         structured["domainMode"] = domain_mode

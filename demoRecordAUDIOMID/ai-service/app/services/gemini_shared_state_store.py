@@ -32,6 +32,7 @@ from app.services.gemini_key_cooldown_store import (
     _redis_errors,
     decode_cooldown_payload,
     encode_cooldown_payload,
+    is_supported_generation_model,
     normalize_model_name,
     parse_redis_cooldown_metadata,
     resolve_shared_state_namespace,
@@ -414,10 +415,13 @@ class _V2StoreBase:
     ) -> None:
         self.namespace = namespace
         self.allowed_aliases = frozenset(
-            str(alias).strip().lower() for alias in allowed_aliases if str(alias).strip()
+            str(alias).strip().lower()
+            for alias in allowed_aliases
+            if str(alias).strip()
         )
         self.model_unsupported_ttl_seconds = max(
-            1, int(model_unsupported_ttl_seconds or DEFAULT_MODEL_UNSUPPORTED_TTL_SECONDS)
+            1,
+            int(model_unsupported_ttl_seconds or DEFAULT_MODEL_UNSUPPORTED_TTL_SECONDS),
         )
         self._wall_clock_ms = wall_clock_ms or (lambda: int(time.time() * 1000))
 
@@ -435,6 +439,19 @@ class _V2StoreBase:
             return SharedWriteResult(
                 status=PendingOperationStatus.REJECTED,
                 error_type=SharedStoreErrorType.INVALID_SCOPE,
+            )
+        return None
+
+    def _reject_invalid_model(self, model: str | None) -> SharedWriteResult | None:
+        normalized = normalize_model_name(model)
+        if not is_supported_generation_model(normalized):
+            logger.warning(
+                "GEMINI_V2_SHARED_STATE_REJECTED namespace={} reason=invalid_model",
+                self.namespace,
+            )
+            return SharedWriteResult(
+                status=PendingOperationStatus.REJECTED,
+                error_type=SharedStoreErrorType.INVALID_ARGUMENT,
             )
         return None
 
@@ -502,7 +519,9 @@ class RedisV2GeminiKeyCooldownStore(_V2StoreBase):
             return self._redis.register_script(script)
         return None
 
-    def _safe_redis(self, operation: str, fn: Callable[[], Any]) -> tuple[bool, Any, Exception | None]:
+    def _safe_redis(
+        self, operation: str, fn: Callable[[], Any]
+    ) -> tuple[bool, Any, Exception | None]:
         del operation
         try:
             return True, fn(), None
@@ -655,6 +674,9 @@ class RedisV2GeminiKeyCooldownStore(_V2StoreBase):
         rejected = self._reject_invalid_scope(scope.alias)
         if rejected is not None:
             return rejected
+        rejected = self._reject_invalid_model(scope.model)
+        if rejected is not None:
+            return rejected
         model = normalize_model_name(scope.model)
         if not model:
             return self._reject_invalid_argument("missing_model")
@@ -692,6 +714,9 @@ class RedisV2GeminiKeyCooldownStore(_V2StoreBase):
         rejected = self._reject_invalid_scope(scope.alias)
         if rejected is not None:
             return rejected
+        rejected = self._reject_invalid_model(scope.model)
+        if rejected is not None:
+            return rejected
         model = normalize_model_name(scope.model)
         if not model:
             return self._reject_invalid_argument("missing_model")
@@ -727,7 +752,10 @@ class RedisV2GeminiKeyCooldownStore(_V2StoreBase):
                 )
             )
         else:
-            model_state_key, model_revision_key = cooldown_state_key, cooldown_revision_key
+            model_state_key, model_revision_key = (
+                cooldown_state_key,
+                cooldown_revision_key,
+            )
 
         if self._snapshot_script is not None:
             raw = self._snapshot_script(
@@ -769,6 +797,8 @@ class RedisV2GeminiKeyCooldownStore(_V2StoreBase):
     ) -> SharedScopeSnapshot:
         if self._reject_invalid_scope(scope.alias) is not None:
             return SharedScopeSnapshot(scope=scope)
+        if model and self._reject_invalid_model(model) is not None:
+            return SharedScopeSnapshot(scope=scope)
         now_ms = self._now_ms()
         ok, values, exc = self._safe_redis(
             "snapshot",
@@ -776,7 +806,7 @@ class RedisV2GeminiKeyCooldownStore(_V2StoreBase):
         )
         if not ok:
             self._log_redis_failure("snapshot", exc, alias=scope.alias, model=model)
-            return SharedScopeSnapshot(scope=scope)
+            return SharedScopeSnapshot(scope=scope, success=False, error=exc)
 
         (
             cooldown_raw,
@@ -831,7 +861,9 @@ class InMemoryV2GeminiKeyCooldownStore(_V2StoreBase):
     def _slot(self, key: str) -> str:
         return key
 
-    def _read_slot(self, state_key: str, revision_key: str) -> tuple[str | None, int, int]:
+    def _read_slot(
+        self, state_key: str, revision_key: str
+    ) -> tuple[str | None, int, int]:
         with self._lock:
             revision = int(self._revisions.get(revision_key, 0))
             now_ms = self._now_ms()
@@ -991,6 +1023,9 @@ class InMemoryV2GeminiKeyCooldownStore(_V2StoreBase):
         rejected = self._reject_invalid_scope(scope.alias)
         if rejected is not None:
             return rejected
+        rejected = self._reject_invalid_model(scope.model)
+        if rejected is not None:
+            return rejected
         if not normalize_model_name(scope.model):
             return self._reject_invalid_argument("missing_model")
         return self._publish_marker_cas(
@@ -1008,6 +1043,9 @@ class InMemoryV2GeminiKeyCooldownStore(_V2StoreBase):
         expected_digest: str | None = None,
     ) -> SharedWriteResult:
         rejected = self._reject_invalid_scope(scope.alias)
+        if rejected is not None:
+            return rejected
+        rejected = self._reject_invalid_model(scope.model)
         if rejected is not None:
             return rejected
         if not normalize_model_name(scope.model):
@@ -1079,6 +1117,8 @@ class InMemoryV2GeminiKeyCooldownStore(_V2StoreBase):
     ) -> SharedScopeSnapshot:
         if self._reject_invalid_scope(scope.alias) is not None:
             return SharedScopeSnapshot(scope=scope)
+        if model and self._reject_invalid_model(model) is not None:
+            return SharedScopeSnapshot(scope=scope)
         now_ms = self._now_ms()
         cooldown_state_key, cooldown_revision_key = self._cooldown_keys(scope)
         cooldown_raw, cooldown_pttl, cooldown_revision = self._read_slot(
@@ -1106,7 +1146,9 @@ class InMemoryV2GeminiKeyCooldownStore(_V2StoreBase):
             cooldown_state=cooldown_state,
             cooldown_pttl_ms=int(cooldown_pttl),
             cooldown_revision=int(cooldown_revision),
-            model_unsupported=bool(model_name and _model_marker_active(model_raw, model_pttl)),
+            model_unsupported=bool(
+                model_name and _model_marker_active(model_raw, model_pttl)
+            ),
             model_pttl_ms=int(model_pttl) if model_name else -2,
             model_revision=int(model_revision) if model_name else 0,
             cooldown_digest=digest_for_raw(cooldown_raw),
