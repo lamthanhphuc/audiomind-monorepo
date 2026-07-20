@@ -2,6 +2,14 @@ import pytest
 
 from app.services.gemini_fault_injection import GeminiFaultInjectionClient
 
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "redis_integration: tests requiring Docker Redis (skipped when unavailable)",
+    )
+
+
 # Spec alias for fault-injection doubles used in test_gemini_analyzer profiles.
 FakeGeminiClient = GeminiFaultInjectionClient
 

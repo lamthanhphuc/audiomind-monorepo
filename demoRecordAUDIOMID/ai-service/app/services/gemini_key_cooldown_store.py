@@ -54,6 +54,43 @@ def _normalize_redis_raw(raw: Any) -> str | None:
     return str(raw)
 
 
+def parse_redis_cooldown_metadata(raw: Any) -> tuple[str, str | None]:
+    """Extract reason/cooldown_type from Redis payload without raising."""
+    normalized = _normalize_redis_raw(raw)
+    if not normalized:
+        return "cooldown", "soft"
+    if normalized == LEGACY_COOLDOWN_PAYLOAD:
+        return "cooldown", "soft"
+    try:
+        parsed = json.loads(normalized)
+    except json.JSONDecodeError:
+        return "cooldown", "soft"
+    except (TypeError, ValueError):
+        return "cooldown", "soft"
+    if not isinstance(parsed, dict):
+        return "cooldown", "soft"
+    reason_raw = parsed.get("reason")
+    if isinstance(reason_raw, str):
+        reason = normalize_reason(reason_raw) or "cooldown"
+    else:
+        reason = "cooldown"
+    cooldown_type = normalize_cooldown_type(
+        parsed.get("cooldown_type") if isinstance(parsed.get("cooldown_type"), str) else None
+    ) or normalize_cooldown_type(
+        parsed.get("type") if isinstance(parsed.get("type"), str) else None
+    )
+    return reason, cooldown_type or "soft"
+
+
+def _coerce_expires_at_ms(value: Any) -> int | None:
+    try:
+        if value is None or value == "":
+            return None
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 @dataclass(frozen=True)
 class GeminiCooldownState:
     remaining_seconds: float
@@ -142,19 +179,28 @@ def decode_cooldown_payload(
         return None
     try:
         parsed = json.loads(normalized)
+    except json.JSONDecodeError:
+        return None
     except (TypeError, ValueError):
         return None
     if not isinstance(parsed, dict):
         return None
-    expires_at_ms = int(parsed.get("expires_at_ms") or 0)
-    if expires_at_ms and expires_at_ms <= int(now_ms):
+    expires_at_ms = _coerce_expires_at_ms(parsed.get("expires_at_ms"))
+    if expires_at_ms is not None and expires_at_ms <= int(now_ms):
         return None
+    reason = normalize_reason(parsed.get("reason")) or "cooldown"
+    cooldown_type = normalize_cooldown_type(
+        parsed.get("cooldown_type") or parsed.get("type")
+    )
+    resolved_expires = expires_at_ms
+    if resolved_expires is None and pttl_ms is not None and int(pttl_ms) > 0:
+        resolved_expires = int(now_ms) + int(pttl_ms)
+    if resolved_expires is None:
+        resolved_expires = 0
     return CooldownMetadata(
-        reason=normalize_reason(parsed.get("reason")),
-        cooldown_type=normalize_cooldown_type(
-            parsed.get("cooldown_type") or parsed.get("type")
-        ),
-        expires_at_ms=expires_at_ms,
+        reason=reason,
+        cooldown_type=cooldown_type or "soft",
+        expires_at_ms=resolved_expires,
     )
 
 
@@ -456,17 +502,33 @@ class RedisGeminiKeyCooldownStore:
         return int(now_ms if now_ms is not None else self._wall_clock_ms())
 
     def _safe_redis(self, operation: str, fn: Callable[[], Any]) -> SafeRedisResult:
+        del operation
         try:
             return SafeRedisResult(success=True, value=fn())
         except _redis_errors() as exc:
-            logger.warning(
-                "GEMINI_SHARED_STATE_{}_FAILED namespace={} errorType={} error={}",
-                operation.upper(),
-                self.namespace,
-                type(exc).__name__,
-                str(exc)[:160],
-            )
             return SafeRedisResult(success=False, error=exc)
+
+    def _log_redis_failure(
+        self,
+        operation: str,
+        exc: Exception | None,
+        *,
+        alias: str | None = None,
+        fingerprint: str | None = None,
+        model: str | None = None,
+    ) -> None:
+        if exc is None:
+            return
+        logger.warning(
+            "GEMINI_SHARED_STATE_{}_FAILED namespace={} alias={} fingerprint={} model={} errorType={} error={}",
+            operation.upper(),
+            self.namespace,
+            alias or "",
+            fingerprint or "",
+            model or "",
+            type(exc).__name__,
+            str(exc)[:160],
+        )
 
     def cooldown_remaining(
         self, scope: GeminiKeyScope, *, now: float, now_ms: int | None = None
@@ -480,34 +542,32 @@ class RedisGeminiKeyCooldownStore:
     def get_cooldown_state(
         self, scope: GeminiKeyScope, *, now: float, now_ms: int | None = None
     ) -> GeminiCooldownState | None:
-        del now
-        current_ms = self._now_ms(now_ms)
+        del now, now_ms
         key = self._cooldown_key(scope)
 
         def _read() -> GeminiCooldownState | None:
             raw = self._redis.get(key)
-            pttl = int(self._redis.pttl(key))
-            metadata = decode_cooldown_payload(
-                raw,
-                now_ms=current_ms,
-                pttl_ms=pttl if pttl > 0 else None,
-            )
-            if metadata is None:
-                if raw and pttl <= 0:
-                    self._redis.delete(key)
+            if raw is None:
                 return None
-            remaining_ms = int(metadata.expires_at_ms) - current_ms
-            if remaining_ms <= 0:
+            pttl = int(self._redis.pttl(key))
+            if pttl == -2:
+                return None
+            if pttl == -1:
                 self._redis.delete(key)
                 return None
+            if pttl <= 0:
+                self._redis.delete(key)
+                return None
+            reason, cooldown_type = parse_redis_cooldown_metadata(raw)
             return GeminiCooldownState(
-                remaining_seconds=remaining_ms / 1000.0,
-                reason=metadata.reason,
-                cooldown_type=metadata.cooldown_type,
+                remaining_seconds=pttl / 1000.0,
+                reason=reason,
+                cooldown_type=cooldown_type,
             )
 
         result = self._safe_redis("read", _read)
         if not result.success:
+            self._log_redis_failure("read", result.error)
             return None
         return result.value
 
@@ -556,18 +616,25 @@ class RedisGeminiKeyCooldownStore:
 
         write_result = self._safe_redis("write", _write)
         if not write_result.success:
-            logger.warning(
-                "GEMINI_SHARED_STATE_WRITE_FAILED namespace={} alias={} fingerprint={}",
-                self.namespace,
-                scope.alias,
-                scope.fingerprint,
+            self._log_redis_failure(
+                "write",
+                write_result.error,
+                alias=scope.alias,
+                fingerprint=scope.fingerprint,
             )
 
     def clear_cooldown(self, scope: GeminiKeyScope) -> None:
         def _delete() -> None:
             self._redis.delete(self._cooldown_key(scope))
 
-        self._safe_redis("write", _delete)
+        delete_result = self._safe_redis("write", _delete)
+        if not delete_result.success:
+            self._log_redis_failure(
+                "clear",
+                delete_result.error,
+                alias=scope.alias,
+                fingerprint=scope.fingerprint,
+            )
 
     def mark_model_unsupported(
         self, scope: GeminiKeyScope, model: str, *, now_ms: int | None = None
@@ -583,12 +650,12 @@ class RedisGeminiKeyCooldownStore:
 
         mark_result = self._safe_redis("write", _mark)
         if not mark_result.success:
-            logger.warning(
-                "GEMINI_SHARED_STATE_WRITE_FAILED namespace={} alias={} fingerprint={} model={}",
-                self.namespace,
-                scope.alias,
-                scope.fingerprint,
-                model_name,
+            self._log_redis_failure(
+                "write",
+                mark_result.error,
+                alias=scope.alias,
+                fingerprint=scope.fingerprint,
+                model=model_name,
             )
             return
         logger.info(
@@ -614,6 +681,7 @@ class RedisGeminiKeyCooldownStore:
 
         result = self._safe_redis("read", _exists)
         if not result.success:
+            self._log_redis_failure("read", result.error, model=model_name)
             return False
         return bool(result.value)
 
@@ -625,7 +693,15 @@ class RedisGeminiKeyCooldownStore:
         def _delete() -> None:
             self._redis.delete(self._model_key(scope, model_name))
 
-        self._safe_redis("write", _delete)
+        delete_result = self._safe_redis("write", _delete)
+        if not delete_result.success:
+            self._log_redis_failure(
+                "clear",
+                delete_result.error,
+                alias=scope.alias,
+                fingerprint=scope.fingerprint,
+                model=model_name,
+            )
 
 
 def build_redis_gemini_cooldown_store(

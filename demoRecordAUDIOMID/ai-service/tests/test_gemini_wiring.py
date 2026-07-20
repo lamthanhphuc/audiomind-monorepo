@@ -15,11 +15,12 @@ def test_api_and_worker_share_default_namespace(monkeypatch) -> None:
     from app.config import Settings, get_settings
 
     get_settings.cache_clear()
+    monkeypatch.delenv("GEMINI_SHARED_STATE_NAMESPACE", raising=False)
     monkeypatch.setenv("APP_ENV", "staging")
     monkeypatch.setenv("APP_COMPONENT", "api")
-    api_settings = Settings(_env_file=None)
+    api_settings = Settings()
     monkeypatch.setenv("APP_COMPONENT", "worker")
-    worker_settings = Settings(_env_file=None)
+    worker_settings = Settings()
 
     api_namespace = resolve_shared_state_namespace(
         app_env=api_settings.app_env,
@@ -34,7 +35,8 @@ def test_api_and_worker_share_default_namespace(monkeypatch) -> None:
     get_settings.cache_clear()
 
 
-def test_different_environments_have_different_namespaces() -> None:
+def test_different_environments_have_different_namespaces(monkeypatch) -> None:
+    monkeypatch.delenv("GEMINI_SHARED_STATE_NAMESPACE", raising=False)
     prod = resolve_shared_state_namespace(app_env="prod")
     staging = resolve_shared_state_namespace(app_env="staging")
     assert prod != staging
