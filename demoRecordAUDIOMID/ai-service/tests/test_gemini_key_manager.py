@@ -729,20 +729,16 @@ def test_clear_failure_keeps_local_tombstone_and_retries_in_next_snapshot():
 
         def clear_cooldown(self, scope):
             self.clear_calls += 1
-            return False
-
-        def read_pool_snapshot(self, *args, **kwargs):
-            if kwargs.get("clear_cooldown_aliases") and not self.allow_retry:
-                return SharedPoolSnapshot(
-                    success=False, error=TimeoutError("redis timeout")
-                )
-            return super().read_pool_snapshot(*args, **kwargs)
+            if not self.allow_retry:
+                return False
+            return super().clear_cooldown(scope)
 
     store = FailClearOnceStore()
     manager = GeminiKeyManager.from_config(
         gemini_api_key="fake-primary-key",
         multi_key_enabled=False,
         cooldown_store=store,
+        clock=FakeClock(),
     )
     manager.hard_cooldown_key(
         "primary", seconds=900, reason="billing_credits_depleted"
@@ -753,6 +749,7 @@ def test_clear_failure_keeps_local_tombstone_and_retries_in_next_snapshot():
     assert "primary" in manager._pending_cooldown_clears
 
     store.allow_retry = True
+    manager._clock.advance(2.0)
     assert manager.select_key().available is True
     assert "primary" not in manager._pending_cooldown_clears
 
@@ -762,3 +759,256 @@ def test_clear_failure_keeps_local_tombstone_and_retries_in_next_snapshot():
         cooldown_store=store,
     )
     assert fresh_manager.select_key().available is True
+
+
+def _three_key_manager(**kwargs):
+    return GeminiKeyManager.from_config(
+        gemini_api_key="",
+        gemini_api_keys="primary:key-a,backup1:key-b,backup2:key-c",
+        multi_key_enabled=True,
+        clock=FakeClock(),
+        **kwargs,
+    )
+
+
+def test_attempted_alias_is_not_selected_on_normal_retry():
+    manager = _three_key_manager()
+    selection = manager.select_key(attempted_aliases={"primary"})
+    assert selection.available
+    assert selection.entry.alias in {"backup1", "backup2"}
+    assert selection.entry.alias != "primary"
+
+
+def test_two_attempted_aliases_leave_only_unattempted():
+    manager = _three_key_manager()
+    selection = manager.select_key(
+        attempted_aliases={"primary", "backup1"}
+    )
+    assert selection.available
+    assert selection.entry.alias == "backup2"
+
+
+def test_all_aliases_attempted_returns_unavailable():
+    manager = _three_key_manager()
+    selection = manager.select_key(
+        attempted_aliases={"primary", "backup1", "backup2"}
+    )
+    assert not selection.available
+    assert not manager.has_unattempted_eligible_key(
+        "gemini-2.5-flash", attempted_aliases={"primary", "backup1", "backup2"}
+    )
+
+
+def test_preferred_attempted_without_reuse_is_not_selected():
+    manager = _three_key_manager()
+    selection = manager.select_key(
+        preferred_alias="primary",
+        attempted_aliases={"primary"},
+        allow_preferred_reuse=False,
+    )
+    assert selection.available
+    assert selection.entry.alias != "primary"
+
+
+def test_sticky_preferred_reuse_allows_attempted_primary():
+    manager = _three_key_manager()
+    selection = manager.select_key(
+        preferred_alias="primary",
+        attempted_aliases={"primary"},
+        allow_preferred_reuse=True,
+    )
+    assert selection.available
+    assert selection.entry.alias == "primary"
+
+
+def test_preferred_reuse_does_not_bypass_cooldown():
+    manager = _three_key_manager()
+    manager.cooldown_key("primary", seconds=60, reason="rate_limit")
+    selection = manager.select_key(
+        preferred_alias="primary",
+        attempted_aliases={"primary"},
+        allow_preferred_reuse=True,
+    )
+    assert selection.available
+    assert selection.entry.alias != "primary"
+
+
+def test_backup1_mutation_does_not_invalidate_primary_validation():
+    store = InMemoryGeminiKeyCooldownStore()
+    manager = _three_key_manager(cooldown_store=store)
+    selection = manager.select_key(model="gemini-2.5-flash")
+    assert selection.entry.alias == "primary"
+    primary_revision = selection.selection_revision
+
+    manager.cooldown_key("backup1", seconds=30, reason="rate_limit")
+    assert manager._alias_generation.get("primary", 0) == primary_revision.alias_generation
+    assert manager.validate_selection(selection, model="gemini-2.5-flash")
+
+
+def test_redis_cooldown_blocks_final_validation_despite_other_alias_change():
+    class PrimaryValidationStore(InMemoryGeminiKeyCooldownStore):
+        validation_started = threading.Event()
+        release_validation = threading.Event()
+
+        def read_pool_snapshot(self, scopes, model_name, **kwargs):
+            if len(scopes) == 1 and scopes[0].alias == "primary":
+                self.validation_started.set()
+                assert self.release_validation.wait(timeout=2)
+            return super().read_pool_snapshot(scopes, model_name, **kwargs)
+
+    store = PrimaryValidationStore()
+    manager = _three_key_manager(cooldown_store=store)
+    selection = manager.select_key(model="gemini-2.5-flash")
+    assert selection.entry.alias == "primary"
+    result = {}
+
+    def validate():
+        result["valid"] = manager.validate_selection(
+            selection, model="gemini-2.5-flash"
+        )
+
+    thread = threading.Thread(target=validate)
+    thread.start()
+    assert store.validation_started.wait(timeout=2)
+    scope = manager._scope_for("primary")
+    store.apply_cooldown(
+        scope, seconds=30, reason="rate_limit", cooldown_type="soft"
+    )
+    manager.cooldown_key("backup1", seconds=30, reason="rate_limit")
+    store.release_validation.set()
+    thread.join(timeout=2)
+    assert not thread.is_alive()
+    assert result["valid"] is False
+
+
+def test_same_alias_local_change_retries_validation_then_invalid():
+    store = InMemoryGeminiKeyCooldownStore()
+    manager = _three_key_manager(cooldown_store=store)
+    selection = manager.select_key(model="gemini-2.5-flash")
+    assert selection.entry.alias == "primary"
+    manager.cooldown_key("primary", seconds=60, reason="rate_limit")
+    assert manager.validate_selection(selection, model="gemini-2.5-flash") is False
+
+
+def test_noop_redis_sync_does_not_bump_alias_generation():
+    store = InMemoryGeminiKeyCooldownStore()
+    manager = _three_key_manager(cooldown_store=store)
+    scope = manager._scope_for("primary")
+    store.apply_cooldown(
+        scope, seconds=30, reason="rate_limit", cooldown_type="soft"
+    )
+    manager.select_key(model="gemini-2.5-flash")
+    before = manager._alias_generation.get("primary", 0)
+    manager.select_key(model="gemini-2.5-flash")
+    assert manager._alias_generation.get("primary", 0) == before
+
+
+def test_reason_change_bumps_alias_generation():
+    store = InMemoryGeminiKeyCooldownStore()
+    manager = _three_key_manager(cooldown_store=store)
+    scope = manager._scope_for("primary")
+    store.apply_cooldown(
+        scope, seconds=30, reason="rate_limit", cooldown_type="soft"
+    )
+    manager.select_key(model="gemini-2.5-flash")
+    before = manager._alias_generation.get("primary", 0)
+    store.apply_cooldown(
+        scope,
+        seconds=30,
+        reason="billing_credits_depleted",
+        cooldown_type="hard",
+    )
+    manager.select_key(model="gemini-2.5-flash")
+    assert manager._alias_generation.get("primary", 0) > before
+
+
+def test_backup1_change_does_not_bump_primary_generation():
+    store = InMemoryGeminiKeyCooldownStore()
+    manager = _three_key_manager(cooldown_store=store)
+    manager.select_key(model="gemini-2.5-flash")
+    before = manager._alias_generation.get("primary", 0)
+    manager.cooldown_key("backup1", seconds=30, reason="rate_limit")
+    assert manager._alias_generation.get("primary", 0) == before
+    assert manager._alias_generation.get("backup1", 0) > 0
+
+
+def test_pending_clear_survives_three_failures_and_retries_after_backoff():
+    clock = FakeClock()
+
+    class AlwaysFailClearStore(InMemoryGeminiKeyCooldownStore):
+        def clear_cooldown(self, scope):
+            return False
+
+    store = AlwaysFailClearStore()
+    manager = GeminiKeyManager.from_config(
+        gemini_api_key="fake-primary-key",
+        multi_key_enabled=False,
+        cooldown_store=store,
+        clock=clock,
+    )
+    manager.hard_cooldown_key(
+        "primary", seconds=900, reason="billing_credits_depleted"
+    )
+    manager.clear_cooldown("primary")
+    pending = manager._pending_cooldown_clears["primary"]
+    for _ in range(3):
+        clock.advance(60.0)
+        manager.select_key()
+        assert "primary" in manager._pending_cooldown_clears
+        assert manager._pending_cooldown_clears["primary"].attempts >= pending.attempts
+        pending = manager._pending_cooldown_clears["primary"]
+
+
+def test_pending_clear_expires_and_stops_suppressing_redis():
+    clock = FakeClock()
+
+    class AlwaysFailClearStore(InMemoryGeminiKeyCooldownStore):
+        def clear_cooldown(self, scope):
+            return False
+
+    store = AlwaysFailClearStore()
+    manager = GeminiKeyManager.from_config(
+        gemini_api_key="fake-primary-key",
+        multi_key_enabled=False,
+        cooldown_store=store,
+        clock=clock,
+    )
+    scope = manager._scope_for("primary")
+    store.apply_cooldown(
+        scope, seconds=900, reason="billing_credits_depleted", cooldown_type="hard"
+    )
+    manager.clear_cooldown("primary")
+    clock.advance(301.0)
+    manager.select_key()
+    assert "primary" not in manager._pending_cooldown_clears
+
+
+def test_concurrent_round_robin_skips_attempted_primary():
+    snapshot_barrier = threading.Barrier(30)
+
+    class ConcurrentSnapshotStore(InMemoryGeminiKeyCooldownStore):
+        def read_pool_snapshot(self, *args, **kwargs):
+            snapshot_barrier.wait()
+            return super().read_pool_snapshot(*args, **kwargs)
+
+    manager = GeminiKeyManager.from_config(
+        gemini_api_key="",
+        gemini_api_keys="primary:key-a,backup1:key-b,backup2:key-c",
+        multi_key_enabled=True,
+        cooldown_store=ConcurrentSnapshotStore(),
+    )
+    barrier = threading.Barrier(30)
+
+    def select_alias(_index: int) -> str:
+        barrier.wait()
+        return manager.select_key(
+            attempted_aliases={"primary"}
+        ).entry.alias
+
+    with ThreadPoolExecutor(max_workers=30) as executor:
+        aliases = list(executor.map(select_alias, range(30)))
+
+    counts = Counter(aliases)
+    assert "primary" not in counts
+    assert set(counts) == {"backup1", "backup2"}
+    assert sum(counts.values()) == 30

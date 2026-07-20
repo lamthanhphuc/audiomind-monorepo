@@ -507,11 +507,17 @@ class GeminiClient:
             for attempt in range(1, loop_attempts + 1):
                 stale_aliases: set[str] = set()
                 while True:
+                    allow_preferred_reuse = bool(
+                        sticky_alias
+                        and preferred_key_alias
+                        and sticky_alias == preferred_key_alias
+                    )
                     selection = self.key_manager.select_key(
                         preferred_alias=sticky_alias,
                         model=model_name or None,
                         attempted_aliases=attempted_aliases,
                         exclude_aliases=stale_aliases,
+                        allow_preferred_reuse=allow_preferred_reuse,
                     )
                     if not selection.available or selection.entry is None:
                         break
@@ -533,6 +539,7 @@ class GeminiClient:
                             model=model_name or None,
                             attempted_aliases=attempted_aliases,
                             exclude_aliases=stale_aliases,
+                            allow_preferred_reuse=False,
                         )
                         break
 
@@ -898,6 +905,8 @@ class GeminiClient:
                     )
                     if attempt >= loop_attempts:
                         break
+                    if not selection.has_unattempted_eligible:
+                        attempted_aliases.discard(entry.alias)
                     self._sleep_before_retry(attempt, started)
                     continue
 
