@@ -212,6 +212,18 @@ def extract_model_from_gemini_url(url: str) -> str:
     return GeminiKeyManager.normalize_model_name(match.group(1))
 
 
+_TERMINAL_KEY_FAILURE_REASONS = frozenset(
+    {
+        GeminiKeyFailureReason.BILLING_CREDITS_DEPLETED,
+        GeminiKeyFailureReason.FREE_TIER_TOKEN_QUOTA_EXHAUSTED,
+        GeminiKeyFailureReason.MODEL_UNAVAILABLE,
+        GeminiKeyFailureReason.AUTH_ERROR,
+        GeminiKeyFailureReason.INVALID_REQUEST,
+        GeminiKeyFailureReason.REGION_BLOCKED,
+    }
+)
+
+
 def conclude_key_pool_failure(
     failures_by_alias: dict[str, GeminiKeyFailureReason],
     *,
@@ -297,11 +309,13 @@ def conclude_key_pool_failure(
         )
 
     # Mixed pool (e.g. rate-limit + model unavailable) must not collapse to 429.
+    # Retry only when at least one failure reason is transient.
+    all_terminal = bool(reasons) and reasons <= _TERMINAL_KEY_FAILURE_REASONS
     return AnalysisUnavailableError(
         "Gemini key pool unavailable due to mixed provider failures",
         provider="gemini",
         error_code="GEMINI_KEY_POOL_UNAVAILABLE",
-        retryable=True,
+        retryable=not all_terminal,
         retry_after_seconds=retry_after_seconds or None,
         key_alias=key_alias,
     )
@@ -449,27 +463,61 @@ class GeminiClient:
         model_name = GeminiKeyManager.normalize_model_name(
             model
         ) or extract_model_from_gemini_url(url)
+        # Always allow one attempt per configured key so backup keys are not
+        # skipped when gemini_max_attempts is smaller than the pool size.
+        loop_attempts = max(self.max_attempts, len(self.key_manager.entries))
 
         client_timeout = self._per_attempt_timeout(started, timeout_seconds)
         with self.http_client_factory(timeout=client_timeout) as client:
-            for attempt in range(1, self.max_attempts + 1):
+            for attempt in range(1, loop_attempts + 1):
                 per_attempt_timeout = self._per_attempt_timeout(
                     started, timeout_seconds
                 )
                 if per_attempt_timeout <= 0:
-                    last_error = AnalysisUnavailableError(
-                        "Gemini fail-fast deadline exceeded",
-                        provider="gemini",
-                        error_code="GEMINI_UNAVAILABLE",
-                        key_alias=sticky_alias,
-                    )
-                    break
+                    # VPS-like failover: do not abort the pool while another key
+                    # is still eligible after a prior failure in this request.
+                    if failures_by_alias and self.key_manager.has_eligible_key(
+                        model_name or None
+                    ):
+                        per_attempt_timeout = min(
+                            max(0.0, float(timeout_seconds or 0)), 15.0
+                        )
+                        if per_attempt_timeout <= 0:
+                            per_attempt_timeout = 15.0
+                        logger.warning(
+                            "GEMINI_FAIL_FAST_GRACE attempt={} remainingKeys=true graceTimeoutSeconds={}",
+                            attempt,
+                            per_attempt_timeout,
+                        )
+                    else:
+                        last_error = AnalysisUnavailableError(
+                            "Gemini fail-fast deadline exceeded",
+                            provider="gemini",
+                            error_code="GEMINI_UNAVAILABLE",
+                            key_alias=sticky_alias,
+                        )
+                        break
 
                 selection = self.key_manager.select_key(
                     preferred_alias=sticky_alias,
                     model=model_name or None,
                 )
                 if not selection.available or selection.entry is None:
+                    if (
+                        model_name
+                        and self.key_manager.all_keys_unsupported_for_model(model_name)
+                    ):
+                        logger.warning(
+                            "GEMINI_ALL_KEYS_UNSUPPORTED model={} httpCallsSkipped=true",
+                            model_name,
+                        )
+                        raise AnalysisUnavailableError(
+                            "Gemini model is unavailable for all configured API keys",
+                            provider="gemini",
+                            error_code="GEMINI_MODEL_UNAVAILABLE",
+                            retryable=False,
+                            key_alias=sticky_alias,
+                        )
                     logger.warning(
                         "GEMINI_ALL_KEYS_EXHAUSTED retryable=true cooldownActive={}",
                         selection.cooldown_active,
@@ -523,7 +571,7 @@ class GeminiClient:
                         "GEMINI_CALL_FAILED alias={} status=timeout reason=TIMEOUT",
                         entry.alias,
                     )
-                    if attempt >= self.max_attempts:
+                    if attempt >= loop_attempts:
                         break
                     self._sleep_before_retry(attempt, started)
                     continue
@@ -552,7 +600,7 @@ class GeminiClient:
                             "GEMINI_CALL_FAILED alias={} status=network reason=CONNECT_ERROR",
                             entry.alias,
                         )
-                    if attempt >= self.max_attempts:
+                    if attempt >= loop_attempts:
                         break
                     self._sleep_before_retry(attempt, started)
                     continue
@@ -566,7 +614,7 @@ class GeminiClient:
                         "GEMINI_CALL_FAILED alias={} status=network reason=HTTP_ERROR",
                         entry.alias,
                     )
-                    if attempt >= self.max_attempts:
+                    if attempt >= loop_attempts:
                         break
                     self._sleep_before_retry(attempt, started)
                     continue
@@ -633,7 +681,7 @@ class GeminiClient:
                             retryable=True,
                             key_alias=entry.alias,
                         )
-                        if attempt >= self.max_attempts:
+                        if attempt >= loop_attempts:
                             break
                         continue
                     failures_by_alias[entry.alias] = (
@@ -667,7 +715,7 @@ class GeminiClient:
                         key_alias=entry.alias,
                     )
                     sticky_alias = None
-                    if attempt >= self.max_attempts:
+                    if attempt >= loop_attempts:
                         break
                     continue
 
@@ -709,8 +757,21 @@ class GeminiClient:
                             int(retry_after * 1000),
                             quota_metric,
                         )
-                    if attempt >= self.max_attempts:
+                    if attempt >= loop_attempts:
                         break
+                    # Match VPS failover intent: try the next eligible key
+                    # immediately inside this logical request (primary 429 →
+                    # backup1). Do not burn fail-fast budget on backoff sleep
+                    # when another key can still serve the model.
+                    if self.key_manager.has_eligible_key(
+                        model_name or None, exclude_alias=entry.alias
+                    ):
+                        logger.info(
+                            "GEMINI_KEY_FAILOVER_IMMEDIATE fromAlias={} model={}",
+                            entry.alias,
+                            model_name or "",
+                        )
+                        continue
                     self._sleep_before_retry(attempt, started)
                     continue
 
@@ -736,7 +797,7 @@ class GeminiClient:
                         retryable=True,
                         key_alias=entry.alias,
                     )
-                    if attempt >= self.max_attempts:
+                    if attempt >= loop_attempts:
                         break
                     continue
 
@@ -751,7 +812,7 @@ class GeminiClient:
                         error_code="GEMINI_UNAVAILABLE",
                         key_alias=entry.alias,
                     )
-                    if attempt >= self.max_attempts:
+                    if attempt >= loop_attempts:
                         break
                     self._sleep_before_retry(attempt, started)
                     continue
