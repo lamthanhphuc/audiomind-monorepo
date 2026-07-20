@@ -531,6 +531,7 @@ def test_build_redis_store_namespace_from_settings(monkeypatch):
     from app.config import Settings, get_settings
 
     get_settings.cache_clear()
+    monkeypatch.delenv("GEMINI_SHARED_STATE_NAMESPACE", raising=False)
     monkeypatch.setenv("APP_ENV", "staging")
     monkeypatch.setenv("APP_COMPONENT", "worker")
     settings = Settings()
@@ -543,3 +544,168 @@ def test_build_redis_store_namespace_from_settings(monkeypatch):
     assert store.namespace == "staging:ai-service"
     assert store.model_unsupported_ttl_seconds == DEFAULT_MODEL_UNSUPPORTED_TTL_SECONDS
     get_settings.cache_clear()
+
+
+def test_redis_pttl_is_source_of_truth_despite_fast_local_clock():
+    redis_clock = FakeWallClock(start_ms=1_700_000_000_000)
+    redis = FakeRedis(wall_clock=redis_clock)
+    scope = _scope("primary", "fake-primary-key")
+    key = f"gemini:test:ai-service:cooldown:{scope.alias}:{scope.fingerprint}"
+    payload = json.dumps(
+        {
+            "version": 2,
+            "expires_at_ms": 1_800_000_000_000,
+            "reason": "rate_limit",
+            "cooldown_type": "soft",
+        }
+    )
+    redis.psetex(key, 30_000, payload)
+    fast_store = RedisGeminiKeyCooldownStore(
+        redis,
+        namespace="test:ai-service",
+        wall_clock_ms=lambda: 1_800_000_000_000,
+    )
+    state = fast_store.get_cooldown_state(scope, now=0.0)
+    assert state is not None
+    assert 25 <= state.remaining_seconds <= 30
+    assert state.reason == "rate_limit"
+    assert state.cooldown_type == "soft"
+
+
+def test_redis_pttl_is_source_of_truth_despite_slow_local_clock():
+    redis_clock = FakeWallClock(start_ms=1_700_000_000_000)
+    redis = FakeRedis(wall_clock=redis_clock)
+    scope = _scope("primary", "fake-primary-key")
+    key = f"gemini:test:ai-service:cooldown:{scope.alias}:{scope.fingerprint}"
+    payload = json.dumps(
+        {
+            "version": 2,
+            "expires_at_ms": 1_700_000_000_000,
+            "reason": "billing_credits_depleted",
+            "cooldown_type": "hard",
+        }
+    )
+    redis.psetex(key, 30_000, payload)
+    slow_store = RedisGeminiKeyCooldownStore(
+        redis,
+        namespace="test:ai-service",
+        wall_clock_ms=lambda: 1_700_600_000_000,
+    )
+    state = slow_store.get_cooldown_state(scope, now=0.0)
+    assert state is not None
+    assert 25 <= state.remaining_seconds <= 30
+    assert state.reason == "billing_credits_depleted"
+    assert state.cooldown_type == "hard"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        '{"version":2,"expires_at_ms":"invalid","reason":"rate_limit","cooldown_type":"soft"}',
+        "{not-json",
+        '{"version":2,"expires_at_ms":1,"reason":123,"cooldown_type":"weird"}',
+    ],
+)
+def test_malformed_redis_payload_does_not_crash_and_uses_pttl(payload: str):
+    clock = FakeWallClock()
+    redis = FakeRedis(wall_clock=clock)
+    store = RedisGeminiKeyCooldownStore(
+        redis, namespace="test:ai-service", wall_clock_ms=clock.now_ms
+    )
+    scope = _scope("primary", "fake-primary-key")
+    key = store._cooldown_key(scope)
+    redis.psetex(key, 15_000, payload)
+    state = store.get_cooldown_state(scope, now=0.0)
+    assert state is not None
+    assert 10 <= state.remaining_seconds <= 15
+    assert state.reason in {"rate_limit", "cooldown"}
+    assert state.cooldown_type in {"soft", None}
+
+
+def test_malformed_bytes_payload_uses_pttl():
+    clock = FakeWallClock()
+    redis = FakeRedis(wall_clock=clock)
+    store = RedisGeminiKeyCooldownStore(
+        redis, namespace="test:ai-service", wall_clock_ms=clock.now_ms
+    )
+    scope = _scope("primary", "fake-primary-key")
+    key = store._cooldown_key(scope)
+    redis.psetex(
+        key,
+        15_000,
+        b'{"version":2,"expires_at_ms":1,"reason":"rate_limit","cooldown_type":"soft"}',
+    )
+    state = store.get_cooldown_state(scope, now=0.0)
+    assert state is not None
+    assert state.reason == "rate_limit"
+
+
+def test_malformed_payload_expired_pttl_returns_none():
+    clock = FakeWallClock()
+    redis = FakeRedis(wall_clock=clock)
+    store = RedisGeminiKeyCooldownStore(
+        redis, namespace="test:ai-service", wall_clock_ms=clock.now_ms
+    )
+    scope = _scope("primary", "fake-primary-key")
+    key = store._cooldown_key(scope)
+    redis._values[key] = (clock.now_ms(), "{bad-json")
+    state = store.get_cooldown_state(scope, now=0.0)
+    assert state is None
+
+
+def test_redis_read_failure_logs_single_warning(monkeypatch):
+    warnings: list[tuple] = []
+
+    def _capture_warning(*args, **kwargs):
+        warnings.append(args)
+
+    monkeypatch.setattr(
+        "app.services.gemini_key_cooldown_store.logger.warning",
+        _capture_warning,
+    )
+
+    class BrokenRedis:
+        def get(self, *args, **kwargs):
+            raise ConnectionError("redis down")
+
+        def pttl(self, *args, **kwargs):
+            raise ConnectionError("redis down")
+
+    store = RedisGeminiKeyCooldownStore(BrokenRedis(), namespace="test:ai-service")
+    scope = _scope("primary", "fake-primary-key")
+    assert store.get_cooldown_state(scope, now=0.0) is None
+    assert len(warnings) == 1
+    assert warnings[0][1] == "READ"
+
+
+def test_redis_write_failure_logs_single_warning(monkeypatch):
+    warnings: list[tuple] = []
+
+    def _capture_warning(*args, **kwargs):
+        warnings.append(args)
+
+    monkeypatch.setattr(
+        "app.services.gemini_key_cooldown_store.logger.warning",
+        _capture_warning,
+    )
+
+    class BrokenRedis:
+        def eval(self, *args, **kwargs):
+            raise ConnectionError("redis down")
+
+        def register_script(self, script):
+            del script
+
+            class _Script:
+                def __call__(self, *, keys, args):
+                    raise ConnectionError("redis down")
+
+            return _Script()
+
+    store = RedisGeminiKeyCooldownStore(BrokenRedis(), namespace="test:ai-service")
+    scope = _scope("primary", "fake-primary-key")
+    store.apply_cooldown(
+        scope, seconds=30, reason="rate_limit", cooldown_type="soft"
+    )
+    assert len(warnings) == 1
+    assert warnings[0][1] == "WRITE"
