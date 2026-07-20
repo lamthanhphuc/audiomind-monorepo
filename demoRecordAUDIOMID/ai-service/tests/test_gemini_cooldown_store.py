@@ -103,19 +103,36 @@ class FakeRedis:
     def exists(self, key: str) -> int:
         return 1 if self.get(key) is not None else 0
 
-    def eval(self, script: str, numkeys: int, *args):
-        del script
-        key = args[0]
-        incoming_json = args[1]
-        incoming_ttl_ms = int(args[2])
-        now_ms = int(args[3])
-        current_raw = self.get(key)
+    def _peek_raw(self, key: str):
+        with self._lock:
+            entry = self._values.get(key)
+            if entry is None:
+                return None
+            return entry[1]
+
+    def _eval_read_cooldown(self, key: str):
+        pttl = self.pttl(key)
+        if pttl <= 0:
+            return ["", pttl]
+        raw = self._peek_raw(key)
+        if raw is None:
+            return ["", pttl]
+        stored = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
+        return [stored, pttl]
+
+    def _eval_merge_cooldown(
+        self, key: str, incoming_json: str, incoming_ttl_ms: int, now_ms: int
+    ):
         current_pttl = self.pttl(key)
-        current = decode_cooldown_payload(
-            current_raw,
-            now_ms=now_ms,
-            pttl_ms=current_pttl if current_pttl > 0 else None,
-        )
+        if current_pttl <= 0:
+            current = None
+        else:
+            current_raw = self._peek_raw(key)
+            current = decode_cooldown_payload(
+                current_raw,
+                now_ms=now_ms,
+                pttl_ms=current_pttl,
+            )
         incoming = decode_cooldown_payload(incoming_json, now_ms=now_ms)
         assert incoming is not None
         incoming = CooldownMetadata(
@@ -130,6 +147,16 @@ class FakeRedis:
         ttl_ms = max(1, int(merged.expires_at_ms) - now_ms)
         self.psetex(key, ttl_ms, payload)
         return payload
+
+    def eval(self, script: str, numkeys: int, *args):
+        del script
+        if numkeys == 1 and len(args) == 1:
+            return self._eval_read_cooldown(args[0])
+        if numkeys == 1 and len(args) == 4:
+            return self._eval_merge_cooldown(
+                args[0], args[1], int(args[2]), int(args[3])
+            )
+        raise NotImplementedError("unsupported FakeRedis eval script")
 
     def register_script(self, script: str):
         redis = self
@@ -534,7 +561,7 @@ def test_build_redis_store_namespace_from_settings(monkeypatch):
     monkeypatch.delenv("GEMINI_SHARED_STATE_NAMESPACE", raising=False)
     monkeypatch.setenv("APP_ENV", "staging")
     monkeypatch.setenv("APP_COMPONENT", "worker")
-    settings = Settings()
+    settings = Settings(_env_file=None)
     namespace = resolve_shared_state_namespace(
         app_env=settings.app_env,
         explicit_namespace=settings.gemini_shared_state_namespace,
@@ -665,17 +692,24 @@ def test_redis_read_failure_logs_single_warning(monkeypatch):
     )
 
     class BrokenRedis:
-        def get(self, *args, **kwargs):
+        def eval(self, *args, **kwargs):
             raise ConnectionError("redis down")
 
-        def pttl(self, *args, **kwargs):
-            raise ConnectionError("redis down")
+        def register_script(self, script):
+            del script
+
+            class _Script:
+                def __call__(self, *, keys, args):
+                    raise ConnectionError("redis down")
+
+            return _Script()
 
     store = RedisGeminiKeyCooldownStore(BrokenRedis(), namespace="test:ai-service")
     scope = _scope("primary", "fake-primary-key")
     assert store.get_cooldown_state(scope, now=0.0) is None
     assert len(warnings) == 1
     assert warnings[0][1] == "READ"
+    assert "redis down" not in str(warnings)
 
 
 def test_redis_write_failure_logs_single_warning(monkeypatch):

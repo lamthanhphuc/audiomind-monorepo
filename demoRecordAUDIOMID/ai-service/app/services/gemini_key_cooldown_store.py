@@ -33,6 +33,26 @@ class SafeRedisResult:
     error: Exception | None = None
 
 
+@dataclass(frozen=True)
+class RedisCooldownSnapshot:
+    raw: str | None
+    pttl_ms: int
+
+
+@dataclass(frozen=True)
+class SharedCooldownReadResult:
+    success: bool
+    state: GeminiCooldownState | None = None
+    error: Exception | None = None
+
+
+@dataclass(frozen=True)
+class SharedModelUnsupportedReadResult:
+    success: bool
+    unsupported: bool = False
+    error: Exception | None = None
+
+
 def _redis_errors() -> tuple[type[BaseException], ...]:
     try:
         import redis.exceptions
@@ -148,6 +168,21 @@ def normalize_model_name(model: str | None) -> str:
     return raw.strip()
 
 
+def safe_model_key_component(model: str) -> str:
+    normalized = normalize_model_name(model)
+    if not normalized:
+        return ""
+    readable: list[str] = []
+    for char in normalized:
+        if char.isalnum() or char in "._-":
+            readable.append(char)
+        else:
+            readable.append("-")
+    prefix = "".join(readable)[:32]
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:12]
+    return f"{prefix}:{digest}"
+
+
 def encode_cooldown_payload(metadata: CooldownMetadata) -> str:
     return json.dumps(
         {
@@ -186,17 +221,18 @@ def decode_cooldown_payload(
     if not isinstance(parsed, dict):
         return None
     expires_at_ms = _coerce_expires_at_ms(parsed.get("expires_at_ms"))
-    if expires_at_ms is not None and expires_at_ms <= int(now_ms):
-        return None
     reason = normalize_reason(parsed.get("reason")) or "cooldown"
     cooldown_type = normalize_cooldown_type(
         parsed.get("cooldown_type") or parsed.get("type")
     )
-    resolved_expires = expires_at_ms
-    if resolved_expires is None and pttl_ms is not None and int(pttl_ms) > 0:
+    if pttl_ms is not None and int(pttl_ms) > 0:
         resolved_expires = int(now_ms) + int(pttl_ms)
-    if resolved_expires is None:
-        resolved_expires = 0
+    elif expires_at_ms is not None and expires_at_ms <= int(now_ms):
+        return None
+    elif expires_at_ms is not None:
+        resolved_expires = expires_at_ms
+    else:
+        return None
     return CooldownMetadata(
         reason=reason,
         cooldown_type=cooldown_type or "soft",
@@ -251,6 +287,14 @@ class GeminiKeyCooldownStore(Protocol):
     ) -> bool: ...
 
     def clear_model_unsupported(self, scope: GeminiKeyScope, model: str) -> None: ...
+
+    def read_shared_cooldown(
+        self, scope: GeminiKeyScope, *, now: float, now_ms: int | None = None
+    ) -> SharedCooldownReadResult: ...
+
+    def read_model_unsupported(
+        self, scope: GeminiKeyScope, model: str, *, now_ms: int | None = None
+    ) -> SharedModelUnsupportedReadResult: ...
 
 
 class LegacyGeminiCooldownStoreAdapter:
@@ -309,6 +353,18 @@ class LegacyGeminiCooldownStoreAdapter:
     def clear_model_unsupported(self, scope: GeminiKeyScope, model: str) -> None:
         del scope, model
 
+    def read_shared_cooldown(
+        self, scope: GeminiKeyScope, *, now: float, now_ms: int | None = None
+    ) -> SharedCooldownReadResult:
+        state = self.get_cooldown_state(scope, now=now, now_ms=now_ms)
+        return SharedCooldownReadResult(success=True, state=state)
+
+    def read_model_unsupported(
+        self, scope: GeminiKeyScope, model: str, *, now_ms: int | None = None
+    ) -> SharedModelUnsupportedReadResult:
+        del now_ms
+        return SharedModelUnsupportedReadResult(success=True, unsupported=False)
+
 
 class InMemoryGeminiKeyCooldownStore:
     supports_cooldown_metadata = True
@@ -333,8 +389,8 @@ class InMemoryGeminiKeyCooldownStore:
         return f"{self.namespace}:{scope.alias}:{scope.fingerprint}"
 
     def _model_key(self, scope: GeminiKeyScope, model: str) -> str:
-        model_name = normalize_model_name(model)
-        return f"{self.namespace}:model:{scope.alias}:{scope.fingerprint}:{model_name}"
+        model_component = safe_model_key_component(model)
+        return f"{self.namespace}:model:{scope.alias}:{scope.fingerprint}:{model_component}"
 
     def _now_ms(self, now_ms: int | None) -> int:
         return int(now_ms if now_ms is not None else self._wall_clock_ms())
@@ -414,11 +470,11 @@ class InMemoryGeminiKeyCooldownStore:
                 expires_at_ms
             )
         logger.info(
-            "GEMINI_MODEL_UNSUPPORTED_MARKED namespace={} alias={} fingerprint={} model={} ttlSeconds={}",
+            "GEMINI_MODEL_UNSUPPORTED_MARKED namespace={} alias={} fingerprint={} modelKey={} ttlSeconds={}",
             self.namespace,
             scope.alias,
             scope.fingerprint,
-            model_name,
+            safe_model_key_component(model_name),
             self.model_unsupported_ttl_seconds,
         )
 
@@ -436,11 +492,11 @@ class InMemoryGeminiKeyCooldownStore:
                 if key in self._unsupported_until_ms:
                     self._unsupported_until_ms.pop(key, None)
                     logger.debug(
-                        "GEMINI_MODEL_UNSUPPORTED_EXPIRED namespace={} alias={} fingerprint={} model={}",
+                        "GEMINI_MODEL_UNSUPPORTED_EXPIRED namespace={} alias={} fingerprint={} modelKey={}",
                         self.namespace,
                         scope.alias,
                         scope.fingerprint,
-                        model_name,
+                        safe_model_key_component(model_name),
                     )
                 return False
             return True
@@ -452,6 +508,27 @@ class InMemoryGeminiKeyCooldownStore:
         with self._lock:
             self._unsupported_until_ms.pop(self._model_key(scope, model_name), None)
 
+    def read_shared_cooldown(
+        self, scope: GeminiKeyScope, *, now: float, now_ms: int | None = None
+    ) -> SharedCooldownReadResult:
+        state = self.get_cooldown_state(scope, now=now, now_ms=now_ms)
+        return SharedCooldownReadResult(success=True, state=state)
+
+    def read_model_unsupported(
+        self, scope: GeminiKeyScope, model: str, *, now_ms: int | None = None
+    ) -> SharedModelUnsupportedReadResult:
+        unsupported = self.is_model_unsupported(scope, model, now_ms=now_ms)
+        return SharedModelUnsupportedReadResult(success=True, unsupported=unsupported)
+
+
+REDIS_READ_COOLDOWN_SCRIPT = """
+local raw = redis.call("GET", KEYS[1])
+local pttl = redis.call("PTTL", KEYS[1])
+if not raw then
+    return {"", pttl}
+end
+return {raw, pttl}
+"""
 
 REDIS_MERGE_COOLDOWN_SCRIPT = build_redis_merge_lua_script()
 
@@ -473,16 +550,17 @@ class RedisGeminiKeyCooldownStore:
             1, int(model_unsupported_ttl_seconds or DEFAULT_MODEL_UNSUPPORTED_TTL_SECONDS)
         )
         self._wall_clock_ms = wall_clock_ms or (lambda: int(time.time() * 1000))
-        self._merge_script = self._register_merge_script()
+        self._merge_script = self._register_script(REDIS_MERGE_COOLDOWN_SCRIPT)
+        self._read_script = self._register_script(REDIS_READ_COOLDOWN_SCRIPT)
         logger.info(
             "GEMINI_KEY_STATE_NAMESPACE namespace={} modelUnsupportedTtlSeconds={}",
             self.namespace,
             self.model_unsupported_ttl_seconds,
         )
 
-    def _register_merge_script(self):
+    def _register_script(self, script: str):
         if hasattr(self._redis, "register_script"):
-            return self._redis.register_script(REDIS_MERGE_COOLDOWN_SCRIPT)
+            return self._redis.register_script(script)
         return None
 
     def _cooldown_key(self, scope: GeminiKeyScope) -> str:
@@ -492,10 +570,10 @@ class RedisGeminiKeyCooldownStore:
         )
 
     def _model_key(self, scope: GeminiKeyScope, model: str) -> str:
-        model_name = normalize_model_name(model)
+        model_component = safe_model_key_component(model)
         return (
             f"gemini:{self.namespace}:model-unsupported:"
-            f"{scope.alias}:{scope.fingerprint}:{model_name}"
+            f"{scope.alias}:{scope.fingerprint}:{model_component}"
         )
 
     def _now_ms(self, now_ms: int | None) -> int:
@@ -519,57 +597,118 @@ class RedisGeminiKeyCooldownStore:
     ) -> None:
         if exc is None:
             return
+        model_key = safe_model_key_component(model) if model else ""
         logger.warning(
-            "GEMINI_SHARED_STATE_{}_FAILED namespace={} alias={} fingerprint={} model={} errorType={} error={}",
+            "GEMINI_SHARED_STATE_{}_FAILED operation={} errorType={} alias={} fingerprint={} namespace={} modelKey={}",
             operation.upper(),
-            self.namespace,
+            operation,
+            type(exc).__name__,
             alias or "",
             fingerprint or "",
-            model or "",
-            type(exc).__name__,
-            str(exc)[:160],
+            self.namespace,
+            model_key,
+        )
+
+    def _cooldown_state_from_snapshot(
+        self, snapshot: RedisCooldownSnapshot, *, key: str
+    ) -> GeminiCooldownState | None:
+        pttl = int(snapshot.pttl_ms)
+        if pttl == -2:
+            return None
+        raw = _normalize_redis_raw(snapshot.raw)
+        if not raw:
+            if pttl <= 0:
+                return None
+            return None
+        if pttl == -1:
+            self._redis.delete(key)
+            return None
+        if pttl <= 0:
+            self._redis.delete(key)
+            return None
+        reason, cooldown_type = parse_redis_cooldown_metadata(raw)
+        return GeminiCooldownState(
+            remaining_seconds=pttl / 1000.0,
+            reason=reason,
+            cooldown_type=cooldown_type,
+        )
+
+    def _read_cooldown_snapshot(self, key: str) -> RedisCooldownSnapshot:
+        if self._read_script is not None:
+            raw_result = self._read_script(keys=[key], args=[])
+        else:
+            raw_result = self._redis.eval(REDIS_READ_COOLDOWN_SCRIPT, 1, key)
+        raw_value = raw_result[0] if raw_result else ""
+        pttl_value = int(raw_result[1]) if raw_result and len(raw_result) > 1 else -2
+        normalized_raw = _normalize_redis_raw(raw_value)
+        if not normalized_raw:
+            return RedisCooldownSnapshot(raw=None, pttl_ms=pttl_value)
+        return RedisCooldownSnapshot(raw=normalized_raw, pttl_ms=pttl_value)
+
+    def read_shared_cooldown(
+        self, scope: GeminiKeyScope, *, now: float, now_ms: int | None = None
+    ) -> SharedCooldownReadResult:
+        del now, now_ms
+        key = self._cooldown_key(scope)
+
+        def _read() -> GeminiCooldownState | None:
+            snapshot = self._read_cooldown_snapshot(key)
+            return self._cooldown_state_from_snapshot(snapshot, key=key)
+
+        result = self._safe_redis("read", _read)
+        if not result.success:
+            self._log_redis_failure(
+                "read",
+                result.error,
+                alias=scope.alias,
+                fingerprint=scope.fingerprint,
+            )
+            return SharedCooldownReadResult(success=False, error=result.error)
+        return SharedCooldownReadResult(success=True, state=result.value)
+
+    def read_model_unsupported(
+        self, scope: GeminiKeyScope, model: str, *, now_ms: int | None = None
+    ) -> SharedModelUnsupportedReadResult:
+        del now_ms
+        model_name = normalize_model_name(model)
+        if not model_name:
+            return SharedModelUnsupportedReadResult(success=True, unsupported=False)
+        key = self._model_key(scope, model_name)
+        model_key = safe_model_key_component(model_name)
+
+        def _exists() -> bool:
+            return bool(self._redis.exists(key))
+
+        result = self._safe_redis("read", _exists)
+        if not result.success:
+            self._log_redis_failure(
+                "read",
+                result.error,
+                alias=scope.alias,
+                fingerprint=scope.fingerprint,
+                model=model_name,
+            )
+            return SharedModelUnsupportedReadResult(success=False, error=result.error)
+        return SharedModelUnsupportedReadResult(
+            success=True, unsupported=bool(result.value)
         )
 
     def cooldown_remaining(
         self, scope: GeminiKeyScope, *, now: float, now_ms: int | None = None
     ) -> float:
         del now
-        state = self.get_cooldown_state(scope, now=0.0, now_ms=now_ms)
-        if state is None:
+        read_result = self.read_shared_cooldown(scope, now=0.0, now_ms=now_ms)
+        if not read_result.success or read_result.state is None:
             return 0.0
-        return max(0.0, float(state.remaining_seconds))
+        return max(0.0, float(read_result.state.remaining_seconds))
 
     def get_cooldown_state(
         self, scope: GeminiKeyScope, *, now: float, now_ms: int | None = None
     ) -> GeminiCooldownState | None:
-        del now, now_ms
-        key = self._cooldown_key(scope)
-
-        def _read() -> GeminiCooldownState | None:
-            raw = self._redis.get(key)
-            if raw is None:
-                return None
-            pttl = int(self._redis.pttl(key))
-            if pttl == -2:
-                return None
-            if pttl == -1:
-                self._redis.delete(key)
-                return None
-            if pttl <= 0:
-                self._redis.delete(key)
-                return None
-            reason, cooldown_type = parse_redis_cooldown_metadata(raw)
-            return GeminiCooldownState(
-                remaining_seconds=pttl / 1000.0,
-                reason=reason,
-                cooldown_type=cooldown_type,
-            )
-
-        result = self._safe_redis("read", _read)
-        if not result.success:
-            self._log_redis_failure("read", result.error)
+        read_result = self.read_shared_cooldown(scope, now=now, now_ms=now_ms)
+        if not read_result.success:
             return None
-        return result.value
+        return read_result.state
 
     def apply_cooldown(
         self,
@@ -659,31 +798,21 @@ class RedisGeminiKeyCooldownStore:
             )
             return
         logger.info(
-            "GEMINI_MODEL_UNSUPPORTED_MARKED namespace={} alias={} fingerprint={} model={} ttlSeconds={}",
+            "GEMINI_MODEL_UNSUPPORTED_MARKED namespace={} alias={} fingerprint={} modelKey={} ttlSeconds={}",
             self.namespace,
             scope.alias,
             scope.fingerprint,
-            model_name,
+            safe_model_key_component(model_name),
             self.model_unsupported_ttl_seconds,
         )
 
     def is_model_unsupported(
         self, scope: GeminiKeyScope, model: str, *, now_ms: int | None = None
     ) -> bool:
-        del now_ms
-        model_name = normalize_model_name(model)
-        if not model_name:
+        read_result = self.read_model_unsupported(scope, model, now_ms=now_ms)
+        if not read_result.success:
             return False
-        key = self._model_key(scope, model_name)
-
-        def _exists() -> bool:
-            return bool(self._redis.exists(key))
-
-        result = self._safe_redis("read", _exists)
-        if not result.success:
-            self._log_redis_failure("read", result.error, model=model_name)
-            return False
-        return bool(result.value)
+        return read_result.unsupported
 
     def clear_model_unsupported(self, scope: GeminiKeyScope, model: str) -> None:
         model_name = normalize_model_name(model)
@@ -702,6 +831,30 @@ class RedisGeminiKeyCooldownStore:
                 fingerprint=scope.fingerprint,
                 model=model_name,
             )
+
+
+def create_gemini_redis_client(redis_url: str, *, settings: Any | None = None):
+    import redis
+
+    if settings is None:
+        from app.config import get_settings
+
+        settings = get_settings()
+    connect_timeout = max(
+        0.1,
+        float(getattr(settings, "gemini_redis_connect_timeout_seconds", 1.0) or 1.0),
+    )
+    socket_timeout = max(
+        0.1,
+        float(getattr(settings, "gemini_redis_socket_timeout_seconds", 1.5) or 1.5),
+    )
+    return redis.Redis.from_url(
+        redis_url,
+        decode_responses=True,
+        socket_connect_timeout=connect_timeout,
+        socket_timeout=socket_timeout,
+        retry_on_timeout=False,
+    )
 
 
 def build_redis_gemini_cooldown_store(

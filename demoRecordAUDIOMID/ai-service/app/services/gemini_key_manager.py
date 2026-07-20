@@ -6,9 +6,9 @@ from dataclasses import dataclass, field
 from math import ceil
 from typing import Callable
 
-from app.services.gemini_cooldown_merge import CooldownMetadata, merge_cooldown_states
 from app.services.gemini_key_cooldown_store import (
     DEFAULT_MODEL_UNSUPPORTED_TTL_SECONDS,
+    GeminiCooldownState,
     GeminiKeyCooldownStore,
     GeminiKeyScope,
     key_fingerprint,
@@ -65,6 +65,23 @@ class _KeyState:
     last_error_code: str | None = None
     last_retry_after_seconds: int = 0
     consecutive_failures: int = 0
+
+
+@dataclass(frozen=True)
+class LocalCooldownState:
+    reason: str | None
+    cooldown_type: str | None
+    expires_at_monotonic: float
+
+
+@dataclass(frozen=True)
+class GeminiAliasStateSnapshot:
+    alias: str
+    model_name: str
+    cooldown_state: GeminiCooldownState | None
+    cooldown_read_success: bool
+    model_unsupported: bool
+    unsupported_read_success: bool
 
 
 def _safe_config_error(message: str) -> GeminiKeyConfigError:
@@ -161,7 +178,7 @@ class GeminiKeyManager:
             entry.alias: key_fingerprint(entry.secret) for entry in self._entries
         }
         self._next_index = 0
-        self._local_cooldown: dict[str, CooldownMetadata] = {}
+        self._local_cooldown: dict[str, LocalCooldownState] = {}
         self._unsupported_expires_monotonic: dict[tuple[str, str, str], float] = {}
         self._model_unsupported_ttl_seconds = self._resolve_model_unsupported_ttl()
 
@@ -283,16 +300,24 @@ class GeminiKeyManager:
         if not model_name:
             return False
         scope = self._scope_for(alias)
+        cache_key = (alias, scope.fingerprint, model_name)
+        if self._cooldown_store is not None:
+            read_result = self._cooldown_store.read_model_unsupported(
+                scope, model_name, now_ms=self._now_ms()
+            )
+            if read_result.success:
+                with self._lock:
+                    if not read_result.unsupported:
+                        self._unsupported_expires_monotonic.pop(cache_key, None)
+                    else:
+                        return True
+                return read_result.unsupported
         with self._lock:
-            cache_key = (alias, scope.fingerprint, model_name)
             expires_at = self._unsupported_expires_monotonic.get(cache_key)
             if expires_at is not None:
                 if expires_at > self._clock():
                     return True
                 self._unsupported_expires_monotonic.pop(cache_key, None)
-        if self._cooldown_store is not None:
-            if self._cooldown_store.is_model_unsupported(scope, model_name):
-                return True
         return False
 
     def all_keys_unsupported_for_model(self, model: str | None) -> bool:
@@ -365,51 +390,184 @@ class GeminiKeyManager:
         return None
 
     def _get_shared_cooldown_state(self, alias: str, *, now: float):
-        del now
         if self._cooldown_store is None:
             return None
-        from app.services.gemini_key_cooldown_store import GeminiCooldownState
-
         scope = self._scope_for(alias)
-        now_ms = self._now_ms()
-        store_state = self._cooldown_store.get_cooldown_state(
-            scope, now=0.0, now_ms=now_ms
+        read_result = self._cooldown_store.read_shared_cooldown(
+            scope, now=now, now_ms=self._now_ms()
         )
-        with self._lock:
-            local = self._local_cooldown.get(alias)
-        if local is not None and int(local.expires_at_ms or 0) <= now_ms:
+        if read_result.success:
             with self._lock:
-                self._local_cooldown.pop(alias, None)
-            local = None
-        if store_state is None and local is None:
+                if read_result.state is None:
+                    self._local_cooldown.pop(alias, None)
+            return read_result.state
+        with self._lock:
+            return self._local_cooldown_as_state(alias, now=now)
+
+    def _local_cooldown_as_state(
+        self, alias: str, *, now: float
+    ) -> GeminiCooldownState | None:
+        remaining = self._local_cooldown_remaining_locked(alias, now=now)
+        if remaining <= 0:
             return None
-        if store_state is None:
-            remaining_ms = int(local.expires_at_ms or 0) - now_ms
-            return GeminiCooldownState(
-                remaining_seconds=max(0.0, remaining_ms / 1000.0),
-                reason=local.reason,
-                cooldown_type=local.cooldown_type,
-            )
-        if local is None:
-            return store_state
-        merged_meta = merge_cooldown_states(
-            CooldownMetadata(
-                reason=local.reason,
-                cooldown_type=local.cooldown_type,
-                expires_at_ms=int(local.expires_at_ms or 0),
-            ),
-            CooldownMetadata(
-                reason=store_state.reason,
-                cooldown_type=store_state.cooldown_type,
-                expires_at_ms=now_ms + int(store_state.remaining_seconds * 1000),
-            ),
-            now_ms=now_ms,
+        local = self._local_cooldown.get(alias)
+        state = self._states.get(alias)
+        reason = (local.reason if local else None) or (
+            state.last_error_code if state else None
         )
-        remaining_ms = int(merged_meta.expires_at_ms or 0) - now_ms
+        cooldown_type = local.cooldown_type if local else "soft"
         return GeminiCooldownState(
-            remaining_seconds=max(0.0, remaining_ms / 1000.0),
-            reason=merged_meta.reason,
-            cooldown_type=merged_meta.cooldown_type,
+            remaining_seconds=remaining,
+            reason=reason,
+            cooldown_type=cooldown_type,
+        )
+
+    def _local_cooldown_remaining_locked(self, alias: str, *, now: float) -> float:
+        local = self._local_cooldown.get(alias)
+        if local is not None:
+            return max(0.0, local.expires_at_monotonic - now)
+        state = self._states.get(alias)
+        if state is None:
+            return 0.0
+        return max(0.0, state.disabled_until_monotonic - now)
+
+    def _build_alias_snapshots(
+        self,
+        entries: tuple[GeminiKeyEntry, ...],
+        *,
+        model_name: str,
+        now: float,
+    ) -> dict[str, GeminiAliasStateSnapshot]:
+        now_ms = self._now_ms()
+        snapshots: dict[str, GeminiAliasStateSnapshot] = {}
+        for entry in entries:
+            alias = entry.alias
+            scope = self._scope_for(alias)
+            cooldown_read_success = False
+            cooldown_state = None
+            unsupported_read_success = False
+            model_unsupported = False
+            if self._cooldown_store is not None:
+                cooldown_result = self._cooldown_store.read_shared_cooldown(
+                    scope, now=now, now_ms=now_ms
+                )
+                cooldown_read_success = cooldown_result.success
+                if cooldown_result.success:
+                    cooldown_state = cooldown_result.state
+                if model_name:
+                    unsupported_result = self._cooldown_store.read_model_unsupported(
+                        scope, model_name, now_ms=now_ms
+                    )
+                    unsupported_read_success = unsupported_result.success
+                    if unsupported_result.success:
+                        model_unsupported = unsupported_result.unsupported
+            snapshots[alias] = GeminiAliasStateSnapshot(
+                alias=alias,
+                model_name=model_name,
+                cooldown_state=cooldown_state,
+                cooldown_read_success=cooldown_read_success,
+                model_unsupported=model_unsupported,
+                unsupported_read_success=unsupported_read_success,
+            )
+        return snapshots
+
+    def _sync_local_from_snapshots(
+        self, snapshots: dict[str, GeminiAliasStateSnapshot]
+    ) -> None:
+        for snap in snapshots.values():
+            if snap.cooldown_read_success and snap.cooldown_state is None:
+                self._local_cooldown.pop(snap.alias, None)
+            if (
+                snap.model_name
+                and snap.unsupported_read_success
+                and not snap.model_unsupported
+            ):
+                fingerprint = self._fingerprints.get(snap.alias, "")
+                self._unsupported_expires_monotonic.pop(
+                    (snap.alias, fingerprint, snap.model_name), None
+                )
+
+    def _cooldown_remaining_from_snapshot(
+        self, snap: GeminiAliasStateSnapshot, *, now: float
+    ) -> float:
+        if self._cooldown_store is not None:
+            if snap.cooldown_read_success:
+                if snap.cooldown_state is None:
+                    return 0.0
+                return float(snap.cooldown_state.remaining_seconds)
+            return self._local_cooldown_remaining_locked(snap.alias, now=now)
+        return self._local_cooldown_remaining_locked(snap.alias, now=now)
+
+    def _model_unsupported_from_snapshot(
+        self, snap: GeminiAliasStateSnapshot, *, now: float
+    ) -> bool:
+        if not snap.model_name:
+            return False
+        if self._cooldown_store is not None:
+            if snap.unsupported_read_success:
+                return snap.model_unsupported
+            fingerprint = self._fingerprints.get(snap.alias, "")
+            cache_key = (snap.alias, fingerprint, snap.model_name)
+            expires_at = self._unsupported_expires_monotonic.get(cache_key)
+            return expires_at is not None and expires_at > now
+        fingerprint = self._fingerprints.get(snap.alias, "")
+        cache_key = (snap.alias, fingerprint, snap.model_name)
+        expires_at = self._unsupported_expires_monotonic.get(cache_key)
+        return expires_at is not None and expires_at > now
+
+    def _eligible_from_snapshot(
+        self, snap: GeminiAliasStateSnapshot, *, now: float
+    ) -> bool:
+        if self._cooldown_remaining_from_snapshot(snap, now=now) > 0:
+            return False
+        if self._model_unsupported_from_snapshot(snap, now=now):
+            return False
+        return True
+
+    def _selection_unavailable_from_snapshots(
+        self,
+        snapshots: dict[str, GeminiAliasStateSnapshot],
+        entries: tuple[GeminiKeyEntry, ...],
+        *,
+        now: float,
+        model: str | None,
+        retry_after: int,
+        cooldown_active: int,
+    ) -> GeminiKeySelection:
+        reasons: dict[str, str] = {}
+        model_name = self.normalize_model_name(model)
+        for entry in entries:
+            snap = snapshots[entry.alias]
+            if model_name and self._model_unsupported_from_snapshot(snap, now=now):
+                reasons[entry.alias] = "model_unavailable"
+                continue
+            remaining = self._cooldown_remaining_from_snapshot(snap, now=now)
+            if remaining > 0:
+                if snap.cooldown_state and snap.cooldown_state.reason:
+                    reasons[entry.alias] = snap.cooldown_state.reason
+                else:
+                    state = self._states.get(entry.alias)
+                    code = str(
+                        (state.last_error_code if state else None) or ""
+                    ).strip()
+                    reasons[entry.alias] = code or "cooldown"
+        all_model_unsupported = bool(
+            model_name
+            and entries
+            and all(
+                self._model_unsupported_from_snapshot(snapshots[entry.alias], now=now)
+                for entry in entries
+            )
+        )
+        reason_values = set(reasons.values())
+        all_terminal = bool(reasons) and reason_values <= _TERMINAL_UNAVAILABLE_REASONS
+        return GeminiKeySelection(
+            available=False,
+            retry_after_seconds=retry_after,
+            cooldown_active=cooldown_active,
+            unavailable_reasons=dict(reasons),
+            all_terminal=all_terminal,
+            all_model_unsupported=all_model_unsupported,
         )
 
     def _selection_unavailable(
@@ -453,47 +611,59 @@ class GeminiKeyManager:
     ) -> GeminiKeySelection:
         with self._lock:
             now = self._clock()
+            entries = tuple(self._entries)
+            next_index = self._next_index
             preferred = str(preferred_alias or "").strip()
+
+        model_name = self.normalize_model_name(model)
+        snapshots = self._build_alias_snapshots(entries, model_name=model_name, now=now)
+
+        with self._lock:
+            self._sync_local_from_snapshots(snapshots)
+
             if preferred:
-                for entry in self._entries:
+                for entry in entries:
                     if entry.alias != preferred:
                         continue
-                    if self._eligible_for_model(entry.alias, now=now, model=model):
-                        # Sticky logical request: reuse the same key without advancing RR.
+                    snap = snapshots[entry.alias]
+                    if self._eligible_from_snapshot(snap, now=now):
                         return GeminiKeySelection(available=True, entry=entry)
                     break
 
-            size = len(self._entries)
+            size = len(entries)
             for offset in range(size):
-                index = (self._next_index + offset) % size
-                entry = self._entries[index]
-                if self._eligible_for_model(entry.alias, now=now, model=model):
+                index = (next_index + offset) % size
+                entry = entries[index]
+                snap = snapshots[entry.alias]
+                if self._eligible_from_snapshot(snap, now=now):
                     self._next_index = (index + 1) % size
                     return GeminiKeySelection(available=True, entry=entry)
 
             retry_after_values = [
-                int(ceil(self._cooldown_remaining(entry.alias, now=now)))
-                for entry in self._entries
-                if self._cooldown_remaining(entry.alias, now=now) > 0
+                int(ceil(self._cooldown_remaining_from_snapshot(snapshots[e.alias], now=now)))
+                for e in entries
+                if self._cooldown_remaining_from_snapshot(snapshots[e.alias], now=now) > 0
             ]
-            # Keys blocked only by model incompatibility still count as exhausted
-            # for this request, but do not invent a fake cooldown retry-after.
-            if not retry_after_values and model:
+            if not retry_after_values and model_name:
                 model_blocked = any(
-                    self.is_model_unsupported(entry.alias, model)
-                    for entry in self._entries
+                    self._model_unsupported_from_snapshot(snapshots[e.alias], now=now)
+                    for e in entries
                 )
                 if model_blocked:
-                    return self._selection_unavailable(
+                    return self._selection_unavailable_from_snapshots(
+                        snapshots,
+                        entries,
                         now=now,
-                        model=model,
+                        model=model_name,
                         retry_after=0,
                         cooldown_active=0,
                     )
             retry_after = min(retry_after_values) if retry_after_values else 0
-            return self._selection_unavailable(
+            return self._selection_unavailable_from_snapshots(
+                snapshots,
+                entries,
                 now=now,
-                model=model,
+                model=model_name,
                 retry_after=retry_after,
                 cooldown_active=len(retry_after_values),
             )
@@ -509,6 +679,7 @@ class GeminiKeyManager:
         )
 
     def clear_cooldown(self, alias: str) -> None:
+        scope = None
         with self._lock:
             state = self._states.get(alias)
             if state is not None:
@@ -517,7 +688,9 @@ class GeminiKeyManager:
                 state.last_retry_after_seconds = 0
             self._local_cooldown.pop(alias, None)
             if self._cooldown_store is not None:
-                self._cooldown_store.clear_cooldown(self._scope_for(alias))
+                scope = self._scope_for(alias)
+        if scope is not None:
+            self._cooldown_store.clear_cooldown(scope)
 
     def _set_cooldown(
         self,
@@ -533,38 +706,39 @@ class GeminiKeyManager:
                 return
             cooldown_seconds = max(0.0, float(seconds or 0.0))
             normalized_reason = str(reason or "unknown").strip() or "unknown"
-            now_ms = self._now_ms()
-            incoming = CooldownMetadata(
-                reason=normalized_reason,
-                cooldown_type=cooldown_type,
-                expires_at_ms=now_ms + int(ceil(cooldown_seconds * 1000)),
-            )
-            if self._cooldown_store is not None:
-                with self._lock:
-                    existing = self._local_cooldown.get(alias)
-                    self._local_cooldown[alias] = merge_cooldown_states(
-                        existing, incoming, now_ms=now_ms
-                    )
-                self._cooldown_store.apply_cooldown(
-                    self._scope_for(alias),
-                    seconds=cooldown_seconds,
-                    reason=normalized_reason,
-                    cooldown_type=cooldown_type,
-                    now_ms=now_ms,
-                )
-            else:
-                state.disabled_until_monotonic = max(
-                    state.disabled_until_monotonic,
-                    self._clock() + cooldown_seconds,
-                )
+            expires_at_monotonic = self._clock() + cooldown_seconds
             state.last_error_code = normalized_reason
             state.last_retry_after_seconds = int(ceil(cooldown_seconds))
             state.consecutive_failures += 1
+            scope = None
+            if self._cooldown_store is not None:
+                self._local_cooldown[alias] = LocalCooldownState(
+                    reason=normalized_reason,
+                    cooldown_type=cooldown_type,
+                    expires_at_monotonic=expires_at_monotonic,
+                )
+                scope = self._scope_for(alias)
+            else:
+                state.disabled_until_monotonic = max(
+                    state.disabled_until_monotonic,
+                    expires_at_monotonic,
+                )
+        if scope is not None:
+            self._cooldown_store.apply_cooldown(
+                scope,
+                seconds=cooldown_seconds,
+                reason=normalized_reason,
+                cooldown_type=cooldown_type,
+                now_ms=self._now_ms(),
+            )
 
     def _cooldown_remaining(self, alias: str, *, now: float) -> float:
         shared = self._get_shared_cooldown_state(alias, now=now)
         if shared is not None and shared.remaining_seconds > 0:
             return float(shared.remaining_seconds)
+        if self._cooldown_store is not None:
+            with self._lock:
+                return self._local_cooldown_remaining_locked(alias, now=now)
         state = self._states.get(alias)
         if state is None:
             return 0.0
