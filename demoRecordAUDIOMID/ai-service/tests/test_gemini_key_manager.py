@@ -280,3 +280,78 @@ def test_concurrent_model_cache_and_selection_is_thread_safe():
         "backup1",
         "backup2",
     }
+
+
+def test_unavailable_selection_preserves_terminal_reasons_without_secrets():
+    clock = FakeClock()
+    manager = GeminiKeyManager.from_config(
+        gemini_api_key="",
+        gemini_api_keys=(
+            "primary:fake-primary-key,backup1:fake-backup-key,backup2:fake-third-key"
+        ),
+        multi_key_enabled=True,
+        clock=clock,
+    )
+    manager.hard_cooldown_key(
+        "primary", seconds=900, reason="billing_credits_depleted"
+    )
+    manager.hard_cooldown_key(
+        "backup1", seconds=900, reason="free_tier_token_quota_exhausted"
+    )
+    manager.mark_model_unsupported("backup2", "gemini-2.5-flash")
+
+    selection = manager.select_key(model="gemini-2.5-flash")
+
+    assert selection.available is False
+    assert selection.unavailable_reasons == {
+        "primary": "billing_credits_depleted",
+        "backup1": "free_tier_token_quota_exhausted",
+        "backup2": "model_unavailable",
+    }
+    assert selection.all_terminal is True
+    assert "fake-primary-key" not in str(selection)
+    assert "fake-backup-key" not in str(selection)
+
+
+def test_has_unattempted_eligible_key_skips_attempted_aliases():
+    manager = GeminiKeyManager.from_config(
+        gemini_api_key="",
+        gemini_api_keys="primary:fake-primary-key,backup1:fake-backup-key",
+        multi_key_enabled=True,
+        clock=FakeClock(),
+    )
+
+    assert manager.has_unattempted_eligible_key(
+        "gemini-2.5-flash", attempted_aliases=set()
+    )
+    assert manager.has_unattempted_eligible_key(
+        "gemini-2.5-flash", attempted_aliases={"primary"}
+    )
+    assert not manager.has_unattempted_eligible_key(
+        "gemini-2.5-flash", attempted_aliases={"primary", "backup1"}
+    )
+
+
+def test_soft_cooldown_unavailable_is_not_all_terminal():
+    clock = FakeClock()
+    manager = GeminiKeyManager.from_config(
+        gemini_api_key="",
+        gemini_api_keys="primary:fake-primary-key,backup1:fake-backup-key",
+        multi_key_enabled=True,
+        clock=clock,
+    )
+    manager.cooldown_key("primary", seconds=30, reason="rate_limit")
+    manager.cooldown_key("backup1", seconds=30, reason="rate_limit")
+
+    selection = manager.select_key(model="gemini-2.5-flash")
+
+    assert selection.available is False
+    assert selection.all_terminal is False
+    assert selection.unavailable_reasons == {
+        "primary": "rate_limit",
+        "backup1": "rate_limit",
+    }
+
+    clock.advance(31)
+    assert manager.select_key(model="gemini-2.5-flash").available is True
+

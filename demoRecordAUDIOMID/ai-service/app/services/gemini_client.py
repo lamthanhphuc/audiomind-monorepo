@@ -321,6 +321,40 @@ def conclude_key_pool_failure(
     )
 
 
+_UNAVAILABLE_REASON_TO_FAILURE: dict[str, GeminiKeyFailureReason] = {
+    "billing_credits_depleted": GeminiKeyFailureReason.BILLING_CREDITS_DEPLETED,
+    "free_tier_token_quota_exhausted": (
+        GeminiKeyFailureReason.FREE_TIER_TOKEN_QUOTA_EXHAUSTED
+    ),
+    "free_tier_quota_exhausted": GeminiKeyFailureReason.FREE_TIER_TOKEN_QUOTA_EXHAUSTED,
+    "model_unavailable": GeminiKeyFailureReason.MODEL_UNAVAILABLE,
+    "invalid_key": GeminiKeyFailureReason.AUTH_ERROR,
+    "auth_error": GeminiKeyFailureReason.AUTH_ERROR,
+    "region_blocked": GeminiKeyFailureReason.REGION_BLOCKED,
+    "invalid_request": GeminiKeyFailureReason.INVALID_REQUEST,
+    "rate_limit": GeminiKeyFailureReason.TRANSIENT_RATE_LIMIT,
+    "transient_rate_limit": GeminiKeyFailureReason.TRANSIENT_RATE_LIMIT,
+    "network_error": GeminiKeyFailureReason.NETWORK_ERROR,
+    "cooldown": GeminiKeyFailureReason.TRANSIENT_RATE_LIMIT,
+}
+
+
+def failure_reasons_from_unavailable(
+    unavailable_reasons: dict[str, str],
+) -> dict[str, GeminiKeyFailureReason]:
+    """Map key-manager unavailable reason codes to structured failure reasons."""
+    mapped: dict[str, GeminiKeyFailureReason] = {}
+    for alias, reason in (unavailable_reasons or {}).items():
+        key = str(alias or "").strip()
+        code = str(reason or "").strip().lower()
+        if not key or not code:
+            continue
+        mapped[key] = _UNAVAILABLE_REASON_TO_FAILURE.get(
+            code, GeminiKeyFailureReason.TRANSIENT_PROVIDER_ERROR
+        )
+    return mapped
+
+
 def _normalize_gemini_proxy_url(proxy_url: str) -> str:
     raw = str(proxy_url or "").strip()
     if not raw:
@@ -458,6 +492,7 @@ class GeminiClient:
         started = self.clock()
         last_error: Exception | None = None
         failures_by_alias: dict[str, GeminiKeyFailureReason] = {}
+        attempted_aliases: set[str] = set()
         retry_after_seconds = 0
         sticky_alias = str(preferred_key_alias or "").strip() or None
         model_name = GeminiKeyManager.normalize_model_name(
@@ -474,10 +509,10 @@ class GeminiClient:
                     started, timeout_seconds
                 )
                 if per_attempt_timeout <= 0:
-                    # VPS-like failover: do not abort the pool while another key
-                    # is still eligible after a prior failure in this request.
-                    if failures_by_alias and self.key_manager.has_eligible_key(
-                        model_name or None
+                    # Fail-fast grace only for keys not yet tried in this request.
+                    # Do not re-grant budget to retry the same timed-out alias.
+                    if failures_by_alias and self.key_manager.has_unattempted_eligible_key(
+                        model_name or None, attempted_aliases
                     ):
                         per_attempt_timeout = min(
                             max(0.0, float(timeout_seconds or 0)), 15.0
@@ -503,7 +538,7 @@ class GeminiClient:
                     model=model_name or None,
                 )
                 if not selection.available or selection.entry is None:
-                    if (
+                    if selection.all_model_unsupported or (
                         model_name
                         and self.key_manager.all_keys_unsupported_for_model(model_name)
                     ):
@@ -518,14 +553,30 @@ class GeminiClient:
                             retryable=False,
                             key_alias=sticky_alias,
                         )
+                    pool_failures = dict(failures_by_alias)
+                    if not pool_failures and selection.unavailable_reasons:
+                        pool_failures = failure_reasons_from_unavailable(
+                            selection.unavailable_reasons
+                        )
+                    retryable_hint = True
+                    if pool_failures:
+                        reason_set = set(pool_failures.values())
+                        retryable_hint = not (
+                            bool(reason_set)
+                            and reason_set <= _TERMINAL_KEY_FAILURE_REASONS
+                        )
+                    elif selection.all_terminal:
+                        retryable_hint = False
                     logger.warning(
-                        "GEMINI_ALL_KEYS_EXHAUSTED retryable=true cooldownActive={}",
+                        "GEMINI_ALL_KEYS_EXHAUSTED retryable={} cooldownActive={} reasons={}",
+                        retryable_hint,
                         selection.cooldown_active,
+                        sorted(selection.unavailable_reasons.items()),
                     )
                     retry_after = selection.retry_after_seconds or retry_after_seconds
-                    if failures_by_alias:
+                    if pool_failures:
                         raise conclude_key_pool_failure(
-                            failures_by_alias,
+                            pool_failures,
                             retry_after_seconds=retry_after,
                             key_alias=sticky_alias,
                         )
@@ -538,6 +589,7 @@ class GeminiClient:
                     )
 
                 entry = selection.entry
+                attempted_aliases.add(entry.alias)
                 # After first selection, drop sticky preference only when this
                 # attempt is not the preferred key (preferred was cooled down).
                 if sticky_alias and entry.alias != sticky_alias:

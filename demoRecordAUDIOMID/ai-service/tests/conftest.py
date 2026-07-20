@@ -29,3 +29,16 @@ def disable_short_transcript_gate_for_legacy_tests(request, monkeypatch):
         "analysis_short_transcript_gate_enabled",
         False,
     )
+
+
+@pytest.fixture
+def deny_real_network(monkeypatch):
+    """Fail immediately if a test accidentally opens a real HTTP request."""
+    import httpx
+
+    def _deny(*_args, **_kwargs):
+        raise AssertionError("Real network calls are forbidden in unit tests")
+
+    monkeypatch.setattr(httpx.Client, "request", _deny)
+    monkeypatch.setattr(httpx.AsyncClient, "request", _deny)
+    return _deny
