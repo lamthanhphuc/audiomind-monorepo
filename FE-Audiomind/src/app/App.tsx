@@ -2139,6 +2139,7 @@ export default function App() {
         mode: 'force',
         reason: 'manual_reanalyze',
         domainMode: selectedDomainMode,
+        reanalysis_generation: Date.now(),
       })
       const responseStatus = getAnalysisStatusValue(response)
       if (hasStructuredAnalysisData(response) && !isPendingAnalysisStatus(responseStatus) && !isFailedAnalysisStatus(responseStatus)) {

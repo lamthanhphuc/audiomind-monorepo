@@ -51,7 +51,7 @@ def build_analysis_analyzer(settings):
             settings, "gemini_analysis_max_input_tokens", 12000
         )
         analysis_max_output_tokens = getattr(
-            settings, "gemini_analysis_max_output_tokens", 8192
+            settings, "gemini_structured_analysis_max_output_tokens", 4096
         )
         analysis_thinking_budget = getattr(
             settings, "gemini_analysis_thinking_budget", 0
@@ -72,9 +72,7 @@ def build_analysis_analyzer(settings):
         gemini_max_tokens_retry_enabled = getattr(
             settings, "gemini_max_tokens_retry_enabled", True
         )
-        gemini_max_attempts = getattr(
-            settings, "gemini_max_attempts", analysis_retry_max_attempts
-        )
+        gemini_max_attempts = getattr(settings, "gemini_max_total_attempts", 2)
         gemini_key_cooldown_seconds = getattr(
             settings, "gemini_key_cooldown_seconds", 90.0
         )
@@ -100,6 +98,20 @@ def build_analysis_analyzer(settings):
             analysis_max_input_tokens=analysis_max_input_tokens,
             analysis_max_output_tokens=analysis_max_output_tokens,
             analysis_thinking_budget=analysis_thinking_budget,
+            thinking_level=getattr(settings, "gemini_thinking_level", "low"),
+            temperature=getattr(settings, "gemini_temperature", 0.2),
+            chat_max_output_tokens=getattr(
+                settings, "gemini_chat_max_output_tokens", 1200
+            ),
+            summary_max_output_tokens=getattr(
+                settings, "gemini_summary_max_output_tokens", 2048
+            ),
+            structured_analysis_max_output_tokens=getattr(
+                settings, "gemini_structured_analysis_max_output_tokens", 4096
+            ),
+            study_artifact_max_output_tokens=getattr(
+                settings, "gemini_study_artifact_max_output_tokens", 3072
+            ),
             analysis_retry_max_attempts=analysis_retry_max_attempts,
             gemini_rate_limit_retry_base_seconds=gemini_rate_limit_retry_base_seconds,
             gemini_rate_limit_retry_max_seconds=gemini_rate_limit_retry_max_seconds,
@@ -110,6 +122,14 @@ def build_analysis_analyzer(settings):
             gemini_api_keys=gemini_api_keys,
             gemini_multi_key_enabled=gemini_multi_key_enabled,
             gemini_max_attempts=gemini_max_attempts,
+            gemini_max_schema_retries=getattr(settings, "gemini_max_schema_retries", 1),
+            gemini_max_token_retries=getattr(settings, "gemini_max_token_retries", 1),
+            gemini_key_project_groups=getattr(
+                settings, "gemini_key_project_groups", ""
+            ),
+            gemini_cross_project_failover_enabled=getattr(
+                settings, "gemini_cross_project_failover_enabled", False
+            ),
             gemini_key_cooldown_seconds=gemini_key_cooldown_seconds,
             gemini_key_hard_cooldown_seconds=gemini_key_hard_cooldown_seconds,
             gemini_backoff_base_ms=gemini_backoff_base_ms,

@@ -42,6 +42,7 @@ export type AnalysisRerunRequest = {
   reason: 'manual_reanalyze' | string
   domainMode?: string
   domain_mode?: string
+  reanalysis_generation?: number
 }
 
 export type TranscriptEvidenceContext = {
@@ -651,20 +652,37 @@ export const getMeetingActionPlan = async (meetingId: number): Promise<MeetingAc
   return normalizeMeetingActionPlanData(response)
 }
 
-export const reanalyzeMeetingAnalysis = async (
+const reanalysisRequestsInFlight = new Map<number, Promise<AiAnalysis>>()
+
+export const reanalyzeMeetingAnalysis = (
   meetingId: number,
   request: AnalysisRerunRequest = { mode: 'force', reason: 'manual_reanalyze' },
 ): Promise<AiAnalysis> => {
-  const response = await fetchJson<AiAnalysis | { data?: AiAnalysis }>(
+  const existing = reanalysisRequestsInFlight.get(meetingId)
+  if (existing) return existing
+
+  const operationRequest = {
+    ...request,
+    reanalysis_generation: request.reanalysis_generation ?? Date.now(),
+  }
+  const pending = fetchJson<AiAnalysis | { data?: AiAnalysis }>(
     `${API_BASE}/processing/${meetingId}/analysis/rerun`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
+      body: JSON.stringify(operationRequest),
     },
-  )
+  ).then(normalizeAnalysisResponse)
 
-  return normalizeAnalysisResponse(response)
+  reanalysisRequestsInFlight.set(meetingId, pending)
+  const clearPending = () => {
+    if (reanalysisRequestsInFlight.get(meetingId) === pending) {
+      reanalysisRequestsInFlight.delete(meetingId)
+    }
+  }
+  void pending.then(clearPending, clearPending)
+
+  return pending
 }
 
 export const downloadMeetingReport = async (
