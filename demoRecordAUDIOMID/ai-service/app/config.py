@@ -29,6 +29,8 @@ class Settings(BaseSettings):
     gemini_shared_cooldown_enabled: bool = False
     gemini_shared_state_namespace: str = ""
     gemini_model_unsupported_ttl_seconds: int = 21600
+    gemini_redis_connect_timeout_seconds: float = 1.0
+    gemini_redis_socket_timeout_seconds: float = 1.5
     gemini_max_attempts: int = 3
     gemini_key_cooldown_seconds: float = 90.0
     gemini_key_hard_cooldown_seconds: float = 900.0
@@ -310,6 +312,14 @@ class Settings(BaseSettings):
         )
         self.gemini_model_unsupported_ttl_seconds = max(
             1, int(self.gemini_model_unsupported_ttl_seconds or 21600)
+        )
+        self.gemini_redis_connect_timeout_seconds = max(
+            0.1,
+            float(self.gemini_redis_connect_timeout_seconds or 1.0),
+        )
+        self.gemini_redis_socket_timeout_seconds = max(
+            0.1,
+            float(self.gemini_redis_socket_timeout_seconds or 1.5),
         )
         self.gemini_timeout_seconds = max(1, int(self.gemini_timeout_seconds or 300))
         self.gemini_rate_limit_retry_base_seconds = max(

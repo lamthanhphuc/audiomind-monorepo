@@ -191,15 +191,14 @@ class AIAnalyzer:
 
                     settings = get_settings()
                     if settings.gemini_shared_cooldown_enabled:
-                        import redis
-
                         from app.services.gemini_key_cooldown_store import (
                             build_redis_gemini_cooldown_store,
+                            create_gemini_redis_client,
                         )
 
-                        redis_client = redis.Redis.from_url(
+                        redis_client = create_gemini_redis_client(
                             settings.job_state_redis_url,
-                            decode_responses=True,
+                            settings=settings,
                         )
                         cooldown_store = build_redis_gemini_cooldown_store(
                             redis_client,

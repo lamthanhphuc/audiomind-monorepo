@@ -18,9 +18,9 @@ def test_api_and_worker_share_default_namespace(monkeypatch) -> None:
     monkeypatch.delenv("GEMINI_SHARED_STATE_NAMESPACE", raising=False)
     monkeypatch.setenv("APP_ENV", "staging")
     monkeypatch.setenv("APP_COMPONENT", "api")
-    api_settings = Settings()
+    api_settings = Settings(_env_file=None)
     monkeypatch.setenv("APP_COMPONENT", "worker")
-    worker_settings = Settings()
+    worker_settings = Settings(_env_file=None)
 
     api_namespace = resolve_shared_state_namespace(
         app_env=api_settings.app_env,
@@ -47,7 +47,7 @@ def test_explicit_namespace_override_is_used(monkeypatch) -> None:
 
     get_settings.cache_clear()
     monkeypatch.setenv("GEMINI_SHARED_STATE_NAMESPACE", "custom:namespace")
-    settings = Settings()
+    settings = Settings(_env_file=None)
     namespace = resolve_shared_state_namespace(
         app_env=settings.app_env,
         explicit_namespace=settings.gemini_shared_state_namespace,
@@ -60,6 +60,7 @@ def test_build_store_does_not_embed_raw_key_in_redis_key() -> None:
     from app.config import Settings
 
     settings = Settings(
+        _env_file=None,
         app_env="offline-test",
         gemini_shared_state_namespace="offline-test:ai-service",
     )
