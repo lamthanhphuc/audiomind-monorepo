@@ -4337,6 +4337,8 @@ class ProcessingServiceTest {
                 null,
                 null,
                 "general",
+                null,
+                null,
                 "trace-616",
                 AUTH_HEADER
         )).thenReturn(Map.of(
@@ -4368,6 +4370,8 @@ class ProcessingServiceTest {
                 null,
                 null,
                 "general",
+                null,
+                null,
                 "trace-616",
                 AUTH_HEADER
         );
@@ -4418,6 +4422,8 @@ class ProcessingServiceTest {
                 anyString(),
                 anyString(),
                 anyString(),
+                isNull(),
+                isNull(),
                 anyString(),
                 anyString()
         );
@@ -4451,6 +4457,8 @@ class ProcessingServiceTest {
                 isNull(),
                 isNull(),
                 eq("education"),
+                isNull(),
+                isNull(),
                 eq("trace-618"),
                 eq(AUTH_HEADER)
         )).thenThrow(new HttpClientErrorException(HttpStatus.NOT_FOUND, "Not Found"));
@@ -4479,6 +4487,8 @@ class ProcessingServiceTest {
                 isNull(),
                 isNull(),
                 eq("education"),
+                isNull(),
+                isNull(),
                 eq("trace-618"),
                 eq(AUTH_HEADER)
         );

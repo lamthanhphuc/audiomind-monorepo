@@ -1222,6 +1222,7 @@ public class ProcessingService {
                 null,
                 null,
                 null,
+                null,
                 traceId,
                 authorization
         );
@@ -1234,6 +1235,29 @@ public class ProcessingService {
             String requestedPromptVersion,
             String requestedSchemaVersion,
             String domainMode,
+            String traceId,
+            String authorization) {
+        return reanalyzeMeetingAnalysis(
+                meetingId,
+                mode,
+                reason,
+                requestedPromptVersion,
+                requestedSchemaVersion,
+                domainMode,
+                null,
+                traceId,
+                authorization
+        );
+    }
+
+    public Map<String, Object> reanalyzeMeetingAnalysis(
+            Long meetingId,
+            String mode,
+            String reason,
+            String requestedPromptVersion,
+            String requestedSchemaVersion,
+            String domainMode,
+            Long reanalysisGeneration,
             String traceId,
             String authorization) {
         assertMeetingAccess(meetingId, traceId, authorization);
@@ -1297,6 +1321,8 @@ public class ProcessingService {
                     transcriptPayload.canonicalTranscriptHash(),
                     transcriptPayload.canonicalTranscriptVersion(),
                     resolvedDomainMode,
+                    resolveCurrentUserId(),
+                    reanalysisGeneration,
                     traceId,
                     authorization
             );
@@ -1484,21 +1510,6 @@ public class ProcessingService {
         }
         fetchAccessibleMeeting(meetingId, traceId, authorization);
 
-        TranscriptPayload transcriptPayload = loadSavedTranscriptPayloadForExport(
-                meetingId,
-                traceId,
-                authorization,
-                false,
-                TranscriptExportMode.READABLE
-        );
-        List<Map<String, Object>> transcriptRows = applySpeakerDisplayNames(
-                stabilizeReadableTranscriptRows(transcriptPayload.readableRows(), meetingId).rows(),
-                meetingId,
-                traceId,
-                authorization
-        );
-        String transcriptExcerpt = buildTimedTranscriptExcerpt(transcriptRows, 12000);
-
         Map<String, Object> analysisPayload = Map.of();
         try {
             analysisPayload = aiServiceClient.getAnalysis(meetingId, traceId);
@@ -1518,16 +1529,17 @@ public class ProcessingService {
                 authorization
         );
 
-        String billingText = question + "\n" + summary + "\n" + transcriptExcerpt;
+        String billingText = question + "\n" + summary + "\n" + sourceSegments;
         enforceGeminiQuotaForText(billingText);
 
         Map<String, Object> aiResponse = aiServiceClient.answerMeetingChat(
                 meetingId,
                 question.trim(),
                 summary,
-                transcriptExcerpt,
-                analysisPayload,
+                "",
+                Map.of(),
                 sourceSegments,
+                resolveCurrentUserId(),
                 traceId,
                 authorization
         );
@@ -1694,6 +1706,7 @@ public class ProcessingService {
         Map<String, Object> rerank = aiServiceClient.semanticRerankMeetings(
                 trimmedQuery,
                 candidates,
+                resolveCurrentUserId(),
                 traceId,
                 authorization
         );
@@ -1819,6 +1832,7 @@ public class ProcessingService {
         Map<String, Object> aiResponse = aiServiceClient.askCrossMeeting(
                 question.trim(),
                 meetings,
+                resolveCurrentUserId(),
                 traceId,
                 authorization
         );
@@ -1880,6 +1894,7 @@ public class ProcessingService {
                 summary,
                 transcriptExcerpt,
                 analysisPayload,
+                resolveCurrentUserId(),
                 traceId,
                 authorization
         );
