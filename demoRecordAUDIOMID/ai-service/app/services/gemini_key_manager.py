@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from math import ceil
 from typing import Callable
 
+from loguru import logger
+
 from app.services.gemini_key_cooldown_store import (
     DEFAULT_MODEL_UNSUPPORTED_TTL_SECONDS,
     GeminiCooldownState,
@@ -17,7 +19,11 @@ from app.services.gemini_key_cooldown_store import (
 )
 
 ALIAS_PATTERN = re.compile(r"^[a-z0-9_-]+$")
-_MAX_PENDING_CLEAR_ATTEMPTS = 3
+MAX_VALIDATION_REFRESH_ATTEMPTS = 2
+PENDING_CLEAR_TTL_SECONDS = 300.0
+PENDING_CLEAR_INITIAL_BACKOFF_SECONDS = 1.0
+PENDING_CLEAR_MAX_BACKOFF_SECONDS = 30.0
+TTL_SYNC_TOLERANCE_SECONDS = 1.0
 
 
 class GeminiKeyConfigError(ValueError):
@@ -48,6 +54,12 @@ _TERMINAL_UNAVAILABLE_REASONS = frozenset(
 
 
 @dataclass(frozen=True)
+class LocalStateRevision:
+    alias_generation: int
+    model_generation: int
+
+
+@dataclass(frozen=True)
 class GeminiKeySelection:
     available: bool
     entry: GeminiKeyEntry | None = None
@@ -58,7 +70,14 @@ class GeminiKeySelection:
     all_model_unsupported: bool = False
     has_unattempted_eligible: bool = False
     reason: str | None = None
-    snapshot_generation: int = 0
+    selection_revision: LocalStateRevision | None = None
+
+    @property
+    def snapshot_generation(self) -> int:
+        """Backward-compatible debug view of alias generation at selection time."""
+        if self.selection_revision is None:
+            return 0
+        return self.selection_revision.alias_generation
 
     @property
     def alias(self) -> str | None:
@@ -75,6 +94,15 @@ class _KeyState:
     last_error_code: str | None = None
     last_retry_after_seconds: int = 0
     consecutive_failures: int = 0
+
+
+@dataclass
+class PendingClearState:
+    attempts: int
+    created_at_monotonic: float
+    next_retry_at_monotonic: float
+    expires_at_monotonic: float
+    last_error_type: str | None = None
 
 
 @dataclass(frozen=True)
@@ -186,10 +214,12 @@ class GeminiKeyManager:
         }
         self._selection_ticket = 0
         self._state_generation = 0
+        self._alias_generation: dict[str, int] = {}
+        self._model_generation: dict[tuple[str, str], int] = {}
         self._local_cooldown: dict[str, LocalCooldownState] = {}
         self._unsupported_expires_monotonic: dict[tuple[str, str, str], float] = {}
-        self._pending_cooldown_clears: dict[str, int] = {}
-        self._pending_model_clears: dict[tuple[str, str, str], int] = {}
+        self._pending_cooldown_clears: dict[str, PendingClearState] = {}
+        self._pending_model_clears: dict[tuple[str, str, str], PendingClearState] = {}
         self._model_unsupported_ttl_seconds = self._resolve_model_unsupported_ttl()
 
     @staticmethod
@@ -270,8 +300,77 @@ class GeminiKeyManager:
             lowered = lowered.split(":", 1)[0]
         return lowered.strip()
 
-    def _increment_generation_locked(self) -> None:
+    def _increment_alias_generation_locked(self, alias: str) -> None:
+        self._alias_generation[alias] = self._alias_generation.get(alias, 0) + 1
         self._state_generation += 1
+
+    def _increment_model_generation_locked(self, alias: str, model_name: str) -> None:
+        if not model_name:
+            return
+        key = (alias, model_name)
+        self._model_generation[key] = self._model_generation.get(key, 0) + 1
+        self._state_generation += 1
+
+    def _capture_revision_locked(
+        self, alias: str, model_name: str
+    ) -> LocalStateRevision:
+        return LocalStateRevision(
+            alias_generation=self._alias_generation.get(alias, 0),
+            model_generation=self._model_generation.get((alias, model_name), 0)
+            if model_name
+            else 0,
+        )
+
+    def _revision_changed_locked(
+        self,
+        captured: LocalStateRevision,
+        alias: str,
+        model_name: str,
+    ) -> bool:
+        return captured != self._capture_revision_locked(alias, model_name)
+
+    def _new_pending_clear_state(self, now: float) -> PendingClearState:
+        return PendingClearState(
+            attempts=0,
+            created_at_monotonic=now,
+            next_retry_at_monotonic=now,
+            expires_at_monotonic=now + PENDING_CLEAR_TTL_SECONDS,
+        )
+
+    def _schedule_pending_clear_retry(
+        self, pending: PendingClearState, *, now: float, error_type: str | None
+    ) -> PendingClearState:
+        attempts = pending.attempts + 1
+        backoff = min(
+            PENDING_CLEAR_MAX_BACKOFF_SECONDS,
+            PENDING_CLEAR_INITIAL_BACKOFF_SECONDS * (2 ** max(0, attempts - 1)),
+        )
+        return PendingClearState(
+            attempts=attempts,
+            created_at_monotonic=pending.created_at_monotonic,
+            next_retry_at_monotonic=now + backoff,
+            expires_at_monotonic=pending.expires_at_monotonic,
+            last_error_type=error_type,
+        )
+
+    def _expire_pending_clears_locked(self, now: float) -> None:
+        for alias, pending in tuple(self._pending_cooldown_clears.items()):
+            if now >= pending.expires_at_monotonic:
+                self._pending_cooldown_clears.pop(alias, None)
+                self._increment_alias_generation_locked(alias)
+                logger.warning(
+                    "GEMINI_PENDING_COOLDOWN_CLEAR_EXPIRED alias={}",
+                    alias,
+                )
+        for cache_key, pending in tuple(self._pending_model_clears.items()):
+            if now >= pending.expires_at_monotonic:
+                self._pending_model_clears.pop(cache_key, None)
+                self._increment_model_generation_locked(cache_key[0], cache_key[2])
+                logger.warning(
+                    "GEMINI_PENDING_MODEL_CLEAR_EXPIRED alias={} modelKey={}",
+                    cache_key[0],
+                    cache_key[2],
+                )
 
     def _reserve_selection_ticket_locked(self) -> int:
         ticket = self._selection_ticket
@@ -279,7 +378,6 @@ class GeminiKeyManager:
         return ticket
 
     def _cleanup_expired_locked(self, now: float) -> None:
-        changed = False
         for alias, local in tuple(self._local_cooldown.items()):
             if local.expires_at_monotonic <= now:
                 self._local_cooldown.pop(alias, None)
@@ -288,15 +386,14 @@ class GeminiKeyManager:
                     state.disabled_until_monotonic = 0.0
                     state.last_error_code = None
                     state.last_retry_after_seconds = 0
-                changed = True
+                self._increment_alias_generation_locked(alias)
         for cache_key, expires_at in tuple(
             self._unsupported_expires_monotonic.items()
         ):
             if expires_at <= now:
                 self._unsupported_expires_monotonic.pop(cache_key, None)
-                changed = True
-        if changed:
-            self._increment_generation_locked()
+                self._increment_model_generation_locked(cache_key[0], cache_key[2])
+        self._expire_pending_clears_locked(now)
 
     def _local_cooldown_as_state_locked(
         self, alias: str, *, now: float
@@ -347,6 +444,59 @@ class GeminiKeyManager:
             )
         return snapshots
 
+    def _cooldown_logical_changed_locked(
+        self,
+        alias: str,
+        *,
+        incoming_active: bool,
+        incoming_reason: str | None,
+        incoming_type: str | None,
+        incoming_remaining: float,
+        now: float,
+    ) -> bool:
+        existing = self._local_cooldown.get(alias)
+        existing_active = existing is not None and existing.expires_at_monotonic > now
+        if existing_active != incoming_active:
+            return True
+        if not incoming_active:
+            return False
+        if existing is None:
+            return True
+        if (existing.reason or "") != (incoming_reason or ""):
+            return True
+        if (existing.cooldown_type or "") != (incoming_type or ""):
+            return True
+        existing_remaining = max(0.0, existing.expires_at_monotonic - now)
+        if abs(existing_remaining - incoming_remaining) > TTL_SYNC_TOLERANCE_SECONDS:
+            if incoming_remaining > existing_remaining + TTL_SYNC_TOLERANCE_SECONDS:
+                return True
+            if (
+                existing_remaining
+                > incoming_remaining + TTL_SYNC_TOLERANCE_SECONDS
+            ):
+                return True
+        return False
+
+    def _model_unsupported_logical_changed_locked(
+        self,
+        cache_key: tuple[str, str, str],
+        *,
+        incoming_active: bool,
+        incoming_remaining: float,
+        now: float,
+    ) -> bool:
+        existing_expires = self._unsupported_expires_monotonic.get(cache_key, 0.0)
+        existing_active = existing_expires > now
+        if existing_active != incoming_active:
+            return True
+        if not incoming_active:
+            return False
+        existing_remaining = max(0.0, existing_expires - now)
+        return (
+            abs(existing_remaining - incoming_remaining)
+            > TTL_SYNC_TOLERANCE_SECONDS
+        )
+
     def _sync_alias_from_shared_locked(
         self,
         shared: SharedAliasSnapshot,
@@ -355,54 +505,142 @@ class GeminiKeyManager:
         now: float,
     ) -> None:
         alias = shared.alias
+        alias_changed = False
         if alias not in self._pending_cooldown_clears:
-            state = shared.cooldown_state
-            if state is not None and shared.cooldown_pttl_ms > 0:
-                self._local_cooldown[alias] = LocalCooldownState(
-                    reason=state.reason,
-                    cooldown_type=state.cooldown_type,
-                    expires_at_monotonic=now + shared.cooldown_pttl_ms / 1000.0,
-                )
-                local_state = self._states.get(alias)
-                if local_state is not None:
-                    local_state.last_error_code = state.reason
-                    local_state.last_retry_after_seconds = int(
-                        ceil(shared.cooldown_pttl_ms / 1000.0)
+            incoming_active = (
+                shared.cooldown_state is not None and shared.cooldown_pttl_ms > 0
+            )
+            incoming_remaining = (
+                max(0.0, shared.cooldown_pttl_ms / 1000.0)
+                if incoming_active
+                else 0.0
+            )
+            incoming_reason = (
+                shared.cooldown_state.reason if shared.cooldown_state else None
+            )
+            incoming_type = (
+                shared.cooldown_state.cooldown_type
+                if shared.cooldown_state
+                else None
+            )
+            if self._cooldown_logical_changed_locked(
+                alias,
+                incoming_active=incoming_active,
+                incoming_reason=incoming_reason,
+                incoming_type=incoming_type,
+                incoming_remaining=incoming_remaining,
+                now=now,
+            ):
+                alias_changed = True
+                if incoming_active and shared.cooldown_state is not None:
+                    self._local_cooldown[alias] = LocalCooldownState(
+                        reason=shared.cooldown_state.reason,
+                        cooldown_type=shared.cooldown_state.cooldown_type,
+                        expires_at_monotonic=now + incoming_remaining,
                     )
-            else:
-                self._local_cooldown.pop(alias, None)
-                local_state = self._states.get(alias)
-                if local_state is not None:
-                    local_state.disabled_until_monotonic = 0.0
-                    local_state.last_error_code = None
-                    local_state.last_retry_after_seconds = 0
+                    local_state = self._states.get(alias)
+                    if local_state is not None:
+                        local_state.last_error_code = shared.cooldown_state.reason
+                        local_state.last_retry_after_seconds = int(
+                            ceil(incoming_remaining)
+                        )
+                else:
+                    self._local_cooldown.pop(alias, None)
+                    local_state = self._states.get(alias)
+                    if local_state is not None:
+                        local_state.disabled_until_monotonic = 0.0
+                        local_state.last_error_code = None
+                        local_state.last_retry_after_seconds = 0
 
+        model_changed = False
         if model_name:
             cache_key = self._model_cache_key(alias, model_name)
             if cache_key not in self._pending_model_clears:
-                if shared.model_unsupported and shared.model_pttl_ms > 0:
-                    self._unsupported_expires_monotonic[cache_key] = (
-                        now + shared.model_pttl_ms / 1000.0
-                    )
-                else:
-                    self._unsupported_expires_monotonic.pop(cache_key, None)
-        self._increment_generation_locked()
+                incoming_active = (
+                    shared.model_unsupported and shared.model_pttl_ms > 0
+                )
+                incoming_remaining = (
+                    max(0.0, shared.model_pttl_ms / 1000.0)
+                    if incoming_active
+                    else 0.0
+                )
+                if self._model_unsupported_logical_changed_locked(
+                    cache_key,
+                    incoming_active=incoming_active,
+                    incoming_remaining=incoming_remaining,
+                    now=now,
+                ):
+                    model_changed = True
+                    if incoming_active:
+                        self._unsupported_expires_monotonic[cache_key] = (
+                            now + incoming_remaining
+                        )
+                    else:
+                        self._unsupported_expires_monotonic.pop(cache_key, None)
+
+        if alias_changed:
+            self._increment_alias_generation_locked(alias)
+        if model_changed:
+            self._increment_model_generation_locked(alias, model_name)
 
     def _pending_clear_capture_locked(
-        self, model_name: str
-    ) -> tuple[dict[str, int], dict[tuple[str, str, str], int]]:
+        self, model_name: str, now: float
+    ) -> tuple[dict[str, PendingClearState], dict[tuple[str, str, str], PendingClearState]]:
+        self._expire_pending_clears_locked(now)
         cooldown = {
-            alias: attempts
-            for alias, attempts in self._pending_cooldown_clears.items()
-            if attempts < _MAX_PENDING_CLEAR_ATTEMPTS
+            alias: pending
+            for alias, pending in self._pending_cooldown_clears.items()
+            if now >= pending.next_retry_at_monotonic
         }
         model = {
-            cache_key: attempts
-            for cache_key, attempts in self._pending_model_clears.items()
-            if cache_key[2] == model_name
-            and attempts < _MAX_PENDING_CLEAR_ATTEMPTS
+            cache_key: pending
+            for cache_key, pending in self._pending_model_clears.items()
+            if cache_key[2] == model_name and now >= pending.next_retry_at_monotonic
         }
         return cooldown, model
+
+    def _process_pending_clear_success_locked(
+        self,
+        *,
+        cooldown_pending: dict[str, PendingClearState],
+        model_pending: dict[tuple[str, str, str], PendingClearState],
+        model_name: str,
+    ) -> None:
+        for alias, pending in cooldown_pending.items():
+            if self._pending_cooldown_clears.get(alias) is pending:
+                self._pending_cooldown_clears.pop(alias, None)
+                self._increment_alias_generation_locked(alias)
+        for cache_key, pending in model_pending.items():
+            if self._pending_model_clears.get(cache_key) is pending:
+                self._pending_model_clears.pop(cache_key, None)
+                self._increment_model_generation_locked(cache_key[0], cache_key[2])
+
+    def _process_pending_clear_failure_locked(
+        self,
+        *,
+        cooldown_pending: dict[str, PendingClearState],
+        model_pending: dict[tuple[str, str, str], PendingClearState],
+        now: float,
+        error_type: str | None,
+    ) -> None:
+        for alias, pending in cooldown_pending.items():
+            current = self._pending_cooldown_clears.get(alias)
+            if current is pending:
+                updated = self._schedule_pending_clear_retry(
+                    pending, now=now, error_type=error_type
+                )
+                self._pending_cooldown_clears[alias] = updated
+                self._increment_alias_generation_locked(alias)
+        for cache_key, pending in model_pending.items():
+            current = self._pending_model_clears.get(cache_key)
+            if current is pending:
+                updated = self._schedule_pending_clear_retry(
+                    pending, now=now, error_type=error_type
+                )
+                self._pending_model_clears[cache_key] = updated
+                self._increment_model_generation_locked(
+                    cache_key[0], cache_key[2]
+                )
 
     def _refresh_pool(
         self,
@@ -413,9 +651,18 @@ class GeminiKeyManager:
         capture_now = self._clock()
         with self._lock:
             self._cleanup_expired_locked(capture_now)
-            captured_generation = self._state_generation
+            captured_alias_generations = {
+                entry.alias: self._alias_generation.get(entry.alias, 0)
+                for entry in entries
+            }
+            captured_model_generations = {
+                (entry.alias, model_name): self._model_generation.get(
+                    (entry.alias, model_name), 0
+                )
+                for entry in entries
+            }
             cooldown_pending, model_pending = self._pending_clear_capture_locked(
-                model_name
+                model_name, capture_now
             )
             scopes = tuple(self._scope_for(entry.alias) for entry in entries)
 
@@ -441,37 +688,45 @@ class GeminiKeyManager:
         )
 
         decision_now = self._clock()
+        error_type = (
+            type(shared_snapshot.error).__name__
+            if shared_snapshot.error is not None
+            else None
+        )
         with self._lock:
-            snapshot_is_stale = self._state_generation != captured_generation
-            if shared_snapshot.success and not snapshot_is_stale:
-                for alias, attempts in cooldown_pending.items():
-                    if self._pending_cooldown_clears.get(alias) == attempts:
-                        self._pending_cooldown_clears.pop(alias, None)
-                        self._increment_generation_locked()
-                for cache_key, attempts in model_pending.items():
-                    if self._pending_model_clears.get(cache_key) == attempts:
-                        self._pending_model_clears.pop(cache_key, None)
-                        self._increment_generation_locked()
+            if shared_snapshot.success:
+                self._process_pending_clear_success_locked(
+                    cooldown_pending=cooldown_pending,
+                    model_pending=model_pending,
+                    model_name=model_name,
+                )
                 for shared in shared_snapshot.aliases:
+                    alias = shared.alias
+                    if self._alias_generation.get(alias, 0) != captured_alias_generations.get(
+                        alias, 0
+                    ):
+                        continue
+                    if model_name and self._model_generation.get(
+                        (alias, model_name), 0
+                    ) != captured_model_generations.get((alias, model_name), 0):
+                        continue
                     self._sync_alias_from_shared_locked(
                         shared, model_name=model_name, now=decision_now
                     )
-            elif not shared_snapshot.success and not snapshot_is_stale:
-                for alias, attempts in cooldown_pending.items():
-                    if self._pending_cooldown_clears.get(alias) == attempts:
-                        self._pending_cooldown_clears[alias] = attempts + 1
-                        self._increment_generation_locked()
-                for cache_key, attempts in model_pending.items():
-                    if self._pending_model_clears.get(cache_key) == attempts:
-                        self._pending_model_clears[cache_key] = attempts + 1
-                        self._increment_generation_locked()
+            else:
+                self._process_pending_clear_failure_locked(
+                    cooldown_pending=cooldown_pending,
+                    model_pending=model_pending,
+                    now=decision_now,
+                    error_type=error_type,
+                )
             self._cleanup_expired_locked(decision_now)
             return (
                 self._local_snapshots_locked(
                     entries, model_name=model_name, now=decision_now
                 ),
                 self._state_generation,
-                shared_snapshot.success and not snapshot_is_stale,
+                shared_snapshot.success,
             )
 
     @staticmethod
@@ -494,7 +749,7 @@ class GeminiKeyManager:
         snapshots: dict[str, GeminiAliasStateSnapshot],
         entries: tuple[GeminiKeyEntry, ...],
         attempted: frozenset[str],
-        generation: int,
+        revision: LocalStateRevision,
     ) -> GeminiKeySelection:
         has_other = any(
             candidate.alias != entry.alias
@@ -506,7 +761,7 @@ class GeminiKeyManager:
             available=True,
             entry=entry,
             has_unattempted_eligible=has_other,
-            snapshot_generation=generation,
+            selection_revision=revision,
         )
 
     def _unavailable_selection(
@@ -516,7 +771,7 @@ class GeminiKeyManager:
         *,
         model_name: str,
         attempted: frozenset[str],
-        generation: int,
+        revision: LocalStateRevision,
     ) -> GeminiKeySelection:
         reasons: dict[str, str] = {}
         remaining_values: list[float] = []
@@ -554,7 +809,7 @@ class GeminiKeyManager:
             all_model_unsupported=all_model_unsupported,
             has_unattempted_eligible=eligible_unattempted,
             reason=common_reason,
-            snapshot_generation=generation,
+            selection_revision=revision,
         )
 
     def select_key(
@@ -564,6 +819,7 @@ class GeminiKeyManager:
         *,
         attempted_aliases: set[str] | frozenset[str] | None = None,
         exclude_aliases: set[str] | frozenset[str] | None = None,
+        allow_preferred_reuse: bool = False,
     ) -> GeminiKeySelection:
         preferred = str(preferred_alias or "").strip()
         model_name = self.normalize_model_name(model)
@@ -576,18 +832,55 @@ class GeminiKeyManager:
             with self._lock:
                 ticket = self._reserve_selection_ticket_locked()
 
-        snapshots, generation, _shared_fresh = self._refresh_pool(
+        snapshots, _generation, _shared_fresh = self._refresh_pool(
             entries, model_name=model_name
         )
 
         if preferred and preferred not in excluded:
-            for entry in entries:
-                if entry.alias == preferred:
-                    if self._eligible_from_snapshot(snapshots[entry.alias]):
-                        return self._selection_for_entry(
-                            entry, snapshots, entries, attempted, generation
-                        )
-                    break
+            may_reuse_preferred = (
+                preferred not in attempted
+                or (
+                    allow_preferred_reuse
+                    and preferred not in excluded
+                )
+            )
+            if may_reuse_preferred:
+                for entry in entries:
+                    if entry.alias == preferred:
+                        if self._eligible_from_snapshot(snapshots[entry.alias]):
+                            with self._lock:
+                                revision = self._capture_revision_locked(
+                                    entry.alias, model_name
+                                )
+                            return self._selection_for_entry(
+                                entry,
+                                snapshots,
+                                entries,
+                                attempted,
+                                revision,
+                            )
+                        break
+
+        eligible_unattempted = [
+            entry
+            for entry in entries
+            if entry.alias not in attempted
+            and entry.alias not in excluded
+            and self._eligible_from_snapshot(snapshots[entry.alias])
+        ]
+        if not eligible_unattempted:
+            with self._lock:
+                revision = LocalStateRevision(
+                    alias_generation=self._state_generation,
+                    model_generation=0,
+                )
+            return self._unavailable_selection(
+                snapshots,
+                entries,
+                model_name=model_name,
+                attempted=attempted,
+                revision=revision,
+            )
 
         if ticket is None:
             with self._lock:
@@ -598,21 +891,41 @@ class GeminiKeyManager:
             entry = entries[(start_index + offset) % size]
             if entry.alias in excluded:
                 continue
+            if entry.alias in attempted:
+                continue
             if self._eligible_from_snapshot(snapshots[entry.alias]):
                 if offset:
                     with self._lock:
                         self._selection_ticket = max(
                             self._selection_ticket, ticket + offset + 1
                         )
+                with self._lock:
+                    revision = self._capture_revision_locked(
+                        entry.alias, model_name
+                    )
                 return self._selection_for_entry(
-                    entry, snapshots, entries, attempted, generation
+                    entry, snapshots, entries, attempted, revision
                 )
+        with self._lock:
+            revision = LocalStateRevision(
+                alias_generation=self._state_generation,
+                model_generation=0,
+            )
         return self._unavailable_selection(
             snapshots,
             entries,
             model_name=model_name,
             attempted=attempted,
-            generation=generation,
+            revision=revision,
+        )
+
+    def _shared_alias_blocked(
+        self, shared: SharedAliasSnapshot, *, model_name: str
+    ) -> bool:
+        if shared.cooldown_state is not None and shared.cooldown_pttl_ms > 0:
+            return True
+        return bool(
+            model_name and shared.model_unsupported and shared.model_pttl_ms > 0
         )
 
     def validate_selection(
@@ -621,12 +934,88 @@ class GeminiKeyManager:
         entry = selection.entry
         if not selection.available or entry is None:
             return False
+        alias = entry.alias
         model_name = self.normalize_model_name(model)
-        snapshots, _generation, _shared_fresh = self._refresh_pool(
-            (entry,), model_name=model_name
-        )
-        snapshot = snapshots.get(entry.alias)
-        return snapshot is not None and self._eligible_from_snapshot(snapshot)
+        store = self._cooldown_store
+
+        for _attempt in range(MAX_VALIDATION_REFRESH_ATTEMPTS + 1):
+            with self._lock:
+                now = self._clock()
+                self._cleanup_expired_locked(now)
+                captured_revision = self._capture_revision_locked(alias, model_name)
+                cooldown_pending, model_pending = self._pending_clear_capture_locked(
+                    model_name, now
+                )
+                scope = self._scope_for(alias)
+
+            if store is None:
+                with self._lock:
+                    snapshots = self._local_snapshots_locked(
+                        (entry,), model_name=model_name, now=self._clock()
+                    )
+                    return self._eligible_from_snapshot(snapshots[alias])
+
+            shared_snapshot = store.read_pool_snapshot(
+                (scope,),
+                model_name,
+                now_ms=self._now_ms(),
+                clear_cooldown_aliases=frozenset(cooldown_pending),
+                clear_model_aliases=frozenset(key[0] for key in model_pending),
+            )
+            decision_now = self._clock()
+            error_type = (
+                type(shared_snapshot.error).__name__
+                if shared_snapshot.error is not None
+                else None
+            )
+
+            with self._lock:
+                if shared_snapshot.success:
+                    shared = next(
+                        (item for item in shared_snapshot.aliases if item.alias == alias),
+                        None,
+                    )
+                    if shared is None:
+                        snapshots = self._local_snapshots_locked(
+                            (entry,), model_name=model_name, now=decision_now
+                        )
+                        return self._eligible_from_snapshot(snapshots[alias])
+
+                    if self._shared_alias_blocked(shared, model_name=model_name):
+                        if not self._revision_changed_locked(
+                            captured_revision, alias, model_name
+                        ):
+                            self._sync_alias_from_shared_locked(
+                                shared, model_name=model_name, now=decision_now
+                            )
+                        return False
+
+                    if not self._revision_changed_locked(
+                        captured_revision, alias, model_name
+                    ):
+                        self._process_pending_clear_success_locked(
+                            cooldown_pending=cooldown_pending,
+                            model_pending=model_pending,
+                            model_name=model_name,
+                        )
+                        self._sync_alias_from_shared_locked(
+                            shared, model_name=model_name, now=decision_now
+                        )
+                        return True
+                    continue
+
+                self._process_pending_clear_failure_locked(
+                    cooldown_pending=cooldown_pending,
+                    model_pending=model_pending,
+                    now=decision_now,
+                    error_type=error_type,
+                )
+                snapshots = self._local_snapshots_locked(
+                    (entry,), model_name=model_name, now=decision_now
+                )
+                return self._eligible_from_snapshot(snapshots[alias])
+
+        return False
 
     def is_model_unsupported(self, alias: str, model: str | None) -> bool:
         model_name = self.normalize_model_name(model)
@@ -702,7 +1091,7 @@ class GeminiKeyManager:
         with self._lock:
             self._pending_model_clears.pop(cache_key, None)
             self._unsupported_expires_monotonic[cache_key] = expires_at
-            self._increment_generation_locked()
+            self._increment_model_generation_locked(normalized_alias, model_name)
         if self._cooldown_store is not None:
             self._cooldown_store.mark_model_unsupported(
                 scope, model_name, now_ms=self._now_ms()
@@ -716,21 +1105,29 @@ class GeminiKeyManager:
         scope = self._scope_for(normalized_alias)
         cache_key = self._model_cache_key(normalized_alias, model_name)
         store = self._cooldown_store
+        now = self._clock()
         with self._lock:
             self._unsupported_expires_monotonic.pop(cache_key, None)
             if store is not None:
-                self._pending_model_clears[cache_key] = 0
-            self._increment_generation_locked()
+                self._pending_model_clears[cache_key] = self._new_pending_clear_state(
+                    now
+                )
+            self._increment_model_generation_locked(normalized_alias, model_name)
         if store is None:
             return
         success = bool(store.clear_model_unsupported(scope, model_name))
         with self._lock:
-            if success and cache_key in self._pending_model_clears:
+            pending = self._pending_model_clears.get(cache_key)
+            if success and pending is not None:
                 self._pending_model_clears.pop(cache_key, None)
-                self._increment_generation_locked()
-            elif not success and self._pending_model_clears.get(cache_key) == 0:
-                self._pending_model_clears[cache_key] = 1
-                self._increment_generation_locked()
+                self._increment_model_generation_locked(normalized_alias, model_name)
+            elif not success and pending is not None:
+                self._pending_model_clears[cache_key] = self._schedule_pending_clear_retry(
+                    pending,
+                    now=self._clock(),
+                    error_type="clear_failed",
+                )
+                self._increment_model_generation_locked(normalized_alias, model_name)
 
     def cooldown_key(self, alias: str, *, seconds: float, reason: str) -> None:
         self._set_cooldown(
@@ -770,7 +1167,7 @@ class GeminiKeyManager:
             state.last_error_code = normalized_reason
             state.last_retry_after_seconds = int(ceil(cooldown_seconds))
             state.consecutive_failures += 1
-            self._increment_generation_locked()
+            self._increment_alias_generation_locked(alias)
         if self._cooldown_store is not None:
             self._cooldown_store.apply_cooldown(
                 scope,
@@ -783,6 +1180,7 @@ class GeminiKeyManager:
     def clear_cooldown(self, alias: str) -> None:
         scope = self._scope_for(alias)
         store = self._cooldown_store
+        now = self._clock()
         with self._lock:
             state = self._states.get(alias)
             if state is None:
@@ -792,18 +1190,23 @@ class GeminiKeyManager:
             state.last_retry_after_seconds = 0
             self._local_cooldown.pop(alias, None)
             if store is not None:
-                self._pending_cooldown_clears[alias] = 0
-            self._increment_generation_locked()
+                self._pending_cooldown_clears[alias] = self._new_pending_clear_state(now)
+            self._increment_alias_generation_locked(alias)
         if store is None:
             return
         success = bool(store.clear_cooldown(scope))
         with self._lock:
-            if success and alias in self._pending_cooldown_clears:
+            pending = self._pending_cooldown_clears.get(alias)
+            if success and pending is not None:
                 self._pending_cooldown_clears.pop(alias, None)
-                self._increment_generation_locked()
-            elif not success and self._pending_cooldown_clears.get(alias) == 0:
-                self._pending_cooldown_clears[alias] = 1
-                self._increment_generation_locked()
+                self._increment_alias_generation_locked(alias)
+            elif not success and pending is not None:
+                self._pending_cooldown_clears[alias] = self._schedule_pending_clear_retry(
+                    pending,
+                    now=self._clock(),
+                    error_type="clear_failed",
+                )
+                self._increment_alias_generation_locked(alias)
 
     def _cooldown_remaining(self, alias: str, *, now: float) -> float:
         with self._lock:

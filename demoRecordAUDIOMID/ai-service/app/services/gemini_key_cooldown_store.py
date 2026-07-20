@@ -413,11 +413,15 @@ class LegacyGeminiCooldownStoreAdapter:
         clear_cooldown_aliases: frozenset[str] = frozenset(),
         clear_model_aliases: frozenset[str] = frozenset(),
     ) -> SharedPoolSnapshot:
-        del model, now_ms, clear_model_aliases
+        del now_ms, clear_model_aliases
         aliases: list[SharedAliasSnapshot] = []
         for scope in scopes:
             if scope.alias in clear_cooldown_aliases:
-                self.clear_cooldown(scope)
+                if not self.clear_cooldown(scope):
+                    return SharedPoolSnapshot(
+                        success=False,
+                        error=RuntimeError("cooldown_clear_failed"),
+                    )
             state = self.get_cooldown_state(scope, now=0.0)
             aliases.append(
                 SharedAliasSnapshot(
@@ -621,11 +625,17 @@ class InMemoryGeminiKeyCooldownStore:
         with self._lock:
             for scope in scopes:
                 if scope.alias in clear_cooldown_aliases:
-                    self._cooldown_by_scope.pop(self._scope_key(scope), None)
+                    if not self.clear_cooldown(scope):
+                        return SharedPoolSnapshot(
+                            success=False,
+                            error=RuntimeError("cooldown_clear_failed"),
+                        )
                 if model_name and scope.alias in clear_model_aliases:
-                    self._unsupported_until_ms.pop(
-                        self._model_key(scope, model_name), None
-                    )
+                    if not self.clear_model_unsupported(scope, model_name):
+                        return SharedPoolSnapshot(
+                            success=False,
+                            error=RuntimeError("model_clear_failed"),
+                        )
 
                 cooldown = self._cooldown_by_scope.get(self._scope_key(scope))
                 cooldown_pttl = -2
