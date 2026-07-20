@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
@@ -19,12 +20,14 @@ from app.services.gemini_key_cooldown_store import (
     InMemoryGeminiKeyCooldownStore,
     LegacyGeminiCooldownStoreAdapter,
     RedisGeminiKeyCooldownStore,
+    RedisCooldownSnapshot,
     SafeRedisResult,
     build_redis_gemini_cooldown_store,
     decode_cooldown_payload,
     encode_cooldown_payload,
     key_fingerprint,
     resolve_shared_state_namespace,
+    safe_model_key_component,
     store_supports_cooldown_metadata,
 )
 from app.services.gemini_key_manager import GeminiKeyManager
@@ -51,6 +54,7 @@ class FakeRedis:
         self._wall_clock = wall_clock or FakeWallClock()
         self._values: dict[str, tuple[int, str]] = {}
         self._lock = threading.RLock()
+        self.eval_calls = 0
 
     def _now_ms(self) -> int:
         return self._wall_clock.now_ms()
@@ -146,16 +150,70 @@ class FakeRedis:
         payload = encode_cooldown_payload(merged)
         ttl_ms = max(1, int(merged.expires_at_ms) - now_ms)
         self.psetex(key, ttl_ms, payload)
+        return [payload, ttl_ms]
+
+    def _next_revision(self, key: str) -> int:
+        raw = self.get(key)
+        if not raw or raw == "1":
+            return 1
+        try:
+            parsed = json.loads(raw)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return 1
+        return int(parsed.get("revision") or 0) + 1 if isinstance(parsed, dict) else 1
+
+    def _write_tombstone(self, key: str, ttl_ms: int) -> str:
+        payload = json.dumps(
+            {"version": 2, "cleared": True, "revision": self._next_revision(key)}
+        )
+        self.psetex(key, ttl_ms, payload)
         return payload
 
+    def _eval_pool_snapshot(self, keys, args):
+        count = len(keys) // 2
+        tombstone_ttl_ms = int(args[0])
+        result = []
+        for index in range(count):
+            cooldown_key = keys[index * 2]
+            model_key = keys[index * 2 + 1]
+            if str(args[1 + index]) == "1":
+                self._write_tombstone(cooldown_key, tombstone_ttl_ms)
+            if str(args[1 + count + index]) == "1":
+                self._write_tombstone(model_key, tombstone_ttl_ms)
+            cooldown_raw = self.get(cooldown_key) or ""
+            model_raw = self.get(model_key) or ""
+            result.extend(
+                [
+                    cooldown_raw,
+                    self.pttl(cooldown_key),
+                    model_raw,
+                    self.pttl(model_key),
+                ]
+            )
+        return result
+
     def eval(self, script: str, numkeys: int, *args):
-        del script
-        if numkeys == 1 and len(args) == 1:
-            return self._eval_read_cooldown(args[0])
+        self.eval_calls += 1
+        keys = list(args[:numkeys])
+        script_args = list(args[numkeys:])
+        if "alias_count = #KEYS / 2" in script:
+            return self._eval_pool_snapshot(keys, script_args)
         if numkeys == 1 and len(args) == 4:
             return self._eval_merge_cooldown(
                 args[0], args[1], int(args[2]), int(args[3])
             )
+        if "active=true" in script and numkeys == 1 and len(script_args) == 1:
+            payload = json.dumps(
+                {
+                    "version": 2,
+                    "active": True,
+                    "revision": self._next_revision(keys[0]),
+                }
+            )
+            self.psetex(keys[0], int(script_args[0]), payload)
+            return payload
+        if "cleared=true" in script and numkeys == 1 and len(script_args) == 1:
+            return self._write_tombstone(keys[0], int(script_args[0]))
         raise NotImplementedError("unsupported FakeRedis eval script")
 
     def register_script(self, script: str):
@@ -163,7 +221,7 @@ class FakeRedis:
 
         class _Script:
             def __call__(self, *, keys, args):
-                return redis.eval(script, len(keys), keys[0], *args)
+                return redis.eval(script, len(keys), *keys, *args)
 
         return _Script()
 
@@ -743,3 +801,220 @@ def test_redis_write_failure_logs_single_warning(monkeypatch):
     )
     assert len(warnings) == 1
     assert warnings[0][1] == "WRITE"
+
+
+def test_select_key_reads_one_atomic_pool_snapshot_for_all_aliases():
+    clock = FakeWallClock()
+    redis = FakeRedis(wall_clock=clock)
+    store = RedisGeminiKeyCooldownStore(
+        redis, namespace="test:pool-snapshot", wall_clock_ms=clock.now_ms
+    )
+    manager = GeminiKeyManager.from_config(
+        gemini_api_key="",
+        gemini_api_keys="primary:key-a,backup1:key-b,backup2:key-c",
+        multi_key_enabled=True,
+        wall_clock=clock,
+        cooldown_store=store,
+    )
+
+    selection = manager.select_key(model="gemini-2.5-flash")
+
+    assert selection.available is True
+    assert redis.eval_calls == 1
+
+
+def test_model_marker_read_uses_positive_pttl():
+    clock = FakeWallClock()
+    redis = FakeRedis(wall_clock=clock)
+    store = RedisGeminiKeyCooldownStore(
+        redis,
+        namespace="test:model-pttl",
+        model_unsupported_ttl_seconds=60,
+        wall_clock_ms=clock.now_ms,
+    )
+    scope = _scope("primary", "fake-primary-key")
+    store.mark_model_unsupported(scope, "gemini-2.5-flash")
+
+    result = store.read_model_unsupported(scope, "gemini-2.5-flash")
+
+    assert result.success is True
+    assert result.unsupported is True
+    assert 0 < result.pttl_ms <= 60_000
+    assert result.remaining_seconds == pytest.approx(result.pttl_ms / 1000.0)
+
+
+def test_model_marker_missing_and_expired_are_not_unsupported():
+    clock = FakeWallClock()
+    redis = FakeRedis(wall_clock=clock)
+    store = RedisGeminiKeyCooldownStore(
+        redis, namespace="test:model-missing", wall_clock_ms=clock.now_ms
+    )
+    scope = _scope("primary", "fake-primary-key")
+
+    missing = store.read_model_unsupported(scope, "gemini-2.5-flash")
+    assert missing.unsupported is False
+    assert missing.pttl_ms == -2
+
+    redis.psetex(store._model_key(scope, "gemini-2.5-flash"), 1, "1")
+    clock.advance_ms(2)
+    expired = store.read_model_unsupported(scope, "gemini-2.5-flash")
+    assert expired.unsupported is False
+    assert expired.pttl_ms == -2
+
+
+def test_model_marker_without_expiry_is_invalid_and_not_deleted():
+    class NoExpiryRedis(FakeRedis):
+        def __init__(self):
+            super().__init__()
+            self.deleted = False
+
+        def get(self, key):
+            return "1" if key.endswith("persistent") else super().get(key)
+
+        def pttl(self, key):
+            return -1 if key.endswith("persistent") else super().pttl(key)
+
+        def delete(self, key):
+            self.deleted = True
+            return super().delete(key)
+
+    redis = NoExpiryRedis()
+    store = RedisGeminiKeyCooldownStore(redis, namespace="test:model-no-expiry")
+    scope = _scope("primary", "fake-primary-key")
+    model_key = store._model_key(scope, "gemini-2.5-flash")
+    original_model_key = store._model_key
+    store._model_key = lambda _scope_value, _model: model_key + "persistent"
+
+    result = store.read_model_unsupported(scope, "gemini-2.5-flash")
+
+    assert result.unsupported is False
+    assert result.pttl_ms == -1
+    assert redis.deleted is False
+    store._model_key = original_model_key
+
+
+def test_read_path_never_blind_deletes_invalid_cooldown_snapshot():
+    class DeleteForbiddenRedis(FakeRedis):
+        def delete(self, key):
+            raise AssertionError(f"read path attempted DELETE for {key}")
+
+    redis = DeleteForbiddenRedis()
+    store = RedisGeminiKeyCooldownStore(redis, namespace="test:no-read-delete")
+
+    state = store._cooldown_state_from_snapshot(
+        RedisCooldownSnapshot(raw="{malformed", pttl_ms=-1)
+    )
+
+    assert state is None
+
+
+def test_invalid_snapshot_cleanup_race_cannot_delete_new_writer_state():
+    snapshot_captured = threading.Event()
+    writer_finished = threading.Event()
+
+    class CleanupRaceRedis(FakeRedis):
+        delete_calls = 0
+
+        def eval(self, script, numkeys, *args):
+            if "alias_count = #KEYS / 2" in script:
+                self.eval_calls += 1
+                snapshot_captured.set()
+                assert writer_finished.wait(timeout=2)
+                return ["{malformed", -1, "", -2]
+            return super().eval(script, numkeys, *args)
+
+        def delete(self, key):
+            self.delete_calls += 1
+            return super().delete(key)
+
+    redis = CleanupRaceRedis()
+    store = RedisGeminiKeyCooldownStore(redis, namespace="test:cleanup-race")
+    scope = _scope("primary", "fake-primary-key")
+    result = {}
+
+    reader = threading.Thread(
+        target=lambda: result.setdefault(
+            "state", store.get_cooldown_state(scope, now=0.0)
+        )
+    )
+    reader.start()
+    assert snapshot_captured.wait(timeout=2)
+    replacement = encode_cooldown_payload(
+        CooldownMetadata(
+            reason="rate_limit",
+            cooldown_type="soft",
+            expires_at_ms=1_700_000_030_000,
+        )
+    )
+    redis.psetex(store._cooldown_key(scope), 30_000, replacement)
+    writer_finished.set()
+    reader.join(timeout=2)
+
+    assert not reader.is_alive()
+    assert result["state"] is None
+    assert redis.delete_calls == 0
+    assert redis.get(store._cooldown_key(scope)) == replacement
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "models/Gemini 2.5/Flash",
+        "mô-hình-中文",
+        "gemini/with spaces",
+        "x" * 300,
+    ],
+)
+def test_model_key_component_is_ascii_bounded_and_deterministic(model):
+    first = safe_model_key_component(model)
+    second = safe_model_key_component(model)
+    prefix, digest = first.rsplit(":", 1)
+
+    assert first == second
+    assert len(prefix) <= 32
+    assert len(digest) == 12
+    assert re.fullmatch(r"[a-z0-9._-]+", prefix)
+    assert first.isascii()
+
+
+def test_long_or_unicode_namespace_is_ascii_bounded_and_deterministic():
+    raw = "Production / 测试 / " + "very-long-segment-" * 10
+    first = resolve_shared_state_namespace(explicit_namespace=raw)
+    second = resolve_shared_state_namespace(explicit_namespace=raw)
+    prefix, digest = first.rsplit(":", 1)
+
+    assert first == second
+    assert first.isascii()
+    assert len(prefix) <= 48
+    assert len(digest) == 12
+    assert raw not in first
+
+
+def test_redis_merge_log_uses_actual_merged_hard_state(monkeypatch):
+    clock = FakeWallClock()
+    redis = FakeRedis(wall_clock=clock)
+    store = RedisGeminiKeyCooldownStore(
+        redis, namespace="test:merged-log", wall_clock_ms=clock.now_ms
+    )
+    scope = _scope("primary", "fake-primary-key")
+    debug_calls = []
+    monkeypatch.setattr(
+        "app.services.gemini_key_cooldown_store.logger.debug",
+        lambda *args, **kwargs: debug_calls.append(args),
+    )
+    store.apply_cooldown(
+        scope,
+        seconds=900,
+        reason="billing_credits_depleted",
+        cooldown_type="hard",
+    )
+    debug_calls.clear()
+
+    store.apply_cooldown(
+        scope, seconds=30, reason="rate_limit", cooldown_type="soft"
+    )
+
+    assert len(debug_calls) == 1
+    assert debug_calls[0][4] == "billing_credits_depleted"
+    assert debug_calls[0][5] == "hard"
+    assert debug_calls[0][6] >= 899_000

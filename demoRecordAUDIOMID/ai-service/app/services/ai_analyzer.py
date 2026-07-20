@@ -186,24 +186,23 @@ class AIAnalyzer:
         ):
             try:
                 cooldown_store = None
-                if self.gemini_multi_key_enabled:
-                    from app.config import get_settings
+                from app.config import get_settings
 
-                    settings = get_settings()
-                    if settings.gemini_shared_cooldown_enabled:
-                        from app.services.gemini_key_cooldown_store import (
-                            build_redis_gemini_cooldown_store,
-                            create_gemini_redis_client,
-                        )
+                settings = get_settings()
+                if settings.gemini_shared_cooldown_enabled:
+                    from app.services.gemini_key_cooldown_store import (
+                        build_redis_gemini_cooldown_store,
+                        create_gemini_redis_client,
+                    )
 
-                        redis_client = create_gemini_redis_client(
-                            settings.job_state_redis_url,
-                            settings=settings,
-                        )
-                        cooldown_store = build_redis_gemini_cooldown_store(
-                            redis_client,
-                            settings=settings,
-                        )
+                    redis_client = create_gemini_redis_client(
+                        settings.job_state_redis_url,
+                        settings=settings,
+                    )
+                    cooldown_store = build_redis_gemini_cooldown_store(
+                        redis_client,
+                        settings=settings,
+                    )
                 self.gemini_key_manager = GeminiKeyManager.from_config(
                     gemini_api_key=self.api_key,
                     gemini_api_keys=gemini_api_keys,

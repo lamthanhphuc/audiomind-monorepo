@@ -247,16 +247,18 @@ local DEFAULT_SPECIFICITY = {DEFAULT_REASON_SPECIFICITY}
 
 local function decode_payload(raw)
   if not raw or raw == "1" then
-    return {{reason="cooldown", cooldown_type="soft", expires_at_ms=0}}
+    return {{reason="cooldown", cooldown_type="soft", expires_at_ms=0, revision=0, cleared=false}}
   end
   local ok, parsed = pcall(cjson.decode, raw)
   if not ok or type(parsed) ~= "table" then
-    return {{reason="cooldown", cooldown_type="soft", expires_at_ms=0}}
+    return {{reason="cooldown", cooldown_type="soft", expires_at_ms=0, revision=0, cleared=false}}
   end
   return {{
     reason=parsed.reason,
     cooldown_type=parsed.cooldown_type or parsed.type,
-    expires_at_ms=tonumber(parsed.expires_at_ms) or 0
+    expires_at_ms=tonumber(parsed.expires_at_ms) or 0,
+    revision=tonumber(parsed.revision) or 0,
+    cleared=parsed.cleared == true
   }}
 end
 
@@ -279,7 +281,9 @@ end
 local current_raw = redis.call("GET", key)
 local current = decode_payload(current_raw)
 local current_pttl = redis.call("PTTL", key)
-if current_pttl and current_pttl > 0 then
+if current.cleared then
+  current.expires_at_ms = 0
+elseif current_pttl and current_pttl > 0 then
   current.expires_at_ms = now_ms + current_pttl
 end
 
@@ -318,6 +322,7 @@ if (winner.cooldown_type or "") ~= "hard" and (loser.cooldown_type or "") == "ha
 end
 
 winner.expires_at_ms = merged_expires
+winner.revision = (current.revision or 0) + 1
 local ttl_ms = merged_expires - now_ms
 if ttl_ms < 1 then
   ttl_ms = incoming_ttl_ms
@@ -326,8 +331,10 @@ local payload = cjson.encode({{
   version=2,
   expires_at_ms=winner.expires_at_ms,
   reason=winner.reason,
-  cooldown_type=winner.cooldown_type
+  cooldown_type=winner.cooldown_type,
+  revision=winner.revision,
+  cleared=false
 }})
 redis.call("PSETEX", key, ttl_ms, payload)
-return payload
+return {{payload, ttl_ms}}
 """.strip()

@@ -505,14 +505,51 @@ class GeminiClient:
         client_timeout = self._per_attempt_timeout(started, timeout_seconds)
         with self.http_client_factory(timeout=client_timeout) as client:
             for attempt in range(1, loop_attempts + 1):
+                stale_aliases: set[str] = set()
+                while True:
+                    selection = self.key_manager.select_key(
+                        preferred_alias=sticky_alias,
+                        model=model_name or None,
+                        attempted_aliases=attempted_aliases,
+                        exclude_aliases=stale_aliases,
+                    )
+                    if not selection.available or selection.entry is None:
+                        break
+                    if self.key_manager.validate_selection(
+                        selection, model=model_name or None
+                    ):
+                        break
+                    stale_alias = selection.entry.alias
+                    stale_aliases.add(stale_alias)
+                    attempted_aliases.add(stale_alias)
+                    sticky_alias = None
+                    logger.info(
+                        "GEMINI_KEY_SELECTION_STALE alias={} model={} reselect=true",
+                        stale_alias,
+                        model_name or "",
+                    )
+                    if len(stale_aliases) >= len(self.key_manager.entries):
+                        selection = self.key_manager.select_key(
+                            model=model_name or None,
+                            attempted_aliases=attempted_aliases,
+                            exclude_aliases=stale_aliases,
+                        )
+                        break
+
                 per_attempt_timeout = self._per_attempt_timeout(
                     started, timeout_seconds
                 )
                 if per_attempt_timeout <= 0:
                     # Fail-fast grace only for keys not yet tried in this request.
                     # Do not re-grant budget to retry the same timed-out alias.
-                    if failures_by_alias and self.key_manager.has_unattempted_eligible_key(
-                        model_name or None, attempted_aliases
+                    selected_unattempted = bool(
+                        selection.available
+                        and selection.entry is not None
+                        and selection.entry.alias not in attempted_aliases
+                    )
+                    if failures_by_alias and (
+                        selected_unattempted
+                        or selection.has_unattempted_eligible
                     ):
                         per_attempt_timeout = min(
                             max(0.0, float(timeout_seconds or 0)), 15.0
@@ -533,15 +570,8 @@ class GeminiClient:
                         )
                         break
 
-                selection = self.key_manager.select_key(
-                    preferred_alias=sticky_alias,
-                    model=model_name or None,
-                )
                 if not selection.available or selection.entry is None:
-                    if selection.all_model_unsupported or (
-                        model_name
-                        and self.key_manager.all_keys_unsupported_for_model(model_name)
-                    ):
+                    if selection.all_model_unsupported:
                         logger.warning(
                             "GEMINI_ALL_KEYS_UNSUPPORTED model={} httpCallsSkipped=true",
                             model_name,
@@ -819,9 +849,7 @@ class GeminiClient:
                     # immediately inside this logical request (primary 429 →
                     # backup1). Do not burn fail-fast budget on backoff sleep
                     # when another key can still serve the model.
-                    if self.key_manager.has_eligible_key(
-                        model_name or None, exclude_alias=entry.alias
-                    ):
+                    if selection.has_unattempted_eligible:
                         logger.info(
                             "GEMINI_KEY_FAILOVER_IMMEDIATE fromAlias={} model={}",
                             entry.alias,
