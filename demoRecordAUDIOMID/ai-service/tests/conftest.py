@@ -11,6 +11,7 @@ _OFFLINE_GEMINI_TEST_FILES = frozenset(
     {
         "test_gemini_analyzer.py",
         "test_gemini_key_manager.py",
+        "test_gemini_cooldown_store.py",
         "test_analysis_response.py",
         "test_tasks.py",
         "test_offline_network_guard.py",
@@ -20,8 +21,6 @@ _OFFLINE_GEMINI_TEST_FILES = frozenset(
 
 _ALLOWED_NETWORK_HOSTS = frozenset(
     {
-        "example.test",
-        "example.com",
         "testserver",
         "localhost",
         "127.0.0.1",
@@ -68,38 +67,70 @@ def deny_real_network(request, monkeypatch):
 
     import httpx
     import requests
+    import socket
 
     original_client_request = httpx.Client.request
     original_async_client_request = httpx.AsyncClient.request
     original_session_request = requests.Session.request
+    original_create_connection = socket.create_connection
+    original_socket_connect = socket.socket.connect
+
+    def _host_allowed(host: str) -> bool:
+        normalized = (host or "").strip().lower()
+        return not normalized or normalized in _ALLOWED_NETWORK_HOSTS
+
+    def _uses_injected_transport(client) -> bool:
+        transport = getattr(client, "_transport", None)
+        if transport is None:
+            return False
+        return type(transport).__name__ not in {"HTTPTransport", "AsyncHTTPTransport"}
 
     def _deny_client_request(self, method, url, *args, **kwargs):
+        if _uses_injected_transport(self):
+            return original_client_request(self, method, url, *args, **kwargs)
         host = _request_host(url)
-        if host in _ALLOWED_NETWORK_HOSTS or not host:
+        if _host_allowed(host):
             return original_client_request(self, method, url, *args, **kwargs)
         raise AssertionError(
-            "Real network calls are forbidden in offline Gemini tests"
+            "Real network calls are forbidden in offline provider tests"
         )
 
     async def _deny_async_client_request(self, method, url, *args, **kwargs):
-        host = _request_host(url)
-        if host in _ALLOWED_NETWORK_HOSTS or not host:
+        if _uses_injected_transport(self):
             return await original_async_client_request(
                 self, method, url, *args, **kwargs
             )
         raise AssertionError(
-            "Real network calls are forbidden in offline Gemini tests"
+            "Real network calls are forbidden in offline provider tests"
         )
 
     def _deny_session_request(self, method, url, *args, **kwargs):
         host = _request_host(url)
-        if host in _ALLOWED_NETWORK_HOSTS or not host:
+        if _host_allowed(host):
             return original_session_request(self, method, url, *args, **kwargs)
         raise AssertionError(
-            "Real network calls are forbidden in offline Gemini tests"
+            "Real network calls are forbidden in offline provider tests"
+        )
+
+    def _deny_create_connection(address, *args, **kwargs):
+        host = str(address[0] if isinstance(address, tuple) else address).strip().lower()
+        if _host_allowed(host):
+            return original_create_connection(address, *args, **kwargs)
+        raise AssertionError(
+            "Real network calls are forbidden in offline provider tests"
+        )
+
+    def _deny_socket_connect(self, address):
+        host = str(address[0] if isinstance(address, tuple) else address).strip().lower()
+        if _host_allowed(host):
+            return original_socket_connect(self, address)
+        raise AssertionError(
+            "Real network calls are forbidden in offline provider tests"
         )
 
     monkeypatch.setattr(httpx.Client, "request", _deny_client_request)
     monkeypatch.setattr(httpx.AsyncClient, "request", _deny_async_client_request)
     monkeypatch.setattr(requests.Session, "request", _deny_session_request)
+    monkeypatch.setattr(socket, "create_connection", _deny_create_connection)
+    monkeypatch.setattr(socket.socket, "connect", _deny_socket_connect)
     return _deny_client_request

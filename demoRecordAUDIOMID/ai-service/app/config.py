@@ -27,6 +27,8 @@ class Settings(BaseSettings):
     gemini_api_keys: str = ""
     gemini_multi_key_enabled: bool = False
     gemini_shared_cooldown_enabled: bool = False
+    gemini_shared_state_namespace: str = ""
+    gemini_model_unsupported_ttl_seconds: int = 21600
     gemini_max_attempts: int = 3
     gemini_key_cooldown_seconds: float = 90.0
     gemini_key_hard_cooldown_seconds: float = 900.0
@@ -305,6 +307,9 @@ class Settings(BaseSettings):
         self.gemini_backoff_max_ms = max(0.0, float(self.gemini_backoff_max_ms or 0.0))
         self.gemini_fail_fast_seconds = max(
             0.0, float(self.gemini_fail_fast_seconds or 0.0)
+        )
+        self.gemini_model_unsupported_ttl_seconds = max(
+            1, int(self.gemini_model_unsupported_ttl_seconds or 21600)
         )
         self.gemini_timeout_seconds = max(1, int(self.gemini_timeout_seconds or 300))
         self.gemini_rate_limit_retry_base_seconds = max(

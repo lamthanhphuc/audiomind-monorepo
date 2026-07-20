@@ -673,6 +673,10 @@ class GeminiClient:
 
                 status_code = int(getattr(response, "status_code", 0) or 0)
                 if status_code < 400:
+                    if model_name:
+                        self.key_manager.clear_model_unsupported(
+                            entry.alias, model_name
+                        )
                     logger.info(
                         "GEMINI_CALL_SUCCEEDED alias={} attempt={} model={}",
                         entry.alias,
