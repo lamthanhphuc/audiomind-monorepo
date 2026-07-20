@@ -19,6 +19,9 @@ class FakeClock:
     def advance(self, seconds: float) -> None:
         self.now += seconds
 
+    def now_ms(self) -> int:
+        return int(self.now * 1000)
+
 
 def test_single_key_backward_compatibility_uses_gemini_api_key():
     manager = GeminiKeyManager.from_config(
@@ -173,8 +176,12 @@ def test_redis_cooldown_store_shares_state_across_managers():
         redis, namespace="test:ai-service", wall_clock_ms=clock.now_ms
     )
     entry = GeminiKeyEntry(alias="primary", secret="key-a")
-    manager_a = GeminiKeyManager([entry], clock=FakeClock(), cooldown_store=store)
-    manager_b = GeminiKeyManager([entry], clock=FakeClock(), cooldown_store=store)
+    manager_a = GeminiKeyManager(
+        [entry], clock=clock, wall_clock=clock, cooldown_store=store
+    )
+    manager_b = GeminiKeyManager(
+        [entry], clock=clock, wall_clock=clock, cooldown_store=store
+    )
 
     manager_a.cooldown_key("primary", seconds=30, reason="rate_limit")
     assert manager_b.select_key().available is False
@@ -351,8 +358,6 @@ def test_soft_cooldown_unavailable_is_not_all_terminal():
 
 def _manager_pair(shared_store, *, clock=None):
     clock = clock or FakeClock()
-    if hasattr(shared_store, "_clock"):
-        shared_store._clock = clock
     return GeminiKeyManager.from_config(
         gemini_api_key="",
         gemini_api_keys=(
@@ -360,6 +365,7 @@ def _manager_pair(shared_store, *, clock=None):
         ),
         multi_key_enabled=True,
         clock=clock,
+        wall_clock=clock,
         cooldown_store=shared_store,
     )
 
@@ -368,7 +374,7 @@ def test_cross_process_terminal_pool_reasons_shared_without_local_state():
     from app.services.gemini_key_cooldown_store import InMemoryGeminiKeyCooldownStore
 
     clock = FakeClock()
-    shared_store = InMemoryGeminiKeyCooldownStore(clock=clock)
+    shared_store = InMemoryGeminiKeyCooldownStore(wall_clock_ms=clock.now_ms)
     manager_a = _manager_pair(shared_store, clock=clock)
     manager_a.hard_cooldown_key(
         "primary", seconds=900, reason="billing_credits_depleted"
@@ -401,12 +407,13 @@ def test_cross_process_transient_cooldown_is_retryable_not_terminal_pool():
     from app.services.gemini_key_cooldown_store import InMemoryGeminiKeyCooldownStore
 
     clock = FakeClock()
-    shared_store = InMemoryGeminiKeyCooldownStore(clock=clock)
+    shared_store = InMemoryGeminiKeyCooldownStore(wall_clock_ms=clock.now_ms)
     manager_a = GeminiKeyManager.from_config(
         gemini_api_key="",
         gemini_api_keys="primary:fake-primary-key,backup1:fake-backup-key",
         multi_key_enabled=True,
         clock=clock,
+        wall_clock=clock,
         cooldown_store=shared_store,
     )
     manager_a.cooldown_key("primary", seconds=30, reason="rate_limit")
@@ -417,6 +424,7 @@ def test_cross_process_transient_cooldown_is_retryable_not_terminal_pool():
         gemini_api_keys="primary:fake-primary-key,backup1:fake-backup-key",
         multi_key_enabled=True,
         clock=clock,
+        wall_clock=clock,
         cooldown_store=shared_store,
     )
     selection = manager_b.select_key(model="gemini-2.5-flash")
@@ -432,12 +440,13 @@ def test_cross_process_cooldown_expiry_clears_shared_terminal_reason():
     from app.services.gemini_key_cooldown_store import InMemoryGeminiKeyCooldownStore
 
     clock = FakeClock()
-    shared_store = InMemoryGeminiKeyCooldownStore(clock=clock)
+    shared_store = InMemoryGeminiKeyCooldownStore(wall_clock_ms=clock.now_ms)
     manager_a = GeminiKeyManager.from_config(
         gemini_api_key="fake-primary-key",
         gemini_api_keys="",
         multi_key_enabled=False,
         clock=clock,
+        wall_clock=clock,
         cooldown_store=shared_store,
     )
     manager_a.hard_cooldown_key(
@@ -449,6 +458,7 @@ def test_cross_process_cooldown_expiry_clears_shared_terminal_reason():
         gemini_api_keys="",
         multi_key_enabled=False,
         clock=clock,
+        wall_clock=clock,
         cooldown_store=shared_store,
     )
     before = manager_b.select_key(model="gemini-2.5-flash")
@@ -506,12 +516,13 @@ def test_clear_cooldown_makes_alias_eligible_in_other_manager():
     from app.services.gemini_key_cooldown_store import InMemoryGeminiKeyCooldownStore
 
     clock = FakeClock()
-    shared_store = InMemoryGeminiKeyCooldownStore(clock=clock)
+    shared_store = InMemoryGeminiKeyCooldownStore(wall_clock_ms=clock.now_ms)
     manager_a = GeminiKeyManager.from_config(
         gemini_api_key="fake-primary-key",
         gemini_api_keys="",
         multi_key_enabled=False,
         clock=clock,
+        wall_clock=clock,
         cooldown_store=shared_store,
     )
     manager_a.hard_cooldown_key(
@@ -522,6 +533,7 @@ def test_clear_cooldown_makes_alias_eligible_in_other_manager():
         gemini_api_keys="",
         multi_key_enabled=False,
         clock=clock,
+        wall_clock=clock,
         cooldown_store=shared_store,
     )
     assert manager_blocked.select_key().available is False
@@ -532,6 +544,7 @@ def test_clear_cooldown_makes_alias_eligible_in_other_manager():
         gemini_api_keys="",
         multi_key_enabled=False,
         clock=clock,
+        wall_clock=clock,
         cooldown_store=shared_store,
     )
     assert manager_b.select_key().available is True

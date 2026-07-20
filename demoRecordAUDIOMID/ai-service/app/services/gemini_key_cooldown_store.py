@@ -13,7 +13,9 @@ from loguru import logger
 
 from app.services.gemini_cooldown_merge import (
     COOLDOWN_PAYLOAD_VERSION,
+    LEGACY_COOLDOWN_PAYLOAD,
     CooldownMetadata,
+    build_redis_merge_lua_script,
     merge_cooldown_states,
     normalize_cooldown_type,
     normalize_reason,
@@ -21,6 +23,35 @@ from app.services.gemini_cooldown_merge import (
 
 DEFAULT_SHARED_STATE_NAMESPACE = "local:ai-service"
 DEFAULT_MODEL_UNSUPPORTED_TTL_SECONDS = 21600
+DEFAULT_SHARED_SERVICE_NAME = "ai-service"
+
+
+@dataclass(frozen=True)
+class SafeRedisResult:
+    success: bool
+    value: Any = None
+    error: Exception | None = None
+
+
+def _redis_errors() -> tuple[type[BaseException], ...]:
+    try:
+        import redis.exceptions
+
+        return (
+            redis.exceptions.RedisError,
+            ConnectionError,
+            TimeoutError,
+        )
+    except ImportError:
+        return (ConnectionError, TimeoutError)
+
+
+def _normalize_redis_raw(raw: Any) -> str | None:
+    if raw is None:
+        return None
+    if isinstance(raw, bytes):
+        return raw.decode("utf-8", errors="replace")
+    return str(raw)
 
 
 @dataclass(frozen=True)
@@ -49,10 +80,24 @@ def resolve_shared_state_namespace(
 ) -> str:
     explicit = str(explicit_namespace or "").strip()
     if explicit:
-        return explicit
+        return _sanitize_namespace(explicit)
     env = str(app_env or "local").strip().lower() or "local"
-    service = str(service_name or "ai-service").strip().lower() or "ai-service"
-    return f"{env}:{service}"
+    service = str(service_name or DEFAULT_SHARED_SERVICE_NAME).strip().lower()
+    service = service or DEFAULT_SHARED_SERVICE_NAME
+    return _sanitize_namespace(f"{env}:{service}")
+
+
+def _sanitize_namespace(namespace: str) -> str:
+    cleaned = str(namespace or "").strip().lower()
+    if not cleaned:
+        return DEFAULT_SHARED_STATE_NAMESPACE
+    safe = []
+    for char in cleaned:
+        if char.isalnum() or char in {":", "-", "_", "."}:
+            safe.append(char)
+        else:
+            safe.append("-")
+    return "".join(safe) or DEFAULT_SHARED_STATE_NAMESPACE
 
 
 def normalize_model_name(model: str | None) -> str:
@@ -79,14 +124,24 @@ def encode_cooldown_payload(metadata: CooldownMetadata) -> str:
 
 
 def decode_cooldown_payload(
-    raw: str | None, *, now_ms: int
+    raw: Any,
+    *,
+    now_ms: int,
+    pttl_ms: int | None = None,
 ) -> CooldownMetadata | None:
-    if not raw:
+    normalized = _normalize_redis_raw(raw)
+    if not normalized:
         return None
-    if raw == "1":
-        return CooldownMetadata(reason="cooldown", cooldown_type="soft", expires_at_ms=0)
+    if normalized == LEGACY_COOLDOWN_PAYLOAD:
+        if pttl_ms is not None and int(pttl_ms) > 0:
+            return CooldownMetadata(
+                reason="cooldown",
+                cooldown_type="soft",
+                expires_at_ms=int(now_ms) + int(pttl_ms),
+            )
+        return None
     try:
-        parsed = json.loads(raw)
+        parsed = json.loads(normalized)
     except (TypeError, ValueError):
         return None
     if not isinstance(parsed, dict):
@@ -215,18 +270,11 @@ class InMemoryGeminiKeyCooldownStore:
     def __init__(
         self,
         *,
-        clock: Callable[[], float] | None = None,
         wall_clock_ms: Callable[[], int] | None = None,
         namespace: str = DEFAULT_SHARED_STATE_NAMESPACE,
         model_unsupported_ttl_seconds: int = DEFAULT_MODEL_UNSUPPORTED_TTL_SECONDS,
     ) -> None:
-        self._clock = clock or time.monotonic
-        if wall_clock_ms is not None:
-            self._wall_clock_ms = wall_clock_ms
-        elif clock is not None:
-            self._wall_clock_ms = lambda: int(self._clock() * 1000)
-        else:
-            self._wall_clock_ms = lambda: int(time.time() * 1000)
+        self._wall_clock_ms = wall_clock_ms or (lambda: int(time.time() * 1000))
         self.namespace = namespace
         self.model_unsupported_ttl_seconds = max(
             1, int(model_unsupported_ttl_seconds or DEFAULT_MODEL_UNSUPPORTED_TTL_SECONDS)
@@ -359,103 +407,7 @@ class InMemoryGeminiKeyCooldownStore:
             self._unsupported_until_ms.pop(self._model_key(scope, model_name), None)
 
 
-REDIS_MERGE_COOLDOWN_SCRIPT = """
-local key = KEYS[1]
-local incoming_json = ARGV[1]
-local incoming_ttl_ms = tonumber(ARGV[2])
-local now_ms = tonumber(ARGV[3])
-
-local function decode_payload(raw)
-  if not raw or raw == "1" then
-    return {reason="cooldown", cooldown_type="soft", expires_at_ms=0}
-  end
-  local ok, parsed = pcall(cjson.decode, raw)
-  if not ok or type(parsed) ~= "table" then
-    return {reason="cooldown", cooldown_type="soft", expires_at_ms=0}
-  end
-  return {
-    reason=parsed.reason,
-    cooldown_type=parsed.cooldown_type or parsed.type,
-    expires_at_ms=tonumber(parsed.expires_at_ms) or 0
-  }
-end
-
-local tier_map = {
-  billing_credits_depleted=3,
-  free_tier_token_quota_exhausted=3,
-  free_tier_quota_exhausted=3,
-  model_unavailable=3,
-  invalid_key=3,
-  auth_error=3,
-  region_blocked=3,
-  invalid_request=3,
-  hard_cooldown=3,
-  terminal_unknown=3,
-  rate_limit=2,
-  transient_rate_limit=2,
-  transient_network=2,
-  network_error=2,
-  timeout=2,
-  server_error=2,
-  transient_provider_error=2,
-  soft_cooldown=2,
-  cooldown=1
-}
-local type_rank = {hard=2, soft=1}
-
-local function score(meta)
-  local reason = meta.reason or "cooldown"
-  local tier = tier_map[reason] or 1
-  local tr = type_rank[meta.cooldown_type or "soft"] or 0
-  return tier * 100 + tr * 10
-end
-
-local current_raw = redis.call("GET", key)
-local current = decode_payload(current_raw)
-local current_pttl = redis.call("PTTL", key)
-if current_pttl and current_pttl > 0 then
-  current.expires_at_ms = now_ms + current_pttl
-end
-
-local incoming = decode_payload(incoming_json)
-incoming.expires_at_ms = now_ms + incoming_ttl_ms
-
-local merged_expires = incoming.expires_at_ms
-if current.expires_at_ms and current.expires_at_ms > now_ms then
-  if current.expires_at_ms > merged_expires then
-    merged_expires = current.expires_at_ms
-  end
-end
-
-local winner = incoming
-if current.expires_at_ms and current.expires_at_ms > now_ms then
-  if score(current) > score(incoming) then
-    winner = current
-  elseif score(current) == score(incoming) then
-    winner = incoming
-    if incoming.reason == nil or incoming.reason == "" then
-      winner.reason = current.reason
-    end
-    if (incoming.cooldown_type or "") ~= "hard" and (current.cooldown_type or "") == "hard" then
-      winner.cooldown_type = "hard"
-    end
-  end
-end
-
-winner.expires_at_ms = merged_expires
-local ttl_ms = merged_expires - now_ms
-if ttl_ms < 1 then
-  ttl_ms = incoming_ttl_ms
-end
-local payload = cjson.encode({
-  version=2,
-  expires_at_ms=winner.expires_at_ms,
-  reason=winner.reason,
-  cooldown_type=winner.cooldown_type
-})
-redis.call("PSETEX", key, ttl_ms, payload)
-return payload
-"""
+REDIS_MERGE_COOLDOWN_SCRIPT = build_redis_merge_lua_script()
 
 
 class RedisGeminiKeyCooldownStore:
@@ -503,26 +455,18 @@ class RedisGeminiKeyCooldownStore:
     def _now_ms(self, now_ms: int | None) -> int:
         return int(now_ms if now_ms is not None else self._wall_clock_ms())
 
-    def _safe_redis(self, operation: str, fn: Callable[[], Any]) -> Any:
+    def _safe_redis(self, operation: str, fn: Callable[[], Any]) -> SafeRedisResult:
         try:
-            return fn()
-        except Exception as exc:
-            exc_name = type(exc).__name__
-            module_name = type(exc).__module__ or ""
-            if "redis" not in module_name and exc_name not in {
-                "ConnectionError",
-                "TimeoutError",
-                "OSError",
-            }:
-                raise
+            return SafeRedisResult(success=True, value=fn())
+        except _redis_errors() as exc:
             logger.warning(
                 "GEMINI_SHARED_STATE_{}_FAILED namespace={} errorType={} error={}",
                 operation.upper(),
                 self.namespace,
-                exc_name,
+                type(exc).__name__,
                 str(exc)[:160],
             )
-            return None
+            return SafeRedisResult(success=False, error=exc)
 
     def cooldown_remaining(
         self, scope: GeminiKeyScope, *, now: float, now_ms: int | None = None
@@ -542,16 +486,15 @@ class RedisGeminiKeyCooldownStore:
 
         def _read() -> GeminiCooldownState | None:
             raw = self._redis.get(key)
-            metadata = decode_cooldown_payload(raw, now_ms=current_ms)
-            if metadata is None and raw:
-                ttl = int(self._redis.pttl(key))
-                if ttl > 0:
-                    metadata = CooldownMetadata(
-                        reason="cooldown",
-                        cooldown_type="soft",
-                        expires_at_ms=current_ms + ttl,
-                    )
+            pttl = int(self._redis.pttl(key))
+            metadata = decode_cooldown_payload(
+                raw,
+                now_ms=current_ms,
+                pttl_ms=pttl if pttl > 0 else None,
+            )
             if metadata is None:
+                if raw and pttl <= 0:
+                    self._redis.delete(key)
                 return None
             remaining_ms = int(metadata.expires_at_ms) - current_ms
             if remaining_ms <= 0:
@@ -563,7 +506,10 @@ class RedisGeminiKeyCooldownStore:
                 cooldown_type=metadata.cooldown_type,
             )
 
-        return self._safe_redis("read", _read)
+        result = self._safe_redis("read", _read)
+        if not result.success:
+            return None
+        return result.value
 
     def apply_cooldown(
         self,
@@ -608,7 +554,8 @@ class RedisGeminiKeyCooldownStore:
                 incoming.cooldown_type,
             )
 
-        if self._safe_redis("write", _write) is None:
+        write_result = self._safe_redis("write", _write)
+        if not write_result.success:
             logger.warning(
                 "GEMINI_SHARED_STATE_WRITE_FAILED namespace={} alias={} fingerprint={}",
                 self.namespace,
@@ -634,7 +581,8 @@ class RedisGeminiKeyCooldownStore:
         def _mark() -> None:
             self._redis.setex(key, self.model_unsupported_ttl_seconds, "1")
 
-        if self._safe_redis("write", _mark) is None:
+        mark_result = self._safe_redis("write", _mark)
+        if not mark_result.success:
             logger.warning(
                 "GEMINI_SHARED_STATE_WRITE_FAILED namespace={} alias={} fingerprint={} model={}",
                 self.namespace,
@@ -665,7 +613,9 @@ class RedisGeminiKeyCooldownStore:
             return bool(self._redis.exists(key))
 
         result = self._safe_redis("read", _exists)
-        return bool(result)
+        if not result.success:
+            return False
+        return bool(result.value)
 
     def clear_model_unsupported(self, scope: GeminiKeyScope, model: str) -> None:
         model_name = normalize_model_name(model)
@@ -690,8 +640,7 @@ def build_redis_gemini_cooldown_store(
     namespace = resolve_shared_state_namespace(
         app_env=getattr(settings, "app_env", None)
         or getattr(settings, "environment", None),
-        service_name=getattr(settings, "service_name", None)
-        or getattr(settings, "app_component", None),
+        service_name=DEFAULT_SHARED_SERVICE_NAME,
         explicit_namespace=getattr(settings, "gemini_shared_state_namespace", None),
     )
     ttl_seconds = int(

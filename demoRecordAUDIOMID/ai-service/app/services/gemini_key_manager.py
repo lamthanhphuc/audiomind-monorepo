@@ -148,10 +148,12 @@ class GeminiKeyManager:
         entries: list[GeminiKeyEntry],
         *,
         clock: Callable[[], float] | None = None,
+        wall_clock: Callable[[], float] | None = None,
         cooldown_store: GeminiKeyCooldownStore | None = None,
     ):
         self._entries = _validate_entries(entries)
         self._clock = clock or time.monotonic
+        self._wall_clock = wall_clock or time.time
         self._cooldown_store = self._normalize_cooldown_store(cooldown_store)
         self._lock = threading.RLock()
         self._states = {entry.alias: _KeyState() for entry in self._entries}
@@ -192,7 +194,7 @@ class GeminiKeyManager:
         )
 
     def _now_ms(self) -> int:
-        return int(self._clock() * 1000)
+        return int(self._wall_clock() * 1000)
 
     @classmethod
     def from_config(
@@ -202,16 +204,23 @@ class GeminiKeyManager:
         gemini_api_keys: str = "",
         multi_key_enabled: bool = False,
         clock: Callable[[], float] | None = None,
+        wall_clock: Callable[[], float] | None = None,
         cooldown_store: GeminiKeyCooldownStore | None = None,
     ) -> "GeminiKeyManager":
         if multi_key_enabled:
             parsed_entries = parse_gemini_api_keys(gemini_api_keys)
             if parsed_entries:
-                return cls(parsed_entries, clock=clock, cooldown_store=cooldown_store)
+                return cls(
+                    parsed_entries,
+                    clock=clock,
+                    wall_clock=wall_clock,
+                    cooldown_store=cooldown_store,
+                )
             primary = _validate_key(gemini_api_key)
             return cls(
                 [GeminiKeyEntry(alias="primary", secret=primary)],
                 clock=clock,
+                wall_clock=wall_clock,
                 cooldown_store=cooldown_store,
             )
 
@@ -219,6 +228,7 @@ class GeminiKeyManager:
         return cls(
             [GeminiKeyEntry(alias="primary", secret=primary)],
             clock=clock,
+            wall_clock=wall_clock,
             cooldown_store=cooldown_store,
         )
 
@@ -355,15 +365,16 @@ class GeminiKeyManager:
         return None
 
     def _get_shared_cooldown_state(self, alias: str, *, now: float):
+        del now
+        if self._cooldown_store is None:
+            return None
         from app.services.gemini_key_cooldown_store import GeminiCooldownState
 
         scope = self._scope_for(alias)
-        now_ms = int(now * 1000)
-        store_state = None
-        if self._cooldown_store is not None:
-            store_state = self._cooldown_store.get_cooldown_state(
-                scope, now=now, now_ms=now_ms
-            )
+        now_ms = self._now_ms()
+        store_state = self._cooldown_store.get_cooldown_state(
+            scope, now=0.0, now_ms=now_ms
+        )
         with self._lock:
             local = self._local_cooldown.get(alias)
         if local is not None and int(local.expires_at_ms or 0) <= now_ms:
@@ -528,12 +539,12 @@ class GeminiKeyManager:
                 cooldown_type=cooldown_type,
                 expires_at_ms=now_ms + int(ceil(cooldown_seconds * 1000)),
             )
-            with self._lock:
-                existing = self._local_cooldown.get(alias)
-                self._local_cooldown[alias] = merge_cooldown_states(
-                    existing, incoming, now_ms=now_ms
-                )
             if self._cooldown_store is not None:
+                with self._lock:
+                    existing = self._local_cooldown.get(alias)
+                    self._local_cooldown[alias] = merge_cooldown_states(
+                        existing, incoming, now_ms=now_ms
+                    )
                 self._cooldown_store.apply_cooldown(
                     self._scope_for(alias),
                     seconds=cooldown_seconds,

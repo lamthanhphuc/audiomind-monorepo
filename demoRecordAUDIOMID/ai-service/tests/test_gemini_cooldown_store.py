@@ -8,13 +8,18 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from app.services.gemini_cooldown_merge import CooldownMetadata, merge_cooldown_states
+from app.services.gemini_cooldown_merge import (
+    CooldownMetadata,
+    merge_cooldown_states,
+    merge_cooldown_states_lua_semantics,
+)
 from app.services.gemini_key_cooldown_store import (
     DEFAULT_MODEL_UNSUPPORTED_TTL_SECONDS,
     GeminiKeyScope,
     InMemoryGeminiKeyCooldownStore,
     LegacyGeminiCooldownStoreAdapter,
     RedisGeminiKeyCooldownStore,
+    SafeRedisResult,
     build_redis_gemini_cooldown_store,
     decode_cooldown_payload,
     encode_cooldown_payload,
@@ -28,6 +33,9 @@ from app.services.gemini_key_manager import GeminiKeyManager
 class FakeWallClock:
     def __init__(self, start_ms: int = 1_700_000_000_000) -> None:
         self._ms = int(start_ms)
+
+    def __call__(self) -> float:
+        return self._ms / 1000.0
 
     def now_ms(self) -> int:
         return self._ms
@@ -79,12 +87,14 @@ class FakeRedis:
     def setex(self, key: str, ttl_seconds: int, value: str) -> None:
         with self._lock:
             expires_at_ms = self._now_ms() + int(ttl_seconds) * 1000
-            self._values[key] = (expires_at_ms, str(value))
+            stored = value.decode("utf-8") if isinstance(value, bytes) else str(value)
+            self._values[key] = (expires_at_ms, stored)
 
     def psetex(self, key: str, ttl_ms: int, value: str) -> None:
         with self._lock:
             expires_at_ms = self._now_ms() + int(ttl_ms)
-            self._values[key] = (expires_at_ms, str(value))
+            stored = value.decode("utf-8") if isinstance(value, bytes) else str(value)
+            self._values[key] = (expires_at_ms, stored)
 
     def delete(self, key: str) -> None:
         with self._lock:
@@ -99,6 +109,13 @@ class FakeRedis:
         incoming_json = args[1]
         incoming_ttl_ms = int(args[2])
         now_ms = int(args[3])
+        current_raw = self.get(key)
+        current_pttl = self.pttl(key)
+        current = decode_cooldown_payload(
+            current_raw,
+            now_ms=now_ms,
+            pttl_ms=current_pttl if current_pttl > 0 else None,
+        )
         incoming = decode_cooldown_payload(incoming_json, now_ms=now_ms)
         assert incoming is not None
         incoming = CooldownMetadata(
@@ -106,11 +123,9 @@ class FakeRedis:
             cooldown_type=incoming.cooldown_type,
             expires_at_ms=now_ms + incoming_ttl_ms,
         )
-        current_raw = self.get(key)
-        current = decode_cooldown_payload(current_raw, now_ms=now_ms)
-        if current is not None and int(current.expires_at_ms or 0) <= now_ms:
-            current = None
-        merged = merge_cooldown_states(current, incoming, now_ms=now_ms)
+        merged = merge_cooldown_states_lua_semantics(
+            current, incoming, now_ms=now_ms
+        )
         payload = encode_cooldown_payload(merged)
         ttl_ms = max(1, int(merged.expires_at_ms) - now_ms)
         self.psetex(key, ttl_ms, payload)
@@ -321,11 +336,79 @@ def test_success_clears_model_unsupported_marker():
     )
 
 
-def test_legacy_redis_value_one_is_readable():
-    metadata = decode_cooldown_payload("1", now_ms=1_700_000_000_000)
+def test_legacy_redis_value_one_requires_pttl():
+    now_ms = 1_700_000_000_000
+    assert decode_cooldown_payload("1", now_ms=now_ms) is None
+    metadata = decode_cooldown_payload("1", now_ms=now_ms, pttl_ms=30_000)
     assert metadata is not None
     assert metadata.reason == "cooldown"
     assert metadata.cooldown_type == "soft"
+    assert metadata.expires_at_ms == now_ms + 30_000
+
+
+def test_legacy_redis_value_one_via_store_get_cooldown_state():
+    clock = FakeWallClock()
+    redis = FakeRedis(wall_clock=clock)
+    store = RedisGeminiKeyCooldownStore(
+        redis, namespace="test:ai-service", wall_clock_ms=clock.now_ms
+    )
+    scope = _scope("primary", "fake-primary-key")
+    key = store._cooldown_key(scope)
+    redis.setex(key, 30, "1")
+    state = store.get_cooldown_state(scope, now=0.0, now_ms=clock.now_ms())
+    assert state is not None
+    assert 25 <= state.remaining_seconds <= 30
+    assert state.reason == "cooldown"
+    assert key in redis._values
+
+
+def test_legacy_redis_bytes_value_one_via_store():
+    clock = FakeWallClock()
+    redis = FakeRedis(wall_clock=clock)
+    store = RedisGeminiKeyCooldownStore(
+        redis, namespace="test:ai-service", wall_clock_ms=clock.now_ms
+    )
+    scope = _scope("primary", "fake-primary-key")
+    key = store._cooldown_key(scope)
+    redis.setex(key, 30, b"1")
+    state = store.get_cooldown_state(scope, now=0.0, now_ms=clock.now_ms())
+    assert state is not None
+    assert state.reason == "cooldown"
+
+
+def test_legacy_redis_value_one_expired_is_cleaned_up():
+    clock = FakeWallClock()
+    redis = FakeRedis(wall_clock=clock)
+    store = RedisGeminiKeyCooldownStore(
+        redis, namespace="test:ai-service", wall_clock_ms=clock.now_ms
+    )
+    scope = _scope("primary", "fake-primary-key")
+    key = store._cooldown_key(scope)
+    redis._values[key] = (clock.now_ms(), "1")
+    state = store.get_cooldown_state(scope, now=0.0, now_ms=clock.now_ms())
+    assert state is None
+
+
+def test_legacy_value_migrates_to_json_on_update():
+    clock = FakeWallClock()
+    redis = FakeRedis(wall_clock=clock)
+    store = RedisGeminiKeyCooldownStore(
+        redis, namespace="test:ai-service", wall_clock_ms=clock.now_ms
+    )
+    scope = _scope("primary", "fake-primary-key")
+    key = store._cooldown_key(scope)
+    redis.setex(key, 60, "1")
+    store.apply_cooldown(
+        scope,
+        seconds=30,
+        reason="rate_limit",
+        cooldown_type="soft",
+        now_ms=clock.now_ms(),
+    )
+    raw = redis.get(key)
+    assert raw is not None
+    assert raw != "1"
+    assert "version" in raw
 
 
 class LegacyDurationOnlyCooldownStore:
@@ -401,6 +484,49 @@ def test_redis_outage_write_keeps_local_manager_state():
     assert selection.unavailable_reasons.get("primary") == "billing_credits_depleted"
 
 
+def test_safe_redis_successful_write_returning_none_does_not_log_warning(caplog):
+    import logging
+
+    clock = FakeWallClock()
+    redis = FakeRedis(wall_clock=clock)
+    store = RedisGeminiKeyCooldownStore(
+        redis, namespace="test:ai-service", wall_clock_ms=clock.now_ms
+    )
+    scope = _scope("primary", "fake-primary-key")
+
+    with caplog.at_level(logging.WARNING):
+        store.apply_cooldown(
+            scope,
+            seconds=30,
+            reason="rate_limit",
+            cooldown_type="soft",
+            now_ms=clock.now_ms(),
+        )
+    assert "GEMINI_SHARED_STATE_WRITE_FAILED" not in caplog.text
+
+
+def test_safe_redis_missing_key_read_does_not_log_read_failed(caplog):
+    import logging
+
+    clock = FakeWallClock()
+    redis = FakeRedis(wall_clock=clock)
+    store = RedisGeminiKeyCooldownStore(
+        redis, namespace="test:ai-service", wall_clock_ms=clock.now_ms
+    )
+    scope = _scope("primary", "fake-primary-key")
+    with caplog.at_level(logging.WARNING):
+        state = store.get_cooldown_state(scope, now=0.0, now_ms=clock.now_ms())
+    assert state is None
+    assert "GEMINI_SHARED_STATE_READ_FAILED" not in caplog.text
+
+
+def test_safe_redis_result_contract():
+    result = SafeRedisResult(success=True, value=None)
+    assert result.success
+    assert result.value is None
+    assert result.error is None
+
+
 def test_build_redis_store_namespace_from_settings(monkeypatch):
     from app.config import Settings, get_settings
 
@@ -410,11 +536,10 @@ def test_build_redis_store_namespace_from_settings(monkeypatch):
     settings = Settings()
     namespace = resolve_shared_state_namespace(
         app_env=settings.app_env,
-        service_name=settings.app_component,
         explicit_namespace=settings.gemini_shared_state_namespace,
     )
-    assert namespace == "staging:worker"
+    assert namespace == "staging:ai-service"
     store = build_redis_gemini_cooldown_store(FakeRedis(), settings=settings)
-    assert store.namespace == "staging:worker"
+    assert store.namespace == "staging:ai-service"
     assert store.model_unsupported_ttl_seconds == DEFAULT_MODEL_UNSUPPORTED_TTL_SECONDS
     get_settings.cache_clear()
