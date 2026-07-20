@@ -1105,9 +1105,13 @@ class ProcessingPipeline:
                         db, analysis_identity
                     )
                     if (
-                        retry_run is None
-                        or retry_run.status not in ANALYSIS_RETRYABLE_FAILURE_STATUSES
+                        retry_run is not None
+                        and retry_run.status
+                        not in ANALYSIS_RETRYABLE_FAILURE_STATUSES
                     ):
+                        # Completed/skipped/in-progress: do not re-run under
+                        # failed_retry. None (never analyzed) falls through so
+                        # background recovery can analyze after EMPTY_TRANSCRIPT.
                         miss_metadata = analysis_miss_response_metadata(
                             db, analysis_identity
                         )
@@ -1243,9 +1247,13 @@ class ProcessingPipeline:
 
         except Exception as e:
             if active_analysis_run is not None:
+                provider_error_code = (
+                    str(getattr(e, "error_code", None) or "").strip()
+                    or type(e).__name__
+                )
                 mark_analysis_run_failed(
                     run=active_analysis_run,
-                    error_code=type(e).__name__,
+                    error_code=provider_error_code,
                     error_message=safe_error_message(e),
                 )
                 db.commit()

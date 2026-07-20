@@ -40,6 +40,12 @@ def _infer_batch_failure_stage(exc: Exception) -> str:
 def _build_batch_failure_error(exc: Exception) -> str:
     error_type = type(exc).__name__
     stage = _infer_batch_failure_stage(exc)
+    error_code = str(getattr(exc, "error_code", None) or "").strip()
+    if error_code:
+        return (
+            f"BATCH_PIPELINE_FAILED errorCode={error_code} "
+            f"errorType={error_type} stage={stage}"
+        )
     return f"BATCH_PIPELINE_FAILED errorType={error_type} stage={stage}"
 
 
@@ -206,6 +212,8 @@ def process_meeting(payload: dict) -> None:
         )
         logger.info(f"[traceId={trace_id}] [jobId={meeting_id}] update COMPLETED")
     except Exception as processing_error:
+        from app.services.analysis_errors import AnalysisProviderError
+
         error_type = type(processing_error).__name__
         stage = _infer_batch_failure_stage(processing_error)
         logger.error(
@@ -225,6 +233,10 @@ def process_meeting(payload: dict) -> None:
             trace_id=trace_id,
             stage="failed",
         )
+        # Provider errors are pickle-safe and already recorded in job state.
+        # Do not re-raise them so the worker stays healthy (Celery task returns).
+        if isinstance(processing_error, AnalysisProviderError):
+            return
         raise
     finally:
         db.close()
@@ -277,14 +289,43 @@ def analysis_retry_scheduled() -> int:
             entry.analysis_attempt,
             entry.trace_id,
         )
+        payload: dict = {
+            "meeting_id": entry.meeting_id,
+            "mode": "failed_retry",
+            "source": entry.source,
+        }
+        db = SessionLocal()
+        try:
+            from app.services.stt_persistence import TranscriptPersistenceRepository
+
+            repository = TranscriptPersistenceRepository(db)
+            scope = repository.resolve_preferred_transcript_scope(entry.meeting_id)
+            transcript_text = repository.assemble_meeting_analysis_transcript_text(
+                entry.meeting_id
+            )
+            if not transcript_text.strip():
+                logger.warning(
+                    "ANALYSIS_BACKGROUND_RETRY_SKIPPED meetingId={} reason=EMPTY_TRANSCRIPT "
+                    "scope={}",
+                    entry.meeting_id,
+                    (
+                        f"v2:{scope.get('recordingSessionId')}:{scope.get('attemptId')}"
+                        if scope and scope.get("scopeKind") == "v2"
+                        else (scope.get("scopeKind") if scope else "none")
+                    ),
+                )
+                continue
+            if scope and scope.get("scopeKind") == "v2":
+                payload["recording_session_id"] = int(scope["recordingSessionId"])
+                payload["attempt_id"] = int(scope["attemptId"])
+            payload["transcript"] = transcript_text
+        finally:
+            db.close()
+
         try:
             response = httpx.post(
                 f"{settings.internal_api_base_url.rstrip('/')}/api/internal/realtime-analysis",
-                json={
-                    "meeting_id": entry.meeting_id,
-                    "mode": "failed_retry",
-                    "source": entry.source,
-                },
+                json=payload,
                 timeout=30.0,
             )
             if response.status_code < 500:

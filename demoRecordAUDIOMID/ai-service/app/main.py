@@ -1093,6 +1093,10 @@ def _default_error_message(error: str) -> str:
         "GEMINI_UNAVAILABLE": "Gemini service is unavailable",
         "GEMINI_RATE_LIMITED": "Gemini rate limit reached",
         "GEMINI_QUOTA_EXHAUSTED": "Gemini quota exhausted",
+        "GEMINI_MODEL_UNAVAILABLE": "Gemini model is unavailable for all configured API keys",
+        "GEMINI_KEY_POOL_UNAVAILABLE": "Gemini key pool is unavailable",
+        "GEMINI_BILLING_CREDITS_DEPLETED": "Gemini billing credits are depleted",
+        "GEMINI_FREE_TIER_TOKEN_QUOTA_EXHAUSTED": "Gemini free-tier token quota is exhausted",
         "GEMINI_ANALYSIS_FAILED": "Gemini analysis failed",
         "INVALID_LANGUAGE": "Invalid language",
         "EMPTY_TRANSCRIPT": "Transcript is empty",
@@ -1392,17 +1396,55 @@ def _map_http_exception(
         )
 
     if status_code == 503:
+        structured_error = ""
+        structured_details: dict[str, object] | None = None
+        if isinstance(exc.detail, dict):
+            structured_error = str(
+                exc.detail.get("error") or exc.detail.get("errorCode") or ""
+            ).strip()
+            nested_details = exc.detail.get("details")
+            if isinstance(nested_details, dict):
+                structured_details = _sanitize_details(nested_details)
+                if not structured_error:
+                    structured_error = str(
+                        nested_details.get("errorCode")
+                        or nested_details.get("error")
+                        or ""
+                    ).strip()
+            message = str(exc.detail.get("message") or "").strip()
+        else:
+            message = ""
+
+        normalized_error = structured_error.strip().upper()
+        known_gemini_codes = {
+            "GEMINI_UNAVAILABLE",
+            "GEMINI_MODEL_UNAVAILABLE",
+            "GEMINI_KEY_POOL_UNAVAILABLE",
+            "GEMINI_BILLING_CREDITS_DEPLETED",
+            "GEMINI_FREE_TIER_TOKEN_QUOTA_EXHAUSTED",
+            "GEMINI_INVALID_KEY",
+            "GEMINI_INVALID_REQUEST",
+            "GEMINI_REGION_BLOCKED",
+            "GEMINI_PROXY_CONNECT_FAILED",
+        }
+        if normalized_error in known_gemini_codes:
+            return (
+                normalized_error,
+                message or _default_error_message(normalized_error),
+                structured_details or details,
+            )
+
         if "deepgram" in normalized_detail:
             return (
                 "DEEPGRAM_UNAVAILABLE",
                 _default_error_message("DEEPGRAM_UNAVAILABLE"),
                 details,
             )
-        if "gemini" in normalized_detail:
+        if "gemini" in normalized_detail or normalized_error.startswith("GEMINI_"):
             return (
-                "GEMINI_UNAVAILABLE",
-                _default_error_message("GEMINI_UNAVAILABLE"),
-                details,
+                normalized_error or "GEMINI_UNAVAILABLE",
+                message or _default_error_message(normalized_error or "GEMINI_UNAVAILABLE"),
+                structured_details or details,
             )
         if "analysis service unavailable" in normalized_detail:
             return (
@@ -2266,6 +2308,7 @@ def _finish_realtime_analysis(
     analysis_trace_id: str | None = None,
     analysis_provider_alias: str | None = None,
     retry_exhausted: bool | None = None,
+    error_retryable: bool | None = None,
 ) -> None:
     now = time.time()
     try:
@@ -2298,7 +2341,9 @@ def _finish_realtime_analysis(
                 retry_after_seconds or int(_REALTIME_ANALYSIS_FAILURE_COOLDOWN_SECONDS),
             )
             cooldown_until = now + retry_after
-            retryable = is_retryable_error_code(error_code)
+            retryable = is_retryable_error_code(
+                error_code, retryable=error_retryable
+            )
             failure_status = "ANALYSIS_FAILED_RETRYABLE" if retryable else "FAILED"
             max_attempts = settings.analysis_background_retry_max_attempts
             retry_count = int(analysis_retry_count or 0)
@@ -2805,7 +2850,9 @@ async def get_transcript(
                 )
             else:
                 fragment_segments = (
-                    fragment_repository.assemble_visible_transcript_segments(meeting_id)
+                    fragment_repository.assemble_meeting_visible_transcript_segments(
+                        meeting_id
+                    )
                 )
         except AttributeError:
             fragment_segments = []
@@ -3229,7 +3276,44 @@ async def get_analysis(
         )
 
 
-def _meeting_transcript_text_for_analysis(db: Session, meeting_id: int) -> str:
+def _meeting_transcript_text_for_analysis(
+    db: Session,
+    meeting_id: int,
+    *,
+    recording_session_id: int | None = None,
+    attempt_id: int | None = None,
+) -> str:
+    provenance = validate_transcript_provenance(recording_session_id, attempt_id)
+    repository = TranscriptPersistenceRepository(db)
+
+    if provenance.is_v2:
+        scoped_text = repository.assemble_attempt_transcript_text(
+            meeting_id,
+            recording_session_id=provenance.recording_session_id,
+            attempt_id=provenance.attempt_id,
+        )
+        if scoped_text.strip():
+            segments = repository.assemble_attempt_visible_transcript_segments(
+                meeting_id,
+                recording_session_id=provenance.recording_session_id,
+                attempt_id=provenance.attempt_id,
+            )
+            labeled: list[str] = []
+            for row in sorted(
+                segments,
+                key=lambda item: (
+                    float(item.get("start_time") or 0.0),
+                    int(item.get("seq") or 0),
+                ),
+            ):
+                text = str(row.get("text") or "").strip()
+                if not text:
+                    continue
+                speaker = str(row.get("speaker") or "SPEAKER_1").strip() or "SPEAKER_1"
+                labeled.append(f"{speaker}: {text}")
+            if labeled:
+                return "\n".join(labeled)
+
     latest_canonical = (
         db.query(Transcript)
         .filter(
@@ -3267,7 +3351,11 @@ def _meeting_transcript_text_for_analysis(db: Session, meeting_id: int) -> str:
             continue
         speaker = str(row.speaker or "SPEAKER_1").strip() or "SPEAKER_1"
         lines.append(f"{speaker}: {text}")
-    return "\n".join(lines).strip()
+    if lines:
+        return "\n".join(lines).strip()
+
+    # Realtime meetings often only have v2 fragments (no rows in transcripts yet).
+    return repository.assemble_meeting_analysis_transcript_text(meeting_id)
 
 
 def _load_structured_fragments_for_education(
@@ -3287,7 +3375,9 @@ def _load_structured_fragments_for_education(
             attempt_id=provenance.attempt_id,
         )
     else:
-        raw_segments = repository.assemble_visible_transcript_segments(meeting_id)
+        raw_segments = repository.assemble_meeting_visible_transcript_segments(
+            meeting_id
+        )
 
     segments: list[dict[str, Any]] = []
     for row in raw_segments:
@@ -3514,7 +3604,12 @@ async def analyze_realtime_transcript(
         transcript_text = _normalize_transcript_text(request.transcript or "")
         if not transcript_text:
             transcript_text = _normalize_transcript_text(
-                _meeting_transcript_text_for_analysis(db, meeting_id)
+                _meeting_transcript_text_for_analysis(
+                    db,
+                    meeting_id,
+                    recording_session_id=request.recording_session_id,
+                    attempt_id=request.attempt_id,
+                )
             )
         if not transcript_text:
             logger.warning(
@@ -3862,9 +3957,10 @@ async def analyze_realtime_transcript(
             if mode == ANALYSIS_MODE_FAILED_RETRY:
                 retry_run = find_latest_analysis_run_for_identity(db, cache_identity)
                 if (
-                    retry_run is None
-                    or retry_run.status not in ANALYSIS_RETRYABLE_FAILURE_STATUSES
+                    retry_run is not None
+                    and retry_run.status not in ANALYSIS_RETRYABLE_FAILURE_STATUSES
                 ):
+                    # Completed/skipped/in-progress for this identity: do not re-run.
                     miss_metadata = analysis_miss_response_metadata(db, cache_identity)
                     return RealtimeTranscriptAnalysisResponse(
                         meeting_id=meeting_id,
@@ -3891,6 +3987,9 @@ async def analyze_realtime_transcript(
                         stale=miss_metadata.get("stale"),
                         staleReason=miss_metadata.get("staleReason"),
                     )
+                # retry_run is None (never analyzed for this scope) OR retryable
+                # failure → fall through to normal analysis. This recovers meetings
+                # that previously only hit EMPTY_TRANSCRIPT before a run existed.
 
             logger.info(
                 "ANALYSIS_CACHE_MISS meetingId={} provider={} model={} promptVersion={} schemaVersion={} canonicalTranscriptHash={} canonicalTranscriptVersion={} analysisInputMode={}",
@@ -4074,6 +4173,7 @@ async def analyze_realtime_transcript(
         finish_error_code: str | None = None
         finish_error_reason: str | None = None
         finish_retry_after_seconds = 0
+        finish_error_retryable: bool | None = None
         try:
             response = _analyze_and_persist_realtime_transcript(
                 meeting_id=meeting_id,
@@ -4132,6 +4232,7 @@ async def analyze_realtime_transcript(
             finish_error_code = error_code
             finish_error_reason = safe_error_message(analysis_error)
             finish_retry_after_seconds = retry_after_seconds
+            finish_error_retryable = True
             raise HTTPException(
                 status_code=429,
                 detail={
@@ -4165,16 +4266,35 @@ async def analyze_realtime_transcript(
             finish_retry_after_seconds = int(
                 _REALTIME_ANALYSIS_FAILURE_COOLDOWN_SECONDS
             )
+            finish_error_retryable = False
             raise HTTPException(
                 status_code=502,
                 detail="Gemini analysis failed",
             ) from analysis_error
         except (AnalysisConfigError, AnalysisUnavailableError) as analysis_error:
             db.rollback()
+            error_code = (
+                str(
+                    getattr(analysis_error, "error_code", None) or "GEMINI_UNAVAILABLE"
+                )
+                .strip()
+                .upper()
+                or "GEMINI_UNAVAILABLE"
+            )
+            exception_retryable = bool(getattr(analysis_error, "retryable", True))
+            if isinstance(analysis_error, AnalysisConfigError):
+                exception_retryable = False
+            will_retry = is_retryable_error_code(
+                error_code, retryable=exception_retryable
+            )
             mark_analysis_run_failed(
                 run=active_analysis_run,
-                status=ANALYSIS_STATUS_FAILED_RETRYABLE,
-                error_code="GEMINI_UNAVAILABLE",
+                status=(
+                    ANALYSIS_STATUS_FAILED_RETRYABLE
+                    if will_retry
+                    else ANALYSIS_STATUS_FAILED
+                ),
+                error_code=error_code,
                 error_message=safe_error_message(analysis_error),
                 analysis_retry_count=int(
                     getattr(active_analysis_run, "analysis_retry_count", 0) or 0
@@ -4185,19 +4305,31 @@ async def analyze_realtime_transcript(
             )
             db.commit()
             logger.warning(
-                "event=REALTIME_ANALYSIS_FAILED_RETRYABLE meetingId={} source={} errorCode=GEMINI_UNAVAILABLE error={}",
+                "event=REALTIME_ANALYSIS_FAILED meetingId={} source={} errorCode={} retryable={} error={}",
                 meeting_id,
                 source,
+                error_code,
+                will_retry,
                 safe_error_message(analysis_error),
             )
-            finish_error_code = "GEMINI_UNAVAILABLE"
+            finish_error_code = error_code
             finish_error_reason = safe_error_message(analysis_error)
             finish_retry_after_seconds = int(
-                _REALTIME_ANALYSIS_FAILURE_COOLDOWN_SECONDS
+                getattr(analysis_error, "retry_after_seconds", None)
+                or _REALTIME_ANALYSIS_FAILURE_COOLDOWN_SECONDS
             )
+            finish_error_retryable = exception_retryable
             raise HTTPException(
                 status_code=503,
-                detail="Gemini service unavailable",
+                detail={
+                    "error": error_code,
+                    "message": _default_error_message(error_code),
+                    "details": {
+                        "provider": "gemini",
+                        "retryable": will_retry,
+                        "errorCode": error_code,
+                    },
+                },
             ) from analysis_error
         except Exception as analysis_error:
             db.rollback()
@@ -4219,6 +4351,7 @@ async def analyze_realtime_transcript(
             finish_retry_after_seconds = int(
                 _REALTIME_ANALYSIS_FAILURE_COOLDOWN_SECONDS
             )
+            finish_error_retryable = False
             raise HTTPException(
                 status_code=502,
                 detail="Gemini analysis failed",
@@ -4269,10 +4402,13 @@ async def analyze_realtime_transcript(
                 analysis_trace_id=finish_trace_id,
                 analysis_provider_alias=finish_provider_alias,
                 retry_exhausted=finish_retry_exhausted,
+                error_retryable=finish_error_retryable,
             )
             if (
                 not success
-                and is_retryable_error_code(finish_error_code)
+                and is_retryable_error_code(
+                    finish_error_code, retryable=finish_error_retryable
+                )
                 and active_analysis_run is not None
             ):
                 _schedule_background_analysis_retry(
@@ -4501,7 +4637,12 @@ async def analysis_provider_exception_handler(
         error = "DEEPGRAM_UNAVAILABLE"
         status_code = 503
     elif provider == "gemini":
-        error = "GEMINI_UNAVAILABLE"
+        error = (
+            str(getattr(exc, "error_code", None) or "GEMINI_UNAVAILABLE")
+            .strip()
+            .upper()
+            or "GEMINI_UNAVAILABLE"
+        )
         status_code = 503
     elif isinstance(exc, AnalysisRateLimitError):
         error = "SERVICE_UNAVAILABLE"
@@ -4510,7 +4651,12 @@ async def analysis_provider_exception_handler(
         error = "SERVICE_UNAVAILABLE"
         status_code = 503
     elif isinstance(exc, (AnalysisConfigError, AnalysisUnavailableError)):
-        error = "SERVICE_UNAVAILABLE"
+        error = (
+            str(getattr(exc, "error_code", None) or "SERVICE_UNAVAILABLE")
+            .strip()
+            .upper()
+            or "SERVICE_UNAVAILABLE"
+        )
         status_code = 503
     else:
         error = "SERVICE_UNAVAILABLE"

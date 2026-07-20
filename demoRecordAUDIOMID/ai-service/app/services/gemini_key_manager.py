@@ -200,6 +200,35 @@ class GeminiKeyManager:
         with self._lock:
             return model_name in self._unsupported_models_by_alias.get(alias, set())
 
+    def all_keys_unsupported_for_model(self, model: str | None) -> bool:
+        """True when every configured key is cached as unsupported for this model."""
+        model_name = self.normalize_model_name(model)
+        if not model_name or not self._entries:
+            return False
+        with self._lock:
+            return all(
+                model_name
+                in self._unsupported_models_by_alias.get(entry.alias, set())
+                for entry in self._entries
+            )
+
+    def has_eligible_key(
+        self,
+        model: str | None = None,
+        *,
+        exclude_alias: str | None = None,
+    ) -> bool:
+        """True when at least one key is usable now for this model."""
+        excluded = str(exclude_alias or "").strip()
+        with self._lock:
+            now = self._clock()
+            for entry in self._entries:
+                if excluded and entry.alias == excluded:
+                    continue
+                if self._eligible_for_model(entry.alias, now=now, model=model):
+                    return True
+        return False
+
     def _eligible_for_model(
         self, alias: str, *, now: float, model: str | None
     ) -> bool:

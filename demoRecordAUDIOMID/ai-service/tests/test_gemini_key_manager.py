@@ -244,6 +244,21 @@ def test_model_unsupported_does_not_use_shared_rate_limit_cooldown():
     assert selection.entry.alias == "backup1"
 
 
+def test_all_keys_unsupported_for_model_helper():
+    manager = GeminiKeyManager.from_config(
+        gemini_api_key="",
+        gemini_api_keys="primary:key-a,backup1:key-b",
+        multi_key_enabled=True,
+        clock=FakeClock(),
+    )
+    assert not manager.all_keys_unsupported_for_model("gemini-2.5-flash")
+    manager.mark_model_unsupported("primary", "gemini-2.5-flash")
+    assert not manager.all_keys_unsupported_for_model("gemini-2.5-flash")
+    manager.mark_model_unsupported("backup1", "gemini-2.5-flash")
+    assert manager.all_keys_unsupported_for_model("gemini-2.5-flash")
+    assert not manager.all_keys_unsupported_for_model("gemini-2.0-flash")
+
+
 def test_concurrent_model_cache_and_selection_is_thread_safe():
     manager = GeminiKeyManager.from_config(
         gemini_api_key="",
