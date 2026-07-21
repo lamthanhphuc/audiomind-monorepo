@@ -104,6 +104,36 @@ docker compose --env-file infra/.env `
 ```
 
 Project name: `audiomind-local`. Volumes are isolated from VPS (`audiomind-local_*`).
+PostgreSQL and Redis stay **private** on the Docker network (no host `5432`/`6379`), so a Windows PostgreSQL install does not block startup. App ports bind to `127.0.0.1` (`8080`, `8000`, `8081`–`8083`). Open **http://localhost:8080**.
+
+Optional DB/Redis host access for debugging only:
+
+```bash
+docker compose --env-file infra/.env `
+  -f infra/docker-compose.dev.yml `
+  -f infra/docker-compose.mvp.yml `
+  -f infra/docker-compose.debug-ports.yml `
+  up -d
+```
+
+Status / logs / stop (keeps volumes):
+
+```bash
+docker compose --env-file infra/.env `
+  -f infra/docker-compose.dev.yml `
+  -f infra/docker-compose.mvp.yml `
+  ps -a
+
+docker compose --env-file infra/.env `
+  -f infra/docker-compose.dev.yml `
+  -f infra/docker-compose.mvp.yml `
+  logs -f ai-api celery-worker processing-api web
+
+docker compose --env-file infra/.env `
+  -f infra/docker-compose.dev.yml `
+  -f infra/docker-compose.mvp.yml `
+  down --remove-orphans
+```
 
 ### VPS (dev + mvp + prod)
 

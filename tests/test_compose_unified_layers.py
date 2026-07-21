@@ -181,6 +181,29 @@ def test_no_fixed_container_names(local_config: dict, vps_config: dict):
             assert "container_name" not in svc, f"{name} still has container_name"
 
 
+def test_local_db_redis_private(local_config: dict):
+    """Default local stack must not publish host 5432/6379 (avoid Windows port clash)."""
+    assert _ports(local_config["services"]["db"]) == []
+    assert _ports(local_config["services"]["redis"]) == []
+
+
+def test_local_apis_loopback(local_config: dict):
+    for name in ("user-api", "meeting-api", "processing-api", "ai-api", "web"):
+        hosts = _published_hosts(local_config["services"][name])
+        assert any("127.0.0.1" in h for h in hosts), f"{name} ports={hosts}"
+
+
+def test_local_ai_and_worker_share_cost_guard_defaults(local_config: dict):
+    for name in ("ai-api", "celery-worker"):
+        env = _env(local_config["services"][name])
+        assert env.get("GEMINI_MODEL") == "gemini-3.1-flash-lite"
+        assert env.get("GEMINI_ANALYSIS_MODEL") == "gemini-3.1-flash-lite"
+        assert str(env.get("GEMINI_MAX_TOTAL_ATTEMPTS")) == "2"
+        assert str(env.get("GEMINI_MODEL_FALLBACK_ENABLED")).lower() == "false"
+        assert str(env.get("GEMINI_CROSS_PROJECT_FAILOVER_ENABLED")).lower() == "false"
+        assert str(env.get("GEMINI_COST_GUARD_ENABLED")).lower() == "true"
+
+
 def test_local_required_services(local_config: dict):
     required = {
         "db", "redis", "db-flyway-bootstrap", "user-db-migrate",
