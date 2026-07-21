@@ -1760,6 +1760,27 @@ def _gemini_caller(*, workload: GeminiWorkload = GeminiWorkload.STRUCTURED_ANALY
     return call_gemini
 
 
+def _lazy_gemini_caller(
+    *, workload: GeminiWorkload = GeminiWorkload.STRUCTURED_ANALYSIS
+):
+    """Defer analyzer construction until Gemini is actually invoked."""
+
+    holder: dict[str, Any] = {}
+
+    def call_gemini(
+        *, prompt: str, system_prompt: str, response_schema: Any = None
+    ) -> str:
+        if "fn" not in holder:
+            holder["fn"] = _gemini_caller(workload=workload)
+        return holder["fn"](
+            prompt=prompt,
+            system_prompt=system_prompt,
+            response_schema=response_schema,
+        )
+
+    return call_gemini
+
+
 def process_synthesis_job(db: Session, synthesis_id: int) -> None:
     row = claim_processing_synthesis(db, synthesis_id)
     if row is None:
@@ -1809,7 +1830,7 @@ def process_synthesis_job(db: Session, synthesis_id: int) -> None:
         options = row.options_json if isinstance(row.options_json, dict) else {}
         language = str(options.get("language") or "vi")
         content = run_hierarchical_synthesis(
-            ready, language=language, call_gemini=_gemini_caller()
+            ready, language=language, call_gemini=_lazy_gemini_caller()
         )
         warnings = []
         if isinstance(content, dict) and isinstance(content.get("warnings"), list):
@@ -1961,7 +1982,7 @@ def process_artifact_job(db: Session, artifact_id: int) -> None:
             synthesis_content=synthesis_content,
             ready_sources=ready,
             options=row.options_json or {},
-            call_gemini=_gemini_caller(),
+            call_gemini=_lazy_gemini_caller(),
         )
         row.content_json = content
         row.status = STATUS_COMPLETED
