@@ -419,9 +419,7 @@ def test_k8s_overlay_patches_do_not_override_worker_command(patch_path: Path) ->
 
 
 COMPOSE_PHASE2_SERVICES = ("ai-api", "celery-worker")
-COMPOSE_FILES_WITH_MEETING_TOKEN = (
-    REPO_ROOT / "infra" / "docker-compose.mvp.yml",
-)
+COMPOSE_FILES_WITH_MEETING_TOKEN = (REPO_ROOT / "infra" / "docker-compose.mvp.yml",)
 
 
 @pytest.mark.parametrize(

@@ -74,7 +74,6 @@ collect_files() {
   done
 }
 
-# shellcheck disable=SC2094
 violations=0
 
 while IFS= read -r file; do
@@ -83,6 +82,7 @@ while IFS= read -r file; do
   while IFS= read -r line || [[ -n "$line" ]]; do
     line_no=$((line_no + 1))
     is_logger_line "$line" || continue
+    # shellcheck disable=SC2094
     is_allowlisted "$file" "$line" && continue
     for token in "${FORBIDDEN[@]}"; do
       if [[ "$line" == *"$token"* ]]; then
@@ -90,6 +90,7 @@ while IFS= read -r file; do
         violations=$((violations + 1))
       fi
     done
+  # shellcheck disable=SC2094
   done < "$file"
 done < <(collect_files)
 

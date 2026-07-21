@@ -2875,9 +2875,7 @@ async def get_transcript(
                 )
             else:
                 fragment_segments = (
-                    fragment_repository.assemble_visible_transcript_segments(
-                        meeting_id
-                    )
+                    fragment_repository.assemble_visible_transcript_segments(meeting_id)
                 )
         except AttributeError:
             fragment_segments = []
