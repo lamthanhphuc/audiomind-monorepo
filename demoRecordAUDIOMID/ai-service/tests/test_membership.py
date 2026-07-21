@@ -25,9 +25,7 @@ def test_fetch_missing_config_raises_unavailable(monkeypatch):
     settings.meeting_service_base_url = ""
     settings.meeting_api_base_url = ""
     settings.internal_service_token = ""
-    monkeypatch.setattr(
-        "app.services.study.membership.get_settings", lambda: settings
-    )
+    monkeypatch.setattr("app.services.study.membership.get_settings", lambda: settings)
 
     with pytest.raises(MeetingMembershipUnavailableError):
         fetch_subject_meeting_ids(10, 1)
@@ -38,9 +36,7 @@ def test_fetch_parses_items_with_id(monkeypatch):
     settings.meeting_service_base_url = "http://meeting-api:8081"
     settings.internal_service_token = "secret"
     settings.meeting_service_timeout_seconds = 5.0
-    monkeypatch.setattr(
-        "app.services.study.membership.get_settings", lambda: settings
-    )
+    monkeypatch.setattr("app.services.study.membership.get_settings", lambda: settings)
 
     response = httpx.Response(
         200,
@@ -51,7 +47,9 @@ def test_fetch_parses_items_with_id(monkeypatch):
             "pageSize": 100,
             "totalPages": 1,
         },
-        request=httpx.Request("GET", "http://meeting-api:8081/internal/subjects/10/meetings"),
+        request=httpx.Request(
+            "GET", "http://meeting-api:8081/internal/subjects/10/meetings"
+        ),
     )
 
     with patch("httpx.Client") as client_cls:
@@ -74,9 +72,7 @@ def test_fetch_parses_content_and_meetings_keys(monkeypatch):
     settings.meeting_service_base_url = "http://meeting-api:8081"
     settings.internal_service_token = "secret"
     settings.meeting_service_timeout_seconds = 5.0
-    monkeypatch.setattr(
-        "app.services.study.membership.get_settings", lambda: settings
-    )
+    monkeypatch.setattr("app.services.study.membership.get_settings", lambda: settings)
 
     response = httpx.Response(
         200,
@@ -94,9 +90,7 @@ def test_fetch_paginates_until_done(monkeypatch):
     settings.meeting_service_base_url = "http://meeting-api:8081"
     settings.internal_service_token = "secret"
     settings.meeting_service_timeout_seconds = 5.0
-    monkeypatch.setattr(
-        "app.services.study.membership.get_settings", lambda: settings
-    )
+    monkeypatch.setattr("app.services.study.membership.get_settings", lambda: settings)
 
     pages = [
         httpx.Response(
@@ -152,9 +146,7 @@ def test_fetch_empty_subject(monkeypatch):
     settings.meeting_service_base_url = "http://meeting-api:8081"
     settings.internal_service_token = "secret"
     settings.meeting_service_timeout_seconds = 5.0
-    monkeypatch.setattr(
-        "app.services.study.membership.get_settings", lambda: settings
-    )
+    monkeypatch.setattr("app.services.study.membership.get_settings", lambda: settings)
 
     response = httpx.Response(
         200,
@@ -172,9 +164,7 @@ def test_fetch_5xx_raises_transient_with_code(monkeypatch):
     settings.meeting_service_base_url = "http://meeting-api:8081"
     settings.internal_service_token = "secret"
     settings.meeting_service_timeout_seconds = 5.0
-    monkeypatch.setattr(
-        "app.services.study.membership.get_settings", lambda: settings
-    )
+    monkeypatch.setattr("app.services.study.membership.get_settings", lambda: settings)
 
     response = httpx.Response(
         503,
@@ -195,9 +185,7 @@ def test_fetch_timeout_raises_transient(monkeypatch):
     settings.meeting_service_base_url = "http://meeting-api:8081"
     settings.internal_service_token = "secret"
     settings.meeting_service_timeout_seconds = 5.0
-    monkeypatch.setattr(
-        "app.services.study.membership.get_settings", lambda: settings
-    )
+    monkeypatch.setattr("app.services.study.membership.get_settings", lambda: settings)
 
     with patch("httpx.Client") as client_cls:
         client = client_cls.return_value.__enter__.return_value
@@ -214,9 +202,7 @@ def test_fetch_auth_errors_raise_transient(monkeypatch, status):
     settings.meeting_service_base_url = "http://meeting-api:8081"
     settings.internal_service_token = "secret"
     settings.meeting_service_timeout_seconds = 5.0
-    monkeypatch.setattr(
-        "app.services.study.membership.get_settings", lambda: settings
-    )
+    monkeypatch.setattr("app.services.study.membership.get_settings", lambda: settings)
 
     response = httpx.Response(
         status,
@@ -237,9 +223,7 @@ def test_fetch_404_raises_validation(monkeypatch):
     settings.meeting_service_base_url = "http://meeting-api:8081"
     settings.internal_service_token = "secret"
     settings.meeting_service_timeout_seconds = 5.0
-    monkeypatch.setattr(
-        "app.services.study.membership.get_settings", lambda: settings
-    )
+    monkeypatch.setattr("app.services.study.membership.get_settings", lambda: settings)
 
     response = httpx.Response(
         404,
@@ -260,9 +244,7 @@ def test_fetch_never_calls_public_subjects_path(monkeypatch):
     settings.meeting_service_base_url = "http://meeting-api:8081"
     settings.internal_service_token = "secret"
     settings.meeting_service_timeout_seconds = 5.0
-    monkeypatch.setattr(
-        "app.services.study.membership.get_settings", lambda: settings
-    )
+    monkeypatch.setattr("app.services.study.membership.get_settings", lambda: settings)
 
     response = httpx.Response(
         200,

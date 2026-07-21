@@ -68,7 +68,7 @@ def _env_secret_ref(container: dict[str, Any], env_name: str) -> dict[str, str]:
     for e in container.get("env") or []:
         if e.get("name") != env_name:
             continue
-        sk = ((e.get("valueFrom") or {}).get("secretKeyRef") or {})
+        sk = (e.get("valueFrom") or {}).get("secretKeyRef") or {}
         assert sk, f"{env_name} must use secretKeyRef"
         return {"name": str(sk.get("name")), "key": str(sk.get("key"))}
     raise AssertionError(f"env {env_name} not found")
@@ -159,9 +159,21 @@ def test_staging_prod_no_postgres_pvc(rendered, overlay: str) -> None:
         and (d.get("metadata") or {}).get("name") == "postgres-data-pvc"
         for d in docs
     )
-    assert any(d.get("kind") == "Job" and (d.get("metadata") or {}).get("name") == "user-db-migrate" for d in docs)
-    assert any(d.get("kind") == "Job" and (d.get("metadata") or {}).get("name") == "meeting-db-migrate" for d in docs)
-    assert any(d.get("kind") == "Job" and (d.get("metadata") or {}).get("name") == "ai-db-migrate" for d in docs)
+    assert any(
+        d.get("kind") == "Job"
+        and (d.get("metadata") or {}).get("name") == "user-db-migrate"
+        for d in docs
+    )
+    assert any(
+        d.get("kind") == "Job"
+        and (d.get("metadata") or {}).get("name") == "meeting-db-migrate"
+        for d in docs
+    )
+    assert any(
+        d.get("kind") == "Job"
+        and (d.get("metadata") or {}).get("name") == "ai-db-migrate"
+        for d in docs
+    )
 
 
 @pytest.mark.parametrize("overlay", OVERLAYS)
@@ -201,9 +213,7 @@ def test_dev_has_postgres_pvc(rendered) -> None:
 
 
 @pytest.mark.parametrize("overlay", ("staging", "prod"))
-def test_staging_prod_internal_db_absent_and_no_db_host(
-    rendered, overlay: str
-) -> None:
+def test_staging_prod_internal_db_absent_and_no_db_host(rendered, overlay: str) -> None:
     docs = rendered[overlay]
     # Direction B: internal DB lives only in the dev overlay.
     assert _db_replicas(docs) is None
@@ -228,9 +238,9 @@ def test_staging_prod_internal_db_absent_and_no_db_host(
                 if not value:
                     continue
                 text = str(value)
-                assert "://db:" not in text and "@db:" not in text, (
-                    f"{overlay}/{dn} env {e.get('name')} still points at db: {text}"
-                )
+                assert (
+                    "://db:" not in text and "@db:" not in text
+                ), f"{overlay}/{dn} env {e.get('name')} still points at db: {text}"
                 assert "localhost" not in text.lower()
                 assert "127.0.0.1" not in text
 
@@ -262,9 +272,11 @@ def test_services_wire_db_from_audiomind_db_secrets(
     ][0]
     url_ref = _env_secret_ref(container, url_env)
     assert url_ref == {"name": "audiomind-db-secrets", "key": url_key}
-    user_ref = _env_secret_ref(container, "SPRING_DATASOURCE_USERNAME") if url_env.startswith(
-        "SPRING"
-    ) else None
+    user_ref = (
+        _env_secret_ref(container, "SPRING_DATASOURCE_USERNAME")
+        if url_env.startswith("SPRING")
+        else None
+    )
     if user_ref is not None:
         assert user_ref == {"name": "audiomind-db-secrets", "key": "DB_USERNAME"}
         pass_ref = _env_secret_ref(container, "SPRING_DATASOURCE_PASSWORD")

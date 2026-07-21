@@ -2,30 +2,25 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
 from app.services.study import (
     MODE_ALL_READY,
     MODE_EXPLICIT,
     STATUS_COMPLETED,
     STATUS_FAILED,
-    STATUS_PROCESSING,
     STATUS_QUEUED,
-    STATUS_QUOTA_EXCEEDED,
     StudyValidationError,
     build_options_hash,
 )
 from app.services.study import service as study_service
 from app.services.study.artifacts import artifact_gemini_schema
-
 
 READY = [
     {
@@ -34,7 +29,10 @@ READY = [
         "analysisRunId": 11,
         "analysisVersion": "education-study-v1",
         "ready": True,
-        "educationStudy": {"overview": "OSI", "sections": [{"title": "L1", "summary": "bits"}]},
+        "educationStudy": {
+            "overview": "OSI",
+            "sections": [{"title": "L1", "summary": "bits"}],
+        },
         "allowedSegmentIds": ["seg-1"],
     },
     {
@@ -43,7 +41,10 @@ READY = [
         "analysisRunId": 12,
         "analysisVersion": "education-study-v1",
         "ready": True,
-        "educationStudy": {"overview": "TCP", "sections": [{"title": "HS", "summary": "syn"}]},
+        "educationStudy": {
+            "overview": "TCP",
+            "sections": [{"title": "HS", "summary": "syn"}],
+        },
         "allowedSegmentIds": ["seg-2"],
     },
 ]
@@ -52,11 +53,28 @@ READY = [
 def _patch_sources(monkeypatch, sources=None):
     src = sources if sources is not None else READY
 
-    def _compute(db, *, owner_user_id, subject_id, source_selection_mode, meeting_ids, require_ready=True):
+    def _compute(
+        db,
+        *,
+        owner_user_id,
+        subject_id,
+        source_selection_mode,
+        meeting_ids,
+        require_ready=True,
+    ):
         from app.services.study import build_source_hash
 
-        ready = [s for s in src if int(s["meetingId"]) in set(int(m) for m in meeting_ids) or not meeting_ids]
-        if source_selection_mode == MODE_ALL_READY and meeting_ids is not None and len(meeting_ids) == 0:
+        ready = [
+            s
+            for s in src
+            if int(s["meetingId"]) in set(int(m) for m in meeting_ids)
+            or not meeting_ids
+        ]
+        if (
+            source_selection_mode == MODE_ALL_READY
+            and meeting_ids is not None
+            and len(meeting_ids) == 0
+        ):
             ready = []
         rows = [
             {
@@ -111,7 +129,11 @@ def test_synthesis_id_of_other_owner_rejected(db_session, monkeypatch):
     )
     synthesis_id = int(foreign["synthesis"]["id"])
     # Force COMPLETED foreign synthesis
-    row = study_service._live_synthesis_query(db_session).filter_by(id=synthesis_id).first()
+    row = (
+        study_service._live_synthesis_query(db_session)
+        .filter_by(id=synthesis_id)
+        .first()
+    )
     row.status = STATUS_COMPLETED
     row.content_json = {"subjectOverview": "secret"}
     db_session.commit()
@@ -141,7 +163,11 @@ def test_synthesis_source_mismatch_rejected(db_session, monkeypatch):
         language="vi",
     )
     synthesis_id = int(syn["synthesis"]["id"])
-    row = study_service._live_synthesis_query(db_session).filter_by(id=synthesis_id).first()
+    row = (
+        study_service._live_synthesis_query(db_session)
+        .filter_by(id=synthesis_id)
+        .first()
+    )
     row.status = STATUS_COMPLETED
     row.content_json = {"subjectOverview": "ok"}
     db_session.commit()
@@ -172,7 +198,9 @@ def test_failed_record_is_not_cache_hit(db_session, monkeypatch):
         options={"language": "vi", "flashcardCount": 5},
     )
     artifact_id = int(first["newlyCreatedArtifactIds"][0])
-    row = study_service._live_artifact_query(db_session).filter_by(id=artifact_id).first()
+    row = (
+        study_service._live_artifact_query(db_session).filter_by(id=artifact_id).first()
+    )
     row.status = STATUS_FAILED
     row.error_code = "FAILED_VALIDATION"
     db_session.commit()
@@ -203,7 +231,9 @@ def test_completed_is_cache_hit(db_session, monkeypatch):
         options={"language": "vi", "flashcardCount": 5},
     )
     artifact_id = int(first["newlyCreatedArtifactIds"][0])
-    row = study_service._live_artifact_query(db_session).filter_by(id=artifact_id).first()
+    row = (
+        study_service._live_artifact_query(db_session).filter_by(id=artifact_id).first()
+    )
     row.status = STATUS_COMPLETED
     row.content_json = {"cards": []}
     db_session.commit()
@@ -280,8 +310,14 @@ def test_language_options_hash_differs_and_persisted(db_session, monkeypatch):
         language="en",
     )
     assert vi["synthesis"]["optionsHash"] != en["synthesis"]["optionsHash"]
-    assert build_options_hash({"language": "vi"}) != build_options_hash({"language": "en"})
-    row = study_service._live_synthesis_query(db_session).filter_by(id=en["synthesis"]["id"]).first()
+    assert build_options_hash({"language": "vi"}) != build_options_hash(
+        {"language": "en"}
+    )
+    row = (
+        study_service._live_synthesis_query(db_session)
+        .filter_by(id=en["synthesis"]["id"])
+        .first()
+    )
     assert row.options_json["language"] == "en"
 
 
@@ -297,7 +333,9 @@ def test_all_ready_empty_subject_is_stale(db_session, monkeypatch):
         options={"language": "vi", "flashcardCount": 5},
     )
     artifact_id = int(prep["newlyCreatedArtifactIds"][0])
-    row = study_service._live_artifact_query(db_session).filter_by(id=artifact_id).first()
+    row = (
+        study_service._live_artifact_query(db_session).filter_by(id=artifact_id).first()
+    )
     row.status = STATUS_COMPLETED
     row.source_selection_mode = MODE_ALL_READY
     db_session.commit()
@@ -326,7 +364,9 @@ def test_explicit_new_meeting_outside_selection_not_stale(db_session, monkeypatc
         options={"language": "vi", "flashcardCount": 5},
     )
     artifact_id = int(prep["newlyCreatedArtifactIds"][0])
-    row = study_service._live_artifact_query(db_session).filter_by(id=artifact_id).first()
+    row = (
+        study_service._live_artifact_query(db_session).filter_by(id=artifact_id).first()
+    )
     row.status = STATUS_COMPLETED
     db_session.commit()
 
@@ -354,7 +394,9 @@ def test_explicit_source_leaving_subject_is_stale(db_session, monkeypatch):
         options={"language": "vi", "flashcardCount": 5},
     )
     artifact_id = int(prep["newlyCreatedArtifactIds"][0])
-    row = study_service._live_artifact_query(db_session).filter_by(id=artifact_id).first()
+    row = (
+        study_service._live_artifact_query(db_session).filter_by(id=artifact_id).first()
+    )
     row.status = STATUS_COMPLETED
     db_session.commit()
 
@@ -382,7 +424,9 @@ def test_list_returns_stale_flag(db_session, monkeypatch):
         options={"language": "vi", "flashcardCount": 5},
     )
     artifact_id = int(prep["newlyCreatedArtifactIds"][0])
-    row = study_service._live_artifact_query(db_session).filter_by(id=artifact_id).first()
+    row = (
+        study_service._live_artifact_query(db_session).filter_by(id=artifact_id).first()
+    )
     row.status = STATUS_COMPLETED
     db_session.commit()
 
@@ -420,7 +464,13 @@ def test_worker_ignores_foreign_synthesis_id(monkeypatch):
         status=STATUS_QUEUED,
         source_hash="hash",
         source_selection_mode=MODE_EXPLICIT,
-        options_json={"language": "vi", "flashcardCount": 5, "multipleChoiceCount": 5, "essayQuestionCount": 1, "difficulty": "MIXED"},
+        options_json={
+            "language": "vi",
+            "flashcardCount": 5,
+            "multipleChoiceCount": 5,
+            "essayQuestionCount": 1,
+            "difficulty": "MIXED",
+        },
         sources=[SimpleNamespace(meeting_id=101)],
         content_json=None,
         error_code=None,
@@ -431,21 +481,36 @@ def test_worker_ignores_foreign_synthesis_id(monkeypatch):
         last_heartbeat_at=None,
     )
     db = MagicMock()
-    monkeypatch.setattr(study_service, "claim_processing_artifact", lambda *_a, **_k: row)
-    monkeypatch.setattr(study_service, "_guard_source_hash_unchanged", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        study_service, "claim_processing_artifact", lambda *_a, **_k: row
+    )
+    monkeypatch.setattr(
+        study_service, "_guard_source_hash_unchanged", lambda *_a, **_k: None
+    )
     monkeypatch.setattr(
         study_service,
         "compute_current_source_hash",
         lambda *a, **k: (
             "hash",
-            [{"meetingId": 101, "ready": True, "educationStudy": {}, "allowedSegmentIds": ["seg-1"]}],
+            [
+                {
+                    "meetingId": 101,
+                    "ready": True,
+                    "educationStudy": {},
+                    "allowedSegmentIds": ["seg-1"],
+                }
+            ],
             [],
         ),
     )
     monkeypatch.setattr(
         study_service,
         "resolve_compatible_synthesis",
-        MagicMock(side_effect=StudyValidationError("SYNTHESIS_NOT_OWNED", "Synthesis not found")),
+        MagicMock(
+            side_effect=StudyValidationError(
+                "SYNTHESIS_NOT_OWNED", "Synthesis not found"
+            )
+        ),
     )
     captured = {}
 

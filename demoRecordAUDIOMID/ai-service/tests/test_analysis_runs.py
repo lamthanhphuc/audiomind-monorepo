@@ -11,6 +11,7 @@ from app.services.analysis_runs import analysis_run_response_metadata
 from sqlalchemy import create_engine, inspect
 from sqlalchemy.orm import sessionmaker
 
+
 class FakeBatchAnalyzer:
     PROMPT_VERSION = "gemini-business-v2"
     SCHEMA_VERSION = "gemini-business-v2"

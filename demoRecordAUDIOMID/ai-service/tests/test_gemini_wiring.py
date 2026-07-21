@@ -102,9 +102,11 @@ def test_single_key_mode_still_wires_shared_redis_store(monkeypatch) -> None:
     )
     monkeypatch.setattr(
         "app.services.gemini_shared_state_store.build_v2_redis_gemini_cooldown_store",
-        lambda client, **kwargs: shared_store
-        if client is redis_sentinel
-        else pytest.fail("unexpected Redis client"),
+        lambda client, **kwargs: (
+            shared_store
+            if client is redis_sentinel
+            else pytest.fail("unexpected Redis client")
+        ),
     )
 
     try:

@@ -144,6 +144,7 @@ from app.routes.stt_stream import validate_stream_chunk
 from app.routes.upload import validate_upload_mime
 from app.routes.internal_meetings import router as internal_meetings_router
 from app.routes.config_lexicon import router as config_lexicon_router
+from app.study_routes import router as study_router
 from app.tasks import process_meeting
 from app.otel_setup import bind_trace_id_attribute, instrument_fastapi_app
 
@@ -357,7 +358,6 @@ instrument_fastapi_app(app)
 
 app.include_router(internal_meetings_router)
 app.include_router(config_lexicon_router)
-from app.study_routes import router as study_router
 
 app.include_router(study_router)
 

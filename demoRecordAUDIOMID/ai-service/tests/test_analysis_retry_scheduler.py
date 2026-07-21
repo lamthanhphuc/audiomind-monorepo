@@ -72,12 +72,8 @@ def test_retryable_error_codes():
     assert not is_retryable_error_code("GEMINI_FREE_TIER_TOKEN_QUOTA_EXHAUSTED")
     assert not is_retryable_error_code("GEMINI_MODEL_UNAVAILABLE")
     assert not is_retryable_error_code("GEMINI_KEY_POOL_UNAVAILABLE")
-    assert not is_retryable_error_code(
-        "GEMINI_KEY_POOL_UNAVAILABLE", retryable=False
-    )
-    assert is_retryable_error_code(
-        "GEMINI_KEY_POOL_UNAVAILABLE", retryable=True
-    )
+    assert not is_retryable_error_code("GEMINI_KEY_POOL_UNAVAILABLE", retryable=False)
+    assert is_retryable_error_code("GEMINI_KEY_POOL_UNAVAILABLE", retryable=True)
 
 
 def test_serialize_queue_member_roundtrip():

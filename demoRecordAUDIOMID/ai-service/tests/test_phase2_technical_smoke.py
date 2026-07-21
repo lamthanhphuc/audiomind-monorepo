@@ -29,11 +29,10 @@ def _phase2_smoke_fake_provider(monkeypatch):
     get_settings.cache_clear()
 
 
-from app.celery_app import celery_app
-from app.database import get_db
-from app.main import app
-from app.services.study import service as study_service
-from tests.httpx_asgi import asgi_client
+from app.database import get_db  # noqa: E402
+from app.main import app  # noqa: E402
+from app.services.study import service as study_service  # noqa: E402
+from tests.httpx_asgi import asgi_client  # noqa: E402
 
 TOKEN = "phase2-smoke-token"
 HEADERS = {"X-Internal-Service-Token": TOKEN}
@@ -67,7 +66,15 @@ READY_SOURCES = [
 
 
 def _patch_ready_sources(monkeypatch):
-    def _compute(db, *, owner_user_id, subject_id, source_selection_mode, meeting_ids, require_ready=True):
+    def _compute(
+        db,
+        *,
+        owner_user_id,
+        subject_id,
+        source_selection_mode,
+        meeting_ids,
+        require_ready=True,
+    ):
         from app.services.study import build_source_hash
 
         source_hash = build_source_hash(
@@ -347,8 +354,12 @@ def smoke_client(monkeypatch):
             throw=True,
         )
 
-    monkeypatch.setattr(tasks_module.generate_subject_synthesis, "apply_async", syn_apply_async)
-    monkeypatch.setattr(tasks_module.generate_study_artifact, "apply_async", art_apply_async)
+    monkeypatch.setattr(
+        tasks_module.generate_subject_synthesis, "apply_async", syn_apply_async
+    )
+    monkeypatch.setattr(
+        tasks_module.generate_study_artifact, "apply_async", art_apply_async
+    )
 
     # Tasks use SessionLocal from app.database — point them at our smoke DB.    monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
     monkeypatch.setattr("app.tasks.SessionLocal", SessionLocal)
@@ -421,7 +432,7 @@ def test_phase2_technical_smoke_synthesis_and_artifacts(smoke_client, monkeypatc
     assert ("synthesis", synthesis_id) in dispatch_calls
 
     got = client.get(
-        f"/api/internal/subjects/10/synthesis?ownerUserId=1&meetingIds=101,102",
+        "/api/internal/subjects/10/synthesis?ownerUserId=1&meetingIds=101,102",
         headers=HEADERS,
     )
     assert got.status_code == 200, got.text
@@ -616,7 +627,9 @@ def test_phase2_technical_smoke_synthesis_and_artifacts(smoke_client, monkeypatc
         provider_calls.append("call")
         if len(provider_calls) == 1:
             raise StudyTransientError("transient")
-        return original_gemini(prompt=prompt, system_prompt=system_prompt, response_schema=response_schema)
+        return original_gemini(
+            prompt=prompt, system_prompt=system_prompt, response_schema=response_schema
+        )
 
     monkeypatch.setattr(study_service, "_gemini_caller", lambda: flaky_gemini)
     monkeypatch.setattr(
@@ -653,9 +666,13 @@ def test_phase2_technical_smoke_synthesis_and_artifacts(smoke_client, monkeypatc
     _confirm_quota(client, artifact_ids=[stale_id])
     stale_calls: list[str] = []
 
-    def counting_gemini(*, prompt: str, system_prompt: str, response_schema=None) -> str:
+    def counting_gemini(
+        *, prompt: str, system_prompt: str, response_schema=None
+    ) -> str:
         stale_calls.append("call")
-        return original_gemini(prompt=prompt, system_prompt=system_prompt, response_schema=response_schema)
+        return original_gemini(
+            prompt=prompt, system_prompt=system_prompt, response_schema=response_schema
+        )
 
     monkeypatch.setattr(study_service, "_gemini_caller", lambda: counting_gemini)
     monkeypatch.setattr(
@@ -664,7 +681,15 @@ def test_phase2_technical_smoke_synthesis_and_artifacts(smoke_client, monkeypatc
         lambda subject_id, owner_user_id: [101, 102],
     )
 
-    def changed_hash(db_arg, *, owner_user_id, subject_id, source_selection_mode, meeting_ids, require_ready=True):
+    def changed_hash(
+        db_arg,
+        *,
+        owner_user_id,
+        subject_id,
+        source_selection_mode,
+        meeting_ids,
+        require_ready=True,
+    ):
         return ("hash-changed", READY_SOURCES, READY_SOURCES)
 
     monkeypatch.setattr(study_service, "compute_current_source_hash", changed_hash)

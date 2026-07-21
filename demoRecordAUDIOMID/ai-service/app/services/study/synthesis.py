@@ -68,6 +68,7 @@ def _coerce_synthesis_provider_object(parsed: Any, *, context: str) -> dict[str,
         f"{'Batch' if context == 'batch' else 'Final'} JSON invalid (expected object, got {type(parsed).__name__})",
     )
 
+
 # Hard ceiling for hierarchical reduce rounds to prevent infinite loops.
 MAX_REDUCER_ROUNDS = 8
 # Deterministic cap on evidence segment ids embedded in prompts.
@@ -218,7 +219,9 @@ def _compact_source(meeting: dict[str, Any]) -> dict[str, Any]:
     # Prefer nested study fields when educationStudy was already compacted.
     if not study and any(k in meeting for k in ("overview", "sections", "keyPoints")):
         study = meeting
-    capped_ids, truncated = _cap_allowed_segment_ids(meeting.get("allowedSegmentIds") or [])
+    capped_ids, truncated = _cap_allowed_segment_ids(
+        meeting.get("allowedSegmentIds") or []
+    )
     if truncated:
         logger.warning(
             "event=SUBJECT_SYNTHESIS_SEGMENT_IDS_CAPPED meetingId=%s kept=%s",
@@ -320,9 +323,16 @@ def _fit_within_token_budget(
             text = json.dumps(shrunk, ensure_ascii=False)
             if len(text) > max_chars:
                 # Keep only provenance + a tiny overview stub.
-                keep_keys = {"meetingId", "sourceMeetingIds", "sourceSegmentIds", overview_key}
+                keep_keys = {
+                    "meetingId",
+                    "sourceMeetingIds",
+                    "sourceSegmentIds",
+                    overview_key,
+                }
                 stub = {k: shrunk[k] for k in keep_keys if k in shrunk}
-                stub[overview_key] = str(stub.get(overview_key) or "")[: max(0, max_chars // 2)]
+                stub[overview_key] = str(stub.get(overview_key) or "")[
+                    : max(0, max_chars // 2)
+                ]
                 shrunk = stub
     return shrunk, True
 
@@ -604,8 +614,12 @@ def normalize_synthesis(
         mids, sids, pairs = paired(t.evidence, t.sourceMeetingIds, t.sourceSegmentIds)
         new_terms.append(
             GlossaryItem(
-                term=t.term, definition=t.definition, example=t.example,
-                evidence=pairs, sourceMeetingIds=mids, sourceSegmentIds=sids,
+                term=t.term,
+                definition=t.definition,
+                example=t.example,
+                evidence=pairs,
+                sourceMeetingIds=mids,
+                sourceSegmentIds=sids,
             )
         )
     content.importantTerms = new_terms
@@ -617,8 +631,12 @@ def normalize_synthesis(
         mids, sids, pairs = paired(m.evidence, m.sourceMeetingIds, m.sourceSegmentIds)
         new_must_remember.append(
             EvidencedItem(
-                content=m.content, importance=m.importance, reason=m.reason,
-                evidence=pairs, sourceMeetingIds=mids, sourceSegmentIds=sids,
+                content=m.content,
+                importance=m.importance,
+                reason=m.reason,
+                evidence=pairs,
+                sourceMeetingIds=mids,
+                sourceSegmentIds=sids,
             )
         )
     content.mustRemember = new_must_remember
@@ -630,8 +648,11 @@ def normalize_synthesis(
         mids, sids, pairs = paired(g.evidence, g.sourceMeetingIds, g.sourceSegmentIds)
         new_gaps.append(
             KnowledgeGap(
-                content=g.content, reason=g.reason,
-                evidence=pairs, sourceMeetingIds=mids, sourceSegmentIds=sids,
+                content=g.content,
+                reason=g.reason,
+                evidence=pairs,
+                sourceMeetingIds=mids,
+                sourceSegmentIds=sids,
             )
         )
     content.knowledgeGaps = new_gaps
@@ -649,7 +670,8 @@ def normalize_synthesis(
         new_focus.append(
             ExamFocus(
                 content=e.content,
-                reason=e.reason or "Chủ đề nên ưu tiên ôn từ tài liệu đã ghi, không phải dự đoán đề thi.",
+                reason=e.reason
+                or "Chủ đề nên ưu tiên ôn từ tài liệu đã ghi, không phải dự đoán đề thi.",
                 evidence=pairs,
                 sourceMeetingIds=mids,
                 sourceSegmentIds=sids,
@@ -730,9 +752,9 @@ def _build_prompt_within_limit(
         if round_idx >= 16:
             items = [
                 {
-                    "subjectOverview": str(item.get("subjectOverview") or item.get("overview") or "")[
-                        :40
-                    ],
+                    "subjectOverview": str(
+                        item.get("subjectOverview") or item.get("overview") or ""
+                    )[:40],
                     "sourceMeetingIds": (item.get("sourceMeetingIds") or [])[:8],
                     "chapters": [],
                     "importantTerms": [],
@@ -761,7 +783,9 @@ def run_hierarchical_synthesis(
     if not ready_sources:
         raise StudyValidationError("NO_READY_SOURCES", "No ready education sources")
 
-    max_meetings_per_batch = max(1, int(settings.subject_synthesis_max_meetings_per_batch))
+    max_meetings_per_batch = max(
+        1, int(settings.subject_synthesis_max_meetings_per_batch)
+    )
     max_input_tokens = max(1, int(settings.subject_synthesis_max_input_tokens))
     max_parallel_batches = max(1, int(settings.subject_synthesis_max_parallel_batches))
     chars_per_token = max(1, int(settings.subject_synthesis_chars_per_token))
@@ -829,9 +853,12 @@ def run_hierarchical_synthesis(
         for idx, batch in enumerate(batches):
             batch_results[idx] = run_batch(batch)
     else:
-        with ThreadPoolExecutor(max_workers=min(max_parallel_batches, len(batches))) as executor:
+        with ThreadPoolExecutor(
+            max_workers=min(max_parallel_batches, len(batches))
+        ) as executor:
             future_to_idx = {
-                executor.submit(run_batch, batch): idx for idx, batch in enumerate(batches)
+                executor.submit(run_batch, batch): idx
+                for idx, batch in enumerate(batches)
             }
             for future in as_completed(future_to_idx):
                 batch_results[future_to_idx[future]] = future.result()
@@ -1003,7 +1030,9 @@ def _reduce_intermediate_batch(
 
     system_prompt = build_synthesis_system_instruction()
     prompt, fitted = _build_prompt_within_limit(
-        build_prompt=lambda items, language: build_reducer_prompt(items, language=language),
+        build_prompt=lambda items, language: build_reducer_prompt(
+            items, language=language
+        ),
         payload_items=fitted,
         language=language,
         max_input_tokens=limit,

@@ -58,7 +58,7 @@ def _secret_refs(docs: list[dict[str, Any]]) -> dict[str, set[str]]:
         if doc.get("kind") == "Job":
             pods = [(doc.get("spec") or {}).get("template") or {}]
         else:
-            pods = [((doc.get("spec") or {}).get("template") or {})]
+            pods = [(doc.get("spec") or {}).get("template") or {}]
         for pod in pods:
             spec = pod.get("spec") or {}
             containers = list(spec.get("containers") or []) + list(
@@ -66,7 +66,7 @@ def _secret_refs(docs: list[dict[str, Any]]) -> dict[str, set[str]]:
             )
             for c in containers:
                 for e in c.get("env") or []:
-                    sk = ((e.get("valueFrom") or {}).get("secretKeyRef") or {})
+                    sk = (e.get("valueFrom") or {}).get("secretKeyRef") or {}
                     if not sk:
                         continue
                     if sk.get("optional") in (True, "true", "True"):
@@ -80,9 +80,7 @@ def _secret_refs(docs: list[dict[str, Any]]) -> dict[str, set[str]]:
 
 def _generator_app_keys() -> set[str]:
     text = GENERATOR_SH.read_text(encoding="utf-8")
-    match = re.search(
-        r"REQUIRED_APP_KEYS=\((.*?)\)", text, flags=re.DOTALL
-    )
+    match = re.search(r"REQUIRED_APP_KEYS=\((.*?)\)", text, flags=re.DOTALL)
     assert match, "REQUIRED_APP_KEYS not found in generate-sealed-secrets.sh"
     keys = set(re.findall(r"[A-Z][A-Z0-9_]+", match.group(1)))
     # Deepgram is conditional but supported by generator
@@ -92,9 +90,7 @@ def _generator_app_keys() -> set[str]:
 
 def _generator_db_keys() -> set[str]:
     text = GENERATOR_SH.read_text(encoding="utf-8")
-    match = re.search(
-        r"REQUIRED_DB_KEYS=\((.*?)\)", text, flags=re.DOTALL
-    )
+    match = re.search(r"REQUIRED_DB_KEYS=\((.*?)\)", text, flags=re.DOTALL)
     assert match, "REQUIRED_DB_KEYS not found in generate-sealed-secrets.sh"
     return set(re.findall(r"[A-Z][A-Z0-9_]+", match.group(1)))
 

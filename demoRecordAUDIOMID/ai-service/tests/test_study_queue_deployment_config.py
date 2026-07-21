@@ -23,9 +23,7 @@ REQUIRED_QUEUES = ("audio_processing", "study_generation")
 
 # Matches the celery worker invocation (as opposed to `celery ... beat`),
 # regardless of surrounding shell quoting/array syntax.
-WORKER_COMMAND_RE = re.compile(
-    r"celery -A app\.celery_app\.celery_app worker[^\"'\n]*"
-)
+WORKER_COMMAND_RE = re.compile(r"celery -A app\.celery_app\.celery_app worker[^\"'\n]*")
 
 # Deployment/compose files whose celery-worker `command` must include both
 # required queues.
@@ -60,7 +58,11 @@ def _extract_worker_commands(text: str) -> list[str]:
     return WORKER_COMMAND_RE.findall(text)
 
 
-@pytest.mark.parametrize("manifest_path", FILES_WITH_WORKER_COMMANDS, ids=lambda p: str(p.relative_to(REPO_ROOT)))
+@pytest.mark.parametrize(
+    "manifest_path",
+    FILES_WITH_WORKER_COMMANDS,
+    ids=lambda p: str(p.relative_to(REPO_ROOT)),
+)
 def test_celery_worker_command_consumes_required_queues(manifest_path: Path) -> None:
     assert manifest_path.is_file(), f"expected deployment manifest at {manifest_path}"
     text = manifest_path.read_text(encoding="utf-8")
@@ -130,9 +132,9 @@ def test_compose_files_define_celery_beat_service() -> None:
             f"{path} must define a celery beat service so "
             "study-generation-reconcile is scheduled"
         )
-        assert "celery -A app.celery_app.celery_app beat" in text, (
-            f"{path} beat service must invoke celery beat"
-        )
+        assert (
+            "celery -A app.celery_app.celery_app beat" in text
+        ), f"{path} beat service must invoke celery beat"
 
 
 def test_celery_app_registers_reconcile_task() -> None:
@@ -247,7 +249,9 @@ def test_k8s_core_deployments_wire_internal_service_token(short_name: str) -> No
 
 
 @pytest.mark.parametrize("short_name", ("meeting-api", "processing-api", "user-api"))
-def test_k8s_java_services_wire_jwt_secret_from_audiomind_secrets(short_name: str) -> None:
+def test_k8s_java_services_wire_jwt_secret_from_audiomind_secrets(
+    short_name: str,
+) -> None:
     block = _deployment_block(_core_deployments_text(), short_name)
     assert _has_secret_key_ref(
         block, "JWT_SECRET", "audiomind-secrets", "JWT_SECRET"
@@ -267,9 +271,8 @@ def test_k8s_processing_api_service_urls() -> None:
         f"http://user-api:8083, got {user_url!r}"
     )
     assert "localhost" not in (user_url or "").lower()
-    assert (
-        _has_configmap_key_ref(block, "AUDIOMIND_AI_API_BASE_URL")
-        or _env_value(block, "AUDIOMIND_AI_API_BASE_URL")
+    assert _has_configmap_key_ref(block, "AUDIOMIND_AI_API_BASE_URL") or _env_value(
+        block, "AUDIOMIND_AI_API_BASE_URL"
     ), "processing-api must define AUDIOMIND_AI_API_BASE_URL (configMap or value)"
 
 
@@ -282,9 +285,9 @@ def test_k8s_ai_celery_base_has_app_component_not_app_env(short_name: str) -> No
         "celery-worker": "worker",
         "celery-beat": "beat",
     }[short_name]
-    assert _env_value(block, "APP_COMPONENT") == expected_component, (
-        f"{short_name} must set APP_COMPONENT={expected_component} in base"
-    )
+    assert (
+        _env_value(block, "APP_COMPONENT") == expected_component
+    ), f"{short_name} must set APP_COMPONENT={expected_component} in base"
     assert _env_value(block, "APP_ENV") is None, (
         f"{short_name} must not hard-code APP_ENV in base core-deployments.yaml; "
         "overlays set APP_ENV via app-env-patch.yaml"
@@ -329,14 +332,12 @@ def test_k8s_overlay_app_env_patch_sets_app_env_for_ai_components(
 ) -> None:
     assert patch_path.is_file(), f"expected overlay patch at {patch_path}"
     text = patch_path.read_text(encoding="utf-8")
-    expected_env = (
-        "development" if patch_path.parent.name == "dev" else "production"
-    )
+    expected_env = "development" if patch_path.parent.name == "dev" else "production"
     for short_name in ("ai-api", "celery-worker", "celery-beat"):
         block = _deployment_block(text, short_name)
-        assert _env_value(block, "APP_ENV") == expected_env, (
-            f"{patch_path.name} must set APP_ENV={expected_env} on {short_name}"
-        )
+        assert (
+            _env_value(block, "APP_ENV") == expected_env
+        ), f"{patch_path.name} must set APP_ENV={expected_env} on {short_name}"
 
 
 def test_k8s_phase2_service_urls_have_no_localhost() -> None:
@@ -347,9 +348,9 @@ def test_k8s_phase2_service_urls_have_no_localhost() -> None:
             value = _env_value(block, env_name)
             if value is None:
                 continue
-            assert "localhost" not in value.lower(), (
-                f"{short_name} {env_name}={value!r} must not use localhost"
-            )
+            assert (
+                "localhost" not in value.lower()
+            ), f"{short_name} {env_name}={value!r} must not use localhost"
 
 
 def test_k8s_core_deployment_sets_study_generation_queue_env() -> None:
@@ -366,9 +367,9 @@ def test_k8s_core_deployment_sets_study_generation_queue_env() -> None:
         r"- name: CELERY_STUDY_GENERATION_QUEUE\s*\n\s*value:\s*\"?study_generation\"?",
         block,
     )
-    assert env_var_match, (
-        "celery-worker-deployment must set CELERY_STUDY_GENERATION_QUEUE=study_generation"
-    )
+    assert (
+        env_var_match
+    ), "celery-worker-deployment must set CELERY_STUDY_GENERATION_QUEUE=study_generation"
 
 
 @pytest.mark.parametrize(
@@ -436,9 +437,9 @@ def test_compose_ai_celery_include_meeting_url_and_internal_token(
     assert compose_path.is_file(), f"expected compose file at {compose_path}"
     text = compose_path.read_text(encoding="utf-8")
     block = _compose_service_block(text, service_name)
-    assert "MEETING_SERVICE_BASE_URL" in block, (
-        f"{compose_path.name} service '{service_name}' must set MEETING_SERVICE_BASE_URL"
-    )
-    assert "INTERNAL_SERVICE_TOKEN" in block, (
-        f"{compose_path.name} service '{service_name}' must set INTERNAL_SERVICE_TOKEN"
-    )
+    assert (
+        "MEETING_SERVICE_BASE_URL" in block
+    ), f"{compose_path.name} service '{service_name}' must set MEETING_SERVICE_BASE_URL"
+    assert (
+        "INTERNAL_SERVICE_TOKEN" in block
+    ), f"{compose_path.name} service '{service_name}' must set INTERNAL_SERVICE_TOKEN"

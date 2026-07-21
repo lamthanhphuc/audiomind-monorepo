@@ -90,7 +90,7 @@ class GlobalExceptionHandlerTest {
         assertEquals(HttpStatus.CONFLICT, response.getStatusCode());
         assertEquals("SOURCE_MEETINGS_NOT_READY", body.error());
         assertEquals("SOURCE_MEETINGS_NOT_READY", body.errorCode());
-        assertEquals("Source meetings not ready", body.message());
+        assertEquals(ErrorCode.SOURCE_MEETINGS_NOT_READY.displayMessage(true), body.message());
         assertEquals("trace-syn", body.traceId());
     }
 }

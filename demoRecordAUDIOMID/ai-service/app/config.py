@@ -37,9 +37,7 @@ def _is_local(value: str | None) -> bool:
     parsed = urlparse(value)
     host = (parsed.hostname or "").strip().lower()
     raw = value.strip().lower()
-    return (
-        host in {"localhost", "127.0.0.1", "0.0.0.0", "::1"} or "localhost" in raw
-    )
+    return host in {"localhost", "127.0.0.1", "0.0.0.0", "::1"} or "localhost" in raw
 
 
 def _database_hostname(database_url: str) -> str:
@@ -568,9 +566,13 @@ class Settings(BaseSettings):
             raise ValueError(
                 "Invalid production analysis_provider: fake is not allowed in production"
             )
-        if provider == "gemini" and not (self.gemini_api_key or "").strip() and not (
-            bool(self.gemini_multi_key_enabled)
-            and (self.gemini_api_keys or "").strip()
+        if (
+            provider == "gemini"
+            and not (self.gemini_api_key or "").strip()
+            and not (
+                bool(self.gemini_multi_key_enabled)
+                and (self.gemini_api_keys or "").strip()
+            )
         ):
             raise ValueError(
                 "Invalid production gemini_api_key: empty secret is not allowed when analysis_provider=gemini"

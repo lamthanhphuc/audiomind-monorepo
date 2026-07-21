@@ -6,7 +6,6 @@ import json
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock
 
 import pytest
 from sqlalchemy import create_engine
@@ -27,7 +26,6 @@ from app.services.study import service as study_service
 from app.services.study.artifacts import validate_mcq
 from app.services.study.synthesis import run_hierarchical_synthesis
 
-
 READY = [
     {
         "meetingId": 101,
@@ -35,7 +33,10 @@ READY = [
         "analysisRunId": 11,
         "analysisVersion": "education-study-v1",
         "ready": True,
-        "educationStudy": {"overview": "OSI", "sections": [{"title": "L1", "summary": "bits"}]},
+        "educationStudy": {
+            "overview": "OSI",
+            "sections": [{"title": "L1", "summary": "bits"}],
+        },
         "allowedSegmentIds": ["seg-1"],
     },
     {
@@ -44,7 +45,10 @@ READY = [
         "analysisRunId": 12,
         "analysisVersion": "education-study-v1",
         "ready": True,
-        "educationStudy": {"overview": "TCP", "sections": [{"title": "HS", "summary": "syn"}]},
+        "educationStudy": {
+            "overview": "TCP",
+            "sections": [{"title": "HS", "summary": "syn"}],
+        },
         "allowedSegmentIds": ["seg-2"],
     },
 ]
@@ -53,11 +57,28 @@ READY = [
 def _patch_sources(monkeypatch, sources=None):
     src = sources if sources is not None else READY
 
-    def _compute(db, *, owner_user_id, subject_id, source_selection_mode, meeting_ids, require_ready=True):
+    def _compute(
+        db,
+        *,
+        owner_user_id,
+        subject_id,
+        source_selection_mode,
+        meeting_ids,
+        require_ready=True,
+    ):
         from app.services.study import build_source_hash
 
-        ready = [s for s in src if int(s["meetingId"]) in set(int(m) for m in meeting_ids) or not meeting_ids]
-        if source_selection_mode == MODE_ALL_READY and meeting_ids is not None and len(meeting_ids) == 0:
+        ready = [
+            s
+            for s in src
+            if int(s["meetingId"]) in set(int(m) for m in meeting_ids)
+            or not meeting_ids
+        ]
+        if (
+            source_selection_mode == MODE_ALL_READY
+            and meeting_ids is not None
+            and len(meeting_ids) == 0
+        ):
             ready = []
         rows = [
             {
@@ -158,7 +179,9 @@ def test_transient_retry_second_claim_succeeds(db_session, monkeypatch):
     with pytest.raises(StudyTransientError):
         study_service.process_artifact_job(db_session, artifact_id)
 
-    row = study_service._live_artifact_query(db_session).filter_by(id=artifact_id).first()
+    row = (
+        study_service._live_artifact_query(db_session).filter_by(id=artifact_id).first()
+    )
     assert row.status == STATUS_QUEUED
     assert row.status != STATUS_FAILED
     assert row.error_code == "TRANSIENT_AI_ERROR"
@@ -192,7 +215,9 @@ def test_max_retries_marks_failed(db_session, monkeypatch, tmp_path):
     finally:
         generate_study_artifact.pop_request()
 
-    row = study_service._live_artifact_query(db_session).filter_by(id=artifact_id).first()
+    row = (
+        study_service._live_artifact_query(db_session).filter_by(id=artifact_id).first()
+    )
     assert row.status == STATUS_FAILED
     assert row.error_code == "TRANSIENT_AI_ERROR"
     assert "Exhausted retries" in (row.error_message or "")
@@ -208,7 +233,9 @@ def test_validation_error_no_retry_failed_immediately(db_session, monkeypatch):
 
     study_service.process_artifact_job(db_session, artifact_id)
 
-    row = study_service._live_artifact_query(db_session).filter_by(id=artifact_id).first()
+    row = (
+        study_service._live_artifact_query(db_session).filter_by(id=artifact_id).first()
+    )
     assert row.status == STATUS_FAILED
     assert row.status != STATUS_QUEUED
     assert row.error_code == "INVALID_FLASHCARDS"
@@ -226,7 +253,9 @@ def test_duplicate_task_after_completed_noops(db_session, monkeypatch):
     study_service.process_artifact_job(db_session, artifact_id)
     assert len(provider_calls) == 1
 
-    row = study_service._live_artifact_query(db_session).filter_by(id=artifact_id).first()
+    row = (
+        study_service._live_artifact_query(db_session).filter_by(id=artifact_id).first()
+    )
     assert row.status == STATUS_COMPLETED
 
     study_service.process_artifact_job(db_session, artifact_id)
@@ -246,7 +275,15 @@ def test_source_changed_after_prepare_aborts_provider(db_session, monkeypatch):
     monkeypatch.setattr(study_service, "generate_artifact_content", gen)
 
     # After prepare, make source hash diverge.
-    def changed_hash(db, *, owner_user_id, subject_id, source_selection_mode, meeting_ids, require_ready=True):
+    def changed_hash(
+        db,
+        *,
+        owner_user_id,
+        subject_id,
+        source_selection_mode,
+        meeting_ids,
+        require_ready=True,
+    ):
         return (
             "changed-after-prepare-hash",
             READY,
@@ -264,7 +301,9 @@ def test_source_changed_after_prepare_aborts_provider(db_session, monkeypatch):
 
     study_service.process_artifact_job(db_session, artifact_id)
 
-    row = study_service._live_artifact_query(db_session).filter_by(id=artifact_id).first()
+    row = (
+        study_service._live_artifact_query(db_session).filter_by(id=artifact_id).first()
+    )
     assert row.status == STATUS_STALE
     assert row.error_code == "SOURCE_CHANGED_AFTER_PREPARE"
     assert provider_calls == []
@@ -272,7 +311,9 @@ def test_source_changed_after_prepare_aborts_provider(db_session, monkeypatch):
 
 def test_broker_failure_redispatch_keeps_quota(db_session, monkeypatch):
     artifact_id = _prepare_flashcards(db_session, monkeypatch)
-    row = study_service._live_artifact_query(db_session).filter_by(id=artifact_id).first()
+    row = (
+        study_service._live_artifact_query(db_session).filter_by(id=artifact_id).first()
+    )
     quota_at = row.quota_confirmed_at
     assert quota_at is not None
 
@@ -284,8 +325,12 @@ def test_broker_failure_redispatch_keeps_quota(db_session, monkeypatch):
             raise RuntimeError("broker unavailable")
         return SimpleNamespace(id=kwargs.get("task_id"))
 
-    monkeypatch.setattr("app.tasks.generate_study_artifact.apply_async", flaky_apply_async)
-    monkeypatch.setattr("app.tasks.generate_subject_synthesis.apply_async", flaky_apply_async)
+    monkeypatch.setattr(
+        "app.tasks.generate_study_artifact.apply_async", flaky_apply_async
+    )
+    monkeypatch.setattr(
+        "app.tasks.generate_subject_synthesis.apply_async", flaky_apply_async
+    )
 
     with pytest.raises(RuntimeError, match="broker unavailable"):
         study_service.dispatch_study_jobs(
@@ -327,7 +372,11 @@ def test_reconcile_enqueues_orphan_not_terminal(db_session, monkeypatch):
         options={"language": "vi", "flashcardCount": 5},
     )
     completed_id = int(completed["newlyCreatedArtifactIds"][0])
-    crow = study_service._live_artifact_query(db_session).filter_by(id=completed_id).first()
+    crow = (
+        study_service._live_artifact_query(db_session)
+        .filter_by(id=completed_id)
+        .first()
+    )
     crow.status = STATUS_COMPLETED
     crow.quota_confirmed_at = datetime.utcnow()
     crow.dispatch_requested_at = None
@@ -343,7 +392,9 @@ def test_reconcile_enqueues_orphan_not_terminal(db_session, monkeypatch):
         options={"language": "vi", "flashcardCount": 5},
     )
     failed_id = int(failed["newlyCreatedArtifactIds"][0])
-    frow = study_service._live_artifact_query(db_session).filter_by(id=failed_id).first()
+    frow = (
+        study_service._live_artifact_query(db_session).filter_by(id=failed_id).first()
+    )
     frow.status = STATUS_FAILED
     frow.quota_confirmed_at = datetime.utcnow()
     frow.dispatch_requested_at = None
@@ -359,7 +410,9 @@ def test_reconcile_enqueues_orphan_not_terminal(db_session, monkeypatch):
         options={"language": "vi", "essayQuestionCount": 1},
     )
     deleted_id = int(deleted["newlyCreatedArtifactIds"][0])
-    drow = study_service._live_artifact_query(db_session).filter_by(id=deleted_id).first()
+    drow = (
+        study_service._live_artifact_query(db_session).filter_by(id=deleted_id).first()
+    )
     drow.quota_confirmed_at = datetime.utcnow()
     drow.dispatch_requested_at = None
     drow.deleted_at = datetime.utcnow()
@@ -482,13 +535,17 @@ def test_hierarchical_reducer_multi_round_calls_gemini(monkeypatch):
             }
         )
 
-    result = run_hierarchical_synthesis(many_sources, language="vi", call_gemini=call_gemini)
+    result = run_hierarchical_synthesis(
+        many_sources, language="vi", call_gemini=call_gemini
+    )
     assert result["subjectOverview"]
     reduce_calls = sum(1 for c in gemini_calls if c == "reduce")
     batch_calls = sum(1 for c in gemini_calls if c == "batch")
     assert batch_calls >= 4
     assert reduce_calls >= 1
-    assert len(gemini_calls) > batch_calls  # multi-round reduce path invoked gemini again
+    assert (
+        len(gemini_calls) > batch_calls
+    )  # multi-round reduce path invoked gemini again
     from app.services.study.evidence import estimate_tokens
 
     for prompt in prompts:
@@ -508,7 +565,9 @@ def test_get_artifact_empty_subject_is_stale(db_session, monkeypatch):
         options={"language": "vi", "flashcardCount": 5},
     )
     artifact_id = int(prep["newlyCreatedArtifactIds"][0])
-    row = study_service._live_artifact_query(db_session).filter_by(id=artifact_id).first()
+    row = (
+        study_service._live_artifact_query(db_session).filter_by(id=artifact_id).first()
+    )
     row.status = STATUS_COMPLETED
     row.source_selection_mode = MODE_ALL_READY
     row.content_json = {"cards": []}

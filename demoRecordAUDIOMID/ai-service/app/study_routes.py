@@ -270,7 +270,9 @@ def get_artifact(
             meeting_ids_for_stale=_parse_meeting_ids_for_stale(meetingIds),
         )
     except StudyAuthorizationError as exc:
-        raise HTTPException(status_code=404, detail={"error_code": "NOT_FOUND"}) from exc
+        raise HTTPException(
+            status_code=404, detail={"error_code": "NOT_FOUND"}
+        ) from exc
 
 
 @router.get("/api/internal/subjects/{subject_id}/study-artifacts")
@@ -313,5 +315,7 @@ def delete_artifact(
             db, artifact_id=artifact_id, owner_user_id=ownerUserId
         )
     except StudyAuthorizationError as exc:
-        raise HTTPException(status_code=404, detail={"error_code": "NOT_FOUND"}) from exc
+        raise HTTPException(
+            status_code=404, detail={"error_code": "NOT_FOUND"}
+        ) from exc
     return {"status": "deleted"}

@@ -161,16 +161,32 @@ def validate_options(options: dict[str, Any]) -> dict[str, Any]:
     language = str(options.get("language") or "vi")
     difficulty = str(options.get("difficulty") or "MIXED").upper()
     if difficulty not in {"EASY", "MEDIUM", "HARD", "MIXED"}:
-        raise StudyValidationError("INVALID_DIFFICULTY", f"Invalid difficulty: {difficulty}")
+        raise StudyValidationError(
+            "INVALID_DIFFICULTY", f"Invalid difficulty: {difficulty}"
+        )
     flashcard_count = int(options.get("flashcardCount") or 20)
     mcq_count = int(options.get("multipleChoiceCount") or 15)
     essay_count = int(options.get("essayQuestionCount") or 5)
-    if not settings.study_flashcard_count_min <= flashcard_count <= settings.study_flashcard_count_max:
-        raise StudyValidationError("INVALID_FLASHCARD_COUNT", "flashcardCount out of range")
+    if (
+        not settings.study_flashcard_count_min
+        <= flashcard_count
+        <= settings.study_flashcard_count_max
+    ):
+        raise StudyValidationError(
+            "INVALID_FLASHCARD_COUNT", "flashcardCount out of range"
+        )
     if not settings.study_mcq_count_min <= mcq_count <= settings.study_mcq_count_max:
-        raise StudyValidationError("INVALID_MCQ_COUNT", "multipleChoiceCount out of range")
-    if not settings.study_essay_count_min <= essay_count <= settings.study_essay_count_max:
-        raise StudyValidationError("INVALID_ESSAY_COUNT", "essayQuestionCount out of range")
+        raise StudyValidationError(
+            "INVALID_MCQ_COUNT", "multipleChoiceCount out of range"
+        )
+    if (
+        not settings.study_essay_count_min
+        <= essay_count
+        <= settings.study_essay_count_max
+    ):
+        raise StudyValidationError(
+            "INVALID_ESSAY_COUNT", "essayQuestionCount out of range"
+        )
     return {
         "language": language,
         "difficulty": difficulty,
@@ -318,7 +334,12 @@ def _mcq_gemini_schema() -> dict[str, Any]:
                         "difficulty": {"type": "STRING"},
                         "evidence": EVIDENCE_SCHEMA,
                     },
-                    "required": ["question", "options", "correctOptionId", "explanation"],
+                    "required": [
+                        "question",
+                        "options",
+                        "correctOptionId",
+                        "explanation",
+                    ],
                 },
             },
         },
@@ -337,7 +358,10 @@ def _essay_gemini_schema() -> dict[str, Any]:
                     "properties": {
                         "id": {"type": "STRING"},
                         "question": {"type": "STRING"},
-                        "suggestedOutline": {"type": "ARRAY", "items": {"type": "STRING"}},
+                        "suggestedOutline": {
+                            "type": "ARRAY",
+                            "items": {"type": "STRING"},
+                        },
                         "keyPoints": {"type": "ARRAY", "items": {"type": "STRING"}},
                         "rubric": {
                             "type": "ARRAY",
@@ -537,12 +561,19 @@ def _normalize_mcq_provider_payload(raw: dict[str, Any]) -> dict[str, Any]:
                 for index, opt in enumerate(options):
                     if isinstance(opt, str):
                         fixed_options.append(
-                            {"id": "ABCD"[index] if index < 4 else str(index), "text": opt}
+                            {
+                                "id": "ABCD"[index] if index < 4 else str(index),
+                                "text": opt,
+                            }
                         )
                     elif isinstance(opt, dict):
                         option = dict(opt)
-                        text = str(option.get("text") or option.get("label") or "").strip()
-                        option_id = str(option.get("id") or option.get("key") or "").strip()
+                        text = str(
+                            option.get("text") or option.get("label") or ""
+                        ).strip()
+                        option_id = str(
+                            option.get("id") or option.get("key") or ""
+                        ).strip()
                         if not option_id and index < 4:
                             option_id = "ABCD"[index]
                         fixed_options.append({"id": option_id, "text": text})
@@ -558,7 +589,9 @@ def validate_mcq(
     allowed_segments_by_meeting: dict[int, set[str]],
 ) -> dict[str, Any]:
     settings = get_settings()
-    content = MultipleChoiceContent.model_validate(_normalize_mcq_provider_payload(raw or {}))
+    content = MultipleChoiceContent.model_validate(
+        _normalize_mcq_provider_payload(raw or {})
+    )
     questions: list[McqQuestion] = []
     for idx, q in enumerate(content.questions, start=1):
         if not q.question.strip() or not q.explanation.strip():
@@ -578,7 +611,9 @@ def validate_mcq(
         provided_ids = [(o.id or "").strip().upper() for o in filtered_options]
         if any(oid not in {"A", "B", "C", "D"} for oid in provided_ids if oid):
             continue
-        if len([oid for oid in provided_ids if oid]) != len(set(oid for oid in provided_ids if oid)):
+        if len([oid for oid in provided_ids if oid]) != len(
+            set(oid for oid in provided_ids if oid)
+        ):
             continue
 
         used_ids = {oid for oid in provided_ids if oid}
@@ -713,16 +748,24 @@ def validate_exam_brief(
     content.evidence = pairs
     # Formulas must reflect only what the sources actually contain — never fabricate.
     content.formulas = [str(f).strip() for f in content.formulas if str(f).strip()]
-    content.mustRemember = [str(m).strip() for m in content.mustRemember if str(m).strip()]
-    content.importantTerms = [str(t).strip() for t in content.importantTerms if str(t).strip()]
-    content.commonMistakes = [str(m).strip() for m in content.commonMistakes if str(m).strip()]
+    content.mustRemember = [
+        str(m).strip() for m in content.mustRemember if str(m).strip()
+    ]
+    content.importantTerms = [
+        str(t).strip() for t in content.importantTerms if str(t).strip()
+    ]
+    content.commonMistakes = [
+        str(m).strip() for m in content.commonMistakes if str(m).strip()
+    ]
     content.lastMinuteChecklist = [
         str(c).strip() for c in content.lastMinuteChecklist if str(c).strip()
     ]
     content.likelyExamTopics = [
-        topic
-        if _has_priority_disclaimer(topic)
-        else f"{topic} (ưu tiên ôn từ tài liệu đã ghi, không phải dự đoán đề)"
+        (
+            topic
+            if _has_priority_disclaimer(topic)
+            else f"{topic} (ưu tiên ôn từ tài liệu đã ghi, không phải dự đoán đề)"
+        )
         for topic in (str(t).strip() for t in content.likelyExamTopics)
         if topic
     ]
@@ -793,11 +836,17 @@ def _prepare_artifact_prompt(
     user_token_budget = max(1, max_input_tokens - system_reserve)
 
     meetings = [_compact_artifact_meeting(s) for s in ready_sources]
-    synthesis = dict(synthesis_content) if isinstance(synthesis_content, dict) else synthesis_content
+    synthesis = (
+        dict(synthesis_content)
+        if isinstance(synthesis_content, dict)
+        else synthesis_content
+    )
 
     # Leave headroom for the prompt wrapper text within the user budget.
     payload_budget = max(1, int(user_token_budget * 0.85))
-    meeting_budget = max(1, payload_budget // max(1, len(meetings) + (1 if synthesis else 0)))
+    meeting_budget = max(
+        1, payload_budget // max(1, len(meetings) + (1 if synthesis else 0))
+    )
 
     if isinstance(synthesis, dict):
         synthesis, _ = _fit_within_token_budget(
@@ -846,7 +895,9 @@ def _prepare_artifact_prompt(
             study = meeting.get("educationStudy") or {}
             if isinstance(study, dict) and study:
                 fitted, _ = _fit_within_token_budget(
-                    dict(study), max_tokens=shrink_budget, chars_per_token=chars_per_token
+                    dict(study),
+                    max_tokens=shrink_budget,
+                    chars_per_token=chars_per_token,
                 )
                 meeting = {**meeting, "educationStudy": fitted}
             # Cap segment ids harder on later rounds.
@@ -862,7 +913,8 @@ def _prepare_artifact_prompt(
             source_payload["synthesis"] = (
                 {
                     "subjectOverview": str(
-                        (source_payload.get("synthesis") or {}).get("subjectOverview") or ""
+                        (source_payload.get("synthesis") or {}).get("subjectOverview")
+                        or ""
                     )[:40]
                 }
                 if isinstance(source_payload.get("synthesis"), dict)
@@ -872,7 +924,9 @@ def _prepare_artifact_prompt(
                 {
                     "meetingId": m.get("meetingId"),
                     "educationStudy": {
-                        "overview": str((m.get("educationStudy") or {}).get("overview") or "")[:40]
+                        "overview": str(
+                            (m.get("educationStudy") or {}).get("overview") or ""
+                        )[:40]
                     },
                     "allowedSegmentIds": (m.get("allowedSegmentIds") or [])[:8],
                 }
@@ -893,9 +947,7 @@ def _prepare_artifact_prompt(
     return prompt
 
 
-def _coerce_provider_object(
-    parsed: Any, artifact_type: str
-) -> dict[str, Any]:
+def _coerce_provider_object(parsed: Any, artifact_type: str) -> dict[str, Any]:
     """Normalize schema-less Gemini retries that return bare arrays."""
     if isinstance(parsed, dict):
         if artifact_type == ARTIFACT_MULTIPLE_CHOICE:
@@ -984,7 +1036,9 @@ def generate_artifact_content(
         parsed = _coerce_provider_object(parsed, artifact_type)
 
         if artifact_type == ARTIFACT_MIND_MAP:
-            return validate_mind_map(parsed, allowed_segments_by_meeting=allowed_segments_by_meeting)
+            return validate_mind_map(
+                parsed, allowed_segments_by_meeting=allowed_segments_by_meeting
+            )
         if artifact_type == ARTIFACT_FLASHCARDS:
             return validate_flashcards(
                 parsed,
@@ -1004,7 +1058,9 @@ def generate_artifact_content(
                 allowed_segments_by_meeting=allowed_segments_by_meeting,
             )
         if artifact_type == ARTIFACT_EXAM_BRIEF:
-            return validate_exam_brief(parsed, allowed_segments_by_meeting=allowed_segments_by_meeting)
+            return validate_exam_brief(
+                parsed, allowed_segments_by_meeting=allowed_segments_by_meeting
+            )
         raise StudyValidationError("UNKNOWN_ARTIFACT_TYPE", artifact_type)
     except StudyValidationError:
         raise

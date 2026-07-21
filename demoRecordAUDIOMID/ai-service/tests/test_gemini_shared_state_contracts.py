@@ -35,7 +35,9 @@ def _scope(alias: str = "primary") -> SharedStateScope:
 
 
 def test_shared_write_result_success_only_on_applied() -> None:
-    applied = SharedWriteResult(status=PendingOperationStatus.APPLIED, final_remaining_ms=1000)
+    applied = SharedWriteResult(
+        status=PendingOperationStatus.APPLIED, final_remaining_ms=1000
+    )
     superseded = SharedWriteResult(status=PendingOperationStatus.SUPERSEDED)
     assert applied.success is True
     assert superseded.success is False
@@ -46,7 +48,9 @@ def test_v2_key_builders() -> None:
     ns = "offline-test:ai-service"
     assert build_v2_cooldown_state_key(ns, gemini_scope).endswith(":cooldown:primary")
     assert build_v2_cooldown_revision_key(ns, gemini_scope).endswith(":revision")
-    assert ":model:primary:" in build_v2_model_state_key(ns, gemini_scope, "gemini-2.0-flash")
+    assert ":model:primary:" in build_v2_model_state_key(
+        ns, gemini_scope, "gemini-2.0-flash"
+    )
     assert build_v2_model_revision_key(ns, gemini_scope, "gemini-2.0-flash").endswith(
         ":revision"
     )

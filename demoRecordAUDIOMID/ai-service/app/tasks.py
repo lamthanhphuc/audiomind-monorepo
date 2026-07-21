@@ -415,7 +415,11 @@ def canonicalize_deferred_retry(meeting_id: int, attempt: int = 1) -> dict:
     max_retries=5,
 )
 def generate_subject_synthesis(self, synthesis_id: int) -> None:
-    from app.services.study import StudyTransientError, StudyValidationError, StudySourceNotReadyError
+    from app.services.study import (
+        StudyTransientError,
+        StudyValidationError,
+        StudySourceNotReadyError,
+    )
     from app.services.study.service import (
         _live_synthesis_query,
         _mark_terminal_failed,
@@ -457,7 +461,11 @@ def generate_subject_synthesis(self, synthesis_id: int) -> None:
     max_retries=5,
 )
 def generate_study_artifact(self, artifact_id: int) -> None:
-    from app.services.study import StudyTransientError, StudyValidationError, StudySourceNotReadyError
+    from app.services.study import (
+        StudyTransientError,
+        StudyValidationError,
+        StudySourceNotReadyError,
+    )
     from app.services.study.service import (
         _live_artifact_query,
         _mark_terminal_failed,

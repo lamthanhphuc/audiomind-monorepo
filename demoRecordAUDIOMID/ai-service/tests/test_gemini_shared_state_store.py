@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import pytest
 
-from app.services.gemini_key_cooldown_store import GeminiKeyScope, key_fingerprint
+from app.services.gemini_key_cooldown_store import key_fingerprint
 from app.services.gemini_shared_state_contracts import (
     PendingOperationStatus,
     SharedStateScope,
@@ -31,7 +30,9 @@ def _scope(alias: str = "primary") -> SharedStateScope:
     )
 
 
-def _store(*, aliases: frozenset[str] | None = None) -> InMemoryV2GeminiKeyCooldownStore:
+def _store(
+    *, aliases: frozenset[str] | None = None
+) -> InMemoryV2GeminiKeyCooldownStore:
     clock = FakeWallClock()
     return InMemoryV2GeminiKeyCooldownStore(
         namespace="offline-test:ai-service",

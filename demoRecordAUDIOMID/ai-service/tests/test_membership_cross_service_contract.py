@@ -18,7 +18,9 @@ import pytest
 from app.services.study import StudyTransientError
 from app.services.study.membership import fetch_subject_meeting_ids
 
-FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "meeting_membership_page.json"
+FIXTURE_PATH = (
+    Path(__file__).resolve().parent / "fixtures" / "meeting_membership_page.json"
+)
 SUBJECT_ID = 42
 OWNER_USER_ID = 7
 TOKEN = "contract-internal-token"
@@ -32,7 +34,14 @@ def _load_pages() -> list[dict]:
     assert sum(len(page["items"]) for page in pages) == 250
     for page in pages:
         for item in page["items"]:
-            assert set(item) >= {"id", "title", "status", "language", "createdAt", "subjectId"}
+            assert set(item) >= {
+                "id",
+                "title",
+                "status",
+                "language",
+                "createdAt",
+                "subjectId",
+            }
     return pages
 
 
@@ -72,9 +81,7 @@ def test_fetch_subject_meeting_ids_paginates_contract_fixture(monkeypatch):
             "meeting_service_timeout_seconds": 5.0,
         },
     )()
-    monkeypatch.setattr(
-        "app.services.study.membership.get_settings", lambda: settings
-    )
+    monkeypatch.setattr("app.services.study.membership.get_settings", lambda: settings)
 
     transport = httpx.MockTransport(handler)
     real_client = httpx.Client
@@ -113,9 +120,7 @@ def test_wrong_token_returns_transient_membership_unavailable(monkeypatch):
             "meeting_service_timeout_seconds": 5.0,
         },
     )()
-    monkeypatch.setattr(
-        "app.services.study.membership.get_settings", lambda: settings
-    )
+    monkeypatch.setattr("app.services.study.membership.get_settings", lambda: settings)
 
     transport = httpx.MockTransport(handler)
     real_client = httpx.Client

@@ -849,9 +849,7 @@ class TranscriptPersistenceRepository:
             (scope for scope in scopes if scope.get("scopeKind") == "legacy"),
             None,
         )
-        v2_scopes = [
-            scope for scope in scopes if scope.get("scopeKind") == "v2"
-        ]
+        v2_scopes = [scope for scope in scopes if scope.get("scopeKind") == "v2"]
         v2_scopes.sort(
             key=lambda scope: (
                 int(scope.get("recordingSessionId") or 0),

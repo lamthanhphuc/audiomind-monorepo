@@ -41,9 +41,7 @@ def test_python_merge_matches_lua_semantics_for_required_cases(
     existing = CooldownMetadata(existing_reason, "hard", now_ms + 900_000)
     incoming = CooldownMetadata(incoming_reason, "hard", now_ms + 90_000)
     python_result = merge_cooldown_states(existing, incoming, now_ms=now_ms)
-    lua_result = merge_cooldown_states_lua_semantics(
-        existing, incoming, now_ms=now_ms
-    )
+    lua_result = merge_cooldown_states_lua_semantics(existing, incoming, now_ms=now_ms)
     assert python_result == lua_result
 
 
@@ -57,17 +55,13 @@ def test_python_and_lua_semantics_agree_for_all_reason_type_pairs(
     existing = CooldownMetadata("cooldown", "soft", now_ms + 500_000)
     incoming = CooldownMetadata(reason, cooldown_type, now_ms + 100_000)
     python_result = merge_cooldown_states(existing, incoming, now_ms=now_ms)
-    lua_result = merge_cooldown_states_lua_semantics(
-        existing, incoming, now_ms=now_ms
-    )
+    lua_result = merge_cooldown_states_lua_semantics(existing, incoming, now_ms=now_ms)
     assert python_result == lua_result
 
 
 def test_billing_beats_terminal_unknown_on_equal_hard_score() -> None:
     now_ms = 1_700_000_000_000
-    existing = CooldownMetadata(
-        "billing_credits_depleted", "hard", now_ms + 900_000
-    )
+    existing = CooldownMetadata("billing_credits_depleted", "hard", now_ms + 900_000)
     incoming = CooldownMetadata("terminal_unknown", "hard", now_ms + 900_000)
     merged = merge_cooldown_states(existing, incoming, now_ms=now_ms)
     assert merged.reason == "billing_credits_depleted"
@@ -86,9 +80,7 @@ def test_rate_limit_beats_cooldown_on_soft_transient_tier() -> None:
 def test_hard_terminal_wins_over_soft_rate_limit_even_with_shorter_ttl() -> None:
     now_ms = 1_700_000_000_000
     existing = CooldownMetadata("rate_limit", "soft", now_ms + 900_000)
-    incoming = CooldownMetadata(
-        "billing_credits_depleted", "hard", now_ms + 90_000
-    )
+    incoming = CooldownMetadata("billing_credits_depleted", "hard", now_ms + 90_000)
     merged = merge_cooldown_states(existing, incoming, now_ms=now_ms)
     assert merged.reason == "billing_credits_depleted"
     assert merged.cooldown_type == "hard"

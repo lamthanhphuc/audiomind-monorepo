@@ -19,11 +19,17 @@ def _add_recovery_columns(table: str) -> None:
     op.add_column(table, sa.Column("quota_confirmed_at", sa.DateTime(), nullable=True))
     op.add_column(
         table,
-        sa.Column("dispatch_attempt_count", sa.Integer(), nullable=False, server_default="0"),
+        sa.Column(
+            "dispatch_attempt_count", sa.Integer(), nullable=False, server_default="0"
+        ),
     )
     op.add_column(table, sa.Column("last_dispatch_error", sa.Text(), nullable=True))
-    op.add_column(table, sa.Column("last_dispatch_error_at", sa.DateTime(), nullable=True))
-    op.add_column(table, sa.Column("next_dispatch_retry_at", sa.DateTime(), nullable=True))
+    op.add_column(
+        table, sa.Column("last_dispatch_error_at", sa.DateTime(), nullable=True)
+    )
+    op.add_column(
+        table, sa.Column("next_dispatch_retry_at", sa.DateTime(), nullable=True)
+    )
 
 
 def _drop_recovery_columns(table: str) -> None:
@@ -55,8 +61,12 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index("ix_study_artifact_next_dispatch_retry_at", table_name="study_artifact")
+    op.drop_index(
+        "ix_study_artifact_next_dispatch_retry_at", table_name="study_artifact"
+    )
     op.drop_index("ix_study_artifact_quota_confirmed_at", table_name="study_artifact")
-    op.drop_index("ix_subject_synthesis_quota_confirmed_at", table_name="subject_synthesis")
+    op.drop_index(
+        "ix_subject_synthesis_quota_confirmed_at", table_name="subject_synthesis"
+    )
     _drop_recovery_columns("study_artifact")
     _drop_recovery_columns("subject_synthesis")

@@ -193,7 +193,9 @@ def deny_real_network(request, monkeypatch):
         )
 
     def _deny_create_connection(address, *args, **kwargs):
-        host = str(address[0] if isinstance(address, tuple) else address).strip().lower()
+        host = (
+            str(address[0] if isinstance(address, tuple) else address).strip().lower()
+        )
         if _host_allowed(host):
             return original_create_connection(address, *args, **kwargs)
         raise AssertionError(
@@ -201,7 +203,9 @@ def deny_real_network(request, monkeypatch):
         )
 
     def _deny_socket_connect(self, address):
-        host = str(address[0] if isinstance(address, tuple) else address).strip().lower()
+        host = (
+            str(address[0] if isinstance(address, tuple) else address).strip().lower()
+        )
         if _host_allowed(host):
             return original_socket_connect(self, address)
         raise AssertionError(

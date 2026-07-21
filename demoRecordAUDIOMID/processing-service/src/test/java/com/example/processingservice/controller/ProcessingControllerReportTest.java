@@ -217,6 +217,7 @@ class ProcessingControllerReportTest {
                 null,
                 null,
                 null,
+                null,
                 "trace-rerun",
                 "Bearer token"
         )).thenReturn(payload);
@@ -249,6 +250,7 @@ class ProcessingControllerReportTest {
                 20L,
                 "force",
                 "manual_reanalyze",
+                null,
                 null,
                 null,
                 null,

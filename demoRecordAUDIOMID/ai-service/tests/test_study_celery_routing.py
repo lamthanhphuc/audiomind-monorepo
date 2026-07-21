@@ -43,7 +43,13 @@ def test_process_artifact_job_lifecycle_queued_to_completed(monkeypatch):
         status=STATUS_QUEUED,
         source_hash="hash",
         source_selection_mode="EXPLICIT",
-        options_json={"language": "vi", "flashcardCount": 5, "multipleChoiceCount": 5, "essayQuestionCount": 1, "difficulty": "MIXED"},
+        options_json={
+            "language": "vi",
+            "flashcardCount": 5,
+            "multipleChoiceCount": 5,
+            "essayQuestionCount": 1,
+            "difficulty": "MIXED",
+        },
         sources=[SimpleNamespace(meeting_id=101)],
         content_json=None,
         error_code=None,
@@ -52,7 +58,9 @@ def test_process_artifact_job_lifecycle_queued_to_completed(monkeypatch):
         updated_at=None,
     )
     db = MagicMock()
-    monkeypatch.setattr(study_service, "claim_processing_artifact", lambda *_a, **_k: row)
+    monkeypatch.setattr(
+        study_service, "claim_processing_artifact", lambda *_a, **_k: row
+    )
     monkeypatch.setattr(
         study_service,
         "fetch_subject_meeting_ids",
@@ -67,7 +75,10 @@ def test_process_artifact_job_lifecycle_queued_to_completed(monkeypatch):
                 {
                     "meetingId": 101,
                     "ready": True,
-                    "educationStudy": {"overview": "o", "sections": [{"title": "t", "summary": "s"}]},
+                    "educationStudy": {
+                        "overview": "o",
+                        "sections": [{"title": "t", "summary": "s"}],
+                    },
                     "allowedSegmentIds": ["seg-1"],
                 }
             ],
@@ -98,7 +109,13 @@ def test_process_artifact_job_validation_does_not_raise_retryable(monkeypatch):
         status=STATUS_QUEUED,
         source_hash="hash",
         source_selection_mode="EXPLICIT",
-        options_json={"language": "vi", "flashcardCount": 5, "multipleChoiceCount": 5, "essayQuestionCount": 1, "difficulty": "MIXED"},
+        options_json={
+            "language": "vi",
+            "flashcardCount": 5,
+            "multipleChoiceCount": 5,
+            "essayQuestionCount": 1,
+            "difficulty": "MIXED",
+        },
         sources=[SimpleNamespace(meeting_id=101)],
         content_json=None,
         error_code=None,
@@ -107,7 +124,9 @@ def test_process_artifact_job_validation_does_not_raise_retryable(monkeypatch):
         updated_at=None,
     )
     db = MagicMock()
-    monkeypatch.setattr(study_service, "claim_processing_artifact", lambda *_a, **_k: row)
+    monkeypatch.setattr(
+        study_service, "claim_processing_artifact", lambda *_a, **_k: row
+    )
     monkeypatch.setattr(
         study_service,
         "fetch_subject_meeting_ids",
@@ -116,7 +135,18 @@ def test_process_artifact_job_validation_does_not_raise_retryable(monkeypatch):
     monkeypatch.setattr(
         study_service,
         "compute_current_source_hash",
-        lambda *a, **k: ("hash", [{"meetingId": 101, "ready": True, "educationStudy": {}, "allowedSegmentIds": []}], []),
+        lambda *a, **k: (
+            "hash",
+            [
+                {
+                    "meetingId": 101,
+                    "ready": True,
+                    "educationStudy": {},
+                    "allowedSegmentIds": [],
+                }
+            ],
+            [],
+        ),
     )
 
     def boom(*_a, **_k):
@@ -140,7 +170,13 @@ def test_process_artifact_job_transient_raises(monkeypatch):
         status=STATUS_QUEUED,
         source_hash="hash",
         source_selection_mode="EXPLICIT",
-        options_json={"language": "vi", "flashcardCount": 5, "multipleChoiceCount": 5, "essayQuestionCount": 1, "difficulty": "MIXED"},
+        options_json={
+            "language": "vi",
+            "flashcardCount": 5,
+            "multipleChoiceCount": 5,
+            "essayQuestionCount": 1,
+            "difficulty": "MIXED",
+        },
         sources=[SimpleNamespace(meeting_id=101)],
         content_json=None,
         error_code=None,
@@ -151,11 +187,24 @@ def test_process_artifact_job_transient_raises(monkeypatch):
         last_heartbeat_at="beat",
     )
     db = MagicMock()
-    monkeypatch.setattr(study_service, "claim_processing_artifact", lambda *_a, **_k: row)
+    monkeypatch.setattr(
+        study_service, "claim_processing_artifact", lambda *_a, **_k: row
+    )
     monkeypatch.setattr(
         study_service,
         "compute_current_source_hash",
-        lambda *a, **k: ("hash", [{"meetingId": 101, "ready": True, "educationStudy": {}, "allowedSegmentIds": []}], []),
+        lambda *a, **k: (
+            "hash",
+            [
+                {
+                    "meetingId": 101,
+                    "ready": True,
+                    "educationStudy": {},
+                    "allowedSegmentIds": [],
+                }
+            ],
+            [],
+        ),
     )
     monkeypatch.setattr(
         study_service,
@@ -180,7 +229,9 @@ def test_worker_skips_when_claim_fails(monkeypatch):
 
     existing = SimpleNamespace(id=9, status=STATUS_COMPLETED)
     db = MagicMock()
-    monkeypatch.setattr(study_service, "claim_processing_artifact", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        study_service, "claim_processing_artifact", lambda *_a, **_k: None
+    )
     query = MagicMock()
     db.query.return_value = query
     query.filter.return_value = query
@@ -216,7 +267,9 @@ def test_generate_study_artifact_task_no_retry_on_validation(monkeypatch):
         # process_artifact_job swallows validation; simulate by returning
         return None
 
-    monkeypatch.setattr("app.services.study.service.process_artifact_job", fail_validation)
+    monkeypatch.setattr(
+        "app.services.study.service.process_artifact_job", fail_validation
+    )
     monkeypatch.setattr("app.tasks.SessionLocal", lambda: MagicMock(close=lambda: None))
     with patch.object(task, "retry") as retry:
         task.run(56)

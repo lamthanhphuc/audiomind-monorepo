@@ -1156,7 +1156,9 @@ def test_gemini_analyzer_passes_schema_and_output_budget(monkeypatch):
     assert len(fake_client.calls) == 1
     payload = fake_client.calls[0][1]["json"]
     generation_config = payload["generationConfig"]
-    assert generation_config["maxOutputTokens"] == 1024  # 1536 ceiling minus 512 headroom
+    assert (
+        generation_config["maxOutputTokens"] == 1024
+    )  # 1536 ceiling minus 512 headroom
     assert generation_config["responseMimeType"] == "application/json"
     assert generation_config["thinkingConfig"]["thinkingLevel"] == "low"
     assert "responseSchema" in generation_config
@@ -2284,7 +2286,9 @@ def test_max_tokens_at_configured_ceiling_retries_within_ceiling_only(monkeypatc
                     "candidates": [
                         {
                             "finishReason": "MAX_TOKENS",
-                            "content": {"parts": [{"text": '{"summary":"still truncated"}'}]},
+                            "content": {
+                                "parts": [{"text": '{"summary":"still truncated"}'}]
+                            },
                         }
                     ],
                     "usageMetadata": {"candidatesTokenCount": 8192},

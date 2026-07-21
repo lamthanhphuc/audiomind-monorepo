@@ -26,7 +26,6 @@ from app.services.study.evidence import estimate_tokens
 from app.services.study.membership import hash_membership
 from app.services.study.synthesis import run_hierarchical_synthesis
 
-
 READY = [
     {
         "meetingId": 101,
@@ -34,7 +33,10 @@ READY = [
         "analysisRunId": 11,
         "analysisVersion": "education-study-v1",
         "ready": True,
-        "educationStudy": {"overview": "OSI", "sections": [{"title": "L1", "summary": "bits"}]},
+        "educationStudy": {
+            "overview": "OSI",
+            "sections": [{"title": "L1", "summary": "bits"}],
+        },
         "allowedSegmentIds": ["seg-1"],
     },
     {
@@ -43,7 +45,10 @@ READY = [
         "analysisRunId": 12,
         "analysisVersion": "education-study-v1",
         "ready": True,
-        "educationStudy": {"overview": "TCP", "sections": [{"title": "HS", "summary": "syn"}]},
+        "educationStudy": {
+            "overview": "TCP",
+            "sections": [{"title": "HS", "summary": "syn"}],
+        },
         "allowedSegmentIds": ["seg-2"],
     },
     {
@@ -52,7 +57,10 @@ READY = [
         "analysisRunId": 13,
         "analysisVersion": "education-study-v1",
         "ready": True,
-        "educationStudy": {"overview": "UDP", "sections": [{"title": "DG", "summary": "datagram"}]},
+        "educationStudy": {
+            "overview": "UDP",
+            "sections": [{"title": "DG", "summary": "datagram"}],
+        },
         "allowedSegmentIds": ["seg-3"],
     },
 ]
@@ -61,19 +69,35 @@ READY = [
 def _patch_sources(monkeypatch, sources=None):
     src = sources if sources is not None else READY
 
-    def _compute(db, *, owner_user_id, subject_id, source_selection_mode, meeting_ids, require_ready=True):
+    def _compute(
+        db,
+        *,
+        owner_user_id,
+        subject_id,
+        source_selection_mode,
+        meeting_ids,
+        require_ready=True,
+    ):
         wanted = set(int(m) for m in meeting_ids) if meeting_ids is not None else None
         ready = []
         for s in src:
             mid = int(s["meetingId"])
             if wanted is not None and mid not in wanted and wanted:
                 continue
-            if source_selection_mode == MODE_ALL_READY and meeting_ids is not None and len(meeting_ids) == 0:
+            if (
+                source_selection_mode == MODE_ALL_READY
+                and meeting_ids is not None
+                and len(meeting_ids) == 0
+            ):
                 continue
             if wanted is not None and wanted and mid not in wanted:
                 continue
             ready.append(s)
-        if source_selection_mode == MODE_ALL_READY and meeting_ids is not None and len(meeting_ids) == 0:
+        if (
+            source_selection_mode == MODE_ALL_READY
+            and meeting_ids is not None
+            and len(meeting_ids) == 0
+        ):
             ready = []
         elif wanted is not None:
             ready = [s for s in src if int(s["meetingId"]) in wanted]
@@ -134,7 +158,9 @@ def _ok_flashcards():
     }
 
 
-def _prepare_flashcards(db, monkeypatch, *, meeting_ids=None, mode=MODE_EXPLICIT) -> int:
+def _prepare_flashcards(
+    db, monkeypatch, *, meeting_ids=None, mode=MODE_EXPLICIT
+) -> int:
     _patch_sources(monkeypatch)
     ids = meeting_ids if meeting_ids is not None else [101, 102]
     prep = study_service.prepare_artifacts(
@@ -158,7 +184,9 @@ def _prepare_flashcards(db, monkeypatch, *, meeting_ids=None, mode=MODE_EXPLICIT
 
 def test_claim_increments_dispatch_attempt_count(db_session, monkeypatch):
     artifact_id = _prepare_flashcards(db_session, monkeypatch)
-    row = study_service._live_artifact_query(db_session).filter_by(id=artifact_id).first()
+    row = (
+        study_service._live_artifact_query(db_session).filter_by(id=artifact_id).first()
+    )
     assert int(row.dispatch_attempt_count or 0) == 0
 
     monkeypatch.setattr(
@@ -179,7 +207,9 @@ def test_claim_increments_dispatch_attempt_count(db_session, monkeypatch):
 
 def test_reconcile_increments_dispatch_attempt_again(db_session, monkeypatch):
     artifact_id = _prepare_flashcards(db_session, monkeypatch)
-    row = study_service._live_artifact_query(db_session).filter_by(id=artifact_id).first()
+    row = (
+        study_service._live_artifact_query(db_session).filter_by(id=artifact_id).first()
+    )
 
     class FakeAsync:
         def apply_async(self, args=None, task_id=None):
@@ -210,7 +240,9 @@ def test_max_attempts_marks_dispatch_exhausted(db_session, monkeypatch):
     monkeypatch.setattr(settings, "study_dispatch_retry_backoff_seconds", 0)
 
     artifact_id = _prepare_flashcards(db_session, monkeypatch)
-    row = study_service._live_artifact_query(db_session).filter_by(id=artifact_id).first()
+    row = (
+        study_service._live_artifact_query(db_session).filter_by(id=artifact_id).first()
+    )
 
     def boom(*_a, **_k):
         raise RuntimeError("broker down")
@@ -259,7 +291,9 @@ def test_all_ready_membership_add_guards_stale_no_gemini(db_session, monkeypatch
     artifact_id = _prepare_flashcards(
         db_session, monkeypatch, meeting_ids=[101, 102], mode=MODE_ALL_READY
     )
-    row = study_service._live_artifact_query(db_session).filter_by(id=artifact_id).first()
+    row = (
+        study_service._live_artifact_query(db_session).filter_by(id=artifact_id).first()
+    )
     assert row.subject_membership_hash == hash_membership([101, 102])
 
     provider_calls: list[str] = []
@@ -286,9 +320,13 @@ def test_explicit_new_meeting_outside_selection_not_stale(db_session, monkeypatc
     artifact_id = _prepare_flashcards(
         db_session, monkeypatch, meeting_ids=[101, 102], mode=MODE_EXPLICIT
     )
-    row = study_service._live_artifact_query(db_session).filter_by(id=artifact_id).first()
+    row = (
+        study_service._live_artifact_query(db_session).filter_by(id=artifact_id).first()
+    )
 
-    monkeypatch.setattr(study_service, "generate_artifact_content", lambda *_a, **_k: _ok_flashcards())
+    monkeypatch.setattr(
+        study_service, "generate_artifact_content", lambda *_a, **_k: _ok_flashcards()
+    )
     # Membership grew, but EXPLICIT selection unchanged → not stale.
     monkeypatch.setattr(
         study_service,
@@ -306,7 +344,9 @@ def test_explicit_meeting_left_subject_is_stale(db_session, monkeypatch):
     artifact_id = _prepare_flashcards(
         db_session, monkeypatch, meeting_ids=[101, 102], mode=MODE_EXPLICIT
     )
-    row = study_service._live_artifact_query(db_session).filter_by(id=artifact_id).first()
+    row = (
+        study_service._live_artifact_query(db_session).filter_by(id=artifact_id).first()
+    )
 
     provider_calls: list[str] = []
 
@@ -330,7 +370,9 @@ def test_explicit_meeting_left_subject_is_stale(db_session, monkeypatch):
 
 def test_type_error_marks_failed_no_retry(db_session, monkeypatch):
     artifact_id = _prepare_flashcards(db_session, monkeypatch)
-    row = study_service._live_artifact_query(db_session).filter_by(id=artifact_id).first()
+    row = (
+        study_service._live_artifact_query(db_session).filter_by(id=artifact_id).first()
+    )
 
     def boom(*_a, **_k):
         raise TypeError("unexpected NoneType")
@@ -363,7 +405,9 @@ def test_provider_timeout_and_429_requeue(db_session, monkeypatch):
     monkeypatch.setattr(study_service, "generate_artifact_content", timeout)
     with pytest.raises(StudyTransientError):
         study_service.process_artifact_job(db_session, artifact_id)
-    row = study_service._live_artifact_query(db_session).filter_by(id=artifact_id).first()
+    row = (
+        study_service._live_artifact_query(db_session).filter_by(id=artifact_id).first()
+    )
     assert row.status == STATUS_QUEUED
     assert row.error_code == "TRANSIENT_AI_ERROR"
 
@@ -379,7 +423,9 @@ def test_provider_timeout_and_429_requeue(db_session, monkeypatch):
     monkeypatch.setattr(study_service, "generate_artifact_content", rate_limited)
     with pytest.raises(StudyTransientError):
         study_service.process_artifact_job(db_session, artifact_id)
-    row = study_service._live_artifact_query(db_session).filter_by(id=artifact_id).first()
+    row = (
+        study_service._live_artifact_query(db_session).filter_by(id=artifact_id).first()
+    )
     assert row.status == STATUS_QUEUED
     assert "429" in (row.error_message or "") or row.error_code == "TRANSIENT_AI_ERROR"
 
@@ -448,7 +494,9 @@ def test_oversized_reducer_all_prompts_under_limit(monkeypatch):
             }
         )
 
-    result = run_hierarchical_synthesis(many_sources, language="vi", call_gemini=call_gemini)
+    result = run_hierarchical_synthesis(
+        many_sources, language="vi", call_gemini=call_gemini
+    )
     assert result["subjectOverview"]
     assert prompts
     for prompt in prompts:
@@ -457,7 +505,9 @@ def test_oversized_reducer_all_prompts_under_limit(monkeypatch):
 
 def test_confirm_quota_idempotent(db_session, monkeypatch):
     artifact_id = _prepare_flashcards(db_session, monkeypatch)
-    row = study_service._live_artifact_query(db_session).filter_by(id=artifact_id).first()
+    row = (
+        study_service._live_artifact_query(db_session).filter_by(id=artifact_id).first()
+    )
     first = row.quota_confirmed_at
     assert first is not None
 

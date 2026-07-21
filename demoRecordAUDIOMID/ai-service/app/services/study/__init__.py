@@ -82,7 +82,9 @@ class StudyTransientError(Exception):
 
 
 def canonical_json_dumps(payload: Any) -> str:
-    return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
 
 
 def sha256_hex(payload: Any) -> str:

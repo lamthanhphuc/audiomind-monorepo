@@ -144,9 +144,7 @@ class FakeRedis:
             cooldown_type=incoming.cooldown_type,
             expires_at_ms=now_ms + incoming_ttl_ms,
         )
-        merged = merge_cooldown_states_lua_semantics(
-            current, incoming, now_ms=now_ms
-        )
+        merged = merge_cooldown_states_lua_semantics(current, incoming, now_ms=now_ms)
         payload = encode_cooldown_payload(merged)
         ttl_ms = max(1, int(merged.expires_at_ms) - now_ms)
         self.psetex(key, ttl_ms, payload)
@@ -253,7 +251,9 @@ def _scope(alias: str, secret: str) -> GeminiKeyScope:
         ),
     ],
 )
-def test_merge_cooldown_states_priority(existing, incoming, expected_reason, expected_type):
+def test_merge_cooldown_states_priority(
+    existing, incoming, expected_reason, expected_type
+):
     now_ms = 1_700_000_000_000
     merged = merge_cooldown_states(existing, incoming, now_ms=now_ms)
     assert merged.reason == expected_reason
@@ -269,7 +269,11 @@ def test_inmemory_soft_to_hard_equal_ttl():
     )
     scope = _scope("primary", "fake-primary-key")
     store.apply_cooldown(
-        scope, seconds=900, reason="rate_limit", cooldown_type="soft", now_ms=clock.now_ms()
+        scope,
+        seconds=900,
+        reason="rate_limit",
+        cooldown_type="soft",
+        now_ms=clock.now_ms(),
     )
     store.apply_cooldown(
         scope,
@@ -294,7 +298,11 @@ def test_redis_soft_to_hard_shorter_incoming_ttl():
     )
     scope = _scope("backup1", "fake-backup-key")
     store.apply_cooldown(
-        scope, seconds=900, reason="rate_limit", cooldown_type="soft", now_ms=clock.now_ms()
+        scope,
+        seconds=900,
+        reason="rate_limit",
+        cooldown_type="soft",
+        now_ms=clock.now_ms(),
     )
     store.apply_cooldown(
         scope,
@@ -322,7 +330,11 @@ def test_redis_concurrent_soft_and_hard_merge():
     def soft_worker() -> None:
         barrier.wait()
         store.apply_cooldown(
-            scope, seconds=900, reason="rate_limit", cooldown_type="soft", now_ms=clock.now_ms()
+            scope,
+            seconds=900,
+            reason="rate_limit",
+            cooldown_type="soft",
+            now_ms=clock.now_ms(),
         )
 
     def hard_worker() -> None:
@@ -371,7 +383,11 @@ def test_environment_namespace_isolation():
     )
     scope = _scope("primary", "fake-primary-key")
     store_a.apply_cooldown(
-        scope, seconds=900, reason="rate_limit", cooldown_type="soft", now_ms=clock.now_ms()
+        scope,
+        seconds=900,
+        reason="rate_limit",
+        cooldown_type="soft",
+        now_ms=clock.now_ms(),
     )
     assert store_b.get_cooldown_state(scope, now=0.0, now_ms=clock.now_ms()) is None
 
@@ -385,7 +401,11 @@ def test_redis_keys_do_not_contain_raw_secret():
     secret = "fake-primary-key"
     scope = _scope("primary", secret)
     store.apply_cooldown(
-        scope, seconds=30, reason="rate_limit", cooldown_type="soft", now_ms=clock.now_ms()
+        scope,
+        seconds=30,
+        reason="rate_limit",
+        cooldown_type="soft",
+        now_ms=clock.now_ms(),
     )
     rendered = json.dumps({k: v[1] for k, v in redis._values.items()})
     assert secret not in rendered
@@ -561,9 +581,7 @@ def test_redis_outage_write_keeps_local_manager_state():
         multi_key_enabled=False,
         cooldown_store=store,
     )
-    manager.hard_cooldown_key(
-        "primary", seconds=900, reason="billing_credits_depleted"
-    )
+    manager.hard_cooldown_key("primary", seconds=900, reason="billing_credits_depleted")
     selection = manager.select_key(model="gemini-2.5-flash")
     assert selection.available is False
     assert selection.unavailable_reasons.get("primary") == "billing_credits_depleted"
@@ -796,9 +814,7 @@ def test_redis_write_failure_logs_single_warning(monkeypatch):
 
     store = RedisGeminiKeyCooldownStore(BrokenRedis(), namespace="test:ai-service")
     scope = _scope("primary", "fake-primary-key")
-    store.apply_cooldown(
-        scope, seconds=30, reason="rate_limit", cooldown_type="soft"
-    )
+    store.apply_cooldown(scope, seconds=30, reason="rate_limit", cooldown_type="soft")
     assert len(warnings) == 1
     assert warnings[0][1] == "WRITE"
 
@@ -1010,9 +1026,7 @@ def test_redis_merge_log_uses_actual_merged_hard_state(monkeypatch):
     )
     debug_calls.clear()
 
-    store.apply_cooldown(
-        scope, seconds=30, reason="rate_limit", cooldown_type="soft"
-    )
+    store.apply_cooldown(scope, seconds=30, reason="rate_limit", cooldown_type="soft")
 
     assert len(debug_calls) == 1
     assert debug_calls[0][4] == "billing_credits_depleted"

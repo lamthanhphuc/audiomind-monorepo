@@ -96,7 +96,9 @@ def test_km_16_delayed_applied_does_not_extend_protected_deadline() -> None:
             final_remaining_ms=900_000,
             merged_from_shared_stronger=False,
         ),
-        timing=RedisCallTiming(started_at_monotonic=start, completed_at_monotonic=1500.0),
+        timing=RedisCallTiming(
+            started_at_monotonic=start, completed_at_monotonic=1500.0
+        ),
     )
     anchored = apply_applied_publish_locked(
         protected_deadline_monotonic=protected,
@@ -170,7 +172,6 @@ def test_km_15_intent_change_during_phase_b_replans() -> None:
 
 def test_km_17_superseded_retries_preserve_root_and_attempts() -> None:
     clock = FakeClock()
-    store = _v2_store(clock)
     scope = _scope()
     root_id = "root-op-abc"
     pending = PendingSharedOperation(
@@ -200,7 +201,9 @@ def test_km_17_superseded_retries_preserve_root_and_attempts() -> None:
         operation_id="attempt-1",
         status=PendingOperationStatus.SUPERSEDED,
         write_result=SharedWriteResult(status=PendingOperationStatus.SUPERSEDED),
-        timing=RedisCallTiming(started_at_monotonic=clock(), completed_at_monotonic=clock()),
+        timing=RedisCallTiming(
+            started_at_monotonic=clock(), completed_at_monotonic=clock()
+        ),
     )
     outcome, updated_pending, convergence = apply_reconcile_business_locked(
         plan,
@@ -309,7 +312,9 @@ def test_perf_06_one_superseded_triggers_at_most_one_refresh_read() -> None:
         operation_id="attempt-1",
         status=PendingOperationStatus.SUPERSEDED,
         write_result=SharedWriteResult(status=PendingOperationStatus.SUPERSEDED),
-        timing=RedisCallTiming(started_at_monotonic=clock(), completed_at_monotonic=clock()),
+        timing=RedisCallTiming(
+            started_at_monotonic=clock(), completed_at_monotonic=clock()
+        ),
     )
 
     handle_operation_result(

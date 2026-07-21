@@ -30,7 +30,6 @@ from app.services.study.artifacts import generate_artifact_content
 from app.services.study.evidence import estimate_tokens
 from app.services.study.exceptions import classify_provider_exception
 
-
 READY = [
     {
         "meetingId": 101,
@@ -38,7 +37,10 @@ READY = [
         "analysisRunId": 11,
         "analysisVersion": "education-study-v1",
         "ready": True,
-        "educationStudy": {"overview": "OSI", "sections": [{"title": "L1", "summary": "bits"}]},
+        "educationStudy": {
+            "overview": "OSI",
+            "sections": [{"title": "L1", "summary": "bits"}],
+        },
         "allowedSegmentIds": ["seg-1"],
     },
     {
@@ -47,7 +49,10 @@ READY = [
         "analysisRunId": 12,
         "analysisVersion": "education-study-v1",
         "ready": True,
-        "educationStudy": {"overview": "TCP", "sections": [{"title": "HS", "summary": "syn"}]},
+        "educationStudy": {
+            "overview": "TCP",
+            "sections": [{"title": "HS", "summary": "syn"}],
+        },
         "allowedSegmentIds": ["seg-2"],
     },
 ]
@@ -56,7 +61,15 @@ READY = [
 def _patch_sources(monkeypatch, sources=None):
     src = sources if sources is not None else READY
 
-    def _compute(db, *, owner_user_id, subject_id, source_selection_mode, meeting_ids, require_ready=True):
+    def _compute(
+        db,
+        *,
+        owner_user_id,
+        subject_id,
+        source_selection_mode,
+        meeting_ids,
+        require_ready=True,
+    ):
         wanted = set(int(m) for m in meeting_ids) if meeting_ids is not None else None
         ready = [s for s in src if wanted is None or int(s["meetingId"]) in wanted]
         rows = [
@@ -253,7 +266,9 @@ def test_classify_provider_exception_preserves_programming_and_validation():
 
 def test_call_gemini_type_error_marks_programming_error(db_session, monkeypatch):
     artifact_id = _prepare_flashcards(db_session, monkeypatch)
-    row = study_service._live_artifact_query(db_session).filter_by(id=artifact_id).first()
+    row = (
+        study_service._live_artifact_query(db_session).filter_by(id=artifact_id).first()
+    )
 
     def boom_caller():
         def call_gemini(**_kwargs):
@@ -292,10 +307,14 @@ def test_call_gemini_timeout_requeues(db_session, monkeypatch):
 
     with pytest.raises(StudyTransientError) as raised:
         study_service.process_artifact_job(db_session, artifact_id)
-    assert "timed out" in str(raised.value).lower() or isinstance(raised.value, StudyTransientError)
+    assert "timed out" in str(raised.value).lower() or isinstance(
+        raised.value, StudyTransientError
+    )
 
     db_session.expire_all()
-    row = study_service._live_artifact_query(db_session).filter_by(id=artifact_id).first()
+    row = (
+        study_service._live_artifact_query(db_session).filter_by(id=artifact_id).first()
+    )
     assert row is not None
     assert row.status == STATUS_QUEUED, (row.status, row.error_code, row.error_message)
     assert row.error_code == "TRANSIENT_AI_ERROR"
@@ -311,7 +330,9 @@ def test_oversized_education_study_prompt_under_limit_or_rejected(monkeypatch):
 
     def call_gemini(*, prompt: str, system_prompt: str, response_schema=None) -> str:
         provider_calls.append(prompt)
-        assert estimate_tokens(system_prompt + "\n\n" + prompt, chars_per_token=4) <= limit
+        assert (
+            estimate_tokens(system_prompt + "\n\n" + prompt, chars_per_token=4) <= limit
+        )
         return json.dumps(_ok_flashcards())
 
     sources = _oversized_sources(meetings=3, segments=200)
@@ -357,7 +378,9 @@ def test_all_artifact_types_prompts_under_limit_when_compaction_succeeds(monkeyp
     for artifact_type in ALL_ARTIFACT_TYPES:
         captured: list[tuple[str, str]] = []
 
-        def call_gemini(*, prompt: str, system_prompt: str, response_schema=None, _t=artifact_type):
+        def call_gemini(
+            *, prompt: str, system_prompt: str, response_schema=None, _t=artifact_type
+        ):
             captured.append((system_prompt, prompt))
             return _fake_artifact_json(_t)
 
@@ -384,7 +407,9 @@ def test_all_artifact_types_prompts_under_limit_when_compaction_succeeds(monkeyp
             call_gemini=call_gemini,
         )
         assert result
-        assert captured, f"{artifact_type} should call provider when compaction succeeds"
+        assert (
+            captured
+        ), f"{artifact_type} should call provider when compaction succeeds"
         for system_prompt, user_prompt in captured:
             combined = system_prompt + "\n\n" + user_prompt
             assert estimate_tokens(combined, chars_per_token=4) <= limit, artifact_type
@@ -424,7 +449,9 @@ def test_system_plus_user_over_limit_rejects_before_provider(monkeypatch):
 
 def test_malformed_provider_json_marks_validation_no_retry(db_session, monkeypatch):
     artifact_id = _prepare_flashcards(db_session, monkeypatch)
-    row = study_service._live_artifact_query(db_session).filter_by(id=artifact_id).first()
+    row = (
+        study_service._live_artifact_query(db_session).filter_by(id=artifact_id).first()
+    )
 
     def bad_json_caller():
         def call_gemini(**_kwargs):
@@ -442,7 +469,11 @@ def test_malformed_provider_json_marks_validation_no_retry(db_session, monkeypat
     study_service.process_artifact_job(db_session, artifact_id)
     db_session.refresh(row)
     assert row.status == STATUS_FAILED
-    assert row.error_code in {"INVALID_PROVIDER_JSON", "INVALID_ARTIFACT_JSON", "FAILED_VALIDATION"}
+    assert row.error_code in {
+        "INVALID_PROVIDER_JSON",
+        "INVALID_ARTIFACT_JSON",
+        "FAILED_VALIDATION",
+    }
     # Validation failures must not requeue (QUEUED + TRANSIENT_AI_ERROR).
     assert row.status != STATUS_QUEUED
     assert row.error_code != "TRANSIENT_AI_ERROR"
@@ -460,7 +491,10 @@ def test_synthesis_list_json_coerced_to_batch_object():
 
 
 def test_mcq_string_options_normalized_before_validation():
-    from app.services.study.artifacts import _normalize_mcq_provider_payload, validate_mcq
+    from app.services.study.artifacts import (
+        _normalize_mcq_provider_payload,
+        validate_mcq,
+    )
 
     raw = _normalize_mcq_provider_payload(
         {
@@ -475,13 +509,17 @@ def test_mcq_string_options_normalized_before_validation():
             ]
         }
     )
-    result = validate_mcq(raw, max_count=5, allowed_segments_by_meeting={101: {"seg-1"}})
+    result = validate_mcq(
+        raw, max_count=5, allowed_segments_by_meeting={101: {"seg-1"}}
+    )
     assert result["questions"][0]["options"][0]["id"] == "A"
 
 
 def test_provider_list_json_coerced_to_flashcard_object(db_session, monkeypatch):
     artifact_id = _prepare_flashcards(db_session, monkeypatch)
-    row = study_service._live_artifact_query(db_session).filter_by(id=artifact_id).first()
+    row = (
+        study_service._live_artifact_query(db_session).filter_by(id=artifact_id).first()
+    )
 
     def list_caller():
         def call_gemini(**_kwargs):
@@ -514,7 +552,9 @@ def test_provider_list_json_coerced_to_flashcard_object(db_session, monkeypatch)
 
 def test_valid_json_wrong_schema_marks_validation_no_retry(db_session, monkeypatch):
     artifact_id = _prepare_flashcards(db_session, monkeypatch)
-    row = study_service._live_artifact_query(db_session).filter_by(id=artifact_id).first()
+    row = (
+        study_service._live_artifact_query(db_session).filter_by(id=artifact_id).first()
+    )
 
     def wrong_schema_caller():
         def call_gemini(**_kwargs):
@@ -543,7 +583,9 @@ def test_valid_json_wrong_schema_marks_validation_no_retry(db_session, monkeypat
 
 
 def test_classify_json_decode_and_schema_errors():
-    classified = classify_provider_exception(json.JSONDecodeError("Expecting value", "doc", 0))
+    classified = classify_provider_exception(
+        json.JSONDecodeError("Expecting value", "doc", 0)
+    )
     assert isinstance(classified, StudyValidationError)
     assert classified.code == "INVALID_PROVIDER_JSON"
 
@@ -580,7 +622,9 @@ def test_call_gemini_429_requeues(db_session, monkeypatch):
         study_service.process_artifact_job(db_session, artifact_id)
 
     db_session.expire_all()
-    row = study_service._live_artifact_query(db_session).filter_by(id=artifact_id).first()
+    row = (
+        study_service._live_artifact_query(db_session).filter_by(id=artifact_id).first()
+    )
     assert row is not None
     assert row.status == STATUS_QUEUED
     assert row.error_code == "TRANSIENT_AI_ERROR"
@@ -679,9 +723,18 @@ def test_phase2_finalization_evidence_smoke(tmp_path, monkeypatch, capsys):
     # 7-9) Fresh SQLite DBs so prepare does not cache-hit across cases
     for index, (label, runner) in enumerate(
         (
-            ("7-malformed-json-validation", test_malformed_provider_json_marks_validation_no_retry),
-            ("8-wrong-schema-validation", test_valid_json_wrong_schema_marks_validation_no_retry),
-            ("9-typeerror-programming-error", test_call_gemini_type_error_marks_programming_error),
+            (
+                "7-malformed-json-validation",
+                test_malformed_provider_json_marks_validation_no_retry,
+            ),
+            (
+                "8-wrong-schema-validation",
+                test_valid_json_wrong_schema_marks_validation_no_retry,
+            ),
+            (
+                "9-typeerror-programming-error",
+                test_call_gemini_type_error_marks_programming_error,
+            ),
         )
     ):
         case_dir = tmp_path / f"case_{index}"

@@ -15,17 +15,31 @@ except ImportError:  # pragma: no cover
 
 def is_transient_provider_error(exc: BaseException) -> bool:
     """True when the failure looks like a retryable provider/network error."""
-    if isinstance(exc, (TimeoutError, ConnectionError, BrokenPipeError, ConnectionResetError)):
+    if isinstance(
+        exc, (TimeoutError, ConnectionError, BrokenPipeError, ConnectionResetError)
+    ):
         return True
 
     name = type(exc).__name__.lower()
     module = (type(exc).__module__ or "").lower()
     msg = str(exc).lower()
 
-    if "httpx" in module or "requests" in module or "urllib3" in module or "urllib" in module:
+    if (
+        "httpx" in module
+        or "requests" in module
+        or "urllib3" in module
+        or "urllib" in module
+    ):
         if any(
             token in name
-            for token in ("timeout", "connect", "network", "remote", "httpstatus", "protocol")
+            for token in (
+                "timeout",
+                "connect",
+                "network",
+                "remote",
+                "httpstatus",
+                "protocol",
+            )
         ):
             return True
         if any(

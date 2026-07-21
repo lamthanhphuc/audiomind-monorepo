@@ -50,9 +50,10 @@ def test_vps_tls_disable_rejects_remote_hostname(monkeypatch):
     get_settings.cache_clear()
     with pytest.raises((ValidationError, ValueError)) as raised:
         Settings(_env_file=None)
-    assert "allowlist" in str(raised.value).lower() or "database_tls" in str(
-        raised.value
-    ).lower()
+    assert (
+        "allowlist" in str(raised.value).lower()
+        or "database_tls" in str(raised.value).lower()
+    )
     get_settings.cache_clear()
 
 

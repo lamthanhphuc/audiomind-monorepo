@@ -299,9 +299,7 @@ def test_unavailable_selection_preserves_terminal_reasons_without_secrets():
         multi_key_enabled=True,
         clock=clock,
     )
-    manager.hard_cooldown_key(
-        "primary", seconds=900, reason="billing_credits_depleted"
-    )
+    manager.hard_cooldown_key("primary", seconds=900, reason="billing_credits_depleted")
     manager.hard_cooldown_key(
         "backup1", seconds=900, reason="free_tier_token_quota_exhausted"
     )
@@ -643,9 +641,7 @@ def test_redis_wait_does_not_hold_manager_lock_for_local_cooldown_update():
     assert read_started.wait(timeout=2)
 
     writer = threading.Thread(
-        target=lambda: manager.cooldown_key(
-            "primary", seconds=30, reason="rate_limit"
-        )
+        target=lambda: manager.cooldown_key("primary", seconds=30, reason="rate_limit")
     )
     writer.start()
     assert cooldown_updated.wait(timeout=0.5)
@@ -689,9 +685,7 @@ def test_positive_shared_cooldown_is_cached_for_redis_failure_fallback():
     fallback = manager.select_key()
 
     assert fallback.available is False
-    assert fallback.unavailable_reasons == {
-        "primary": "billing_credits_depleted"
-    }
+    assert fallback.unavailable_reasons == {"primary": "billing_credits_depleted"}
 
 
 def test_positive_shared_model_marker_is_cached_for_redis_failure_fallback():
@@ -740,9 +734,7 @@ def test_clear_failure_keeps_local_tombstone_and_retries_in_next_snapshot():
         cooldown_store=store,
         clock=FakeClock(),
     )
-    manager.hard_cooldown_key(
-        "primary", seconds=900, reason="billing_credits_depleted"
-    )
+    manager.hard_cooldown_key("primary", seconds=900, reason="billing_credits_depleted")
     manager.clear_cooldown("primary")
 
     assert manager.select_key().available is True
@@ -781,18 +773,14 @@ def test_attempted_alias_is_not_selected_on_normal_retry():
 
 def test_two_attempted_aliases_leave_only_unattempted():
     manager = _three_key_manager()
-    selection = manager.select_key(
-        attempted_aliases={"primary", "backup1"}
-    )
+    selection = manager.select_key(attempted_aliases={"primary", "backup1"})
     assert selection.available
     assert selection.entry.alias == "backup2"
 
 
 def test_all_aliases_attempted_returns_unavailable():
     manager = _three_key_manager()
-    selection = manager.select_key(
-        attempted_aliases={"primary", "backup1", "backup2"}
-    )
+    selection = manager.select_key(attempted_aliases={"primary", "backup1", "backup2"})
     assert not selection.available
     assert not manager.has_unattempted_eligible_key(
         "gemini-2.5-flash", attempted_aliases={"primary", "backup1", "backup2"}
@@ -841,7 +829,9 @@ def test_backup1_mutation_does_not_invalidate_primary_validation():
     primary_revision = selection.selection_revision
 
     manager.cooldown_key("backup1", seconds=30, reason="rate_limit")
-    assert manager._alias_generation.get("primary", 0) == primary_revision.alias_generation
+    assert (
+        manager._alias_generation.get("primary", 0) == primary_revision.alias_generation
+    )
     assert manager.validate_selection(selection, model="gemini-2.5-flash")
 
 
@@ -871,9 +861,7 @@ def test_redis_cooldown_blocks_final_validation_despite_other_alias_change():
     thread.start()
     assert store.validation_started.wait(timeout=2)
     scope = manager._scope_for("primary")
-    store.apply_cooldown(
-        scope, seconds=30, reason="rate_limit", cooldown_type="soft"
-    )
+    store.apply_cooldown(scope, seconds=30, reason="rate_limit", cooldown_type="soft")
     manager.cooldown_key("backup1", seconds=30, reason="rate_limit")
     store.release_validation.set()
     thread.join(timeout=2)
@@ -894,9 +882,7 @@ def test_noop_redis_sync_does_not_bump_alias_generation():
     store = InMemoryGeminiKeyCooldownStore()
     manager = _three_key_manager(cooldown_store=store)
     scope = manager._scope_for("primary")
-    store.apply_cooldown(
-        scope, seconds=30, reason="rate_limit", cooldown_type="soft"
-    )
+    store.apply_cooldown(scope, seconds=30, reason="rate_limit", cooldown_type="soft")
     manager.select_key(model="gemini-2.5-flash")
     before = manager._alias_generation.get("primary", 0)
     manager.select_key(model="gemini-2.5-flash")
@@ -907,9 +893,7 @@ def test_reason_change_bumps_alias_generation():
     store = InMemoryGeminiKeyCooldownStore()
     manager = _three_key_manager(cooldown_store=store)
     scope = manager._scope_for("primary")
-    store.apply_cooldown(
-        scope, seconds=30, reason="rate_limit", cooldown_type="soft"
-    )
+    store.apply_cooldown(scope, seconds=30, reason="rate_limit", cooldown_type="soft")
     manager.select_key(model="gemini-2.5-flash")
     before = manager._alias_generation.get("primary", 0)
     store.apply_cooldown(
@@ -946,9 +930,7 @@ def test_pending_clear_survives_three_failures_and_retries_after_backoff():
         cooldown_store=store,
         clock=clock,
     )
-    manager.hard_cooldown_key(
-        "primary", seconds=900, reason="billing_credits_depleted"
-    )
+    manager.hard_cooldown_key("primary", seconds=900, reason="billing_credits_depleted")
     manager.clear_cooldown("primary")
     pending = manager._pending_cooldown_clears["primary"]
     for _ in range(3):
@@ -1001,9 +983,7 @@ def test_concurrent_round_robin_skips_attempted_primary():
 
     def select_alias(_index: int) -> str:
         barrier.wait()
-        return manager.select_key(
-            attempted_aliases={"primary"}
-        ).entry.alias
+        return manager.select_key(attempted_aliases={"primary"}).entry.alias
 
     with ThreadPoolExecutor(max_workers=30) as executor:
         aliases = list(executor.map(select_alias, range(30)))

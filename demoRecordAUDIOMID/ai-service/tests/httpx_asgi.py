@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 from contextlib import contextmanager
 from typing import Any, Iterator, Mapping
-from urllib.parse import urljoin
 
 import httpx
 
@@ -120,7 +119,9 @@ def create_asgi_client(app: Any, *, base_url: str = "http://test") -> CompatTest
 
 
 @contextmanager
-def asgi_client(app: Any, *, base_url: str = "http://test") -> Iterator[CompatTestClient]:
+def asgi_client(
+    app: Any, *, base_url: str = "http://test"
+) -> Iterator[CompatTestClient]:
     client = create_asgi_client(app, base_url=base_url)
     try:
         yield client

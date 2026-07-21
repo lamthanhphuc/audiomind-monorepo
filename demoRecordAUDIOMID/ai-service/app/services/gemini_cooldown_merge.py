@@ -124,9 +124,7 @@ def metadata_score_tuple(metadata: CooldownMetadata) -> tuple[int, int, int]:
 def metadata_score_int(metadata: CooldownMetadata) -> int:
     tier, type_rank, specificity = metadata_score_tuple(metadata)
     return (
-        tier * SCORE_TIER_MULTIPLIER
-        + type_rank * SCORE_TYPE_MULTIPLIER
-        + specificity
+        tier * SCORE_TIER_MULTIPLIER + type_rank * SCORE_TYPE_MULTIPLIER + specificity
     )
 
 

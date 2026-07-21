@@ -29,7 +29,6 @@ from app.services.study import (
     STATUS_FAILED,
     STATUS_PROCESSING,
     STATUS_QUEUED,
-    STATUS_STALE,
     STATUS_QUOTA_EXCEEDED,
     STATUS_STALE,
     StudyAuthorizationError,
@@ -42,7 +41,10 @@ from app.services.study import (
     build_source_hash,
 )
 from app.services.study.artifacts import generate_artifact_content, validate_options
-from app.services.study.exceptions import classify_provider_exception, is_transient_provider_error
+from app.services.study.exceptions import (
+    classify_provider_exception,
+    is_transient_provider_error,
+)
 from app.services.study.membership import (
     MeetingMembershipUnavailableError,
     fetch_subject_meeting_ids,
@@ -78,7 +80,9 @@ def _attach_sources_payload(sources: list[Any]) -> list[dict[str, Any]]:
     ]
 
 
-def serialize_synthesis(row: SubjectSynthesis, *, stale: bool = False) -> dict[str, Any]:
+def serialize_synthesis(
+    row: SubjectSynthesis, *, stale: bool = False
+) -> dict[str, Any]:
     status = STATUS_STALE if stale and row.status == STATUS_COMPLETED else row.status
     options = row.options_json if isinstance(row.options_json, dict) else {}
     return {
@@ -169,7 +173,9 @@ def compute_current_source_hash(
     still yields a comparable hash instead of raising — empty current set must
     stale artifacts that still have stored sources.
     """
-    resolved = resolve_study_sources(db, owner_user_id=owner_user_id, meeting_ids=meeting_ids)
+    resolved = resolve_study_sources(
+        db, owner_user_id=owner_user_id, meeting_ids=meeting_ids
+    )
     if source_selection_mode == MODE_ALL_READY:
         ready = [r for r in resolved if r.get("ready")]
     else:
@@ -179,7 +185,9 @@ def compute_current_source_hash(
         ready = [r for r in resolved if r.get("ready")]
     if not ready:
         if require_ready:
-            raise StudySourceNotReadyError([int(m) for m in meeting_ids] if meeting_ids else [])
+            raise StudySourceNotReadyError(
+                [int(m) for m in meeting_ids] if meeting_ids else []
+            )
         source_rows: list[dict[str, Any]] = []
         return (
             build_source_hash(
@@ -315,7 +323,10 @@ def _guard_source_hash_unchanged(
 
     if mode == MODE_ALL_READY:
         hash_ids = list(current_membership)
-        if stored_membership_hash and hash_membership(current_membership) != stored_membership_hash:
+        if (
+            stored_membership_hash
+            and hash_membership(current_membership) != stored_membership_hash
+        ):
             _mark_source_changed(db, row)
             raise StudyValidationError(
                 "SOURCE_CHANGED_AFTER_PREPARE",
@@ -403,7 +414,9 @@ def _mark_or_requeue_classified(
             error_message=str(classified),
         )
         db.commit()
-        logger.info("event=%s entityId=%s code=%s", event_name, entity_id, row.error_code)
+        logger.info(
+            "event=%s entityId=%s code=%s", event_name, entity_id, row.error_code
+        )
         return None
     if isinstance(classified, StudyTransientError):
         _requeue_for_transient_retry(row, "TRANSIENT_AI_ERROR", str(classified)[:500])
@@ -453,24 +466,27 @@ def resolve_compatible_synthesis(
             .first()
         )
 
-    row = (
-        _live_synthesis_query(db)
-        .filter(SubjectSynthesis.id == synthesis_id)
-        .first()
-    )
+    row = _live_synthesis_query(db).filter(SubjectSynthesis.id == synthesis_id).first()
     if row is None:
         raise StudyValidationError("SYNTHESIS_NOT_FOUND", "Synthesis not found")
     if int(row.owner_user_id) != int(owner_user_id):
         raise StudyValidationError("SYNTHESIS_NOT_OWNED", "Synthesis not found")
     if int(row.subject_id) != int(subject_id):
-        raise StudyValidationError("SYNTHESIS_SUBJECT_MISMATCH", "Synthesis subject mismatch")
+        raise StudyValidationError(
+            "SYNTHESIS_SUBJECT_MISMATCH", "Synthesis subject mismatch"
+        )
     if row.status != STATUS_COMPLETED:
         raise StudyValidationError(
             "SYNTHESIS_NOT_READY",
             f"Synthesis status is {row.status}",
         )
-    if row.source_hash != source_hash or row.source_selection_mode != source_selection_mode:
-        raise StudyValidationError("SYNTHESIS_SOURCE_MISMATCH", "Synthesis source mismatch")
+    if (
+        row.source_hash != source_hash
+        or row.source_selection_mode != source_selection_mode
+    ):
+        raise StudyValidationError(
+            "SYNTHESIS_SOURCE_MISMATCH", "Synthesis source mismatch"
+        )
     return row
 
 
@@ -572,11 +588,15 @@ def prepare_synthesis(
     language: str = "vi",
     force: bool = False,
 ) -> dict[str, Any]:
-    mode = MODE_EXPLICIT if meeting_ids and source_selection_mode != MODE_ALL_READY else (
-        source_selection_mode or MODE_ALL_READY
+    mode = (
+        MODE_EXPLICIT
+        if meeting_ids and source_selection_mode != MODE_ALL_READY
+        else (source_selection_mode or MODE_ALL_READY)
     )
     if mode == MODE_EXPLICIT and not meeting_ids:
-        raise StudyValidationError("EMPTY_MEETING_IDS", "meetingIds required for EXPLICIT")
+        raise StudyValidationError(
+            "EMPTY_MEETING_IDS", "meetingIds required for EXPLICIT"
+        )
 
     current_hash, ready, source_rows = compute_current_source_hash(
         db,
@@ -614,14 +634,15 @@ def prepare_synthesis(
         else:
             payload = serialize_synthesis(existing)
             payload["cacheHit"] = kind == "cacheHit"
-            dispatchable = [payload] if kind == "dispatchable" else []
             newly = [payload] if kind == "needsQuota" else []
             return {
                 "kind": "newlyCreated" if kind == "needsQuota" else kind,
                 "newlyCreated": newly,
                 "cacheHits": [payload] if kind == "cacheHit" else [],
                 "inFlight": [payload] if kind == "inFlight" else [],
-                "dispatchableSynthesisIds": [existing.id] if kind == "dispatchable" else [],
+                "dispatchableSynthesisIds": (
+                    [existing.id] if kind == "dispatchable" else []
+                ),
                 "dispatchableIds": [existing.id] if kind == "dispatchable" else [],
                 "synthesis": payload,
             }
@@ -694,13 +715,11 @@ def prepare_synthesis(
         }
 
     # Verify the row still exists before commit (no phantom ids).
-    verified = (
-        _live_synthesis_query(db)
-        .filter(SubjectSynthesis.id == row.id)
-        .first()
-    )
+    verified = _live_synthesis_query(db).filter(SubjectSynthesis.id == row.id).first()
     if verified is None:
-        raise StudyValidationError("PREPARE_PHANTOM", "Synthesis row vanished before commit")
+        raise StudyValidationError(
+            "PREPARE_PHANTOM", "Synthesis row vanished before commit"
+        )
 
     db.commit()
     db.refresh(verified)
@@ -741,11 +760,15 @@ def prepare_artifacts(
     if not types:
         raise StudyValidationError("EMPTY_ARTIFACT_TYPES", "artifactTypes required")
 
-    mode = MODE_EXPLICIT if meeting_ids and source_selection_mode != MODE_ALL_READY else (
-        source_selection_mode or MODE_ALL_READY
+    mode = (
+        MODE_EXPLICIT
+        if meeting_ids and source_selection_mode != MODE_ALL_READY
+        else (source_selection_mode or MODE_ALL_READY)
     )
     if mode == MODE_EXPLICIT and not meeting_ids:
-        raise StudyValidationError("EMPTY_MEETING_IDS", "meetingIds required for EXPLICIT")
+        raise StudyValidationError(
+            "EMPTY_MEETING_IDS", "meetingIds required for EXPLICIT"
+        )
 
     validated_options = validate_options(options or {})
     options_hash = build_options_hash(validated_options)
@@ -932,7 +955,9 @@ def prepare_artifacts(
     }
 
 
-def mark_reserved_quota_exceeded(db: Session, artifact_ids: list[int], owner_user_id: int) -> None:
+def mark_reserved_quota_exceeded(
+    db: Session, artifact_ids: list[int], owner_user_id: int
+) -> None:
     rows = (
         _live_artifact_query(db)
         .filter(
@@ -951,7 +976,9 @@ def mark_reserved_quota_exceeded(db: Session, artifact_ids: list[int], owner_use
     db.commit()
 
 
-def mark_synthesis_quota_exceeded(db: Session, synthesis_id: int, owner_user_id: int) -> None:
+def mark_synthesis_quota_exceeded(
+    db: Session, synthesis_id: int, owner_user_id: int
+) -> None:
     row = (
         _live_synthesis_query(db)
         .filter(
@@ -1028,8 +1055,7 @@ def claim_dispatch_synthesis(
     now = _now()
     lease_cutoff = now - timedelta(seconds=settings.study_dispatch_lease_seconds)
     result = db.execute(
-        text(
-            """
+        text("""
             UPDATE subject_synthesis
             SET dispatch_requested_at = :now,
                 celery_task_id = :task_id,
@@ -1050,8 +1076,7 @@ def claim_dispatch_synthesis(
                     OR next_dispatch_retry_at <= :now
                   )
               AND COALESCE(dispatch_attempt_count, 0) < :max_attempts
-            """
-        ),
+            """),
         {
             "now": now,
             "task_id": task_id,
@@ -1076,8 +1101,7 @@ def claim_dispatch_artifact(
     now = _now()
     lease_cutoff = now - timedelta(seconds=settings.study_dispatch_lease_seconds)
     result = db.execute(
-        text(
-            """
+        text("""
             UPDATE study_artifact
             SET dispatch_requested_at = :now,
                 celery_task_id = :task_id,
@@ -1098,8 +1122,7 @@ def claim_dispatch_artifact(
                     OR next_dispatch_retry_at <= :now
                   )
               AND COALESCE(dispatch_attempt_count, 0) < :max_attempts
-            """
-        ),
+            """),
         {
             "now": now,
             "task_id": task_id,
@@ -1113,10 +1136,11 @@ def claim_dispatch_artifact(
     return int(result.rowcount or 0) == 1
 
 
-def release_dispatch_claim_synthesis(db: Session, *, synthesis_id: int, owner_user_id: int) -> None:
+def release_dispatch_claim_synthesis(
+    db: Session, *, synthesis_id: int, owner_user_id: int
+) -> None:
     db.execute(
-        text(
-            """
+        text("""
             UPDATE subject_synthesis
             SET dispatch_requested_at = NULL,
                 celery_task_id = NULL,
@@ -1125,17 +1149,17 @@ def release_dispatch_claim_synthesis(db: Session, *, synthesis_id: int, owner_us
               AND owner_user_id = :owner
               AND status = 'QUEUED'
               AND processing_started_at IS NULL
-            """
-        ),
+            """),
         {"now": _now(), "id": synthesis_id, "owner": owner_user_id},
     )
     db.commit()
 
 
-def release_dispatch_claim_artifact(db: Session, *, artifact_id: int, owner_user_id: int) -> None:
+def release_dispatch_claim_artifact(
+    db: Session, *, artifact_id: int, owner_user_id: int
+) -> None:
     db.execute(
-        text(
-            """
+        text("""
             UPDATE study_artifact
             SET dispatch_requested_at = NULL,
                 celery_task_id = NULL,
@@ -1144,8 +1168,7 @@ def release_dispatch_claim_artifact(db: Session, *, artifact_id: int, owner_user
               AND owner_user_id = :owner
               AND status = 'QUEUED'
               AND processing_started_at IS NULL
-            """
-        ),
+            """),
         {"now": _now(), "id": artifact_id, "owner": owner_user_id},
     )
     db.commit()
@@ -1181,7 +1204,10 @@ def dispatch_study_jobs(
             continue
         if synth.quota_confirmed_at is None:
             continue
-        if int(synth.dispatch_attempt_count or 0) >= settings.study_dispatch_max_attempts:
+        if (
+            int(synth.dispatch_attempt_count or 0)
+            >= settings.study_dispatch_max_attempts
+        ):
             _mark_terminal_failed(
                 synth,
                 error_code="DISPATCH_EXHAUSTED",
@@ -1195,7 +1221,10 @@ def dispatch_study_jobs(
             db, synthesis_id=int(synth.id), owner_user_id=owner_user_id, task_id=task_id
         ):
             db.refresh(synth)
-            if int(synth.dispatch_attempt_count or 0) >= settings.study_dispatch_max_attempts:
+            if (
+                int(synth.dispatch_attempt_count or 0)
+                >= settings.study_dispatch_max_attempts
+            ):
                 _mark_terminal_failed(
                     synth,
                     error_code="DISPATCH_EXHAUSTED",
@@ -1253,7 +1282,10 @@ def dispatch_study_jobs(
             db, artifact_id=int(art.id), owner_user_id=owner_user_id, task_id=task_id
         ):
             db.refresh(art)
-            if int(art.dispatch_attempt_count or 0) >= settings.study_dispatch_max_attempts:
+            if (
+                int(art.dispatch_attempt_count or 0)
+                >= settings.study_dispatch_max_attempts
+            ):
                 _mark_terminal_failed(
                     art,
                     error_code="DISPATCH_EXHAUSTED",
@@ -1294,10 +1326,11 @@ def dispatch_study_jobs(
     }
 
 
-def claim_processing_synthesis(db: Session, synthesis_id: int) -> SubjectSynthesis | None:
+def claim_processing_synthesis(
+    db: Session, synthesis_id: int
+) -> SubjectSynthesis | None:
     result = db.execute(
-        text(
-            """
+        text("""
             UPDATE subject_synthesis
             SET status = 'PROCESSING',
                 processing_started_at = :now,
@@ -1307,8 +1340,7 @@ def claim_processing_synthesis(db: Session, synthesis_id: int) -> SubjectSynthes
             WHERE id = :id
               AND deleted_at IS NULL
               AND status = 'QUEUED'
-            """
-        ),
+            """),
         {"now": _now(), "id": synthesis_id},
     )
     db.commit()
@@ -1319,8 +1351,7 @@ def claim_processing_synthesis(db: Session, synthesis_id: int) -> SubjectSynthes
 
 def claim_processing_artifact(db: Session, artifact_id: int) -> StudyArtifact | None:
     result = db.execute(
-        text(
-            """
+        text("""
             UPDATE study_artifact
             SET status = 'PROCESSING',
                 processing_started_at = :now,
@@ -1330,8 +1361,7 @@ def claim_processing_artifact(db: Session, artifact_id: int) -> StudyArtifact | 
             WHERE id = :id
               AND deleted_at IS NULL
               AND status = 'QUEUED'
-            """
-        ),
+            """),
         {"now": _now(), "id": artifact_id},
     )
     db.commit()
@@ -1345,12 +1375,13 @@ def reconcile_study_generation_jobs(db: Session) -> dict[str, int]:
     settings = get_settings()
     now = _now()
     lease_cutoff = now - timedelta(seconds=settings.study_dispatch_lease_seconds)
-    processing_cutoff = now - timedelta(seconds=settings.study_processing_timeout_seconds)
+    processing_cutoff = now - timedelta(
+        seconds=settings.study_processing_timeout_seconds
+    )
 
     # Allow redispatch by clearing expired dispatch claims still QUEUED.
     cleared_syn = db.execute(
-        text(
-            """
+        text("""
             UPDATE subject_synthesis
             SET dispatch_requested_at = NULL,
                 celery_task_id = NULL,
@@ -1360,13 +1391,11 @@ def reconcile_study_generation_jobs(db: Session) -> dict[str, int]:
               AND processing_started_at IS NULL
               AND dispatch_requested_at IS NOT NULL
               AND dispatch_requested_at < :lease_cutoff
-            """
-        ),
+            """),
         {"now": now, "lease_cutoff": lease_cutoff},
     )
     cleared_art = db.execute(
-        text(
-            """
+        text("""
             UPDATE study_artifact
             SET dispatch_requested_at = NULL,
                 celery_task_id = NULL,
@@ -1376,14 +1405,12 @@ def reconcile_study_generation_jobs(db: Session) -> dict[str, int]:
               AND processing_started_at IS NULL
               AND dispatch_requested_at IS NOT NULL
               AND dispatch_requested_at < :lease_cutoff
-            """
-        ),
+            """),
         {"now": now, "lease_cutoff": lease_cutoff},
     )
 
     failed_syn = db.execute(
-        text(
-            """
+        text("""
             UPDATE subject_synthesis
             SET status = 'FAILED',
                 error_code = 'PROCESSING_TIMEOUT',
@@ -1393,13 +1420,11 @@ def reconcile_study_generation_jobs(db: Session) -> dict[str, int]:
               AND status = 'PROCESSING'
               AND processing_started_at IS NOT NULL
               AND processing_started_at < :cutoff
-            """
-        ),
+            """),
         {"now": now, "cutoff": processing_cutoff},
     )
     failed_art = db.execute(
-        text(
-            """
+        text("""
             UPDATE study_artifact
             SET status = 'FAILED',
                 error_code = 'PROCESSING_TIMEOUT',
@@ -1409,8 +1434,7 @@ def reconcile_study_generation_jobs(db: Session) -> dict[str, int]:
               AND status = 'PROCESSING'
               AND processing_started_at IS NOT NULL
               AND processing_started_at < :cutoff
-            """
-        ),
+            """),
         {"now": now, "cutoff": processing_cutoff},
     )
     db.commit()
@@ -1437,7 +1461,10 @@ def reconcile_study_generation_jobs(db: Session) -> dict[str, int]:
         next_retry = getattr(synth, "next_dispatch_retry_at", None)
         if next_retry is not None and next_retry > now:
             continue
-        if int(synth.dispatch_attempt_count or 0) >= settings.study_dispatch_max_attempts:
+        if (
+            int(synth.dispatch_attempt_count or 0)
+            >= settings.study_dispatch_max_attempts
+        ):
             _mark_terminal_failed(
                 synth,
                 error_code="DISPATCH_EXHAUSTED",
@@ -1454,7 +1481,10 @@ def reconcile_study_generation_jobs(db: Session) -> dict[str, int]:
             task_id=task_id,
         ):
             db.refresh(synth)
-            if int(synth.dispatch_attempt_count or 0) >= settings.study_dispatch_max_attempts:
+            if (
+                int(synth.dispatch_attempt_count or 0)
+                >= settings.study_dispatch_max_attempts
+            ):
                 _mark_terminal_failed(
                     synth,
                     error_code="DISPATCH_EXHAUSTED",
@@ -1512,7 +1542,10 @@ def reconcile_study_generation_jobs(db: Session) -> dict[str, int]:
             task_id=task_id,
         ):
             db.refresh(art)
-            if int(art.dispatch_attempt_count or 0) >= settings.study_dispatch_max_attempts:
+            if (
+                int(art.dispatch_attempt_count or 0)
+                >= settings.study_dispatch_max_attempts
+            ):
                 _mark_terminal_failed(
                     art,
                     error_code="DISPATCH_EXHAUSTED",
@@ -1605,7 +1638,10 @@ def get_artifact_for_owner(
 ) -> dict[str, Any]:
     row = (
         _live_artifact_query(db)
-        .filter(StudyArtifact.id == artifact_id, StudyArtifact.owner_user_id == owner_user_id)
+        .filter(
+            StudyArtifact.id == artifact_id,
+            StudyArtifact.owner_user_id == owner_user_id,
+        )
         .first()
     )
     if row is None:
@@ -1686,7 +1722,10 @@ def list_artifacts_for_subject(
 def soft_delete_artifact(db: Session, *, artifact_id: int, owner_user_id: int) -> None:
     row = (
         _live_artifact_query(db)
-        .filter(StudyArtifact.id == artifact_id, StudyArtifact.owner_user_id == owner_user_id)
+        .filter(
+            StudyArtifact.id == artifact_id,
+            StudyArtifact.owner_user_id == owner_user_id,
+        )
         .first()
     )
     if row is None:
@@ -1702,7 +1741,9 @@ def _gemini_caller(*, workload: GeminiWorkload = GeminiWorkload.STRUCTURED_ANALY
     settings = get_settings()
     analyzer = build_analysis_analyzer(settings)
 
-    def call_gemini(*, prompt: str, system_prompt: str, response_schema: Any = None) -> str:
+    def call_gemini(
+        *, prompt: str, system_prompt: str, response_schema: Any = None
+    ) -> str:
         model = getattr(analyzer, "model", None) or getattr(
             settings, "gemini_analysis_model", "gemini-3.1-flash-lite"
         )
@@ -1722,10 +1763,20 @@ def _gemini_caller(*, workload: GeminiWorkload = GeminiWorkload.STRUCTURED_ANALY
 def process_synthesis_job(db: Session, synthesis_id: int) -> None:
     row = claim_processing_synthesis(db, synthesis_id)
     if row is None:
-        existing = _live_synthesis_query(db).filter(SubjectSynthesis.id == synthesis_id).first()
+        existing = (
+            _live_synthesis_query(db)
+            .filter(SubjectSynthesis.id == synthesis_id)
+            .first()
+        )
         if existing is None:
             return
-        if existing.status in {STATUS_COMPLETED, STATUS_FAILED, STATUS_QUOTA_EXCEEDED, STATUS_PROCESSING, STATUS_STALE}:
+        if existing.status in {
+            STATUS_COMPLETED,
+            STATUS_FAILED,
+            STATUS_QUOTA_EXCEEDED,
+            STATUS_PROCESSING,
+            STATUS_STALE,
+        }:
             logger.info(
                 "event=SUBJECT_SYNTHESIS_SKIPPED synthesisId=%s status=%s",
                 synthesis_id,
@@ -1741,7 +1792,9 @@ def process_synthesis_job(db: Session, synthesis_id: int) -> None:
         mode = row.source_selection_mode
         if mode == MODE_ALL_READY:
             try:
-                hash_ids = fetch_subject_meeting_ids(int(row.subject_id), int(row.owner_user_id))
+                hash_ids = fetch_subject_meeting_ids(
+                    int(row.subject_id), int(row.owner_user_id)
+                )
             except MeetingMembershipUnavailableError:
                 hash_ids = list(meeting_ids)
         else:
@@ -1780,7 +1833,11 @@ def process_synthesis_job(db: Session, synthesis_id: int) -> None:
             error_message=str(exc),
         )
         db.commit()
-        logger.info("event=SUBJECT_SYNTHESIS_FAILED synthesisId=%s code=%s", synthesis_id, row.error_code)
+        logger.info(
+            "event=SUBJECT_SYNTHESIS_FAILED synthesisId=%s code=%s",
+            synthesis_id,
+            row.error_code,
+        )
         return
     except StudySourceNotReadyError as exc:
         _mark_terminal_failed(
@@ -1789,7 +1846,11 @@ def process_synthesis_job(db: Session, synthesis_id: int) -> None:
             error_message=str(exc),
         )
         db.commit()
-        logger.info("event=SUBJECT_SYNTHESIS_FAILED synthesisId=%s code=%s", synthesis_id, row.error_code)
+        logger.info(
+            "event=SUBJECT_SYNTHESIS_FAILED synthesisId=%s code=%s",
+            synthesis_id,
+            row.error_code,
+        )
         return
     except StudyTransientError:
         _requeue_for_transient_retry(row, "TRANSIENT_AI_ERROR", "Transient AI error")
@@ -1798,7 +1859,11 @@ def process_synthesis_job(db: Session, synthesis_id: int) -> None:
     except (TypeError, AttributeError, KeyError, ValueError) as exc:
         # json.JSONDecodeError is a ValueError subclass — classify before PROGRAMMING_ERROR.
         reraise = _mark_or_requeue_classified(
-            db, row, exc=exc, event_name="SUBJECT_SYNTHESIS_FAILED", entity_id=synthesis_id
+            db,
+            row,
+            exc=exc,
+            event_name="SUBJECT_SYNTHESIS_FAILED",
+            entity_id=synthesis_id,
         )
         if reraise is not None:
             raise reraise
@@ -1815,14 +1880,19 @@ def process_synthesis_job(db: Session, synthesis_id: int) -> None:
             error_message=str(exc)[:500],
         )
         db.commit()
-        logger.info("event=SUBJECT_SYNTHESIS_FAILED synthesisId=%s code=INTERNAL_ERROR", synthesis_id)
+        logger.info(
+            "event=SUBJECT_SYNTHESIS_FAILED synthesisId=%s code=INTERNAL_ERROR",
+            synthesis_id,
+        )
         return
 
 
 def process_artifact_job(db: Session, artifact_id: int) -> None:
     row = claim_processing_artifact(db, artifact_id)
     if row is None:
-        existing = _live_artifact_query(db).filter(StudyArtifact.id == artifact_id).first()
+        existing = (
+            _live_artifact_query(db).filter(StudyArtifact.id == artifact_id).first()
+        )
         if existing is None:
             return
         logger.info(
@@ -1842,7 +1912,9 @@ def process_artifact_job(db: Session, artifact_id: int) -> None:
         mode = row.source_selection_mode
         if mode == MODE_ALL_READY:
             try:
-                hash_ids = fetch_subject_meeting_ids(int(row.subject_id), int(row.owner_user_id))
+                hash_ids = fetch_subject_meeting_ids(
+                    int(row.subject_id), int(row.owner_user_id)
+                )
             except MeetingMembershipUnavailableError:
                 hash_ids = list(meeting_ids)
         else:
@@ -1912,7 +1984,11 @@ def process_artifact_job(db: Session, artifact_id: int) -> None:
             error_message=str(exc),
         )
         db.commit()
-        logger.info("event=STUDY_ARTIFACT_FAILED artifactId=%s code=%s", artifact_id, row.error_code)
+        logger.info(
+            "event=STUDY_ARTIFACT_FAILED artifactId=%s code=%s",
+            artifact_id,
+            row.error_code,
+        )
         return
     except StudySourceNotReadyError as exc:
         _mark_terminal_failed(
@@ -1921,7 +1997,11 @@ def process_artifact_job(db: Session, artifact_id: int) -> None:
             error_message=str(exc),
         )
         db.commit()
-        logger.info("event=STUDY_ARTIFACT_FAILED artifactId=%s code=%s", artifact_id, row.error_code)
+        logger.info(
+            "event=STUDY_ARTIFACT_FAILED artifactId=%s code=%s",
+            artifact_id,
+            row.error_code,
+        )
         return
     except StudyTransientError:
         _requeue_for_transient_retry(row, "TRANSIENT_AI_ERROR", "Transient AI error")
@@ -1946,5 +2026,7 @@ def process_artifact_job(db: Session, artifact_id: int) -> None:
             error_message=str(exc)[:500],
         )
         db.commit()
-        logger.info("event=STUDY_ARTIFACT_FAILED artifactId=%s code=INTERNAL_ERROR", artifact_id)
+        logger.info(
+            "event=STUDY_ARTIFACT_FAILED artifactId=%s code=INTERNAL_ERROR", artifact_id
+        )
         return

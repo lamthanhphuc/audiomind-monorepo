@@ -202,9 +202,7 @@ def _flyway_all_success(engine_url: str, history_table: str) -> bool:
                 return False
             return bool(
                 connection.execute(
-                    text(
-                        f"SELECT bool_and(success) FROM public.{history_table}"
-                    )
+                    text(f"SELECT bool_and(success) FROM public.{history_table}")
                 ).scalar()
             )
     finally:
@@ -233,7 +231,9 @@ def postgres_url(postgres: PostgresContainer) -> str:
 
 
 @pytest.fixture(scope="module")
-def postgres_target(migration_network: Network, postgres: PostgresContainer) -> PostgresTarget:
+def postgres_target(
+    migration_network: Network, postgres: PostgresContainer
+) -> PostgresTarget:
     return PostgresTarget(
         host=FLYWAY_HOST,
         port=FLYWAY_PORT,
@@ -280,17 +280,13 @@ def test_ordered_user_meeting_ai_migrations_pass(
             ).scalar()
             assert meeting_table == "meeting"
 
-            fk_count = connection.execute(
-                text(
-                    """
+            fk_count = connection.execute(text("""
                     SELECT COUNT(*)
                     FROM pg_constraint c
                     JOIN pg_namespace n ON n.oid = c.connamespace
                     WHERE n.nspname = 'public'
                       AND c.conname = 'fk_meeting_owner_user'
-                    """
-                )
-            ).scalar()
+                    """)).scalar()
             assert int(fk_count or 0) == 1
 
             alembic_version = connection.execute(
@@ -321,9 +317,12 @@ def test_meeting_before_user_fails_then_retry_passes(
     engine = create_engine(postgres_url)
     try:
         with engine.connect() as connection:
-            assert connection.execute(
-                text("SELECT to_regclass('public.app_users')")
-            ).scalar() is None
+            assert (
+                connection.execute(
+                    text("SELECT to_regclass('public.app_users')")
+                ).scalar()
+                is None
+            )
             user_history = connection.execute(
                 text("SELECT to_regclass('public.flyway_schema_history_user')")
             ).scalar()
@@ -334,15 +333,11 @@ def test_meeting_before_user_fails_then_retry_passes(
             ).scalar()
             assert meeting_history is not None
 
-            v15_applied = connection.execute(
-                text(
-                    """
+            v15_applied = connection.execute(text("""
                     SELECT COUNT(*)
                     FROM flyway_schema_history_meeting
                     WHERE version = '15' AND success = true
-                    """
-                )
-            ).scalar()
+                    """)).scalar()
             assert int(v15_applied or 0) == 0
     finally:
         engine.dispose()
@@ -366,26 +361,28 @@ def test_meeting_before_user_fails_then_retry_passes(
     engine = create_engine(postgres_url)
     try:
         with engine.connect() as connection:
-            assert connection.execute(
-                text("SELECT to_regclass('public.app_users')")
-            ).scalar() == "app_users"
+            assert (
+                connection.execute(
+                    text("SELECT to_regclass('public.app_users')")
+                ).scalar()
+                == "app_users"
+            )
 
-            v1_success, v1_script = connection.execute(
-                text(
-                    """
+            v1_success, v1_script = connection.execute(text("""
                     SELECT success, script
                     FROM flyway_schema_history_user
                     WHERE version = '1'
                     LIMIT 1
-                    """
-                )
-            ).one()
+                    """)).one()
             assert v1_success is True
             assert "V1__create_user_table.sql" in str(v1_script)
 
-            assert connection.execute(
-                text("SELECT to_regclass('public.meeting')")
-            ).scalar() == "meeting"
+            assert (
+                connection.execute(
+                    text("SELECT to_regclass('public.meeting')")
+                ).scalar()
+                == "meeting"
+            )
     finally:
         engine.dispose()
 

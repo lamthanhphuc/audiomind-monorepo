@@ -16,7 +16,6 @@ from typing import Any
 
 import pytest
 from sqlalchemy import (
-    BigInteger,
     Column,
     DateTime,
     Integer,
@@ -25,7 +24,6 @@ from sqlalchemy import (
     Table,
     Text,
     create_engine,
-    select,
     text,
 )
 from sqlalchemy.orm import Session, sessionmaker
@@ -172,24 +170,16 @@ def _build_sqlite_schema(engine) -> None:
     )
     meta.create_all(engine)
     with engine.begin() as conn:
-        conn.execute(
-            text(
-                """
+        conn.execute(text("""
                 CREATE UNIQUE INDEX IF NOT EXISTS uq_study_artifact_idempotency_live
                 ON study_artifact(idempotency_key)
                 WHERE deleted_at IS NULL
-                """
-            )
-        )
-        conn.execute(
-            text(
-                """
+                """))
+        conn.execute(text("""
                 CREATE UNIQUE INDEX IF NOT EXISTS uq_subject_synthesis_idempotency_live
                 ON subject_synthesis(idempotency_key)
                 WHERE deleted_at IS NULL
-                """
-            )
-        )
+                """))
 
 
 @pytest.fixture()
@@ -217,24 +207,16 @@ def race_session_factory(tmp_path: Path):
             ],
         )
         with engine.begin() as conn:
-            conn.execute(
-                text(
-                    """
+            conn.execute(text("""
                     CREATE UNIQUE INDEX IF NOT EXISTS uq_study_artifact_idempotency_live
                     ON study_artifact(idempotency_key)
                     WHERE deleted_at IS NULL
-                    """
-                )
-            )
-            conn.execute(
-                text(
-                    """
+                    """))
+            conn.execute(text("""
                     CREATE UNIQUE INDEX IF NOT EXISTS uq_subject_synthesis_idempotency_live
                     ON subject_synthesis(idempotency_key)
                     WHERE deleted_at IS NULL
-                    """
-                )
-            )
+                    """))
     else:
         db_file = tmp_path / "phase2_race.sqlite"
         engine = create_engine(
@@ -258,7 +240,15 @@ def race_session_factory(tmp_path: Path):
 
 
 def _patch_sources(monkeypatch):
-    def _compute(db, *, owner_user_id, subject_id, source_selection_mode, meeting_ids, require_ready=True):
+    def _compute(
+        db,
+        *,
+        owner_user_id,
+        subject_id,
+        source_selection_mode,
+        meeting_ids,
+        require_ready=True,
+    ):
         from app.services.study import build_source_hash
 
         source_hash = build_source_hash(
@@ -314,7 +304,9 @@ def test_concurrent_prepare_artifacts_creates_single_active_row(
             )
             with lock:
                 results.append(payload)
-                newly_ids.extend(int(x) for x in (payload.get("newlyCreatedArtifactIds") or []))
+                newly_ids.extend(
+                    int(x) for x in (payload.get("newlyCreatedArtifactIds") or [])
+                )
         except BaseException as exc:  # noqa: BLE001
             with lock:
                 errors.append(exc)
@@ -418,7 +410,9 @@ def test_concurrent_prepare_synthesis_creates_single_active_row(
         verify.close()
 
 
-def test_soft_delete_allows_recreate_and_hides_from_cache(race_session_factory, monkeypatch):
+def test_soft_delete_allows_recreate_and_hides_from_cache(
+    race_session_factory, monkeypatch
+):
     _patch_sources(monkeypatch)
     db = race_session_factory()
     try:
@@ -441,7 +435,9 @@ def test_soft_delete_allows_recreate_and_hides_from_cache(race_session_factory, 
         assert all(int(item["id"]) != artifact_a for item in listed["items"])
 
         with pytest.raises(StudyAuthorizationError):
-            study_service.get_artifact_for_owner(db, artifact_id=artifact_a, owner_user_id=1)
+            study_service.get_artifact_for_owner(
+                db, artifact_id=artifact_a, owner_user_id=1
+            )
 
         second = study_service.prepare_artifacts(
             db,

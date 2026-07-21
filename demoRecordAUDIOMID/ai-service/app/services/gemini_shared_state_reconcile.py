@@ -24,7 +24,6 @@ from app.services.gemini_shared_state_contracts import (
     SharedWriteResult,
     apply_reconcile_plan_locked,
     apply_safe_anchored_deadline,
-    build_reconcile_plan_locked,
     new_operation_id,
     scope_from_gemini,
 )
@@ -176,7 +175,9 @@ def apply_reconcile_business_locked(
     clock: Callable[[], float],
     publish_reason: str | None = None,
     publish_cooldown_type: str | None = None,
-) -> tuple[ApplyReconcileOutcome, PendingSharedOperation | None, ConvergenceWriteRequest | None]:
+) -> tuple[
+    ApplyReconcileOutcome, PendingSharedOperation | None, ConvergenceWriteRequest | None
+]:
     """PHASE C — contract guard plus APPLIED/SUPERSEDED/FAILED routing."""
     base = apply_reconcile_plan_locked(
         plan,
@@ -265,7 +266,9 @@ def _handle_applied_locked(
     clock: Callable[[], float],
     publish_reason: str | None = None,
     publish_cooldown_type: str | None = None,
-) -> tuple[ApplyReconcileOutcome, PendingSharedOperation | None, ConvergenceWriteRequest | None]:
+) -> tuple[
+    ApplyReconcileOutcome, PendingSharedOperation | None, ConvergenceWriteRequest | None
+]:
     write = operation_result.write_result
     if write is None:
         return (
@@ -377,7 +380,9 @@ def _handle_superseded_locked(
     clock: Callable[[], float],
     publish_reason: str | None = None,
     publish_cooldown_type: str | None = None,
-) -> tuple[ApplyReconcileOutcome, PendingSharedOperation | None, ConvergenceWriteRequest | None]:
+) -> tuple[
+    ApplyReconcileOutcome, PendingSharedOperation | None, ConvergenceWriteRequest | None
+]:
     if desired_intent is DesiredIntent.NONE:
         return (
             ApplyReconcileOutcome(status=ApplyReconcileStatus.CONVERGED),
@@ -465,7 +470,9 @@ def _convergence_write_from_pending(
     elif op_type == "clear":
         remaining_ms = 0
     else:
-        remaining_ms = max(0, math.floor((plan.protected_deadline_monotonic - now) * 1000))
+        remaining_ms = max(
+            0, math.floor((plan.protected_deadline_monotonic - now) * 1000)
+        )
     if op_type == "publish" and remaining_ms <= 0:
         return None
     expected_revision, expected_digest = _revision_from_snapshot(pending, read_snapshot)
@@ -537,7 +544,9 @@ def execute_convergence_write_unlocked(
                 expected_digest=op.expected_value_digest,
             )
     completed = clock()
-    return _operation_result_from_write(op.operation_id, write, started=started, completed=completed)
+    return _operation_result_from_write(
+        op.operation_id, write, started=started, completed=completed
+    )
 
 
 def run_reconcile_loop(
@@ -553,7 +562,11 @@ def run_reconcile_loop(
             ReconcileReadSnapshot | None,
             PendingOperationResult | None,
         ],
-        tuple[ApplyReconcileOutcome, PendingSharedOperation | None, ConvergenceWriteRequest | None],
+        tuple[
+            ApplyReconcileOutcome,
+            PendingSharedOperation | None,
+            ConvergenceWriteRequest | None,
+        ],
     ],
     initial_operation_result: PendingOperationResult | None = None,
 ) -> ApplyReconcileOutcome:
@@ -585,7 +598,10 @@ def run_reconcile_loop(
             )
 
         read_snapshot = execute_reconcile_reads_unlocked(plan, store, clock)
-        if read_snapshot.shared_snapshot is None and read_shared_revision_unlocked is not None:
+        if (
+            read_snapshot.shared_snapshot is None
+            and read_shared_revision_unlocked is not None
+        ):
             started = clock()
             try:
                 snapshot = read_shared_revision_unlocked()
@@ -610,7 +626,10 @@ def run_reconcile_loop(
             attempts = plan.reconcile_attempts + 1
             continue
 
-        if outcome.status is ApplyReconcileStatus.OPERATION_ENQUEUED and convergence is not None:
+        if (
+            outcome.status is ApplyReconcileStatus.OPERATION_ENQUEUED
+            and convergence is not None
+        ):
             operation_result = execute_convergence_write_unlocked(
                 convergence,
                 store,
@@ -644,7 +663,11 @@ def handle_operation_result(
             ReconcileReadSnapshot | None,
             PendingOperationResult | None,
         ],
-        tuple[ApplyReconcileOutcome, PendingSharedOperation | None, ConvergenceWriteRequest | None],
+        tuple[
+            ApplyReconcileOutcome,
+            PendingSharedOperation | None,
+            ConvergenceWriteRequest | None,
+        ],
     ],
     read_shared_revision_unlocked: Callable[[], SharedScopeSnapshot] | None = None,
 ) -> ApplyReconcileOutcome:
@@ -674,7 +697,9 @@ def build_publish_operation_locked(
 ) -> PendingSharedOperation:
     """Create or inherit a pending publish operation under lock."""
     now = clock()
-    root_id = current_pending.root_operation_id if current_pending else new_operation_id()
+    root_id = (
+        current_pending.root_operation_id if current_pending else new_operation_id()
+    )
     return PendingSharedOperation(
         operation_id=new_operation_id(),
         root_operation_id=root_id,
@@ -685,7 +710,9 @@ def build_publish_operation_locked(
         expected_shared_revision=expected_shared_revision,
         expected_value_digest=expected_value_digest,
         reconcile_attempts=current_pending.reconcile_attempts if current_pending else 0,
-        created_at_monotonic=current_pending.created_at_monotonic if current_pending else now,
+        created_at_monotonic=(
+            current_pending.created_at_monotonic if current_pending else now
+        ),
         next_retry_at_monotonic=now,
         operation_deadline_monotonic=protected_deadline_monotonic,
         protected_state_expires_at_monotonic=protected_deadline_monotonic,
@@ -704,7 +731,9 @@ def build_clear_operation_locked(
 ) -> PendingSharedOperation:
     """Create or inherit a pending clear operation under lock."""
     now = clock()
-    root_id = current_pending.root_operation_id if current_pending else new_operation_id()
+    root_id = (
+        current_pending.root_operation_id if current_pending else new_operation_id()
+    )
     created = current_pending.created_at_monotonic if current_pending else now
     return PendingSharedOperation(
         operation_id=new_operation_id(),

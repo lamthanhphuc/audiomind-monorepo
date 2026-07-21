@@ -116,7 +116,11 @@ def fetch_subject_meeting_ids(subject_id: int, owner_user_id: int) -> list[int]:
                 if len(items) < page_size and total_pages is None:
                     break
                 page += 1
-    except (StudyTransientError, StudyValidationError, MeetingMembershipUnavailableError):
+    except (
+        StudyTransientError,
+        StudyValidationError,
+        MeetingMembershipUnavailableError,
+    ):
         raise
     except (httpx.TimeoutException, httpx.TransportError, httpx.HTTPError) as exc:
         logger.warning(

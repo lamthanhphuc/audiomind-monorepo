@@ -182,7 +182,9 @@ def _resolve_container_env(
         if not name:
             continue
         if "value" in entry and entry.get("valueFrom") is None:
-            resolved[str(name)] = "" if entry.get("value") is None else str(entry["value"])
+            resolved[str(name)] = (
+                "" if entry.get("value") is None else str(entry["value"])
+            )
             continue
         value_from = entry.get("valueFrom") or {}
         cm_ref = value_from.get("configMapKeyRef") or {}
@@ -199,18 +201,18 @@ def _resolve_container_env(
             sname = str(secret_ref.get("name") or "")
             key = str(secret_ref.get("key") or "")
             optional = secret_ref.get("optional") in (True, "true", "True")
-            assert sname != "jwt-secret", (
-                f"env {name}: legacy Secret jwt-secret must not be referenced"
-            )
+            assert (
+                sname != "jwt-secret"
+            ), f"env {name}: legacy Secret jwt-secret must not be referenced"
             if sname not in secrets:
-                assert optional, (
-                    f"env {name}: secretKeyRef Secret {sname!r} has no producer in render"
-                )
+                assert (
+                    optional
+                ), f"env {name}: secretKeyRef Secret {sname!r} has no producer in render"
                 continue
             if key not in secrets[sname]:
-                assert optional, (
-                    f"env {name}: secretKeyRef key {key!r} missing from Secret {sname}"
-                )
+                assert (
+                    optional
+                ), f"env {name}: secretKeyRef key {key!r} missing from Secret {sname}"
                 continue
             resolved[str(name)] = secrets[sname][key]
             continue
@@ -301,7 +303,9 @@ def _ensure_synthetic_managed_secrets(
 
 
 @pytest.mark.parametrize("overlay", OVERLAYS)
-def test_no_legacy_jwt_secret_or_user_jwt_secret(rendered_overlays, overlay: str) -> None:
+def test_no_legacy_jwt_secret_or_user_jwt_secret(
+    rendered_overlays, overlay: str
+) -> None:
     docs = rendered_overlays[overlay]
     blob = yaml.safe_dump_all(docs)
     assert "name: jwt-secret" not in blob
@@ -314,7 +318,7 @@ def test_no_legacy_jwt_secret_or_user_jwt_secret(rendered_overlays, overlay: str
             "containers"
         ) or []:
             for e in c.get("env") or []:
-                sk = ((e.get("valueFrom") or {}).get("secretKeyRef") or {})
+                sk = (e.get("valueFrom") or {}).get("secretKeyRef") or {}
                 assert sk.get("name") != "jwt-secret"
 
 
@@ -349,9 +353,7 @@ def test_java_deployments_wire_jwt_from_audiomind_secrets(
     assert resolved["INTERNAL_SERVICE_TOKEN"].strip()
 
     # Explicit secretKeyRef shape
-    env_by_name = {
-        e["name"]: e for e in (container.get("env") or []) if e.get("name")
-    }
+    env_by_name = {e["name"]: e for e in (container.get("env") or []) if e.get("name")}
     jwt = env_by_name["JWT_SECRET"]["valueFrom"]["secretKeyRef"]
     assert jwt["name"] == "audiomind-secrets"
     assert jwt["key"] == "JWT_SECRET"
@@ -429,15 +431,15 @@ def test_rendered_component_settings(
             "INTERNAL_SERVICE_TOKEN",
             "DATABASE_URL",
         ):
-            assert forbidden not in resolved, (
-                f"beat container must not set {forbidden}; got {resolved.get(forbidden)!r}"
-            )
+            assert (
+                forbidden not in resolved
+            ), f"beat container must not set {forbidden}; got {resolved.get(forbidden)!r}"
         assert deployment["spec"].get("replicas") == 1
 
     if component in {"api", "worker"}:
-        assert resolved.get("DATABASE_URL", "").strip(), (
-            f"{overlay}/{component}: DATABASE_URL must resolve from audiomind-db-secrets"
-        )
+        assert resolved.get(
+            "DATABASE_URL", ""
+        ).strip(), f"{overlay}/{component}: DATABASE_URL must resolve from audiomind-db-secrets"
         db_url = resolved["DATABASE_URL"]
         assert db_url.startswith("postgresql://") or db_url.startswith(
             "postgresql+psycopg2://"
@@ -446,13 +448,18 @@ def test_rendered_component_settings(
         assert not db_url.startswith("postgresql+psycopg://")
         assert not db_url.startswith("postgresql+asyncpg://")
         if overlay in {"staging", "prod"}:
-            assert "sslmode=require" in db_url.lower() or "sslmode=verify-full" in db_url.lower()
+            assert (
+                "sslmode=require" in db_url.lower()
+                or "sslmode=verify-full" in db_url.lower()
+            )
 
     _apply_resolved_env(monkeypatch, resolved)
 
     settings = Settings(_env_file=None)
     assert settings.app_component == component
-    assert (settings.app_env or "").strip().lower() == resolved["APP_ENV"].strip().lower()
+    assert (settings.app_env or "").strip().lower() == resolved[
+        "APP_ENV"
+    ].strip().lower()
 
     if overlay in {"staging", "prod"} and component == "api":
         assert (settings.analysis_provider or "").strip().lower() == "gemini"
@@ -467,7 +474,9 @@ def test_rendered_component_settings(
         assert (settings.gemini_api_key or "").strip()
         assert (settings.meeting_service_base_url or "").strip()
         assert (settings.internal_service_token or "").strip()
-        assert (settings.celery_study_generation_queue or "").strip() == "study_generation"
+        assert (
+            settings.celery_study_generation_queue or ""
+        ).strip() == "study_generation"
 
         import app.celery_app as celery_module
         import app.tasks as tasks_module

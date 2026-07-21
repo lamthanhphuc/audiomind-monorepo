@@ -28,7 +28,12 @@ def upgrade() -> None:
         sa.Column("content_json", JSONB(), nullable=True),
         sa.Column("source_hash", sa.String(64), nullable=False),
         sa.Column("options_hash", sa.String(64), nullable=True),
-        sa.Column("source_selection_mode", sa.String(20), nullable=False, server_default="ALL_READY"),
+        sa.Column(
+            "source_selection_mode",
+            sa.String(20),
+            nullable=False,
+            server_default="ALL_READY",
+        ),
         sa.Column("prompt_version", sa.String(100), nullable=True),
         sa.Column("schema_version", sa.String(100), nullable=True),
         sa.Column("idempotency_key", sa.String(256), nullable=False),
@@ -37,8 +42,18 @@ def upgrade() -> None:
         sa.Column("error_message", sa.Text(), nullable=True),
         sa.Column("warnings_json", JSONB(), nullable=True),
         sa.Column("generated_at", sa.DateTime(), nullable=True),
-        sa.Column("created_at", sa.DateTime(), nullable=False, server_default=sa.text("CURRENT_TIMESTAMP")),
-        sa.Column("updated_at", sa.DateTime(), nullable=False, server_default=sa.text("CURRENT_TIMESTAMP")),
+        sa.Column(
+            "created_at",
+            sa.DateTime(),
+            nullable=False,
+            server_default=sa.text("CURRENT_TIMESTAMP"),
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(),
+            nullable=False,
+            server_default=sa.text("CURRENT_TIMESTAMP"),
+        ),
         sa.Column("deleted_at", sa.DateTime(), nullable=True),
     )
     op.create_index(
@@ -47,13 +62,11 @@ def upgrade() -> None:
         ["owner_user_id", "subject_id"],
     )
     op.create_index("idx_subject_synthesis_status", "subject_synthesis", ["status"])
-    op.execute(
-        """
+    op.execute("""
         CREATE UNIQUE INDEX uq_subject_synthesis_idempotency_live
         ON subject_synthesis(idempotency_key)
         WHERE deleted_at IS NULL
-        """
-    )
+        """)
 
     op.create_table(
         "subject_synthesis_source",
@@ -62,9 +75,16 @@ def upgrade() -> None:
         sa.Column("transcript_hash", sa.String(64), nullable=True),
         sa.Column("analysis_run_id", sa.BigInteger(), nullable=True),
         sa.Column("analysis_version", sa.String(100), nullable=True),
-        sa.Column("created_at", sa.DateTime(), nullable=False, server_default=sa.text("CURRENT_TIMESTAMP")),
+        sa.Column(
+            "created_at",
+            sa.DateTime(),
+            nullable=False,
+            server_default=sa.text("CURRENT_TIMESTAMP"),
+        ),
         sa.PrimaryKeyConstraint("synthesis_id", "meeting_id"),
-        sa.ForeignKeyConstraint(["synthesis_id"], ["subject_synthesis.id"], ondelete="CASCADE"),
+        sa.ForeignKeyConstraint(
+            ["synthesis_id"], ["subject_synthesis.id"], ondelete="CASCADE"
+        ),
     )
     op.create_index(
         "idx_subject_synthesis_source_meeting",
@@ -86,7 +106,12 @@ def upgrade() -> None:
         sa.Column("content_json", JSONB(), nullable=True),
         sa.Column("source_hash", sa.String(64), nullable=False),
         sa.Column("options_hash", sa.String(64), nullable=False),
-        sa.Column("source_selection_mode", sa.String(20), nullable=False, server_default="ALL_READY"),
+        sa.Column(
+            "source_selection_mode",
+            sa.String(20),
+            nullable=False,
+            server_default="ALL_READY",
+        ),
         sa.Column("prompt_version", sa.String(100), nullable=True),
         sa.Column("schema_version", sa.String(100), nullable=True),
         sa.Column("idempotency_key", sa.String(256), nullable=False),
@@ -95,8 +120,18 @@ def upgrade() -> None:
         sa.Column("error_message", sa.Text(), nullable=True),
         sa.Column("warnings_json", JSONB(), nullable=True),
         sa.Column("generated_at", sa.DateTime(), nullable=True),
-        sa.Column("created_at", sa.DateTime(), nullable=False, server_default=sa.text("CURRENT_TIMESTAMP")),
-        sa.Column("updated_at", sa.DateTime(), nullable=False, server_default=sa.text("CURRENT_TIMESTAMP")),
+        sa.Column(
+            "created_at",
+            sa.DateTime(),
+            nullable=False,
+            server_default=sa.text("CURRENT_TIMESTAMP"),
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(),
+            nullable=False,
+            server_default=sa.text("CURRENT_TIMESTAMP"),
+        ),
         sa.Column("deleted_at", sa.DateTime(), nullable=True),
     )
     op.create_index(
@@ -106,13 +141,11 @@ def upgrade() -> None:
     )
     op.create_index("idx_study_artifact_type", "study_artifact", ["artifact_type"])
     op.create_index("idx_study_artifact_status", "study_artifact", ["status"])
-    op.execute(
-        """
+    op.execute("""
         CREATE UNIQUE INDEX uq_study_artifact_idempotency_live
         ON study_artifact(idempotency_key)
         WHERE deleted_at IS NULL
-        """
-    )
+        """)
 
     op.create_table(
         "study_artifact_source",
@@ -121,9 +154,16 @@ def upgrade() -> None:
         sa.Column("transcript_hash", sa.String(64), nullable=True),
         sa.Column("analysis_run_id", sa.BigInteger(), nullable=True),
         sa.Column("analysis_version", sa.String(100), nullable=True),
-        sa.Column("created_at", sa.DateTime(), nullable=False, server_default=sa.text("CURRENT_TIMESTAMP")),
+        sa.Column(
+            "created_at",
+            sa.DateTime(),
+            nullable=False,
+            server_default=sa.text("CURRENT_TIMESTAMP"),
+        ),
         sa.PrimaryKeyConstraint("artifact_id", "meeting_id"),
-        sa.ForeignKeyConstraint(["artifact_id"], ["study_artifact.id"], ondelete="CASCADE"),
+        sa.ForeignKeyConstraint(
+            ["artifact_id"], ["study_artifact.id"], ondelete="CASCADE"
+        ),
     )
     op.create_index(
         "idx_study_artifact_source_meeting",

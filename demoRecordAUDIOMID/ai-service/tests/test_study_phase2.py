@@ -34,16 +34,36 @@ def test_source_hash_stable_regardless_of_order():
         subject_id=12,
         source_selection_mode="EXPLICIT",
         sources=[
-            {"meetingId": 2, "transcriptHash": "b", "analysisRunId": 2, "analysisVersion": "v1"},
-            {"meetingId": 1, "transcriptHash": "a", "analysisRunId": 1, "analysisVersion": "v1"},
+            {
+                "meetingId": 2,
+                "transcriptHash": "b",
+                "analysisRunId": 2,
+                "analysisVersion": "v1",
+            },
+            {
+                "meetingId": 1,
+                "transcriptHash": "a",
+                "analysisRunId": 1,
+                "analysisVersion": "v1",
+            },
         ],
     )
     b = build_source_hash(
         subject_id=12,
         source_selection_mode="EXPLICIT",
         sources=[
-            {"meetingId": 1, "transcriptHash": "a", "analysisRunId": 1, "analysisVersion": "v1"},
-            {"meetingId": 2, "transcriptHash": "b", "analysisRunId": 2, "analysisVersion": "v1"},
+            {
+                "meetingId": 1,
+                "transcriptHash": "a",
+                "analysisRunId": 1,
+                "analysisVersion": "v1",
+            },
+            {
+                "meetingId": 2,
+                "transcriptHash": "b",
+                "analysisRunId": 2,
+                "analysisVersion": "v1",
+            },
         ],
     )
     assert a == b
@@ -54,7 +74,12 @@ def test_source_hash_changes_when_transcript_changes():
         "subject_id": 12,
         "source_selection_mode": "ALL_READY",
         "sources": [
-            {"meetingId": 1, "transcriptHash": "a", "analysisRunId": 1, "analysisVersion": "v1"},
+            {
+                "meetingId": 1,
+                "transcriptHash": "a",
+                "analysisRunId": 1,
+                "analysisVersion": "v1",
+            },
         ],
     }
     h1 = build_source_hash(**base)
@@ -64,7 +89,9 @@ def test_source_hash_changes_when_transcript_changes():
 
 
 def test_options_hash_and_validate_options():
-    opts = validate_options({"language": "vi", "difficulty": "MIXED", "flashcardCount": 20})
+    opts = validate_options(
+        {"language": "vi", "difficulty": "MIXED", "flashcardCount": 20}
+    )
     assert build_options_hash(opts) == build_options_hash(dict(opts))
     with pytest.raises(StudyValidationError):
         validate_options({"flashcardCount": 1})
@@ -174,7 +201,10 @@ def test_exam_brief_formulas_empty_ok():
         allowed_segments_by_meeting={1: set()},
     )
     assert brief["formulas"] == []
-    assert "ưu tiên" in brief["likelyExamTopics"][0].lower() or "ôn" in brief["likelyExamTopics"][0].lower()
+    assert (
+        "ưu tiên" in brief["likelyExamTopics"][0].lower()
+        or "ôn" in brief["likelyExamTopics"][0].lower()
+    )
 
 
 def test_evidence_rejects_cross_meeting_segment():

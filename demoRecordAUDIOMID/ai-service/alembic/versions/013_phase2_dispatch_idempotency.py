@@ -17,9 +17,13 @@ depends_on = None
 
 
 def _add_dispatch_columns(table: str) -> None:
-    op.add_column(table, sa.Column("dispatch_requested_at", sa.DateTime(), nullable=True))
+    op.add_column(
+        table, sa.Column("dispatch_requested_at", sa.DateTime(), nullable=True)
+    )
     op.add_column(table, sa.Column("celery_task_id", sa.String(128), nullable=True))
-    op.add_column(table, sa.Column("processing_started_at", sa.DateTime(), nullable=True))
+    op.add_column(
+        table, sa.Column("processing_started_at", sa.DateTime(), nullable=True)
+    )
     op.add_column(
         table,
         sa.Column("attempt_count", sa.Integer(), nullable=False, server_default="0"),
@@ -55,7 +59,9 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index("ix_study_artifact_dispatch_requested_at", table_name="study_artifact")
+    op.drop_index(
+        "ix_study_artifact_dispatch_requested_at", table_name="study_artifact"
+    )
     op.drop_index(
         "ix_subject_synthesis_dispatch_requested_at", table_name="subject_synthesis"
     )

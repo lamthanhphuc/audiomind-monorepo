@@ -184,7 +184,9 @@ def postgres_url():
         yield url
 
 
-def test_ai_database_url_settings_alembic_and_sqlalchemy(postgres_url: str, monkeypatch):
+def test_ai_database_url_settings_alembic_and_sqlalchemy(
+    postgres_url: str, monkeypatch
+):
     assert postgres_url.startswith("postgresql://")
     assert not postgres_url.startswith("jdbc:")
 
@@ -201,7 +203,9 @@ def test_ai_database_url_settings_alembic_and_sqlalchemy(postgres_url: str, monk
     engine = create_engine(postgres_url)
     try:
         with engine.connect() as connection:
-            version = connection.execute(text("SELECT version_num FROM alembic_version")).scalar()
+            version = connection.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar()
             assert version is not None
             connection.execute(text("SELECT 1")).scalar()
     finally:

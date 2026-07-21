@@ -160,7 +160,9 @@ def test_api_production_rejects_localhost_cors(monkeypatch):
 
 def test_api_vps_production_allows_localhost_cors(monkeypatch):
     _set_api_worker_production_env(monkeypatch, component="api")
-    monkeypatch.setenv("CORS_ALLOWED_ORIGINS", "http://localhost:8080,http://127.0.0.1:8080")
+    monkeypatch.setenv(
+        "CORS_ALLOWED_ORIGINS", "http://localhost:8080,http://127.0.0.1:8080"
+    )
     monkeypatch.setenv("DEPLOYMENT_MODE", "vps")
     get_settings.cache_clear()
 

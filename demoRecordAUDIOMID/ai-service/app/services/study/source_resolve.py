@@ -83,7 +83,9 @@ def resolve_study_sources(
                 "canonicalTranscriptHash": run.canonical_transcript_hash,
                 "promptVersion": run.prompt_version,
                 "schemaVersion": run.schema_version,
-                "analysisFeatureSet": (payload.get("analysisFeatureSet") or run.schema_version),
+                "analysisFeatureSet": (
+                    payload.get("analysisFeatureSet") or run.schema_version
+                ),
                 "educationStudy": education_study,
                 "allowedSegmentIds": sorted(allowed) if allowed else [],
             }
@@ -119,14 +121,16 @@ def _resolve_study_payload(
     projected = _project_study_from_general_analysis(payload)
     if projected is None:
         return None
-    return normalize_education_study(
-        projected, allowed_segment_ids=allowed_segment_ids
-    )
+    return normalize_education_study(projected, allowed_segment_ids=allowed_segment_ids)
 
 
-def _project_study_from_general_analysis(payload: dict[str, Any]) -> dict[str, Any] | None:
+def _project_study_from_general_analysis(
+    payload: dict[str, Any],
+) -> dict[str, Any] | None:
     """Build a study-shaped object from IT/business/general analysis fields."""
-    nested = payload.get("analysis") if isinstance(payload.get("analysis"), dict) else {}
+    nested = (
+        payload.get("analysis") if isinstance(payload.get("analysis"), dict) else {}
+    )
     summary = str(
         payload.get("summary")
         or payload.get("meetingSummary")
@@ -146,22 +150,33 @@ def _project_study_from_general_analysis(payload: dict[str, Any]) -> dict[str, A
     study = build_fallback_education_study(
         summary=summary or None,
         keywords=keywords,
-        technical_terms=technical_terms if isinstance(technical_terms, (list, tuple)) else [],
+        technical_terms=(
+            technical_terms if isinstance(technical_terms, (list, tuple)) else []
+        ),
     )
 
     extra_points: list[dict[str, Any]] = list(study.get("keyPoints") or [])
-    for item in _coerce_content_items(payload.get("actionItems") or nested.get("actionItems")):
+    for item in _coerce_content_items(
+        payload.get("actionItems") or nested.get("actionItems")
+    ):
         extra_points.append(
             {"content": item, "importance": "HIGH", "sourceSegmentIds": []}
         )
-    for item in _coerce_content_items(payload.get("painPoints") or nested.get("painPoints")):
+    for item in _coerce_content_items(
+        payload.get("painPoints") or nested.get("painPoints")
+    ):
         extra_points.append(
             {"content": item, "importance": "MEDIUM", "sourceSegmentIds": []}
         )
     # Cap to keep token budgets predictable.
     study["keyPoints"] = extra_points[:12]
 
-    if not summary and not keywords and not study["keyPoints"] and not study.get("glossary"):
+    if (
+        not summary
+        and not keywords
+        and not study["keyPoints"]
+        and not study.get("glossary")
+    ):
         return None
 
     if not str(study.get("overview") or "").strip() and study["keyPoints"]:
@@ -175,9 +190,13 @@ def _coerce_string_list(value: Any) -> list[str]:
         return []
     out: list[str] = []
     for item in value:
-        text = str(item).strip() if not isinstance(item, dict) else str(
-            item.get("term") or item.get("content") or item.get("text") or ""
-        ).strip()
+        text = (
+            str(item).strip()
+            if not isinstance(item, dict)
+            else str(
+                item.get("term") or item.get("content") or item.get("text") or ""
+            ).strip()
+        )
         if text:
             out.append(text)
     return out[:12]
@@ -242,13 +261,17 @@ def _owner_matches(run: MeetingAnalysisRun, owner_user_id: int) -> bool:
 
 
 def _run_has_usable_payload(run: MeetingAnalysisRun) -> bool:
-    payload = run.analysis_payload_json if isinstance(run.analysis_payload_json, dict) else {}
+    payload = (
+        run.analysis_payload_json if isinstance(run.analysis_payload_json, dict) else {}
+    )
     if not payload and hasattr(run, "analysis_payload_json"):
         # Some tests use SimpleNamespace without full analysis accessors.
         pass
     if extract_education_study_raw(payload) is not None:
         return True
-    nested = payload.get("analysis") if isinstance(payload.get("analysis"), dict) else {}
+    nested = (
+        payload.get("analysis") if isinstance(payload.get("analysis"), dict) else {}
+    )
     return bool(
         str(payload.get("summary") or nested.get("summary") or "").strip()
         or payload.get("keywords")
@@ -267,7 +290,9 @@ def _is_education_run(run: MeetingAnalysisRun) -> bool:
     prompt = (run.prompt_version or "").lower()
     if "education" in schema or "education" in prompt:
         return True
-    payload = run.analysis_payload_json if isinstance(run.analysis_payload_json, dict) else {}
+    payload = (
+        run.analysis_payload_json if isinstance(run.analysis_payload_json, dict) else {}
+    )
     return isinstance(payload.get("educationStudy"), dict) or isinstance(
         payload.get("education_study"), dict
     )

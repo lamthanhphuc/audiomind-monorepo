@@ -26,26 +26,51 @@ from app.services.study.source_resolve import resolve_study_sources
 
 def test_aggregate_partially_failed():
     assert aggregate_statuses([STATUS_COMPLETED, STATUS_FAILED]) == "PARTIALLY_FAILED"
-    assert aggregate_statuses([STATUS_COMPLETED, STATUS_COMPLETED]) != "PARTIALLY_FAILED"
+    assert (
+        aggregate_statuses([STATUS_COMPLETED, STATUS_COMPLETED]) != "PARTIALLY_FAILED"
+    )
 
 
 def test_stale_detection_helpers():
-    assert is_stale_against_current(stored_source_hash="a", current_source_hash="b") is True
-    assert is_stale_against_current(stored_source_hash="a", current_source_hash="a") is False
+    assert (
+        is_stale_against_current(stored_source_hash="a", current_source_hash="b")
+        is True
+    )
+    assert (
+        is_stale_against_current(stored_source_hash="a", current_source_hash="a")
+        is False
+    )
 
 
 def test_all_ready_hash_changes_when_ready_set_grows():
     h1 = build_source_hash(
         subject_id=1,
         source_selection_mode=MODE_ALL_READY,
-        sources=[{"meetingId": 1, "transcriptHash": "t1", "analysisRunId": 1, "analysisVersion": "v1"}],
+        sources=[
+            {
+                "meetingId": 1,
+                "transcriptHash": "t1",
+                "analysisRunId": 1,
+                "analysisVersion": "v1",
+            }
+        ],
     )
     h2 = build_source_hash(
         subject_id=1,
         source_selection_mode=MODE_ALL_READY,
         sources=[
-            {"meetingId": 1, "transcriptHash": "t1", "analysisRunId": 1, "analysisVersion": "v1"},
-            {"meetingId": 2, "transcriptHash": "t2", "analysisRunId": 2, "analysisVersion": "v1"},
+            {
+                "meetingId": 1,
+                "transcriptHash": "t1",
+                "analysisRunId": 1,
+                "analysisVersion": "v1",
+            },
+            {
+                "meetingId": 2,
+                "transcriptHash": "t2",
+                "analysisRunId": 2,
+                "analysisVersion": "v1",
+            },
         ],
     )
     assert h1 != h2
@@ -54,39 +79,87 @@ def test_all_ready_hash_changes_when_ready_set_grows():
 def test_explicit_hash_ignores_unrelated_meeting_addition():
     """EXPLICIT hash only includes selected meetings — adding outside set does not change hash."""
     selected = [
-        {"meetingId": 1, "transcriptHash": "t1", "analysisRunId": 1, "analysisVersion": "v1"},
-        {"meetingId": 2, "transcriptHash": "t2", "analysisRunId": 2, "analysisVersion": "v1"},
+        {
+            "meetingId": 1,
+            "transcriptHash": "t1",
+            "analysisRunId": 1,
+            "analysisVersion": "v1",
+        },
+        {
+            "meetingId": 2,
+            "transcriptHash": "t2",
+            "analysisRunId": 2,
+            "analysisVersion": "v1",
+        },
     ]
-    h1 = build_source_hash(subject_id=1, source_selection_mode=MODE_EXPLICIT, sources=selected)
-    h2 = build_source_hash(subject_id=1, source_selection_mode=MODE_EXPLICIT, sources=selected)
+    h1 = build_source_hash(
+        subject_id=1, source_selection_mode=MODE_EXPLICIT, sources=selected
+    )
+    h2 = build_source_hash(
+        subject_id=1, source_selection_mode=MODE_EXPLICIT, sources=selected
+    )
     assert h1 == h2
 
 
 def test_explicit_stale_when_source_leaves_or_hash_changes():
     base = [
-        {"meetingId": 1, "transcriptHash": "t1", "analysisRunId": 1, "analysisVersion": "v1"},
+        {
+            "meetingId": 1,
+            "transcriptHash": "t1",
+            "analysisRunId": 1,
+            "analysisVersion": "v1",
+        },
     ]
-    h1 = build_source_hash(subject_id=1, source_selection_mode=MODE_EXPLICIT, sources=base)
-    left = build_source_hash(subject_id=1, source_selection_mode=MODE_EXPLICIT, sources=[])
+    h1 = build_source_hash(
+        subject_id=1, source_selection_mode=MODE_EXPLICIT, sources=base
+    )
+    left = build_source_hash(
+        subject_id=1, source_selection_mode=MODE_EXPLICIT, sources=[]
+    )
     changed = build_source_hash(
         subject_id=1,
         source_selection_mode=MODE_EXPLICIT,
-        sources=[{"meetingId": 1, "transcriptHash": "CHANGED", "analysisRunId": 1, "analysisVersion": "v1"}],
+        sources=[
+            {
+                "meetingId": 1,
+                "transcriptHash": "CHANGED",
+                "analysisRunId": 1,
+                "analysisVersion": "v1",
+            }
+        ],
     )
     schema_changed = build_source_hash(
         subject_id=1,
         source_selection_mode=MODE_EXPLICIT,
-        sources=[{"meetingId": 1, "transcriptHash": "t1", "analysisRunId": 1, "analysisVersion": "v2"}],
+        sources=[
+            {
+                "meetingId": 1,
+                "transcriptHash": "t1",
+                "analysisRunId": 1,
+                "analysisVersion": "v2",
+            }
+        ],
     )
     run_changed = build_source_hash(
         subject_id=1,
         source_selection_mode=MODE_EXPLICIT,
-        sources=[{"meetingId": 1, "transcriptHash": "t1", "analysisRunId": 99, "analysisVersion": "v1"}],
+        sources=[
+            {
+                "meetingId": 1,
+                "transcriptHash": "t1",
+                "analysisRunId": 99,
+                "analysisVersion": "v1",
+            }
+        ],
     )
     assert is_stale_against_current(stored_source_hash=h1, current_source_hash=left)
     assert is_stale_against_current(stored_source_hash=h1, current_source_hash=changed)
-    assert is_stale_against_current(stored_source_hash=h1, current_source_hash=schema_changed)
-    assert is_stale_against_current(stored_source_hash=h1, current_source_hash=run_changed)
+    assert is_stale_against_current(
+        stored_source_hash=h1, current_source_hash=schema_changed
+    )
+    assert is_stale_against_current(
+        stored_source_hash=h1, current_source_hash=run_changed
+    )
 
 
 def test_idempotency_key_includes_force_token_for_regenerate():
@@ -205,7 +278,12 @@ def test_bulk_resolve_filters_other_owner_education_runs(monkeypatch):
         prompt_version="education-analysis-v1",
         schema_version="education-study-v1",
         canonical_transcript_hash="h",
-        analysis_payload_json={"educationStudy": {"overview": "secret", "sections": [{"title": "t", "summary": "s"}]}},
+        analysis_payload_json={
+            "educationStudy": {
+                "overview": "secret",
+                "sections": [{"title": "t", "summary": "s"}],
+            }
+        },
         canonical_transcript_rows=[],
         completed_at=datetime.utcnow(),
     )
@@ -248,7 +326,11 @@ def test_bulk_resolve_filters_other_owner_education_runs(monkeypatch):
     assert items[0]["meetingId"] == 101
     # Depending on owner match logic: other owner should not be treated as ready for user 1
     # If run has owner_id 999 and we request owner 1, ready should be False OR educationStudy null
-    assert items[0]["ready"] is False or items[0]["educationStudy"] is None or items[0]["analysisRunId"] is None
+    assert (
+        items[0]["ready"] is False
+        or items[0]["educationStudy"] is None
+        or items[0]["analysisRunId"] is None
+    )
 
 
 def test_mark_reserved_quota_exceeded_updates_queued_only():
@@ -297,8 +379,12 @@ def test_soft_deleted_idempotency_key_can_be_reused_conceptually():
         schema_version="flashcards-schema-v1",
         source_selection_mode=MODE_EXPLICIT,
     )
-    deleted = SimpleNamespace(id=1, idempotency_key=key, deleted_at=datetime.utcnow(), status=STATUS_COMPLETED)
-    live_after = SimpleNamespace(id=2, idempotency_key=key, deleted_at=None, status=STATUS_QUEUED)
+    deleted = SimpleNamespace(
+        id=1, idempotency_key=key, deleted_at=datetime.utcnow(), status=STATUS_COMPLETED
+    )
+    live_after = SimpleNamespace(
+        id=2, idempotency_key=key, deleted_at=None, status=STATUS_QUEUED
+    )
     active = [r for r in [deleted, live_after] if r.deleted_at is None]
     assert len(active) == 1
     assert active[0].id == 2

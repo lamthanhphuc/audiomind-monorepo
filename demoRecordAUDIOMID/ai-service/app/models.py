@@ -261,7 +261,9 @@ class SubjectSynthesisSource(Base):
     __table_args__ = (PrimaryKeyConstraint("synthesis_id", "meeting_id"),)
 
     synthesis_id = Column(
-        BigInteger, ForeignKey("subject_synthesis.id", ondelete="CASCADE"), nullable=False
+        BigInteger,
+        ForeignKey("subject_synthesis.id", ondelete="CASCADE"),
+        nullable=False,
     )
     meeting_id = Column(BigInteger, nullable=False, index=True)
     transcript_hash = Column(String(64), nullable=True)

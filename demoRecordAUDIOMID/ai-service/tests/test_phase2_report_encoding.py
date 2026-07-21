@@ -7,9 +7,11 @@ from pathlib import Path
 
 def test_phase2_report_has_no_stray_control_characters() -> None:
     report = next(
-        Path(__file__).resolve().parents[3].joinpath("docs").glob(
-            "phase2-*-implementation-report.md"
-        )
+        Path(__file__)
+        .resolve()
+        .parents[3]
+        .joinpath("docs")
+        .glob("phase2-*-implementation-report.md")
     )
     raw = report.read_bytes()
     # UTF-8 decode
