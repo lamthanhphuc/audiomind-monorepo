@@ -40,6 +40,8 @@ class Settings(BaseSettings):
     gemini_fail_fast_seconds: float = 30.0
     gemini_analysis_model: str = "gemini-2.5-flash"
     gemini_summary_model: str = "gemini-2.5-flash"
+    # Comma-separated fallbacks when preferred model is blocked for new AQ./auth keys.
+    gemini_model_fallbacks: str = "gemini-2.0-flash,gemini-2.5-flash-lite"
     gemini_analysis_domain_mode: str = "it"
     gemini_analysis_max_input_tokens: int = 12000
     gemini_analysis_max_output_tokens: int = 8192

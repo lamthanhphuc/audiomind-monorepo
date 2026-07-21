@@ -85,6 +85,11 @@ def build_analysis_analyzer(settings):
         gemini_backoff_max_ms = getattr(settings, "gemini_backoff_max_ms", 10000.0)
         gemini_backoff_jitter = getattr(settings, "gemini_backoff_jitter", True)
         gemini_fail_fast_seconds = getattr(settings, "gemini_fail_fast_seconds", 30.0)
+        gemini_model_fallbacks = getattr(
+            settings,
+            "gemini_model_fallbacks",
+            "gemini-2.0-flash,gemini-2.5-flash-lite",
+        )
         logger.info(
             "Selected analysis provider=gemini analysis_model={} summary_model={} timeout_seconds={} retry_max_attempts={}",
             settings.gemini_analysis_model,
@@ -116,6 +121,7 @@ def build_analysis_analyzer(settings):
             gemini_backoff_max_ms=gemini_backoff_max_ms,
             gemini_backoff_jitter=gemini_backoff_jitter,
             gemini_fail_fast_seconds=gemini_fail_fast_seconds,
+            gemini_model_fallbacks=gemini_model_fallbacks,
             timeout_seconds=gemini_timeout_seconds,
         )
 

@@ -124,6 +124,7 @@ class AIAnalyzer:
         gemini_backoff_max_ms: float = 10000.0,
         gemini_backoff_jitter: bool = True,
         gemini_fail_fast_seconds: float = 30.0,
+        gemini_model_fallbacks: str = "gemini-2.0-flash,gemini-2.5-flash-lite",
         ollama_base_url: str = "http://127.0.0.1:11434",
         timeout_seconds: int = 300,
         http_client_factory: Callable[..., Any] | None = None,
@@ -177,6 +178,7 @@ class AIAnalyzer:
         self.gemini_backoff_max_ms = max(0.0, float(gemini_backoff_max_ms or 0.0))
         self.gemini_backoff_jitter = bool(gemini_backoff_jitter)
         self.gemini_fail_fast_seconds = max(0.0, float(gemini_fail_fast_seconds or 0.0))
+        self.gemini_model_fallbacks = str(gemini_model_fallbacks or "").strip()
         self.ollama_base_url = (ollama_base_url or "http://127.0.0.1:11434").rstrip("/")
         self.timeout_seconds = timeout_seconds
         self.gemini_key_manager = None
@@ -221,7 +223,10 @@ class AIAnalyzer:
             except GeminiKeyConfigError as exc:
                 raise AnalysisConfigError(str(exc), provider="gemini") from exc
             from app.config import get_settings
-            from app.services.gemini_client import resolve_http_client_factory
+            from app.services.gemini_client import (
+                parse_model_fallback_list,
+                resolve_http_client_factory,
+            )
 
             settings = get_settings()
             test_mode = str(settings.gemini_client_test_mode or "").strip()
@@ -240,6 +245,9 @@ class AIAnalyzer:
                         base_factory=httpx.Client,
                     )
                 )
+            fallback_raw = self.gemini_model_fallbacks or getattr(
+                settings, "gemini_model_fallbacks", ""
+            )
             self.gemini_client = GeminiClient(
                 self.gemini_key_manager,
                 max_attempts=self.gemini_max_attempts,
@@ -250,6 +258,7 @@ class AIAnalyzer:
                 backoff_jitter=self.gemini_backoff_jitter,
                 fail_fast_seconds=self.gemini_fail_fast_seconds,
                 http_proxy=gemini_http_proxy,
+                model_fallbacks=parse_model_fallback_list(fallback_raw),
                 http_client_factory=resolved_http_client_factory,
                 sleep=time.sleep,
             )

@@ -8,7 +8,9 @@ import pytest
 from app.services.gemini_client import (
     GeminiClient,
     SafeProxyContext,
+    _is_invalid_api_key_response,
     _sanitize_proxy_for_log,
+    build_gemini_request_headers,
 )
 from app.services.gemini_key_manager import GeminiKeyManager
 
@@ -27,6 +29,118 @@ def test_safe_proxy_context_log_label() -> None:
     assert "pass" not in ctx.log_label
     assert "admin" not in ctx.log_label
     assert "127.0.0.1" in ctx.log_label
+
+
+def test_is_invalid_api_key_response_detects_ai_studio_400() -> None:
+    class Response:
+        status_code = 400
+
+        def json(self):
+            return {
+                "error": {
+                    "status": "INVALID_ARGUMENT",
+                    "message": "API key not valid. Please pass a valid API key.",
+                }
+            }
+
+    assert _is_invalid_api_key_response(Response()) is True
+
+
+def test_is_invalid_api_key_response_does_not_classify_schema_400() -> None:
+    class Response:
+        status_code = 400
+
+        def json(self):
+            return {
+                "error": {
+                    "status": "INVALID_ARGUMENT",
+                    "message": "Invalid JSON payload provided to google.ai.generativelanguage.v1beta.GenerativeService.GenerateContent",
+                }
+            }
+
+    assert _is_invalid_api_key_response(Response()) is False
+
+
+def test_build_gemini_request_headers_accepts_auth_aq_keys() -> None:
+    headers = build_gemini_request_headers("AQ.Ab8RN6K45kNmiQx3NkGhvBM9Bs_example")
+    assert headers["x-goog-api-key"].startswith("AQ.")
+    assert headers["Content-Type"] == "application/json"
+
+
+def test_build_gemini_request_headers_accepts_standard_aiza_keys() -> None:
+    headers = build_gemini_request_headers("AIzaSyExampleStandardKey")
+    assert headers["x-goog-api-key"].startswith("AIza")
+
+
+def test_model_fallback_when_preferred_blocked_for_new_users(monkeypatch) -> None:
+    manager = GeminiKeyManager.from_config(
+        gemini_api_key="",
+        gemini_api_keys="primary:AQ.Ab8RN6K45kNmiQx3NkGhvBM9Bs_example",
+        multi_key_enabled=True,
+    )
+    responses = [
+        type(
+            "R",
+            (),
+            {
+                "status_code": 404,
+                "json": lambda self: {
+                    "error": {
+                        "status": "NOT_FOUND",
+                        "message": (
+                            "This model models/gemini-2.5-flash is no longer "
+                            "available to new users. Please update your code "
+                            "to use a newer model"
+                        ),
+                    }
+                },
+                "text": "",
+                "headers": {},
+            },
+        )(),
+        type(
+            "R",
+            (),
+            {
+                "status_code": 200,
+                "json": lambda self: {"candidates": [{"content": {"parts": [{"text": "ok"}]}}]},
+                "text": "",
+                "headers": {},
+            },
+        )(),
+    ]
+    posted_urls: list[str] = []
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def post(self, url, *args, **kwargs):
+            posted_urls.append(url)
+            return responses[len(posted_urls) - 1]
+
+    client = GeminiClient(
+        manager,
+        http_client_factory=FakeClient,
+        max_attempts=1,
+        model_fallbacks=["gemini-2.0-flash"],
+        sleep=lambda seconds: None,
+    )
+    result = client.post_json(
+        url="https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+        payload={"contents": []},
+        timeout_seconds=30,
+        model="gemini-2.5-flash",
+    )
+    assert result.key_alias == "primary"
+    assert "gemini-2.5-flash" in posted_urls[0]
+    assert "gemini-2.0-flash" in posted_urls[1]
 
 
 def test_http_success_does_not_clear_model_marker(monkeypatch) -> None:

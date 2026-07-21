@@ -163,6 +163,37 @@ def _is_region_blocked_message(message: str) -> bool:
     return "location is not supported" in lowered
 
 
+def _is_invalid_api_key_response(response: Any) -> bool:
+    """True when the failure is key auth, not a malformed generateContent payload."""
+    status_code = int(getattr(response, "status_code", 0) or 0)
+    if status_code in {401, 403}:
+        return True
+    if status_code != 400:
+        return False
+    reason = _response_reason(response)
+    if reason in {"UNAUTHENTICATED", "PERMISSION_DENIED"}:
+        return True
+    message = str(_response_error_message(response) or "").strip().lower()
+    if not message:
+        return False
+    invalid_key_markers = (
+        "api key not valid",
+        "invalid api key",
+        "api_key_invalid",
+        "api key expired",
+        "expired api key",
+        "invalid api-key",
+        "missing api key",
+    )
+    if any(marker in message for marker in invalid_key_markers):
+        return True
+    if "api key" in message and any(
+        token in message for token in ("not valid", "invalid", "expired", "missing")
+    ):
+        return True
+    return False
+
+
 def is_model_unavailable_response(response: Any) -> bool:
     """True only when status + body indicate the *model* is unavailable for this key."""
     status_code = int(getattr(response, "status_code", 0) or 0)
@@ -213,6 +244,70 @@ def extract_model_from_gemini_url(url: str) -> str:
     if not match:
         return ""
     return GeminiKeyManager.normalize_model_name(match.group(1))
+
+
+def replace_model_in_gemini_url(url: str, model: str) -> str:
+    """Swap the model segment in a generateContent URL."""
+    normalized = GeminiKeyManager.normalize_model_name(model)
+    if not normalized:
+        return str(url or "")
+    return re.sub(
+        r"(/models/)([^/:]+)(:)",
+        rf"\g<1>{normalized}\g<3>",
+        str(url or ""),
+        count=1,
+    )
+
+
+def parse_model_fallback_list(raw_value: str | None) -> list[str]:
+    models: list[str] = []
+    seen: set[str] = set()
+    for part in str(raw_value or "").split(","):
+        normalized = GeminiKeyManager.normalize_model_name(part)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        models.append(normalized)
+    return models
+
+
+def resolve_model_candidates(
+    primary: str | None,
+    *,
+    fallbacks: list[str] | None = None,
+) -> list[str]:
+    """Preferred model first, then configured fallbacks (for AQ/new-project keys)."""
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for candidate in [primary or "", *(fallbacks or [])]:
+        normalized = GeminiKeyManager.normalize_model_name(candidate)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        ordered.append(normalized)
+    return ordered
+
+
+def build_gemini_request_headers(api_key: str) -> dict[str, str]:
+    """Build auth headers for Standard (AIza) and Auth (AQ.) AI Studio keys.
+
+    Both key types authenticate to generativelanguage.googleapis.com via
+    ``x-goog-api-key``. Auth keys from AI Studio start with ``AQ.`` and must
+    not be rejected or coerced to the legacy ``AIza`` format.
+    """
+    secret = str(api_key or "").strip()
+    if not secret:
+        raise ValueError("Gemini API key must not be empty")
+    return {
+        "Content-Type": "application/json",
+        "x-goog-api-key": secret,
+    }
+
+
+DEFAULT_GEMINI_MODEL_FALLBACKS = (
+    "gemini-2.0-flash",
+    "gemini-2.5-flash-lite",
+)
 
 
 _TERMINAL_KEY_FAILURE_REASONS = frozenset(
@@ -489,6 +584,7 @@ class GeminiClient:
         backoff_jitter: bool = True,
         fail_fast_seconds: float = 30.0,
         http_proxy: str = "",
+        model_fallbacks: list[str] | tuple[str, ...] | None = None,
         http_client_factory: Callable[..., Any] = httpx.Client,
         sleep: Callable[[float], None] = time.sleep,
         clock: Callable[[], float] = time.monotonic,
@@ -506,10 +602,44 @@ class GeminiClient:
         self.fail_fast_seconds = max(0.0, float(fail_fast_seconds or 0.0))
         self.http_proxy = _normalize_gemini_proxy_url(http_proxy)
         self.proxy_context = SafeProxyContext(self.http_proxy)
+        if model_fallbacks is None:
+            self.model_fallbacks = list(DEFAULT_GEMINI_MODEL_FALLBACKS)
+        else:
+            self.model_fallbacks = parse_model_fallback_list(
+                ",".join(str(item) for item in model_fallbacks)
+            )
         self.http_client_factory = http_client_factory
         self.sleep = sleep
         self.clock = clock
         self.random_float = random_float
+
+    def _try_model_fallback(
+        self,
+        *,
+        url: str,
+        model_name: str,
+        model_candidates: list[str],
+        tried_models: set[str],
+        entry_alias: str,
+        attempted_aliases: set[str],
+    ) -> tuple[str, str, str | None] | None:
+        """Return (url, model, sticky_alias) when another model can be tried."""
+        tried_models.add(model_name)
+        for candidate in model_candidates:
+            if candidate in tried_models:
+                continue
+            next_url = replace_model_in_gemini_url(url, candidate)
+            if next_url == url and candidate == model_name:
+                continue
+            attempted_aliases.discard(entry_alias)
+            logger.warning(
+                "GEMINI_MODEL_FALLBACK alias={} fromModel={} toModel={}",
+                entry_alias,
+                model_name,
+                candidate,
+            )
+            return next_url, candidate, entry_alias
+        return None
 
     def post_json(
         self,
@@ -527,12 +657,20 @@ class GeminiClient:
         same_alias_transient_retries: dict[str, int] = {}
         retry_after_seconds = 0
         sticky_alias = str(preferred_key_alias or "").strip() or None
+        request_url = str(url)
         model_name = GeminiKeyManager.normalize_model_name(
             model
-        ) or extract_model_from_gemini_url(url)
-        # Always allow one attempt per configured key so backup keys are not
-        # skipped when gemini_max_attempts is smaller than the pool size.
-        loop_attempts = max(self.max_attempts, len(self.key_manager.entries))
+        ) or extract_model_from_gemini_url(request_url)
+        model_candidates = resolve_model_candidates(
+            model_name, fallbacks=self.model_fallbacks
+        )
+        tried_models: set[str] = set()
+        # Allow one attempt per key×model so AQ/new-project keys can fall back
+        # when gemini-2.5-flash is blocked for new users.
+        loop_attempts = max(
+            self.max_attempts,
+            len(self.key_manager.entries) * max(1, len(model_candidates)),
+        )
 
         client_timeout = self._per_attempt_timeout(started, timeout_seconds)
         with self.http_client_factory(timeout=client_timeout) as client:
@@ -664,20 +802,18 @@ class GeminiClient:
                 if sticky_alias and entry.alias != sticky_alias:
                     sticky_alias = None
 
-                headers = {
-                    "Content-Type": "application/json",
-                    "x-goog-api-key": entry.secret,
-                }
+                headers = build_gemini_request_headers(entry.secret)
                 logger.info(
-                    "GEMINI_KEY_SELECTED alias={} attempt={} sticky={} model={}",
+                    "GEMINI_KEY_SELECTED alias={} attempt={} sticky={} model={} keyType={}",
                     entry.alias,
                     attempt,
                     bool(preferred_key_alias and entry.alias == preferred_key_alias),
                     model_name or "",
+                    "auth" if entry.secret.startswith("AQ.") else "standard",
                 )
                 try:
                     response = client.post(
-                        url,
+                        request_url,
                         headers=headers,
                         json=payload,
                         timeout=per_attempt_timeout,
@@ -795,6 +931,18 @@ class GeminiClient:
                         self.key_manager.mark_model_unsupported(
                             entry.alias, model_name
                         )
+                        fallback = self._try_model_fallback(
+                            url=request_url,
+                            model_name=model_name,
+                            model_candidates=model_candidates,
+                            tried_models=tried_models,
+                            entry_alias=entry.alias,
+                            attempted_aliases=attempted_aliases,
+                        )
+                        if fallback is not None:
+                            request_url, model_name, sticky_alias = fallback
+                            failures_by_alias.pop(entry.alias, None)
+                            continue
                         last_error = AnalysisUnavailableError(
                             error_message
                             or "Gemini model is not available for this API key",
@@ -803,6 +951,32 @@ class GeminiClient:
                             retryable=True,
                             key_alias=entry.alias,
                         )
+                        if attempt >= loop_attempts:
+                            break
+                        continue
+                    if _is_invalid_api_key_response(response):
+                        failures_by_alias[entry.alias] = (
+                            GeminiKeyFailureReason.AUTH_ERROR
+                        )
+                        self.key_manager.hard_cooldown_key(
+                            entry.alias,
+                            seconds=self.key_hard_cooldown_seconds,
+                            reason="invalid_key",
+                        )
+                        logger.warning(
+                            "GEMINI_KEY_COOLDOWN alias={} cooldownMs={} reason=invalid_key httpStatus={}",
+                            entry.alias,
+                            int(self.key_hard_cooldown_seconds * 1000),
+                            status_code,
+                        )
+                        last_error = AnalysisConfigError(
+                            error_message
+                            or "Gemini API key was rejected or is missing",
+                            provider="gemini",
+                            error_code="GEMINI_INVALID_KEY",
+                            key_alias=entry.alias,
+                        )
+                        sticky_alias = None
                         if attempt >= loop_attempts:
                             break
                         continue
@@ -909,6 +1083,19 @@ class GeminiClient:
                         entry.alias,
                         model_name or "",
                     )
+                    if model_name:
+                        fallback = self._try_model_fallback(
+                            url=request_url,
+                            model_name=model_name,
+                            model_candidates=model_candidates,
+                            tried_models=tried_models,
+                            entry_alias=entry.alias,
+                            attempted_aliases=attempted_aliases,
+                        )
+                        if fallback is not None:
+                            request_url, model_name, sticky_alias = fallback
+                            failures_by_alias.pop(entry.alias, None)
+                            continue
                     last_error = AnalysisUnavailableError(
                         error_message
                         or "Gemini model is not available for this API key",

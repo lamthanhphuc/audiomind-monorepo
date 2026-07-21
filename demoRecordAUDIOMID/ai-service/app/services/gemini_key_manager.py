@@ -173,6 +173,7 @@ def _validate_key(value: str) -> str:
     secret = str(value or "").strip()
     if not secret:
         raise _safe_config_error("key must not be empty")
+    # Accept both Standard keys (AIza...) and Auth keys (AQ....) from AI Studio.
     return secret
 
 

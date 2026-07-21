@@ -245,6 +245,26 @@ def test_gemini_multi_key_invalid_key_then_valid_key_succeeds(monkeypatch):
     assert _request_keys(fake_client) == ["key-a", "key-b"]
 
 
+def test_gemini_multi_key_invalid_api_key_400_then_valid_key_succeeds(monkeypatch):
+    """AI Studio returns HTTP 400 INVALID_ARGUMENT for bad API keys."""
+    fake_client = _FakeClient(
+        [
+            _FakeResponse(
+                400,
+                text='{"error":{"status":"INVALID_ARGUMENT","message":"API key not valid. Please pass a valid API key."}}',
+            ),
+            _success_response("Backup after 400 invalid key"),
+        ]
+    )
+    monkeypatch.setattr(AI_MODULE.httpx, "Client", lambda timeout: fake_client)
+
+    analyzer = _analyzer_with_multi_key()
+    result = analyzer._analyze_with_gemini("Speaker 1: safe transcript")
+
+    assert result["summary"] == "Backup after 400 invalid key"
+    assert _request_keys(fake_client) == ["key-a", "key-b"]
+
+
 def test_gemini_multi_key_attempt_budget_covers_all_configured_keys(monkeypatch):
     """max_attempts may be smaller than pool size; still try every key once."""
     fake_client = _FakeClient(
