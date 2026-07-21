@@ -158,6 +158,7 @@ for key in "${required_env_keys[@]}"; do
   if is_placeholder_value "$value"; then
     fail "placeholder value remains for required env key: $key"
   fi
+  # shellcheck disable=SC2016
   if requires_literal_public_url "$key" && [[ "$value" == *'$'* || "$value" == *'${'* || "$value" == *'}'* ]]; then
     fail "public URL env key must be literal, not nested env reference: $key"
   fi

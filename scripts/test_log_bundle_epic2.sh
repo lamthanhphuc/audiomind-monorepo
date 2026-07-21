@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SAMPLE_LOG="$(mktemp)"
 trap 'rm -f "$SAMPLE_LOG"' EXIT
 
@@ -20,7 +19,7 @@ noise line without markers should be ignored
 EOF
 
 PATTERN='UPLOAD_VALIDATION_|MIME_MISMATCH|REALTIME_VALIDATION_|UPLOAD_SCAN_|UPLOAD_SCAN_CIRCUIT_OPEN'
-MATCHES="$(grep -E "$PATTERN" "$SAMPLE_LOG" | wc -l | tr -d ' ')"
+MATCHES="$(grep -Ec "$PATTERN" "$SAMPLE_LOG" || true)"
 
 if [[ "$MATCHES" -lt 9 ]]; then
   printf 'Expected at least 9 Epic 2 log markers, found %s\n' "$MATCHES" >&2

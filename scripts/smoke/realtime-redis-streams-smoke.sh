@@ -26,12 +26,11 @@ fi
 
 echo "OK: ${PROCESSING_COUNT} processing-api replica(s) running"
 
-for port in "${PROCESSING_API_HOST_PORT:-8082}"; do
-  if curl -fsS "http://127.0.0.1:${port}/ready" >/dev/null; then
-    echo "OK: processing-api ready on :${port}"
-    exit 0
-  fi
-done
+port="${PROCESSING_API_HOST_PORT:-8082}"
+if curl -fsS "http://127.0.0.1:${port}/ready" >/dev/null; then
+  echo "OK: processing-api ready on :${port}"
+  exit 0
+fi
 
 echo "FAIL: no processing-api /ready on expected port"
 exit 1

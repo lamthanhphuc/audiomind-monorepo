@@ -23,7 +23,6 @@ WARN_AVAILABLE_KB="${AUDIOMIND_BACKUP_WARN_AVAILABLE_KB:-5242880}"
 tmp_file="${BACKUP_FILE}.tmp.$$"
 sha_file="${BACKUP_FILE}.sha256"
 sha_tmp="${sha_file}.tmp.$$"
-lock_acquired=0
 
 fail() {
   printf 'ERROR: %s\n' "$*" >&2
@@ -80,7 +79,6 @@ acquire_lock() {
   if ! flock -n 9; then
     fail "another Audiomind backup is already running; lock=$LOCK_FILE"
   fi
-  lock_acquired=1 # shellcheck disable=SC2034
 }
 
 cleanup_retention() {

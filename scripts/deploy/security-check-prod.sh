@@ -230,6 +230,7 @@ check_env_file() {
       fail_check "placeholder value remains for required env key: $key"
       continue
     fi
+    # shellcheck disable=SC2016
     if requires_literal_public_url "$key" && [[ "$value" == *'$'* || "$value" == *'${'* || "$value" == *'}'* ]]; then
       fail_check "public URL env key must be literal, not nested env reference: $key"
       continue
