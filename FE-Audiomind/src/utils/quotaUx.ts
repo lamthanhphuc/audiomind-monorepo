@@ -51,6 +51,10 @@ export function isProviderGeminiQuota(signal: QuotaSignal): boolean {
   return code === 'GEMINI_QUOTA_EXHAUSTED'
 }
 
+export function isGeminiBillingBlocked(signal: QuotaSignal): boolean {
+  return normalizeErrorCode(signal.errorCode) === 'GEMINI_BILLING_CREDITS_DEPLETED'
+}
+
 export function quotaBlockedAnalysisStatus(errorCode?: string): 'QUOTA_BLOCKED' | undefined {
   const code = normalizeErrorCode(errorCode)
   return code === 'QUOTA_EXCEEDED' ? 'QUOTA_BLOCKED' : undefined

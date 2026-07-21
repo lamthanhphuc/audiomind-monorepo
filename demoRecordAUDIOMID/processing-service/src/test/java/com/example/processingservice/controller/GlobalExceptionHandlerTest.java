@@ -74,4 +74,23 @@ class GlobalExceptionHandlerTest {
         assertEquals("Unexpected server error", body.message());
         assertTrue(body.traceId() != null && !body.traceId().isBlank());
     }
+
+    @Test
+    void conflictSourceMeetingsNotReady_shouldMapCanonicalErrorCode() {
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        request.addHeader("X-Trace-Id", "trace-syn");
+        request.setRequestURI("/processing/subjects/1/synthesis");
+
+        ResponseEntity<ApiErrorResponse> response = handler.handleResponseStatus(
+                new ResponseStatusException(HttpStatus.CONFLICT, "SOURCE_MEETINGS_NOT_READY"),
+                request);
+
+        ApiErrorResponse body = response.getBody();
+        assertNotNull(body);
+        assertEquals(HttpStatus.CONFLICT, response.getStatusCode());
+        assertEquals("SOURCE_MEETINGS_NOT_READY", body.error());
+        assertEquals("SOURCE_MEETINGS_NOT_READY", body.errorCode());
+        assertEquals(ErrorCode.SOURCE_MEETINGS_NOT_READY.displayMessage(true), body.message());
+        assertEquals("trace-syn", body.traceId());
+    }
 }

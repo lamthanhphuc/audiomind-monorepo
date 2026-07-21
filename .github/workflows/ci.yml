@@ -77,6 +77,7 @@ jobs:
         run: |
           cd FE-Audiomind
           npm test
+          npm run build
           npx tsc --noEmit
           cd ..
           cd demoRecordAUDIOMID
@@ -88,6 +89,36 @@ jobs:
       - name: Note E2E
         run: |
           echo "Full-stack E2E runs in smoke-test.yml (PR/nightly) when E2E_USERNAME/E2E_PASSWORD secrets are set."
+
+  compose-unified:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Compose config (local + VPS examples)
+        run: |
+          docker compose --env-file infra/.env.local.example \
+            -f infra/docker-compose.dev.yml -f infra/docker-compose.mvp.yml config --quiet
+          docker compose --env-file infra/.env.vps.example \
+            -f infra/docker-compose.dev.yml -f infra/docker-compose.mvp.yml \
+            -f infra/docker-compose.prod.yml config --quiet
+
+      - name: Unified compose + migration graph tests
+        run: |
+          pip install pytest
+          python -m pytest \
+            tests/test_compose_unified_layers.py \
+            tests/test_generate_vps_db_url.py \
+            tests/test_smoke_vps_public_rules.py \
+            tests/test_deploy_vps_build_once.py \
+            tests/test_vps_shared_uploads_volume.py \
+            tests/test_migration_history_completeness.py \
+            -q
 
   contract-check:
     runs-on: ubuntu-latest
@@ -177,6 +208,81 @@ jobs:
             npx commitlint --from HEAD~1 --to HEAD --verbose
           fi
 
+  bash-lf-shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Verify shell scripts are executable
+        run: |
+          status=0
+          while IFS= read -r script; do
+            if [ ! -x "$script" ]; then
+              echo "FAIL: $script is not executable (run: git update-index --chmod=+x $script)"
+              status=1
+            fi
+          done < <(git ls-files '*.sh' '*.bash')
+          exit "$status"
+
+      - name: Verify LF line endings for shell scripts
+        run: python scripts/check-bash-lf.py
+
+      - name: Bash syntax check
+        run: |
+          while IFS= read -r script; do
+            bash -n "$script"
+          done < <(git ls-files '*.sh' '*.bash')
+
+      - name: Install ShellCheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
+      - name: ShellCheck shell scripts
+        run: |
+          while IFS= read -r script; do
+            shellcheck "$script"
+          done < <(git ls-files '*.sh' '*.bash')
+
+      - name: Validate rendered-k8s unit tests
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyyaml pytest
+          pytest scripts/test_validate_rendered_k8s.py -q --tb=short
+
+  vps-compose-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Docker Compose config (VPS layered stack)
+        run: |
+          docker compose \
+            --env-file infra/.env.vps.test \
+            -f infra/docker-compose.dev.yml \
+            -f infra/docker-compose.mvp.yml \
+            -f infra/docker-compose.prod.yml \
+            config >/tmp/vps-compose.resolved.yml
+          test -s /tmp/vps-compose.resolved.yml
+          grep -q 'celery-beat' /tmp/vps-compose.resolved.yml
+          grep -q '  web:' /tmp/vps-compose.resolved.yml
+          # Postgres/Redis must not publish host ports once mvp/prod overlays are applied
+          ! grep -E '5432:5432|6379:6379' /tmp/vps-compose.resolved.yml \
+            && echo "PASS: postgres/redis not publicly published"
+
+      - name: Bash syntax for VPS scripts
+        run: |
+          bash -n scripts/deploy-vps.sh
+          bash -n scripts/deploy-local.sh
+          bash -n scripts/vps-migrate.sh
+          bash -n scripts/smoke-vps.sh
+          bash -n scripts/backup-vps.sh
+
   gate-a:
     runs-on: ubuntu-latest
 
@@ -205,3 +311,255 @@ jobs:
 
       - name: Run Gate-A verification
         run: bash scripts/ci/gate-a-verify.sh
+
+  quota-postgres-concurrency:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Run QuotaConcurrencyTest (required Postgres / Docker)
+        env:
+          REQUIRE_POSTGRES_CONCURRENCY_TESTS: "true"
+        run: |
+          cd demoRecordAUDIOMID
+          chmod +x ./mvnw
+          ./mvnw -pl user-service -Pquota-postgres-it test --no-transfer-progress
+
+      - name: Verify QuotaConcurrencyTest Surefire results
+        run: node scripts/verify-quota-concurrency-results.mjs
+
+  k8s-runtime-validation:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install Python deps for AI tests
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyyaml pytest
+          if [ -f demoRecordAUDIOMID/ai-service/requirements.txt ]; then
+            pip install -r demoRecordAUDIOMID/ai-service/requirements.txt
+          elif [ -f demoRecordAUDIOMID/ai-service/requirements-dev.txt ]; then
+            pip install -r demoRecordAUDIOMID/ai-service/requirements-dev.txt
+          fi
+
+      - name: Verify kubectl client
+        run: kubectl version --client
+
+      - name: Render overlays
+        run: |
+          kubectl kustomize k8s/overlays/dev --load-restrictor=LoadRestrictionsNone > rendered-dev.yaml
+          kubectl kustomize k8s/overlays/staging --load-restrictor=LoadRestrictionsNone > rendered-staging.yaml
+          kubectl kustomize k8s/overlays/prod --load-restrictor=LoadRestrictionsNone > rendered-prod.yaml
+
+      - name: Structural Secret/ConfigMap validation
+        run: |
+          python scripts/validate-rendered-k8s.py rendered-dev.yaml --environment dev
+          python scripts/validate-rendered-k8s.py rendered-staging.yaml --environment staging
+          python scripts/validate-rendered-k8s.py rendered-prod.yaml --environment prod
+
+      - name: Required rendered component Settings tests
+        env:
+          REQUIRE_K8S_RENDER_TESTS: "true"
+        working-directory: demoRecordAUDIOMID/ai-service
+        run: |
+          pytest tests/test_k8s_rendered_component_settings.py -q --tb=short
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Java JWT startup validator tests
+        run: |
+          cd demoRecordAUDIOMID
+          chmod +x ./mvnw
+          ./mvnw -pl meeting-service,processing-service,user-service \
+            -Dtest=StartupConfigValidatorTest test --no-transfer-progress
+
+  k8s-managed-database-validation:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install Python deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyyaml pytest
+          if [ -f demoRecordAUDIOMID/ai-service/requirements.txt ]; then
+            pip install -r demoRecordAUDIOMID/ai-service/requirements.txt
+          fi
+          if [ -f demoRecordAUDIOMID/ai-service/requirements-dev.txt ]; then
+            pip install -r demoRecordAUDIOMID/ai-service/requirements-dev.txt
+          fi
+
+      - name: Verify kubectl client
+        run: kubectl version --client
+
+      - name: Render overlays
+        run: |
+          kubectl kustomize k8s/overlays/dev --load-restrictor=LoadRestrictionsNone > rendered-dev.yaml
+          kubectl kustomize k8s/overlays/staging --load-restrictor=LoadRestrictionsNone > rendered-staging.yaml
+          kubectl kustomize k8s/overlays/prod --load-restrictor=LoadRestrictionsNone > rendered-prod.yaml
+
+      - name: Structural managed database validation
+        run: |
+          python scripts/validate-rendered-k8s.py rendered-dev.yaml --environment dev
+          python scripts/validate-rendered-k8s.py rendered-staging.yaml --environment staging
+          python scripts/validate-rendered-k8s.py rendered-prod.yaml --environment prod
+
+      - name: Required managed database render tests
+        env:
+          REQUIRE_K8S_RENDER_TESTS: "true"
+        working-directory: demoRecordAUDIOMID/ai-service
+        run: |
+          pytest tests/test_k8s_rendered_component_settings.py \
+            tests/test_k8s_managed_database_wiring.py -q --tb=short
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Spring datasource context + Flyway tests
+        env:
+          REQUIRE_DATASOURCE_CONTEXT_TESTS: "true"
+        run: |
+          cd demoRecordAUDIOMID
+          chmod +x ./mvnw
+          ./mvnw -pl meeting-service,user-service \
+            -Dtest=DatasourceContextStartupTest,DatasourceContextFailureTest,StartupConfigValidatorTest \
+            test --no-transfer-progress
+
+      - name: AI SQLAlchemy + Alembic database startup
+        env:
+          REQUIRE_DATASOURCE_CONTEXT_TESTS: "true"
+        working-directory: demoRecordAUDIOMID/ai-service
+        run: |
+          pytest tests/test_database_startup.py -q --tb=short
+
+      - name: Migration order integration + Beat subprocess
+        env:
+          REQUIRE_DATASOURCE_CONTEXT_TESTS: "true"
+        working-directory: demoRecordAUDIOMID/ai-service
+        run: |
+          pytest tests/test_migration_order_integration.py \
+            tests/test_beat_subprocess_startup.py -q --tb=short
+
+  k8s-schema-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyyaml
+
+      - name: Verify kubectl client
+        run: kubectl version --client
+
+      - name: Install kubeconform
+        run: |
+          set -euo pipefail
+          KUBECONFORM_VERSION=v0.6.7
+          KUBECONFORM_SHA256=95f14e87aa28c09d5941f11bd024c1d02fdc0303ccaa23f61cef67bc92619d73
+          curl -fsSL -o /tmp/kubeconform.tgz \
+            "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
+          echo "${KUBECONFORM_SHA256}  /tmp/kubeconform.tgz" | sha256sum -c -
+          tar -xzf /tmp/kubeconform.tgz -C /tmp
+          sudo mv /tmp/kubeconform /usr/local/bin/kubeconform
+          kubeconform -v
+
+      - name: Render overlays
+        run: |
+          kubectl kustomize k8s/overlays/dev --load-restrictor=LoadRestrictionsNone > rendered-dev.yaml
+          kubectl kustomize k8s/overlays/staging --load-restrictor=LoadRestrictionsNone > rendered-staging.yaml
+          kubectl kustomize k8s/overlays/prod --load-restrictor=LoadRestrictionsNone > rendered-prod.yaml
+
+      - name: Structural validation (merge / code-only for staging/prod)
+        run: |
+          python scripts/validate-rendered-k8s.py rendered-dev.yaml --environment dev
+          python scripts/validate-rendered-k8s.py rendered-staging.yaml --environment staging
+          python scripts/validate-rendered-k8s.py rendered-prod.yaml --environment prod
+
+      - name: kubeconform (built-in resources)
+        run: |
+          kubeconform -strict -summary -ignore-missing-schemas rendered-dev.yaml
+          kubeconform -strict -summary -ignore-missing-schemas rendered-staging.yaml
+          kubeconform -strict -summary -ignore-missing-schemas rendered-prod.yaml
+
+  staging-deploy-preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyyaml
+
+      - name: Verify kubectl client
+        run: kubectl version --client
+
+      - name: Render staging
+        run: |
+          kubectl kustomize k8s/overlays/staging --load-restrictor=LoadRestrictionsNone > rendered-staging.yaml
+
+      - name: Deploy-ready gate must fail closed without real SealedSecrets
+        run: |
+          set +e
+          python scripts/validate-rendered-k8s.py rendered-staging.yaml \
+            --environment staging --deploy-ready
+          code=$?
+          set -e
+          if [ "$code" -eq 0 ]; then
+            echo "FAIL: --deploy-ready unexpectedly passed without sealed ciphertext"
+            exit 1
+          fi
+          echo "PASS: staging --deploy-ready fail-closed without real SealedSecrets (exit=$code)"
+
+      - name: Merge-mode staging render still valid
+        run: |
+          python scripts/validate-rendered-k8s.py rendered-staging.yaml --environment staging

@@ -103,6 +103,12 @@ if ! AUDIOMIND_BACKUP_LOCK_HELD=1 \
   fail "uploads backup failed after Postgres backup completed"
 fi
 
+postgres_path=""
+postgres_sha256=""
+postgres_size_bytes=0
+uploads_path=""
+uploads_sha256=""
+uploads_size_bytes=0
 read_result postgres "$postgres_result"
 read_result uploads "$uploads_result"
 

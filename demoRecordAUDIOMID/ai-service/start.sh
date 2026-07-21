@@ -11,6 +11,7 @@ if [ ! -d "venv" ]; then
 fi
 
 # Activate virtual environment
+# shellcheck disable=SC1091
 source venv/bin/activate
 
 # Install dependencies

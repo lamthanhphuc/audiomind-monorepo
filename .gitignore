@@ -21,7 +21,14 @@ coverage/
 **/*.py[cod]
 **/.pytest_cache/
 **/.mypy_cache/
+**/.ruff_cache/
 **/venv/
+.venv/
+.venv-*/
+.venv311/
+**/.venv/
+**/.venv-*/
+**/.venv311/
 /.venv-ai311/
 
 # IDE / OS
@@ -42,6 +49,19 @@ logs/ci-fix/
 .env.local
 !.env.example
 !.env.production.example
+!.env.local.example
+!.env.vps.example
+!infra/.env.local.example
+!infra/.env.vps.example
+!infra/.env.vps.test
+!**/.env.example
+!**/.env.local.example
+!**/.env.vps.example
+.env.production
+
+# VPS backups
+backups/
+*.sql.gz
 
 # Temp artifacts
 **/temp/
@@ -87,6 +107,17 @@ contextcaddy-config.json
 # Local review / verification artifacts (keep outside the repo)
 /review-*/
 /review-fixed/
+/backups/
 /*-review-bundle.zip
 /working-tree.patch
 /staged.patch
+/rendered-*.yaml
+rendered-dev.yaml
+rendered-prod.yaml
+rendered-staging.yaml
+k8s/overlays/*/sealed-secret.generated.yaml
+k8s/overlays/*/sealed-db-secret.generated.yaml
+**/sealed-secret.generated.yaml
+**/sealed-db-secret.generated.yaml
+
+.env.production.test

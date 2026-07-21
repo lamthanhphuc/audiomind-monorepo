@@ -1,8 +1,8 @@
 from dataclasses import dataclass
 from datetime import datetime
 import hashlib
+import json
 from typing import Any
-from uuid import uuid4
 
 from sqlalchemy import and_
 from sqlalchemy.orm import Session
@@ -31,9 +31,20 @@ ANALYSIS_IN_PROGRESS_STATUSES = {ANALYSIS_STATUS_ANALYZING}
 ANALYSIS_RETRYABLE_FAILURE_STATUSES = {
     ANALYSIS_STATUS_FAILED,
     ANALYSIS_STATUS_FAILED_RETRYABLE,
-    ANALYSIS_STATUS_QUOTA_BLOCKED,
     ANALYSIS_STATUS_RATE_LIMITED,
 }
+TERMINAL_GEMINI_FAILURE_CODES = frozenset(
+    {
+        "GEMINI_BILLING_CREDITS_DEPLETED",
+        "GEMINI_DAILY_QUOTA_EXHAUSTED",
+        "GEMINI_FREE_TIER_TOKEN_QUOTA_EXHAUSTED",
+        "GEMINI_INVALID_KEY",
+        "GEMINI_INVALID_REQUEST",
+        "GEMINI_MODEL_UNAVAILABLE",
+        "GEMINI_COST_LIMIT_EXCEEDED",
+        "GEMINI_COST_GUARD_UNAVAILABLE",
+    }
+)
 ANALYSIS_STALE_REASON_FIELDS = (
     ("canonical_transcript_hash", "transcript_hash_changed"),
     ("canonical_transcript_version", "canonical_version_changed"),
@@ -65,6 +76,7 @@ class AnalysisCacheIdentity:
     recording_session_id: int | None = None
     attempt_id: int | None = None
     normalized_domain_mode: str = "it"
+    generation_config_hash: str = ""
 
 
 def _clean_text(value: Any) -> str:
@@ -133,6 +145,27 @@ def _analysis_feature_set(payload: dict[str, Any]) -> str | None:
     )
 
 
+def _generation_config_hash(analyzer: Any) -> str:
+    if not any(
+        hasattr(analyzer, attribute)
+        for attribute in (
+            "gemini_temperature",
+            "gemini_thinking_level",
+            "structured_analysis_max_output_tokens",
+        )
+    ):
+        return ""
+    config = {
+        "temperature": getattr(analyzer, "gemini_temperature", None),
+        "thinking_level": getattr(analyzer, "gemini_thinking_level", None),
+        "structured_max_output_tokens": getattr(
+            analyzer, "structured_analysis_max_output_tokens", None
+        ),
+    }
+    encoded = json.dumps(config, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:16]
+
+
 def _latest_canonical_transcript(db: Session, meeting_id: int) -> Transcript | None:
     return (
         db.query(Transcript)
@@ -192,6 +225,7 @@ def build_analysis_run_idempotency_key(
     recording_session_id: int | None = None,
     attempt_id: int | None = None,
     normalized_domain_mode: str = "it",
+    generation_config_hash: str = "",
 ) -> str:
     parts = [
         str(meeting_id),
@@ -208,6 +242,7 @@ def build_analysis_run_idempotency_key(
         _clean_text(transcript_language).lower(),
         _clean_text(analysis_feature_set).lower(),
         _clean_text(normalized_domain_mode).lower(),
+        _clean_text(generation_config_hash).lower(),
         "" if recording_session_id is None else str(recording_session_id),
         "" if attempt_id is None else str(attempt_id),
     ]
@@ -234,6 +269,7 @@ def build_analysis_run_idempotency_key_for_identity(
         recording_session_id=identity.recording_session_id,
         attempt_id=identity.attempt_id,
         normalized_domain_mode=identity.normalized_domain_mode,
+        generation_config_hash=identity.generation_config_hash,
     )
 
 
@@ -247,6 +283,12 @@ def normalize_analysis_mode(value: Any) -> str:
     }:
         return mode
     return ANALYSIS_MODE_AUTO
+
+
+def is_analysis_run_retryable(run: MeetingAnalysisRun | None) -> bool:
+    if run is None or run.status not in ANALYSIS_RETRYABLE_FAILURE_STATUSES:
+        return False
+    return _clean_text(run.error_code).upper() not in TERMINAL_GEMINI_FAILURE_CODES
 
 
 def build_analysis_cache_identity(
@@ -295,6 +337,7 @@ def build_analysis_cache_identity(
         recording_session_id=provenance.recording_session_id,
         attempt_id=provenance.attempt_id,
         normalized_domain_mode=_clean_text(normalized_domain_mode).lower() or "it",
+        generation_config_hash=_generation_config_hash(analyzer),
     )
 
 
@@ -499,6 +542,7 @@ def begin_analysis_run(
     mode: str = ANALYSIS_MODE_AUTO,
     requested_by: str | None = None,
     rerun_reason: str | None = None,
+    reanalysis_generation: int = 0,
 ) -> tuple[MeetingAnalysisRun, bool]:
     normalized_mode = normalize_analysis_mode(mode)
     existing_in_progress = find_in_progress_analysis_run_for_identity(db, identity)
@@ -506,11 +550,18 @@ def begin_analysis_run(
         return existing_in_progress, False
 
     if normalized_mode == ANALYSIS_MODE_FORCE:
+        generation = max(1, int(reanalysis_generation or 1))
         idempotency_key = (
             f"{build_analysis_run_idempotency_key_for_identity(identity)}:"
-            f"force:{uuid4().hex}"
+            f"force:{generation}"
         )
-        run = None
+        run = (
+            db.query(MeetingAnalysisRun)
+            .filter(MeetingAnalysisRun.idempotency_key == idempotency_key)
+            .first()
+        )
+        if run is not None:
+            return run, False
     else:
         idempotency_key = build_analysis_run_idempotency_key_for_identity(identity)
         run = (
@@ -518,6 +569,8 @@ def begin_analysis_run(
             .filter(MeetingAnalysisRun.idempotency_key == idempotency_key)
             .first()
         )
+        if run is not None and not is_analysis_run_retryable(run):
+            return run, False
 
     now = datetime.utcnow()
     if run is None:
@@ -745,10 +798,7 @@ def analysis_run_response_metadata(
         metadata["recordingSessionId"] = int(run.recording_session_id)
     if run.attempt_id is not None:
         metadata["attemptId"] = int(run.attempt_id)
-    if (
-        run.status in ANALYSIS_RETRYABLE_FAILURE_STATUSES
-        or run.status == ANALYSIS_STATUS_FAILED_RETRYABLE
-    ):
+    if is_analysis_run_retryable(run):
         metadata["retryable"] = True
         metadata["analysisRetryCount"] = int(
             getattr(run, "analysis_retry_count", 0) or 0

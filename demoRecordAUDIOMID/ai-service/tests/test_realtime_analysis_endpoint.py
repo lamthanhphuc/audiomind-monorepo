@@ -12,6 +12,11 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 
+@pytest.fixture(autouse=True)
+def disable_cost_guard_for_legacy_endpoint_tests(monkeypatch):
+    monkeypatch.setattr(main_module.settings, "gemini_cost_guard_enabled", False)
+
+
 class FakeRealtimeAnalyzer:
     def __init__(self, *, fail_with_config_error: bool = False):
         self.calls = []
@@ -360,7 +365,12 @@ def test_realtime_analysis_returns_503_when_analyzer_unavailable(
         asyncio.run(main_module.analyze_realtime_transcript(request, db_session))
 
     assert exc_info.value.status_code == 503
-    assert exc_info.value.detail == "Gemini service unavailable"
+    assert exc_info.value.detail["error"] == "GEMINI_UNAVAILABLE"
+    assert exc_info.value.detail["details"] == {
+        "provider": "gemini",
+        "retryable": False,
+        "errorCode": "GEMINI_UNAVAILABLE",
+    }
     assert db_session.query(Analysis).filter(Analysis.meeting_id == 903).first() is None
 
 

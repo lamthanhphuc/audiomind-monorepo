@@ -76,6 +76,7 @@ collect_files() {
 
 violations=0
 
+# shellcheck disable=SC2094
 while IFS= read -r file; do
   [[ -z "$file" || ! -f "$file" ]] && continue
   line_no=0

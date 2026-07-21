@@ -5,6 +5,7 @@ import com.example.userservice.quota.QuotaService.QuotaConsumeResult;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
@@ -35,16 +36,19 @@ public class InternalQuotaController {
         QuotaConsumeResult result = quotaService.consume(
                 request.userId(),
                 request.sttSecondsDelta() == null ? 0 : request.sttSecondsDelta(),
-                request.geminiCharsDelta() == null ? 0 : request.geminiCharsDelta()
+                request.geminiCharsDelta() == null ? 0 : request.geminiCharsDelta(),
+                request.idempotencyKey(),
+                request.quotaType()
         );
-        return Map.of(
-                "allowed", result.allowed(),
-                "periodYyyymm", result.periodYyyymm(),
-                "sttSecondsUsed", result.sttSecondsUsed(),
-                "geminiInputCharsUsed", result.geminiInputCharsUsed(),
-                "sttSecondsLimit", result.sttSecondsLimit(),
-                "geminiInputCharsLimit", result.geminiInputCharsLimit()
-        );
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("allowed", result.allowed());
+        body.put("status", result.status());
+        body.put("periodYyyymm", result.periodYyyymm());
+        body.put("sttSecondsUsed", result.sttSecondsUsed());
+        body.put("geminiInputCharsUsed", result.geminiInputCharsUsed());
+        body.put("sttSecondsLimit", result.sttSecondsLimit());
+        body.put("geminiInputCharsLimit", result.geminiInputCharsLimit());
+        return body;
     }
 
     private void requireInternalToken(String token) {
@@ -59,8 +63,9 @@ public class InternalQuotaController {
     public record ConsumeRequest(
             @NotNull @Min(1) Long userId,
             @Min(0) Long sttSecondsDelta,
-            @Min(0) Long geminiCharsDelta
+            @Min(0) Long geminiCharsDelta,
+            String idempotencyKey,
+            String quotaType
     ) {
     }
 }
-

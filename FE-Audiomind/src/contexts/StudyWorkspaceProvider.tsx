@@ -4,6 +4,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from 'react'
@@ -89,6 +90,7 @@ type StudyWorkspaceContextValue = {
 const StudyWorkspaceContext = createContext<StudyWorkspaceContextValue | null>(null)
 
 export function StudyWorkspaceProvider({ children }: { children: ReactNode }) {
+  const mountedRef = useRef(true)
   const [folderTree, setFolderTree] = useState<StudyFolderTreeResponse | null>(null)
   const [catalogSubjects, setCatalogSubjects] = useState<SubjectSummary[]>([])
   const [treeRevision, setTreeRevision] = useState(0)
@@ -98,31 +100,48 @@ export function StudyWorkspaceProvider({ children }: { children: ReactNode }) {
   const [treeError, setTreeError] = useState<string | null>(null)
   const [catalogError, setCatalogError] = useState<string | null>(null)
 
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
+
   const refreshFolderTree = useCallback(async () => {
+    if (!mountedRef.current) return
     setTreeLoading(true)
     setTreeError(null)
     try {
       const tree = await getStudyFolderTree()
+      if (!mountedRef.current) return
       setFolderTree(tree)
       setTreeRevision((value) => value + 1)
     } catch (error) {
+      if (!mountedRef.current) return
       setTreeError(error instanceof Error ? error.message : 'Không tải được cây thư mục')
     } finally {
-      setTreeLoading(false)
+      if (mountedRef.current) {
+        setTreeLoading(false)
+      }
     }
   }, [])
 
   const refreshCatalog = useCallback(async () => {
+    if (!mountedRef.current) return
     setCatalogLoading(true)
     setCatalogError(null)
     try {
       const subjects = await fetchFullSubjectCatalog()
+      if (!mountedRef.current) return
       setCatalogSubjects(subjects)
       setCatalogRevision((value) => value + 1)
     } catch (error) {
+      if (!mountedRef.current) return
       setCatalogError(error instanceof Error ? error.message : 'Không tải được danh sách môn học')
     } finally {
-      setCatalogLoading(false)
+      if (mountedRef.current) {
+        setCatalogLoading(false)
+      }
     }
   }, [])
 

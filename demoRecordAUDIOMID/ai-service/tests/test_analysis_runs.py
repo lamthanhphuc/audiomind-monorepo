@@ -6,7 +6,7 @@ from datetime import datetime
 
 import pytest
 import app.main as main_module
-from app.models import Analysis, Base, MeetingAnalysisRun
+from app.models import Analysis, Base, MeetingAnalysisRun, TranscriptFragment
 from app.services.analysis_runs import analysis_run_response_metadata
 from sqlalchemy import create_engine, inspect
 from sqlalchemy.orm import sessionmaker
@@ -152,6 +152,47 @@ def test_batch_save_results_writes_analysis_run_and_keeps_current_projection(
     assert run.transcript_language == "vi"
     assert run.summary == "Batch summary"
     assert run.analysis_payload_json["summary"] == "Batch summary"
+
+
+def test_batch_persists_transcript_segments_before_analysis(
+    db_session,
+    monkeypatch,
+):
+    ProcessingPipeline = _load_processing_pipeline(monkeypatch)
+    pipeline = object.__new__(ProcessingPipeline)
+    segments = [
+        {
+            "seq": 1,
+            "speaker": "SPEAKER_1",
+            "start": 0.0,
+            "end": 2.5,
+            "text": "Transcript before analysis",
+            "segment_id": "meeting-2101-start-0.000-speaker_1",
+            "is_final": True,
+        }
+    ]
+
+    pipeline._persist_aligned_transcript_segments(2101, segments, db_session)
+    db_session.commit()
+
+    fragments = (
+        db_session.query(TranscriptFragment)
+        .filter(TranscriptFragment.meeting_id == 2101)
+        .all()
+    )
+    assert len(fragments) == 1
+    assert fragments[0].text == "Transcript before analysis"
+    assert fragments[0].is_final is True
+
+    # Second persist (as _save_results would do) must not duplicate.
+    pipeline._persist_aligned_transcript_segments(2101, segments, db_session)
+    db_session.commit()
+    fragments_after = (
+        db_session.query(TranscriptFragment)
+        .filter(TranscriptFragment.meeting_id == 2101)
+        .all()
+    )
+    assert len(fragments_after) == 1
 
 
 def test_get_analysis_returns_run_metadata_with_legacy_payload(db_session, monkeypatch):

@@ -40,6 +40,12 @@ def _infer_batch_failure_stage(exc: Exception) -> str:
 def _build_batch_failure_error(exc: Exception) -> str:
     error_type = type(exc).__name__
     stage = _infer_batch_failure_stage(exc)
+    error_code = str(getattr(exc, "error_code", None) or "").strip()
+    if error_code:
+        return (
+            f"BATCH_PIPELINE_FAILED errorCode={error_code} "
+            f"errorType={error_type} stage={stage}"
+        )
     return f"BATCH_PIPELINE_FAILED errorType={error_type} stage={stage}"
 
 
@@ -175,7 +181,7 @@ def process_meeting(payload: dict) -> None:
         if analysis:
             result_data["analysis"] = analysis
             try:
-                from app.config import settings as app_settings
+                from app.config import get_settings
                 from app.services.embedding_service import index_meeting_for_search
 
                 summary_text = ""
@@ -184,7 +190,7 @@ def process_meeting(payload: dict) -> None:
                         analysis.get("summary") or analysis.get("meetingSummary") or ""
                     )
                 index_meeting_for_search(
-                    settings=app_settings,
+                    settings=get_settings(),
                     meeting_id=meeting_id,
                     user_id=int(payload.get("owner_user_id") or 0),
                     title=str(payload.get("topic") or ""),
@@ -225,6 +231,9 @@ def process_meeting(payload: dict) -> None:
             trace_id=trace_id,
             stage="failed",
         )
+        # Persist business/job FAILED first, then fail the Celery task.
+        # AnalysisProviderError is pickle-safe; swallowing it made Celery report
+        # success while the job was FAILED. Worker continues with the next task.
         raise
     finally:
         db.close()
@@ -277,14 +286,43 @@ def analysis_retry_scheduled() -> int:
             entry.analysis_attempt,
             entry.trace_id,
         )
+        payload: dict = {
+            "meeting_id": entry.meeting_id,
+            "mode": "failed_retry",
+            "source": entry.source,
+        }
+        db = SessionLocal()
+        try:
+            from app.services.stt_persistence import TranscriptPersistenceRepository
+
+            repository = TranscriptPersistenceRepository(db)
+            scope = repository.resolve_preferred_transcript_scope(entry.meeting_id)
+            transcript_text = repository.assemble_meeting_analysis_transcript_text(
+                entry.meeting_id
+            )
+            if not transcript_text.strip():
+                logger.warning(
+                    "ANALYSIS_BACKGROUND_RETRY_SKIPPED meetingId={} reason=EMPTY_TRANSCRIPT "
+                    "scope={}",
+                    entry.meeting_id,
+                    (
+                        f"v2:{scope.get('recordingSessionId')}:{scope.get('attemptId')}"
+                        if scope and scope.get("scopeKind") == "v2"
+                        else (scope.get("scopeKind") if scope else "none")
+                    ),
+                )
+                continue
+            if scope and scope.get("scopeKind") == "v2":
+                payload["recording_session_id"] = int(scope["recordingSessionId"])
+                payload["attempt_id"] = int(scope["attemptId"])
+            payload["transcript"] = transcript_text
+        finally:
+            db.close()
+
         try:
             response = httpx.post(
                 f"{settings.internal_api_base_url.rstrip('/')}/api/internal/realtime-analysis",
-                json={
-                    "meeting_id": entry.meeting_id,
-                    "mode": "failed_retry",
-                    "source": entry.source,
-                },
+                json=payload,
                 timeout=30.0,
             )
             if response.status_code < 500:
@@ -364,3 +402,105 @@ def canonicalize_deferred_retry(meeting_id: int, attempt: int = 1) -> dict:
             return canonicalize_and_persist(meeting_id, run_id)
         finally:
             db.close()
+
+
+@celery_app.task(
+    bind=True,
+    name="app.tasks.generate_subject_synthesis",
+    queue="study_generation",
+    autoretry_for=(),
+    retry_backoff=True,
+    retry_backoff_max=32,
+    retry_jitter=True,
+    max_retries=5,
+)
+def generate_subject_synthesis(self, synthesis_id: int) -> None:
+    from app.services.study import (
+        StudyTransientError,
+        StudyValidationError,
+        StudySourceNotReadyError,
+    )
+    from app.services.study.service import (
+        _live_synthesis_query,
+        _mark_terminal_failed,
+        process_synthesis_job,
+    )
+
+    settings = get_settings()
+    max_retries = int(settings.study_generation_max_retries)
+    db = SessionLocal()
+    try:
+        process_synthesis_job(db, synthesis_id)
+    except (StudyValidationError, StudySourceNotReadyError):
+        return
+    except StudyTransientError as exc:
+        # process_* already requeued to QUEUED; only FAIL when Celery retries are exhausted.
+        if self.request.retries >= max_retries:
+            row = _live_synthesis_query(db).filter_by(id=synthesis_id).first()
+            if row is not None and row.status == "QUEUED":
+                _mark_terminal_failed(
+                    row,
+                    error_code="TRANSIENT_AI_ERROR",
+                    error_message=f"Exhausted retries after transient error: {exc}",
+                )
+                db.commit()
+            return
+        raise self.retry(exc=exc, max_retries=max_retries) from exc
+    finally:
+        db.close()
+
+
+@celery_app.task(
+    bind=True,
+    name="app.tasks.generate_study_artifact",
+    queue="study_generation",
+    autoretry_for=(),
+    retry_backoff=True,
+    retry_backoff_max=32,
+    retry_jitter=True,
+    max_retries=5,
+)
+def generate_study_artifact(self, artifact_id: int) -> None:
+    from app.services.study import (
+        StudyTransientError,
+        StudyValidationError,
+        StudySourceNotReadyError,
+    )
+    from app.services.study.service import (
+        _live_artifact_query,
+        _mark_terminal_failed,
+        process_artifact_job,
+    )
+
+    settings = get_settings()
+    max_retries = int(settings.study_generation_max_retries)
+    db = SessionLocal()
+    try:
+        process_artifact_job(db, artifact_id)
+    except (StudyValidationError, StudySourceNotReadyError):
+        return
+    except StudyTransientError as exc:
+        if self.request.retries >= max_retries:
+            row = _live_artifact_query(db).filter_by(id=artifact_id).first()
+            if row is not None and row.status == "QUEUED":
+                _mark_terminal_failed(
+                    row,
+                    error_code="TRANSIENT_AI_ERROR",
+                    error_message=f"Exhausted retries after transient error: {exc}",
+                )
+                db.commit()
+            return
+        raise self.retry(exc=exc, max_retries=max_retries) from exc
+    finally:
+        db.close()
+
+
+@celery_app.task(name="app.tasks.reconcile_study_generation")
+def reconcile_study_generation() -> dict:
+    from app.services.study.service import reconcile_study_generation_jobs
+
+    db = SessionLocal()
+    try:
+        return reconcile_study_generation_jobs(db)
+    finally:
+        db.close()

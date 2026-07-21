@@ -652,7 +652,7 @@ def test_backfill_uses_persisted_segments_without_external_processing(monkeypatc
         def __init__(self, _db):
             pass
 
-        def assemble_visible_transcript_segments(self, meeting_id):
+        def assemble_meeting_visible_transcript_segments(self, meeting_id):
             captured["repo_calls"] += 1
             assert meeting_id == 4204
             return [

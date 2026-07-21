@@ -145,6 +145,10 @@ public class GlobalExceptionHandler {
     private ErrorCode mapResponseStatusErrorCode(HttpStatus status, String reason, HttpServletRequest request) {
         String normalizedReason = normalize(reason);
         String path = normalize(request == null ? null : request.getRequestURI());
+        ErrorCode fromReason = tryParseErrorCode(reason);
+        if (fromReason != null && fromReason.status() == status.value()) {
+            return fromReason;
+        }
 
         return switch (status) {
             case NOT_FOUND -> {
@@ -162,6 +166,9 @@ public class GlobalExceptionHandler {
             case UNAUTHORIZED -> ErrorCode.UNAUTHORIZED;
             case FORBIDDEN -> ErrorCode.FORBIDDEN;
             case CONFLICT -> {
+                if (normalizedReason.contains("source_meetings_not_ready")) {
+                    yield ErrorCode.SOURCE_MEETINGS_NOT_READY;
+                }
                 if (normalizedReason.contains("export_analysis_required")) {
                     yield ErrorCode.EXPORT_ANALYSIS_REQUIRED;
                 }
@@ -244,9 +251,22 @@ public class GlobalExceptionHandler {
                     REALTIME_AUDIO_METADATA_MISMATCH,
                     REALTIME_INVALID_PAYLOAD,
                     QUOTA_EXCEEDED,
+                    SOURCE_MEETINGS_NOT_READY,
+                    EXPORT_ANALYSIS_REQUIRED,
                     INTERNAL_ERROR -> true;
             default -> false;
         };
+    }
+
+    private ErrorCode tryParseErrorCode(String reason) {
+        if (reason == null || reason.isBlank()) {
+            return null;
+        }
+        try {
+            return ErrorCode.valueOf(reason.trim());
+        } catch (IllegalArgumentException ignored) {
+            return null;
+        }
     }
 
     private String resolveTraceId(HttpServletRequest request) {

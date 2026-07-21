@@ -1,11 +1,60 @@
+from enum import Enum
 from functools import lru_cache
+from ipaddress import ip_address
 from pathlib import Path
+import re
 from urllib.parse import urlparse
 
 from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
+
+# Private Docker Compose service hostnames allowed for DATABASE_TLS_MODE=disable.
+DEFAULT_PRIVATE_VPS_DB_HOSTS: frozenset[str] = frozenset({"postgres", "db"})
+
+
+class AppComponent(str, Enum):
+    API = "api"
+    WORKER = "worker"
+    BEAT = "beat"
+
+
+class DeploymentMode(str, Enum):
+    VPS = "vps"
+    MANAGED = "managed"
+
+
+class DatabaseTlsMode(str, Enum):
+    REQUIRE = "require"
+    VERIFY_FULL = "verify-full"
+    DISABLE = "disable"
+
+
+def _is_local(value: str | None) -> bool:
+    if not value:
+        return True
+    parsed = urlparse(value)
+    host = (parsed.hostname or "").strip().lower()
+    raw = value.strip().lower()
+    return host in {"localhost", "127.0.0.1", "0.0.0.0", "::1"} or "localhost" in raw
+
+
+def _database_hostname(database_url: str) -> str:
+    return (urlparse(database_url).hostname or "").strip().lower()
+
+
+def _is_disallowed_tls_disable_host(host: str) -> bool:
+    """Reject loopback / non-private IP addresses for TLS-disable production."""
+    if not host:
+        return True
+    if host in {"localhost", "127.0.0.1", "0.0.0.0", "::1"}:
+        return True
+    try:
+        addr = ip_address(host)
+    except ValueError:
+        return False
+    return not addr.is_private
 
 
 class Settings(BaseSettings):
@@ -16,6 +65,26 @@ class Settings(BaseSettings):
     )
 
     app_env: str = "development"
+    # api | worker | beat — beat is broker-only and must not require DB/provider secrets.
+    app_component: str = Field(
+        default="api",
+        validation_alias=AliasChoices("APP_COMPONENT", "app_component"),
+    )
+    deployment_mode: str = Field(
+        default="",
+        validation_alias=AliasChoices("DEPLOYMENT_MODE", "deployment_mode"),
+    )
+    database_tls_mode: str = Field(
+        default="",
+        validation_alias=AliasChoices("DATABASE_TLS_MODE", "database_tls_mode"),
+    )
+    database_tls_private_hosts: str = Field(
+        default="postgres,db",
+        validation_alias=AliasChoices(
+            "DATABASE_TLS_PRIVATE_HOSTS",
+            "database_tls_private_hosts",
+        ),
+    )
 
     # Database
     database_url: str = "postgresql://postgres:postgres@db:5432/audiomind"
@@ -25,20 +94,38 @@ class Settings(BaseSettings):
     gemini_api_keys: str = ""
     gemini_multi_key_enabled: bool = False
     gemini_shared_cooldown_enabled: bool = False
-    gemini_max_attempts: int = 3
+    gemini_shared_state_namespace: str = ""
+    gemini_model_unsupported_ttl_seconds: int = 21600
+    gemini_redis_connect_timeout_seconds: float = 1.0
+    gemini_redis_socket_timeout_seconds: float = 1.5
+    gemini_max_total_attempts: int = 2
+    gemini_max_attempts: int = 2
+    gemini_max_schema_retries: int = 1
+    gemini_max_token_retries: int = 1
     gemini_key_cooldown_seconds: float = 90.0
     gemini_key_hard_cooldown_seconds: float = 900.0
     gemini_backoff_base_ms: float = 500.0
     gemini_backoff_max_ms: float = 10000.0
     gemini_backoff_jitter: bool = True
     gemini_fail_fast_seconds: float = 30.0
-    gemini_analysis_model: str = "gemini-2.5-flash"
-    gemini_summary_model: str = "gemini-2.5-flash"
+    gemini_model: str = "gemini-3.1-flash-lite"
+    gemini_analysis_model: str = ""
+    gemini_summary_model: str = ""
+    gemini_thinking_level: str = "low"
+    gemini_temperature: float = 0.2
+    gemini_chat_max_output_tokens: int = 1200
+    gemini_summary_max_output_tokens: int = 2048
+    gemini_structured_analysis_max_output_tokens: int = 4096
+    gemini_study_artifact_max_output_tokens: int = 3072
+    gemini_chat_max_input_tokens: int = 12000
+    gemini_chat_history_max_tokens: int = 3000
+    gemini_rag_context_max_tokens: int = 8000
+    gemini_rag_top_k: int = 6
     gemini_analysis_domain_mode: str = "it"
     gemini_analysis_max_input_tokens: int = 12000
     gemini_analysis_max_output_tokens: int = 4096
     gemini_analysis_thinking_budget: int = 0
-    gemini_analysis_retry_max_attempts: int = 3
+    gemini_analysis_retry_max_attempts: int = 2
     gemini_timeout_seconds: int = 300
     gemini_rate_limit_retry_base_seconds: float = 30.0
     gemini_rate_limit_retry_max_seconds: float = 90.0
@@ -47,6 +134,16 @@ class Settings(BaseSettings):
     gemini_max_single_request_chars: int = 50000
     gemini_request_delay_seconds: float = 15.0
     gemini_http_proxy: str = ""
+    gemini_key_project_groups: str = ""
+    gemini_cross_project_failover_enabled: bool = False
+    gemini_model_fallback_enabled: bool = False
+    gemini_pro_fallback_enabled: bool = False
+    gemini_cost_guard_enabled: bool = True
+    gemini_cost_guard_namespace: str = ""
+    gemini_daily_request_limit_per_user: int = 20
+    gemini_daily_reanalyze_limit_per_meeting: int = 3
+    gemini_daily_token_limit_per_user: int = 100000
+    gemini_max_concurrent_requests: int = 2
 
     # Analysis recovery (PR2)
     analysis_background_retry_enabled: bool = True
@@ -67,6 +164,18 @@ class Settings(BaseSettings):
             "INTERNAL_SERVICE_TOKEN",
             "GOOGLE_INTERNAL_SERVICE_TOKEN",
         ),
+    )
+    meeting_service_base_url: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "MEETING_SERVICE_BASE_URL",
+            "MEETING_API_BASE_URL",
+            "AUDIOMIND_MEETING_API_BASE_URL",
+        ),
+    )
+    meeting_service_timeout_seconds: float = Field(
+        default=10.0,
+        validation_alias=AliasChoices("MEETING_SERVICE_TIMEOUT_SECONDS"),
     )
     quota_fail_open: bool = Field(
         default=True,
@@ -244,6 +353,69 @@ class Settings(BaseSettings):
     celery_retry_jitter: bool = True
     celery_prefetch_multiplier: int = 1
     celery_concurrency: int = 4
+    celery_study_generation_queue: str = Field(
+        default="study_generation",
+        validation_alias=AliasChoices(
+            "CELERY_STUDY_GENERATION_QUEUE",
+            "STUDY_GENERATION_QUEUE",
+        ),
+    )
+    study_generation_max_retries: int = Field(
+        default=5,
+        validation_alias=AliasChoices("STUDY_GENERATION_MAX_RETRIES"),
+    )
+    study_generation_soft_time_limit_seconds: int = Field(
+        default=900,
+        validation_alias=AliasChoices("STUDY_GENERATION_SOFT_TIME_LIMIT_SECONDS"),
+    )
+    study_generation_time_limit_seconds: int = Field(
+        default=1200,
+        validation_alias=AliasChoices("STUDY_GENERATION_TIME_LIMIT_SECONDS"),
+    )
+    study_dispatch_lease_seconds: int = Field(
+        default=120,
+        validation_alias=AliasChoices("STUDY_DISPATCH_LEASE_SECONDS"),
+    )
+    study_dispatch_max_attempts: int = Field(
+        default=8,
+        validation_alias=AliasChoices("STUDY_DISPATCH_MAX_ATTEMPTS"),
+    )
+    study_dispatch_retry_backoff_seconds: int = Field(
+        default=30,
+        validation_alias=AliasChoices("STUDY_DISPATCH_RETRY_BACKOFF_SECONDS"),
+    )
+    study_processing_timeout_seconds: int = Field(
+        default=1800,
+        validation_alias=AliasChoices("STUDY_PROCESSING_TIMEOUT_SECONDS"),
+    )
+    study_artifact_list_default_size: int = Field(default=20)
+    study_artifact_list_max_size: int = Field(default=100)
+    subject_synthesis_max_meetings_per_batch: int = Field(
+        default=3,
+        validation_alias=AliasChoices("SUBJECT_SYNTHESIS_MAX_MEETINGS_PER_BATCH"),
+    )
+    subject_synthesis_max_input_tokens: int = Field(
+        default=24000,
+        validation_alias=AliasChoices("SUBJECT_SYNTHESIS_MAX_INPUT_TOKENS"),
+    )
+    subject_synthesis_max_parallel_batches: int = Field(
+        default=2,
+        validation_alias=AliasChoices("SUBJECT_SYNTHESIS_MAX_PARALLEL_BATCHES"),
+    )
+    subject_synthesis_chars_per_token: int = Field(
+        default=4,
+        validation_alias=AliasChoices("SUBJECT_SYNTHESIS_CHARS_PER_TOKEN"),
+    )
+    study_flashcard_count_min: int = 5
+    study_flashcard_count_max: int = 100
+    study_mcq_count_min: int = 5
+    study_mcq_count_max: int = 50
+    study_essay_count_min: int = 1
+    study_essay_count_max: int = 20
+    study_quota_gemini_chars_per_artifact: int = Field(
+        default=8000,
+        validation_alias=AliasChoices("STUDY_QUOTA_GEMINI_CHARS_PER_ARTIFACT"),
+    )
 
     # Worker monitor
     timeout_monitor_interval_seconds: int = 60
@@ -251,17 +423,234 @@ class Settings(BaseSettings):
     chunk_processing_stale_seconds: int = 180
     worker_health_port: int = 8080
 
+    @staticmethod
+    def _normalize_analysis_provider(value: str | None) -> str:
+        provider = (value or "gemini").strip().lower()
+        if provider == "local":
+            provider = "ollama"
+        # fake is allowed in non-production; production validators reject it.
+        if provider not in {"gemini", "ollama", "fake"}:
+            return "gemini"
+        return provider
+
+    def _validate_broker_urls_production(self) -> None:
+        if not (self.celery_broker_url or "").strip():
+            raise ValueError(
+                "Invalid production celery_broker_url: empty broker URL is not allowed"
+            )
+        if _is_local(self.celery_broker_url):
+            raise ValueError(
+                "Invalid production celery_broker_url: localhost is not allowed"
+            )
+        if not (self.celery_result_backend or "").strip():
+            raise ValueError(
+                "Invalid production celery_result_backend: empty result backend is not allowed"
+            )
+        if _is_local(self.celery_result_backend):
+            raise ValueError(
+                "Invalid production celery_result_backend: localhost is not allowed"
+            )
+
+    def validate_database_url_scheme(self) -> "Settings":
+        """Enforce schemes compatible with installed driver (psycopg2-binary)."""
+        url = (self.database_url or "").strip()
+        if not url:
+            raise ValueError("Invalid database_url: empty")
+        if url.startswith("jdbc:"):
+            raise ValueError(
+                "Invalid database_url: JDBC scheme is not supported by AI SQLAlchemy runtime"
+            )
+        if url.startswith("postgresql+psycopg://"):
+            raise ValueError(
+                "Invalid database_url: postgresql+psycopg:// requires psycopg v3; "
+                "runtime installs psycopg2-binary — use postgresql:// or postgresql+psycopg2://"
+            )
+        if url.startswith("postgresql+asyncpg://"):
+            raise ValueError(
+                "Invalid database_url: postgresql+asyncpg:// is async-only; "
+                "runtime uses synchronous create_engine with psycopg2"
+            )
+        if not (
+            url.startswith("postgresql://") or url.startswith("postgresql+psycopg2://")
+        ):
+            raise ValueError(
+                "Invalid database_url: must start with postgresql:// or postgresql+psycopg2://"
+            )
+        return self
+
+    def _private_vps_db_hosts(self) -> frozenset[str]:
+        raw = (self.database_tls_private_hosts or "").strip()
+        if not raw:
+            return DEFAULT_PRIVATE_VPS_DB_HOSTS
+        hosts = {part.strip().lower() for part in raw.split(",") if part.strip()}
+        return frozenset(hosts) if hosts else DEFAULT_PRIVATE_VPS_DB_HOSTS
+
+    def _validate_database_url_production(self) -> None:
+        self.validate_database_url_scheme()
+        if (
+            _is_local(self.database_url)
+            or "postgres:postgres@" in (self.database_url or "").lower()
+        ):
+            raise ValueError(
+                "Invalid production database_url: localhost/default credentials are not allowed"
+            )
+
+        lowered = (self.database_url or "").lower()
+        host = _database_hostname(self.database_url)
+        deployment_mode = (self.deployment_mode or "").strip().lower()
+        tls_mode = (self.database_tls_mode or "").strip().lower()
+        has_require = "sslmode=require" in lowered
+        has_verify_full = "sslmode=verify-full" in lowered
+
+        # Explicit VPS private Postgres: allow TLS disable only for allowlisted Docker hosts.
+        if tls_mode == DatabaseTlsMode.DISABLE.value:
+            if deployment_mode != DeploymentMode.VPS.value:
+                raise ValueError(
+                    "Invalid production DATABASE_TLS_MODE=disable: only allowed when "
+                    "DEPLOYMENT_MODE=vps"
+                )
+            if _is_disallowed_tls_disable_host(host):
+                raise ValueError(
+                    "Invalid production DATABASE_TLS_MODE=disable: host must be a private "
+                    "Docker service hostname (not localhost/public IP)"
+                )
+            if host not in self._private_vps_db_hosts():
+                raise ValueError(
+                    "Invalid production DATABASE_TLS_MODE=disable: "
+                    f"host {host!r} is not in DATABASE_TLS_PRIVATE_HOSTS allowlist"
+                )
+            return
+
+        # Managed / Kubernetes / remote: TLS required (backward compatible when mode unset).
+        if tls_mode and tls_mode not in {
+            DatabaseTlsMode.REQUIRE.value,
+            DatabaseTlsMode.VERIFY_FULL.value,
+            "",
+        }:
+            raise ValueError(
+                "Invalid production DATABASE_TLS_MODE: "
+                "expected require, verify-full, or disable"
+            )
+
+        if tls_mode == DatabaseTlsMode.VERIFY_FULL.value:
+            if not has_verify_full:
+                raise ValueError(
+                    "Invalid production database_url: sslmode=verify-full is required "
+                    "when DATABASE_TLS_MODE=verify-full"
+                )
+            return
+
+        if not has_require and not has_verify_full:
+            raise ValueError(
+                "Invalid production database_url: sslmode=require "
+                "or sslmode=verify-full is required "
+                "(set DEPLOYMENT_MODE=vps and DATABASE_TLS_MODE=disable only for "
+                "private Docker Postgres on allowlisted hosts)"
+            )
+
+    def _validate_meeting_and_token_production(self) -> None:
+        if not (self.meeting_service_base_url or "").strip():
+            raise ValueError(
+                "Invalid production meeting_service_base_url: required for Phase 2 "
+                "subject membership guards before Gemini"
+            )
+        if not (self.internal_service_token or "").strip():
+            raise ValueError(
+                "Invalid production internal_service_token: required for meeting membership "
+                "and internal study APIs"
+            )
+
+    def _validate_analysis_provider_credentials_production(self) -> None:
+        provider = (self.analysis_provider or "gemini").strip().lower()
+        if provider == "fake":
+            raise ValueError(
+                "Invalid production analysis_provider: fake is not allowed in production"
+            )
+        if (
+            provider == "gemini"
+            and not (self.gemini_api_key or "").strip()
+            and not (
+                bool(self.gemini_multi_key_enabled)
+                and (self.gemini_api_keys or "").strip()
+            )
+        ):
+            raise ValueError(
+                "Invalid production gemini_api_key: empty secret is not allowed when analysis_provider=gemini"
+            )
+        if provider == "ollama" and _is_local(self.ollama_base_url):
+            raise ValueError(
+                "Invalid production ollama_base_url: localhost is not allowed when analysis_provider=ollama"
+            )
+
+    def _validate_study_generation_queue_production(self) -> None:
+        if not (self.celery_study_generation_queue or "").strip():
+            raise ValueError(
+                "Invalid production celery_study_generation_queue: empty queue name is not allowed"
+            )
+
+    def _validate_cors_production(self) -> None:
+        origins = (self.cors_allowed_origins or "").lower()
+        if "localhost" not in origins and "127.0.0.1" not in origins:
+            return
+        # Local VPS compose may expose the app on localhost / 127.0.0.1.
+        if (self.deployment_mode or "").strip().lower() == DeploymentMode.VPS.value:
+            return
+        raise ValueError(
+            "Invalid production cors_allowed_origins: localhost/127.0.0.1 "
+            "is not allowed (set DEPLOYMENT_MODE=vps for private VPS compose)"
+        )
+
+    def _validate_huggingface_diarization_production(self) -> None:
+        native_deepgram_diarization_enabled = bool(
+            self.enable_speaker_diarization and self.deepgram_diarize
+        )
+        if (
+            self.enable_speaker_diarization
+            and not native_deepgram_diarization_enabled
+            and not (self.huggingface_token or "").strip()
+        ):
+            raise ValueError(
+                "Invalid production huggingface_token: empty secret is not allowed when local diarization is enabled"
+            )
+
     @model_validator(mode="after")
     def normalize_provider_settings(self) -> "Settings":
+        self.app_component = (self.app_component or "api").strip().lower()
+        if self.app_component not in {
+            AppComponent.API.value,
+            AppComponent.WORKER.value,
+            AppComponent.BEAT.value,
+        }:
+            self.app_component = AppComponent.API.value
+
         self.stt_provider = (self.stt_provider or "deepgram").strip().lower()
         if self.stt_provider == "whisper":
             self.stt_provider = "local_whisper"
         if self.stt_provider not in {"deepgram", "local_whisper"}:
             self.stt_provider = "deepgram"
 
-        self.analysis_provider = (self.analysis_provider or "gemini").strip().lower()
-        if self.analysis_provider not in {"gemini", "ollama", "local"}:
-            self.analysis_provider = "gemini"
+        analysis_set = "analysis_provider" in self.model_fields_set
+        ai_set = "ai_provider" in self.model_fields_set
+
+        analysis_norm = self._normalize_analysis_provider(self.analysis_provider)
+        ai_norm = self._normalize_analysis_provider(self.ai_provider)
+
+        if analysis_set and ai_set and analysis_norm != ai_norm:
+            raise ValueError(
+                "ai_provider and analysis_provider conflict: "
+                f"ai_provider={ai_norm!r} analysis_provider={analysis_norm!r}. "
+                "Set both to the same value, or set only analysis_provider "
+                "(source of truth for Phase 2 generation)."
+            )
+
+        # analysis_provider is source of truth; sync ai_provider for backward compat.
+        # Legacy sole AI_PROVIDER still seeds analysis_provider when ANALYSIS_PROVIDER unset.
+        if analysis_set or not ai_set:
+            self.analysis_provider = analysis_norm
+            self.ai_provider = analysis_norm
+        else:
+            self.analysis_provider = ai_norm
+            self.ai_provider = ai_norm
 
         self.gemini_analysis_domain_mode = (
             (self.gemini_analysis_domain_mode or "it").strip().lower()
@@ -274,20 +663,70 @@ class Settings(BaseSettings):
         }:
             self.gemini_analysis_domain_mode = "it"
 
+        self.gemini_model = (
+            (self.gemini_model or "gemini-3.1-flash-lite").strip().lower()
+        )
+        self.gemini_analysis_model = (
+            self.gemini_analysis_model or ""
+        ).strip().lower() or self.gemini_model
+        self.gemini_summary_model = (
+            self.gemini_summary_model or ""
+        ).strip().lower() or self.gemini_model
+        self.gemini_thinking_level = (
+            (self.gemini_thinking_level or "low").strip().lower()
+        )
+        if self.gemini_thinking_level not in {"minimal", "low", "medium", "high"}:
+            self.gemini_thinking_level = "low"
+        self.gemini_temperature = min(
+            2.0, max(0.0, float(self.gemini_temperature or 0.2))
+        )
+        self.gemini_chat_max_output_tokens = max(
+            1, int(self.gemini_chat_max_output_tokens or 1200)
+        )
+        self.gemini_summary_max_output_tokens = max(
+            1, int(self.gemini_summary_max_output_tokens or 2048)
+        )
+        self.gemini_structured_analysis_max_output_tokens = max(
+            1, int(self.gemini_structured_analysis_max_output_tokens or 4096)
+        )
+        self.gemini_study_artifact_max_output_tokens = max(
+            1, int(self.gemini_study_artifact_max_output_tokens or 3072)
+        )
+        self.gemini_chat_max_input_tokens = max(
+            1, int(self.gemini_chat_max_input_tokens or 12000)
+        )
+        self.gemini_chat_history_max_tokens = max(
+            0, int(self.gemini_chat_history_max_tokens or 3000)
+        )
+        self.gemini_rag_context_max_tokens = max(
+            1, int(self.gemini_rag_context_max_tokens or 8000)
+        )
+        self.gemini_rag_top_k = min(20, max(1, int(self.gemini_rag_top_k or 6)))
+
         self.gemini_analysis_max_input_tokens = max(
             1, int(self.gemini_analysis_max_input_tokens or 12000)
         )
-        self.gemini_analysis_max_output_tokens = max(
-            1, int(self.gemini_analysis_max_output_tokens or 4096)
+        # Clamp to a sane model budget: avoid tiny wasteful requests and unbounded growth.
+        self.gemini_analysis_max_output_tokens = min(
+            16384,
+            max(1024, int(self.gemini_analysis_max_output_tokens or 4096)),
         )
         self.gemini_analysis_thinking_budget = max(
             0, int(self.gemini_analysis_thinking_budget or 0)
         )
         self.gemini_analysis_retry_max_attempts = max(
-            1, int(self.gemini_analysis_retry_max_attempts or 3)
+            1, int(self.gemini_analysis_retry_max_attempts or 2)
         )
-        self.gemini_max_attempts = max(
-            1, int(self.gemini_max_attempts or self.gemini_analysis_retry_max_attempts)
+        self.gemini_max_total_attempts = max(
+            1, int(self.gemini_max_total_attempts or 2)
+        )
+        # Legacy knob remains readable but can never expand the global budget.
+        self.gemini_max_attempts = self.gemini_max_total_attempts
+        self.gemini_max_schema_retries = min(
+            1, max(0, int(self.gemini_max_schema_retries or 0))
+        )
+        self.gemini_max_token_retries = min(
+            1, max(0, int(self.gemini_max_token_retries or 0))
         )
         self.gemini_key_cooldown_seconds = max(
             0.0, float(self.gemini_key_cooldown_seconds or 0.0)
@@ -302,6 +741,17 @@ class Settings(BaseSettings):
         self.gemini_fail_fast_seconds = max(
             0.0, float(self.gemini_fail_fast_seconds or 0.0)
         )
+        self.gemini_model_unsupported_ttl_seconds = max(
+            1, int(self.gemini_model_unsupported_ttl_seconds or 21600)
+        )
+        self.gemini_redis_connect_timeout_seconds = max(
+            0.1,
+            float(self.gemini_redis_connect_timeout_seconds or 1.0),
+        )
+        self.gemini_redis_socket_timeout_seconds = max(
+            0.1,
+            float(self.gemini_redis_socket_timeout_seconds or 1.5),
+        )
         self.gemini_timeout_seconds = max(1, int(self.gemini_timeout_seconds or 300))
         self.gemini_rate_limit_retry_base_seconds = max(
             0.0, float(self.gemini_rate_limit_retry_base_seconds or 0.0)
@@ -309,14 +759,33 @@ class Settings(BaseSettings):
         self.gemini_rate_limit_retry_max_seconds = max(
             0.0, float(self.gemini_rate_limit_retry_max_seconds or 0.0)
         )
+        self.gemini_daily_request_limit_per_user = max(
+            1, int(self.gemini_daily_request_limit_per_user or 20)
+        )
+        self.gemini_daily_reanalyze_limit_per_meeting = max(
+            1, int(self.gemini_daily_reanalyze_limit_per_meeting or 3)
+        )
+        self.gemini_daily_token_limit_per_user = max(
+            1, int(self.gemini_daily_token_limit_per_user or 100000)
+        )
+        self.gemini_max_concurrent_requests = max(
+            1, int(self.gemini_max_concurrent_requests or 2)
+        )
+        self.gemini_cost_guard_namespace = (
+            (
+                self.gemini_cost_guard_namespace
+                or f"{(self.app_env or 'development').strip().lower()}-audiomind"
+            )
+            .strip()
+            .lower()
+        )
+        if not re.fullmatch(
+            r"[a-z0-9][a-z0-9._-]{0,47}", self.gemini_cost_guard_namespace
+        ):
+            raise ValueError("gemini_cost_guard_namespace is invalid")
         self.analysis_background_retry_max_attempts = max(
             0, int(self.analysis_background_retry_max_attempts or 4)
         )
-
-        # Backward-compatible normalization for legacy variable usage.
-        self.ai_provider = (self.ai_provider or "gemini").strip().lower()
-        if self.ai_provider not in {"gemini", "ollama", "local"}:
-            self.ai_provider = "gemini"
 
         self.audio_enhancement_provider = (
             (self.audio_enhancement_provider or "").strip().lower()
@@ -334,6 +803,9 @@ class Settings(BaseSettings):
             1, int(self.audio_enhancement_timeout_seconds or 120)
         )
 
+        if self.app_component != AppComponent.BEAT.value:
+            self.validate_database_url_scheme()
+
         return self
 
     @model_validator(mode="after")
@@ -342,59 +814,25 @@ class Settings(BaseSettings):
         if env not in {"prod", "production"}:
             return self
 
-        def _is_local(value: str | None) -> bool:
-            if not value:
-                return True
-            parsed = urlparse(value)
-            host = (parsed.hostname or "").strip().lower()
-            raw = value.strip().lower()
-            return (
-                host in {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
-                or "localhost" in raw
-            )
+        component = (self.app_component or AppComponent.API.value).strip().lower()
 
-        if (
-            _is_local(self.database_url)
-            or "postgres:postgres@" in self.database_url.lower()
-        ):
-            raise ValueError(
-                "Invalid production database_url: localhost/default credentials are not allowed"
-            )
+        if component == AppComponent.BEAT.value:
+            self._validate_broker_urls_production()
+            return self
 
-        if _is_local(self.ollama_base_url):
-            raise ValueError(
-                "Invalid production ollama_base_url: localhost is not allowed"
-            )
+        # Worker and API share DB / meeting / provider / study-queue checks.
+        self._validate_database_url_production()
+        self._validate_broker_urls_production()
+        self._validate_meeting_and_token_production()
+        self._validate_analysis_provider_credentials_production()
+        self._validate_study_generation_queue_production()
 
-        if "localhost" in (self.cors_allowed_origins or "").lower():
-            raise ValueError(
-                "Invalid production cors_allowed_origins: localhost is not allowed"
-            )
+        if component == AppComponent.WORKER.value:
+            return self
 
-        if (
-            self.analysis_provider == "gemini"
-            and not (self.gemini_api_key or "").strip()
-            and not (
-                bool(self.gemini_multi_key_enabled)
-                and (self.gemini_api_keys or "").strip()
-            )
-        ):
-            raise ValueError(
-                "Invalid production gemini_api_key: empty secret is not allowed when analysis_provider=gemini"
-            )
-
-        native_deepgram_diarization_enabled = bool(
-            self.enable_speaker_diarization and self.deepgram_diarize
-        )
-        if (
-            self.enable_speaker_diarization
-            and not native_deepgram_diarization_enabled
-            and not (self.huggingface_token or "").strip()
-        ):
-            raise ValueError(
-                "Invalid production huggingface_token: empty secret is not allowed when local diarization is enabled"
-            )
-
+        # API (default): CORS + diarization token checks.
+        self._validate_cors_production()
+        self._validate_huggingface_diarization_production()
         return self
 
 

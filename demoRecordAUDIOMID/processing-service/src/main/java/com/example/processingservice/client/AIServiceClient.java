@@ -399,13 +399,7 @@ public class AIServiceClient {
         return requireBody(response, "getAnalysis", meetingId);
     }
 
-    @Retry(name = "ai-service")
     @CircuitBreaker(name = "ai-service")
-    @Retryable(
-        retryFor = { RestClientException.class, IllegalStateException.class },
-        maxAttempts = 3,
-        backoff = @Backoff(delay = 1000, multiplier = 2.0)
-    )
     public Map<String, Object> rerunAnalysis(
             Long meetingId,
             String mode,
@@ -430,6 +424,8 @@ public class AIServiceClient {
                 canonicalTranscriptHash,
                 canonicalTranscriptVersion,
                 null,
+                null,
+                null,
                 traceId,
                 authorization
         );
@@ -447,6 +443,41 @@ public class AIServiceClient {
             String canonicalTranscriptHash,
             String canonicalTranscriptVersion,
             String domainMode,
+            String traceId,
+            String authorization) {
+        return rerunAnalysis(
+                meetingId,
+                mode,
+                reason,
+                transcript,
+                transcriptHash,
+                promptVersion,
+                schemaVersion,
+                analysisFeatureSet,
+                canonicalTranscriptHash,
+                canonicalTranscriptVersion,
+                domainMode,
+                null,
+                null,
+                traceId,
+                authorization
+        );
+    }
+
+    public Map<String, Object> rerunAnalysis(
+            Long meetingId,
+            String mode,
+            String reason,
+            String transcript,
+            String transcriptHash,
+            String promptVersion,
+            String schemaVersion,
+            String analysisFeatureSet,
+            String canonicalTranscriptHash,
+            String canonicalTranscriptVersion,
+            String domainMode,
+            Long ownerUserId,
+            Long reanalysisGeneration,
             String traceId,
             String authorization) {
         HttpHeaders headers = new HttpHeaders();
@@ -486,6 +517,12 @@ public class AIServiceClient {
         if (StringUtils.hasText(domainMode)) {
             request.put("domain_mode", domainMode.trim());
         }
+        if (ownerUserId != null) {
+            request.put("owner_user_id", ownerUserId);
+        }
+        if (reanalysisGeneration != null && reanalysisGeneration > 0) {
+            request.put("reanalysis_generation", reanalysisGeneration);
+        }
 
         ResponseEntity<Map<String, Object>> response = executeAiServiceCall(
                 "rerunAnalysis",
@@ -509,6 +546,30 @@ public class AIServiceClient {
             String traceId,
             String authorization
     ) {
+        return answerMeetingChat(
+                meetingId,
+                question,
+                summary,
+                transcriptExcerpt,
+                analysis,
+                sourceSegments,
+                null,
+                traceId,
+                authorization
+        );
+    }
+
+    public Map<String, Object> answerMeetingChat(
+            Long meetingId,
+            String question,
+            String summary,
+            String transcriptExcerpt,
+            Map<String, Object> analysis,
+            List<Map<String, Object>> sourceSegments,
+            Long ownerUserId,
+            String traceId,
+            String authorization
+    ) {
         HttpHeaders headers = new HttpHeaders();
         String resolvedTraceId = resolveTraceId(traceId);
         String resolvedRequestId = resolveRequestId(resolvedTraceId);
@@ -525,6 +586,9 @@ public class AIServiceClient {
         request.put("transcript_excerpt", transcriptExcerpt);
         request.put("analysis", analysis == null ? Map.of() : analysis);
         request.put("source_segments", sourceSegments == null ? List.of() : sourceSegments);
+        if (ownerUserId != null) {
+            request.put("owner_user_id", ownerUserId);
+        }
 
         ResponseEntity<Map<String, Object>> response = executeAiServiceCall(
                 "answerMeetingChat",
@@ -541,6 +605,7 @@ public class AIServiceClient {
     public Map<String, Object> semanticRerankMeetings(
             String query,
             List<Map<String, Object>> candidates,
+            Long ownerUserId,
             String traceId,
             String authorization
     ) {
@@ -557,6 +622,7 @@ public class AIServiceClient {
         Map<String, Object> request = new HashMap<>();
         request.put("query", query);
         request.put("candidates", candidates == null ? List.of() : candidates);
+        request.put("owner_user_id", ownerUserId);
 
         ResponseEntity<Map<String, Object>> response = executeAiServiceCall(
                 "semanticRerankMeetings",
@@ -573,6 +639,7 @@ public class AIServiceClient {
     public Map<String, Object> askCrossMeeting(
             String question,
             List<Map<String, Object>> meetings,
+            Long ownerUserId,
             String traceId,
             String authorization
     ) {
@@ -588,6 +655,7 @@ public class AIServiceClient {
         Map<String, Object> request = new HashMap<>();
         request.put("question", question);
         request.put("meetings", meetings == null ? List.of() : meetings);
+        request.put("owner_user_id", ownerUserId);
         ResponseEntity<Map<String, Object>> response = executeAiServiceCall(
                 "askCrossMeeting",
                 aiUrl + "/api/search/cross-meeting/ask",
@@ -606,6 +674,7 @@ public class AIServiceClient {
             String summary,
             String transcriptExcerpt,
             Map<String, Object> analysis,
+            Long ownerUserId,
             String traceId,
             String authorization
     ) {
@@ -624,6 +693,7 @@ public class AIServiceClient {
         request.put("summary", summary);
         request.put("transcript_excerpt", transcriptExcerpt);
         request.put("analysis", analysis == null ? Map.of() : analysis);
+        request.put("owner_user_id", ownerUserId);
 
         ResponseEntity<Map<String, Object>> response = executeAiServiceCall(
                 "explainMeetingTerm",
@@ -819,7 +889,6 @@ public class AIServiceClient {
         );
     }
 
-    @Retry(name = "ai-service")
     @CircuitBreaker(name = "ai-service")
     public Map<String, Object> analyzeRealtimeTranscript(
             Long meetingId,
@@ -844,7 +913,6 @@ public class AIServiceClient {
         );
     }
 
-    @Retry(name = "ai-service")
     @CircuitBreaker(name = "ai-service")
     public Map<String, Object> analyzeRealtimeTranscript(
             Long meetingId,
@@ -899,7 +967,6 @@ public class AIServiceClient {
         );
     }
 
-    @Retry(name = "ai-service")
     @CircuitBreaker(name = "ai-service")
     public Map<String, Object> analyzeRealtimeTranscript(
             Long meetingId,
@@ -1634,6 +1701,176 @@ public class AIServiceClient {
                 return payload.length;
             }
         };
+    }
+
+    private HttpHeaders internalJsonHeaders(String traceId) {
+        HttpHeaders headers = new HttpHeaders();
+        String resolvedTraceId = resolveTraceId(traceId);
+        headers.add(TRACE_HEADER, resolvedTraceId);
+        headers.add(REQUEST_HEADER, resolvedTraceId);
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        String normalizedInternalToken = StringUtils.hasText(internalServiceToken)
+                ? internalServiceToken.trim()
+                : "";
+        if (StringUtils.hasText(normalizedInternalToken)) {
+            headers.add("X-Internal-Service-Token", normalizedInternalToken);
+        }
+        return headers;
+    }
+
+    public Map<String, Object> prepareSubjectSynthesis(Map<String, Object> body, String traceId) {
+        ResponseEntity<Map<String, Object>> response = restTemplate.exchange(
+                aiUrl + "/api/internal/subjects/" + body.get("subjectId") + "/synthesis/prepare",
+                HttpMethod.POST,
+                new HttpEntity<>(body, internalJsonHeaders(traceId)),
+                new ParameterizedTypeReference<>() {
+                }
+        );
+        return requireBody(response, "prepareSubjectSynthesis", 0L);
+    }
+
+    public Map<String, Object> prepareStudyArtifacts(Map<String, Object> body, String traceId) {
+        ResponseEntity<Map<String, Object>> response = restTemplate.exchange(
+                aiUrl + "/api/internal/study-artifacts/prepare",
+                HttpMethod.POST,
+                new HttpEntity<>(body, internalJsonHeaders(traceId)),
+                new ParameterizedTypeReference<>() {
+                }
+        );
+        return requireBody(response, "prepareStudyArtifacts", 0L);
+    }
+
+    public Map<String, Object> dispatchStudyJobs(Map<String, Object> body, String traceId) {
+        ResponseEntity<Map<String, Object>> response = restTemplate.exchange(
+                aiUrl + "/api/internal/study/dispatch",
+                HttpMethod.POST,
+                new HttpEntity<>(body, internalJsonHeaders(traceId)),
+                new ParameterizedTypeReference<>() {
+                }
+        );
+        return requireBody(response, "dispatchStudyJobs", 0L);
+    }
+
+    public Map<String, Object> confirmStudyQuota(Map<String, Object> body, String traceId) {
+        ResponseEntity<Map<String, Object>> response = restTemplate.exchange(
+                aiUrl + "/api/internal/study/confirm-quota",
+                HttpMethod.POST,
+                new HttpEntity<>(body, internalJsonHeaders(traceId)),
+                new ParameterizedTypeReference<>() {
+                }
+        );
+        return requireBody(response, "confirmStudyQuota", 0L);
+    }
+
+    public Map<String, Object> markStudyQuotaFailed(Map<String, Object> body, String traceId) {
+        ResponseEntity<Map<String, Object>> response = restTemplate.exchange(
+                aiUrl + "/api/internal/study/quota-failed",
+                HttpMethod.POST,
+                new HttpEntity<>(body, internalJsonHeaders(traceId)),
+                new ParameterizedTypeReference<>() {
+                }
+        );
+        return requireBody(response, "markStudyQuotaFailed", 0L);
+    }
+
+    public Map<String, Object> getSubjectSynthesis(
+            Long subjectId, Long ownerUserId, List<Long> meetingIds, String traceId) {
+        UriComponentsBuilder builder = UriComponentsBuilder
+                .fromUriString(aiUrl + "/api/internal/subjects/" + subjectId + "/synthesis")
+                .queryParam("ownerUserId", ownerUserId);
+        if (meetingIds != null && !meetingIds.isEmpty()) {
+            builder.queryParam(
+                    "meetingIds",
+                    meetingIds.stream().map(String::valueOf).reduce((a, b) -> a + "," + b).orElse("")
+            );
+        }
+        ResponseEntity<Map<String, Object>> response = restTemplate.exchange(
+                builder.toUriString(),
+                HttpMethod.GET,
+                new HttpEntity<>(internalJsonHeaders(traceId)),
+                new ParameterizedTypeReference<>() {
+                }
+        );
+        return requireBody(response, "getSubjectSynthesis", 0L);
+    }
+
+    public Map<String, Object> getStudyArtifact(
+            Long artifactId, Long ownerUserId, List<Long> meetingIds, String traceId) {
+        UriComponentsBuilder builder = UriComponentsBuilder
+                .fromUriString(aiUrl + "/api/internal/study-artifacts/" + artifactId)
+                .queryParam("ownerUserId", ownerUserId);
+        if (meetingIds != null && !meetingIds.isEmpty()) {
+            builder.queryParam(
+                    "meetingIds",
+                    meetingIds.stream().map(String::valueOf).reduce((a, b) -> a + "," + b).orElse("")
+            );
+        }
+        ResponseEntity<Map<String, Object>> response = restTemplate.exchange(
+                builder.toUriString(),
+                HttpMethod.GET,
+                new HttpEntity<>(internalJsonHeaders(traceId)),
+                new ParameterizedTypeReference<>() {
+                }
+        );
+        return requireBody(response, "getStudyArtifact", 0L);
+    }
+
+    public Map<String, Object> listStudyArtifacts(
+            Long subjectId,
+            Long ownerUserId,
+            String artifactType,
+            String status,
+            List<Long> meetingIds,
+            Integer page,
+            Integer size,
+            String sort,
+            String traceId) {
+        UriComponentsBuilder builder = UriComponentsBuilder
+                .fromUriString(aiUrl + "/api/internal/subjects/" + subjectId + "/study-artifacts")
+                .queryParam("ownerUserId", ownerUserId);
+        if (StringUtils.hasText(artifactType)) {
+            builder.queryParam("artifactType", artifactType);
+        }
+        if (StringUtils.hasText(status)) {
+            builder.queryParam("status", status);
+        }
+        if (meetingIds != null && !meetingIds.isEmpty()) {
+            builder.queryParam(
+                    "meetingIds",
+                    meetingIds.stream().map(String::valueOf).reduce((a, b) -> a + "," + b).orElse("")
+            );
+        }
+        if (page != null) {
+            builder.queryParam("page", page);
+        }
+        if (size != null) {
+            builder.queryParam("size", size);
+        }
+        if (StringUtils.hasText(sort)) {
+            builder.queryParam("sort", sort);
+        }
+        ResponseEntity<Map<String, Object>> response = restTemplate.exchange(
+                builder.toUriString(),
+                HttpMethod.GET,
+                new HttpEntity<>(internalJsonHeaders(traceId)),
+                new ParameterizedTypeReference<>() {
+                }
+        );
+        return requireBody(response, "listStudyArtifacts", 0L);
+    }
+
+    public Map<String, Object> deleteStudyArtifact(Long artifactId, Long ownerUserId, String traceId) {
+        UriComponentsBuilder builder = UriComponentsBuilder
+                .fromUriString(aiUrl + "/api/internal/study-artifacts/" + artifactId)
+                .queryParam("ownerUserId", ownerUserId);
+        ResponseEntity<Map<String, Object>> response = restTemplate.exchange(
+                builder.toUriString(),
+                HttpMethod.DELETE,
+                new HttpEntity<>(internalJsonHeaders(traceId)),
+                new ParameterizedTypeReference<>() {
+                }
+        );
+        return requireBody(response, "deleteStudyArtifact", 0L);
     }
 
 }

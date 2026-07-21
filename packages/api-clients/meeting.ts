@@ -352,6 +352,26 @@ export interface paths {
         patch: operations["assignMeetingSubject"];
         trace?: never;
     };
+    "/internal/subjects/{subjectId}/meetings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Internal subject membership page (service-to-service)
+         * @description Authenticated with X-Internal-Service-Token and scoped by X-Owner-User-Id. Used by AI study workers; does not accept user JWT.
+         */
+        get: operations["listInternalSubjectMeetings"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/health": {
         parameters: {
             query?: never;
@@ -1369,6 +1389,62 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["MeetingEntity"];
                 };
+            };
+        };
+    };
+    listInternalSubjectMeetings: {
+        parameters: {
+            query?: {
+                page?: number;
+                pageSize?: number;
+            };
+            header: {
+                "X-Internal-Service-Token": string;
+                "X-Owner-User-Id": number;
+            };
+            path: {
+                subjectId: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Paged subject meetings */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SubjectMeetingPageResponse"];
+                };
+            };
+            /** @description Missing or invalid owner header */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid or missing internal token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Subject not found for owner */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Internal token not configured */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

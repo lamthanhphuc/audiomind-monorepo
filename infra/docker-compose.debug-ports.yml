@@ -1,0 +1,17 @@
+# Optional debug overlay — publish DB/Redis to the host loopback.
+# Not required for the default browser workflow (dev + mvp only).
+#
+# Example:
+#   docker compose --env-file infra/.env \
+#     -f infra/docker-compose.dev.yml \
+#     -f infra/docker-compose.mvp.yml \
+#     -f infra/docker-compose.debug-ports.yml \
+#     up -d
+
+services:
+  db:
+    ports:
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432"
+  redis:
+    ports:
+      - "127.0.0.1:${REDIS_HOST_PORT:-6379}:6379"

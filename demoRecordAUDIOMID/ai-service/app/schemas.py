@@ -181,6 +181,8 @@ class RealtimeTranscriptAnalysisRequest(BaseModel):
     reason: Optional[str] = None
     recording_session_id: Optional[int] = None
     attempt_id: Optional[int] = None
+    owner_user_id: Optional[int] = None
+    reanalysis_generation: Optional[int] = None
 
 
 class AnalysisRerunRequest(BaseModel):
@@ -194,6 +196,8 @@ class AnalysisRerunRequest(BaseModel):
     canonical_transcript_hash: Optional[str] = None
     canonical_transcript_version: Optional[str] = None
     domain_mode: Optional[str] = None
+    owner_user_id: Optional[int] = None
+    reanalysis_generation: Optional[int] = None
 
 
 class RealtimeTranscriptAnalysisResponse(BaseModel):

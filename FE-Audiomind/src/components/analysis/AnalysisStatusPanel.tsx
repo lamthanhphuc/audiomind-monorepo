@@ -178,6 +178,7 @@ export const AnalysisStatusPanel = ({
     || normalized.errorCode === 'QUOTA_EXCEEDED'
   const isQuotaExhausted = normalized.errorCode === 'GEMINI_QUOTA_EXHAUSTED'
     || normalized.errorCode === 'GEMINI_RATE_LIMITED'
+  const isGeminiBillingBlocked = normalized.errorCode === 'GEMINI_BILLING_CREDITS_DEPLETED'
   const noTranscriptAfterFinalize = normalized.errorCode === 'NO_TRANSCRIPT_AFTER_FINALIZE'
     || normalized.errorCode === 'NO_TRANSCRIPT'
   const failedAudioCapture = normalized.errorCode === 'FAILED_AUDIO_CAPTURE'
@@ -186,6 +187,7 @@ export const AnalysisStatusPanel = ({
     || noTranscriptAfterFinalize
     || failedAudioCapture
     || isShortTranscriptSkip
+    || isGeminiBillingBlocked
     || retryAfterSeconds > 0
     || (isRetryableFailure && !normalized.retryExhausted && retryAfterSeconds > 0)
 
@@ -195,6 +197,10 @@ export const AnalysisStatusPanel = ({
     }
     if (isUserQuotaBlocked) {
       return resolveErrorPresentation('QUOTA_EXCEEDED', normalized.errorMessage || 'Hết quota', ERROR_UX_ENABLED).message
+    }
+    if (isGeminiBillingBlocked) {
+      return normalized.errorMessage
+        || 'Dịch vụ AI tạm dừng do project Gemini đã hết billing credit. Yêu cầu sẽ không tự động thử lại.'
     }
     if (isShortTranscriptSkip) {
       return 'Bản ghi quá ngắn hoặc chưa có đủ nội dung để phân tích. Bạn có thể ghi lại hoặc tải file khác.'

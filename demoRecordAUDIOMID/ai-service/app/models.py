@@ -208,3 +208,131 @@ class GlossaryVersion(Base):
     domain = Column(String(100), nullable=True)
     version_hash = Column(String(64), nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class SubjectSynthesis(Base):
+    __tablename__ = "subject_synthesis"
+
+    id = Column(BigInteger, primary_key=True, index=True, autoincrement=True)
+    subject_id = Column(BigInteger, nullable=False, index=True)
+    owner_user_id = Column(BigInteger, nullable=False, index=True)
+    status = Column(String(30), nullable=False, index=True)
+    version = Column(Integer, nullable=False, default=1)
+    title = Column(String(255), nullable=True)
+    content_json = Column(JSON, nullable=True)
+    options_json = Column(JSON, nullable=True)
+    source_hash = Column(String(64), nullable=False)
+    options_hash = Column(String(64), nullable=True)
+    source_selection_mode = Column(String(20), nullable=False, default="ALL_READY")
+    subject_membership_hash = Column(String(64), nullable=True)
+    prompt_version = Column(String(100), nullable=True)
+    schema_version = Column(String(100), nullable=True)
+    idempotency_key = Column(String(256), nullable=False)
+    generation_request_id = Column(String(64), nullable=True)
+    error_code = Column(String(100), nullable=True)
+    error_message = Column(Text, nullable=True)
+    warnings_json = Column(JSON, nullable=True)
+    generated_at = Column(DateTime, nullable=True)
+    dispatch_requested_at = Column(DateTime, nullable=True)
+    celery_task_id = Column(String(128), nullable=True)
+    processing_started_at = Column(DateTime, nullable=True)
+    attempt_count = Column(Integer, nullable=False, default=0)
+    last_heartbeat_at = Column(DateTime, nullable=True)
+    quota_confirmed_at = Column(DateTime, nullable=True)
+    dispatch_attempt_count = Column(Integer, nullable=False, default=0)
+    last_dispatch_error = Column(Text, nullable=True)
+    last_dispatch_error_at = Column(DateTime, nullable=True)
+    next_dispatch_retry_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
+    )
+    deleted_at = Column(DateTime, nullable=True)
+
+    sources = relationship(
+        "SubjectSynthesisSource",
+        back_populates="synthesis",
+        cascade="all, delete-orphan",
+    )
+
+
+class SubjectSynthesisSource(Base):
+    __tablename__ = "subject_synthesis_source"
+    __table_args__ = (PrimaryKeyConstraint("synthesis_id", "meeting_id"),)
+
+    synthesis_id = Column(
+        BigInteger,
+        ForeignKey("subject_synthesis.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    meeting_id = Column(BigInteger, nullable=False, index=True)
+    transcript_hash = Column(String(64), nullable=True)
+    analysis_run_id = Column(BigInteger, nullable=True)
+    analysis_version = Column(String(100), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    synthesis = relationship("SubjectSynthesis", back_populates="sources")
+
+
+class StudyArtifact(Base):
+    __tablename__ = "study_artifact"
+
+    id = Column(BigInteger, primary_key=True, index=True, autoincrement=True)
+    owner_user_id = Column(BigInteger, nullable=False, index=True)
+    subject_id = Column(BigInteger, nullable=False, index=True)
+    synthesis_id = Column(BigInteger, nullable=True)
+    artifact_type = Column(String(40), nullable=False, index=True)
+    status = Column(String(30), nullable=False, index=True)
+    version = Column(Integer, nullable=False, default=1)
+    title = Column(String(255), nullable=True)
+    options_json = Column(JSON, nullable=True)
+    content_json = Column(JSON, nullable=True)
+    source_hash = Column(String(64), nullable=False)
+    options_hash = Column(String(64), nullable=False)
+    source_selection_mode = Column(String(20), nullable=False, default="ALL_READY")
+    subject_membership_hash = Column(String(64), nullable=True)
+    prompt_version = Column(String(100), nullable=True)
+    schema_version = Column(String(100), nullable=True)
+    idempotency_key = Column(String(256), nullable=False)
+    generation_request_id = Column(String(64), nullable=True)
+    error_code = Column(String(100), nullable=True)
+    error_message = Column(Text, nullable=True)
+    warnings_json = Column(JSON, nullable=True)
+    generated_at = Column(DateTime, nullable=True)
+    dispatch_requested_at = Column(DateTime, nullable=True)
+    celery_task_id = Column(String(128), nullable=True)
+    processing_started_at = Column(DateTime, nullable=True)
+    attempt_count = Column(Integer, nullable=False, default=0)
+    last_heartbeat_at = Column(DateTime, nullable=True)
+    quota_confirmed_at = Column(DateTime, nullable=True)
+    dispatch_attempt_count = Column(Integer, nullable=False, default=0)
+    last_dispatch_error = Column(Text, nullable=True)
+    last_dispatch_error_at = Column(DateTime, nullable=True)
+    next_dispatch_retry_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
+    )
+    deleted_at = Column(DateTime, nullable=True)
+
+    sources = relationship(
+        "StudyArtifactSource",
+        back_populates="artifact",
+        cascade="all, delete-orphan",
+    )
+
+
+class StudyArtifactSource(Base):
+    __tablename__ = "study_artifact_source"
+    __table_args__ = (PrimaryKeyConstraint("artifact_id", "meeting_id"),)
+
+    artifact_id = Column(
+        BigInteger, ForeignKey("study_artifact.id", ondelete="CASCADE"), nullable=False
+    )
+    meeting_id = Column(BigInteger, nullable=False, index=True)
+    transcript_hash = Column(String(64), nullable=True)
+    analysis_run_id = Column(BigInteger, nullable=True)
+    analysis_version = Column(String(100), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    artifact = relationship("StudyArtifact", back_populates="sources")

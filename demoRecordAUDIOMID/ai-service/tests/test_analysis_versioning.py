@@ -9,6 +9,7 @@ from app.services.analysis_runs import (
     AnalysisCacheIdentity,
     begin_analysis_run,
     build_analysis_run_idempotency_key_for_identity,
+    is_analysis_run_retryable,
     find_completed_analysis_run_for_identity,
     persist_completed_analysis_run,
 )
@@ -187,6 +188,60 @@ def test_idempotency_key_consistent_across_lookup_begin_persist(
     persist_key = persisted.idempotency_key
 
     assert lookup_key == begin_key == persist_key
+
+
+def test_force_generation_is_deterministic_and_redelivery_does_not_restart(
+    db_session,
+):
+    identity = _identity_for_domain("it")
+    first, began_first = begin_analysis_run(
+        db=db_session,
+        identity=identity,
+        mode="force",
+        reanalysis_generation=7,
+    )
+    db_session.commit()
+    first.status = "COMPLETED"
+    db_session.commit()
+
+    redelivered, began_redelivery = begin_analysis_run(
+        db=db_session,
+        identity=identity,
+        mode="force",
+        reanalysis_generation=7,
+    )
+    next_generation, began_next = begin_analysis_run(
+        db=db_session,
+        identity=identity,
+        mode="force",
+        reanalysis_generation=8,
+    )
+
+    assert began_first is True
+    assert began_redelivery is False
+    assert redelivered.id == first.id
+    assert redelivered.idempotency_key.endswith(":force:7")
+    assert began_next is True
+    assert next_generation.idempotency_key.endswith(":force:8")
+
+
+def test_terminal_billing_run_is_not_eligible_for_failed_retry(db_session):
+    identity = _identity_for_domain("it")
+    run, _ = begin_analysis_run(db=db_session, identity=identity)
+    run.status = "FAILED"
+    run.error_code = "GEMINI_BILLING_CREDITS_DEPLETED"
+    db_session.commit()
+
+    redelivered, began_redelivery = begin_analysis_run(
+        db=db_session,
+        identity=identity,
+        mode="auto",
+    )
+
+    assert is_analysis_run_retryable(run) is False
+    assert began_redelivery is False
+    assert redelivered.id == run.id
+    assert redelivered.status == "FAILED"
 
 
 def test_merge_domain_analysis_payload_overrides_mismatched_business_versions_for_education():

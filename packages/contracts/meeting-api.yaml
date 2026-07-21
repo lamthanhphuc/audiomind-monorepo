@@ -571,6 +571,59 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/MeetingEntity"
+  /internal/subjects/{subjectId}/meetings:
+    get:
+      summary: Internal subject membership page (service-to-service)
+      operationId: listInternalSubjectMeetings
+      description: >
+        Authenticated with X-Internal-Service-Token and scoped by X-Owner-User-Id.
+        Used by AI study workers; does not accept user JWT.
+      parameters:
+        - in: path
+          name: subjectId
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - in: query
+          name: page
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - in: query
+          name: pageSize
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 100
+        - in: header
+          name: X-Internal-Service-Token
+          required: true
+          schema:
+            type: string
+        - in: header
+          name: X-Owner-User-Id
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: Paged subject meetings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SubjectMeetingPageResponse"
+        "400":
+          description: Missing or invalid owner header
+        "401":
+          description: Invalid or missing internal token
+        "404":
+          description: Subject not found for owner
+        "503":
+          description: Internal token not configured
   /health:
     get:
       summary: Health check

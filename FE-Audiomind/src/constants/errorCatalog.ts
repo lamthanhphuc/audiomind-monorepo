@@ -148,6 +148,12 @@ export const ERROR_CATALOG: Record<string, ErrorCatalogEntry> = {
     ctaId: 'upgrade_plan',
     ctaLabel: 'Xem gói & thanh toán',
   },
+  SOURCE_MEETINGS_NOT_READY: {
+    message:
+      'Buổi học chưa có phân tích sẵn sàng để tạo học liệu. Hãy mở buổi học đã hoàn tất rồi thử tạo lại.',
+    ctaId: 'run_analysis',
+    ctaLabel: 'Chạy phân tích',
+  },
   GEMINI_QUOTA_EXHAUSTED: {
     message: 'AI đang quá tải (Gemini). Hệ thống sẽ tự thử lại.',
     ctaId: 'retry_later',

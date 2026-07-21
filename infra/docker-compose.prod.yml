@@ -1,35 +1,228 @@
+# Production / VPS overlay for:
+#   docker compose --env-file infra/.env \
+#     -f infra/docker-compose.dev.yml \
+#     -f infra/docker-compose.mvp.yml \
+#     -f infra/docker-compose.prod.yml \
+#     up -d
+#
+# Layering only — does not redefine the full stack. Local uses dev+mvp without this file.
 name: audiomind-prod
 
+x-logging: &prod-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
+x-restart: &prod-restart
+  restart: unless-stopped
+
 services:
+  db:
+    <<: *prod-restart
+    logging: *prod-logging
+    ports: !reset []
+    expose:
+      - "5432"
+
+  redis:
+    <<: *prod-restart
+    logging: *prod-logging
+    ports: !reset []
+    expose:
+      - "6379"
+
   meeting-api:
+    <<: *prod-restart
+    logging: *prod-logging
     environment:
       SPRING_PROFILES_ACTIVE: production
       OTEL_SDK_DISABLED: "true"
       OTEL_ENABLED: "false"
+      SPRING_FLYWAY_ENABLED: "false"
+    ports: !override
+      - "127.0.0.1:${MEETING_API_HOST_PORT:-8081}:8081"
+    deploy:
+      resources:
+        limits:
+          memory: 1024M
 
   processing-api:
+    <<: *prod-restart
+    logging: *prod-logging
     environment:
       SPRING_PROFILES_ACTIVE: production
       OTEL_SDK_DISABLED: "true"
       OTEL_ENABLED: "false"
+    ports: !override
+      - "127.0.0.1:${PROCESSING_API_HOST_PORT:-8082}:8082"
+    deploy:
+      resources:
+        limits:
+          memory: 1536M
 
   user-api:
+    <<: *prod-restart
+    logging: *prod-logging
     environment:
       SPRING_PROFILES_ACTIVE: production
       OTEL_SDK_DISABLED: "true"
       OTEL_ENABLED: "false"
+      SPRING_FLYWAY_ENABLED: "false"
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_DB: ${USER_REDIS_DB:-3}
+      GOOGLE_OAUTH_REDIRECT_URI: ${GOOGLE_OAUTH_REDIRECT_URI:-https://${PUBLIC_DOMAIN:-your-domain.com}/auth/google/callback}
+      GOOGLE_OAUTH_LINK_REDIRECT_URI: ${GOOGLE_OAUTH_LINK_REDIRECT_URI:-https://${PUBLIC_DOMAIN:-your-domain.com}/auth/google/link/callback}
+      GOOGLE_OAUTH_FRONTEND_BASE_URL: ${GOOGLE_OAUTH_FRONTEND_BASE_URL:-${PUBLIC_ORIGIN:?Set PUBLIC_ORIGIN in infra/.env}}
+      GOOGLE_OAUTH_ALLOWED_REDIRECT_ORIGINS: ${GOOGLE_OAUTH_ALLOWED_REDIRECT_ORIGINS:-${CORS_ALLOWED_ORIGINS:?Set CORS_ALLOWED_ORIGINS in infra/.env}}
+    ports: !override
+      - "127.0.0.1:${USER_API_HOST_PORT:-8083}:8083"
+    deploy:
+      resources:
+        limits:
+          memory: 1024M
 
   ai-api:
+    <<: *prod-restart
+    logging: *prod-logging
     environment:
       APP_ENV: production
+      APP_COMPONENT: api
+      DEPLOYMENT_MODE: ${DEPLOYMENT_MODE:-vps}
+      DATABASE_TLS_MODE: ${DATABASE_TLS_MODE:-disable}
       OTEL_SDK_DISABLED: "true"
-
-  celery-beat:
-    environment:
-      APP_ENV: production
-      OTEL_SDK_DISABLED: "true"
+      DATABASE_URL: ${AI_DATABASE_URL:?Set AI_DATABASE_URL in infra/.env (URL-encoded password)}
+      STT_PROVIDER: ${STT_PROVIDER:-deepgram}
+      DEEPGRAM_API_KEY: ${DEEPGRAM_API_KEY:?Set DEEPGRAM_API_KEY in infra/.env}
+      ANALYSIS_PROVIDER: ${ANALYSIS_PROVIDER:-gemini}
+      AI_PROVIDER: ${ANALYSIS_PROVIDER:-gemini}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:?Set GEMINI_API_KEY in infra/.env}
+      ENABLE_SPEAKER_DIARIZATION: ${ENABLE_SPEAKER_DIARIZATION:-false}
+      DEEPGRAM_DIARIZE: ${DEEPGRAM_DIARIZE:-false}
+      LOCAL_WHISPER_ENABLED: "false"
+      ALLOW_LEGACY_LOCAL_STT: "false"
+      OLLAMA_ENABLED: "false"
+      ALLOW_LEGACY_LOCAL_AI: "false"
+      AUDIO_STORAGE_PATH: /app/uploads
+      FINAL_AUDIO_ALLOWED_ROOTS: /app/uploads
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      JOB_STATE_REDIS_URL: redis://redis:6379/2
+      MEETING_SERVICE_BASE_URL: http://meeting-api:8081
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-${GOOGLE_INTERNAL_SERVICE_TOKEN:?Set INTERNAL_SERVICE_TOKEN in infra/.env}}
+    volumes:
+      - uploads:/app/uploads
+    ports: !override
+      - "127.0.0.1:${AI_API_HOST_PORT:-8000}:8000"
+    deploy:
+      resources:
+        limits:
+          memory: 2048M
 
   celery-worker:
+    <<: *prod-restart
+    logging: *prod-logging
+    command: sh -c "celery -A app.celery_app.celery_app worker --loglevel=INFO --concurrency=$${CELERY_CONCURRENCY:-2} --prefetch-multiplier=$${CELERY_PREFETCH_MULTIPLIER:-1} -Q audio_processing,study_generation"
     environment:
       APP_ENV: production
+      APP_COMPONENT: worker
+      DEPLOYMENT_MODE: ${DEPLOYMENT_MODE:-vps}
+      DATABASE_TLS_MODE: ${DATABASE_TLS_MODE:-disable}
       OTEL_SDK_DISABLED: "true"
+      DATABASE_URL: ${AI_DATABASE_URL:?Set AI_DATABASE_URL in infra/.env (URL-encoded password)}
+      STT_PROVIDER: ${STT_PROVIDER:-deepgram}
+      DEEPGRAM_API_KEY: ${DEEPGRAM_API_KEY:?Set DEEPGRAM_API_KEY in infra/.env}
+      ANALYSIS_PROVIDER: ${ANALYSIS_PROVIDER:-gemini}
+      AI_PROVIDER: ${ANALYSIS_PROVIDER:-gemini}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:?Set GEMINI_API_KEY in infra/.env}
+      ENABLE_SPEAKER_DIARIZATION: ${ENABLE_SPEAKER_DIARIZATION:-false}
+      DEEPGRAM_DIARIZE: ${DEEPGRAM_DIARIZE:-false}
+      LOCAL_WHISPER_ENABLED: "false"
+      ALLOW_LEGACY_LOCAL_STT: "false"
+      OLLAMA_ENABLED: "false"
+      ALLOW_LEGACY_LOCAL_AI: "false"
+      AUDIO_STORAGE_PATH: /app/uploads
+      FINAL_AUDIO_ALLOWED_ROOTS: /app/uploads
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      JOB_STATE_REDIS_URL: redis://redis:6379/2
+      CELERY_CONCURRENCY: ${CELERY_CONCURRENCY:-2}
+      CELERY_PREFETCH_MULTIPLIER: ${CELERY_PREFETCH_MULTIPLIER:-1}
+      MEETING_SERVICE_BASE_URL: http://meeting-api:8081
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-${GOOGLE_INTERNAL_SERVICE_TOKEN:?Set INTERNAL_SERVICE_TOKEN in infra/.env}}
+    volumes:
+      - uploads:/app/uploads
+    deploy:
+      resources:
+        limits:
+          memory: 2048M
+
+  # Beat: broker only — no DB / Gemini / Deepgram / meeting token secrets.
+  celery-beat:
+    <<: *prod-restart
+    logging: *prod-logging
+    environment: !override
+      APP_ENV: production
+      APP_COMPONENT: beat
+      DEPLOYMENT_MODE: ${DEPLOYMENT_MODE:-vps}
+      OTEL_SDK_DISABLED: "true"
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      JOB_STATE_REDIS_URL: redis://redis:6379/2
+      ANALYSIS_BACKGROUND_RETRY_ENABLED: ${ANALYSIS_BACKGROUND_RETRY_ENABLED:-true}
+    depends_on:
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  web:
+    <<: *prod-restart
+    logging: *prod-logging
+    build:
+      args:
+        VITE_MEETING_API_BASE_URL: ${VITE_MEETING_API_BASE_URL:-__SAME_ORIGIN__}
+        VITE_PROCESSING_API_BASE_URL: ${VITE_PROCESSING_API_BASE_URL:-__SAME_ORIGIN__}
+        VITE_USER_API_BASE_URL: ${VITE_USER_API_BASE_URL:-__SAME_ORIGIN__}
+        VITE_API_BASE: ${VITE_API_BASE:-__SAME_ORIGIN__}
+        VITE_API_CPU_BASE: ${VITE_API_CPU_BASE:-__SAME_ORIGIN__}
+        VITE_API_GPU_BASE: ${VITE_API_GPU_BASE:-__SAME_ORIGIN__}
+        VITE_AI_SERVICE_URL: ${VITE_AI_SERVICE_URL:-}
+        VITE_REALTIME_WS_ENABLED: ${VITE_REALTIME_WS_ENABLED:-true}
+        VITE_REALTIME_WS_BASE_URL: ${VITE_REALTIME_WS_BASE_URL:-${PUBLIC_WS_ORIGIN:-wss://${PUBLIC_DOMAIN:-your-domain.com}}/ws/meetings}
+        VITE_GOOGLE_LOGIN_ENABLED: ${VITE_GOOGLE_LOGIN_ENABLED:-false}
+        VITE_PAYOS_ENABLED: ${VITE_PAYOS_ENABLED:-false}
+        VITE_REALTIME_ENABLED: ${VITE_REALTIME_ENABLED:-true}
+    ports: !override
+      - "127.0.0.1:${FRONTEND_HOST_PORT:-8080}:80"
+
+  db-flyway-bootstrap:
+    restart: "no"
+
+  user-db-migrate:
+    restart: "no"
+
+  meeting-db-migrate:
+    restart: "no"
+
+  ai-db-migrate:
+    restart: "no"
+    environment:
+      DATABASE_URL: ${AI_DATABASE_URL:?Set AI_DATABASE_URL in infra/.env (URL-encoded password)}
+      DATABASE_TLS_MODE: ${DATABASE_TLS_MODE:-disable}
+      DEPLOYMENT_MODE: ${DEPLOYMENT_MODE:-vps}
+
+volumes:
+  postgres_data:
+    name: ${POSTGRES_DATA_VOLUME:-audiomind-prod_postgres_data}
+  uploads:
+    name: ${UPLOADS_VOLUME:-audiomind-prod_uploads}
+  model_cache:
+    name: ${MODEL_CACHE_VOLUME:-audiomind-prod_model_cache}
+  job_status:
+    name: ${JOB_STATUS_VOLUME:-audiomind-prod_job_status}
+  ollama_cache:
+    name: ${OLLAMA_CACHE_VOLUME:-audiomind-prod_ollama_cache}

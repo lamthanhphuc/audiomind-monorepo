@@ -8,6 +8,7 @@ import {
   type ParsedStudioRoute,
 } from '../utils/studioRouting'
 import type { MeetingResultScope } from '../utils/meetingResultScope'
+import type { SubjectDetailTab } from '../utils/subjectTabs'
 
 type StudioRouteStateSetters = {
   setFeatureScene: (scene: DashboardScene) => void
@@ -16,6 +17,7 @@ type StudioRouteStateSetters = {
   setMindmapSelectedMeetingId: (id: number | null) => void
   setMindmapSelectedScope: (scope: MeetingResultScope | null) => void
   setSelectedSubjectId?: (id: number | null) => void
+  setSelectedSubjectTab?: (tab: SubjectDetailTab | null) => void
 }
 
 type OAuthNoticeHandlers = {
@@ -48,7 +50,9 @@ export const useStudioRouteSync = (
         pushStudioRoute(event.route.scene, {
           meetingId: event.route.meetingId,
           subjectId: event.route.subjectId,
+          subjectTab: event.route.subjectTab,
           resultScope: event.route.resultScope ?? null,
+          evidenceSegmentId: event.route.evidenceSegmentId,
           replace: true,
         })
       }

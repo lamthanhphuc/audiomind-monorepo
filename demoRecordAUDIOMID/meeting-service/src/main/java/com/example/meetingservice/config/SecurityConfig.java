@@ -54,6 +54,10 @@ public class SecurityConfig {
                 .exceptionHandling(ex -> ex
                         .authenticationEntryPoint(authenticationEntryPoint)
                         .accessDeniedHandler(accessDeniedHandler))
+                // /internal/** is permitAll at the filter chain (no JWT). Controllers that expose
+                // internal APIs MUST validate X-Internal-Service-Token themselves (see
+                // InternalSubjectController, InternalMeetingShareController) — same pattern as
+                // user-service InternalQuotaController.
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(HttpMethod.GET, "/health", "/ready").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/config/upload").permitAll()

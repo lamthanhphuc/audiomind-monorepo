@@ -3,7 +3,8 @@ from datetime import datetime
 import app.main as main_module
 from app.database import get_db
 from app.main import app
-from fastapi.testclient import TestClient
+
+from tests.httpx_asgi import asgi_client
 
 
 class DummyAnalysis:
@@ -81,33 +82,33 @@ def test_endpoints_async_flow(monkeypatch):
     monkeypatch.setattr(main_module, "get_job_status", _get_status)
     app.dependency_overrides[get_db] = _override_db
 
-    client = TestClient(app)
+    try:
+        with asgi_client(app) as client:
+            health = client.get("/health")
+            assert health.status_code == 200
 
-    health = client.get("/health")
-    assert health.status_code == 200
+            process = client.post(
+                "/api/process",
+                json={
+                    "meeting_id": 1001,
+                    "audio_path": "/app/uploads/test.mp3",
+                    "language": "vi",
+                },
+            )
+            assert process.status_code == 200
+            payload = process.json()
+            assert payload["status"] == "queued"
 
-    process = client.post(
-        "/api/process",
-        json={
-            "meeting_id": 1001,
-            "audio_path": "/app/uploads/test.mp3",
-            "language": "vi",
-        },
-    )
-    assert process.status_code == 200
-    payload = process.json()
-    assert payload["status"] == "queued"
+            status = client.get("/api/meeting/1001/status")
+            assert status.status_code == 200
+            assert status.json()["status"] in {"QUEUED", "RUNNING", "COMPLETED"}
 
-    status = client.get("/api/meeting/1001/status")
-    assert status.status_code == 200
-    assert status.json()["status"] in {"QUEUED", "RUNNING", "COMPLETED"}
+            transcript = client.get("/api/meeting/1001/transcript")
+            assert transcript.status_code == 200
+            assert len(transcript.json()["transcripts"]) == 1
 
-    transcript = client.get("/api/meeting/1001/transcript")
-    assert transcript.status_code == 200
-    assert len(transcript.json()["transcripts"]) == 1
-
-    analysis = client.get("/api/meeting/1001/analysis")
-    assert analysis.status_code == 200
-    assert analysis.json()["summary"] == "Day la summary"
-
-    app.dependency_overrides.clear()
+            analysis = client.get("/api/meeting/1001/analysis")
+            assert analysis.status_code == 200
+            assert analysis.json()["summary"] == "Day la summary"
+    finally:
+        app.dependency_overrides.clear()

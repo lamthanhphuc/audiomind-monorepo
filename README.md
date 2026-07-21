@@ -84,54 +84,103 @@ copy demoRecordAUDIOMID\ai-service\.env.example demoRecordAUDIOMID\ai-service\.e
 
 ## Run With Docker
 
-Validate the compose file first:
+There are **exactly two official paths**. Prepare `infra/.env` once from the matching example, then only `build` + `up -d`. Migrations run automatically — no `--profile migrate`, no manual migrate script, no `down -v` unless you intentionally destroy data after a backup.
+
+### Local (dev + mvp)
 
 ```bash
-docker compose -f infra/docker-compose.dev.yml config --quiet
+cp infra/.env.local.example infra/.env
+# fill API keys / JWT / DB password once
+
+docker compose --env-file infra/.env `
+  -f infra/docker-compose.dev.yml `
+  -f infra/docker-compose.mvp.yml `
+  build
+
+docker compose --env-file infra/.env `
+  -f infra/docker-compose.dev.yml `
+  -f infra/docker-compose.mvp.yml `
+  up -d
 ```
 
-Build and start the stack:
+Project name: `audiomind-local`. Volumes are isolated from VPS (`audiomind-local_*`).
+PostgreSQL and Redis stay **private** on the Docker network (no host `5432`/`6379`), so a Windows PostgreSQL install does not block startup. App ports bind to `127.0.0.1` (`8080`, `8000`, `8081`–`8083`). Open **http://localhost:8080**.
+
+Optional DB/Redis host access for debugging only:
 
 ```bash
-docker compose -f infra/docker-compose.dev.yml build
-docker compose -f infra/docker-compose.dev.yml up -d
+docker compose --env-file infra/.env `
+  -f infra/docker-compose.dev.yml `
+  -f infra/docker-compose.mvp.yml `
+  -f infra/docker-compose.debug-ports.yml `
+  up -d
 ```
 
-If you only changed the AI stack, rebuild the heavy images first:
+Status / logs / stop (keeps volumes):
 
 ```bash
-docker compose -f infra/docker-compose.dev.yml build ai-api celery-worker
-docker compose -f infra/docker-compose.dev.yml up -d --force-recreate
+docker compose --env-file infra/.env `
+  -f infra/docker-compose.dev.yml `
+  -f infra/docker-compose.mvp.yml `
+  ps -a
+
+docker compose --env-file infra/.env `
+  -f infra/docker-compose.dev.yml `
+  -f infra/docker-compose.mvp.yml `
+  logs -f ai-api celery-worker processing-api web
+
+docker compose --env-file infra/.env `
+  -f infra/docker-compose.dev.yml `
+  -f infra/docker-compose.mvp.yml `
+  down --remove-orphans
 ```
 
-For a clean restart:
+### VPS (dev + mvp + prod)
 
 ```bash
-docker compose -f infra/docker-compose.dev.yml down
-docker compose -f infra/docker-compose.dev.yml up -d --build
+cp infra/.env.vps.example infra/.env
+# fill production domain, secrets, and provider keys once on the VPS only
+
+docker compose --env-file infra/.env `
+  -f infra/docker-compose.dev.yml `
+  -f infra/docker-compose.mvp.yml `
+  -f infra/docker-compose.prod.yml `
+  build
+
+docker compose --env-file infra/.env `
+  -f infra/docker-compose.dev.yml `
+  -f infra/docker-compose.mvp.yml `
+  -f infra/docker-compose.prod.yml `
+  up -d
+```
+
+Project name: `audiomind-prod`. PostgreSQL and Redis stay private (no host publish). App ports bind to `127.0.0.1` for host Nginx. Optional helpers: `scripts/deploy-local.sh`, `scripts/deploy-vps.sh`. `scripts/vps-migrate.sh` is troubleshooting only.
+
+Validate (examples only in CI — never commit real `infra/.env`):
+
+```bash
+docker compose --env-file infra/.env.local.example `
+  -f infra/docker-compose.dev.yml -f infra/docker-compose.mvp.yml config --quiet
+
+docker compose --env-file infra/.env.vps.example `
+  -f infra/docker-compose.dev.yml -f infra/docker-compose.mvp.yml `
+  -f infra/docker-compose.prod.yml config --quiet
 ```
 
 ## Verify Services
 
-Check the running containers:
-
 ```bash
-docker compose -f infra/docker-compose.dev.yml ps
+docker compose --env-file infra/.env `
+  -f infra/docker-compose.dev.yml -f infra/docker-compose.mvp.yml ps
 ```
 
-Check Redis:
-
-```bash
-docker compose -f infra/docker-compose.dev.yml exec redis redis-cli ping
-```
-
-Browser and health URLs:
+Browser and health URLs (local):
 
 - Frontend: http://localhost:8080/
-- ai-api: http://localhost:8000/health
-- meeting-api: http://localhost:8081/health
-- processing-api: http://localhost:8082/health
-- user-api: http://localhost:8083/health
+- ai-api: http://localhost:8000/ready
+- meeting-api: http://localhost:8081/ready
+- processing-api: http://localhost:8082/ready
+- user-api: http://localhost:8083/ready
 
 ## Local Validation
 

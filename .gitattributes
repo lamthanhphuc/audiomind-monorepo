@@ -1,3 +1,6 @@
+*.sh text eol=lf
+*.bash text eol=lf
+Dockerfile text eol=lf
 demoRecordAUDIOMID/ai-service/docker-entrypoint.sh text eol=lf
 demoRecordAUDIOMID/meeting-service/docker-entrypoint.sh text eol=lf
 scripts/deploy/*.sh text eol=lf

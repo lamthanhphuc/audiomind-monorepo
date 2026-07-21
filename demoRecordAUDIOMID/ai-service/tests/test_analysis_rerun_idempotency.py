@@ -103,6 +103,7 @@ def _make_batch_pipeline(monkeypatch, analyzer):
     pipeline._should_use_native_deepgram_diarization = lambda: False
     pipeline._deduplicate_repeated_segments = lambda segments: segments
     monkeypatch.setattr(pipeline_module, "get_runtime_device", lambda: "cpu")
+    monkeypatch.setattr(pipeline_module.settings, "gemini_cost_guard_enabled", False)
     return pipeline
 
 
@@ -477,3 +478,40 @@ def test_failed_retry_only_retries_retryable_failed_identity(db_session, monkeyp
         == 1
     )
     assert failed_run.status == "COMPLETED"
+
+
+def test_failed_retry_analyzes_when_no_prior_run(db_session, monkeypatch):
+    """Background recovery after EMPTY_TRANSCRIPT: no run exists yet for the scope."""
+    meeting_id = 7109
+    analyzer = FakeBatchAnalyzer()
+    pipeline = _make_batch_pipeline(monkeypatch, analyzer)
+
+    result = _run_batch_with_mode(
+        pipeline, db_session, meeting_id, ANALYSIS_MODE_FAILED_RETRY
+    )
+
+    assert len(analyzer.calls) == 1
+    assert result["analysis"]["analysisStatus"] == "COMPLETED"
+    assert (
+        db_session.query(MeetingAnalysisRun)
+        .filter(MeetingAnalysisRun.meeting_id == meeting_id)
+        .count()
+        == 1
+    )
+
+
+def test_failed_retry_skips_completed_identity(db_session, monkeypatch):
+    """Matching completed cache hits before failed_retry; provider is not called again."""
+    meeting_id = 7110
+    analyzer = FakeBatchAnalyzer()
+    _seed_completed_run(db_session, meeting_id=meeting_id, analyzer=analyzer)
+    pipeline = _make_batch_pipeline(monkeypatch, analyzer)
+
+    result = _run_batch_with_mode(
+        pipeline, db_session, meeting_id, ANALYSIS_MODE_FAILED_RETRY
+    )
+
+    assert analyzer.calls == []
+    assert result["analysis"]["analysisStatus"] == "COMPLETED"
+    assert result["analysis"]["cacheHit"] is True
+    assert result["analysis"]["summary"] == "Cached summary"

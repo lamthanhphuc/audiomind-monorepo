@@ -10,13 +10,15 @@ from loguru import logger
 from sqlalchemy.orm import Session
 
 from app.config import get_runtime_device, get_settings
+from app.job_status_store import _get_client
 from app.logging_utils import safe_error_message, transcript_hash_prefix
+from app.metrics import gemini_metrics
 from app.models import Analysis, Transcript, TranscriptFragment
+from app.services.analysis_errors import AnalysisUnavailableError
 from app.services.analysis_runs import (
     ANALYSIS_MODE_CACHE_ONLY,
     ANALYSIS_MODE_FAILED_RETRY,
     ANALYSIS_MODE_FORCE,
-    ANALYSIS_RETRYABLE_FAILURE_STATUSES,
     ANALYSIS_STATUS_ANALYZING,
     analysis_payload_from_run,
     analysis_miss_response_metadata,
@@ -26,6 +28,7 @@ from app.services.analysis_runs import (
     find_completed_analysis_run_for_identity,
     find_in_progress_analysis_run_for_identity,
     find_latest_analysis_run_for_identity,
+    is_analysis_run_retryable,
     mark_analysis_run_failed,
     mark_analysis_run_skipped_short,
     persist_completed_analysis_run,
@@ -33,6 +36,8 @@ from app.services.analysis_runs import (
 )
 from app.services.analysis_factory import build_analysis_analyzer
 from app.services.analysis_versioning import merge_domain_analysis_payload
+from app.services.gemini_context_budget import estimate_text_tokens
+from app.services.gemini_cost_guard import GeminiCostGuard
 from app.services.segment_identity import (
     assign_stable_segment_ids,
     format_aligned_transcript_for_analysis,
@@ -865,6 +870,9 @@ class ProcessingPipeline:
             Processing result dictionary
         """
         active_analysis_run = None
+        cost_guard = None
+        cost_reservation = None
+        analysis_persisted = False
         enhanced_path: Path | None = None
         try:
             logger.info(f"Starting processing pipeline for meeting {meeting_id}")
@@ -1017,6 +1025,16 @@ class ProcessingPipeline:
             aligned_segments = self._deduplicate_repeated_segments(aligned_segments)
             aligned_segments = assign_stable_segment_ids(meeting_id, aligned_segments)
 
+            # Persist transcript before Gemini so analysis failures still leave
+            # rerunable saved transcript for "Phân tích lại".
+            self._persist_aligned_transcript_segments(meeting_id, aligned_segments, db)
+            db.commit()
+            logger.info(
+                "event=BATCH_TRANSCRIPT_PERSISTED_BEFORE_ANALYSIS meetingId={} segments={}",
+                meeting_id,
+                len(aligned_segments),
+            )
+
             # Step 5: AI Analysis
             logger.info("Step 5: AI analysis")
             mode = normalize_analysis_mode(analysis_mode)
@@ -1044,6 +1062,7 @@ class ProcessingPipeline:
                 else find_completed_analysis_run_for_identity(db, analysis_identity)
             )
             if cached_analysis_run is not None:
+                gemini_metrics.cache_hit()
                 logger.info(
                     "ANALYSIS_CACHE_HIT meetingId={} provider={} model={} promptVersion={} schemaVersion={} canonicalTranscriptHash={} canonicalTranscriptVersion={} analysisInputMode={}",
                     meeting_id,
@@ -1094,10 +1113,12 @@ class ProcessingPipeline:
                     retry_run = find_latest_analysis_run_for_identity(
                         db, analysis_identity
                     )
-                    if (
-                        retry_run is None
-                        or retry_run.status not in ANALYSIS_RETRYABLE_FAILURE_STATUSES
+                    if retry_run is not None and not is_analysis_run_retryable(
+                        retry_run
                     ):
+                        # Completed/skipped/in-progress: do not re-run under
+                        # failed_retry. None (never analyzed) falls through so
+                        # background recovery can analyze after EMPTY_TRANSCRIPT.
                         miss_metadata = analysis_miss_response_metadata(
                             db, analysis_identity
                         )
@@ -1134,6 +1155,28 @@ class ProcessingPipeline:
                         "speaker_count": speaker_count,
                         "diarization_enabled": diarization_enabled,
                         "analysis": run_metadata,
+                    }
+                if not began_run:
+                    if active_analysis_run.status == "COMPLETED":
+                        return {
+                            "meeting_id": meeting_id,
+                            "status": "completed",
+                            "transcript_segments": len(aligned_segments),
+                            "speaker_count": speaker_count,
+                            "diarization_enabled": diarization_enabled,
+                            "analysis": analysis_payload_from_run(
+                                active_analysis_run, cache_hit=True
+                            ),
+                        }
+                    return {
+                        "meeting_id": meeting_id,
+                        "status": "failed",
+                        "transcript_segments": len(aligned_segments),
+                        "speaker_count": speaker_count,
+                        "diarization_enabled": diarization_enabled,
+                        "analysis": analysis_run_response_metadata(
+                            active_analysis_run, cache_hit=False
+                        ),
                     }
 
                 logger.info(
@@ -1196,6 +1239,69 @@ class ProcessingPipeline:
                     "allowedSegmentIds": allowed_segment_ids,
                     "language": language,
                 }
+                if (
+                    settings.gemini_cost_guard_enabled
+                    and getattr(self.ai_analyzer, "provider", "") == "gemini"
+                ):
+                    try:
+                        cost_guard_redis = _get_client()
+                    except Exception as redis_error:
+                        logger.warning(
+                            "GEMINI_COST_GUARD_UNAVAILABLE workload=structured_analysis error_type={} fail_closed=true",
+                            type(redis_error).__name__,
+                        )
+                        cost_guard_redis = None
+                    cost_guard = GeminiCostGuard(
+                        cost_guard_redis,
+                        namespace=settings.gemini_cost_guard_namespace,
+                        daily_request_limit_per_user=(
+                            settings.gemini_daily_request_limit_per_user
+                        ),
+                        daily_reanalysis_limit_per_meeting=(
+                            settings.gemini_daily_reanalyze_limit_per_meeting
+                        ),
+                        daily_token_limit_per_user=(
+                            settings.gemini_daily_token_limit_per_user
+                        ),
+                        max_concurrent_requests=(
+                            settings.gemini_max_concurrent_requests
+                        ),
+                    )
+                    cost_reservation = cost_guard.reserve(
+                        user_id=owner_user_id or "internal-default",
+                        meeting_id=meeting_id,
+                        operation_id=active_analysis_run.idempotency_key,
+                        estimated_tokens=(
+                            estimate_text_tokens(formatted_transcript)
+                            + settings.gemini_structured_analysis_max_output_tokens
+                        ),
+                        is_reanalysis=mode == ANALYSIS_MODE_FORCE,
+                    )
+                    if not cost_reservation.allowed:
+                        if cost_reservation.duplicate:
+                            gemini_metrics.duplicate_suppressed()
+                            return {
+                                "meeting_id": meeting_id,
+                                "status": "analyzing",
+                                "transcript_segments": len(aligned_segments),
+                                "speaker_count": speaker_count,
+                                "diarization_enabled": diarization_enabled,
+                                "analysis": analysis_run_response_metadata(
+                                    active_analysis_run, cache_hit=False
+                                ),
+                            }
+                        error_code = (
+                            "GEMINI_COST_GUARD_UNAVAILABLE"
+                            if cost_reservation.reason == "guard_unavailable"
+                            else "GEMINI_COST_LIMIT_EXCEEDED"
+                        )
+                        gemini_metrics.failure(error_code)
+                        raise AnalysisUnavailableError(
+                            "Gemini request blocked by the distributed cost guard",
+                            provider="gemini",
+                            error_code=error_code,
+                            retryable=False,
+                        )
                 analysis_result = self.ai_analyzer.analyze_meeting(
                     formatted_transcript,
                     metadata=analysis_metadata,
@@ -1219,6 +1325,7 @@ class ProcessingPipeline:
             if analysis_metadata:
                 analysis_result = dict(analysis_result or {})
                 analysis_result.update(analysis_metadata)
+            analysis_persisted = True
 
             logger.info(f"Processing complete for meeting {meeting_id}")
 
@@ -1233,9 +1340,15 @@ class ProcessingPipeline:
 
         except Exception as e:
             if active_analysis_run is not None:
+                provider_error_code = (
+                    str(getattr(e, "error_code", None) or "").strip()
+                    or type(e).__name__
+                )
+                if str(getattr(e, "provider", "")).strip().lower() == "gemini":
+                    gemini_metrics.failure(provider_error_code)
                 mark_analysis_run_failed(
                     run=active_analysis_run,
-                    error_code=type(e).__name__,
+                    error_code=provider_error_code,
                     error_message=safe_error_message(e),
                 )
                 db.commit()
@@ -1244,6 +1357,8 @@ class ProcessingPipeline:
             )
             raise
         finally:
+            if cost_guard is not None:
+                cost_guard.release(cost_reservation, success=analysis_persisted)
             if enhanced_path is not None and not settings.audio_keep_enhanced_file:
                 try:
                     enhanced_path.unlink(missing_ok=True)
@@ -1253,6 +1368,56 @@ class ProcessingPipeline:
                         meeting_id,
                         enhanced_path.name,
                     )
+
+    def _persist_aligned_transcript_segments(
+        self,
+        meeting_id: int,
+        aligned_segments: List[Dict],
+        db: Session,
+    ) -> None:
+        """Persist aligned STT segments independently of analysis success."""
+
+        def _to_builtin(value):
+            if value is None or isinstance(value, (str, int, float, bool, datetime)):
+                return value
+            if hasattr(value, "item"):
+                try:
+                    return _to_builtin(value.item())
+                except Exception:
+                    pass
+            if isinstance(value, dict):
+                return {str(k): _to_builtin(v) for k, v in value.items()}
+            if isinstance(value, (list, tuple)):
+                return [_to_builtin(v) for v in value]
+            return str(value)
+
+        transcript_repository = TranscriptPersistenceRepository(db)
+        for index, segment in enumerate(aligned_segments, start=1):
+            seq_raw = segment.get("seq")
+            seq = int(_to_builtin(seq_raw)) if seq_raw is not None else index
+            if seq <= 0:
+                seq = index
+            fragment_input = TranscriptFragmentInput(
+                meeting_id=meeting_id,
+                seq=seq,
+                speaker=str(segment.get("speaker", "UNKNOWN")),
+                start_time=float(_to_builtin(segment.get("start", 0.0))),
+                end_time=float(_to_builtin(segment.get("end", 0.0))),
+                text=str(segment.get("text", "")),
+                event_id=(
+                    str(segment.get("segment_id") or segment.get("event_id"))
+                    if (segment.get("segment_id") or segment.get("event_id"))
+                    else None
+                ),
+                # Batch STT segments are complete once aligned.
+                is_final=bool(segment.get("is_final", True)),
+                confidence=(
+                    float(_to_builtin(segment.get("confidence")))
+                    if segment.get("confidence") is not None
+                    else None
+                ),
+            )
+            transcript_repository.append_fragment(fragment_input)
 
     def _save_results(
         self,
@@ -1300,33 +1465,9 @@ class ProcessingPipeline:
 
                 return str(value)
 
-            # Save transcripts
-            transcript_repository = TranscriptPersistenceRepository(db)
-            for segment in aligned_segments:
-                fragment_input = TranscriptFragmentInput(
-                    meeting_id=meeting_id,
-                    seq=(
-                        int(_to_builtin(segment.get("seq", 0)))
-                        if segment.get("seq") is not None
-                        else len(transcript_repository.list_fragments(meeting_id)) + 1
-                    ),
-                    speaker=str(segment.get("speaker", "UNKNOWN")),
-                    start_time=float(_to_builtin(segment.get("start", 0.0))),
-                    end_time=float(_to_builtin(segment.get("end", 0.0))),
-                    text=str(segment.get("text", "")),
-                    event_id=(
-                        str(segment.get("segment_id") or segment.get("event_id"))
-                        if (segment.get("segment_id") or segment.get("event_id"))
-                        else None
-                    ),
-                    is_final=bool(segment.get("is_final", False)),
-                    confidence=(
-                        float(_to_builtin(segment.get("confidence")))
-                        if segment.get("confidence") is not None
-                        else None
-                    ),
-                )
-                transcript_repository.append_fragment(fragment_input)
+            # Save transcripts (idempotent via fragment dedupe if already
+            # persisted before analysis).
+            self._persist_aligned_transcript_segments(meeting_id, aligned_segments, db)
 
             # Save analysis
             clean_analysis = _to_builtin(analysis_result or {})

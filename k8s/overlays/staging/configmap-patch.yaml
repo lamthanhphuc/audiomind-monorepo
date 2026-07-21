@@ -4,6 +4,8 @@ metadata:
   name: audiomind-config
   namespace: audiomind
 data:
-  CORS_ALLOWED_ORIGINS: https://app.audiomind.example
-  ENABLE_SPEAKER_DIARIZATION: "true"
+  CORS_ALLOWED_ORIGINS: https://staging.audiomind.example
+  STT_PROVIDER: local_whisper
+  ALLOW_LEGACY_LOCAL_STT: "true"
+  ENABLE_SPEAKER_DIARIZATION: "false"
   OLLAMA_MODEL: qwen2.5:7b-instruct
