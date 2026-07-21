@@ -7,7 +7,11 @@ import json
 import pytest
 
 from app.services.gemini_key_cooldown_store import key_fingerprint
-from app.services.gemini_key_manager import GeminiKeyEntry, GeminiKeyManager, LocalCooldownState
+from app.services.gemini_key_manager import (
+    GeminiKeyEntry,
+    GeminiKeyManager,
+    LocalCooldownState,
+)
 from app.services.gemini_shared_state_contracts import (
     INTEGRATION_REMAINING_MS_TOLERANCE,
     MAX_RECONCILE_ATTEMPTS,
@@ -35,6 +39,13 @@ from app.services.gemini_shared_state_store import RedisV2GeminiKeyCooldownStore
 pytestmark = pytest.mark.redis_integration
 
 
+@pytest.fixture(autouse=True)
+def clean_redis(redis_client):
+    redis_client.flushdb()
+    yield
+    redis_client.flushdb()
+
+
 class MonotonicClock:
     def __init__(self, start: float = 1000.0) -> None:
         self.t = start
@@ -49,7 +60,9 @@ class MonotonicClock:
         return int(self.t * 1000)
 
 
-def _v2_scope(alias: str = "primary", secret: str = "fake-primary-key") -> SharedStateScope:
+def _v2_scope(
+    alias: str = "primary", secret: str = "fake-primary-key"
+) -> SharedStateScope:
     return SharedStateScope(alias=alias, fingerprint=key_fingerprint(secret))
 
 
@@ -133,7 +146,9 @@ def test_redis_05_two_manager_model_marker_cas(redis_client, request) -> None:
     assert stale.status is PendingOperationStatus.SUPERSEDED
 
 
-def test_redis_09_stale_publish_wrong_expected_superseded(redis_client, request) -> None:
+def test_redis_09_stale_publish_wrong_expected_superseded(
+    redis_client, request
+) -> None:
     store = _v2_store(redis_client, request)
     scope = _v2_scope()
     applied = store.apply_cooldown_cas(
@@ -206,7 +221,9 @@ def test_redis_17_republish_uses_remaining_ms_not_original_duration(
     )
     assert second.status is PendingOperationStatus.APPLIED
     assert second.final_remaining_ms is not None
-    assert abs(second.final_remaining_ms - retry_ms) <= INTEGRATION_REMAINING_MS_TOLERANCE
+    assert (
+        abs(second.final_remaining_ms - retry_ms) <= INTEGRATION_REMAINING_MS_TOLERANCE
+    )
 
 
 def test_redis_19_invalid_scope_rejected_no_keys(redis_client, request) -> None:
@@ -221,7 +238,10 @@ def test_redis_19_invalid_scope_rejected_no_keys(redis_client, request) -> None:
     )
     assert result.status is PendingOperationStatus.REJECTED
     gemini_scope = scope.to_key_scope()
-    assert redis_client.get(build_v2_cooldown_state_key(store.namespace, gemini_scope)) is None
+    assert (
+        redis_client.get(build_v2_cooldown_state_key(store.namespace, gemini_scope))
+        is None
+    )
     assert (
         redis_client.get(build_v2_cooldown_revision_key(store.namespace, gemini_scope))
         is None
@@ -241,9 +261,7 @@ def test_redis_18_clear_superseded_then_refresh_clear(redis_client, request) -> 
     assert published.status is PendingOperationStatus.APPLIED
     stale_clear = store.clear_cooldown_cas(scope, expected_revision=0)
     assert stale_clear.status is PendingOperationStatus.REJECTED
-    cleared = store.clear_cooldown_cas(
-        scope, expected_revision=published.revision
-    )
+    cleared = store.clear_cooldown_cas(scope, expected_revision=published.revision)
     assert cleared.status is PendingOperationStatus.APPLIED
 
 
@@ -364,7 +382,9 @@ def test_redis_11_fresh_publish_after_tombstone_matching_revision(
     assert snapshot.cooldown_revision == 3
 
 
-def test_redis_12_superseded_publish_refresh_merge_republish(redis_client, request) -> None:
+def test_redis_12_superseded_publish_refresh_merge_republish(
+    redis_client, request
+) -> None:
     """REDIS-12: SUPERSEDED publish converges to local hard cooldown via reconcile."""
     clock = MonotonicClock()
     store = _v2_store(redis_client, request, clock=clock)
@@ -408,7 +428,9 @@ def test_redis_12_superseded_publish_refresh_merge_republish(redis_client, reque
         operation_id="attempt-stale",
         status=stale_write.status,
         write_result=stale_write,
-        timing=RedisCallTiming(started_at_monotonic=clock(), completed_at_monotonic=clock()),
+        timing=RedisCallTiming(
+            started_at_monotonic=clock(), completed_at_monotonic=clock()
+        ),
     )
 
     def capture_plan_locked() -> ReconcilePlanCapture:
@@ -848,7 +870,9 @@ def test_redis_21_convergence_conflict_budget(redis_client, request) -> None:
             status=PendingOperationStatus.REJECTED,
             revision=1,
         ),
-        timing=RedisCallTiming(started_at_monotonic=clock(), completed_at_monotonic=clock()),
+        timing=RedisCallTiming(
+            started_at_monotonic=clock(), completed_at_monotonic=clock()
+        ),
     )
 
     outcome = run_reconcile_loop(
@@ -869,3 +893,26 @@ def test_redis_21_convergence_conflict_budget(redis_client, request) -> None:
     assert pending.root_operation_id == root_id
     assert read_calls["count"] <= MAX_RECONCILE_ATTEMPTS + 2
     assert write_calls["count"] <= MAX_RECONCILE_ATTEMPTS
+
+
+def test_v2_final_validation_blocks_state_created_after_selection(
+    redis_client, request
+) -> None:
+    clock = MonotonicClock()
+    store = _v2_store(redis_client, request, clock=clock)
+    manager = _manager(store, clock)
+    scope = _v2_scope()
+    selection = manager.select_key(model="gemini-3.1-flash-lite")
+    assert selection.available is True
+
+    current = store.read_scope_snapshot(scope)
+    applied = store.apply_cooldown_cas(
+        scope,
+        expected_revision=current.cooldown_revision,
+        expected_digest=current.cooldown_digest,
+        remaining_ms=30_000,
+        reason="rate_limit",
+        cooldown_type="soft",
+    )
+    assert applied.status is PendingOperationStatus.APPLIED
+    assert manager.validate_selection(selection, model="gemini-3.1-flash-lite") is False

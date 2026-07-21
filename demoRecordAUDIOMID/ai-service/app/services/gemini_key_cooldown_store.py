@@ -27,6 +27,15 @@ DEFAULT_MODEL_UNSUPPORTED_TTL_SECONDS = 21600
 DEFAULT_SHARED_SERVICE_NAME = "ai-service"
 DEFAULT_TOMBSTONE_TTL_SECONDS = 300
 _NAMESPACE_PREFIX_LIMIT = 48
+SUPPORTED_GEMINI_GENERATION_MODELS = frozenset(
+    {
+        "gemini-1.5-flash",
+        "gemini-2.0-flash",
+        "gemini-2.5-flash",
+        "gemini-3.1-flash-lite",
+    }
+)
+_NORMALIZED_MODEL_PATTERN = re.compile(r"^gemini-[a-z0-9]+(?:[._-][a-z0-9]+)*$")
 
 
 @dataclass(frozen=True)
@@ -116,7 +125,9 @@ def parse_redis_cooldown_metadata(raw: Any) -> tuple[str, str | None]:
     else:
         reason = "cooldown"
     cooldown_type = normalize_cooldown_type(
-        parsed.get("cooldown_type") if isinstance(parsed.get("cooldown_type"), str) else None
+        parsed.get("cooldown_type")
+        if isinstance(parsed.get("cooldown_type"), str)
+        else None
     ) or normalize_cooldown_type(
         parsed.get("type") if isinstance(parsed.get("type"), str) else None
     )
@@ -187,6 +198,15 @@ def normalize_model_name(model: str | None) -> str:
     if ":" in raw:
         raw = raw.split(":", 1)[0]
     return raw.strip()
+
+
+def is_supported_generation_model(model: str | None) -> bool:
+    normalized = normalize_model_name(model)
+    return bool(
+        normalized
+        and _NORMALIZED_MODEL_PATTERN.fullmatch(normalized)
+        and normalized in SUPPORTED_GEMINI_GENERATION_MODELS
+    )
 
 
 def safe_model_key_component(model: str) -> str:
@@ -452,7 +472,8 @@ class InMemoryGeminiKeyCooldownStore:
         self._wall_clock_ms = wall_clock_ms or (lambda: int(time.time() * 1000))
         self.namespace = _sanitize_namespace(namespace)
         self.model_unsupported_ttl_seconds = max(
-            1, int(model_unsupported_ttl_seconds or DEFAULT_MODEL_UNSUPPORTED_TTL_SECONDS)
+            1,
+            int(model_unsupported_ttl_seconds or DEFAULT_MODEL_UNSUPPORTED_TTL_SECONDS),
         )
         self._lock = threading.RLock()
         self._cooldown_by_scope: dict[str, CooldownMetadata] = {}
@@ -509,7 +530,8 @@ class InMemoryGeminiKeyCooldownStore:
         incoming = CooldownMetadata(
             reason=normalize_reason(reason),
             cooldown_type=normalize_cooldown_type(cooldown_type),
-            expires_at_ms=current_ms + int(ceil(max(0.0, float(seconds or 0.0)) * 1000)),
+            expires_at_ms=current_ms
+            + int(ceil(max(0.0, float(seconds or 0.0)) * 1000)),
         )
         scope_key = self._scope_key(scope)
         with self._lock:
@@ -766,14 +788,13 @@ class RedisGeminiKeyCooldownStore:
         self._redis = redis_client
         self.namespace = _sanitize_namespace(namespace)
         self.model_unsupported_ttl_seconds = max(
-            1, int(model_unsupported_ttl_seconds or DEFAULT_MODEL_UNSUPPORTED_TTL_SECONDS)
+            1,
+            int(model_unsupported_ttl_seconds or DEFAULT_MODEL_UNSUPPORTED_TTL_SECONDS),
         )
         self._wall_clock_ms = wall_clock_ms or (lambda: int(time.time() * 1000))
         self.tombstone_ttl_seconds = max(1, int(tombstone_ttl_seconds))
         self._merge_script = self._register_script(REDIS_MERGE_COOLDOWN_SCRIPT)
-        self._pool_snapshot_script = self._register_script(
-            REDIS_POOL_SNAPSHOT_SCRIPT
-        )
+        self._pool_snapshot_script = self._register_script(REDIS_POOL_SNAPSHOT_SCRIPT)
         self._tombstone_script = self._register_script(REDIS_TOMBSTONE_SCRIPT)
         self._mark_model_script = self._register_script(REDIS_MARK_MODEL_SCRIPT)
         logger.info(
@@ -788,10 +809,7 @@ class RedisGeminiKeyCooldownStore:
         return None
 
     def _cooldown_key(self, scope: GeminiKeyScope) -> str:
-        return (
-            f"gemini:{self.namespace}:cooldown:"
-            f"{scope.alias}:{scope.fingerprint}"
-        )
+        return f"gemini:{self.namespace}:cooldown:" f"{scope.alias}:{scope.fingerprint}"
 
     def _model_key(self, scope: GeminiKeyScope, model: str) -> str:
         model_component = safe_model_key_component(model)
@@ -884,8 +902,7 @@ class RedisGeminiKeyCooldownStore:
             )
         args: list[Any] = [self.tombstone_ttl_seconds * 1000]
         args.extend(
-            "1" if scope.alias in clear_cooldown_aliases else "0"
-            for scope in scopes
+            "1" if scope.alias in clear_cooldown_aliases else "0" for scope in scopes
         )
         args.extend(
             "1" if model_name and scope.alias in clear_model_aliases else "0"
@@ -902,13 +919,9 @@ class RedisGeminiKeyCooldownStore:
         for index, scope in enumerate(scopes):
             offset = index * 4
             cooldown_raw = values[offset] if len(values) > offset else ""
-            cooldown_pttl = (
-                int(values[offset + 1]) if len(values) > offset + 1 else -2
-            )
+            cooldown_pttl = int(values[offset + 1]) if len(values) > offset + 1 else -2
             model_raw = values[offset + 2] if len(values) > offset + 2 else ""
-            model_pttl = (
-                int(values[offset + 3]) if len(values) > offset + 3 else -2
-            )
+            model_pttl = int(values[offset + 3]) if len(values) > offset + 3 else -2
             cooldown_state = self._cooldown_state_from_snapshot(
                 RedisCooldownSnapshot(
                     raw=_normalize_redis_raw(cooldown_raw),
@@ -916,8 +929,7 @@ class RedisGeminiKeyCooldownStore:
                 )
             )
             model_unsupported = bool(
-                model_name
-                and self._model_marker_from_snapshot(model_raw, model_pttl)
+                model_name and self._model_marker_from_snapshot(model_raw, model_pttl)
             )
             snapshots.append(
                 SharedAliasSnapshot(
@@ -975,9 +987,7 @@ class RedisGeminiKeyCooldownStore:
             return SharedModelUnsupportedReadResult(success=True, unsupported=False)
         result = self.read_pool_snapshot((scope,), model_name, now_ms=now_ms)
         if not result.success or not result.aliases:
-            return SharedModelUnsupportedReadResult(
-                success=False, error=result.error
-            )
+            return SharedModelUnsupportedReadResult(success=False, error=result.error)
         snapshot = result.aliases[0]
         return SharedModelUnsupportedReadResult(
             success=True,

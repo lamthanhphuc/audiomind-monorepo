@@ -23,7 +23,7 @@ class FakeBatchAnalyzer:
         self,
         *,
         provider: str = "gemini",
-        model: str = "gemini-2.5-flash",
+        model: str = "gemini-3.1-flash-lite",
         prompt_version: str = "gemini-business-v2",
         schema_version: str = "gemini-business-v2",
     ):
@@ -73,6 +73,7 @@ def reset_realtime_state(monkeypatch):
     main_module._realtime_analysis_in_progress.clear()
     main_module._realtime_analysis_completed_hash.clear()
     monkeypatch.setattr(main_module, "pipeline", None)
+    monkeypatch.setattr(main_module.settings, "gemini_cost_guard_enabled", False)
     yield
     main_module._realtime_analysis_in_progress.clear()
     main_module._realtime_analysis_completed_hash.clear()
@@ -214,7 +215,7 @@ def test_batch_cache_hit_skips_provider_and_does_not_duplicate_run(
     assert result["analysis"]["analysisStatus"] == "COMPLETED"
     assert result["analysis"]["cacheHit"] is True
     assert result["analysis"]["provider"] == "gemini"
-    assert result["analysis"]["model"] == "gemini-2.5-flash"
+    assert result["analysis"]["model"] == "gemini-3.1-flash-lite"
     assert result["analysis"]["promptVersion"] == "gemini-business-v2"
     assert result["analysis"]["schemaVersion"] == "gemini-business-v2"
     assert result["analysis"]["canonicalTranscriptHash"] is not None
@@ -371,7 +372,7 @@ def test_realtime_cache_hit_skips_provider_and_returns_metadata(
     assert response.analysisStatus == "COMPLETED"
     assert response.cacheHit is True
     assert response.provider == "gemini"
-    assert response.model == "gemini-2.5-flash"
+    assert response.model == "gemini-3.1-flash-lite"
     assert response.canonicalTranscriptHash == transcript_hash
     assert response.analysisInputMode == "readable_fallback"
     assert job_updates

@@ -40,9 +40,21 @@ def _force_analysis_cache_miss(pipeline_module, monkeypatch) -> None:
         "find_in_progress_analysis_run_for_identity",
         lambda *args, **kwargs: None,
     )
+    monkeypatch.setattr(
+        pipeline_module,
+        "begin_analysis_run",
+        lambda *args, **kwargs: (
+            types.SimpleNamespace(
+                idempotency_key="audio-enhancement-test-operation",
+                status="ANALYZING",
+            ),
+            True,
+        ),
+    )
     from app.config import get_settings
 
     monkeypatch.setattr(get_settings(), "analysis_short_transcript_gate_enabled", False)
+    monkeypatch.setattr(pipeline_module.settings, "gemini_cost_guard_enabled", False)
 
 
 def _load_processing_pipeline(monkeypatch):

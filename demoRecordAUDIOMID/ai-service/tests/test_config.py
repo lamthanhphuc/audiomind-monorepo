@@ -19,15 +19,15 @@ def test_provider_defaults_load_for_mvp():
     assert settings.stt_provider == "deepgram"
     assert settings.analysis_provider == "gemini"
     assert settings.gemini_api_key == ""
-    assert settings.gemini_analysis_model == "gemini-2.5-flash"
-    assert settings.gemini_summary_model == "gemini-2.5-flash"
+    assert settings.gemini_analysis_model == "gemini-3.1-flash-lite"
+    assert settings.gemini_summary_model == "gemini-3.1-flash-lite"
     assert settings.gemini_timeout_seconds == 300
-    assert settings.gemini_analysis_retry_max_attempts == 3
+    assert settings.gemini_analysis_retry_max_attempts == 2
     assert settings.gemini_rate_limit_retry_base_seconds == 30.0
     assert settings.gemini_rate_limit_retry_max_seconds == 90.0
     assert settings.gemini_retry_quota_exceeded is False
     assert settings.gemini_max_tokens_retry_enabled is True
-    assert settings.gemini_analysis_max_output_tokens == 8192
+    assert settings.gemini_analysis_max_output_tokens == 4096
     assert settings.gemini_max_single_request_chars == 50000
     assert settings.gemini_request_delay_seconds == 15.0
     assert settings.deepgram_realtime_model == "nova-3"

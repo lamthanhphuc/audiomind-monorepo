@@ -1,5 +1,6 @@
 from functools import lru_cache
 from pathlib import Path
+import re
 from urllib.parse import urlparse
 
 from pydantic import AliasChoices, Field, model_validator
@@ -31,22 +32,34 @@ class Settings(BaseSettings):
     gemini_model_unsupported_ttl_seconds: int = 21600
     gemini_redis_connect_timeout_seconds: float = 1.0
     gemini_redis_socket_timeout_seconds: float = 1.5
-    gemini_max_attempts: int = 3
+    gemini_max_total_attempts: int = 2
+    gemini_max_attempts: int = 2
+    gemini_max_schema_retries: int = 1
+    gemini_max_token_retries: int = 1
     gemini_key_cooldown_seconds: float = 90.0
     gemini_key_hard_cooldown_seconds: float = 900.0
     gemini_backoff_base_ms: float = 500.0
     gemini_backoff_max_ms: float = 10000.0
     gemini_backoff_jitter: bool = True
     gemini_fail_fast_seconds: float = 30.0
-    gemini_analysis_model: str = "gemini-2.5-flash"
-    gemini_summary_model: str = "gemini-2.5-flash"
-    # Comma-separated fallbacks when preferred model is blocked for new AQ./auth keys.
-    gemini_model_fallbacks: str = "gemini-2.0-flash,gemini-2.5-flash-lite"
+    gemini_model: str = "gemini-3.1-flash-lite"
+    gemini_analysis_model: str = ""
+    gemini_summary_model: str = ""
+    gemini_thinking_level: str = "low"
+    gemini_temperature: float = 0.2
+    gemini_chat_max_output_tokens: int = 1200
+    gemini_summary_max_output_tokens: int = 2048
+    gemini_structured_analysis_max_output_tokens: int = 4096
+    gemini_study_artifact_max_output_tokens: int = 3072
+    gemini_chat_max_input_tokens: int = 12000
+    gemini_chat_history_max_tokens: int = 3000
+    gemini_rag_context_max_tokens: int = 8000
+    gemini_rag_top_k: int = 6
     gemini_analysis_domain_mode: str = "it"
     gemini_analysis_max_input_tokens: int = 12000
-    gemini_analysis_max_output_tokens: int = 8192
+    gemini_analysis_max_output_tokens: int = 4096
     gemini_analysis_thinking_budget: int = 0
-    gemini_analysis_retry_max_attempts: int = 3
+    gemini_analysis_retry_max_attempts: int = 2
     gemini_timeout_seconds: int = 300
     gemini_rate_limit_retry_base_seconds: float = 30.0
     gemini_rate_limit_retry_max_seconds: float = 90.0
@@ -55,6 +68,16 @@ class Settings(BaseSettings):
     gemini_max_single_request_chars: int = 50000
     gemini_request_delay_seconds: float = 15.0
     gemini_http_proxy: str = ""
+    gemini_key_project_groups: str = ""
+    gemini_cross_project_failover_enabled: bool = False
+    gemini_model_fallback_enabled: bool = False
+    gemini_pro_fallback_enabled: bool = False
+    gemini_cost_guard_enabled: bool = True
+    gemini_cost_guard_namespace: str = ""
+    gemini_daily_request_limit_per_user: int = 20
+    gemini_daily_reanalyze_limit_per_meeting: int = 3
+    gemini_daily_token_limit_per_user: int = 100000
+    gemini_max_concurrent_requests: int = 2
 
     # Analysis recovery (PR2)
     analysis_background_retry_enabled: bool = True
@@ -282,22 +305,70 @@ class Settings(BaseSettings):
         }:
             self.gemini_analysis_domain_mode = "it"
 
+        self.gemini_model = (
+            (self.gemini_model or "gemini-3.1-flash-lite").strip().lower()
+        )
+        self.gemini_analysis_model = (
+            self.gemini_analysis_model or ""
+        ).strip().lower() or self.gemini_model
+        self.gemini_summary_model = (
+            self.gemini_summary_model or ""
+        ).strip().lower() or self.gemini_model
+        self.gemini_thinking_level = (
+            (self.gemini_thinking_level or "low").strip().lower()
+        )
+        if self.gemini_thinking_level not in {"minimal", "low", "medium", "high"}:
+            self.gemini_thinking_level = "low"
+        self.gemini_temperature = min(
+            2.0, max(0.0, float(self.gemini_temperature or 0.2))
+        )
+        self.gemini_chat_max_output_tokens = max(
+            1, int(self.gemini_chat_max_output_tokens or 1200)
+        )
+        self.gemini_summary_max_output_tokens = max(
+            1, int(self.gemini_summary_max_output_tokens or 2048)
+        )
+        self.gemini_structured_analysis_max_output_tokens = max(
+            1, int(self.gemini_structured_analysis_max_output_tokens or 4096)
+        )
+        self.gemini_study_artifact_max_output_tokens = max(
+            1, int(self.gemini_study_artifact_max_output_tokens or 3072)
+        )
+        self.gemini_chat_max_input_tokens = max(
+            1, int(self.gemini_chat_max_input_tokens or 12000)
+        )
+        self.gemini_chat_history_max_tokens = max(
+            0, int(self.gemini_chat_history_max_tokens or 3000)
+        )
+        self.gemini_rag_context_max_tokens = max(
+            1, int(self.gemini_rag_context_max_tokens or 8000)
+        )
+        self.gemini_rag_top_k = min(20, max(1, int(self.gemini_rag_top_k or 6)))
+
         self.gemini_analysis_max_input_tokens = max(
             1, int(self.gemini_analysis_max_input_tokens or 12000)
         )
         # Clamp to a sane model budget: avoid tiny wasteful requests and unbounded growth.
         self.gemini_analysis_max_output_tokens = min(
             16384,
-            max(1024, int(self.gemini_analysis_max_output_tokens or 8192)),
+            max(1024, int(self.gemini_analysis_max_output_tokens or 4096)),
         )
         self.gemini_analysis_thinking_budget = max(
             0, int(self.gemini_analysis_thinking_budget or 0)
         )
         self.gemini_analysis_retry_max_attempts = max(
-            1, int(self.gemini_analysis_retry_max_attempts or 3)
+            1, int(self.gemini_analysis_retry_max_attempts or 2)
         )
-        self.gemini_max_attempts = max(
-            1, int(self.gemini_max_attempts or self.gemini_analysis_retry_max_attempts)
+        self.gemini_max_total_attempts = max(
+            1, int(self.gemini_max_total_attempts or 2)
+        )
+        # Legacy knob remains readable but can never expand the global budget.
+        self.gemini_max_attempts = self.gemini_max_total_attempts
+        self.gemini_max_schema_retries = min(
+            1, max(0, int(self.gemini_max_schema_retries or 0))
+        )
+        self.gemini_max_token_retries = min(
+            1, max(0, int(self.gemini_max_token_retries or 0))
         )
         self.gemini_key_cooldown_seconds = max(
             0.0, float(self.gemini_key_cooldown_seconds or 0.0)
@@ -330,6 +401,30 @@ class Settings(BaseSettings):
         self.gemini_rate_limit_retry_max_seconds = max(
             0.0, float(self.gemini_rate_limit_retry_max_seconds or 0.0)
         )
+        self.gemini_daily_request_limit_per_user = max(
+            1, int(self.gemini_daily_request_limit_per_user or 20)
+        )
+        self.gemini_daily_reanalyze_limit_per_meeting = max(
+            1, int(self.gemini_daily_reanalyze_limit_per_meeting or 3)
+        )
+        self.gemini_daily_token_limit_per_user = max(
+            1, int(self.gemini_daily_token_limit_per_user or 100000)
+        )
+        self.gemini_max_concurrent_requests = max(
+            1, int(self.gemini_max_concurrent_requests or 2)
+        )
+        self.gemini_cost_guard_namespace = (
+            (
+                self.gemini_cost_guard_namespace
+                or f"{(self.app_env or 'development').strip().lower()}-audiomind"
+            )
+            .strip()
+            .lower()
+        )
+        if not re.fullmatch(
+            r"[a-z0-9][a-z0-9._-]{0,47}", self.gemini_cost_guard_namespace
+        ):
+            raise ValueError("gemini_cost_guard_namespace is invalid")
         self.analysis_background_retry_max_attempts = max(
             0, int(self.analysis_background_retry_max_attempts or 4)
         )

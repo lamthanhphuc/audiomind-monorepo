@@ -292,6 +292,7 @@ public class ProcessingController {
         String promptVersion = request == null ? null : request.prompt_version();
         String schemaVersion = request == null ? null : request.schema_version();
         String domainMode = request == null ? null : request.domain_mode();
+        Long reanalysisGeneration = request == null ? null : request.reanalysis_generation();
         return new AnalysisResponse(
                 meetingId,
                 processingService.reanalyzeMeetingAnalysis(
@@ -301,6 +302,7 @@ public class ProcessingController {
                         promptVersion,
                         schemaVersion,
                         domainMode,
+                        reanalysisGeneration,
                         ensureTraceId(traceId),
                         authorization
                 )

@@ -408,7 +408,38 @@ describe('upload language request wiring', () => {
     expect(url).toContain('/processing/7/analysis/rerun')
     expect(url).not.toContain('/api/meeting/7/analysis/rerun')
     expect(init.method).toBe('POST')
-    expect(JSON.parse(String(init.body))).toEqual({ mode: 'force', reason: 'manual_reanalyze' })
+    expect(JSON.parse(String(init.body))).toEqual({
+      mode: 'force',
+      reason: 'manual_reanalyze',
+      reanalysis_generation: expect.any(Number),
+    })
+  })
+
+  it('suppresses concurrent reanalyze calls for the same meeting', async () => {
+    let resolveRequest!: (value: unknown) => void
+    fetchMock.mockImplementationOnce(() => new Promise((resolve) => {
+      resolveRequest = resolve
+    }))
+
+    const first = reanalyzeMeetingAnalysis(17, {
+      mode: 'force',
+      reason: 'manual_reanalyze',
+      reanalysis_generation: 17001,
+    })
+    const duplicate = reanalyzeMeetingAnalysis(17, {
+      mode: 'force',
+      reason: 'manual_reanalyze',
+      reanalysis_generation: 17002,
+    })
+
+    expect(first).toBe(duplicate)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    resolveRequest({
+      ok: true,
+      json: async () => ({ meetingId: 17, status: 'ANALYZING' }),
+      headers: new Headers(),
+    })
+    await expect(first).resolves.toBeDefined()
   })
 
   it('downloads meeting report as blob and reads filename from content-disposition', async () => {

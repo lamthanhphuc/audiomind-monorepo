@@ -103,6 +103,7 @@ def _make_batch_pipeline(monkeypatch, analyzer):
     pipeline._should_use_native_deepgram_diarization = lambda: False
     pipeline._deduplicate_repeated_segments = lambda segments: segments
     monkeypatch.setattr(pipeline_module, "get_runtime_device", lambda: "cpu")
+    monkeypatch.setattr(pipeline_module.settings, "gemini_cost_guard_enabled", False)
     return pipeline
 
 

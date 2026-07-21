@@ -4,7 +4,7 @@ import { type DomainMode } from '../../constants/domainMode'
 import { useStudyWorkspace } from '../../hooks/useStudyWorkspace'
 import { SubjectPicker } from '../subjects/SubjectPicker'
 import type { Meeting } from '../../types'
-import { isUserQuotaExceeded } from '../../utils/quotaUx'
+import { isGeminiBillingBlocked, isUserQuotaExceeded } from '../../utils/quotaUx'
 import {
   formatResultScopeLabel,
   scopeCacheKey,
@@ -291,6 +291,7 @@ export default function MeetingHistoryScene({
       errorCode: detail.analysisMetadata?.errorCode,
       analysisStatus: String(detail.analysisMetadata?.analysisStatus ?? detail.analysisMetadata?.status ?? ''),
     })
+    && !isGeminiBillingBlocked({ errorCode: detail.analysisMetadata?.errorCode })
 
   const handleReanalyze = useCallback(async () => {
     if (!selectedMeetingId || reanalyzeBusy) return
@@ -301,6 +302,7 @@ export default function MeetingHistoryScene({
         mode: 'force',
         reason: 'manual_reanalyze',
         domainMode: preferredDomainMode,
+        reanalysis_generation: Date.now(),
       })
       reloadDetail()
       reload()
