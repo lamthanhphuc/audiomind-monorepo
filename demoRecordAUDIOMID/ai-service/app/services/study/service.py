@@ -1771,7 +1771,10 @@ def _lazy_gemini_caller(
         *, prompt: str, system_prompt: str, response_schema: Any = None
     ) -> str:
         if "fn" not in holder:
-            holder["fn"] = _gemini_caller(workload=workload)
+            try:
+                holder["fn"] = _gemini_caller(workload=workload)
+            except TypeError:
+                holder["fn"] = _gemini_caller()
         return holder["fn"](
             prompt=prompt,
             system_prompt=system_prompt,
