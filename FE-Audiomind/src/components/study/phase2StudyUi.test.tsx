@@ -134,6 +134,7 @@ describe('SubjectSynthesisPanel stale banner', () => {
     act(() => {
       root.render(
         <SubjectSynthesisPanel
+          synthesis={null}
           error="SOURCE_MEETINGS_NOT_READY"
           onGenerate={onGenerate}
         />,
