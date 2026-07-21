@@ -597,6 +597,105 @@ def test_legacy_reads_exclude_v2_rows_and_v2_reads_exclude_legacy_rows():
         )
         == "v2"
     )
+    # Unscoped meeting-level reads prefer newest v2 scope with text.
+    assert repo.assemble_meeting_transcript_text(406) == "v2"
+    assert "v2" in repo.assemble_meeting_analysis_transcript_text(406)
+    db.close()
+    engine.dispose()
+
+
+def test_meeting_level_assemble_prefers_v2_when_legacy_empty():
+    """Regression: realtime meetings store only v2 fragments (meeting 7 style)."""
+    db, engine = _make_repo()
+    repo = TranscriptPersistenceRepository(db)
+
+    repo.append_fragment(
+        TranscriptFragmentInput(
+            meeting_id=707,
+            recording_session_id=1,
+            attempt_id=1,
+            seq=45,
+            text="Để sau này còn biết thời khóa biểu",
+            speaker="SPEAKER_1",
+            start_time=3.59,
+            end_time=5.8,
+            event_id="meeting-707-start-3.590",
+            is_final=True,
+        )
+    )
+    repo.append_fragment(
+        TranscriptFragmentInput(
+            meeting_id=707,
+            recording_session_id=1,
+            attempt_id=1,
+            seq=55,
+            text="ví dụ bữa nay chúng ta học hai slot",
+            speaker="SPEAKER_1",
+            start_time=5.8,
+            end_time=7.9,
+            event_id="meeting-707-start-5.800",
+            is_final=True,
+        )
+    )
+    db.commit()
+
+    assert repo.list_fragments(707) == []
+    assert repo.assemble_visible_transcript_segments(707) == []
+    assert repo.assemble_transcript_text(707) == ""
+
+    scope = repo.resolve_preferred_transcript_scope(707)
+    assert scope is not None
+    assert scope["scopeKind"] == "v2"
+    assert scope["recordingSessionId"] == 1
+    assert scope["attemptId"] == 1
+
+    segments = repo.assemble_meeting_visible_transcript_segments(707)
+    assert len(segments) == 2
+    analysis_text = repo.assemble_meeting_analysis_transcript_text(707)
+    assert "thời khóa biểu" in analysis_text
+    assert "học hai slot" in analysis_text
+    assert analysis_text.startswith("SPEAKER_1:")
+
+    db.close()
+    engine.dispose()
+
+
+def test_meeting_level_assemble_prefers_newest_v2_with_text():
+    db, engine = _make_repo()
+    repo = TranscriptPersistenceRepository(db)
+
+    repo.append_fragment(
+        TranscriptFragmentInput(
+            meeting_id=708,
+            recording_session_id=1,
+            attempt_id=1,
+            seq=1,
+            text="attempt one only",
+            start_time=1.0,
+            end_time=2.0,
+            event_id="evt-a1",
+            is_final=True,
+        )
+    )
+    repo.append_fragment(
+        TranscriptFragmentInput(
+            meeting_id=708,
+            recording_session_id=1,
+            attempt_id=2,
+            seq=1,
+            text="attempt two wins",
+            start_time=1.0,
+            end_time=2.0,
+            event_id="evt-a2",
+            is_final=True,
+        )
+    )
+    db.commit()
+
+    scope = repo.resolve_preferred_transcript_scope(708)
+    assert scope["attemptId"] == 2
+    assert repo.assemble_meeting_transcript_text(708) == "attempt two wins"
+
     db.close()
     engine.dispose()
 

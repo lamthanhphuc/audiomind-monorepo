@@ -98,7 +98,7 @@ def canonicalize_and_persist_run(
         raise ValueError(f"analysis run not found: {run_id}")
 
     repo = TranscriptPersistenceRepository(db)
-    segments = repo.assemble_visible_transcript_segments(meeting_id)
+    segments = repo.assemble_meeting_visible_transcript_segments(meeting_id)
     rows_before = len(segments)
 
     result = canonicalize_segments(segments)
@@ -135,7 +135,7 @@ def canonicalize_and_persist_run(
 
 def preview_canonical_hash(db: Session, meeting_id: int) -> tuple[str, str]:
     repo = TranscriptPersistenceRepository(db)
-    segments = repo.assemble_visible_transcript_segments(meeting_id)
+    segments = repo.assemble_meeting_visible_transcript_segments(meeting_id)
     result = canonicalize_segments(segments)
     return result.version, build_canonical_transcript_hash(
         result.rows, version=result.version
