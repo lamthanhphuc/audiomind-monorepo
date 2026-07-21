@@ -72,43 +72,15 @@ def test_build_gemini_request_headers_accepts_standard_aiza_keys() -> None:
     assert headers["x-goog-api-key"].startswith("AIza")
 
 
-def test_model_fallback_when_preferred_blocked_for_new_users(monkeypatch) -> None:
+def test_model_unavailable_does_not_fallback_by_default(monkeypatch) -> None:
+    """Cost guard: model fallback is off; unavailable model fails without retrying another model."""
+    from app.services.analysis_errors import AnalysisUnavailableError
+
     manager = GeminiKeyManager.from_config(
         gemini_api_key="",
         gemini_api_keys="primary:AQ.Ab8RN6K45kNmiQx3NkGhvBM9Bs_example",
         multi_key_enabled=True,
     )
-    responses = [
-        type(
-            "R",
-            (),
-            {
-                "status_code": 404,
-                "json": lambda self: {
-                    "error": {
-                        "status": "NOT_FOUND",
-                        "message": (
-                            "This model models/gemini-2.5-flash is no longer "
-                            "available to new users. Please update your code "
-                            "to use a newer model"
-                        ),
-                    }
-                },
-                "text": "",
-                "headers": {},
-            },
-        )(),
-        type(
-            "R",
-            (),
-            {
-                "status_code": 200,
-                "json": lambda self: {"candidates": [{"content": {"parts": [{"text": "ok"}]}}]},
-                "text": "",
-                "headers": {},
-            },
-        )(),
-    ]
     posted_urls: list[str] = []
 
     class FakeClient:
@@ -123,24 +95,42 @@ def test_model_fallback_when_preferred_blocked_for_new_users(monkeypatch) -> Non
 
         def post(self, url, *args, **kwargs):
             posted_urls.append(url)
-            return responses[len(posted_urls) - 1]
+
+            class R:
+                status_code = 404
+                text = ""
+                headers = {}
+
+                def json(self):
+                    return {
+                        "error": {
+                            "status": "NOT_FOUND",
+                            "message": (
+                                "This model models/gemini-2.5-flash is no longer "
+                                "available to new users. Please update your code "
+                                "to use a newer model"
+                            ),
+                        }
+                    }
+
+            return R()
 
     client = GeminiClient(
         manager,
         http_client_factory=FakeClient,
-        max_attempts=1,
-        model_fallbacks=["gemini-2.0-flash"],
+        max_attempts=2,
         sleep=lambda seconds: None,
     )
-    result = client.post_json(
-        url="https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
-        payload={"contents": []},
-        timeout_seconds=30,
-        model="gemini-2.5-flash",
-    )
-    assert result.key_alias == "primary"
+    with pytest.raises(AnalysisUnavailableError) as exc_info:
+        client.post_json(
+            url="https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+            payload={"contents": []},
+            timeout_seconds=30,
+            model="gemini-2.5-flash",
+        )
+    assert exc_info.value.error_code == "GEMINI_MODEL_UNAVAILABLE"
+    assert len(posted_urls) == 1
     assert "gemini-2.5-flash" in posted_urls[0]
-    assert "gemini-2.0-flash" in posted_urls[1]
 
 
 def test_http_success_does_not_clear_model_marker(monkeypatch) -> None:

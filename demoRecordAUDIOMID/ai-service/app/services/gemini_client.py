@@ -493,6 +493,22 @@ def _normalize_gemini_proxy_url(proxy_url: str) -> str:
     return normalized
 
 
+def build_gemini_request_headers(api_key: str) -> dict[str, str]:
+    """Build auth headers for Standard (AIza) and Auth (AQ.) AI Studio keys.
+
+    Both key types authenticate to generativelanguage.googleapis.com via
+    ``x-goog-api-key``. Auth keys from AI Studio start with ``AQ.`` and must
+    not be rejected or coerced to the legacy ``AIza`` format.
+    """
+    secret = str(api_key or "").strip()
+    if not secret:
+        raise ValueError("Gemini API key must not be empty")
+    return {
+        "Content-Type": "application/json",
+        "x-goog-api-key": secret,
+    }
+
+
 def resolve_http_client_factory(
     *,
     proxy: str | None = None,
@@ -745,10 +761,7 @@ class GeminiClient:
                 if sticky_alias and entry.alias != sticky_alias:
                     sticky_alias = None
 
-                headers = {
-                    "Content-Type": "application/json",
-                    "x-goog-api-key": entry.secret,
-                }
+                headers = build_gemini_request_headers(entry.secret)
                 logger.info(
                     "GEMINI_KEY_SELECTED alias={} attempt={} sticky={} model={}",
                     entry.alias,

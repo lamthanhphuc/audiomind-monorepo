@@ -43,7 +43,6 @@ class GeminiAnalyzer(AIAnalyzer):
         gemini_backoff_max_ms: float = 10000.0,
         gemini_backoff_jitter: bool = True,
         gemini_fail_fast_seconds: float = 30.0,
-        gemini_model_fallbacks: str = "gemini-2.0-flash,gemini-2.5-flash-lite",
         timeout_seconds: int = 300,
         http_client_factory: Callable[..., Any] | None = None,
     ):
@@ -82,7 +81,6 @@ class GeminiAnalyzer(AIAnalyzer):
             gemini_backoff_max_ms=gemini_backoff_max_ms,
             gemini_backoff_jitter=gemini_backoff_jitter,
             gemini_fail_fast_seconds=gemini_fail_fast_seconds,
-            gemini_model_fallbacks=gemini_model_fallbacks,
             timeout_seconds=timeout_seconds,
             http_client_factory=http_client_factory,
         )
