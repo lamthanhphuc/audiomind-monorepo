@@ -357,6 +357,9 @@ instrument_fastapi_app(app)
 
 app.include_router(internal_meetings_router)
 app.include_router(config_lexicon_router)
+from app.study_routes import router as study_router
+
+app.include_router(study_router)
 
 _stt_adapter: DeepgramSTTAdapter | None = None
 _stt_stream_sessions: dict[str, MeetingSessionActor] = {}
@@ -4812,6 +4815,17 @@ async def readiness_check():
     deepgram_configured = bool((settings.deepgram_api_key or "").strip())
     dependencies["deepgramConfigured"] = _dependency_state(deepgram_configured)
     if deepgram_required and not deepgram_configured:
+        ready = False
+
+    native_deepgram_diarization = bool(
+        settings.enable_speaker_diarization and settings.deepgram_diarize
+    )
+    local_diarization_requires_hf = bool(
+        settings.enable_speaker_diarization and not native_deepgram_diarization
+    )
+    hf_configured = bool((settings.huggingface_token or "").strip())
+    dependencies["huggingfaceConfigured"] = _dependency_state(hf_configured)
+    if local_diarization_requires_hf and not hf_configured:
         ready = False
 
     analysis_provider = (settings.analysis_provider or "").strip().lower()

@@ -294,7 +294,7 @@ Compose build: $([[ "${SKIP_BUILD:-0}" == "1" ]] && echo skipped || echo once-be
 Migrations: ran via depends_on (db-flyway-bootstrap, user-db-migrate, meeting-db-migrate, ai-db-migrate).
 Container + loopback health: passed.
 Local smoke: $([[ "${SKIP_SMOKE:-0}" == "1" ]] && echo skipped || echo passed via smoke-vps.sh).
-Real VPS / HTTPS: not verified here â€” confirm DNS/TLS/Nginx on the public domain separately
+Real VPS / HTTPS: not verified here — confirm DNS/TLS/Nginx on the public domain separately
 (RUN_PUBLIC_SMOKE=1 ./scripts/smoke-vps.sh).
 
 EOF

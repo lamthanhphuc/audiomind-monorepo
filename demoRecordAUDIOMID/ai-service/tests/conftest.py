@@ -1,6 +1,7 @@
 import pytest
 
 from app.services.gemini_fault_injection import GeminiFaultInjectionClient
+from tests.httpx_asgi import create_asgi_client, patch_starlette_testclient
 
 
 def _docker_available() -> bool:
@@ -61,6 +62,8 @@ FakeGeminiClient = GeminiFaultInjectionClient
 
 _GROUPED_ACTION_PLAN_TEST = "test_grouped_action_plan.py"
 
+patch_starlette_testclient()
+
 _OFFLINE_GEMINI_TEST_FILES = frozenset(
     {
         "test_gemini_analyzer.py",
@@ -91,6 +94,26 @@ def _request_host(url) -> str:
 
     parsed = urlparse(str(url))
     return (parsed.hostname or "").strip().lower()
+
+
+@pytest.fixture
+def asgi_test_client():
+    """httpx 0.28+ compatible ASGI client for FastAPI apps."""
+
+    def _factory(app):
+        return create_asgi_client(app)
+
+    return _factory
+
+
+@pytest.fixture(autouse=True)
+def clear_settings_cache_between_tests():
+    """Avoid cross-test Settings pollution (e.g. MEETING_SERVICE_BASE_URL left in lru_cache)."""
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
 
 
 @pytest.fixture(autouse=True)

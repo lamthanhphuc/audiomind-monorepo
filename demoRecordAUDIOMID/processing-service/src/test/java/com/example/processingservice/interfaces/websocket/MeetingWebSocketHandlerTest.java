@@ -3642,7 +3642,7 @@ class MeetingWebSocketHandlerTest {
         attributes.put("authorization", "Bearer test-token");
         attributes.put("lastAudioSeq", 1L);
         when(userQuotaClient.consume(eq(1L), anyLong(), eq(0L)))
-                .thenReturn(new UserQuotaClient.QuotaConsumeResult(false, Map.of(), null));
+                .thenReturn(UserQuotaClient.QuotaConsumeResult.denied(null, null, Map.of(), "QUOTA_EXCEEDED"));
         when(session.isOpen()).thenReturn(true);
 
         ArgumentCaptor<TextMessage> messageCaptor = ArgumentCaptor.forClass(TextMessage.class);

@@ -2,7 +2,7 @@
 """Build a URL-encoded PostgreSQL URL for AI service (AI_DATABASE_URL).
 
 Does not print the raw password anywhere (URL output aside, since the URL is
-the point of this tool) and never uses shell `source`/`eval` semantics â€” it is
+the point of this tool) and never uses shell `source`/`eval` semantics — it is
 pure Python argument/env-file parsing.
 
 Preferred usage (reads POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB from a
@@ -112,7 +112,7 @@ def main() -> int:
     else:
         database = "audiomind"
 
-    # Default host is "db" â€” the private Docker service name in the layered
+    # Default host is "db" — the private Docker service name in the layered
     # dev+mvp+prod compose stack. Override with --host if needed.
     host = args.host or "db"
 

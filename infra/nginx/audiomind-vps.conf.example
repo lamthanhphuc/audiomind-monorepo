@@ -1,0 +1,228 @@
+# AudioMind single-domain VPS Nginx reverse proxy example.
+# Copy to /etc/nginx/sites-available/audiomind and symlink into sites-enabled.
+# Replace your-domain.com and loopback ports to match .env.production.
+
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+upstream audiomind_frontend {
+    server 127.0.0.1:8080;
+    keepalive 16;
+}
+
+upstream audiomind_user_api {
+    server 127.0.0.1:8083;
+    keepalive 16;
+}
+
+upstream audiomind_meeting_api {
+    server 127.0.0.1:8081;
+    keepalive 16;
+}
+
+upstream audiomind_processing_api {
+    server 127.0.0.1:8082;
+    keepalive 16;
+}
+
+upstream audiomind_ai_api {
+    server 127.0.0.1:8000;
+    keepalive 16;
+}
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name your-domain.com;
+
+    # Certbot will add the HTTPS server block or redirect here.
+    client_max_body_size 500M;
+
+    location / {
+        proxy_pass http://audiomind_frontend;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+
+    # --- User API ---
+    # Frontend SPA OAuth landing (must be exact + before /auth/).
+    location = /auth/google/success {
+        proxy_pass http://audiomind_frontend;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location = /auth/google/error {
+        proxy_pass http://audiomind_frontend;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location /auth/ {
+        proxy_pass http://audiomind_user_api;
+        include /etc/nginx/proxy_params;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+
+    # Integration controllers: /users/me/{google,zoom,teams} (not under /api/users).
+    location /users/ {
+        proxy_pass http://audiomind_user_api;
+        include /etc/nginx/proxy_params;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location /api/users/ {
+        proxy_pass http://audiomind_user_api;
+        include /etc/nginx/proxy_params;
+    }
+
+    location /api/billing/ {
+        proxy_pass http://audiomind_user_api;
+        include /etc/nginx/proxy_params;
+    }
+
+    # --- Meeting API (exact config/upload before broader /api/config/) ---
+    location = /api/config/upload {
+        proxy_pass http://audiomind_meeting_api;
+        include /etc/nginx/proxy_params;
+        client_max_body_size 500M;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+
+    location /meetings {
+        proxy_pass http://audiomind_meeting_api;
+        include /etc/nginx/proxy_params;
+        client_max_body_size 500M;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+
+    location /subjects {
+        proxy_pass http://audiomind_meeting_api;
+        include /etc/nginx/proxy_params;
+    }
+
+    location /study-folders {
+        proxy_pass http://audiomind_meeting_api;
+        include /etc/nginx/proxy_params;
+    }
+
+    location /api/v1/meetings {
+        proxy_pass http://audiomind_meeting_api;
+        include /etc/nginx/proxy_params;
+    }
+
+    # --- Processing API (realtime websocket + REST) ---
+    location /ws/meetings {
+        proxy_pass http://audiomind_processing_api;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 86400s;
+        proxy_send_timeout 86400s;
+    }
+
+    location /processing {
+        proxy_pass http://audiomind_processing_api;
+        include /etc/nginx/proxy_params;
+        client_max_body_size 500M;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+
+    location /api/v1/jobs {
+        proxy_pass http://audiomind_processing_api;
+        include /etc/nginx/proxy_params;
+    }
+
+    location /api/config/transcript-quality {
+        proxy_pass http://audiomind_processing_api;
+        include /etc/nginx/proxy_params;
+    }
+
+    # --- AI API (more specific /api/config/* before broader /api/) ---
+    location /api/config/lexicon {
+        proxy_pass http://audiomind_ai_api;
+        include /etc/nginx/proxy_params;
+    }
+
+    location /api/meeting {
+        proxy_pass http://audiomind_ai_api;
+        include /etc/nginx/proxy_params;
+    }
+
+    location /api/search {
+        proxy_pass http://audiomind_ai_api;
+        include /etc/nginx/proxy_params;
+    }
+
+    location /api/process {
+        proxy_pass http://audiomind_ai_api;
+        include /etc/nginx/proxy_params;
+    }
+
+    location /api/stt {
+        proxy_pass http://audiomind_ai_api;
+        include /etc/nginx/proxy_params;
+    }
+
+    location /api/upload {
+        proxy_pass http://audiomind_ai_api;
+        include /etc/nginx/proxy_params;
+        client_max_body_size 500M;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+
+    location /api/v1/stt {
+        proxy_pass http://audiomind_ai_api;
+        include /etc/nginx/proxy_params;
+    }
+
+    location /api/v1/process {
+        proxy_pass http://audiomind_ai_api;
+        include /etc/nginx/proxy_params;
+    }
+
+    location = /ready {
+        proxy_pass http://audiomind_ai_api/ready;
+        include /etc/nginx/proxy_params;
+    }
+
+    location = /health {
+        proxy_pass http://audiomind_ai_api/health;
+        include /etc/nginx/proxy_params;
+    }
+
+    # Broader AI REST prefix (after more specific /api/config/* and meeting upload).
+    location /api/ {
+        proxy_pass http://audiomind_ai_api;
+        include /etc/nginx/proxy_params;
+        client_max_body_size 500M;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+}

@@ -1,12 +1,20 @@
 import type { DashboardScene } from '../components/dashboard/DashboardLayout'
 import type { MeetingResultScope } from './meetingResultScope'
 import { isLegacyResultScope, scopeToSearchParams } from './meetingResultScope'
+import {
+  DEFAULT_SUBJECT_TAB,
+  parseSubjectDetailTab,
+  type SubjectDetailTab,
+} from './subjectTabs'
+import { readEvidenceSegmentId } from './subjectEvidence'
 
 export type ParsedStudioRoute = {
   scene: DashboardScene
   meetingId: number | null
   subjectId?: number | null
+  subjectTab?: SubjectDetailTab | null
   resultScope?: MeetingResultScope | null
+  evidenceSegmentId?: string | null
 }
 
 export const STUDIO_SCENE_PATHS: Record<DashboardScene, string> = {
@@ -30,11 +38,23 @@ const SCENE_BY_PATH = Object.fromEntries(
     .map(([scene, path]) => [path, scene]),
 ) as Record<string, DashboardScene>
 
-const parseSubjectIdFromPath = (pathname: string): number | null => {
-  const match = /^\/studio\/subjects\/(\d+)$/.exec(pathname)
+const parseSubjectRouteFromPath = (
+  pathname: string,
+): { subjectId: number; subjectTab: SubjectDetailTab } | null => {
+  const match = /^\/studio\/subjects\/(\d+)(?:\/([a-z0-9-]+))?$/.exec(pathname)
   if (!match) return null
   const subjectId = Number(match[1])
-  return Number.isFinite(subjectId) && subjectId > 0 ? subjectId : null
+  if (!Number.isFinite(subjectId) || subjectId <= 0) return null
+  const tabRaw = match[2]
+  if (!tabRaw) {
+    return { subjectId, subjectTab: DEFAULT_SUBJECT_TAB }
+  }
+  // Unknown tab segments are not subject detail routes (avoid swallowing future paths).
+  const tab = parseSubjectDetailTab(tabRaw)
+  if (tab === DEFAULT_SUBJECT_TAB && tabRaw !== 'meetings') {
+    return null
+  }
+  return { subjectId, subjectTab: tab }
 }
 
 const parseMeetingId = (raw: string | null): number | null => {
@@ -51,12 +71,26 @@ export const parseStudioRouteFromLocation = (
   const meetingId = parseMeetingId(params.get('meetingId'))
 
   if (path === '/' || path === STUDIO_SCENE_PATHS.upload) {
-    return { scene: 'upload', meetingId: null, subjectId: null, resultScope: null }
+    return {
+      scene: 'upload',
+      meetingId: null,
+      subjectId: null,
+      subjectTab: null,
+      resultScope: null,
+      evidenceSegmentId: null,
+    }
   }
 
-  const subjectIdFromPath = parseSubjectIdFromPath(path)
-  if (subjectIdFromPath != null) {
-    return { scene: 'subjectDetail', meetingId: null, subjectId: subjectIdFromPath, resultScope: null }
+  const subjectRoute = parseSubjectRouteFromPath(path)
+  if (subjectRoute != null) {
+    return {
+      scene: 'subjectDetail',
+      meetingId: null,
+      subjectId: subjectRoute.subjectId,
+      subjectTab: subjectRoute.subjectTab,
+      resultScope: null,
+      evidenceSegmentId: null,
+    }
   }
 
   const scene = SCENE_BY_PATH[path]
@@ -78,10 +112,24 @@ export const parseStudioRouteFromLocation = (
         }
       }
     }
-    return { scene, meetingId, subjectId: null, resultScope }
+    return {
+      scene,
+      meetingId,
+      subjectId: null,
+      subjectTab: null,
+      resultScope,
+      evidenceSegmentId: scene === 'analysis' ? readEvidenceSegmentId(loc) : null,
+    }
   }
 
-  return { scene, meetingId: null, subjectId: null, resultScope: null }
+  return {
+    scene,
+    meetingId: null,
+    subjectId: null,
+    subjectTab: null,
+    resultScope: null,
+    evidenceSegmentId: null,
+  }
 }
 
 export const buildStudioPath = (
@@ -89,20 +137,36 @@ export const buildStudioPath = (
   options?: {
     meetingId?: number | null
     subjectId?: number | null
+    subjectTab?: SubjectDetailTab | null
     resultScope?: MeetingResultScope | null
+    evidenceSegmentId?: string | null
   },
 ): string => {
   if (scene === 'subjectDetail' && options?.subjectId != null && options.subjectId > 0) {
-    return `/studio/subjects/${options.subjectId}`
+    const tab = options.subjectTab && options.subjectTab !== DEFAULT_SUBJECT_TAB
+      ? options.subjectTab
+      : null
+    return tab
+      ? `/studio/subjects/${options.subjectId}/${tab}`
+      : `/studio/subjects/${options.subjectId}`
   }
   const base = STUDIO_SCENE_PATHS[scene]
   const meetingId = options?.meetingId
   if (meetingId && (scene === 'analysis' || scene === 'mindmap')) {
+    const params = new URLSearchParams()
     const scope = options?.resultScope
     if (scope && scope.meetingId === meetingId && !isLegacyResultScope(scope)) {
-      return `${base}?${scopeToSearchParams(scope).toString()}`
+      for (const [key, value] of scopeToSearchParams(scope).entries()) {
+        params.set(key, value)
+      }
+    } else {
+      params.set('meetingId', String(meetingId))
     }
-    return `${base}?meetingId=${meetingId}`
+    if (scene === 'analysis' && options?.evidenceSegmentId?.trim()) {
+      params.set('evidenceSegmentId', options.evidenceSegmentId.trim())
+    }
+    const query = params.toString()
+    return query ? `${base}?${query}` : base
   }
   return base
 }
@@ -112,7 +176,9 @@ export const pushStudioRoute = (
   options?: {
     meetingId?: number | null
     subjectId?: number | null
+    subjectTab?: SubjectDetailTab | null
     resultScope?: MeetingResultScope | null
+    evidenceSegmentId?: string | null
     replace?: boolean
   },
 ): void => {
@@ -120,21 +186,50 @@ export const pushStudioRoute = (
   const path = buildStudioPath(scene, {
     meetingId: options?.meetingId,
     subjectId: options?.subjectId,
+    subjectTab: options?.subjectTab,
     resultScope: options?.resultScope,
+    evidenceSegmentId: options?.evidenceSegmentId,
   })
   const method = options?.replace ? 'replaceState' : 'pushState'
-  window.history[method]({}, '', path)
+  const state =
+    options?.evidenceSegmentId != null
+      ? { evidenceSegmentId: options.evidenceSegmentId }
+      : {}
+  window.history[method](state, '', path)
 }
 
 export const resolveStudioRedirectAfter = (redirectAfter: string | null): ParsedStudioRoute => {
   if (!redirectAfter || !redirectAfter.startsWith('/') || redirectAfter.startsWith('//')) {
-    return { scene: 'integrations', meetingId: null, subjectId: null, resultScope: null }
+    return {
+      scene: 'integrations',
+      meetingId: null,
+      subjectId: null,
+      subjectTab: null,
+      resultScope: null,
+      evidenceSegmentId: null,
+    }
   }
   try {
     const url = new URL(redirectAfter, window.location.origin)
-    return parseStudioRouteFromLocation(url) ?? { scene: 'integrations', meetingId: null, subjectId: null, resultScope: null }
+    return (
+      parseStudioRouteFromLocation(url) ?? {
+        scene: 'integrations',
+        meetingId: null,
+        subjectId: null,
+        subjectTab: null,
+        resultScope: null,
+        evidenceSegmentId: null,
+      }
+    )
   } catch {
-    return { scene: 'integrations', meetingId: null, subjectId: null, resultScope: null }
+    return {
+      scene: 'integrations',
+      meetingId: null,
+      subjectId: null,
+      subjectTab: null,
+      resultScope: null,
+      evidenceSegmentId: null,
+    }
   }
 }
 
@@ -147,6 +242,7 @@ export const applyParsedStudioRoute = (
     setMindmapSelectedMeetingId: (id: number | null) => void
     setMindmapSelectedScope?: (scope: MeetingResultScope | null) => void
     setSelectedSubjectId?: (id: number | null) => void
+    setSelectedSubjectTab?: (tab: SubjectDetailTab | null) => void
   },
 ): void => {
   handlers.setFeatureScene(route.scene)
@@ -163,7 +259,9 @@ export const applyParsedStudioRoute = (
   // stale state doesn't leak into unrelated scenes.
   if (route.scene === 'subjectDetail') {
     handlers.setSelectedSubjectId?.(route.subjectId ?? null)
+    handlers.setSelectedSubjectTab?.(route.subjectTab ?? DEFAULT_SUBJECT_TAB)
   } else {
     handlers.setSelectedSubjectId?.(null)
+    handlers.setSelectedSubjectTab?.(null)
   }
 }

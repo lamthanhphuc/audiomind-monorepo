@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Optional troubleshooting/re-run of database migrations for the layered VPS Docker Compose
 # stack. Migrations normally run automatically via `depends_on: service_completed_successfully`
-# when `deploy-vps.sh` / `deploy-local.sh` call `up -d` â€” this script exists to re-run them
+# when `deploy-vps.sh` / `deploy-local.sh` call `up -d` — this script exists to re-run them
 # explicitly (e.g. after fixing a failed migration) without requiring any compose profile,
 # since the migrate services (db-flyway-bootstrap, user-db-migrate, meeting-db-migrate,
 # ai-db-migrate) are always-defined, profile-less, one-shot services. Never logs secret values.
@@ -122,7 +122,7 @@ main() {
   note "using env file ${ENV_FILE}"
   note "using compose files: ${COMPOSE_FILES[*]}"
 
-  # Ensure postgres is up for one-shot migrate containers (no profile required â€”
+  # Ensure postgres is up for one-shot migrate containers (no profile required —
   # these services are always defined and simply not started implicitly by `run`).
   "${COMPOSE[@]}" up -d "${postgres_service}"
   wait_for_postgres "${postgres_service}"

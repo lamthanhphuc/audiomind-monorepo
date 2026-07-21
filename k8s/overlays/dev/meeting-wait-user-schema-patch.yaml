@@ -1,0 +1,62 @@
+# Dev may already have app_users from prior boots; still wait so cold start is deterministic.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: meeting-api-deployment
+  namespace: audiomind
+spec:
+  template:
+    spec:
+      initContainers:
+        - name: wait-user-schema
+          image: postgres:15.8
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              echo "WAITING_FOR_USER_SCHEMA"
+              deadline=$(( $(date +%s) + 180 ))
+              export PGPASSWORD="${DB_PASSWORD}"
+              RAW_URL="${USER_DATABASE_URL}"
+              case "${RAW_URL}" in
+                jdbc:postgresql://*) RAW_URL="${RAW_URL#jdbc:}" ;;
+              esac
+              HOSTPORT="${RAW_URL#postgresql://}"
+              HOSTPORT="${HOSTPORT#*@}"
+              HOSTPORT="${HOSTPORT%%/*}"
+              HOST="${HOSTPORT%%:*}"
+              PORT="${HOSTPORT##*:}"
+              if [ "${PORT}" = "${HOSTPORT}" ]; then PORT=5432; fi
+              DBNAME="${RAW_URL##*/}"
+              DBNAME="${DBNAME%%\?*}"
+              while true; do
+                if psql -h "${HOST}" -p "${PORT}" -U "${DB_USERNAME}" -d "${DBNAME}" -v ON_ERROR_STOP=1 -Atqc "SELECT to_regclass('public.app_users');" | grep -q app_users; then
+                  echo "USER_SCHEMA_READY"
+                  exit 0
+                fi
+                now=$(date +%s)
+                if [ "${now}" -ge "${deadline}" ]; then
+                  echo "USER_SCHEMA_WAIT_TIMEOUT" >&2
+                  exit 1
+                fi
+                echo "WAITING_FOR_USER_SCHEMA"
+                sleep 3
+              done
+          env:
+            - name: USER_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: audiomind-db-secrets
+                  key: USER_DATABASE_URL
+            - name: DB_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: audiomind-db-secrets
+                  key: DB_USERNAME
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: audiomind-db-secrets
+                  key: DB_PASSWORD

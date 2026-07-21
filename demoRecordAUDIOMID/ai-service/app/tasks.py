@@ -402,3 +402,97 @@ def canonicalize_deferred_retry(meeting_id: int, attempt: int = 1) -> dict:
             return canonicalize_and_persist(meeting_id, run_id)
         finally:
             db.close()
+
+
+@celery_app.task(
+    bind=True,
+    name="app.tasks.generate_subject_synthesis",
+    queue="study_generation",
+    autoretry_for=(),
+    retry_backoff=True,
+    retry_backoff_max=32,
+    retry_jitter=True,
+    max_retries=5,
+)
+def generate_subject_synthesis(self, synthesis_id: int) -> None:
+    from app.services.study import StudyTransientError, StudyValidationError, StudySourceNotReadyError
+    from app.services.study.service import (
+        _live_synthesis_query,
+        _mark_terminal_failed,
+        process_synthesis_job,
+    )
+
+    settings = get_settings()
+    max_retries = int(settings.study_generation_max_retries)
+    db = SessionLocal()
+    try:
+        process_synthesis_job(db, synthesis_id)
+    except (StudyValidationError, StudySourceNotReadyError):
+        return
+    except StudyTransientError as exc:
+        # process_* already requeued to QUEUED; only FAIL when Celery retries are exhausted.
+        if self.request.retries >= max_retries:
+            row = _live_synthesis_query(db).filter_by(id=synthesis_id).first()
+            if row is not None and row.status == "QUEUED":
+                _mark_terminal_failed(
+                    row,
+                    error_code="TRANSIENT_AI_ERROR",
+                    error_message=f"Exhausted retries after transient error: {exc}",
+                )
+                db.commit()
+            return
+        raise self.retry(exc=exc, max_retries=max_retries) from exc
+    finally:
+        db.close()
+
+
+@celery_app.task(
+    bind=True,
+    name="app.tasks.generate_study_artifact",
+    queue="study_generation",
+    autoretry_for=(),
+    retry_backoff=True,
+    retry_backoff_max=32,
+    retry_jitter=True,
+    max_retries=5,
+)
+def generate_study_artifact(self, artifact_id: int) -> None:
+    from app.services.study import StudyTransientError, StudyValidationError, StudySourceNotReadyError
+    from app.services.study.service import (
+        _live_artifact_query,
+        _mark_terminal_failed,
+        process_artifact_job,
+    )
+
+    settings = get_settings()
+    max_retries = int(settings.study_generation_max_retries)
+    db = SessionLocal()
+    try:
+        process_artifact_job(db, artifact_id)
+    except (StudyValidationError, StudySourceNotReadyError):
+        return
+    except StudyTransientError as exc:
+        if self.request.retries >= max_retries:
+            row = _live_artifact_query(db).filter_by(id=artifact_id).first()
+            if row is not None and row.status == "QUEUED":
+                _mark_terminal_failed(
+                    row,
+                    error_code="TRANSIENT_AI_ERROR",
+                    error_message=f"Exhausted retries after transient error: {exc}",
+                )
+                db.commit()
+            return
+        raise self.retry(exc=exc, max_retries=max_retries) from exc
+    finally:
+        db.close()
+
+
+@celery_app.task(name="app.tasks.reconcile_study_generation")
+def reconcile_study_generation() -> dict:
+    from app.services.study.service import reconcile_study_generation_jobs
+
+    db = SessionLocal()
+    try:
+        return reconcile_study_generation_jobs(db)
+    finally:
+        db.close()

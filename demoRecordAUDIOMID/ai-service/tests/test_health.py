@@ -137,6 +137,70 @@ def test_ready_returns_up_when_required_dependencies_are_available(monkeypatch):
     assert "gm-secret-value" not in json.dumps(payload)
 
 
+def test_ready_requires_deepgram_key_when_provider_is_deepgram(monkeypatch):
+    monkeypatch.setattr(main_module, "_cleanup_stale_stt_actors", _noop_cleanup)
+    monkeypatch.setattr(main_module, "_stt_registry_summary", lambda: {"total": 1})
+    monkeypatch.setattr(main_module, "engine", _FakeEngine())
+    monkeypatch.setattr(main_module, "_get_client", lambda: _HealthyRedisClient())
+    monkeypatch.setattr(main_module, "pipeline", object())
+    monkeypatch.setattr(main_module.settings, "stt_provider", "deepgram")
+    monkeypatch.setattr(main_module.settings, "analysis_provider", "gemini")
+    monkeypatch.setattr(main_module.settings, "deepgram_api_key", "")
+    monkeypatch.setattr(main_module.settings, "gemini_api_key", "gm-secret-value")
+    monkeypatch.setattr(main_module.settings, "enable_speaker_diarization", False)
+    monkeypatch.setattr(main_module.settings, "deepgram_diarize", False)
+    monkeypatch.setattr(main_module.settings, "huggingface_token", "")
+
+    response = asyncio.run(main_module.readiness_check())
+
+    assert isinstance(response, JSONResponse)
+    assert response.status_code == 503
+    payload = json.loads(response.body.decode("utf-8"))
+    assert payload["dependencies"]["deepgramConfigured"] == "DOWN"
+
+
+def test_ready_allows_missing_huggingface_token_when_diarization_disabled(monkeypatch):
+    monkeypatch.setattr(main_module, "_cleanup_stale_stt_actors", _noop_cleanup)
+    monkeypatch.setattr(main_module, "_stt_registry_summary", lambda: {"total": 1})
+    monkeypatch.setattr(main_module, "engine", _FakeEngine())
+    monkeypatch.setattr(main_module, "_get_client", lambda: _HealthyRedisClient())
+    monkeypatch.setattr(main_module, "pipeline", object())
+    monkeypatch.setattr(main_module.settings, "stt_provider", "local_whisper")
+    monkeypatch.setattr(main_module.settings, "analysis_provider", "gemini")
+    monkeypatch.setattr(main_module.settings, "deepgram_api_key", "")
+    monkeypatch.setattr(main_module.settings, "gemini_api_key", "gm-secret-value")
+    monkeypatch.setattr(main_module.settings, "enable_speaker_diarization", False)
+    monkeypatch.setattr(main_module.settings, "deepgram_diarize", False)
+    monkeypatch.setattr(main_module.settings, "huggingface_token", "")
+
+    payload = asyncio.run(main_module.readiness_check())
+
+    assert payload["status"] == "UP"
+    assert payload["dependencies"]["huggingfaceConfigured"] == "DOWN"
+
+
+def test_ready_fails_when_local_diarization_enabled_without_hf_token(monkeypatch):
+    monkeypatch.setattr(main_module, "_cleanup_stale_stt_actors", _noop_cleanup)
+    monkeypatch.setattr(main_module, "_stt_registry_summary", lambda: {"total": 1})
+    monkeypatch.setattr(main_module, "engine", _FakeEngine())
+    monkeypatch.setattr(main_module, "_get_client", lambda: _HealthyRedisClient())
+    monkeypatch.setattr(main_module, "pipeline", object())
+    monkeypatch.setattr(main_module.settings, "stt_provider", "local_whisper")
+    monkeypatch.setattr(main_module.settings, "analysis_provider", "gemini")
+    monkeypatch.setattr(main_module.settings, "deepgram_api_key", "")
+    monkeypatch.setattr(main_module.settings, "gemini_api_key", "gm-secret-value")
+    monkeypatch.setattr(main_module.settings, "enable_speaker_diarization", True)
+    monkeypatch.setattr(main_module.settings, "deepgram_diarize", False)
+    monkeypatch.setattr(main_module.settings, "huggingface_token", "")
+
+    response = asyncio.run(main_module.readiness_check())
+
+    assert isinstance(response, JSONResponse)
+    assert response.status_code == 503
+    payload = json.loads(response.body.decode("utf-8"))
+    assert payload["dependencies"]["huggingfaceConfigured"] == "DOWN"
+
+
 def test_ready_returns_503_with_down_payload_when_checks_fail(monkeypatch):
     monkeypatch.setattr(main_module, "_cleanup_stale_stt_actors", _noop_cleanup)
     monkeypatch.setattr(main_module, "_stt_registry_summary", lambda: {"total": 0})

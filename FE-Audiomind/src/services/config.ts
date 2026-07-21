@@ -1,9 +1,23 @@
+const SAME_ORIGIN_SENTINEL = '__SAME_ORIGIN__'
+
+/** Normalize Vite env base URLs; __SAME_ORIGIN__ means relative same-origin paths. */
+export const normalizeApiBaseUrl = (value: string | undefined): string | undefined => {
+	if (typeof value !== 'string') {
+		return undefined
+	}
+	const trimmed = value.trim()
+	if (trimmed === SAME_ORIGIN_SENTINEL) {
+		return ''
+	}
+	return trimmed.length > 0 ? trimmed : undefined
+}
+
 const resolveEnv = (keys: string[], fallback: string): string => {
 	const value = keys
-		.map((key) => (import.meta.env as Record<string, string | undefined>)[key])
-		.find((candidate) => typeof candidate === 'string' && candidate.trim().length > 0)
+		.map((key) => normalizeApiBaseUrl((import.meta.env as Record<string, string | undefined>)[key]))
+		.find((candidate) => typeof candidate === 'string')
 
-	if (value) {
+	if (typeof value === 'string') {
 		return value
 	}
 
@@ -16,10 +30,10 @@ const resolveEnv = (keys: string[], fallback: string): string => {
 
 const resolveOptionalEnv = (keys: string[], fallback: string): string => {
 	const value = keys
-		.map((key) => (import.meta.env as Record<string, string | undefined>)[key])
-		.find((candidate) => typeof candidate === 'string' && candidate.trim().length > 0)
+		.map((key) => normalizeApiBaseUrl((import.meta.env as Record<string, string | undefined>)[key]))
+		.find((candidate) => typeof candidate === 'string')
 
-	return value || fallback
+	return typeof value === 'string' ? value : fallback
 }
 
 const resolveBooleanEnv = (keys: string[], fallback: boolean): boolean => {

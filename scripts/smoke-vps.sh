@@ -304,9 +304,9 @@ main() {
 
   cat <<EOF
 
-VPS INFRA HEALTHY$([[ "${INFRA_OK}" == "1" ]] && echo '' || echo ' â€” FAIL')
-VPS LOOPBACK APPLICATION HEALTHY$([[ "${LOOPBACK_OK}" == "1" ]] && echo '' || echo ' â€” FAIL')
-VPS PUBLIC NGINX HEALTHY$([[ "${PUBLIC_OK}" == "1" ]] && echo '' || echo ' â€” NOT RUN (RUN_PUBLIC_SMOKE=1 to enable)')
+VPS INFRA HEALTHY$([[ "${INFRA_OK}" == "1" ]] && echo '' || echo ' — FAIL')
+VPS LOOPBACK APPLICATION HEALTHY$([[ "${LOOPBACK_OK}" == "1" ]] && echo '' || echo ' — FAIL')
+VPS PUBLIC NGINX HEALTHY$([[ "${PUBLIC_OK}" == "1" ]] && echo '' || echo ' — NOT RUN (RUN_PUBLIC_SMOKE=1 to enable)')
 PHASE 2 FUNCTIONAL SMOKE ${FUNCTIONAL_STATUS}
 
 EOF

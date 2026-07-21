@@ -1,0 +1,232 @@
+# Ordered DB migration Jobs. Deploy scripts MUST run user → meeting → ai sequentially
+# (do not rely on Job createTime ordering). Jobs are suspendable / one-shot.
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: user-db-migrate
+  namespace: audiomind
+  labels:
+    app: user-db-migrate
+    audiomind.io/migration: user
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app: user-db-migrate
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: migrate
+          image: audiomind/user-api:0.1.0
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          env:
+            - name: SPRING_PROFILES_ACTIVE
+              value: migration
+            - name: SPRING_MAIN_WEB_APPLICATION_TYPE
+              value: none
+            - name: SPRING_DATASOURCE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: audiomind-db-secrets
+                  key: USER_DATABASE_URL
+            - name: SPRING_DATASOURCE_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: audiomind-db-secrets
+                  key: DB_USERNAME
+            - name: SPRING_DATASOURCE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: audiomind-db-secrets
+                  key: DB_PASSWORD
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: audiomind-secrets
+                  key: JWT_SECRET
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 768Mi
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: meeting-db-migrate
+  namespace: audiomind
+  labels:
+    app: meeting-db-migrate
+    audiomind.io/migration: meeting
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app: meeting-db-migrate
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: wait-user-schema
+          image: postgres:15.8
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              echo "WAITING_FOR_USER_SCHEMA"
+              deadline=$(( $(date +%s) + 300 ))
+              export PGPASSWORD="${DB_PASSWORD}"
+              # Convert JDBC URL to libpq parts when needed.
+              RAW_URL="${SPRING_DATASOURCE_URL}"
+              case "${RAW_URL}" in
+                jdbc:postgresql://*) RAW_URL="${RAW_URL#jdbc:}" ;;
+              esac
+              HOSTPORT="${RAW_URL#postgresql://}"
+              HOSTPORT="${HOSTPORT#*@}"
+              HOSTPORT="${HOSTPORT%%/*}"
+              HOST="${HOSTPORT%%:*}"
+              PORT="${HOSTPORT##*:}"
+              if [ "${PORT}" = "${HOSTPORT}" ]; then PORT=5432; fi
+              DBNAME="${RAW_URL##*/}"
+              DBNAME="${DBNAME%%\?*}"
+              while true; do
+                if psql -h "${HOST}" -p "${PORT}" -U "${DB_USERNAME}" -d "${DBNAME}" -v ON_ERROR_STOP=1 -Atqc "SELECT to_regclass('public.app_users');" | grep -q app_users; then
+                  echo "USER_SCHEMA_READY"
+                  exit 0
+                fi
+                now=$(date +%s)
+                if [ "${now}" -ge "${deadline}" ]; then
+                  echo "USER_SCHEMA_WAIT_TIMEOUT" >&2
+                  exit 1
+                fi
+                echo "WAITING_FOR_USER_SCHEMA"
+                sleep 5
+              done
+          env:
+            - name: SPRING_DATASOURCE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: audiomind-db-secrets
+                  key: USER_DATABASE_URL
+            - name: DB_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: audiomind-db-secrets
+                  key: DB_USERNAME
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: audiomind-db-secrets
+                  key: DB_PASSWORD
+      containers:
+        - name: migrate
+          image: audiomind/meeting-api:0.1.0
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          env:
+            - name: SPRING_PROFILES_ACTIVE
+              value: migration
+            - name: SPRING_MAIN_WEB_APPLICATION_TYPE
+              value: none
+            - name: SPRING_DATASOURCE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: audiomind-db-secrets
+                  key: MEETING_DATABASE_URL
+            - name: SPRING_DATASOURCE_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: audiomind-db-secrets
+                  key: DB_USERNAME
+            - name: SPRING_DATASOURCE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: audiomind-db-secrets
+                  key: DB_PASSWORD
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: audiomind-secrets
+                  key: JWT_SECRET
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 768Mi
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ai-db-migrate
+  namespace: audiomind
+  labels:
+    app: ai-db-migrate
+    audiomind.io/migration: ai
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app: ai-db-migrate
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: migrate
+          image: audiomind/ai-api:0.1.0
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          command: ["alembic", "upgrade", "head"]
+          env:
+            - name: APP_COMPONENT
+              value: api
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: audiomind-db-secrets
+                  key: AI_DATABASE_URL
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 250m
+              memory: 512Mi

@@ -42,6 +42,7 @@ type FeatureAnalysisProps = {
   statusLabel?: string
   hydrateFromApi?: boolean
   resultScope?: MeetingResultScope | null
+  evidenceSegmentId?: string | null
   onBackToHistory?: () => void
   preferredDomainMode?: string
 }
@@ -145,6 +146,7 @@ export default function FeatureAnalysis({
   statusLabel,
   hydrateFromApi = false,
   resultScope = null,
+  evidenceSegmentId = null,
   onBackToHistory,
 }: FeatureAnalysisProps) {
   const [activeTab, setActiveTab] = useState<'content' | 'model' | 'mindmap'>('content')
@@ -346,7 +348,10 @@ export default function FeatureAnalysis({
   }, [activeTab, loadSavedAnalysis, meetingId, resultScope])
 
   const effectiveAnalysis = hydrateFromApi ? hydratedAnalysis : (analysis ?? null)
-  const effectiveSegments = hydrateFromApi ? hydratedTranscriptSegments : (transcriptSegments ?? [])
+  const effectiveSegments = useMemo(
+    () => (hydrateFromApi ? hydratedTranscriptSegments : (transcriptSegments ?? [])),
+    [hydrateFromApi, hydratedTranscriptSegments, transcriptSegments],
+  )
   const effectiveTranscriptText = hydrateFromApi ? hydratedTranscriptText : (transcriptText ?? '')
   const { navigateToSegment } = useTranscriptEvidenceNavigation({
     segments: effectiveSegments,
@@ -360,6 +365,21 @@ export default function FeatureAnalysis({
       setEvidenceWarning('Không tìm thấy đoạn transcript tương ứng với bằng chứng này.')
     },
   })
+
+  const appliedEvidenceRef = useRef<string | null>(null)
+  useEffect(() => {
+    const target = evidenceSegmentId?.trim()
+    if (!target || effectiveSegments.length === 0) {
+      return
+    }
+    const key = `${meetingId ?? 'none'}:${target}`
+    if (appliedEvidenceRef.current === key) {
+      return
+    }
+    appliedEvidenceRef.current = key
+    navigateToSegment([target])
+  }, [evidenceSegmentId, effectiveSegments, meetingId, navigateToSegment])
+
   const effectiveBusy = hydrateFromApi
     ? hydrateState === 'loading' || hydrateAnalysisState === 'processing'
     : Boolean(busy)
