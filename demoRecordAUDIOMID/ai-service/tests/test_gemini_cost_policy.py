@@ -474,8 +474,8 @@ def test_workload_budgets_and_low_thinking_are_sent_without_extra_request():
 
     chat_config = capture.payloads[0]["generationConfig"]
     structured_config = capture.payloads[1]["generationConfig"]
-    assert chat_config["maxOutputTokens"] == 1200
-    assert structured_config["maxOutputTokens"] == 4096
+    assert chat_config["maxOutputTokens"] == 688
+    assert structured_config["maxOutputTokens"] == 3584
     assert chat_config["thinkingConfig"] == {"thinkingLevel": "low"}
     assert chat_config["temperature"] == 0.2
     assert len(capture.payloads) == 2

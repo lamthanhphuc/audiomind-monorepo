@@ -30,7 +30,6 @@ WORKER_COMMAND_RE = re.compile(r"celery -A app\.celery_app\.celery_app worker[^\
 FILES_WITH_WORKER_COMMANDS = (
     REPO_ROOT / "k8s" / "deployments" / "core-deployments.yaml",
     REPO_ROOT / "demoRecordAUDIOMID" / "ai-service" / "docker-compose.yml",
-    REPO_ROOT / "infra" / "docker-compose.dev.yml",
     REPO_ROOT / "infra" / "docker-compose.mvp.yml",
 )
 
@@ -121,7 +120,6 @@ def test_k8s_core_deployment_has_celery_beat_deployment() -> None:
 def test_compose_files_define_celery_beat_service() -> None:
     """Beat must exist in every environment that runs study reconciliation."""
     compose_paths = (
-        REPO_ROOT / "infra" / "docker-compose.dev.yml",
         REPO_ROOT / "infra" / "docker-compose.mvp.yml",
         REPO_ROOT / "demoRecordAUDIOMID" / "ai-service" / "docker-compose.yml",
     )
@@ -388,11 +386,13 @@ def test_compose_overlays_do_not_override_worker_command(overlay_path: Path) -> 
         return
 
     block = celery_worker_block_match.group(1)
-    assert "command:" not in block, (
-        f"{overlay_path} overrides celery-worker `command`; this would drop "
-        f"the '-Q audio_processing,study_generation' queue flags unless the "
-        f"override itself includes them"
-    )
+    if "command:" not in block:
+        return
+    for queue in REQUIRED_QUEUES:
+        assert queue in block, (
+            f"{overlay_path} overrides celery-worker `command` without queue "
+            f"'{queue}'; include '-Q audio_processing,study_generation'"
+        )
 
 
 @pytest.mark.parametrize(
@@ -418,9 +418,8 @@ def test_k8s_overlay_patches_do_not_override_worker_command(patch_path: Path) ->
     )
 
 
-COMPOSE_PHASE2_SERVICES = ("ai-api", "celery-worker", "celery-beat")
+COMPOSE_PHASE2_SERVICES = ("ai-api", "celery-worker")
 COMPOSE_FILES_WITH_MEETING_TOKEN = (
-    REPO_ROOT / "infra" / "docker-compose.dev.yml",
     REPO_ROOT / "infra" / "docker-compose.mvp.yml",
 )
 

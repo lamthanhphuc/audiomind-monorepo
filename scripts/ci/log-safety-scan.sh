@@ -74,6 +74,7 @@ collect_files() {
   done
 }
 
+# shellcheck disable=SC2094
 violations=0
 
 while IFS= read -r file; do
