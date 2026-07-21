@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     )
 
     app_env: str = "development"
+    # api | worker | beat — beat is broker-only and must not require DB/provider secrets.
+    app_component: str = "api"
 
     # Database
     database_url: str = "postgresql://postgres:postgres@db:5432/audiomind"
@@ -25,6 +27,10 @@ class Settings(BaseSettings):
     gemini_api_keys: str = ""
     gemini_multi_key_enabled: bool = False
     gemini_shared_cooldown_enabled: bool = False
+    gemini_shared_state_namespace: str = ""
+    gemini_model_unsupported_ttl_seconds: int = 21600
+    gemini_redis_connect_timeout_seconds: float = 1.0
+    gemini_redis_socket_timeout_seconds: float = 1.5
     gemini_max_attempts: int = 3
     gemini_key_cooldown_seconds: float = 90.0
     gemini_key_hard_cooldown_seconds: float = 900.0
@@ -34,9 +40,11 @@ class Settings(BaseSettings):
     gemini_fail_fast_seconds: float = 30.0
     gemini_analysis_model: str = "gemini-2.5-flash"
     gemini_summary_model: str = "gemini-2.5-flash"
+    # Comma-separated fallbacks when preferred model is blocked for new AQ./auth keys.
+    gemini_model_fallbacks: str = "gemini-2.0-flash,gemini-2.5-flash-lite"
     gemini_analysis_domain_mode: str = "it"
     gemini_analysis_max_input_tokens: int = 12000
-    gemini_analysis_max_output_tokens: int = 4096
+    gemini_analysis_max_output_tokens: int = 8192
     gemini_analysis_thinking_budget: int = 0
     gemini_analysis_retry_max_attempts: int = 3
     gemini_timeout_seconds: int = 300
@@ -277,8 +285,10 @@ class Settings(BaseSettings):
         self.gemini_analysis_max_input_tokens = max(
             1, int(self.gemini_analysis_max_input_tokens or 12000)
         )
-        self.gemini_analysis_max_output_tokens = max(
-            1, int(self.gemini_analysis_max_output_tokens or 4096)
+        # Clamp to a sane model budget: avoid tiny wasteful requests and unbounded growth.
+        self.gemini_analysis_max_output_tokens = min(
+            16384,
+            max(1024, int(self.gemini_analysis_max_output_tokens or 8192)),
         )
         self.gemini_analysis_thinking_budget = max(
             0, int(self.gemini_analysis_thinking_budget or 0)
@@ -301,6 +311,17 @@ class Settings(BaseSettings):
         self.gemini_backoff_max_ms = max(0.0, float(self.gemini_backoff_max_ms or 0.0))
         self.gemini_fail_fast_seconds = max(
             0.0, float(self.gemini_fail_fast_seconds or 0.0)
+        )
+        self.gemini_model_unsupported_ttl_seconds = max(
+            1, int(self.gemini_model_unsupported_ttl_seconds or 21600)
+        )
+        self.gemini_redis_connect_timeout_seconds = max(
+            0.1,
+            float(self.gemini_redis_connect_timeout_seconds or 1.0),
+        )
+        self.gemini_redis_socket_timeout_seconds = max(
+            0.1,
+            float(self.gemini_redis_socket_timeout_seconds or 1.5),
         )
         self.gemini_timeout_seconds = max(1, int(self.gemini_timeout_seconds or 300))
         self.gemini_rate_limit_retry_base_seconds = max(
@@ -340,6 +361,10 @@ class Settings(BaseSettings):
     def validate_production_settings(self) -> "Settings":
         env = (self.app_env or "").strip().lower()
         if env not in {"prod", "production"}:
+            return self
+
+        # Celery Beat schedules only; it must start without DATABASE_URL / Gemini / Deepgram.
+        if (self.app_component or "").strip().lower() == "beat":
             return self
 
         def _is_local(value: str | None) -> bool:

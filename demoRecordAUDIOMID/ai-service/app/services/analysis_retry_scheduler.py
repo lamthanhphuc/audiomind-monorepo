@@ -16,11 +16,25 @@ ANALYSIS_LOCK_TTL_SECONDS = 600
 BACKOFF_SCHEDULE_SECONDS = (30, 120, 300, 900)
 JITTER_RATIO = 0.10
 
+# Terminal Gemini failures must not be Beat-retried.
+TERMINAL_ERROR_CODES = frozenset(
+    {
+        "GEMINI_BILLING_CREDITS_DEPLETED",
+        "GEMINI_FREE_TIER_TOKEN_QUOTA_EXHAUSTED",
+        "GEMINI_MODEL_UNAVAILABLE",
+        "GEMINI_INVALID_KEY",
+        "GEMINI_INVALID_REQUEST",
+        "GEMINI_REGION_BLOCKED",
+        "GEMINI_ANALYSIS_FAILED",
+        "GEMINI_PROXY_CONNECT_FAILED",
+    }
+)
+
+# Transient / rate-limit codes that may be background-retried.
 RETRYABLE_ERROR_CODES = frozenset(
     {
         "GEMINI_RATE_LIMITED",
         "GEMINI_UNAVAILABLE",
-        "GEMINI_QUOTA_EXHAUSTED",
         "CIRCUIT_OPEN",
     }
 )
@@ -142,8 +156,26 @@ def pop_due_retries(redis_client, *, now: float | None = None) -> list[RetryQueu
     return entries
 
 
-def is_retryable_error_code(error_code: str | None) -> bool:
+def is_retryable_error_code(
+    error_code: str | None,
+    *,
+    retryable: bool | None = None,
+) -> bool:
+    """Return whether Beat/background should retry this analysis failure.
+
+    Terminal Gemini codes never retry. ``GEMINI_KEY_POOL_UNAVAILABLE`` retries
+    only when the exception marked ``retryable=True`` (mixed pool with at least
+    one transient cause).
+    """
     normalized = str(error_code or "").strip().upper()
+    if not normalized:
+        return False
+    if normalized in TERMINAL_ERROR_CODES:
+        return False
+    if retryable is False:
+        return False
+    if normalized == "GEMINI_KEY_POOL_UNAVAILABLE":
+        return retryable is True
     return normalized in RETRYABLE_ERROR_CODES
 
 

@@ -245,23 +245,43 @@ def test_gemini_multi_key_invalid_key_then_valid_key_succeeds(monkeypatch):
     assert _request_keys(fake_client) == ["key-a", "key-b"]
 
 
-def test_gemini_multi_key_total_attempt_budget_is_not_per_key(monkeypatch):
+def test_gemini_multi_key_invalid_api_key_400_then_valid_key_succeeds(monkeypatch):
+    """AI Studio returns HTTP 400 INVALID_ARGUMENT for bad API keys."""
+    fake_client = _FakeClient(
+        [
+            _FakeResponse(
+                400,
+                text='{"error":{"status":"INVALID_ARGUMENT","message":"API key not valid. Please pass a valid API key."}}',
+            ),
+            _success_response("Backup after 400 invalid key"),
+        ]
+    )
+    monkeypatch.setattr(AI_MODULE.httpx, "Client", lambda timeout: fake_client)
+
+    analyzer = _analyzer_with_multi_key()
+    result = analyzer._analyze_with_gemini("Speaker 1: safe transcript")
+
+    assert result["summary"] == "Backup after 400 invalid key"
+    assert _request_keys(fake_client) == ["key-a", "key-b"]
+
+
+def test_gemini_multi_key_attempt_budget_covers_all_configured_keys(monkeypatch):
+    """max_attempts may be smaller than pool size; still try every key once."""
     fake_client = _FakeClient(
         [
             _FakeResponse(503, text='{"error":{"status":"UNAVAILABLE"}}'),
             _FakeResponse(503, text='{"error":{"status":"UNAVAILABLE"}}'),
-            _success_response("Should not be reached"),
+            _success_response("Reached via pool-sized attempts"),
         ]
     )
     monkeypatch.setattr(AI_MODULE.httpx, "Client", lambda timeout: fake_client)
 
     analyzer = _analyzer_with_multi_key(gemini_max_attempts=2)
 
-    with pytest.raises(AnalysisUnavailableError):
-        analyzer._analyze_with_gemini("Speaker 1: safe transcript")
+    result = analyzer._analyze_with_gemini("Speaker 1: safe transcript")
 
-    assert len(fake_client.calls) == 2
-    assert _request_keys(fake_client) == ["key-a", "key-b"]
+    assert result["summary"] == "Reached via pool-sized attempts"
+    assert _request_keys(fake_client) == ["key-a", "key-b", "key-c"]
 
 
 def test_gemini_client_caps_http_timeout_to_fail_fast_remaining_budget():
@@ -289,15 +309,17 @@ def test_gemini_client_caps_http_timeout_to_fail_fast_remaining_budget():
         timeout_seconds=300,
     )
 
-    assert response.status_code == 200
+    assert response.response.status_code == 200
+    assert response.key_alias == "primary"
     assert fake_client.calls[0][1]["timeout"] == pytest.approx(7.0)
 
 
-def test_gemini_client_stops_before_next_attempt_when_fail_fast_deadline_reached():
+def test_gemini_client_fail_fast_grace_still_tries_eligible_backup():
+    """After fail-fast budget is spent, still try one remaining eligible key."""
     fake_client = _FakeClient(
         [
             _FakeResponse(503, text='{"error":{"status":"UNAVAILABLE"}}'),
-            _success_response("Should not be reached"),
+            _success_response("Backup after fail-fast grace"),
         ]
     )
     now = {"value": 0.0}
@@ -320,16 +342,15 @@ def test_gemini_client_stops_before_next_attempt_when_fail_fast_deadline_reached
         random_float=lambda low, high: high,
     )
 
-    with pytest.raises(AnalysisUnavailableError) as exc_info:
-        client.post_json(
-            url="https://example.test/gemini",
-            payload={"contents": []},
-            timeout_seconds=300,
-        )
+    result = client.post_json(
+        url="https://example.test/gemini",
+        payload={"contents": []},
+        timeout_seconds=300,
+    )
 
-    assert exc_info.value.error_code == "GEMINI_UNAVAILABLE"
-    assert len(fake_client.calls) == 1
-    assert _request_keys(fake_client) == ["key-a"]
+    assert result.key_alias == "backup"
+    assert result.response.status_code == 200
+    assert _request_keys(fake_client) == ["key-a", "key-b"]
 
 
 def test_gemini_multi_key_timeout_then_success(monkeypatch):
@@ -1762,3 +1783,1197 @@ def test_normalize_gemini_proxy_url_resolves_host_docker_internal(monkeypatch):
     )
 
     assert normalized == "http://192.168.65.254:7890"
+
+
+def test_max_tokens_retry_sticks_to_key_that_returned_http_200(monkeypatch):
+    """Regression: MAX_TOKENS must not round-robin away from the successful key."""
+    fake_client = _FakeClient(
+        [
+            # primary depleted
+            _FakeResponse(
+                429,
+                text='{"error":{"status":"RESOURCE_EXHAUSTED","message":"prepaid credits are depleted"}}',
+                headers={"Retry-After": "1"},
+            ),
+            # backup1 succeeds HTTP but MAX_TOKENS
+            _FakeResponse(
+                200,
+                {
+                    "candidates": [
+                        {
+                            "finishReason": "MAX_TOKENS",
+                            "content": {"parts": [{"text": '{"summary":"truncated"}'}]},
+                        }
+                    ],
+                    "usageMetadata": {
+                        "promptTokenCount": 5832,
+                        "candidatesTokenCount": 4084,
+                        "totalTokenCount": 9916,
+                    },
+                },
+            ),
+            # sticky retry on backup1 must succeed (not backup2 404)
+            _success_response(summary="Recovered on sticky backup1"),
+            # Would be wrong if round-robin advanced to backup2
+            _FakeResponse(
+                404,
+                text=(
+                    '{"error":{"status":"NOT_FOUND","message":'
+                    '"This model models/gemini-2.5-flash is no longer available to new users"}}'
+                ),
+            ),
+        ]
+    )
+    monkeypatch.setattr(AI_MODULE.httpx, "Client", lambda timeout: fake_client)
+
+    analyzer = _analyzer_with_multi_key(
+        analysis_max_output_tokens=4096,
+        gemini_max_attempts=3,
+        gemini_key_cooldown_seconds=30,
+        gemini_backoff_base_ms=0,
+    )
+    result = analyzer.analyze_meeting("Speaker 1: sticky key transcript")
+
+    assert result["summary"] == "Recovered on sticky backup1"
+    keys = _request_keys(fake_client)
+    assert keys[0] == "key-a"
+    assert keys[1] == "key-b"
+    assert keys[2] == "key-b"
+    assert "key-c" not in keys
+
+
+def test_gemini_client_model_404_fails_over_to_next_key():
+    fake_client = _FakeClient(
+        [
+            _FakeResponse(
+                404,
+                text=(
+                    '{"error":{"status":"NOT_FOUND","message":'
+                    '"This model models/gemini-2.5-flash is no longer available to new users"}}'
+                ),
+            ),
+            _success_response("From backup key"),
+        ]
+    )
+    key_manager = KEY_MANAGER_MODULE.GeminiKeyManager.from_config(
+        gemini_api_key="",
+        gemini_api_keys="primary:key-a,backup1:key-b",
+        multi_key_enabled=True,
+    )
+    client = GEMINI_CLIENT_MODULE.GeminiClient(
+        key_manager,
+        max_attempts=3,
+        key_cooldown_seconds=30,
+        backoff_base_ms=0,
+        http_client_factory=lambda timeout: fake_client,
+        sleep=lambda seconds: None,
+    )
+
+    result = client.post_json(
+        url="https://example.test/gemini",
+        payload={"contents": []},
+        timeout_seconds=30,
+    )
+
+    assert result.key_alias == "backup1"
+    assert result.response.status_code == 200
+    assert _request_keys(fake_client) == ["key-a", "key-b"]
+
+
+def test_gemini_client_all_keys_model_404_raises_model_unavailable():
+    unavailable = _FakeResponse(
+        404,
+        text=(
+            '{"error":{"status":"NOT_FOUND","message":'
+            '"This model models/gemini-2.5-flash is no longer available to new users"}}'
+        ),
+    )
+    fake_client = _FakeClient([unavailable, unavailable, unavailable])
+    key_manager = KEY_MANAGER_MODULE.GeminiKeyManager.from_config(
+        gemini_api_key="",
+        gemini_api_keys="primary:key-a,backup1:key-b,backup2:key-c",
+        multi_key_enabled=True,
+    )
+    client = GEMINI_CLIENT_MODULE.GeminiClient(
+        key_manager,
+        max_attempts=3,
+        key_cooldown_seconds=30,
+        backoff_base_ms=0,
+        http_client_factory=lambda timeout: fake_client,
+        sleep=lambda seconds: None,
+    )
+
+    with pytest.raises(AnalysisUnavailableError) as exc_info:
+        client.post_json(
+            url="https://example.test/gemini",
+            payload={"contents": []},
+            timeout_seconds=30,
+        )
+
+    assert exc_info.value.error_code == "GEMINI_MODEL_UNAVAILABLE"
+    assert len(fake_client.calls) == 3
+
+
+def test_gemini_client_preferred_key_alias_reused_without_round_robin():
+    fake_client = _FakeClient([_success_response("sticky")])
+    key_manager = KEY_MANAGER_MODULE.GeminiKeyManager.from_config(
+        gemini_api_key="",
+        gemini_api_keys="primary:key-a,backup1:key-b,backup2:key-c",
+        multi_key_enabled=True,
+    )
+    # Advance RR so next default would be backup1
+    assert key_manager.select_key().entry.alias == "primary"
+    client = GEMINI_CLIENT_MODULE.GeminiClient(
+        key_manager,
+        max_attempts=1,
+        http_client_factory=lambda timeout: fake_client,
+        sleep=lambda seconds: None,
+    )
+
+    result = client.post_json(
+        url="https://example.test/gemini",
+        payload={"contents": []},
+        timeout_seconds=30,
+        preferred_key_alias="primary",
+    )
+
+    assert result.key_alias == "primary"
+    assert _request_keys(fake_client) == ["key-a"]
+
+
+_MODEL_URL = (
+    "https://generativelanguage.googleapis.com/v1beta/models/"
+    "gemini-2.5-flash:generateContent"
+)
+
+
+def _model_unavailable_404() -> _FakeResponse:
+    return _FakeResponse(
+        404,
+        text=(
+            '{"error":{"status":"NOT_FOUND","message":'
+            '"This model models/gemini-2.5-flash is no longer available to new users"}}'
+        ),
+    )
+
+
+def test_is_model_unavailable_response_requires_model_markers():
+    assert GEMINI_CLIENT_MODULE.is_model_unavailable_response(
+        _model_unavailable_404()
+    )
+    assert not GEMINI_CLIENT_MODULE.is_model_unavailable_response(
+        _FakeResponse(404, text='{"error":{"status":"NOT_FOUND","message":"Not Found"}}')
+    )
+    assert not GEMINI_CLIENT_MODULE.is_model_unavailable_response(
+        _FakeResponse(404, text="")
+    )
+    assert not GEMINI_CLIENT_MODULE.is_model_unavailable_response(
+        _FakeResponse(
+            404,
+            text='{"error":{"status":"NOT_FOUND","message":"Endpoint /v1/foo not found"}}',
+        )
+    )
+
+
+def test_mixed_rate_limit_and_model_unavailable_returns_key_pool_unavailable():
+    fake_client = _FakeClient(
+        [
+            _FakeResponse(
+                429,
+                text='{"error":{"status":"RESOURCE_EXHAUSTED","message":"Rate limit exceeded (RPM)"}}',
+                headers={"Retry-After": "1"},
+            ),
+            _model_unavailable_404(),
+            _model_unavailable_404(),
+        ]
+    )
+    key_manager = KEY_MANAGER_MODULE.GeminiKeyManager.from_config(
+        gemini_api_key="",
+        gemini_api_keys="primary:key-a,backup1:key-b,backup2:key-c",
+        multi_key_enabled=True,
+    )
+    client = GEMINI_CLIENT_MODULE.GeminiClient(
+        key_manager,
+        max_attempts=3,
+        key_cooldown_seconds=30,
+        backoff_base_ms=0,
+        http_client_factory=lambda timeout: fake_client,
+        sleep=lambda seconds: None,
+    )
+
+    with pytest.raises(AnalysisUnavailableError) as exc_info:
+        client.post_json(
+            url=_MODEL_URL,
+            payload={"contents": []},
+            timeout_seconds=30,
+            model="gemini-2.5-flash",
+        )
+
+    assert exc_info.value.error_code == "GEMINI_KEY_POOL_UNAVAILABLE"
+    assert exc_info.value.error_code != "GEMINI_RATE_LIMITED"
+
+
+def test_billing_credits_depleted_uses_hard_cooldown_not_soft_90s():
+    clock = KEY_MANAGER_MODULE.time.monotonic
+    # Use FakeClock from key manager tests pattern via simple mutable clock
+    class Clock:
+        def __init__(self):
+            self.now = 1000.0
+
+        def __call__(self):
+            return self.now
+
+    clock = Clock()
+    fake_client = _FakeClient(
+        [
+            _FakeResponse(
+                429,
+                text=(
+                    '{"error":{"status":"RESOURCE_EXHAUSTED","message":'
+                    '"Your prepayment credits are depleted"}}'
+                ),
+            ),
+            _success_response("backup ok"),
+        ]
+    )
+    key_manager = KEY_MANAGER_MODULE.GeminiKeyManager.from_config(
+        gemini_api_key="",
+        gemini_api_keys="primary:key-a,backup1:key-b",
+        multi_key_enabled=True,
+        clock=clock,
+    )
+    client = GEMINI_CLIENT_MODULE.GeminiClient(
+        key_manager,
+        max_attempts=3,
+        key_cooldown_seconds=90,
+        key_hard_cooldown_seconds=900,
+        backoff_base_ms=0,
+        http_client_factory=lambda timeout: fake_client,
+        sleep=lambda seconds: None,
+        clock=clock,
+    )
+
+    result = client.post_json(
+        url=_MODEL_URL,
+        payload={"contents": []},
+        timeout_seconds=30,
+        model="gemini-2.5-flash",
+    )
+    assert result.key_alias == "backup1"
+
+    # Soft 90s would have expired; billing must keep primary hard-cooled.
+    clock.now += 91
+    assert key_manager.select_key(model="gemini-2.5-flash").entry.alias == "backup1"
+
+
+def test_all_keys_billing_depleted_returns_billing_error_code():
+    depleted = _FakeResponse(
+        429,
+        text=(
+            '{"error":{"status":"RESOURCE_EXHAUSTED","message":'
+            '"prepaid credits depleted"}}'
+        ),
+    )
+    fake_client = _FakeClient([depleted, depleted, depleted])
+    key_manager = KEY_MANAGER_MODULE.GeminiKeyManager.from_config(
+        gemini_api_key="",
+        gemini_api_keys="primary:key-a,backup1:key-b,backup2:key-c",
+        multi_key_enabled=True,
+    )
+    client = GEMINI_CLIENT_MODULE.GeminiClient(
+        key_manager,
+        max_attempts=3,
+        key_hard_cooldown_seconds=900,
+        backoff_base_ms=0,
+        http_client_factory=lambda timeout: fake_client,
+        sleep=lambda seconds: None,
+    )
+
+    with pytest.raises(AnalysisUnavailableError) as exc_info:
+        client.post_json(
+            url=_MODEL_URL,
+            payload={"contents": []},
+            timeout_seconds=30,
+            model="gemini-2.5-flash",
+        )
+
+    assert exc_info.value.error_code == "GEMINI_BILLING_CREDITS_DEPLETED"
+
+
+def test_free_tier_token_quota_classified_and_hard_cooled():
+    free_tier = _FakeResponse(
+        429,
+        text=(
+            '{"error":{"status":"RESOURCE_EXHAUSTED","message":'
+            '"Quota exceeded for generate_content_free_tier_input_token_count",'
+            '"details":[{"@type":"type.googleapis.com/google.rpc.QuotaFailure",'
+            '"violations":[{"quotaMetric":'
+            '"generativelanguage.googleapis.com/generate_content_free_tier_input_token_count"}]}]}}'
+        ),
+    )
+    fake_client = _FakeClient([free_tier, _success_response("ok")])
+    key_manager = KEY_MANAGER_MODULE.GeminiKeyManager.from_config(
+        gemini_api_key="",
+        gemini_api_keys="primary:key-a,backup1:key-b",
+        multi_key_enabled=True,
+    )
+    client = GEMINI_CLIENT_MODULE.GeminiClient(
+        key_manager,
+        max_attempts=3,
+        key_hard_cooldown_seconds=900,
+        backoff_base_ms=0,
+        http_client_factory=lambda timeout: fake_client,
+        sleep=lambda seconds: None,
+    )
+
+    result = client.post_json(
+        url=_MODEL_URL,
+        payload={"contents": []},
+        timeout_seconds=30,
+        model="gemini-2.5-flash",
+    )
+    assert result.key_alias == "backup1"
+    reason = GEMINI_CLIENT_MODULE.classify_http_429(free_tier)
+    assert (
+        reason
+        == GEMINI_CLIENT_MODULE.GeminiKeyFailureReason.FREE_TIER_TOKEN_QUOTA_EXHAUSTED
+    )
+
+
+def test_transient_rpm_still_maps_to_rate_limited():
+    rpm = _FakeResponse(
+        429,
+        text='{"error":{"status":"RESOURCE_EXHAUSTED","message":"Resource exhausted: RPM"}}',
+        headers={"Retry-After": "5"},
+    )
+    fake_client = _FakeClient([rpm, rpm, rpm])
+    key_manager = KEY_MANAGER_MODULE.GeminiKeyManager.from_config(
+        gemini_api_key="",
+        gemini_api_keys="primary:key-a,backup1:key-b,backup2:key-c",
+        multi_key_enabled=True,
+    )
+    client = GEMINI_CLIENT_MODULE.GeminiClient(
+        key_manager,
+        max_attempts=3,
+        key_cooldown_seconds=30,
+        backoff_base_ms=0,
+        http_client_factory=lambda timeout: fake_client,
+        sleep=lambda seconds: None,
+    )
+
+    with pytest.raises(AnalysisRateLimitError) as exc_info:
+        client.post_json(
+            url=_MODEL_URL,
+            payload={"contents": []},
+            timeout_seconds=30,
+            model="gemini-2.5-flash",
+        )
+
+    assert exc_info.value.error_code == "GEMINI_RATE_LIMITED"
+
+
+def test_generic_404_is_not_model_unavailable_and_does_not_failover():
+    fake_client = _FakeClient(
+        [
+            _FakeResponse(
+                404,
+                text='{"error":{"status":"NOT_FOUND","message":"Not Found"}}',
+            ),
+            _success_response("should-not-be-used"),
+        ]
+    )
+    key_manager = KEY_MANAGER_MODULE.GeminiKeyManager.from_config(
+        gemini_api_key="",
+        gemini_api_keys="primary:key-a,backup1:key-b",
+        multi_key_enabled=True,
+    )
+    client = GEMINI_CLIENT_MODULE.GeminiClient(
+        key_manager,
+        max_attempts=3,
+        backoff_base_ms=0,
+        http_client_factory=lambda timeout: fake_client,
+        sleep=lambda seconds: None,
+    )
+
+    with pytest.raises(AnalysisUnavailableError) as exc_info:
+        client.post_json(
+            url=_MODEL_URL,
+            payload={"contents": []},
+            timeout_seconds=30,
+            model="gemini-2.5-flash",
+        )
+
+    assert exc_info.value.error_code == "GEMINI_UNAVAILABLE"
+    assert len(fake_client.calls) == 1
+
+
+def test_model_404_failover_then_success_with_model_cache():
+    fake_client = _FakeClient(
+        [
+            _FakeResponse(
+                429,
+                text='{"error":{"message":"Rate limit exceeded"}}',
+                headers={"Retry-After": "1"},
+            ),
+            _model_unavailable_404(),
+            _success_response("From backup2"),
+        ]
+    )
+    key_manager = KEY_MANAGER_MODULE.GeminiKeyManager.from_config(
+        gemini_api_key="",
+        gemini_api_keys="primary:key-a,backup1:key-b,backup2:key-c",
+        multi_key_enabled=True,
+    )
+    client = GEMINI_CLIENT_MODULE.GeminiClient(
+        key_manager,
+        max_attempts=3,
+        key_cooldown_seconds=30,
+        backoff_base_ms=0,
+        http_client_factory=lambda timeout: fake_client,
+        sleep=lambda seconds: None,
+    )
+
+    result = client.post_json(
+        url=_MODEL_URL,
+        payload={"contents": []},
+        timeout_seconds=30,
+        model="gemini-2.5-flash",
+    )
+
+    assert result.key_alias == "backup2"
+    assert key_manager.is_model_unsupported("backup1", "gemini-2.5-flash")
+    # Same key still usable for another model.
+    assert not key_manager.is_model_unsupported("backup1", "gemini-2.0-flash")
+
+
+def test_max_tokens_retry_does_not_exceed_configured_maximum(monkeypatch):
+    fake_client = _FakeClient(
+        [
+            _FakeResponse(
+                200,
+                {
+                    "candidates": [
+                        {
+                            "finishReason": "MAX_TOKENS",
+                            "content": {"parts": [{"text": '{"summary":"truncated"}'}]},
+                        }
+                    ],
+                    "usageMetadata": {"candidatesTokenCount": 8192},
+                },
+            ),
+            _success_response(summary="Still capped"),
+        ]
+    )
+    monkeypatch.setattr(AI_MODULE.httpx, "Client", lambda timeout: fake_client)
+    analyzer = GeminiAnalyzer(
+        api_key="key-a",
+        analysis_model="gemini-2.5-flash",
+        analysis_max_output_tokens=8192,
+        gemini_max_attempts=2,
+        gemini_backoff_base_ms=0,
+        gemini_key_cooldown_seconds=30,
+    )
+    result = analyzer.analyze_meeting("Speaker 1: capped retry")
+    assert result["summary"] == "Still capped"
+    # Both calls stay at configured maximum (8192), never unbounded growth.
+    budgets = [
+        call[1]["json"]["generationConfig"]["maxOutputTokens"]
+        for call in fake_client.calls
+    ]
+    assert budgets[0] == 8192
+    assert budgets[1] == 8192
+    assert max(budgets) <= 8192
+
+
+def test_embedding_index_uses_get_settings_not_missing_settings_export(monkeypatch):
+    """Regression: tasks must not `from app.config import settings`."""
+    import app.config as config_mod
+    import app.tasks as tasks_mod
+
+    assert not hasattr(config_mod, "settings")
+    # Import path used by process_meeting embedding block must resolve.
+    from app.config import get_settings
+    from app.services.embedding_service import index_meeting_for_search
+
+    settings = get_settings()
+    monkeypatch.setenv("EMBEDDING_SEARCH_ENABLED", "false")
+    # Optional skip must not raise when embeddings are disabled.
+    index_meeting_for_search(
+        settings=settings,
+        meeting_id=1,
+        user_id=1,
+        title="t",
+        summary="s",
+    )
+    source = Path(tasks_mod.__file__).read_text(encoding="utf-8")
+    assert "from app.config import settings" not in source
+    assert "from app.config import get_settings" in source
+
+
+def test_cached_unsupported_all_keys_raises_model_unavailable_without_http():
+    key_manager = KEY_MANAGER_MODULE.GeminiKeyManager.from_config(
+        gemini_api_key="",
+        gemini_api_keys="primary:key-a,backup1:key-b,backup2:key-c",
+        multi_key_enabled=True,
+    )
+    for alias in ("primary", "backup1", "backup2"):
+        key_manager.mark_model_unsupported(alias, "gemini-2.5-flash")
+
+    fake_client = _FakeClient([_success_response("should-not-call")])
+    client = GEMINI_CLIENT_MODULE.GeminiClient(
+        key_manager,
+        max_attempts=3,
+        backoff_base_ms=0,
+        http_client_factory=lambda timeout: fake_client,
+        sleep=lambda seconds: None,
+    )
+
+    with pytest.raises(AnalysisUnavailableError) as exc_info:
+        client.post_json(
+            url=_MODEL_URL,
+            payload={"contents": []},
+            timeout_seconds=30,
+            model="gemini-2.5-flash",
+        )
+
+    assert exc_info.value.error_code == "GEMINI_MODEL_UNAVAILABLE"
+    assert exc_info.value.retryable is False
+    assert len(fake_client.calls) == 0
+
+
+def test_cached_unsupported_model_a_still_allows_model_b():
+    key_manager = KEY_MANAGER_MODULE.GeminiKeyManager.from_config(
+        gemini_api_key="",
+        gemini_api_keys="primary:key-a,backup1:key-b",
+        multi_key_enabled=True,
+    )
+    key_manager.mark_model_unsupported("primary", "gemini-2.5-flash")
+    key_manager.mark_model_unsupported("backup1", "gemini-2.5-flash")
+
+    fake_client = _FakeClient([_success_response("model-b-ok")])
+    client = GEMINI_CLIENT_MODULE.GeminiClient(
+        key_manager,
+        max_attempts=1,
+        backoff_base_ms=0,
+        http_client_factory=lambda timeout: fake_client,
+        sleep=lambda seconds: None,
+    )
+
+    result = client.post_json(
+        url=(
+            "https://generativelanguage.googleapis.com/v1beta/models/"
+            "gemini-2.0-flash:generateContent"
+        ),
+        payload={"contents": []},
+        timeout_seconds=30,
+        model="gemini-2.0-flash",
+    )
+    assert result.response.status_code == 200
+    assert len(fake_client.calls) == 1
+
+
+def test_all_terminal_mixed_key_pool_is_not_retryable():
+    failures = {
+        "primary": GEMINI_CLIENT_MODULE.GeminiKeyFailureReason.BILLING_CREDITS_DEPLETED,
+        "backup1": GEMINI_CLIENT_MODULE.GeminiKeyFailureReason.MODEL_UNAVAILABLE,
+    }
+    error = GEMINI_CLIENT_MODULE.conclude_key_pool_failure(failures)
+    assert error.error_code == "GEMINI_KEY_POOL_UNAVAILABLE"
+    assert error.retryable is False
+
+
+def test_analysis_unavailable_error_pickle_roundtrip():
+    import pickle
+
+    original = AnalysisUnavailableError(
+        "Gemini model is unavailable for all configured API keys",
+        provider="gemini",
+        error_code="GEMINI_MODEL_UNAVAILABLE",
+        retryable=False,
+        key_alias="primary",
+    )
+    restored = pickle.loads(pickle.dumps(original))
+    assert isinstance(restored, AnalysisUnavailableError)
+    assert restored.error_code == "GEMINI_MODEL_UNAVAILABLE"
+    assert restored.retryable is False
+    assert restored.provider == "gemini"
+    assert str(restored) == str(original)
+
+
+def test_process_meeting_records_provider_error_and_reraises(monkeypatch):
+    """Terminal Gemini errors mark job FAILED then re-raise for Celery FAILURE."""
+    import app.tasks as tasks_mod
+
+    recorded = {}
+
+    class FakePipeline:
+        def process_meeting(self, **kwargs):
+            raise AnalysisUnavailableError(
+                "Gemini model is unavailable for all configured API keys",
+                provider="gemini",
+                error_code="GEMINI_MODEL_UNAVAILABLE",
+                retryable=False,
+            )
+
+    class FakeSession:
+        def close(self):
+            return None
+
+    monkeypatch.setattr(tasks_mod, "pipeline", FakePipeline())
+    monkeypatch.setattr(tasks_mod, "SessionLocal", lambda: FakeSession())
+
+    def fake_set_job_status(meeting_id, status, **kwargs):
+        recorded["meeting_id"] = meeting_id
+        recorded["status"] = status
+        recorded["error"] = kwargs.get("error")
+
+    monkeypatch.setattr(tasks_mod, "set_job_status", fake_set_job_status)
+
+    with pytest.raises(AnalysisUnavailableError) as exc_info:
+        tasks_mod.process_meeting(
+            {
+                "meeting_id": 88,
+                "audio_path": "/tmp/x.wav",
+                "trace_id": "t-88",
+                "file_id": "f-88",
+            }
+        )
+
+    assert recorded["status"] == "FAILED"
+    assert "GEMINI_MODEL_UNAVAILABLE" in str(recorded["error"])
+    assert exc_info.value.error_code == "GEMINI_MODEL_UNAVAILABLE"
+    assert exc_info.value.retryable is False
+
+
+def test_vps_exact_primary_429_backup1_200_two_keys():
+    """VPS pool shape: primary + backup1 only."""
+    billing_429 = _FakeResponse(
+        429,
+        text=(
+            '{"error":{"status":"RESOURCE_EXHAUSTED","message":'
+            '"Your prepayment credits are depleted"}}'
+        ),
+    )
+    fake_client = _FakeClient([billing_429, _success_response("vps-backup1-ok")])
+    key_manager = KEY_MANAGER_MODULE.GeminiKeyManager.from_config(
+        gemini_api_key="",
+        gemini_api_keys="primary:key-a,backup1:key-b",
+        multi_key_enabled=True,
+    )
+    client = GEMINI_CLIENT_MODULE.GeminiClient(
+        key_manager,
+        max_attempts=3,
+        key_hard_cooldown_seconds=900,
+        backoff_base_ms=0,
+        fail_fast_seconds=30,
+        http_client_factory=lambda timeout: fake_client,
+        sleep=lambda seconds: None,
+    )
+
+    result = client.post_json(
+        url=_MODEL_URL,
+        payload={"contents": []},
+        timeout_seconds=30,
+        model="gemini-2.5-flash",
+    )
+
+    assert result.key_alias == "backup1"
+    assert result.response.status_code == 200
+    assert _request_keys(fake_client) == ["key-a", "key-b"]
+
+
+def test_local_three_key_primary_429_backup1_200_skips_backup2():
+    billing_429 = _FakeResponse(
+        429,
+        text=(
+            '{"error":{"status":"RESOURCE_EXHAUSTED","message":'
+            '"Your prepayment credits are depleted"}}'
+        ),
+    )
+    fake_client = _FakeClient(
+        [
+            billing_429,
+            _success_response("local-backup1-ok"),
+            _success_response("should-not-call-backup2"),
+        ]
+    )
+    key_manager = KEY_MANAGER_MODULE.GeminiKeyManager.from_config(
+        gemini_api_key="",
+        gemini_api_keys="primary:key-a,backup1:key-b,backup2:key-c",
+        multi_key_enabled=True,
+    )
+    client = GEMINI_CLIENT_MODULE.GeminiClient(
+        key_manager,
+        max_attempts=2,
+        key_hard_cooldown_seconds=900,
+        backoff_base_ms=0,
+        fail_fast_seconds=30,
+        http_client_factory=lambda timeout: fake_client,
+        sleep=lambda seconds: None,
+    )
+
+    result = client.post_json(
+        url=_MODEL_URL,
+        payload={"contents": []},
+        timeout_seconds=30,
+        model="gemini-2.5-flash",
+    )
+
+    assert result.key_alias == "backup1"
+    assert _request_keys(fake_client) == ["key-a", "key-b"]
+    assert "key-c" not in _request_keys(fake_client)
+
+
+def test_backup2_model_unsupported_does_not_block_backup1_success():
+    billing_429 = _FakeResponse(
+        429,
+        text=(
+            '{"error":{"status":"RESOURCE_EXHAUSTED","message":'
+            '"Your prepayment credits are depleted"}}'
+        ),
+    )
+    fake_client = _FakeClient([billing_429, _success_response("backup1-wins")])
+    key_manager = KEY_MANAGER_MODULE.GeminiKeyManager.from_config(
+        gemini_api_key="",
+        gemini_api_keys="primary:key-a,backup1:key-b,backup2:key-c",
+        multi_key_enabled=True,
+    )
+    key_manager.mark_model_unsupported("backup2", "gemini-2.5-flash")
+    client = GEMINI_CLIENT_MODULE.GeminiClient(
+        key_manager,
+        max_attempts=3,
+        key_hard_cooldown_seconds=900,
+        backoff_base_ms=0,
+        http_client_factory=lambda timeout: fake_client,
+        sleep=lambda seconds: None,
+    )
+
+    result = client.post_json(
+        url=_MODEL_URL,
+        payload={"contents": []},
+        timeout_seconds=30,
+        model="gemini-2.5-flash",
+    )
+
+    assert result.key_alias == "backup1"
+    assert _request_keys(fake_client) == ["key-a", "key-b"]
+
+
+def test_backup1_success_beats_prior_primary_failure_no_pool_error():
+    fake_client = _FakeClient(
+        [
+            _FakeResponse(
+                429,
+                text='{"error":{"message":"Rate limit exceeded (RPM)"}}',
+                headers={"Retry-After": "1"},
+            ),
+            _success_response("ok"),
+        ]
+    )
+    key_manager = KEY_MANAGER_MODULE.GeminiKeyManager.from_config(
+        gemini_api_key="",
+        gemini_api_keys="primary:key-a,backup1:key-b",
+        multi_key_enabled=True,
+    )
+    client = GEMINI_CLIENT_MODULE.GeminiClient(
+        key_manager,
+        max_attempts=3,
+        key_cooldown_seconds=30,
+        backoff_base_ms=0,
+        http_client_factory=lambda timeout: fake_client,
+        sleep=lambda seconds: None,
+    )
+
+    result = client.post_json(
+        url=_MODEL_URL,
+        payload={"contents": []},
+        timeout_seconds=30,
+        model="gemini-2.5-flash",
+    )
+    assert result.key_alias == "backup1"
+    # Must not raise GEMINI_KEY_POOL_UNAVAILABLE after a successful backup1 call.
+
+
+def test_cooldown_expiry_allows_backup1_again():
+    class Clock:
+        def __init__(self):
+            self.now = 1000.0
+
+        def __call__(self):
+            return self.now
+
+    clock = Clock()
+    key_manager = KEY_MANAGER_MODULE.GeminiKeyManager.from_config(
+        gemini_api_key="",
+        gemini_api_keys="primary:key-a,backup1:key-b",
+        multi_key_enabled=True,
+        clock=clock,
+    )
+    key_manager.cooldown_key("backup1", seconds=30, reason="rate_limit")
+    assert key_manager.select_key(model="gemini-2.5-flash").entry.alias == "primary"
+    clock.now += 31
+    assert key_manager.has_eligible_key("gemini-2.5-flash")
+    # After expiry, round-robin can pick backup1 again.
+    aliases = {
+        key_manager.select_key(model="gemini-2.5-flash").entry.alias for _ in range(4)
+    }
+    assert "backup1" in aliases
+
+
+def test_cached_terminal_pool_second_request_zero_http_and_non_retryable():
+    """After terminal pool exhaustion, next request must not soft-fail as GEMINI_UNAVAILABLE."""
+    billing_429 = _FakeResponse(
+        429,
+        text=(
+            '{"error":{"status":"RESOURCE_EXHAUSTED","message":'
+            '"Your prepayment credits are depleted"}}'
+        ),
+    )
+    free_tier_429 = _FakeResponse(
+        429,
+        text=(
+            '{"error":{"status":"RESOURCE_EXHAUSTED","message":'
+            '"You exceeded your current quota",'
+            '"details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo",'
+            '"metadata":{"quota_metric":"generate_content_free_tier_requests"}}]}}'
+        ),
+    )
+    fake_client = _FakeClient([billing_429, free_tier_429, _model_unavailable_404()])
+    key_manager = KEY_MANAGER_MODULE.GeminiKeyManager.from_config(
+        gemini_api_key="",
+        gemini_api_keys=(
+            "primary:fake-primary-key,backup1:fake-backup-key,backup2:fake-third-key"
+        ),
+        multi_key_enabled=True,
+    )
+    client = GEMINI_CLIENT_MODULE.GeminiClient(
+        key_manager,
+        max_attempts=3,
+        key_hard_cooldown_seconds=900,
+        backoff_base_ms=0,
+        http_client_factory=lambda timeout: fake_client,
+        sleep=lambda seconds: None,
+    )
+
+    with pytest.raises(AnalysisUnavailableError) as first:
+        client.post_json(
+            url=_MODEL_URL,
+            payload={"contents": []},
+            timeout_seconds=30,
+            model="gemini-2.5-flash",
+        )
+
+    assert first.value.error_code == "GEMINI_KEY_POOL_UNAVAILABLE"
+    assert first.value.retryable is False
+    assert len(fake_client.calls) == 3
+
+    calls_before = len(fake_client.calls)
+    with pytest.raises(AnalysisUnavailableError) as second:
+        client.post_json(
+            url=_MODEL_URL,
+            payload={"contents": []},
+            timeout_seconds=30,
+            model="gemini-2.5-flash",
+        )
+
+    assert len(fake_client.calls) == calls_before
+    assert second.value.error_code == "GEMINI_KEY_POOL_UNAVAILABLE"
+    assert second.value.retryable is False
+
+
+def test_all_model_unsupported_cached_skips_http_on_next_request():
+    fake_client = _FakeClient(
+        [_model_unavailable_404(), _model_unavailable_404(), _model_unavailable_404()]
+    )
+    key_manager = KEY_MANAGER_MODULE.GeminiKeyManager.from_config(
+        gemini_api_key="",
+        gemini_api_keys=(
+            "primary:fake-primary-key,backup1:fake-backup-key,backup2:fake-third-key"
+        ),
+        multi_key_enabled=True,
+    )
+    client = GEMINI_CLIENT_MODULE.GeminiClient(
+        key_manager,
+        max_attempts=3,
+        backoff_base_ms=0,
+        http_client_factory=lambda timeout: fake_client,
+        sleep=lambda seconds: None,
+    )
+
+    with pytest.raises(AnalysisUnavailableError) as first:
+        client.post_json(
+            url=_MODEL_URL,
+            payload={"contents": []},
+            timeout_seconds=30,
+            model="gemini-2.5-flash",
+        )
+    assert first.value.error_code == "GEMINI_MODEL_UNAVAILABLE"
+    assert first.value.retryable is False
+    assert len(fake_client.calls) == 3
+
+    calls_before = len(fake_client.calls)
+    with pytest.raises(AnalysisUnavailableError) as second:
+        client.post_json(
+            url=_MODEL_URL,
+            payload={"contents": []},
+            timeout_seconds=30,
+            model="gemini-2.5-flash",
+        )
+    assert len(fake_client.calls) == calls_before
+    assert second.value.error_code == "GEMINI_MODEL_UNAVAILABLE"
+    assert second.value.retryable is False
+
+
+def test_fail_fast_single_key_timeout_does_not_grace_retry_same_alias():
+    class _TimeoutClient(_FakeClient):
+        def post(self, *args, **kwargs):
+            self.calls.append((args, kwargs))
+            # Consume the shared fail-fast budget as a real timed-out HTTP call would.
+            now["value"] += 1.0
+            raise AI_MODULE.httpx.TimeoutException("timed out")
+
+    now = {"value": 0.0}
+    fake_client = _TimeoutClient([])
+    key_manager = KEY_MANAGER_MODULE.GeminiKeyManager.from_config(
+        gemini_api_key="",
+        gemini_api_keys="primary:fake-primary-key",
+        multi_key_enabled=True,
+        clock=lambda: now["value"],
+    )
+    client = GEMINI_CLIENT_MODULE.GeminiClient(
+        key_manager,
+        max_attempts=4,
+        backoff_base_ms=0,
+        fail_fast_seconds=1,
+        http_client_factory=lambda timeout: fake_client,
+        clock=lambda: now["value"],
+        sleep=lambda seconds: None,
+        random_float=lambda low, high: high,
+    )
+
+    with pytest.raises(AnalysisUnavailableError) as exc_info:
+        client.post_json(
+            url="https://example.test/gemini",
+            payload={"contents": []},
+            timeout_seconds=300,
+        )
+
+    assert exc_info.value.error_code in {
+        "GEMINI_UNAVAILABLE",
+        "GEMINI_KEY_POOL_UNAVAILABLE",
+    }
+    assert len(fake_client.calls) == 1
+
+
+def test_fail_fast_multi_key_grants_grace_only_for_unattempted_backup():
+    class _TimeoutThenSuccess(_FakeClient):
+        def post(self, *args, **kwargs):
+            self.calls.append((args, kwargs))
+            if len(self.calls) == 1:
+                now["value"] += 1.0
+                raise AI_MODULE.httpx.TimeoutException("timed out")
+            return _success_response("backup-after-grace")
+
+    now = {"value": 0.0}
+    fake_client = _TimeoutThenSuccess([])
+    key_manager = KEY_MANAGER_MODULE.GeminiKeyManager.from_config(
+        gemini_api_key="",
+        gemini_api_keys="primary:fake-primary-key,backup1:fake-backup-key",
+        multi_key_enabled=True,
+        clock=lambda: now["value"],
+    )
+    client = GEMINI_CLIENT_MODULE.GeminiClient(
+        key_manager,
+        max_attempts=4,
+        backoff_base_ms=0,
+        fail_fast_seconds=1,
+        http_client_factory=lambda timeout: fake_client,
+        clock=lambda: now["value"],
+        sleep=lambda seconds: None,
+        random_float=lambda low, high: high,
+    )
+
+    result = client.post_json(
+        url="https://example.test/gemini",
+        payload={"contents": []},
+        timeout_seconds=300,
+    )
+
+    assert result.key_alias == "backup1"
+    assert _request_keys(fake_client) == ["fake-primary-key", "fake-backup-key"]
+
+
+def test_cross_process_worker_b_reuses_shared_terminal_pool_without_http():
+    from app.services.gemini_key_cooldown_store import InMemoryGeminiKeyCooldownStore
+
+    billing_429 = _FakeResponse(
+        429,
+        text=(
+            '{"error":{"status":"RESOURCE_EXHAUSTED","message":'
+            '"Your prepayment credits are depleted"}}'
+        ),
+    )
+    free_tier_429 = _FakeResponse(
+        429,
+        text=(
+            '{"error":{"status":"RESOURCE_EXHAUSTED","message":'
+            '"You exceeded your current quota",'
+            '"details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo",'
+            '"metadata":{"quota_metric":"generate_content_free_tier_requests"}}]}}'
+        ),
+    )
+    fake_client_a = _FakeClient(
+        [billing_429, free_tier_429, _model_unavailable_404()]
+    )
+    fake_client_b = _FakeClient([])
+
+    shared_store = InMemoryGeminiKeyCooldownStore()
+    key_manager_a = KEY_MANAGER_MODULE.GeminiKeyManager.from_config(
+        gemini_api_key="",
+        gemini_api_keys=(
+            "primary:fake-primary-key,backup1:fake-backup-key,backup2:fake-third-key"
+        ),
+        multi_key_enabled=True,
+        cooldown_store=shared_store,
+    )
+    client_a = GEMINI_CLIENT_MODULE.GeminiClient(
+        key_manager_a,
+        max_attempts=3,
+        key_hard_cooldown_seconds=900,
+        backoff_base_ms=0,
+        http_client_factory=lambda timeout: fake_client_a,
+        sleep=lambda seconds: None,
+    )
+
+    with pytest.raises(AnalysisUnavailableError) as first:
+        client_a.post_json(
+            url=_MODEL_URL,
+            payload={"contents": []},
+            timeout_seconds=30,
+            model="gemini-2.5-flash",
+        )
+    assert first.value.error_code == "GEMINI_KEY_POOL_UNAVAILABLE"
+    assert first.value.retryable is False
+    assert len(fake_client_a.calls) == 3
+
+    key_manager_b = KEY_MANAGER_MODULE.GeminiKeyManager.from_config(
+        gemini_api_key="",
+        gemini_api_keys=(
+            "primary:fake-primary-key,backup1:fake-backup-key,backup2:fake-third-key"
+        ),
+        multi_key_enabled=True,
+        cooldown_store=shared_store,
+    )
+    client_b = GEMINI_CLIENT_MODULE.GeminiClient(
+        key_manager_b,
+        max_attempts=3,
+        key_hard_cooldown_seconds=900,
+        backoff_base_ms=0,
+        http_client_factory=lambda timeout: fake_client_b,
+        sleep=lambda seconds: None,
+    )
+
+    with pytest.raises(AnalysisUnavailableError) as second:
+        client_b.post_json(
+            url=_MODEL_URL,
+            payload={"contents": []},
+            timeout_seconds=30,
+            model="gemini-2.5-flash",
+        )
+
+    assert len(fake_client_b.calls) == 0
+    assert second.value.error_code == "GEMINI_KEY_POOL_UNAVAILABLE"
+    assert second.value.retryable is False
+
+
+def test_final_validation_reselects_when_cooldown_appears_before_http():
+    from app.services.gemini_key_cooldown_store import (
+        InMemoryGeminiKeyCooldownStore,
+    )
+
+    class CooldownBeforeValidationStore(InMemoryGeminiKeyCooldownStore):
+        snapshot_calls = 0
+
+        def read_pool_snapshot(self, scopes, model, **kwargs):
+            self.snapshot_calls += 1
+            if self.snapshot_calls == 2:
+                primary = next(scope for scope in scopes if scope.alias == "primary")
+                self.apply_cooldown(
+                    primary,
+                    seconds=60,
+                    reason="rate_limit",
+                    cooldown_type="soft",
+                )
+            return super().read_pool_snapshot(scopes, model, **kwargs)
+
+    store = CooldownBeforeValidationStore()
+    key_manager = KEY_MANAGER_MODULE.GeminiKeyManager.from_config(
+        gemini_api_key="",
+        gemini_api_keys="primary:key-a,backup1:key-b",
+        multi_key_enabled=True,
+        cooldown_store=store,
+    )
+    fake_client = _FakeClient([_success_response(summary="validated backup")])
+    client = GEMINI_CLIENT_MODULE.GeminiClient(
+        key_manager,
+        max_attempts=2,
+        backoff_base_ms=0,
+        http_client_factory=lambda timeout: fake_client,
+        sleep=lambda seconds: None,
+    )
+
+    result = client.post_json(
+        url=_MODEL_URL,
+        payload={"contents": []},
+        timeout_seconds=30,
+        model="gemini-2.5-flash",
+    )
+
+    assert result.key_alias == "backup1"
+    assert _request_keys(fake_client) == ["key-b"]
+    assert store.snapshot_calls == 4
+
+
+def test_gemini_client_hot_path_does_not_call_post_selection_helpers(monkeypatch):
+    key_manager = KEY_MANAGER_MODULE.GeminiKeyManager.from_config(
+        gemini_api_key="",
+        gemini_api_keys="primary:key-a,backup1:key-b",
+        multi_key_enabled=True,
+    )
+
+    def unexpected_helper(*args, **kwargs):
+        raise AssertionError("unexpected post-selection helper call")
+
+    for helper_name in (
+        "has_eligible_key",
+        "has_unattempted_eligible_key",
+        "all_keys_unsupported_for_model",
+    ):
+        monkeypatch.setattr(key_manager, helper_name, unexpected_helper)
+    fake_client = _FakeClient(
+        [
+            _FakeResponse(
+                429,
+                body={"error": {"message": "rate limited"}},
+                headers={"Retry-After": "30"},
+            ),
+            _success_response(summary="backup without helper reads"),
+        ]
+    )
+    client = GEMINI_CLIENT_MODULE.GeminiClient(
+        key_manager,
+        max_attempts=2,
+        backoff_base_ms=0,
+        http_client_factory=lambda timeout: fake_client,
+        sleep=lambda seconds: None,
+    )
+
+    result = client.post_json(
+        url=_MODEL_URL,
+        payload={"contents": []},
+        timeout_seconds=30,
+        model="gemini-2.5-flash",
+    )
+
+    assert result.key_alias == "backup1"
+    assert _request_keys(fake_client) == ["key-a", "key-b"]

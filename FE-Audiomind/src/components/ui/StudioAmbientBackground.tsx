@@ -4,13 +4,21 @@ type StudioAmbientVariant = 'auth' | 'dashboard' | 'panel'
 
 type StudioAmbientBackgroundProps = {
   variant?: StudioAmbientVariant
+  /** Soften / hide heavy glow on light theme dashboards. */
+  muted?: boolean
 }
 
 const PARTICLE_COUNT = 10
 
-export function StudioAmbientBackground({ variant = 'dashboard' }: StudioAmbientBackgroundProps) {
+export function StudioAmbientBackground({
+  variant = 'dashboard',
+  muted = false,
+}: StudioAmbientBackgroundProps) {
   return (
-    <div className={`studio-ambient studio-ambient--${variant}`} aria-hidden="true">
+    <div
+      className={`studio-ambient studio-ambient--${variant}${muted ? ' studio-ambient--muted' : ''}`}
+      aria-hidden="true"
+    >
       <div className="studio-ambient__orb studio-ambient__orb--1" />
       <div className="studio-ambient__orb studio-ambient__orb--2" />
       <div className="studio-ambient__orb studio-ambient__orb--3" />

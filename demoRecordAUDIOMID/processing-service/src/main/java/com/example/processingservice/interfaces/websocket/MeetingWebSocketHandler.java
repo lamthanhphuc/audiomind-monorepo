@@ -1649,6 +1649,7 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                             meetingId,
                             currentRecordingSessionId(session),
                             currentAttemptId(session),
+                            normalizeDomainMode(getStringAttribute(session, DOMAIN_MODE_ATTR)),
                             resolveSessionTraceId(session)
                     );
                     triggerRealtimeAnalysisAsync(
@@ -1973,6 +1974,17 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                         "processing_ws_realtime_stop",
                         decision.lockToken()
                 );
+                // AI may overwrite job-state result with analysis-only payload.
+                // Re-merge session/attempt/domain intent so scoped GET can HIT job-state.
+                if (hasCompleteProvenance(recordingSessionId, attemptId)) {
+                    jobStateStore.mergeJobResultProvenance(
+                            meetingId,
+                            recordingSessionId,
+                            attemptId,
+                            domainMode,
+                            traceId
+                    );
+                }
                 log.info("event=REALTIME_ANALYSIS_SAVED meetingId={} source={}", meetingId, source);
                 return;
             }
@@ -1986,6 +1998,15 @@ public class MeetingWebSocketHandler extends AbstractWebSocketHandler {
                             "processing_ws_realtime_stop",
                             decision.lockToken()
                     );
+                    if (hasCompleteProvenance(recordingSessionId, attemptId)) {
+                        jobStateStore.mergeJobResultProvenance(
+                                meetingId,
+                                recordingSessionId,
+                                attemptId,
+                                domainMode,
+                                traceId
+                        );
+                    }
                     log.info(
                             "event=REALTIME_ANALYSIS_SAVED meetingId={} source={} reason=already_exists_verified",
                             meetingId,

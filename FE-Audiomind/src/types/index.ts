@@ -12,6 +12,7 @@ export type Meeting = {
   scheduledEndAt?: string | null
   scheduledTimezone?: string | null
   sharedWithMe?: boolean | null
+  subjectId?: number | null
 }
 
 export type AnalysisTechnicalTerm = {
@@ -80,6 +81,23 @@ export type GroupedActionPlan = {
   notes: GroupedActionPlanNote[]
 }
 
+export type { EducationImportance, EducationStudy, EducationSection, EducationKeyPoint, EducationGlossaryItem, EducationMustRememberItem, EducationUnclearPoint } from './education'
+export { normalizeEducationStudyAnalysis } from './education'
+export type {
+  StudyFolder,
+  SubjectSummary,
+  StudyFolderTreeNode,
+  StudyFolderTreeResponse,
+  Subject,
+  SubjectMeeting,
+  PageResponse,
+  SubjectListFilters,
+  UnclassifiedFilters,
+} from './study'
+
+import type { EducationStudy } from './education'
+import { normalizeEducationStudyAnalysis } from './education'
+
 export type AiAnalysis = {
   meetingId?: number
   meeting_id?: number
@@ -130,6 +148,9 @@ export type AiAnalysis = {
   analysisFeatureSet?: string
   groupedActionPlan?: GroupedActionPlan
   transcriptHash?: string
+  educationStudy?: EducationStudy | null
+  /** True when the transcript lacks stable segment identifiers, so evidence links cannot be resolved. */
+  evidenceUnavailable?: boolean
   evidence?: {
     matches?: Array<{
       verificationStatus?: string
@@ -716,6 +737,15 @@ export const normalizeAnalysisResponse = (value: unknown): AiAnalysis => {
       : []
   const meetingSummary = String(nested.meetingSummary ?? nested.summary ?? '').trim()
   const summary = String(nested.summary ?? nested.meetingSummary ?? '').trim()
+  const educationStudy = normalizeEducationStudyAnalysis(
+    nested.educationStudy ?? nested.education_study,
+  )
+  const evidenceUnavailable = firstBoolean(
+    nested.evidenceUnavailable,
+    nested.evidence_unavailable,
+    payload.evidenceUnavailable,
+    payload.evidence_unavailable,
+  )
 
   return {
     meetingId: resolvedMeetingId,
@@ -777,6 +807,8 @@ export const normalizeAnalysisResponse = (value: unknown): AiAnalysis => {
     analysisFeatureSet: firstString(nested.analysisFeatureSet, nested.analysis_feature_set, payload.analysisFeatureSet, payload.analysis_feature_set),
     groupedActionPlan,
     transcriptHash: firstString(nested.transcriptHash, nested.transcript_hash, payload.transcriptHash, payload.transcript_hash),
+    educationStudy,
+    evidenceUnavailable,
     domainMode: normalizeDomainMode(nested.domainMode ?? nested.domain_mode),
     createdAt: typeof nested.createdAt === 'string' ? nested.createdAt : typeof nested.created_at === 'string' ? nested.created_at : undefined,
     technical_terms: Array.isArray(nested.technical_terms) ? (nested.technical_terms as Array<string | AnalysisTechnicalTerm>) : undefined,

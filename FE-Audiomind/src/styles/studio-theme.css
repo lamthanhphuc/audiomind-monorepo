@@ -51,7 +51,8 @@ body:has(.app--studio) {
 }
 
 /* Shared studio surfaces */
-.app--studio .studio-card {
+.app--studio .studio-card,
+.app--light .studio-card {
   background: var(--studio-elevated);
   border: 1px solid var(--studio-border);
   border-radius: 16px;
@@ -59,17 +60,21 @@ body:has(.app--studio) {
   box-shadow: var(--shadow-md);
 }
 
-.app--studio .studio-card--flat {
+.app--studio .studio-card--flat,
+.app--light .studio-card--flat {
   box-shadow: none;
 }
 
 .app--studio .studio-page-head h1,
-.app--studio .studio-page-head h2 {
+.app--studio .studio-page-head h2,
+.app--light .studio-page-head h1,
+.app--light .studio-page-head h2 {
   margin: 0;
   color: var(--studio-text);
 }
 
-.app--studio .studio-page-head p {
+.app--studio .studio-page-head p,
+.app--light .studio-page-head p {
   margin: 6px 0 0;
   color: var(--studio-muted);
   font-size: 14px;
@@ -79,12 +84,19 @@ body:has(.app--studio) {
 .app--studio .dashboard-page h2,
 .app--studio .dashboard-page h3,
 .app--studio .history-detail-card h2,
-.app--studio .history-detail-card h3 {
+.app--studio .history-detail-card h3,
+.app--light .dashboard-page h1,
+.app--light .dashboard-page h2,
+.app--light .dashboard-page h3,
+.app--light .history-detail-card h2,
+.app--light .history-detail-card h3 {
   color: var(--studio-text);
 }
 
 .app--studio .dashboard-page p,
-.app--studio .history-detail-card p {
+.app--studio .history-detail-card p,
+.app--light .dashboard-page p,
+.app--light .history-detail-card p {
   color: var(--studio-muted);
 }
 
@@ -276,22 +288,33 @@ body:has(.app--studio) {
   color: var(--studio-muted);
 }
 
-.app--studio .history-list-card {
+.app--studio .history-list-card,
+.app--light .history-list-card {
   min-height: 0;
 }
 
-.app--studio .history-empty-actions {
+.app--studio .history-empty-actions,
+.app--light .history-empty-actions {
   gap: 10px;
 }
 
 .app--studio .dashboard-page,
-.app--studio .bg-gray-light {
+.app--studio .bg-gray-light,
+.app--light .dashboard-page,
+.app--light .bg-gray-light {
   background: transparent;
 }
 
 .app--studio .dashboard-header,
 .app--studio .analysis-page-header {
   background: rgba(12, 14, 20, 0.85);
+  border-bottom-color: var(--studio-border);
+  backdrop-filter: blur(12px);
+}
+
+.app--light .dashboard-header,
+.app--light .analysis-page-header {
+  background: rgba(255, 255, 255, 0.92);
   border-bottom-color: var(--studio-border);
   backdrop-filter: blur(12px);
 }
@@ -361,6 +384,18 @@ body:has(.app--studio) {
 .app--studio select {
   color-scheme: dark;
   background-color: var(--studio-elevated-2);
+  border: 1px solid var(--studio-border-strong);
+  color: var(--studio-text);
+}
+
+.app--light .form-group select,
+.app--light .upload-panel__select,
+.app--light .filter-select,
+.app--light .history-toolbar select,
+.app--light .audio-options select,
+.app--light select {
+  color-scheme: light;
+  background-color: #ffffff;
   border: 1px solid var(--studio-border-strong);
   color: var(--studio-text);
 }
@@ -496,18 +531,25 @@ body:has(.app--studio) {
   background: var(--studio-accent);
 }
 
-.app--studio .history-export-menu {
+.app--studio .history-export-menu,
+.app--light .history-export-menu {
   background: var(--studio-panel);
   border-color: var(--studio-border);
   box-shadow: var(--studio-shadow-lg, 0 16px 40px rgba(0, 0, 0, 0.45));
 }
 
-.app--studio .history-actions__group {
+.app--studio .history-actions__group,
+.app--light .history-actions__group {
   background: rgba(255, 255, 255, 0.03);
   border-color: var(--studio-border);
 }
 
-.app--studio .history-share-panel {
+.app--light .history-actions__group {
+  background: var(--studio-elevated-2);
+}
+
+.app--studio .history-share-panel,
+.app--light .history-share-panel {
   background: rgba(124, 108, 255, 0.08);
   border-color: var(--studio-border);
 }
@@ -759,8 +801,8 @@ body:has(.app--studio) {
   background: rgba(124, 108, 255, 0.1);
 }
 
-/* ─── Meeting history ─── */
-.app--studio .history-scene {
+/* ─── Meeting history (Night structure; Light reuses via remapped studio tokens) ─── */
+.app--dashboard .history-scene {
   display: grid;
   grid-template-columns: 320px minmax(0, 1fr);
   gap: 20px;
@@ -768,12 +810,12 @@ body:has(.app--studio) {
   min-height: calc(100vh - 72px);
 }
 
-.app--studio .history-detail-card {
+.app--dashboard .history-detail-card {
   display: grid;
   gap: 20px;
 }
 
-.app--studio .history-list-item {
+.app--dashboard .history-list-item {
   width: 100%;
   text-align: left;
   padding: 14px;
@@ -785,21 +827,25 @@ body:has(.app--studio) {
   transition: border-color 0.15s, background 0.15s;
 }
 
-.app--studio .history-list-item:hover {
+.app--light .history-list-item {
+  background: #ffffff;
+}
+
+.app--dashboard .history-list-item:hover {
   border-color: rgba(124, 108, 255, 0.35);
   background: rgba(124, 108, 255, 0.06);
 }
 
-.app--studio .history-list-item--active {
+.app--dashboard .history-list-item--active {
   border-color: rgba(124, 108, 255, 0.55);
   background: rgba(124, 108, 255, 0.12);
 }
 
-.app--studio .history-list-item strong {
+.app--dashboard .history-list-item strong {
   color: var(--studio-text);
 }
 
-.app--studio .history-list-item__meta {
+.app--dashboard .history-list-item__meta {
   margin-top: 8px;
   display: flex;
   flex-wrap: wrap;
@@ -808,13 +854,13 @@ body:has(.app--studio) {
   font-size: 12px;
 }
 
-.app--studio .history-toolbar {
+.app--dashboard .history-toolbar {
   display: grid;
   gap: 8px;
   margin-bottom: 14px;
 }
 
-.app--studio .history-toolbar input {
+.app--dashboard .history-toolbar input {
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid var(--studio-border-strong);
   color: var(--studio-text);
@@ -822,7 +868,11 @@ body:has(.app--studio) {
   padding: 10px 12px;
 }
 
-.app--studio .history-toolbar select {
+.app--light .history-toolbar input {
+  background: #ffffff;
+}
+
+.app--dashboard .history-toolbar select {
   border-radius: 8px;
   padding: 10px 12px;
 }
@@ -1032,12 +1082,18 @@ body:has(.app--studio) {
   font-size: 13px;
 }
 
-.app--studio .meta-pill {
+.app--studio .meta-pill,
+.app--light .meta-pill {
   background: rgba(255, 255, 255, 0.06);
   color: var(--studio-muted);
 }
 
-.app--studio .meta-pill strong {
+.app--light .meta-pill {
+  background: rgba(15, 23, 42, 0.06);
+}
+
+.app--studio .meta-pill strong,
+.app--light .meta-pill strong {
   color: var(--studio-text);
 }
 
@@ -1122,7 +1178,7 @@ body:has(.app--studio) {
 }
 
 @media (max-width: 960px) {
-  .app--studio .history-scene {
+  .app--dashboard .history-scene {
     grid-template-columns: 1fr;
   }
 }
@@ -1700,6 +1756,16 @@ body:has(.app--studio) {
   font-size: 13px;
 }
 
+.app--studio .integration-import__dropzone-title {
+  font-weight: 600;
+  color: var(--studio-text);
+}
+
+.app--studio .integration-import__dropzone-hint {
+  font-size: 12px;
+  color: var(--studio-subtle);
+}
+
 .app--studio .integration-import__dropzone:hover,
 .app--studio .zoom-import-panel__dropzone:hover {
   border-color: rgba(124, 108, 255, 0.4);
@@ -1847,3 +1913,254 @@ body:has(.app--studio) {
   font-size: 12px;
   color: var(--studio-muted);
 }
+
+/* ─── Light theme (dashboard when Night toggle is off) ─── */
+.app--light {
+  /* Remap studio palette to light tokens so dark-only components stay readable */
+  --studio-bg: #f1f5f9;
+  --studio-panel: #ffffff;
+  --studio-elevated: #ffffff;
+  --studio-elevated-2: #f8fafc;
+  --studio-border: #e2e8f0;
+  --studio-border-strong: #cbd5e1;
+  --studio-text: #0f172a;
+  --studio-muted: #475569;
+  --studio-subtle: #64748b;
+  --studio-accent: #6366f1;
+  --studio-accent-2: #2563eb;
+  --studio-glow: rgba(99, 102, 241, 0.18);
+  --studio-danger: #dc2626;
+
+  color: var(--color-ink);
+  background: var(--color-surface-sunken);
+  color-scheme: light;
+}
+
+body:has(.app--light) {
+  background: var(--color-surface-sunken);
+  color: var(--color-ink);
+  color-scheme: light;
+}
+
+.app--light.app--dashboard {
+  background: var(--color-surface-sunken);
+}
+
+.app--light .dashboard-sidebar {
+  background: var(--color-surface);
+  border-color: var(--color-border);
+}
+
+.app--light .dashboard-main {
+  background: var(--color-surface-sunken);
+}
+
+.app--light .dashboard-page {
+  color: var(--color-ink);
+}
+
+.app--light .dashboard-page h1,
+.app--light .dashboard-page h2,
+.app--light .dashboard-page h3 {
+  color: var(--color-ink);
+}
+
+.app--light .dashboard-page p,
+.app--light .studio-muted-text {
+  color: var(--color-ink-muted);
+}
+
+.app--light .feature-integrations-page {
+  background: transparent;
+}
+
+.app--light .google-integration {
+  color: var(--studio-text);
+}
+
+.app--light .google-integration input,
+.app--light .google-integration select {
+  background: #ffffff;
+  color: var(--color-ink);
+  border-color: var(--color-border-strong);
+}
+
+.app--light .google-integration input::placeholder {
+  color: var(--color-ink-subtle);
+}
+
+.app--light .google-integration__mode {
+  background: #ffffff;
+  border-color: var(--color-border);
+}
+
+.app--light .google-integration__mode button {
+  color: var(--color-ink-muted);
+}
+
+.app--light .google-integration__mode button.is-active {
+  background: rgba(99, 102, 241, 0.12);
+  color: var(--color-ink);
+}
+
+.app--light .google-integration__connection-row {
+  background: #ffffff;
+  border-color: var(--color-border);
+}
+
+.app--light .google-integration__message {
+  background: rgba(99, 102, 241, 0.08);
+  color: var(--color-ink);
+}
+
+.app--light .google-integration__message--warn {
+  background: rgba(245, 158, 11, 0.12);
+  border-color: rgba(217, 119, 6, 0.35);
+  color: #92400e;
+}
+
+.app--light .google-btn {
+  background: #ffffff;
+  color: var(--color-ink);
+  border-color: var(--color-border-strong);
+}
+
+.app--light .google-btn--primary {
+  color: #ffffff;
+}
+
+.app--light .integration-import-section {
+  display: grid;
+  gap: 16px;
+  margin-top: 20px;
+  padding: 20px;
+  border: 1px solid var(--color-border);
+  border-radius: 16px;
+  background: var(--color-surface);
+}
+
+.app--light .teams-import-panel,
+.app--light .zoom-import-panel {
+  display: grid;
+  gap: 12px;
+  color: var(--color-ink);
+}
+
+.app--light .zoom-import-panel header h3,
+.app--light .teams-import-panel header h3 {
+  margin: 0 0 6px;
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--color-ink);
+}
+
+.app--light .zoom-import-panel header p,
+.app--light .teams-import-panel header p {
+  margin: 0;
+  font-size: 0.875rem;
+  color: var(--color-ink-muted);
+  line-height: 1.5;
+}
+
+.app--light .integration-import__dropzone,
+.app--light .zoom-import-panel__dropzone {
+  display: grid;
+  gap: 4px;
+  place-items: center;
+  width: 100%;
+  text-align: center;
+  border: 1px dashed var(--color-border-strong);
+  border-radius: 12px;
+  background: var(--color-surface-sunken);
+  color: var(--color-ink-muted);
+  padding: 18px 14px;
+  cursor: pointer;
+  font-size: 0.875rem;
+}
+
+.app--light .integration-import__dropzone:hover,
+.app--light .zoom-import-panel__dropzone:hover {
+  border-color: var(--color-brand-500);
+  color: var(--color-ink);
+  background: var(--color-brand-50);
+}
+
+.app--light .integration-import__dropzone-title {
+  font-weight: 600;
+  color: var(--color-ink);
+}
+
+.app--light .integration-import__dropzone-hint {
+  font-size: 0.75rem;
+  color: var(--color-ink-subtle);
+}
+
+.app--light .studio-btn--primary {
+  color: #ffffff;
+}
+
+.app--light .studio-btn--secondary {
+  background: #ffffff;
+  color: var(--color-ink);
+  border-color: var(--color-border-strong);
+}
+
+.app--light .history-detail-tab {
+  color: var(--studio-muted);
+  border-color: var(--studio-border);
+  background: #ffffff;
+}
+
+.app--light .history-detail-tab--active {
+  background: rgba(99, 102, 241, 0.12);
+  border-color: rgba(99, 102, 241, 0.35);
+  color: var(--studio-text);
+}
+
+.app--light .history-rename-row input,
+.app--light .history-share-row input,
+.app--light .subject-picker__select {
+  background: #ffffff;
+  color: var(--studio-text);
+  border: 1px solid var(--studio-border-strong);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+
+.app--light .history-export-menu {
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.12);
+}
+
+.app--light .history-export-menu button {
+  color: var(--studio-text);
+}
+
+.app--light .history-share-badge {
+  color: #1d4ed8;
+  background: rgba(37, 99, 235, 0.1);
+  border-color: rgba(37, 99, 235, 0.25);
+}
+
+.app--light .pagination-btn.active {
+  background: rgba(99, 102, 241, 0.12);
+  border-color: rgba(99, 102, 241, 0.35);
+  color: #4338ca;
+}
+
+.app--light .search-bar input,
+.app--light .dashboard-main__topbar input {
+  background: #ffffff;
+  color: var(--color-ink);
+  border-color: var(--color-border);
+}
+
+.app--light .search-bar input::placeholder {
+  color: var(--color-ink-subtle);
+}
+
+.app--light .history-detail-card.studio-card,
+.app--light .history-list-card.studio-card {
+  background: var(--studio-elevated);
+  border-color: var(--studio-border);
+}
+

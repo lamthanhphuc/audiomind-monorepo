@@ -3,6 +3,7 @@ import type { RealtimeLanguage } from '../../hooks/useRealtimeMeetingStream'
 import { useUpload } from '../../hooks/useUpload'
 import type { DomainMode } from '../../constants/domainMode'
 import DomainModeSelector from '../ui/DomainModeSelector'
+import SubjectPicker from '../subjects/SubjectPicker'
 import OnboardingTour from '../onboarding/OnboardingTour'
 import { ErrorState } from '../ui/ErrorState'
 import { getStatusBadgeClass } from '../../utils/statusBadge'
@@ -15,6 +16,8 @@ type FeatureUploadProps = {
   onUploadLanguageChange: (language: RealtimeLanguage) => void
   domainMode: DomainMode
   onDomainModeChange: (mode: DomainMode) => void
+  selectedSubjectId?: number | null
+  onSubjectIdChange?: (subjectId: number | null) => void
   showOnboarding?: boolean
   onDismissOnboarding?: () => void
   onNavigateRealtime?: () => void
@@ -24,6 +27,8 @@ type FeatureUploadProps = {
   errorCode?: string
   onNavigateBilling?: () => void
   duplicateNotice?: string | null
+  lastMeetingId?: number | null
+  onReanalyze?: () => void | Promise<void>
   onUpload: (title: string, file: File) => Promise<void>
   onCancel?: () => void
 }
@@ -35,6 +40,8 @@ export default function FeatureUpload({
   onUploadLanguageChange,
   domainMode,
   onDomainModeChange,
+  selectedSubjectId = null,
+  onSubjectIdChange,
   showOnboarding = false,
   onDismissOnboarding,
   onNavigateRealtime,
@@ -44,6 +51,8 @@ export default function FeatureUpload({
   errorCode,
   onNavigateBilling,
   duplicateNotice,
+  lastMeetingId = null,
+  onReanalyze,
   onUpload,
   onCancel,
 }: FeatureUploadProps) {
@@ -53,6 +62,11 @@ export default function FeatureUpload({
   const { supportedFormatsLabel, config } = useUpload()
   const acceptExtensions = config.allowedExtensions.join(',')
   const shouldShowStatus = status !== 'idle' || Boolean(errorMessage) || Boolean(duplicateNotice) || Boolean(disabled)
+  const canReanalyze = status === 'failed'
+    && Boolean(onReanalyze)
+    && Number.isFinite(lastMeetingId)
+    && (lastMeetingId ?? 0) > 0
+    && errorCode !== 'QUOTA_EXCEEDED'
 
   const handleDrag = (e: React.DragEvent) => {
     e.preventDefault()
@@ -180,6 +194,17 @@ export default function FeatureUpload({
                 disabled={disabled}
                 testId="e2e-upload-domain-mode-select"
               />
+              {onSubjectIdChange ? (
+                <div className="form-group">
+                  <label htmlFor="upload-subject">Môn học (tuỳ chọn)</label>
+                  <SubjectPicker
+                    value={selectedSubjectId}
+                    onChange={onSubjectIdChange}
+                    disabled={disabled}
+                    allowClear
+                  />
+                </div>
+              ) : null}
             </div>
           </section>
 
@@ -209,6 +234,20 @@ export default function FeatureUpload({
               title="Lỗi xử lý"
               onCtaClick={onNavigateBilling}
             />
+          )}
+
+          {canReanalyze && (
+            <div className="upload-actions-row">
+              <button
+                type="button"
+                className="btn btn--secondary btn--block form-submit"
+                data-testid="upload-reanalyze-button"
+                onClick={() => void onReanalyze?.()}
+                disabled={disabled}
+              >
+                {disabled ? 'Đang phân tích lại…' : 'Phân tích lại'}
+              </button>
+            </div>
           )}
 
           <div className="upload-actions-row">

@@ -14,6 +14,7 @@ import {
   semanticSearchMeetings,
 } from '../../services/api'
 import type { SemanticSearchResult } from '../../services/api'
+import { useStudyWorkspace } from '../../hooks/useStudyWorkspace'
 import type { AiAnalysis, Meeting } from '../../types'
 import { normalizePersistedTranscriptForView } from '../../utils/transcript'
 import {
@@ -234,12 +235,17 @@ export function useMeetingHistoryData({
   const [renameBusy, setRenameBusy] = useState(false)
   const [deleteBusy, setDeleteBusy] = useState(false)
   const [reloadTick, setReloadTick] = useState(0)
+  const [detailReloadTick, setDetailReloadTick] = useState(0)
   const [semanticResults, setSemanticResults] = useState<SemanticSearchResult[]>([])
   const [semanticState, setSemanticState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle')
   const [availableScopes, setAvailableScopes] = useState<MeetingResultScope[]>([])
   const [selectedScope, setSelectedScope] = useState<MeetingResultScope | null>(null)
   const [scopeState, setScopeState] = useState<ListState>('idle')
   const [scopeError, setScopeError] = useState<string | null>(null)
+  const [subjectBusy, setSubjectBusy] = useState(false)
+  const [subjectError, setSubjectError] = useState<string | null>(null)
+
+  const { assignMeetingToSubject } = useStudyWorkspace()
 
   const detailAbortRef = useRef<AbortController | null>(null)
   const detailRequestKeyRef = useRef<string | null>(null)
@@ -584,7 +590,7 @@ export function useMeetingHistoryData({
 
     void loadDetail()
     return () => controller.abort()
-  }, [selectedMeetingSummary, selectedScope, scopeError, scopeState, selectedMeetingId])
+  }, [selectedMeetingSummary, selectedScope, scopeError, scopeState, selectedMeetingId, detailReloadTick])
 
   const handleRename = async () => {
     if (!selectedMeetingSummary) return
@@ -627,6 +633,35 @@ export function useMeetingHistoryData({
       setListError(error instanceof Error ? error.message : 'Không thể xoá meeting')
     } finally {
       setDeleteBusy(false)
+    }
+  }
+
+  /**
+   * Assigns/changes/clears the subject for the selected meeting without reloading the
+   * transcript or analysis panels: only the meeting summary's `subjectId` is patched locally.
+   */
+  const handleSubjectChange = async (nextSubjectId: number | null) => {
+    if (!selectedMeetingSummary) return
+    const meetingId = selectedMeetingSummary.id
+    setSubjectBusy(true)
+    setSubjectError(null)
+    try {
+      await assignMeetingToSubject(meetingId, nextSubjectId)
+      setMeetings((current) => current.map((meeting) => (
+        meeting.id === meetingId ? { ...meeting, subjectId: nextSubjectId } : meeting
+      )))
+      setPinnedMeetingSummary((current) => (
+        current && current.id === meetingId ? { ...current, subjectId: nextSubjectId } : current
+      ))
+      setDetail((current) => (
+        current.meeting && current.meeting.id === meetingId
+          ? { ...current, meeting: { ...current.meeting, subjectId: nextSubjectId } }
+          : current
+      ))
+    } catch (error) {
+      setSubjectError(error instanceof Error ? error.message : 'Không thể gán môn học')
+    } finally {
+      setSubjectBusy(false)
     }
   }
 
@@ -674,6 +709,12 @@ export function useMeetingHistoryData({
     renameBusy,
     deleteBusy,
     reload: () => setReloadTick((value) => value + 1),
+    reloadDetail: () => {
+      if (selectedMeetingId != null) {
+        invalidateDetailCacheForMeeting(selectedMeetingId)
+      }
+      setDetailReloadTick((value) => value + 1)
+    },
     semanticResults,
     semanticState,
     availableScopes,
@@ -682,5 +723,8 @@ export function useMeetingHistoryData({
     scopeState,
     handleRename,
     handleDelete,
+    subjectBusy,
+    subjectError,
+    handleSubjectChange,
   }
 }

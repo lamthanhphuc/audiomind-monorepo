@@ -7,6 +7,56 @@ import MeetingHistoryScene from './MeetingHistoryScene'
 
 const HISTORY_LAST_SELECTED_KEY = 'audiomind.history.lastSelectedMeetingId'
 
+const { assignMeetingToSubjectMock } = vi.hoisted(() => ({
+  assignMeetingToSubjectMock: vi.fn().mockResolvedValue(undefined),
+}))
+
+vi.mock('../../hooks/useStudyWorkspace', () => ({
+  useStudyWorkspace: () => ({
+    folderTree: null,
+    catalogSubjects: [
+      {
+        id: 11,
+        name: 'Toán rời rạc',
+        code: 'MAT101',
+        semester: 'HK1',
+        color: null,
+        folderId: null,
+        archivedAt: null,
+        meetingCount: 2,
+      },
+      {
+        id: 12,
+        name: 'Cấu trúc dữ liệu',
+        code: 'DSA',
+        semester: null,
+        color: null,
+        folderId: null,
+        archivedAt: null,
+        meetingCount: 1,
+      },
+    ],
+    treeRevision: 0,
+    catalogRevision: 0,
+    treeLoading: false,
+    catalogLoading: false,
+    treeError: null,
+    catalogError: null,
+    refreshFolderTree: vi.fn(),
+    refreshCatalog: vi.fn(),
+    invalidateAfterFolderMutation: vi.fn(),
+    invalidateAfterSubjectMutation: vi.fn(),
+    invalidateAfterMeetingSubjectMutation: vi.fn(),
+    createFolder: vi.fn(),
+    updateFolder: vi.fn(),
+    removeFolder: vi.fn(),
+    createSubjectEntry: vi.fn(),
+    updateSubjectEntry: vi.fn(),
+    archiveSubjectEntry: vi.fn(),
+    assignMeetingToSubject: assignMeetingToSubjectMock,
+  }),
+}))
+
 const baseMeeting = {
   id: 7,
   title: 'History item',
@@ -14,6 +64,7 @@ const baseMeeting = {
   createdAt: '2026-05-28T00:00:00Z',
   language: 'vi',
   status: 'processing',
+  subjectId: null as number | null,
 }
 
 const mockMeetingListPage = (
@@ -116,6 +167,8 @@ describe('MeetingHistoryScene', () => {
     document.body.appendChild(container)
     root = createRoot(container)
     sessionStorage.clear()
+    assignMeetingToSubjectMock.mockClear()
+    assignMeetingToSubjectMock.mockResolvedValue(undefined)
 
     vi.spyOn(api, 'listMeetingsPage').mockResolvedValue(mockMeetingListPage([baseMeeting]))
     vi.spyOn(api, 'getMeetingDetail').mockResolvedValue(baseMeeting)
@@ -209,6 +262,36 @@ describe('MeetingHistoryScene', () => {
     expect(api.getTranscript).toHaveBeenCalledWith(7, expect.objectContaining({ signal: expect.any(AbortSignal) }))
     expect(api.getSavedAnalysis).toHaveBeenCalledWith(7, expect.objectContaining({ signal: expect.any(AbortSignal) }))
     expect(container.textContent).toContain('History item')
+  })
+
+  it('shows Phân tích lại and calls analysis rerun for failed meetings', async () => {
+    const failedMeeting = { ...baseMeeting, status: 'failed' }
+    ;(api.listMeetingsPage as any).mockResolvedValue(mockMeetingListPage([failedMeeting]))
+    ;(api.getMeetingDetail as any).mockResolvedValue(failedMeeting)
+    ;(api.getSavedAnalysis as any).mockResolvedValue({
+      ...baseAnalysis,
+      status: 'FAILED',
+      analysisStatus: 'FAILED',
+      errorCode: 'AnalysisRateLimitError',
+      errorMessage: 'rate limited',
+      retryable: true,
+    })
+
+    await mountWithStoredSelection(7)
+
+    const button = container.querySelector('[data-testid="history-reanalyze-button"]') as HTMLButtonElement | null
+    expect(button).toBeTruthy()
+    expect(button?.textContent).toContain('Phân tích lại')
+
+    await act(async () => {
+      button?.click()
+    })
+    await flush()
+
+    expect(api.reanalyzeMeetingAnalysis).toHaveBeenCalledWith(7, expect.objectContaining({
+      mode: 'force',
+      reason: 'manual_reanalyze',
+    }))
   })
 
   it('copies existing-user invite link with openMeeting on root path', async () => {
@@ -934,6 +1017,51 @@ describe('MeetingHistoryScene', () => {
         updatedAt: null,
       },
     })
+  })
+
+  it('shows unclassified subject label and assigns a subject from history picker (AC-29)', async () => {
+    await mountWithStoredSelection(7)
+    expect(container.querySelector('[data-testid="meeting-subject-label"]')?.textContent).toContain('Chưa phân loại')
+
+    const picker = container.querySelector('select[id^="meeting-history-subject-picker"]') as HTMLSelectElement
+    expect(picker).toBeTruthy()
+
+    await act(async () => {
+      setNativeValue(picker, '11')
+      picker.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    await flush()
+
+    expect(assignMeetingToSubjectMock).toHaveBeenCalledWith(7, 11)
+    expect(container.querySelector('[data-testid="meeting-subject-label"]')?.textContent).toContain('Toán rời rạc')
+  })
+
+  it('changes and clears meeting subject from history picker (AC-29)', async () => {
+    const assignedMeeting = {
+      ...baseMeeting,
+      subjectId: 11,
+    }
+    vi.spyOn(api, 'listMeetingsPage').mockResolvedValue(mockMeetingListPage([assignedMeeting]))
+    vi.spyOn(api, 'getMeetingDetail').mockResolvedValue(assignedMeeting)
+
+    await mountWithStoredSelection(7)
+    expect(container.querySelector('[data-testid="meeting-subject-label"]')?.textContent).toContain('Toán rời rạc')
+
+    const picker = container.querySelector('select[id^="meeting-history-subject-picker"]') as HTMLSelectElement
+    await act(async () => {
+      setNativeValue(picker, '12')
+      picker.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    await flush()
+    expect(assignMeetingToSubjectMock).toHaveBeenCalledWith(7, 12)
+
+    await act(async () => {
+      setNativeValue(picker, '')
+      picker.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    await flush()
+    expect(assignMeetingToSubjectMock).toHaveBeenCalledWith(7, null)
+    expect(container.querySelector('[data-testid="meeting-subject-label"]')?.textContent).toContain('Chưa phân loại')
   })
 })
 

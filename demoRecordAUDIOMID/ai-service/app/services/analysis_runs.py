@@ -64,6 +64,7 @@ class AnalysisCacheIdentity:
     analysis_feature_set: str | None
     recording_session_id: int | None = None
     attempt_id: int | None = None
+    normalized_domain_mode: str = "it"
 
 
 def _clean_text(value: Any) -> str:
@@ -190,6 +191,7 @@ def build_analysis_run_idempotency_key(
     analysis_feature_set: str | None = None,
     recording_session_id: int | None = None,
     attempt_id: int | None = None,
+    normalized_domain_mode: str = "it",
 ) -> str:
     parts = [
         str(meeting_id),
@@ -205,6 +207,7 @@ def build_analysis_run_idempotency_key(
         _clean_text(recognition_mode).lower(),
         _clean_text(transcript_language).lower(),
         _clean_text(analysis_feature_set).lower(),
+        _clean_text(normalized_domain_mode).lower(),
         "" if recording_session_id is None else str(recording_session_id),
         "" if attempt_id is None else str(attempt_id),
     ]
@@ -230,6 +233,7 @@ def build_analysis_run_idempotency_key_for_identity(
         analysis_feature_set=identity.analysis_feature_set,
         recording_session_id=identity.recording_session_id,
         attempt_id=identity.attempt_id,
+        normalized_domain_mode=identity.normalized_domain_mode,
     )
 
 
@@ -259,6 +263,7 @@ def build_analysis_cache_identity(
     transcript_language: str | None = None,
     recording_session_id: int | None = None,
     attempt_id: int | None = None,
+    normalized_domain_mode: str = "it",
 ) -> AnalysisCacheIdentity:
     provenance = validate_transcript_provenance(recording_session_id, attempt_id)
     payload = analysis_payload or {}
@@ -289,6 +294,7 @@ def build_analysis_cache_identity(
         analysis_feature_set=_analysis_feature_set(payload),
         recording_session_id=provenance.recording_session_id,
         attempt_id=provenance.attempt_id,
+        normalized_domain_mode=_clean_text(normalized_domain_mode).lower() or "it",
     )
 
 
@@ -301,24 +307,15 @@ def _nullable_match(column: Any, value: str | None) -> Any:
 def find_completed_analysis_run_for_identity(
     db: Session, identity: AnalysisCacheIdentity
 ) -> MeetingAnalysisRun | None:
-    candidates = (
+    idempotency_key = build_analysis_run_idempotency_key_for_identity(identity)
+    return (
         db.query(MeetingAnalysisRun)
         .filter(
-            and_(
-                MeetingAnalysisRun.status == ANALYSIS_STATUS_COMPLETED,
-                *_identity_filters(identity),
-            )
+            MeetingAnalysisRun.status == ANALYSIS_STATUS_COMPLETED,
+            MeetingAnalysisRun.idempotency_key == idempotency_key,
         )
         .order_by(MeetingAnalysisRun.completed_at.desc(), MeetingAnalysisRun.id.desc())
-        .all()
-    )
-    return next(
-        (
-            run
-            for run in candidates
-            if _run_analysis_feature_set(run) == identity.analysis_feature_set
-        ),
-        None,
+        .first()
     )
 
 
@@ -562,6 +559,7 @@ def persist_completed_analysis_run(
     requested_by: str | None = None,
     rerun_reason: str | None = None,
     run: MeetingAnalysisRun | None = None,
+    normalized_domain_mode: str = "it",
 ) -> MeetingAnalysisRun:
     if run is not None:
         recording_session_id = run.recording_session_id
@@ -584,6 +582,7 @@ def persist_completed_analysis_run(
         transcript_language=transcript_language,
         recording_session_id=recording_session_id,
         attempt_id=attempt_id,
+        normalized_domain_mode=normalized_domain_mode,
     )
     if identity.analysis_feature_set and not (
         payload.get("analysisFeatureSet") or payload.get("analysis_feature_set")

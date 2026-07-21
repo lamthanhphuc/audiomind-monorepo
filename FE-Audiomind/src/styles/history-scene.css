@@ -128,12 +128,22 @@
 .history-actions__group {
   display: flex;
   flex-wrap: wrap;
+  flex-basis: 100%;
   gap: 10px;
   align-items: center;
   padding: 12px 14px;
   border-radius: 12px;
   border: 1px solid var(--studio-border, rgba(148, 163, 184, 0.2));
   background: var(--studio-panel, rgba(15, 23, 42, 0.4));
+}
+
+.history-subject-row .subject-picker {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
+.history-subject-row .subject-picker__select {
+  width: 100%;
 }
 
 .history-actions__label {
@@ -342,6 +352,18 @@
   margin: 0;
   font-size: 13px;
   line-height: 1.5;
+}
+
+.history-reanalyze-row {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.history-reanalyze-error {
+  margin: 0;
+  color: var(--studio-danger, #b91c1c);
+  font-size: 13px;
 }
 
 @media (max-width: 720px) {

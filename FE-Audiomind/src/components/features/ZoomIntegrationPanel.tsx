@@ -245,7 +245,8 @@ export default function ZoomIntegrationPanel({
             }}
             data-testid="zoom-import-input"
           />
-          <span>Chọn file Zoom đã xuất</span>
+          <span className="integration-import__dropzone-title">Chọn file Zoom đã xuất</span>
+          <span className="integration-import__dropzone-hint">.mp4, .m4a, .vtt…</span>
         </label>
       </div>
     </section>

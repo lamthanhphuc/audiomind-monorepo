@@ -21,9 +21,27 @@ from app.services.analysis_errors import (
     AnalysisProviderError,
     AnalysisUnavailableError,
 )
+from app.services.analysis_versioning import resolve_analysis_versions
+from app.services.education_analysis import (
+    build_education_prompt_rules,
+    build_education_system_instruction,
+    build_fallback_education_study,
+    coerce_allowed_segment_ids,
+    education_study_gemini_schema,
+    extract_education_study_raw,
+    normalize_education_study,
+)
 from app.services.gemini_fault_injection import resolve_gemini_http_client_factory
 from app.services.gemini_client import GeminiClient
 from app.services.gemini_key_manager import GeminiKeyConfigError, GeminiKeyManager
+
+# Internal-only analyze metadata: used for post-validation, not Gemini prompt text.
+_INTERNAL_ANALYSIS_METADATA_KEYS = frozenset(
+    {
+        "allowedSegmentIds",
+        "allowed_segment_ids",
+    }
+)
 
 
 class AIAnalyzer:
@@ -88,7 +106,7 @@ class AIAnalyzer:
         summary_model: str | None = None,
         analysis_domain_mode: str = "it",
         analysis_max_input_tokens: int = 12000,
-        analysis_max_output_tokens: int = 4096,
+        analysis_max_output_tokens: int = 8192,
         analysis_thinking_budget: Optional[int] = 0,
         analysis_retry_max_attempts: int = 3,
         gemini_rate_limit_retry_base_seconds: float = 30.0,
@@ -106,6 +124,7 @@ class AIAnalyzer:
         gemini_backoff_max_ms: float = 10000.0,
         gemini_backoff_jitter: bool = True,
         gemini_fail_fast_seconds: float = 30.0,
+        gemini_model_fallbacks: str = "gemini-2.0-flash,gemini-2.5-flash-lite",
         ollama_base_url: str = "http://127.0.0.1:11434",
         timeout_seconds: int = 300,
         http_client_factory: Callable[..., Any] | None = None,
@@ -159,6 +178,7 @@ class AIAnalyzer:
         self.gemini_backoff_max_ms = max(0.0, float(gemini_backoff_max_ms or 0.0))
         self.gemini_backoff_jitter = bool(gemini_backoff_jitter)
         self.gemini_fail_fast_seconds = max(0.0, float(gemini_fail_fast_seconds or 0.0))
+        self.gemini_model_fallbacks = str(gemini_model_fallbacks or "").strip()
         self.ollama_base_url = (ollama_base_url or "http://127.0.0.1:11434").rstrip("/")
         self.timeout_seconds = timeout_seconds
         self.gemini_key_manager = None
@@ -168,22 +188,32 @@ class AIAnalyzer:
         ):
             try:
                 cooldown_store = None
-                if self.gemini_multi_key_enabled:
-                    from app.config import get_settings
+                from app.config import get_settings
 
-                    settings = get_settings()
-                    if settings.gemini_shared_cooldown_enabled:
-                        import redis
+                settings = get_settings()
+                if settings.gemini_shared_cooldown_enabled:
+                    from app.services.gemini_key_cooldown_store import (
+                        create_gemini_redis_client,
+                    )
+                    from app.services.gemini_key_manager import parse_gemini_api_keys
+                    from app.services.gemini_shared_state_store import (
+                        build_v2_redis_gemini_cooldown_store,
+                    )
 
-                        from app.services.gemini_key_cooldown_store import (
-                            RedisGeminiKeyCooldownStore,
-                        )
-
-                        redis_client = redis.Redis.from_url(
-                            settings.job_state_redis_url,
-                            decode_responses=True,
-                        )
-                        cooldown_store = RedisGeminiKeyCooldownStore(redis_client)
+                    redis_client = create_gemini_redis_client(
+                        settings.job_state_redis_url,
+                        settings=settings,
+                    )
+                    parsed_entries = parse_gemini_api_keys(gemini_api_keys)
+                    if parsed_entries:
+                        allowed_aliases = frozenset(entry.alias for entry in parsed_entries)
+                    else:
+                        allowed_aliases = frozenset({"primary"})
+                    cooldown_store = build_v2_redis_gemini_cooldown_store(
+                        redis_client,
+                        allowed_aliases=allowed_aliases,
+                        settings=settings,
+                    )
                 self.gemini_key_manager = GeminiKeyManager.from_config(
                     gemini_api_key=self.api_key,
                     gemini_api_keys=gemini_api_keys,
@@ -193,7 +223,10 @@ class AIAnalyzer:
             except GeminiKeyConfigError as exc:
                 raise AnalysisConfigError(str(exc), provider="gemini") from exc
             from app.config import get_settings
-            from app.services.gemini_client import resolve_http_client_factory
+            from app.services.gemini_client import (
+                parse_model_fallback_list,
+                resolve_http_client_factory,
+            )
 
             settings = get_settings()
             test_mode = str(settings.gemini_client_test_mode or "").strip()
@@ -212,6 +245,9 @@ class AIAnalyzer:
                         base_factory=httpx.Client,
                     )
                 )
+            fallback_raw = self.gemini_model_fallbacks or getattr(
+                settings, "gemini_model_fallbacks", ""
+            )
             self.gemini_client = GeminiClient(
                 self.gemini_key_manager,
                 max_attempts=self.gemini_max_attempts,
@@ -222,6 +258,7 @@ class AIAnalyzer:
                 backoff_jitter=self.gemini_backoff_jitter,
                 fail_fast_seconds=self.gemini_fail_fast_seconds,
                 http_proxy=gemini_http_proxy,
+                model_fallbacks=parse_model_fallback_list(fallback_raw),
                 http_client_factory=resolved_http_client_factory,
                 sleep=time.sleep,
             )
@@ -369,7 +406,9 @@ class AIAnalyzer:
         if domain_mode == "education":
             return (
                 "Nếu domainMode=education, ưu tiên mục tiêu học tập, nội dung bài giảng, "
-                "đánh giá, bài tập, tiến độ học viên, câu hỏi cần làm rõ và việc cần chuẩn bị."
+                "đánh giá, bài tập, tiến độ học viên, câu hỏi cần làm rõ và việc cần chuẩn bị. "
+                "Đồng thời luôn trả về educationStudy (object bắt buộc) đúng schema education-study-v1; "
+                "không được bỏ trống hoặc omit field educationStudy."
             )
         if domain_mode == "general":
             return (
@@ -523,8 +562,10 @@ class AIAnalyzer:
             },
         }
 
-    def _build_gemini_response_schema(self) -> Dict[str, Any]:
-        return {
+    def _build_gemini_response_schema(
+        self, domain_mode: str | None = None
+    ) -> Dict[str, Any]:
+        schema: Dict[str, Any] = {
             "type": "OBJECT",
             "properties": {
                 "summary": {"type": "STRING"},
@@ -560,6 +601,22 @@ class AIAnalyzer:
                 "analysisFeatureSet": {"type": "STRING"},
             },
         }
+        normalized_domain = self._normalize_domain_mode(
+            domain_mode or self.analysis_domain_mode,
+            default=self.analysis_domain_mode,
+        )
+        required = [
+            "summary",
+            "meetingSummary",
+            "keywords",
+            "technicalTerms",
+            "domainMode",
+        ]
+        if normalized_domain == "education":
+            schema["properties"]["educationStudy"] = education_study_gemini_schema()
+            required.append("educationStudy")
+        schema["required"] = required
+        return schema
 
     def _coerce_structured_technical_terms(self, values: Any) -> List[Dict[str, str]]:
         normalized: List[Dict[str, str]] = []
@@ -1689,6 +1746,8 @@ TEXT:
 
         lines = ["NGỮ CẢNH BỔ SUNG:"]
         for key, value in metadata.items():
+            if key in _INTERNAL_ANALYSIS_METADATA_KEYS:
+                continue
             if value is None:
                 continue
             text = str(value).strip()
@@ -1863,11 +1922,13 @@ NỘI DUNG:
                 schema_mode: str,
                 output_tokens: Any,
                 max_output_tokens: Optional[int],
+                key_alias: Optional[str] = None,
             ):
                 self.response_chars = response_chars
                 self.schema_mode = schema_mode
                 self.output_tokens = output_tokens
                 self.max_output_tokens = max_output_tokens
+                self.key_alias = key_alias
                 super().__init__("Gemini response incomplete: finish_reason=MAX_TOKENS")
 
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
@@ -1946,7 +2007,8 @@ NỘI DUNG:
         def _call_once(
             current_schema: Optional[Dict[str, Any]],
             request_max_output_tokens: Optional[int],
-        ) -> str:
+            preferred_key_alias: Optional[str],
+        ) -> tuple[str, Optional[str]]:
             request_payload = json.loads(json.dumps(base_payload))
             schema_mode = "schema" if current_schema is not None else "json"
             if current_schema is not None:
@@ -1959,13 +2021,14 @@ NỘI DUNG:
                 ] = request_max_output_tokens
 
             logger.info(
-                "Calling Gemini model={} response_json={} transcript_chars={} max_output_tokens={} schema_mode={} thinking_budget={}",
+                "Calling Gemini model={} response_json={} transcript_chars={} max_output_tokens={} schema_mode={} thinking_budget={} preferred_key={}",
                 model,
                 response_json,
                 len(prompt),
                 request_max_output_tokens,
                 schema_mode,
                 thinking_budget,
+                preferred_key_alias or "",
             )
 
             if self.gemini_client is None:
@@ -1974,11 +2037,15 @@ NỘI DUNG:
                     provider=self.provider,
                 )
 
-            response = self.gemini_client.post_json(
+            call_result = self.gemini_client.post_json(
                 url=url,
                 payload=request_payload,
                 timeout_seconds=self.timeout_seconds,
+                preferred_key_alias=preferred_key_alias,
+                model=model,
             )
+            response = call_result.response
+            key_alias = call_result.key_alias
             body = response.json()
             text, candidates, body_dict = _extract_response_text(body)
 
@@ -1999,10 +2066,11 @@ NỘI DUNG:
                     "totalTokenCount"
                 ) or usage_metadata.get("total_tokens")
                 logger.info(
-                    "GEMINI_ANALYSIS_TOKEN_USAGE input_tokens={} output_tokens={} total_tokens={}",
+                    "GEMINI_ANALYSIS_TOKEN_USAGE input_tokens={} output_tokens={} total_tokens={} key_alias={}",
                     input_tokens,
                     output_tokens,
                     total_tokens,
+                    key_alias,
                 )
 
             finish_reason = None
@@ -2012,38 +2080,46 @@ NỘI DUNG:
                 )
 
             logger.info(
-                "GEMINI_ANALYSIS_RESPONSE_META finish_reason={} response_chars={} schema_mode={} max_output_tokens={} thinking_budget={}",
+                "GEMINI_ANALYSIS_RESPONSE_META finish_reason={} response_chars={} schema_mode={} max_output_tokens={} thinking_budget={} key_alias={}",
                 finish_reason,
                 len(text),
                 schema_mode,
                 request_max_output_tokens,
                 thinking_budget,
+                key_alias,
             )
             if str(finish_reason or "").strip().upper() == "MAX_TOKENS":
                 logger.warning(
-                    "GEMINI_ANALYSIS_INCOMPLETE reason=max_tokens output_tokens={} max_output_tokens={} response_chars={} schema_mode={}",
+                    "GEMINI_ANALYSIS_INCOMPLETE reason=max_tokens output_tokens={} max_output_tokens={} response_chars={} schema_mode={} key_alias={}",
                     output_tokens,
                     request_max_output_tokens,
                     len(text),
                     schema_mode,
+                    key_alias,
                 )
                 raise _GeminiMaxTokensError(
                     response_chars=len(text),
                     schema_mode=schema_mode,
                     output_tokens=output_tokens,
                     max_output_tokens=request_max_output_tokens,
+                    key_alias=key_alias,
                 )
             logger.info(
                 f"Gemini response parse success model={model} response_chars={len(text)}"
             )
-            return text
+            return text, key_alias
 
         base_max_output_tokens = max_output_tokens
         if base_max_output_tokens is None:
             base_max_output_tokens = self.analysis_max_output_tokens
-        # Primary analysis defaults to 4096; retry must exceed that cap (gemini-2.5-flash allows 8192+).
+        # One doubling retry is allowed. Ceiling is the configured analysis max,
+        # but never below the historical 8192 analysis ceiling when the instance
+        # budget is lower (compat with 1024→2048 / 4096→8192), and never above 16384.
+        configured_cap = max(1, int(self.analysis_max_output_tokens or 8192))
+        retry_ceiling = min(16384, max(configured_cap, 8192))
         max_tokens_retry_output_budget = min(
-            8192, max(2048, int(base_max_output_tokens or 2048) * 2)
+            retry_ceiling,
+            max(2048, int(base_max_output_tokens or 2048) * 2),
         )
 
         attempt_variants: List[Dict[str, Any]] = [
@@ -2055,6 +2131,7 @@ NỘI DUNG:
         ]
         schema_retry_enqueued = False
         max_tokens_retry_enqueued = False
+        sticky_key_alias: Optional[str] = None
 
         last_exc: Optional[AnalysisProviderError] = None
         while attempt_variants:
@@ -2065,17 +2142,28 @@ NỘI DUNG:
             try:
                 if variant_reason == "http_400_without_schema":
                     logger.warning(
-                        "GEMINI_ANALYSIS_SCHEMA_RETRY reason=http_400_without_schema"
+                        "GEMINI_ANALYSIS_SCHEMA_RETRY reason=http_400_without_schema preferred_key={}",
+                        sticky_key_alias or "",
                     )
                 if variant_reason == "max_tokens_retry":
                     logger.warning(
-                        "GEMINI_ANALYSIS_SCHEMA_RETRY reason=max_tokens_response_retry_without_schema"
+                        "GEMINI_ANALYSIS_SCHEMA_RETRY reason=max_tokens_response_retry_without_schema preferred_key={}",
+                        sticky_key_alias or "",
                     )
-                return _call_once(current_schema, variant_max_output_tokens)
+                text, used_alias = _call_once(
+                    current_schema,
+                    variant_max_output_tokens,
+                    sticky_key_alias,
+                )
+                sticky_key_alias = used_alias or sticky_key_alias
+                return text
             except _GeminiMaxTokensError as exc:
+                if getattr(exc, "key_alias", None):
+                    sticky_key_alias = exc.key_alias
                 last_exc = AnalysisUnavailableError(
                     f"Gemini response incomplete due to MAX_TOKENS (output_tokens={exc.output_tokens}, max_output_tokens={exc.max_output_tokens}, response_chars={exc.response_chars})",
                     provider=self.provider,
+                    key_alias=sticky_key_alias,
                 )
                 if not self.gemini_max_tokens_retry_enabled:
                     logger.warning(
@@ -2089,10 +2177,11 @@ NỘI DUNG:
                     raise last_exc
                 max_tokens_retry_enqueued = True
                 logger.warning(
-                    "GEMINI_ANALYSIS_MAX_TOKENS_RETRY_ENQUEUED output_tokens={} max_output_tokens={} retry_max_output_tokens={}",
+                    "GEMINI_ANALYSIS_MAX_TOKENS_RETRY_ENQUEUED output_tokens={} max_output_tokens={} retry_max_output_tokens={} sticky_key={}",
                     exc.output_tokens,
                     exc.max_output_tokens,
                     max_tokens_retry_output_budget,
+                    sticky_key_alias or "",
                 )
                 attempt_variants.append(
                     {
@@ -2104,6 +2193,8 @@ NỘI DUNG:
                 continue
             except AnalysisUnavailableError as exc:
                 last_exc = exc
+                if getattr(exc, "key_alias", None):
+                    sticky_key_alias = exc.key_alias or sticky_key_alias
                 is_http_400 = (
                     "HTTP 400" in str(exc)
                     or getattr(exc, "error_code", "") == "GEMINI_INVALID_REQUEST"
@@ -2137,15 +2228,29 @@ NỘI DUNG:
         self, prompt: str, metadata: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         domain_mode = self._resolve_analysis_domain_mode(metadata)
+        versions = resolve_analysis_versions(domain_mode)
         metadata_source = str((metadata or {}).get("source") or "").strip().lower()
         is_realtime = metadata_source == "realtime"
-        system_prompt = (
-            "Bạn là trợ lý phân tích biên bản họp. Hãy trả về đúng một object JSON hợp lệ và không thêm gì khác. "
-            "Tất cả nội dung trong các value phải bằng tiếng Việt, trừ tên riêng và thuật ngữ kỹ thuật cần giữ nguyên. "
-            f"domainMode hiện tại là {domain_mode}."
-        )
+        if domain_mode == "education":
+            system_prompt = build_education_system_instruction(domain_mode)
+        else:
+            system_prompt = (
+                "Bạn là trợ lý phân tích biên bản họp. Hãy trả về đúng một object JSON hợp lệ và không thêm gì khác. "
+                "Tất cả nội dung trong các value phải bằng tiếng Việt, trừ tên riêng và thuật ngữ kỹ thuật cần giữ nguyên. "
+                f"domainMode hiện tại là {domain_mode}."
+            )
         metadata_text = self._metadata_to_prompt_lines(metadata)
         domain_guidance = self._domain_guidance_for_mode(domain_mode)
+        if domain_mode == "education":
+            language_hint = None
+            if metadata:
+                language_hint = metadata.get("language") or metadata.get(
+                    "meetingLanguage"
+                )
+            domain_guidance = (
+                f"{domain_guidance}\n\n"
+                f"{build_education_prompt_rules(language_hint=language_hint)}"
+            )
         json_prompt = self._build_gemini_analysis_json_prompt(
             transcript=prompt,
             metadata_text=metadata_text,
@@ -2159,7 +2264,7 @@ NỘI DUNG:
             model=self.model,
             temperature=0.1,
             response_json=True,
-            response_schema=self._build_gemini_response_schema(),
+            response_schema=self._build_gemini_response_schema(domain_mode),
             max_output_tokens=self.analysis_max_output_tokens,
         )
         try:
@@ -2192,14 +2297,84 @@ NỘI DUNG:
         structured = self._normalize_gemini_structured_analysis(prompt, parsed)
         structured["domainMode"] = domain_mode
         structured["domain_mode"] = domain_mode
+        structured["promptVersion"] = versions["promptVersion"]
+        structured["schemaVersion"] = versions["schemaVersion"]
+        structured["analysisFeatureSet"] = versions["analysisFeatureSet"]
+
+        if domain_mode == "education":
+            allowed_ids = coerce_allowed_segment_ids(
+                (metadata or {}).get("allowedSegmentIds")
+                or (metadata or {}).get("allowed_segment_ids")
+            )
+            meeting_id_raw = (metadata or {}).get("meetingId") or (metadata or {}).get(
+                "meeting_id"
+            )
+            meeting_id: int | None = None
+            try:
+                if meeting_id_raw is not None:
+                    meeting_id = int(meeting_id_raw)
+            except (TypeError, ValueError):
+                meeting_id = None
+            try:
+                education_study = normalize_education_study(
+                    extract_education_study_raw(parsed),
+                    allowed_segment_ids=allowed_ids,
+                    meeting_id=meeting_id,
+                )
+            except Exception as exc:  # noqa: BLE001 — soft-fail education only
+                logger.warning(
+                    "EDUCATION_STUDY_NORMALIZE_FAILED meeting_id={} domain_mode={} error_class={} detail={}",
+                    meeting_id,
+                    domain_mode,
+                    type(exc).__name__,
+                    safe_error_message(exc),
+                )
+                education_study = None
+            if education_study is None:
+                education_study = normalize_education_study(
+                    build_fallback_education_study(
+                        summary=str(structured.get("summary") or ""),
+                        meeting_summary=str(structured.get("meetingSummary") or ""),
+                        keywords=(
+                            structured.get("keywords")
+                            if isinstance(structured.get("keywords"), list)
+                            else []
+                        ),
+                        technical_terms=(
+                            structured.get("technicalTerms")
+                            if isinstance(structured.get("technicalTerms"), list)
+                            else []
+                        ),
+                    ),
+                    allowed_segment_ids=allowed_ids,
+                    meeting_id=meeting_id,
+                )
+                logger.warning(
+                    "EDUCATION_STUDY_FALLBACK_APPLIED meeting_id={} domain_mode={} reason=normalize_failed_or_missing",
+                    meeting_id,
+                    domain_mode,
+                )
+            if education_study is not None:
+                structured["educationStudy"] = education_study
+            else:
+                structured.pop("educationStudy", None)
+                logger.warning(
+                    "EDUCATION_STUDY_OMITTED meeting_id={} domain_mode={} reason=normalize_failed_or_missing",
+                    meeting_id,
+                    domain_mode,
+                )
+            if (metadata or {}).get("evidenceUnavailable") is True or (
+                not allowed_ids
+                and str((metadata or {}).get("source") or "").lower() == "realtime"
+            ):
+                structured["evidenceUnavailable"] = True
+                logger.info(
+                    "EDUCATION_EVIDENCE_UNAVAILABLE meeting_id={} source=realtime",
+                    meeting_id,
+                )
+
         if is_realtime:
             structured = self._compact_realtime_structured_analysis(structured)
-        structured["promptVersion"] = (
-            str(structured.get("promptVersion") or "").strip() or self.PROMPT_VERSION
-        )
-        structured["schemaVersion"] = (
-            str(structured.get("schemaVersion") or "").strip() or self.SCHEMA_VERSION
-        )
         if metadata:
             metadata_hash = str(metadata.get("transcriptHash") or "").strip()
             if metadata_hash:
@@ -2517,6 +2692,10 @@ NỘI DUNG:
                     str(data.get("transcriptHash") or "").strip() or None
                 ),
             }
+            if isinstance(data.get("educationStudy"), dict):
+                legacy_payload["educationStudy"] = data["educationStudy"]
+            if data.get("evidenceUnavailable") is True:
+                legacy_payload["evidenceUnavailable"] = True
             prepared = self._ensure_analysis_completeness(transcript, legacy_payload)
 
             # F8 rule: Gemini missing action items must remain empty.

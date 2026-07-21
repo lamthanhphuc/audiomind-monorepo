@@ -32,6 +32,12 @@ from app.services.analysis_runs import (
     normalize_analysis_mode,
 )
 from app.services.analysis_factory import build_analysis_analyzer
+from app.services.analysis_versioning import merge_domain_analysis_payload
+from app.services.segment_identity import (
+    assign_stable_segment_ids,
+    format_aligned_transcript_for_analysis,
+    collect_allowed_segment_ids,
+)
 from app.services.audio_enhancement_service import prepare_audio_for_stt
 from app.services.audio_processor import AudioProcessor
 from app.services.stt_adapter import (
@@ -1009,11 +1015,26 @@ class ProcessingPipeline:
                     )
 
             aligned_segments = self._deduplicate_repeated_segments(aligned_segments)
+            aligned_segments = assign_stable_segment_ids(meeting_id, aligned_segments)
+
+            # Persist transcript before Gemini so analysis failures still leave
+            # rerunable saved transcript for "Phân tích lại".
+            self._persist_aligned_transcript_segments(meeting_id, aligned_segments, db)
+            db.commit()
+            logger.info(
+                "event=BATCH_TRANSCRIPT_PERSISTED_BEFORE_ANALYSIS meetingId={} segments={}",
+                meeting_id,
+                len(aligned_segments),
+            )
 
             # Step 5: AI Analysis
             logger.info("Step 5: AI analysis")
             mode = normalize_analysis_mode(analysis_mode)
-            formatted_transcript = self.ai_analyzer.format_transcript_for_analysis(
+            normalized_domain, domain_payload = merge_domain_analysis_payload(
+                domain_mode,
+                default_domain=self.ai_analyzer.analysis_domain_mode,
+            )
+            formatted_transcript = format_aligned_transcript_for_analysis(
                 aligned_segments
             )
             analysis_identity = build_analysis_cache_identity(
@@ -1022,8 +1043,10 @@ class ProcessingPipeline:
                 analyzer=self.ai_analyzer,
                 fallback_transcript_hash=None,
                 fallback_text=formatted_transcript,
+                analysis_payload=domain_payload,
                 recognition_mode=_normalized_stt_provider(),
                 transcript_language=self._normalize_batch_language(language),
+                normalized_domain_mode=normalized_domain,
             )
             cached_analysis_run = (
                 None
@@ -1082,9 +1105,13 @@ class ProcessingPipeline:
                         db, analysis_identity
                     )
                     if (
-                        retry_run is None
-                        or retry_run.status not in ANALYSIS_RETRYABLE_FAILURE_STATUSES
+                        retry_run is not None
+                        and retry_run.status
+                        not in ANALYSIS_RETRYABLE_FAILURE_STATUSES
                     ):
+                        # Completed/skipped/in-progress: do not re-run under
+                        # failed_retry. None (never analyzed) falls through so
+                        # background recovery can analyze after EMPTY_TRANSCRIPT.
                         miss_metadata = analysis_miss_response_metadata(
                             db, analysis_identity
                         )
@@ -1173,9 +1200,15 @@ class ProcessingPipeline:
                 from app.services.user_quota_client import enforce_gemini_quota
 
                 enforce_gemini_quota(owner_user_id, formatted_transcript)
+                allowed_segment_ids = sorted(
+                    collect_allowed_segment_ids(aligned_segments)
+                )
                 analysis_metadata = {
                     "source": "upload",
-                    "domainMode": domain_mode or "it",
+                    "domainMode": normalized_domain,
+                    "meetingId": meeting_id,
+                    "allowedSegmentIds": allowed_segment_ids,
+                    "language": language,
                 }
                 analysis_result = self.ai_analyzer.analyze_meeting(
                     formatted_transcript,
@@ -1214,9 +1247,13 @@ class ProcessingPipeline:
 
         except Exception as e:
             if active_analysis_run is not None:
+                provider_error_code = (
+                    str(getattr(e, "error_code", None) or "").strip()
+                    or type(e).__name__
+                )
                 mark_analysis_run_failed(
                     run=active_analysis_run,
-                    error_code=type(e).__name__,
+                    error_code=provider_error_code,
                     error_message=safe_error_message(e),
                 )
                 db.commit()
@@ -1234,6 +1271,56 @@ class ProcessingPipeline:
                         meeting_id,
                         enhanced_path.name,
                     )
+
+    def _persist_aligned_transcript_segments(
+        self,
+        meeting_id: int,
+        aligned_segments: List[Dict],
+        db: Session,
+    ) -> None:
+        """Persist aligned STT segments independently of analysis success."""
+
+        def _to_builtin(value):
+            if value is None or isinstance(value, (str, int, float, bool, datetime)):
+                return value
+            if hasattr(value, "item"):
+                try:
+                    return _to_builtin(value.item())
+                except Exception:
+                    pass
+            if isinstance(value, dict):
+                return {str(k): _to_builtin(v) for k, v in value.items()}
+            if isinstance(value, (list, tuple)):
+                return [_to_builtin(v) for v in value]
+            return str(value)
+
+        transcript_repository = TranscriptPersistenceRepository(db)
+        for index, segment in enumerate(aligned_segments, start=1):
+            seq_raw = segment.get("seq")
+            seq = int(_to_builtin(seq_raw)) if seq_raw is not None else index
+            if seq <= 0:
+                seq = index
+            fragment_input = TranscriptFragmentInput(
+                meeting_id=meeting_id,
+                seq=seq,
+                speaker=str(segment.get("speaker", "UNKNOWN")),
+                start_time=float(_to_builtin(segment.get("start", 0.0))),
+                end_time=float(_to_builtin(segment.get("end", 0.0))),
+                text=str(segment.get("text", "")),
+                event_id=(
+                    str(segment.get("segment_id") or segment.get("event_id"))
+                    if (segment.get("segment_id") or segment.get("event_id"))
+                    else None
+                ),
+                # Batch STT segments are complete once aligned.
+                is_final=bool(segment.get("is_final", True)),
+                confidence=(
+                    float(_to_builtin(segment.get("confidence")))
+                    if segment.get("confidence") is not None
+                    else None
+                ),
+            )
+            transcript_repository.append_fragment(fragment_input)
 
     def _save_results(
         self,
@@ -1281,33 +1368,9 @@ class ProcessingPipeline:
 
                 return str(value)
 
-            # Save transcripts
-            transcript_repository = TranscriptPersistenceRepository(db)
-            for segment in aligned_segments:
-                fragment_input = TranscriptFragmentInput(
-                    meeting_id=meeting_id,
-                    seq=(
-                        int(_to_builtin(segment.get("seq", 0)))
-                        if segment.get("seq") is not None
-                        else len(transcript_repository.list_fragments(meeting_id)) + 1
-                    ),
-                    speaker=str(segment.get("speaker", "UNKNOWN")),
-                    start_time=float(_to_builtin(segment.get("start", 0.0))),
-                    end_time=float(_to_builtin(segment.get("end", 0.0))),
-                    text=str(segment.get("text", "")),
-                    event_id=(
-                        str(segment.get("event_id"))
-                        if segment.get("event_id")
-                        else None
-                    ),
-                    is_final=bool(segment.get("is_final", False)),
-                    confidence=(
-                        float(_to_builtin(segment.get("confidence")))
-                        if segment.get("confidence") is not None
-                        else None
-                    ),
-                )
-                transcript_repository.append_fragment(fragment_input)
+            # Save transcripts (idempotent via fragment dedupe if already
+            # persisted before analysis).
+            self._persist_aligned_transcript_segments(meeting_id, aligned_segments, db)
 
             # Save analysis
             clean_analysis = _to_builtin(analysis_result or {})
@@ -1379,6 +1442,20 @@ class ProcessingPipeline:
                     "schemaVersion": schema_version or None,
                     "source": str(clean_analysis.get("source") or "batch"),
                 }
+                if isinstance(clean_analysis.get("educationStudy"), dict):
+                    technical_terms_payload["educationStudy"] = clean_analysis[
+                        "educationStudy"
+                    ]
+                if clean_analysis.get("evidenceUnavailable") is True:
+                    technical_terms_payload["evidenceUnavailable"] = True
+                if clean_analysis.get("analysisFeatureSet"):
+                    technical_terms_payload["analysisFeatureSet"] = clean_analysis[
+                        "analysisFeatureSet"
+                    ]
+                if clean_analysis.get("groupedActionPlan") is not None:
+                    technical_terms_payload["groupedActionPlan"] = clean_analysis[
+                        "groupedActionPlan"
+                    ]
             analysis_run_payload = dict(clean_analysis)
             analysis_run_payload["transcriptHash"] = (
                 str(

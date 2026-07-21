@@ -1,6 +1,7 @@
 package com.example.meetingservice.controller;
 
 import com.example.meetingservice.entity.Meeting;
+import com.example.meetingservice.controller.dto.AssignMeetingSubjectRequest;
 import com.example.meetingservice.controller.dto.CreateScheduledMeetingRequest;
 import com.example.meetingservice.security.UserPrincipal;
 import com.example.meetingservice.service.MeetingPageResult;
@@ -25,7 +26,6 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.util.StringUtils;
 import org.springframework.web.server.ResponseStatusException;
-import org.springframework.http.HttpStatus;
 
 import java.io.IOException;
 import java.security.MessageDigest;
@@ -69,9 +69,16 @@ public class MeetingController {
             @RequestParam String title,
             @RequestParam MultipartFile file,
             @RequestParam(required = false) String language,
+            @RequestParam(required = false) String subjectId,
             Authentication authentication) {
 
         uploadValidator.validate(file, file.getOriginalFilename(), MDC.get("traceId"));
+
+        UserPrincipal principal = requirePrincipal(authentication);
+        Long resolvedSubjectId = parseOptionalSubjectId(subjectId);
+        if (resolvedSubjectId != null) {
+            meetingService.requireActiveOwnedSubject(resolvedSubjectId, principal.userId());
+        }
 
         String originalName = Objects.requireNonNullElse(file.getOriginalFilename(), "audio-upload.bin");
         String cleanedFileName = StringUtils.cleanPath(originalName);
@@ -85,7 +92,6 @@ public class MeetingController {
             throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Unable to read uploaded file", readError);
         }
 
-        UserPrincipal principal = requirePrincipal(authentication);
         String audioHash = computeAudioHash(fileBytes);
         MeetingService.DuplicateMatch duplicate = meetingService.findActiveDuplicateForOwner(principal.userId(), audioHash)
                 .orElse(null);
@@ -147,7 +153,8 @@ public class MeetingController {
                 effectiveLanguage,
                 audioHash,
                 file.getSize(),
-                MeetingService.MEETING_STATUS_PROCESSING
+                MeetingService.MEETING_STATUS_PROCESSING,
+                resolvedSubjectId
         );
         log.info(
                 "event=REQUEST_COMPLETED traceId={} requestId={} meetingId={} path=/meetings/upload",
@@ -167,6 +174,7 @@ public class MeetingController {
                 ? "Live recording session"
                 : request.title().trim();
         String effectiveLanguage = normalizeUploadLanguage(request == null ? null : request.language());
+        Long resolvedSubjectId = request == null ? null : request.subjectId();
 
         Meeting saved = meetingService.saveMeeting(
                 title,
@@ -176,7 +184,8 @@ public class MeetingController {
                 effectiveLanguage,
                 null,
                 0L,
-                MeetingService.MEETING_STATUS_PROCESSING
+                MeetingService.MEETING_STATUS_PROCESSING,
+                resolvedSubjectId
         );
         log.info(
                 "event=REALTIME_MEETING_CREATED traceId={} requestId={} ownerUserId={} meetingId={} source=realtime",
@@ -223,6 +232,34 @@ public class MeetingController {
         } catch (DateTimeParseException | java.time.zone.ZoneRulesException ex) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid scheduled date, offset, or time zone");
         }
+    }
+
+    @GetMapping("/unclassified")
+    public Map<String, Object> getUnclassifiedMeetings(
+            @RequestParam(required = false) String search,
+            @RequestParam(required = false) String sort,
+            @RequestParam(required = false) Integer page,
+            @RequestParam(required = false) Integer pageSize,
+            Authentication authentication
+    ) {
+        UserPrincipal principal = requirePrincipal(authentication);
+        MeetingPageResult pageResult = meetingService.findUnclassifiedForOwnerPage(
+                principal.userId(),
+                search,
+                sort,
+                page,
+                pageSize
+        );
+        for (Meeting meeting : pageResult.items()) {
+            meeting.setSharedWithMe(false);
+        }
+        return Map.of(
+                "items", pageResult.items(),
+                "total", pageResult.total(),
+                "page", pageResult.page(),
+                "pageSize", pageResult.pageSize(),
+                "totalPages", pageResult.totalPages()
+        );
     }
 
     @GetMapping("/{id}")
@@ -330,6 +367,17 @@ public class MeetingController {
         return meetings;
     }
 
+    @PatchMapping("/{id}/subject")
+    public Meeting assignMeetingSubject(
+            @PathVariable Long id,
+            @RequestBody(required = false) AssignMeetingSubjectRequest request,
+            Authentication authentication
+    ) {
+        UserPrincipal principal = requirePrincipal(authentication);
+        Long subjectId = request == null ? null : request.subjectId();
+        return meetingService.assignSubject(id, principal.userId(), subjectId);
+    }
+
     @PatchMapping("/{id}")
     public Meeting renameMeeting(@PathVariable Long id, @RequestBody RenameMeetingRequest request, Authentication authentication) {
         UserPrincipal principal = requirePrincipal(authentication);
@@ -367,6 +415,17 @@ public class MeetingController {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Unauthorized");
         }
         return principal;
+    }
+
+    private Long parseOptionalSubjectId(String subjectId) {
+        if (subjectId == null || subjectId.isBlank()) {
+            return null;
+        }
+        try {
+            return Long.valueOf(subjectId.trim());
+        } catch (NumberFormatException ex) {
+            throw new IllegalArgumentException("subjectId must be a number");
+        }
     }
 
     private String normalizeUploadLanguage(String language) {
@@ -418,6 +477,7 @@ public class MeetingController {
         response.put("scheduledStartAt", meeting.getScheduledStartAt());
         response.put("scheduledEndAt", meeting.getScheduledEndAt());
         response.put("scheduledTimezone", meeting.getScheduledTimezone());
+        response.put("subjectId", meeting.getSubjectId());
         response.put("duplicate", duplicate);
         response.put("reused", reused);
         response.put("existingMeetingId", existingMeetingId);
@@ -430,6 +490,9 @@ public class MeetingController {
     private record UpdateMeetingStatusRequest(String status) {
     }
 
-    public record CreateRealtimeMeetingRequest(String title, String language) {
+    public record CreateRealtimeMeetingRequest(String title, String language, Long subjectId) {
+        public CreateRealtimeMeetingRequest(String title, String language) {
+            this(title, language, null);
+        }
     }
 }

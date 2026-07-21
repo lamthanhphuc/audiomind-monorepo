@@ -117,6 +117,7 @@ export const TranscriptDisplay: React.FC<TranscriptDisplayProps> = ({
               className={`transcript-display__segment${isHighlighted ? ' transcript-display__segment--highlight' : ''}`}
               data-segment-start={startSeconds}
               data-segment-end={endSeconds}
+              data-transcript-segment-id={segment.id}
             >
               <div className="transcript-display__speaker-row">
                 <span className="transcript-display__speaker">{speakerLabel}</span>

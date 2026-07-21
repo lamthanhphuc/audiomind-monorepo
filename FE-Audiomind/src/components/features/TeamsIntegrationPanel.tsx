@@ -245,7 +245,8 @@ export default function TeamsIntegrationPanel({
             }}
             data-testid="teams-import-input"
           />
-          <span>Chọn file Teams đã xuất</span>
+          <span className="integration-import__dropzone-title">Chọn file Teams đã xuất</span>
+          <span className="integration-import__dropzone-hint">.mp4, .m4a, .vtt…</span>
         </label>
       </div>
     </section>

@@ -21,7 +21,15 @@ coverage/
 **/*.py[cod]
 **/.pytest_cache/
 **/.mypy_cache/
+**/.ruff_cache/
 **/venv/
+.venv/
+.venv-*/
+.venv311/
+**/.venv/
+**/.venv-*/
+**/.venv311/
+/.venv-ai311/
 
 # IDE / OS
 .vscode/
@@ -41,6 +49,11 @@ logs/ci-fix/
 .env.local
 !.env.example
 !.env.production.example
+!.env.local.example
+!.env.vps.example
+!**/.env.example
+!**/.env.local.example
+!**/.env.vps.example
 
 # Temp artifacts
 **/temp/
@@ -86,6 +99,11 @@ contextcaddy-config.json
 # Local review / verification artifacts (keep outside the repo)
 /review-*/
 /review-fixed/
+/backups/
 /*-review-bundle.zip
 /working-tree.patch
 /staged.patch
+/rendered-*.yaml
+rendered-dev.yaml
+rendered-prod.yaml
+rendered-staging.yaml

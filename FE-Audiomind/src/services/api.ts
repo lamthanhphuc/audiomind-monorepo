@@ -931,11 +931,22 @@ export const createMeeting = async (): Promise<CreateMeetingResponse> => {
   })
 }
 
-export const createRealtimeMeeting = async (
-  title = 'Live recording session',
-  language?: string,
-  domainMode?: string,
-): Promise<{
+export type CreateRealtimeMeetingInput = {
+  title?: string
+  language?: string
+  subjectId?: number | null
+  domainMode?: string
+}
+
+export type UploadMeetingInput = {
+  title: string
+  file: File
+  language?: string
+  subjectId?: number | null
+  domainMode?: string
+}
+
+export type MeetingUploadResult = {
   id: number
   audioPath: string
   title: string
@@ -948,14 +959,25 @@ export const createRealtimeMeeting = async (
   ownerUserId?: number | null
   language?: string | null
   fileSize?: number | null
+  subjectId?: number | null
   source?: string
-}> => {
-  const body: Record<string, string> = { title }
-  if (language?.trim()) {
-    body.language = language.trim()
+}
+
+export const createRealtimeMeeting = async (
+  input: CreateRealtimeMeetingInput | string = 'Live recording session',
+  legacyLanguage?: string,
+  legacyDomainMode?: string,
+): Promise<MeetingUploadResult> => {
+  const resolved: CreateRealtimeMeetingInput = typeof input === 'string'
+    ? { title: input, language: legacyLanguage, domainMode: legacyDomainMode }
+    : input
+  const title = resolved.title?.trim() || 'Live recording session'
+  const body: Record<string, string | number> = { title }
+  if (resolved.language?.trim()) {
+    body.language = resolved.language.trim()
   }
-  if (domainMode?.trim()) {
-    body.domainMode = domainMode.trim()
+  if (resolved.subjectId != null) {
+    body.subjectId = resolved.subjectId
   }
 
   return fetchJson(`${MEETING_API_BASE}/meetings/realtime`, {
@@ -1112,46 +1134,25 @@ export const getAuthHeaders = (): Record<string, string> => {
  * Returns the persisted Meeting entity with id and audioPath.
  */
 export const uploadToMeetingApi = async (
-  title: string,
-  file: File,
-  language?: string,
-): Promise<{
-  id: number
-  audioPath: string
-  title: string
-  duplicate?: boolean
-  reused?: boolean
-  existingMeetingId?: number | null
-  status?: string
-  createdAt?: string
-  originalFileName?: string | null
-  ownerUserId?: number | null
-  language?: string | null
-  fileSize?: number | null
-}> => {
+  input: UploadMeetingInput | string,
+  legacyFile?: File,
+  legacyLanguage?: string,
+): Promise<MeetingUploadResult> => {
+  const resolved: UploadMeetingInput = typeof input === 'string'
+    ? { title: input, file: legacyFile as File, language: legacyLanguage }
+    : input
   const body = new FormData()
-  body.append('title', title)
-  body.append('file', file)
-  if (language) {
-    body.append('language', language.trim())
+  body.append('title', resolved.title)
+  body.append('file', resolved.file)
+  if (resolved.language) {
+    body.append('language', resolved.language.trim())
   }
-  // Do NOT set Content-Type manually — browser auto-adds multipart boundary
-  return fetchJson<{
-    id: number
-    audioPath: string
-    title: string
-    duplicate?: boolean
-    reused?: boolean
-    existingMeetingId?: number | null
-    status?: string
-    createdAt?: string
-    originalFileName?: string | null
-    ownerUserId?: number | null
-    language?: string | null
-    fileSize?: number | null
-  }>(
+  if (resolved.subjectId != null) {
+    body.append('subjectId', String(resolved.subjectId))
+  }
+  return fetchJson<MeetingUploadResult>(
     `${MEETING_API_BASE}/meetings/upload`,
-    { method: 'POST', body }
+    { method: 'POST', body },
   )
 }
 

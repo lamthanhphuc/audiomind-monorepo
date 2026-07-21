@@ -831,3 +831,109 @@ class TranscriptPersistenceRepository:
             )
         )
         return scopes
+
+    def resolve_preferred_transcript_scope(
+        self, meeting_id: int
+    ) -> dict[str, object] | None:
+        """Pick the best meeting-level transcript scope for unscoped reads.
+
+        Prefer the newest v2 (recording_session_id, attempt_id) that has visible
+        text. Fall back to legacy only when it has content (or when no v2 exists).
+        Explicit scoped APIs must still call list_fragments / list_attempt_*.
+        """
+        scopes = self.list_attempt_scopes(meeting_id)
+        if not scopes:
+            return None
+
+        legacy_scope = next(
+            (scope for scope in scopes if scope.get("scopeKind") == "legacy"),
+            None,
+        )
+        v2_scopes = [
+            scope for scope in scopes if scope.get("scopeKind") == "v2"
+        ]
+        v2_scopes.sort(
+            key=lambda scope: (
+                int(scope.get("recordingSessionId") or 0),
+                int(scope.get("attemptId") or 0),
+                int(scope.get("latestSeq") or 0),
+            ),
+            reverse=True,
+        )
+
+        for scope in v2_scopes:
+            text = self.assemble_attempt_transcript_text(
+                meeting_id,
+                recording_session_id=int(scope["recordingSessionId"]),
+                attempt_id=int(scope["attemptId"]),
+            )
+            if text.strip():
+                return scope
+
+        if legacy_scope is not None:
+            legacy_text = self.assemble_transcript_text(meeting_id)
+            if legacy_text.strip() or not v2_scopes:
+                return legacy_scope
+
+        return v2_scopes[0] if v2_scopes else legacy_scope
+
+    def assemble_meeting_visible_fragments(
+        self, meeting_id: int
+    ) -> list[TranscriptFragment]:
+        scope = self.resolve_preferred_transcript_scope(meeting_id)
+        if scope is None:
+            return []
+        if scope.get("scopeKind") == "v2":
+            return self.assemble_attempt_visible_fragments(
+                meeting_id,
+                recording_session_id=int(scope["recordingSessionId"]),
+                attempt_id=int(scope["attemptId"]),
+            )
+        return self.assemble_visible_fragments(meeting_id)
+
+    def assemble_meeting_visible_transcript_segments(
+        self, meeting_id: int
+    ) -> list[dict[str, object]]:
+        scope = self.resolve_preferred_transcript_scope(meeting_id)
+        if scope is None:
+            return []
+        if scope.get("scopeKind") == "v2":
+            return self.assemble_attempt_visible_transcript_segments(
+                meeting_id,
+                recording_session_id=int(scope["recordingSessionId"]),
+                attempt_id=int(scope["attemptId"]),
+            )
+        return self.assemble_visible_transcript_segments(meeting_id)
+
+    def assemble_meeting_transcript_text(self, meeting_id: int) -> str:
+        scope = self.resolve_preferred_transcript_scope(meeting_id)
+        if scope is None:
+            return ""
+        if scope.get("scopeKind") == "v2":
+            return self.assemble_attempt_transcript_text(
+                meeting_id,
+                recording_session_id=int(scope["recordingSessionId"]),
+                attempt_id=int(scope["attemptId"]),
+            )
+        return self.assemble_transcript_text(meeting_id)
+
+    def assemble_meeting_analysis_transcript_text(self, meeting_id: int) -> str:
+        """Speaker-labeled transcript text for Gemini / rerun / background retry."""
+        segments = self.assemble_meeting_visible_transcript_segments(meeting_id)
+        if not segments:
+            return ""
+
+        def _sort_key(segment: dict[str, object]) -> tuple[float, int]:
+            return (
+                float(segment.get("start_time") or 0.0),
+                int(segment.get("seq") or 0),
+            )
+
+        lines: list[str] = []
+        for segment in sorted(segments, key=_sort_key):
+            text = str(segment.get("text") or "").strip()
+            if not text:
+                continue
+            speaker = str(segment.get("speaker") or "SPEAKER_1").strip() or "SPEAKER_1"
+            lines.append(f"{speaker}: {text}")
+        return "\n".join(lines).strip()

@@ -26,6 +26,7 @@ import java.time.OffsetDateTime;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -91,13 +92,13 @@ class MeetingControllerTest {
         Meeting meeting = new Meeting();
         meeting.setId(10L);
         meeting.setLanguage("en");
-        when(meetingService.saveMeeting(eq("sample"), anyString(), eq(9L), eq("sample.wav"), eq("en"), anyString(), eq(3L), eq(MeetingService.MEETING_STATUS_PROCESSING)))
+        when(meetingService.saveMeeting(eq("sample"), anyString(), eq(9L), eq("sample.wav"), eq("en"), anyString(), eq(3L), eq(MeetingService.MEETING_STATUS_PROCESSING), eq(null)))
                 .thenReturn(meeting);
 
         MockMultipartFile file = new MockMultipartFile("file", "sample.wav", "audio/wav", new byte[]{1, 2, 3});
-        controller.upload("sample", file, "en", authentication);
+        controller.upload("sample", file, "en", null, authentication);
 
-        verify(meetingService).saveMeeting(eq("sample"), anyString(), eq(9L), eq("sample.wav"), eq("en"), anyString(), eq(3L), eq(MeetingService.MEETING_STATUS_PROCESSING));
+        verify(meetingService).saveMeeting(eq("sample"), anyString(), eq(9L), eq("sample.wav"), eq("en"), anyString(), eq(3L), eq(MeetingService.MEETING_STATUS_PROCESSING), eq(null));
     }
 
     @Test
@@ -111,14 +112,14 @@ class MeetingControllerTest {
 
         Meeting meeting = new Meeting();
         meeting.setLanguage("vi");
-        when(meetingService.saveMeeting(eq("sample"), anyString(), eq(9L), eq("sample.wav"), eq("vi"), anyString(), eq(3L), eq(MeetingService.MEETING_STATUS_PROCESSING)))
+        when(meetingService.saveMeeting(eq("sample"), anyString(), eq(9L), eq("sample.wav"), eq("vi"), anyString(), eq(3L), eq(MeetingService.MEETING_STATUS_PROCESSING), eq(null)))
                 .thenReturn(meeting);
 
         MockMultipartFile file = new MockMultipartFile("file", "sample.wav", "audio/wav", new byte[]{1, 2, 3});
-        Map<String, Object> result = controller.upload("sample", file, "fr", authentication);
+        Map<String, Object> result = controller.upload("sample", file, "fr", null, authentication);
 
         assertEquals("vi", result.get("language"));
-        verify(meetingService).saveMeeting(eq("sample"), anyString(), eq(9L), eq("sample.wav"), eq("vi"), anyString(), eq(3L), eq(MeetingService.MEETING_STATUS_PROCESSING));
+        verify(meetingService).saveMeeting(eq("sample"), anyString(), eq(9L), eq("sample.wav"), eq("vi"), anyString(), eq(3L), eq(MeetingService.MEETING_STATUS_PROCESSING), eq(null));
     }
 
     @Test
@@ -140,14 +141,15 @@ class MeetingControllerTest {
                 .thenReturn(Optional.of(new MeetingService.DuplicateMatch(existing, true, MeetingService.MEETING_STATUS_COMPLETED)));
 
         MockMultipartFile file = new MockMultipartFile("file", "sample.wav", "audio/wav", new byte[]{1, 2, 3});
-        Map<String, Object> result = controller.upload("sample", file, "vi", authentication);
+        Map<String, Object> result = controller.upload("sample", file, "vi", null, authentication);
 
         assertEquals(true, result.get("duplicate"));
         assertEquals(true, result.get("reused"));
         assertEquals(77L, result.get("existingMeetingId"));
         assertEquals("completed", result.get("status"));
         assertTrue(result.containsKey("id"));
-        verify(meetingService, never()).saveMeeting(anyString(), anyString(), anyLong(), anyString(), anyString(), anyString(), anyLong(), anyString());
+        assertTrue(result.containsKey("subjectId"));
+        verify(meetingService, never()).saveMeeting(anyString(), anyString(), anyLong(), anyString(), anyString(), anyString(), anyLong(), anyString(), any());
     }
 
     @Test
@@ -174,7 +176,8 @@ class MeetingControllerTest {
                 eq("en"),
                 eq((String) null),
                 eq(0L),
-                eq(MeetingService.MEETING_STATUS_PROCESSING)
+                eq(MeetingService.MEETING_STATUS_PROCESSING),
+                eq(null)
         )).thenReturn(meeting);
 
         Map<String, Object> result = controller.createRealtimeMeeting(
@@ -195,7 +198,8 @@ class MeetingControllerTest {
                 eq("en"),
                 eq((String) null),
                 eq(0L),
-                eq(MeetingService.MEETING_STATUS_PROCESSING)
+                eq(MeetingService.MEETING_STATUS_PROCESSING),
+                eq(null)
         );
     }
 

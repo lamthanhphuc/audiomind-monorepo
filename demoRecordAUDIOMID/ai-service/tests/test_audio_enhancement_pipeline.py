@@ -16,6 +16,35 @@ class _PipelineGate(Exception):
     """Stop process_meeting after the enhancement/STT/diarization assertions."""
 
 
+def _gated_analyzer(message: str) -> MagicMock:
+    """Analyzer that trips at analyze_meeting with concrete identity attrs."""
+    analyzer = MagicMock()
+    analyzer.analysis_domain_mode = "it"
+    analyzer.provider = "gemini"
+    analyzer.model = "gemini-2.5-flash"
+    analyzer.PROMPT_VERSION = "gemini-business-v2"
+    analyzer.SCHEMA_VERSION = "gemini-business-v2"
+    analyzer.analyze_meeting.side_effect = _PipelineGate(message)
+    return analyzer
+
+
+def _force_analysis_cache_miss(pipeline_module, monkeypatch) -> None:
+    """MagicMock db would otherwise look like a completed/in-progress hit."""
+    monkeypatch.setattr(
+        pipeline_module,
+        "find_completed_analysis_run_for_identity",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        pipeline_module,
+        "find_in_progress_analysis_run_for_identity",
+        lambda *args, **kwargs: None,
+    )
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "analysis_short_transcript_gate_enabled", False)
+
+
 def _load_processing_pipeline(monkeypatch):
     existing = sys.modules.get("app.pipeline")
     if existing is not None:
@@ -136,16 +165,14 @@ def test_pipeline_skips_enhancement_for_precomputed_without_diarization(
     prepare = MagicMock()
     monkeypatch.setattr(pipeline_module, "prepare_audio_for_stt", prepare)
     monkeypatch.setattr(pipeline_module.settings, "audio_enhancement_enabled", True)
+    _force_analysis_cache_miss(pipeline_module, monkeypatch)
 
     pipeline = _base_pipeline(ProcessingPipeline, pipeline_module, monkeypatch)
     pipeline.diarization_available = False
     pipeline.speaker_diarizer = None
     pipeline._should_enable_diarization = lambda runtime_device: False
     pipeline._should_use_native_deepgram_diarization = lambda: False
-    pipeline.ai_analyzer = MagicMock()
-    pipeline.ai_analyzer.format_transcript_for_analysis.side_effect = _PipelineGate(
-        "analysis-reached-without-enhancement"
-    )
+    pipeline.ai_analyzer = _gated_analyzer("analysis-reached-without-enhancement")
 
     with pytest.raises(_PipelineGate, match="analysis-reached-without-enhancement"):
         pipeline.process_meeting(
@@ -215,6 +242,7 @@ def test_pipeline_cleanup_after_diarization_when_keep_false(
     monkeypatch.setattr(
         pipeline_module.settings, "temp_storage_path", str(audio_file.parent)
     )
+    _force_analysis_cache_miss(pipeline_module, monkeypatch)
 
     pipeline = _base_pipeline(ProcessingPipeline, pipeline_module, monkeypatch)
     pipeline.diarization_available = True
@@ -228,10 +256,7 @@ def test_pipeline_cleanup_after_diarization_when_keep_false(
     ]
     pipeline.speaker_diarizer.align_transcript_with_speakers.return_value = _segments()
     pipeline.speaker_diarizer.get_speaker_count.return_value = 1
-    pipeline.ai_analyzer = MagicMock()
-    pipeline.ai_analyzer.format_transcript_for_analysis.side_effect = _PipelineGate(
-        "past-diarization"
-    )
+    pipeline.ai_analyzer = _gated_analyzer("past-diarization")
 
     with pytest.raises(_PipelineGate, match="past-diarization"):
         pipeline.process_meeting(

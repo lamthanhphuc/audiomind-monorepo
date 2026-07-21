@@ -347,6 +347,95 @@ def set_job_status(
         )
 
 
+def build_completed_analysis_job_result(
+    *,
+    meeting_id: int,
+    analysis: dict[str, Any],
+    source: str,
+    domain_mode: str | None = None,
+    recording_session_id: int | None = None,
+    attempt_id: int | None = None,
+) -> dict[str, Any]:
+    """
+    Build a COMPLETED job-state result that keeps realtime provenance.
+
+    Processing writes domainMode + recording_session_id/attempt_id into the
+    result before AI analysis. Replacing the entire result map would wipe that
+    intent and force scoped GET to fall back to expectedDomainMode=general.
+    """
+    merged: dict[str, Any] = {}
+    existing_job = get_job_status(meeting_id) or {}
+    existing_result = existing_job.get("result")
+    if isinstance(existing_result, dict):
+        merged.update(existing_result)
+
+    analysis_payload = dict(analysis) if isinstance(analysis, dict) else {}
+    merged["analysis"] = analysis_payload
+    merged["source"] = source
+
+    resolved_domain = _first_non_blank(
+        domain_mode,
+        analysis_payload.get("domainMode"),
+        analysis_payload.get("domain_mode"),
+        merged.get("domainMode"),
+        merged.get("domain_mode"),
+    )
+    if resolved_domain:
+        normalized_domain = str(resolved_domain).strip().lower()
+        merged["domainMode"] = normalized_domain
+        merged["domain_mode"] = normalized_domain
+        analysis_payload.setdefault("domainMode", normalized_domain)
+        analysis_payload.setdefault("domain_mode", normalized_domain)
+
+    resolved_session = _first_present_int(
+        recording_session_id,
+        analysis_payload.get("recordingSessionId"),
+        analysis_payload.get("recording_session_id"),
+        merged.get("recordingSessionId"),
+        merged.get("recording_session_id"),
+    )
+    resolved_attempt = _first_present_int(
+        attempt_id,
+        analysis_payload.get("attemptId"),
+        analysis_payload.get("attempt_id"),
+        merged.get("attemptId"),
+        merged.get("attempt_id"),
+    )
+    if resolved_session is not None and resolved_attempt is not None:
+        merged["recording_session_id"] = resolved_session
+        merged["recordingSessionId"] = resolved_session
+        merged["attempt_id"] = resolved_attempt
+        merged["attemptId"] = resolved_attempt
+        analysis_payload.setdefault("recordingSessionId", resolved_session)
+        analysis_payload.setdefault("recording_session_id", resolved_session)
+        analysis_payload.setdefault("attemptId", resolved_attempt)
+        analysis_payload.setdefault("attempt_id", resolved_attempt)
+
+    merged["analysis"] = analysis_payload
+    return merged
+
+
+def _first_non_blank(*candidates: Any) -> str | None:
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        text = str(candidate).strip()
+        if text:
+            return text
+    return None
+
+
+def _first_present_int(*candidates: Any) -> int | None:
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        try:
+            return int(candidate)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
 def get_job_status(meeting_id: int) -> dict | None:
     try:
         raw = _safe_job_hash(_get_client(), _job_key(meeting_id))

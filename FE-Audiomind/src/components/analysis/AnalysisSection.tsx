@@ -6,6 +6,7 @@ type AnalysisSectionProps = {
   children: ReactNode
   emptyMessage?: string
   isEmpty?: boolean
+  testId?: string
 }
 
 export const AnalysisSection = ({
@@ -13,8 +14,9 @@ export const AnalysisSection = ({
   children,
   emptyMessage = 'Không có dữ liệu',
   isEmpty = false,
+  testId,
 }: AnalysisSectionProps) => (
-  <section className="analysis-section">
+  <section className="analysis-section" data-testid={testId}>
     <h3 className="analysis-section__title">{title}</h3>
     {isEmpty ? (
       <p className="analysis-section__empty">{emptyMessage}</p>

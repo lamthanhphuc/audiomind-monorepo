@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import time
 from typing import Any
-from uuid import uuid4
 
 from loguru import logger
 from sqlalchemy.orm import Session
 
 from app.models import MeetingAnalysisRun
+from app.services.segment_identity import assign_stable_segment_ids
 from app.services.evidence_stats import (
     compute_evidence_stats,
     enrich_rows_with_term_frequency,
@@ -31,14 +31,10 @@ def resolve_latest_run_id(db: Session, meeting_id: int) -> int | None:
     return int(run.id) if run is not None else None
 
 
-def assign_segment_ids(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    enriched: list[dict[str, Any]] = []
-    for row in rows:
-        copy = dict(row)
-        if not copy.get("segment_id"):
-            copy["segment_id"] = str(uuid4())
-        enriched.append(copy)
-    return enriched
+def assign_segment_ids(
+    rows: list[dict[str, Any]], meeting_id: int
+) -> list[dict[str, Any]]:
+    return assign_stable_segment_ids(meeting_id, rows)
 
 
 def rows_to_camel_case_dto(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -102,11 +98,11 @@ def canonicalize_and_persist_run(
         raise ValueError(f"analysis run not found: {run_id}")
 
     repo = TranscriptPersistenceRepository(db)
-    segments = repo.assemble_visible_transcript_segments(meeting_id)
+    segments = repo.assemble_meeting_visible_transcript_segments(meeting_id)
     rows_before = len(segments)
 
     result = canonicalize_segments(segments)
-    rows = assign_segment_ids(result.rows)
+    rows = assign_segment_ids(result.rows, meeting_id)
     rows = enrich_rows_with_term_frequency(rows)
     stats = compute_evidence_stats(rows, version=result.version)
     canonical_hash = build_canonical_transcript_hash(rows, version=result.version)
@@ -139,7 +135,7 @@ def canonicalize_and_persist_run(
 
 def preview_canonical_hash(db: Session, meeting_id: int) -> tuple[str, str]:
     repo = TranscriptPersistenceRepository(db)
-    segments = repo.assemble_visible_transcript_segments(meeting_id)
+    segments = repo.assemble_meeting_visible_transcript_segments(meeting_id)
     result = canonicalize_segments(segments)
     return result.version, build_canonical_transcript_hash(
         result.rows, version=result.version

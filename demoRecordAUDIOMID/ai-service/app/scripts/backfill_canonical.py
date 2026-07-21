@@ -105,12 +105,12 @@ def _preview_analysis_run_backfill(
     db = SessionLocal()
     try:
         repo = TranscriptPersistenceRepository(db)
-        segments = repo.assemble_visible_transcript_segments(meeting_id)
+        segments = repo.assemble_meeting_visible_transcript_segments(meeting_id)
         if not segments:
             return [], None, "", ""
 
         result = canonicalize_segments(segments)
-        rows = assign_segment_ids(result.rows)
+        rows = assign_segment_ids(result.rows, meeting_id)
         stats: dict[str, Any] | None = None
         if rebuild_stats:
             rows = enrich_rows_with_term_frequency(rows)
@@ -131,7 +131,7 @@ def _backfill_meeting_analysis_run(
     worker_id: int | None,
 ) -> BackfillResult:
     repo = TranscriptPersistenceRepository(db)
-    segments = repo.assemble_visible_transcript_segments(meeting_id)
+    segments = repo.assemble_meeting_visible_transcript_segments(meeting_id)
     if not segments:
         return BackfillResult(
             status="no_segments",
@@ -141,7 +141,7 @@ def _backfill_meeting_analysis_run(
         )
 
     result = canonicalize_segments(segments)
-    rows = assign_segment_ids(result.rows)
+    rows = assign_segment_ids(result.rows, meeting_id)
     stats: dict[str, Any] | None = None
     if rebuild_stats:
         rows = enrich_rows_with_term_frequency(rows)
@@ -219,7 +219,7 @@ def _backfill_legacy_transcript_sidecar(
     worker_id: int | None,
 ) -> BackfillResult:
     repo = TranscriptPersistenceRepository(db)
-    segments = repo.assemble_visible_transcript_segments(meeting_id)
+    segments = repo.assemble_meeting_visible_transcript_segments(meeting_id)
 
     if not segments:
         print(f"No transcript segments available for meeting {meeting_id}")

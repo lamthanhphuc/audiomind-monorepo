@@ -49,5 +49,54 @@ describe('DashboardLayout global meeting search', () => {
 
     expect(onSubmit).toHaveBeenCalledWith('weekly sync')
   })
+
+  it('toggles theme from Night to Light via sidebar button', async () => {
+    const onToggleTheme = vi.fn()
+    await act(async () => {
+      root.render(
+        <DashboardLayout
+          user={{ name: 'Test User', email: 'test@example.com', plan: 'FREE' }}
+          onLogout={() => {}}
+          activeMenu="upload"
+          onNavigate={() => {}}
+          theme="night"
+          onToggleTheme={onToggleTheme}
+        >
+          <div>content</div>
+        </DashboardLayout>,
+      )
+    })
+
+    const toggle = container.querySelector('[data-testid="theme-mode-toggle"]') as HTMLButtonElement
+    expect(toggle).toBeTruthy()
+    expect(toggle.getAttribute('aria-pressed')).toBe('true')
+    expect(container.querySelector('[data-testid="theme-mode-toggle-label"]')?.textContent).toBe('Light')
+
+    await act(async () => {
+      toggle.click()
+    })
+    expect(onToggleTheme).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows Night label when currently in light mode', async () => {
+    await act(async () => {
+      root.render(
+        <DashboardLayout
+          user={{ name: 'Test User', email: 'test@example.com', plan: 'FREE' }}
+          onLogout={() => {}}
+          activeMenu="upload"
+          onNavigate={() => {}}
+          theme="light"
+          onToggleTheme={() => {}}
+        >
+          <div>content</div>
+        </DashboardLayout>,
+      )
+    })
+
+    const toggle = container.querySelector('[data-testid="theme-mode-toggle"]') as HTMLButtonElement
+    expect(toggle.getAttribute('aria-pressed')).toBe('false')
+    expect(container.querySelector('[data-testid="theme-mode-toggle-label"]')?.textContent).toBe('Night')
+  })
 })
 

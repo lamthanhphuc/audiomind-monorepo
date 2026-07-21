@@ -39,6 +39,7 @@ from app.database import (
 from app.ffmpeg_utils import ensure_ffmpeg_on_path
 from app.job_status_store import (
     _get_client,
+    build_completed_analysis_job_result,
     cleanup_expired_job_statuses,
     get_job_status,
     load_job_statuses,
@@ -71,6 +72,12 @@ from app.services.analysis_errors import (
     AnalysisUnavailableError,
 )
 from app.services.analysis_factory import build_analysis_analyzer
+from app.services.analysis_versioning import merge_domain_analysis_payload
+from app.services.segment_identity import (
+    collect_allowed_segment_ids,
+    format_aligned_transcript_for_analysis,
+    resolve_segment_id_for_read,
+)
 from app.services.analysis_runs import (
     ANALYSIS_MODE_CACHE_ONLY,
     ANALYSIS_MODE_FAILED_RETRY,
@@ -1086,6 +1093,10 @@ def _default_error_message(error: str) -> str:
         "GEMINI_UNAVAILABLE": "Gemini service is unavailable",
         "GEMINI_RATE_LIMITED": "Gemini rate limit reached",
         "GEMINI_QUOTA_EXHAUSTED": "Gemini quota exhausted",
+        "GEMINI_MODEL_UNAVAILABLE": "Gemini model is unavailable for all configured API keys",
+        "GEMINI_KEY_POOL_UNAVAILABLE": "Gemini key pool is unavailable",
+        "GEMINI_BILLING_CREDITS_DEPLETED": "Gemini billing credits are depleted",
+        "GEMINI_FREE_TIER_TOKEN_QUOTA_EXHAUSTED": "Gemini free-tier token quota is exhausted",
         "GEMINI_ANALYSIS_FAILED": "Gemini analysis failed",
         "INVALID_LANGUAGE": "Invalid language",
         "EMPTY_TRANSCRIPT": "Transcript is empty",
@@ -1385,17 +1396,55 @@ def _map_http_exception(
         )
 
     if status_code == 503:
+        structured_error = ""
+        structured_details: dict[str, object] | None = None
+        if isinstance(exc.detail, dict):
+            structured_error = str(
+                exc.detail.get("error") or exc.detail.get("errorCode") or ""
+            ).strip()
+            nested_details = exc.detail.get("details")
+            if isinstance(nested_details, dict):
+                structured_details = _sanitize_details(nested_details)
+                if not structured_error:
+                    structured_error = str(
+                        nested_details.get("errorCode")
+                        or nested_details.get("error")
+                        or ""
+                    ).strip()
+            message = str(exc.detail.get("message") or "").strip()
+        else:
+            message = ""
+
+        normalized_error = structured_error.strip().upper()
+        known_gemini_codes = {
+            "GEMINI_UNAVAILABLE",
+            "GEMINI_MODEL_UNAVAILABLE",
+            "GEMINI_KEY_POOL_UNAVAILABLE",
+            "GEMINI_BILLING_CREDITS_DEPLETED",
+            "GEMINI_FREE_TIER_TOKEN_QUOTA_EXHAUSTED",
+            "GEMINI_INVALID_KEY",
+            "GEMINI_INVALID_REQUEST",
+            "GEMINI_REGION_BLOCKED",
+            "GEMINI_PROXY_CONNECT_FAILED",
+        }
+        if normalized_error in known_gemini_codes:
+            return (
+                normalized_error,
+                message or _default_error_message(normalized_error),
+                structured_details or details,
+            )
+
         if "deepgram" in normalized_detail:
             return (
                 "DEEPGRAM_UNAVAILABLE",
                 _default_error_message("DEEPGRAM_UNAVAILABLE"),
                 details,
             )
-        if "gemini" in normalized_detail:
+        if "gemini" in normalized_detail or normalized_error.startswith("GEMINI_"):
             return (
-                "GEMINI_UNAVAILABLE",
-                _default_error_message("GEMINI_UNAVAILABLE"),
-                details,
+                normalized_error or "GEMINI_UNAVAILABLE",
+                message or _default_error_message(normalized_error or "GEMINI_UNAVAILABLE"),
+                structured_details or details,
             )
         if "analysis service unavailable" in normalized_detail:
             return (
@@ -1783,6 +1832,14 @@ def _normalize_analysis_payload(raw_analysis: dict[str, Any]) -> dict[str, Any]:
         "stale": raw_analysis.get("stale"),
         "staleReason": raw_analysis.get("staleReason"),
         "retryAfterSeconds": raw_analysis.get("retryAfterSeconds"),
+        "educationStudy": (
+            raw_analysis.get("educationStudy")
+            if isinstance(raw_analysis.get("educationStudy"), dict)
+            else None
+        ),
+        "evidenceUnavailable": (
+            True if raw_analysis.get("evidenceUnavailable") is True else None
+        ),
     }
 
 
@@ -2251,6 +2308,7 @@ def _finish_realtime_analysis(
     analysis_trace_id: str | None = None,
     analysis_provider_alias: str | None = None,
     retry_exhausted: bool | None = None,
+    error_retryable: bool | None = None,
 ) -> None:
     now = time.time()
     try:
@@ -2283,7 +2341,9 @@ def _finish_realtime_analysis(
                 retry_after_seconds or int(_REALTIME_ANALYSIS_FAILURE_COOLDOWN_SECONDS),
             )
             cooldown_until = now + retry_after
-            retryable = is_retryable_error_code(error_code)
+            retryable = is_retryable_error_code(
+                error_code, retryable=error_retryable
+            )
             failure_status = "ANALYSIS_FAILED_RETRYABLE" if retryable else "FAILED"
             max_attempts = settings.analysis_background_retry_max_attempts
             retry_count = int(analysis_retry_count or 0)
@@ -2359,6 +2419,10 @@ def _analyze_and_persist_realtime_transcript(
     db: Session,
     analysis_run=None,
     rerun_reason: str | None = None,
+    allowed_segment_ids: list[str] | None = None,
+    evidence_unavailable: bool = False,
+    recording_session_id: int | None = None,
+    attempt_id: int | None = None,
 ):
     analyzer = _get_realtime_analysis_analyzer()
     if analyzer is None:
@@ -2378,7 +2442,10 @@ def _analyze_and_persist_realtime_transcript(
         "promptVersion": prompt_version,
         "schemaVersion": schema_version,
         "analysisFeatureSet": analysis_feature_set,
+        "allowedSegmentIds": list(allowed_segment_ids or []),
     }
+    if evidence_unavailable:
+        metadata["evidenceUnavailable"] = True
 
     if getattr(analyzer, "provider", "") == "gemini":
         structured_analysis = analyzer._analyze_with_gemini(
@@ -2439,6 +2506,16 @@ def _analyze_and_persist_realtime_transcript(
         "groupedActionPlan": grouped_action_plan,
         "source": source,
     }
+    if isinstance(prepared.get("educationStudy"), dict):
+        technical_terms_payload["educationStudy"] = prepared["educationStudy"]
+    elif isinstance(normalized.get("educationStudy"), dict):
+        technical_terms_payload["educationStudy"] = normalized["educationStudy"]
+    if (
+        prepared.get("evidenceUnavailable") is True
+        or normalized.get("evidenceUnavailable") is True
+        or evidence_unavailable
+    ):
+        technical_terms_payload["evidenceUnavailable"] = True
     analysis_row = db.query(Analysis).filter(Analysis.meeting_id == meeting_id).first()
     if analysis_row is None:
         analysis_row = Analysis(meeting_id=meeting_id)
@@ -2458,6 +2535,12 @@ def _analyze_and_persist_realtime_transcript(
     analysis_for_job_state["analysisFeatureSet"] = prepared_feature_set
     analysis_for_job_state["groupedActionPlan"] = grouped_action_plan
     analysis_for_job_state["source"] = source
+    if isinstance(technical_terms_payload.get("educationStudy"), dict):
+        analysis_for_job_state["educationStudy"] = technical_terms_payload[
+            "educationStudy"
+        ]
+    if technical_terms_payload.get("evidenceUnavailable") is True:
+        analysis_for_job_state["evidenceUnavailable"] = True
     analysis_run = persist_completed_analysis_run(
         db=db,
         meeting_id=meeting_id,
@@ -2481,7 +2564,14 @@ def _analyze_and_persist_realtime_transcript(
     set_job_status(
         meeting_id=meeting_id,
         status="COMPLETED",
-        result={"analysis": analysis_for_job_state, "source": source},
+        result=build_completed_analysis_job_result(
+            meeting_id=meeting_id,
+            analysis=analysis_for_job_state,
+            source=source,
+            domain_mode=requested_domain_mode,
+            recording_session_id=recording_session_id,
+            attempt_id=attempt_id,
+        ),
         stage="completed",
         progress=100,
     )
@@ -2491,6 +2581,7 @@ def _analyze_and_persist_realtime_transcript(
     return RealtimeTranscriptAnalysisResponse(
         meeting_id=meeting_id,
         status="completed",
+        analysis=analysis_for_job_state,
         transcript_hash=transcript_hash,
         source=source,
         promptVersion=prompt_version,
@@ -2618,12 +2709,11 @@ async def get_transcript(
         start_time_value: float,
         explicit_segment_id: Any,
     ) -> str:
-        segment_id = str(explicit_segment_id or "").strip()
-        if segment_id:
-            return segment_id
-        return (
-            f"meeting-{meeting_id_value}-start-{float(start_time_value):.3f}-"
-            f"{speaker_value.strip().lower().replace(' ', '_')}"
+        return resolve_segment_id_for_read(
+            meeting_id=meeting_id_value,
+            speaker=speaker_value,
+            start_time=start_time_value,
+            explicit_segment_id=explicit_segment_id,
         )
 
     def _segment_from_mapping(row: dict[str, Any]) -> TranscriptSegment:
@@ -2760,7 +2850,9 @@ async def get_transcript(
                 )
             else:
                 fragment_segments = (
-                    fragment_repository.assemble_visible_transcript_segments(meeting_id)
+                    fragment_repository.assemble_meeting_visible_transcript_segments(
+                        meeting_id
+                    )
                 )
         except AttributeError:
             fragment_segments = []
@@ -2943,6 +3035,7 @@ async def get_analysis(
                     action_items=[],
                     status="NOT_FOUND",
                     analysisStatus=ANALYSIS_STATUS_UNAVAILABLE_FOR_SCOPE,
+                    created_at=datetime.now(timezone.utc),
                 )
             normalized = analysis_payload_from_run(scoped_run, cache_hit=True)
             run_metadata = analysis_run_response_metadata(scoped_run, cache_hit=True)
@@ -3003,6 +3096,8 @@ async def get_analysis(
                 staleReason=run_metadata.get("staleReason")
                 or normalized.get("staleReason"),
                 retryAfterSeconds=normalized.get("retryAfterSeconds"),
+                educationStudy=normalized.get("educationStudy"),
+                evidenceUnavailable=normalized.get("evidenceUnavailable"),
             )
 
         job_state = get_job_status(meeting_id)
@@ -3074,6 +3169,8 @@ async def get_analysis(
                 staleReason=run_metadata.get("staleReason")
                 or normalized.get("staleReason"),
                 retryAfterSeconds=normalized.get("retryAfterSeconds"),
+                educationStudy=normalized.get("educationStudy"),
+                evidenceUnavailable=normalized.get("evidenceUnavailable"),
             )
 
         if pipeline is None:
@@ -3159,6 +3256,8 @@ async def get_analysis(
             staleReason=run_metadata.get("staleReason")
             or normalized.get("staleReason"),
             retryAfterSeconds=normalized.get("retryAfterSeconds"),
+            educationStudy=normalized.get("educationStudy"),
+            evidenceUnavailable=normalized.get("evidenceUnavailable"),
         )
 
     except HTTPException:
@@ -3178,7 +3277,44 @@ async def get_analysis(
         )
 
 
-def _meeting_transcript_text_for_analysis(db: Session, meeting_id: int) -> str:
+def _meeting_transcript_text_for_analysis(
+    db: Session,
+    meeting_id: int,
+    *,
+    recording_session_id: int | None = None,
+    attempt_id: int | None = None,
+) -> str:
+    provenance = validate_transcript_provenance(recording_session_id, attempt_id)
+    repository = TranscriptPersistenceRepository(db)
+
+    if provenance.is_v2:
+        scoped_text = repository.assemble_attempt_transcript_text(
+            meeting_id,
+            recording_session_id=provenance.recording_session_id,
+            attempt_id=provenance.attempt_id,
+        )
+        if scoped_text.strip():
+            segments = repository.assemble_attempt_visible_transcript_segments(
+                meeting_id,
+                recording_session_id=provenance.recording_session_id,
+                attempt_id=provenance.attempt_id,
+            )
+            labeled: list[str] = []
+            for row in sorted(
+                segments,
+                key=lambda item: (
+                    float(item.get("start_time") or 0.0),
+                    int(item.get("seq") or 0),
+                ),
+            ):
+                text = str(row.get("text") or "").strip()
+                if not text:
+                    continue
+                speaker = str(row.get("speaker") or "SPEAKER_1").strip() or "SPEAKER_1"
+                labeled.append(f"{speaker}: {text}")
+            if labeled:
+                return "\n".join(labeled)
+
     latest_canonical = (
         db.query(Transcript)
         .filter(
@@ -3216,7 +3352,81 @@ def _meeting_transcript_text_for_analysis(db: Session, meeting_id: int) -> str:
             continue
         speaker = str(row.speaker or "SPEAKER_1").strip() or "SPEAKER_1"
         lines.append(f"{speaker}: {text}")
-    return "\n".join(lines).strip()
+    if lines:
+        return "\n".join(lines).strip()
+
+    # Realtime meetings often only have v2 fragments (no rows in transcripts yet).
+    return repository.assemble_meeting_analysis_transcript_text(meeting_id)
+
+
+def _load_structured_fragments_for_education(
+    db: Session,
+    meeting_id: int,
+    *,
+    recording_session_id: int | None = None,
+    attempt_id: int | None = None,
+) -> list[dict[str, Any]]:
+    """Load attempt-scoped (v2) or legacy visible fragments for education evidence."""
+    provenance = validate_transcript_provenance(recording_session_id, attempt_id)
+    repository = TranscriptPersistenceRepository(db)
+    if provenance.is_v2:
+        raw_segments = repository.assemble_attempt_visible_transcript_segments(
+            meeting_id,
+            recording_session_id=provenance.recording_session_id,
+            attempt_id=provenance.attempt_id,
+        )
+    else:
+        raw_segments = repository.assemble_meeting_visible_transcript_segments(
+            meeting_id
+        )
+
+    segments: list[dict[str, Any]] = []
+    for row in raw_segments:
+        text = str(row.get("text") or "").strip()
+        if not text:
+            continue
+        speaker = str(row.get("speaker") or "SPEAKER_1").strip() or "SPEAKER_1"
+        start_time = float(row.get("start_time") or row.get("start") or 0.0)
+        end_time = float(row.get("end_time") or row.get("end") or start_time)
+        segment_id = resolve_segment_id_for_read(
+            meeting_id=meeting_id,
+            speaker=speaker,
+            start_time=start_time,
+            explicit_segment_id=row.get("segment_id") or row.get("event_id"),
+        )
+        segments.append(
+            {
+                "segment_id": segment_id,
+                "event_id": segment_id,
+                "speaker": speaker,
+                "start": start_time,
+                "start_time": start_time,
+                "end": end_time,
+                "text": text,
+            }
+        )
+    return segments
+
+
+def _resolve_education_realtime_transcript_input(
+    *,
+    db: Session,
+    meeting_id: int,
+    plain_transcript: str,
+    recording_session_id: int | None = None,
+    attempt_id: int | None = None,
+) -> tuple[str, list[str], bool]:
+    """Return transcript text, allowed segment ids, evidence_unavailable."""
+    fragments = _load_structured_fragments_for_education(
+        db,
+        meeting_id,
+        recording_session_id=recording_session_id,
+        attempt_id=attempt_id,
+    )
+    allowed = sorted(collect_allowed_segment_ids(fragments))
+    if allowed:
+        return format_aligned_transcript_for_analysis(fragments), allowed, False
+    return plain_transcript, [], True
 
 
 @app.post("/api/meeting/{meeting_id}/analysis/rerun", response_model=AnalysisResponse)
@@ -3395,7 +3605,12 @@ async def analyze_realtime_transcript(
         transcript_text = _normalize_transcript_text(request.transcript or "")
         if not transcript_text:
             transcript_text = _normalize_transcript_text(
-                _meeting_transcript_text_for_analysis(db, meeting_id)
+                _meeting_transcript_text_for_analysis(
+                    db,
+                    meeting_id,
+                    recording_session_id=request.recording_session_id,
+                    attempt_id=request.attempt_id,
+                )
             )
         if not transcript_text:
             logger.warning(
@@ -3411,14 +3626,59 @@ async def analyze_realtime_transcript(
         transcript_hash = _compute_transcript_hash(
             transcript_text, request.transcript_hash
         )
+        mode = normalize_analysis_mode(request.mode)
+        analyzer = (
+            _analysis_cache_metadata_analyzer()
+            if mode == ANALYSIS_MODE_CACHE_ONLY
+            else _get_realtime_analysis_analyzer()
+        )
+        default_domain = (
+            getattr(analyzer, "analysis_domain_mode", "it") if analyzer else "it"
+        )
         requested_prompt_version = str(request.prompt_version or "").strip()
         requested_schema_version = str(request.schema_version or "").strip()
-        prompt_version = _normalize_analysis_version(
-            request.prompt_version, AIAnalyzer.PROMPT_VERSION
+        override_payload: dict[str, Any] = {}
+        if requested_prompt_version:
+            override_payload["promptVersion"] = _normalize_analysis_version(
+                request.prompt_version, AIAnalyzer.PROMPT_VERSION
+            )
+        if requested_schema_version:
+            override_payload["schemaVersion"] = _normalize_analysis_version(
+                request.schema_version, AIAnalyzer.SCHEMA_VERSION
+            )
+        if request.analysis_feature_set:
+            override_payload["analysisFeatureSet"] = _normalize_analysis_feature_set(
+                request.analysis_feature_set
+            )
+        normalized_domain, domain_payload = merge_domain_analysis_payload(
+            request.domain_mode,
+            override_payload,
+            default_domain=default_domain,
         )
-        schema_version = _normalize_analysis_version(
-            request.schema_version, AIAnalyzer.SCHEMA_VERSION
-        )
+        education_allowed_segment_ids: list[str] = []
+        education_evidence_unavailable = False
+        if normalized_domain == "education":
+            (
+                transcript_text,
+                education_allowed_segment_ids,
+                education_evidence_unavailable,
+            ) = _resolve_education_realtime_transcript_input(
+                db=db,
+                meeting_id=meeting_id,
+                plain_transcript=transcript_text,
+                recording_session_id=provenance.recording_session_id,
+                attempt_id=provenance.attempt_id,
+            )
+            transcript_hash = _compute_transcript_hash(transcript_text, None)
+            if education_evidence_unavailable:
+                logger.info(
+                    "event=EDUCATION_EVIDENCE_UNAVAILABLE meetingId={} source={} reason=plain_transcript",
+                    meeting_id,
+                    source,
+                )
+        prompt_version = str(domain_payload["promptVersion"])
+        schema_version = str(domain_payload["schemaVersion"])
+        analysis_feature_set = str(domain_payload["analysisFeatureSet"])
         if (
             prompt_version == "gemini-business-v1"
             or schema_version == "gemini-business-v1"
@@ -3434,6 +3694,8 @@ async def analyze_realtime_transcript(
             )
             prompt_version = AIAnalyzer.PROMPT_VERSION
             schema_version = AIAnalyzer.SCHEMA_VERSION
+            domain_payload["promptVersion"] = prompt_version
+            domain_payload["schemaVersion"] = schema_version
         logger.info(
             "event=ANALYSIS_VERSION_SELECTED meetingId={} source={} requestedPromptVersion={} requestedSchemaVersion={} selectedPromptVersion={} selectedSchemaVersion={} reason={}",
             meeting_id,
@@ -3448,17 +3710,8 @@ async def analyze_realtime_transcript(
                 else "request_allowed"
             ),
         )
-        analysis_feature_set = _normalize_analysis_feature_set(
-            request.analysis_feature_set
-        )
-        mode = normalize_analysis_mode(request.mode)
         analysis_cache_key = _analysis_cache_key(
             transcript_hash, prompt_version, schema_version, analysis_feature_set
-        )
-        analyzer = (
-            _analysis_cache_metadata_analyzer()
-            if mode == ANALYSIS_MODE_CACHE_ONLY
-            else _get_realtime_analysis_analyzer()
         )
         quality_verdict = evaluate_transcript_quality(
             transcript_text,
@@ -3480,8 +3733,10 @@ async def analyze_realtime_transcript(
                     analyzer=analyzer,
                     fallback_transcript_hash=transcript_hash,
                     fallback_text=transcript_text,
+                    analysis_payload=domain_payload,
                     recording_session_id=provenance.recording_session_id,
                     attempt_id=provenance.attempt_id,
+                    normalized_domain_mode=normalized_domain,
                 )
                 skipped_run, _ = begin_analysis_run(
                     db=db,
@@ -3543,13 +3798,10 @@ async def analyze_realtime_transcript(
                 analyzer=analyzer,
                 fallback_transcript_hash=transcript_hash,
                 fallback_text=transcript_text,
-                analysis_payload={
-                    "promptVersion": prompt_version,
-                    "schemaVersion": schema_version,
-                    "analysisFeatureSet": analysis_feature_set,
-                },
+                analysis_payload=domain_payload,
                 recording_session_id=provenance.recording_session_id,
                 attempt_id=provenance.attempt_id,
+                normalized_domain_mode=normalized_domain,
             )
             analysis_cache_key = build_analysis_run_idempotency_key_for_identity(
                 cache_identity
@@ -3597,7 +3849,14 @@ async def analyze_realtime_transcript(
                 set_job_status(
                     meeting_id=meeting_id,
                     status="COMPLETED",
-                    result={"analysis": job_state_analysis, "source": source},
+                    result=build_completed_analysis_job_result(
+                        meeting_id=meeting_id,
+                        analysis=job_state_analysis,
+                        source=source,
+                        domain_mode=normalized_domain,
+                        recording_session_id=provenance.recording_session_id,
+                        attempt_id=provenance.attempt_id,
+                    ),
                     stage="completed",
                     progress=100,
                 )
@@ -3699,9 +3958,10 @@ async def analyze_realtime_transcript(
             if mode == ANALYSIS_MODE_FAILED_RETRY:
                 retry_run = find_latest_analysis_run_for_identity(db, cache_identity)
                 if (
-                    retry_run is None
-                    or retry_run.status not in ANALYSIS_RETRYABLE_FAILURE_STATUSES
+                    retry_run is not None
+                    and retry_run.status not in ANALYSIS_RETRYABLE_FAILURE_STATUSES
                 ):
+                    # Completed/skipped/in-progress for this identity: do not re-run.
                     miss_metadata = analysis_miss_response_metadata(db, cache_identity)
                     return RealtimeTranscriptAnalysisResponse(
                         meeting_id=meeting_id,
@@ -3728,6 +3988,9 @@ async def analyze_realtime_transcript(
                         stale=miss_metadata.get("stale"),
                         staleReason=miss_metadata.get("staleReason"),
                     )
+                # retry_run is None (never analyzed for this scope) OR retryable
+                # failure → fall through to normal analysis. This recovers meetings
+                # that previously only hit EMPTY_TRANSCRIPT before a run existed.
 
             logger.info(
                 "ANALYSIS_CACHE_MISS meetingId={} provider={} model={} promptVersion={} schemaVersion={} canonicalTranscriptHash={} canonicalTranscriptVersion={} analysisInputMode={}",
@@ -3911,6 +4174,7 @@ async def analyze_realtime_transcript(
         finish_error_code: str | None = None
         finish_error_reason: str | None = None
         finish_retry_after_seconds = 0
+        finish_error_retryable: bool | None = None
         try:
             response = _analyze_and_persist_realtime_transcript(
                 meeting_id=meeting_id,
@@ -3920,10 +4184,14 @@ async def analyze_realtime_transcript(
                 schema_version=schema_version,
                 analysis_feature_set=analysis_feature_set,
                 source=source,
-                domain_mode=request.domain_mode,
+                domain_mode=normalized_domain,
                 db=db,
                 analysis_run=active_analysis_run,
                 rerun_reason=request.reason,
+                allowed_segment_ids=education_allowed_segment_ids,
+                evidence_unavailable=education_evidence_unavailable,
+                recording_session_id=provenance.recording_session_id,
+                attempt_id=provenance.attempt_id,
             )
             success = True
             return response
@@ -3965,6 +4233,7 @@ async def analyze_realtime_transcript(
             finish_error_code = error_code
             finish_error_reason = safe_error_message(analysis_error)
             finish_retry_after_seconds = retry_after_seconds
+            finish_error_retryable = True
             raise HTTPException(
                 status_code=429,
                 detail={
@@ -3998,16 +4267,35 @@ async def analyze_realtime_transcript(
             finish_retry_after_seconds = int(
                 _REALTIME_ANALYSIS_FAILURE_COOLDOWN_SECONDS
             )
+            finish_error_retryable = False
             raise HTTPException(
                 status_code=502,
                 detail="Gemini analysis failed",
             ) from analysis_error
         except (AnalysisConfigError, AnalysisUnavailableError) as analysis_error:
             db.rollback()
+            error_code = (
+                str(
+                    getattr(analysis_error, "error_code", None) or "GEMINI_UNAVAILABLE"
+                )
+                .strip()
+                .upper()
+                or "GEMINI_UNAVAILABLE"
+            )
+            exception_retryable = bool(getattr(analysis_error, "retryable", True))
+            if isinstance(analysis_error, AnalysisConfigError):
+                exception_retryable = False
+            will_retry = is_retryable_error_code(
+                error_code, retryable=exception_retryable
+            )
             mark_analysis_run_failed(
                 run=active_analysis_run,
-                status=ANALYSIS_STATUS_FAILED_RETRYABLE,
-                error_code="GEMINI_UNAVAILABLE",
+                status=(
+                    ANALYSIS_STATUS_FAILED_RETRYABLE
+                    if will_retry
+                    else ANALYSIS_STATUS_FAILED
+                ),
+                error_code=error_code,
                 error_message=safe_error_message(analysis_error),
                 analysis_retry_count=int(
                     getattr(active_analysis_run, "analysis_retry_count", 0) or 0
@@ -4018,19 +4306,31 @@ async def analyze_realtime_transcript(
             )
             db.commit()
             logger.warning(
-                "event=REALTIME_ANALYSIS_FAILED_RETRYABLE meetingId={} source={} errorCode=GEMINI_UNAVAILABLE error={}",
+                "event=REALTIME_ANALYSIS_FAILED meetingId={} source={} errorCode={} retryable={} error={}",
                 meeting_id,
                 source,
+                error_code,
+                will_retry,
                 safe_error_message(analysis_error),
             )
-            finish_error_code = "GEMINI_UNAVAILABLE"
+            finish_error_code = error_code
             finish_error_reason = safe_error_message(analysis_error)
             finish_retry_after_seconds = int(
-                _REALTIME_ANALYSIS_FAILURE_COOLDOWN_SECONDS
+                getattr(analysis_error, "retry_after_seconds", None)
+                or _REALTIME_ANALYSIS_FAILURE_COOLDOWN_SECONDS
             )
+            finish_error_retryable = exception_retryable
             raise HTTPException(
                 status_code=503,
-                detail="Gemini service unavailable",
+                detail={
+                    "error": error_code,
+                    "message": _default_error_message(error_code),
+                    "details": {
+                        "provider": "gemini",
+                        "retryable": will_retry,
+                        "errorCode": error_code,
+                    },
+                },
             ) from analysis_error
         except Exception as analysis_error:
             db.rollback()
@@ -4052,6 +4352,7 @@ async def analyze_realtime_transcript(
             finish_retry_after_seconds = int(
                 _REALTIME_ANALYSIS_FAILURE_COOLDOWN_SECONDS
             )
+            finish_error_retryable = False
             raise HTTPException(
                 status_code=502,
                 detail="Gemini analysis failed",
@@ -4102,10 +4403,13 @@ async def analyze_realtime_transcript(
                 analysis_trace_id=finish_trace_id,
                 analysis_provider_alias=finish_provider_alias,
                 retry_exhausted=finish_retry_exhausted,
+                error_retryable=finish_error_retryable,
             )
             if (
                 not success
-                and is_retryable_error_code(finish_error_code)
+                and is_retryable_error_code(
+                    finish_error_code, retryable=finish_error_retryable
+                )
                 and active_analysis_run is not None
             ):
                 _schedule_background_analysis_retry(
@@ -4334,7 +4638,12 @@ async def analysis_provider_exception_handler(
         error = "DEEPGRAM_UNAVAILABLE"
         status_code = 503
     elif provider == "gemini":
-        error = "GEMINI_UNAVAILABLE"
+        error = (
+            str(getattr(exc, "error_code", None) or "GEMINI_UNAVAILABLE")
+            .strip()
+            .upper()
+            or "GEMINI_UNAVAILABLE"
+        )
         status_code = 503
     elif isinstance(exc, AnalysisRateLimitError):
         error = "SERVICE_UNAVAILABLE"
@@ -4343,7 +4652,12 @@ async def analysis_provider_exception_handler(
         error = "SERVICE_UNAVAILABLE"
         status_code = 503
     elif isinstance(exc, (AnalysisConfigError, AnalysisUnavailableError)):
-        error = "SERVICE_UNAVAILABLE"
+        error = (
+            str(getattr(exc, "error_code", None) or "SERVICE_UNAVAILABLE")
+            .strip()
+            .upper()
+            or "SERVICE_UNAVAILABLE"
+        )
         status_code = 503
     else:
         error = "SERVICE_UNAVAILABLE"

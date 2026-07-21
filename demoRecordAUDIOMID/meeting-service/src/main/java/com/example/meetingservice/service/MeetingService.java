@@ -1,10 +1,18 @@
 package com.example.meetingservice.service;
 
 import com.example.meetingservice.entity.Meeting;
+import com.example.meetingservice.entity.Subject;
 import com.example.meetingservice.repository.MeetingRepository;
 import com.example.meetingservice.repository.MeetingShareRepository;
+import com.example.meetingservice.repository.SubjectRepository;
 import lombok.RequiredArgsConstructor;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
@@ -12,7 +20,9 @@ import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Stream;
@@ -26,8 +36,23 @@ public class MeetingService {
     public static final String MEETING_STATUS_FAILED = "failed";
     public static final String MEETING_STATUS_SCHEDULED = "scheduled";
 
+    private static final int DEFAULT_PAGE = 1;
+    private static final int DEFAULT_PAGE_SIZE = 10;
+    private static final int MAX_PAGE_SIZE = 50;
+    private static final Set<String> UNCLASSIFIED_SORT_WHITELIST = Set.of(
+            "createdAt_desc",
+            "createdAt_asc",
+            "title_asc",
+            "title_desc");
+    private static final Map<String, Sort> UNCLASSIFIED_SORTS = Map.of(
+            "createdAt_desc", Sort.by(Sort.Order.desc("createdAt"), Sort.Order.desc("id")),
+            "createdAt_asc", Sort.by(Sort.Order.asc("createdAt"), Sort.Order.asc("id")),
+            "title_asc", Sort.by(Sort.Order.asc("title"), Sort.Order.asc("id")),
+            "title_desc", Sort.by(Sort.Order.desc("title"), Sort.Order.desc("id")));
+
     private final MeetingRepository meetingRepository;
     private final MeetingShareRepository meetingShareRepository;
+    private final SubjectRepository subjectRepository;
 
     public Meeting saveMeeting(String title, String audioPath){
         return saveMeeting(title, audioPath, null);
@@ -55,6 +80,35 @@ public class MeetingService {
             Long fileSize,
             String status
     ) {
+        return saveMeeting(
+                title,
+                audioPath,
+                ownerUserId,
+                originalFileName,
+                language,
+                audioHash,
+                fileSize,
+                status,
+                null);
+    }
+
+    @Transactional
+    public Meeting saveMeeting(
+            String title,
+            String audioPath,
+            Long ownerUserId,
+            String originalFileName,
+            String language,
+            String audioHash,
+            Long fileSize,
+            String status,
+            Long subjectId
+    ) {
+        Long resolvedSubjectId = null;
+        if (subjectId != null) {
+            requireActiveOwnedSubject(subjectId, ownerUserId);
+            resolvedSubjectId = subjectId;
+        }
 
         Meeting meeting = new Meeting();
 
@@ -66,6 +120,7 @@ public class MeetingService {
         meeting.setAudioHash(normalizeNullable(audioHash));
         meeting.setFileSize(fileSize);
         meeting.setStatus(normalizeMeetingStatus(status));
+        meeting.setSubjectId(resolvedSubjectId);
         meeting.setCreatedAt(LocalDateTime.now());
         meeting.setDeletedAt(null);
 
@@ -210,7 +265,7 @@ public class MeetingService {
             int pageSize
     ) {
         List<Meeting> all = findMeetingsForUser(userId, query, status, language, sort);
-        int safePageSize = Math.max(1, Math.min(pageSize, 50));
+        int safePageSize = Math.max(1, Math.min(pageSize, MAX_PAGE_SIZE));
         int safePage = Math.max(1, page);
         long total = all.size();
         int totalPages = total == 0 ? 0 : (int) Math.ceil((double) total / safePageSize);
@@ -220,6 +275,67 @@ public class MeetingService {
         }
         int toIndex = Math.min(fromIndex + safePageSize, all.size());
         return new MeetingPageResult(all.subList(fromIndex, toIndex), total, safePage, safePageSize, totalPages);
+    }
+
+    @Transactional(readOnly = true)
+    public MeetingPageResult findUnclassifiedForOwnerPage(
+            Long ownerUserId,
+            String search,
+            String sort,
+            Integer page,
+            Integer pageSize
+    ) {
+        int safePage = page == null ? DEFAULT_PAGE : Math.max(1, page);
+        int safePageSize = pageSize == null
+                ? DEFAULT_PAGE_SIZE
+                : Math.max(1, Math.min(pageSize, MAX_PAGE_SIZE));
+        Sort resolvedSort = resolveUnclassifiedSort(sort);
+        PageRequest pageable = PageRequest.of(safePage - 1, safePageSize, resolvedSort);
+        String normalizedSearch = normalizeNullable(search);
+        Page<Meeting> result = normalizedSearch == null
+                ? meetingRepository.findByOwnerUserIdAndSubjectIdIsNullAndDeletedAtIsNull(
+                        ownerUserId, pageable)
+                : meetingRepository.findUnclassifiedForOwner(
+                        ownerUserId, "%" + normalizedSearch + "%", pageable);
+        long total = result.getTotalElements();
+        int totalPages = total == 0 ? 0 : result.getTotalPages();
+        return new MeetingPageResult(
+                result.getContent(),
+                total,
+                safePage,
+                safePageSize,
+                totalPages);
+    }
+
+    @Transactional
+    public Meeting assignSubject(Long meetingId, Long ownerUserId, Long subjectId) {
+        Meeting meeting = findByIdForOwner(meetingId, ownerUserId);
+        if (subjectId == null) {
+            if (meeting.getSubjectId() == null) {
+                return meeting;
+            }
+            meeting.setSubjectId(null);
+            return meetingRepository.save(meeting);
+        }
+
+        requireActiveOwnedSubject(subjectId, ownerUserId);
+        if (Objects.equals(meeting.getSubjectId(), subjectId)) {
+            return meeting;
+        }
+        meeting.setSubjectId(subjectId);
+        return meetingRepository.save(meeting);
+    }
+
+    public void requireActiveOwnedSubject(Long subjectId, Long ownerUserId) {
+        if (ownerUserId == null) {
+            throw new IllegalArgumentException("Owner is required");
+        }
+        Subject subject = subjectRepository
+                .findByIdAndOwnerUserId(subjectId, ownerUserId)
+                .orElseThrow(() -> new NoSuchElementException("Subject not found"));
+        if (subject.getArchivedAt() != null) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Archived subjects cannot be assigned");
+        }
     }
 
     private boolean matchesMeetingFilters(Meeting meeting, String query, String status, String language) {
@@ -291,6 +407,17 @@ public class MeetingService {
             case MEETING_STATUS_SCHEDULED -> MEETING_STATUS_SCHEDULED;
             default -> MEETING_STATUS_PROCESSING;
         };
+    }
+
+    private Sort resolveUnclassifiedSort(String sort) {
+        if (sort == null || sort.isBlank()) {
+            return UNCLASSIFIED_SORTS.get("createdAt_desc");
+        }
+        String normalized = sort.trim();
+        if (!UNCLASSIFIED_SORT_WHITELIST.contains(normalized)) {
+            throw new IllegalArgumentException("Unsupported sort: " + normalized);
+        }
+        return UNCLASSIFIED_SORTS.get(normalized);
     }
 
     private boolean isSortAscending(String sort) {

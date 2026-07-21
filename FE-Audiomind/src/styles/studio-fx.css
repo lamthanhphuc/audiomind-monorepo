@@ -7,6 +7,17 @@
   z-index: 0;
 }
 
+.studio-ambient--muted .studio-ambient__orb {
+  opacity: 0.18;
+  filter: blur(80px);
+}
+
+.studio-ambient--muted .studio-ambient__grid,
+.studio-ambient--muted .studio-ambient__noise,
+.studio-ambient--muted .studio-ambient__scanline {
+  opacity: 0.2;
+}
+
 .studio-ambient__orb {
   position: absolute;
   border-radius: 50%;
