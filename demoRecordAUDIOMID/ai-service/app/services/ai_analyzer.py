@@ -2200,24 +2200,32 @@ NỘI DUNG:
             gemini_metrics.success(workload.value, model)
             return text, key_alias
 
-        base_max_output_tokens = max_output_tokens
-        if base_max_output_tokens is None:
-            base_max_output_tokens = self._workload_output_budget(workload)
+        requested_max_output_tokens = max_output_tokens
+        if requested_max_output_tokens is None:
+            requested_max_output_tokens = self._workload_output_budget(workload)
         # A controlled retry may only use remaining room in this workload's
         # configured ceiling; it never raises the ceiling implicitly.
         retry_ceiling = self._workload_output_budget(workload)
-        max_tokens_retry_output_budget = min(
-            retry_ceiling,
-            max(
-                int(base_max_output_tokens or 1) + 512,
-                int(base_max_output_tokens or 1) * 2,
-            ),
+        configured_budget = min(
+            max(1, int(requested_max_output_tokens or 1)),
+            max(1, int(retry_ceiling or 1)),
         )
+        # Leave in-ceiling headroom for one MAX_TOKENS compact retry so the
+        # primary call does not sit on the hard ceiling with nowhere to go.
+        leave_max_tokens_headroom = (
+            self.gemini_max_tokens_retry_enabled
+            and self.gemini_max_token_retries > 0
+            and configured_budget > 512
+        )
+        primary_max_output_tokens = (
+            configured_budget - 512 if leave_max_tokens_headroom else configured_budget
+        )
+        max_tokens_retry_output_budget = configured_budget
 
         attempt_variants: List[Dict[str, Any]] = [
             {
                 "schema": response_schema,
-                "max_output_tokens": base_max_output_tokens,
+                "max_output_tokens": primary_max_output_tokens,
                 "reason": "primary",
             }
         ]

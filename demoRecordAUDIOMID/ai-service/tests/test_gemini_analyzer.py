@@ -1271,7 +1271,7 @@ def test_gemini_analyzer_schema_400_retries_once_without_schema(monkeypatch):
     assert "responseSchema" not in second_payload["generationConfig"]
 
 
-def test_gemini_analyzer_max_tokens_does_not_raise_workload_ceiling(
+def test_gemini_analyzer_max_tokens_retries_within_workload_ceiling(
     monkeypatch,
 ):
     fake_client = _FakeClient(
@@ -1302,13 +1302,16 @@ def test_gemini_analyzer_max_tokens_does_not_raise_workload_ceiling(
         api_key="test-gemini-key",
         analysis_max_output_tokens=1024,
     )
-    with pytest.raises(AnalysisUnavailableError):
-        analyzer.analyze_meeting("hello world")
+    result = analyzer.analyze_meeting("hello world")
 
-    assert len(fake_client.calls) == 1
+    assert result["summary"] == "Recovered after max tokens"
+    assert len(fake_client.calls) == 2
     first_payload = fake_client.calls[0][1]["json"]
-    assert first_payload["generationConfig"]["maxOutputTokens"] == 1024
+    second_payload = fake_client.calls[1][1]["json"]
+    assert first_payload["generationConfig"]["maxOutputTokens"] == 512
     assert "responseSchema" in first_payload["generationConfig"]
+    assert second_payload["generationConfig"]["maxOutputTokens"] == 1024
+    assert "responseSchema" not in second_payload["generationConfig"]
 
 
 def test_gemini_analyzer_max_tokens_never_implicitly_doubles_4096_to_8192(
@@ -1325,7 +1328,7 @@ def test_gemini_analyzer_max_tokens_never_implicitly_doubles_4096_to_8192(
                             "content": {"parts": [{"text": '{"summary":"truncated"}'}]},
                         }
                     ],
-                    "usageMetadata": {"candidatesTokenCount": 4084},
+                    "usageMetadata": {"candidatesTokenCount": 3580},
                 },
             ),
             _success_response(summary="Recovered with larger budget"),
@@ -1337,12 +1340,15 @@ def test_gemini_analyzer_max_tokens_never_implicitly_doubles_4096_to_8192(
         api_key="test-gemini-key",
         analysis_max_output_tokens=4096,
     )
-    with pytest.raises(AnalysisUnavailableError):
-        analyzer.analyze_meeting("hello world")
+    result = analyzer.analyze_meeting("hello world")
 
-    assert len(fake_client.calls) == 1
+    assert result["summary"] == "Recovered with larger budget"
+    assert len(fake_client.calls) == 2
     first_payload = fake_client.calls[0][1]["json"]
-    assert first_payload["generationConfig"]["maxOutputTokens"] == 4096
+    second_payload = fake_client.calls[1][1]["json"]
+    assert first_payload["generationConfig"]["maxOutputTokens"] == 3584
+    assert second_payload["generationConfig"]["maxOutputTokens"] == 4096
+    assert second_payload["generationConfig"]["maxOutputTokens"] < 8192
 
 
 def test_gemini_analyzer_max_tokens_retry_can_be_disabled(monkeypatch):
@@ -2257,7 +2263,7 @@ def test_model_404_after_rate_limit_stops_operation_and_caches_marker():
     assert not key_manager.is_model_unsupported("backup1", "gemini-2.0-flash")
 
 
-def test_max_tokens_at_configured_ceiling_does_not_retry(monkeypatch):
+def test_max_tokens_at_configured_ceiling_retries_within_ceiling_only(monkeypatch):
     fake_client = _FakeClient(
         [
             _FakeResponse(
@@ -2269,10 +2275,21 @@ def test_max_tokens_at_configured_ceiling_does_not_retry(monkeypatch):
                             "content": {"parts": [{"text": '{"summary":"truncated"}'}]},
                         }
                     ],
+                    "usageMetadata": {"candidatesTokenCount": 7680},
+                },
+            ),
+            _FakeResponse(
+                200,
+                {
+                    "candidates": [
+                        {
+                            "finishReason": "MAX_TOKENS",
+                            "content": {"parts": [{"text": '{"summary":"still truncated"}'}]},
+                        }
+                    ],
                     "usageMetadata": {"candidatesTokenCount": 8192},
                 },
             ),
-            _success_response(summary="Still capped"),
         ]
     )
     monkeypatch.setattr(AI_MODULE.httpx, "Client", lambda timeout: fake_client)
@@ -2290,8 +2307,7 @@ def test_max_tokens_at_configured_ceiling_does_not_retry(monkeypatch):
         call[1]["json"]["generationConfig"]["maxOutputTokens"]
         for call in fake_client.calls
     ]
-    assert budgets[0] == 8192
-    assert len(budgets) == 1
+    assert budgets == [7680, 8192]
     assert max(budgets) <= 8192
 
 
