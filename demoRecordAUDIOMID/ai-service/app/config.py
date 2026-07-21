@@ -393,7 +393,7 @@ class Settings(BaseSettings):
     study_artifact_list_default_size: int = Field(default=20)
     study_artifact_list_max_size: int = Field(default=100)
     subject_synthesis_max_meetings_per_batch: int = Field(
-        default=8,
+        default=3,
         validation_alias=AliasChoices("SUBJECT_SYNTHESIS_MAX_MEETINGS_PER_BATCH"),
     )
     subject_synthesis_max_input_tokens: int = Field(

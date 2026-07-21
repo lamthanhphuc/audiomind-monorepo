@@ -26,6 +26,48 @@ from app.services.study.exceptions import classify_provider_exception
 
 logger = logging.getLogger(__name__)
 
+_SYNTHESIS_EMPTY_SHELL: dict[str, Any] = {
+    "subjectOverview": "",
+    "learningObjectives": [],
+    "chapters": [],
+    "importantTerms": [],
+    "mustRemember": [],
+    "knowledgeGaps": [],
+    "examFocus": [],
+}
+
+
+def _coerce_synthesis_provider_object(parsed: Any, *, context: str) -> dict[str, Any]:
+    """Normalize schema-less Gemini retries that return bare arrays."""
+    if isinstance(parsed, dict):
+        return parsed
+    if isinstance(parsed, list):
+        if parsed and all(isinstance(item, dict) for item in parsed):
+            logger.warning(
+                "event=SUBJECT_SYNTHESIS_JSON_COERCED context=%s shape=list->object items=%s",
+                context,
+                len(parsed),
+            )
+            shell = dict(_SYNTHESIS_EMPTY_SHELL)
+            if any(
+                isinstance(item, dict)
+                and (
+                    item.get("title")
+                    or item.get("keyPoints")
+                    or item.get("summary")
+                    or item.get("id", "").startswith("chapter")
+                )
+                for item in parsed
+            ):
+                shell["chapters"] = parsed
+            else:
+                shell["mustRemember"] = parsed
+            return shell
+    raise StudyValidationError(
+        "INVALID_BATCH_JSON" if context == "batch" else "INVALID_FINAL_JSON",
+        f"{'Batch' if context == 'batch' else 'Final'} JSON invalid (expected object, got {type(parsed).__name__})",
+    )
+
 # Hard ceiling for hierarchical reduce rounds to prevent infinite loops.
 MAX_REDUCER_ROUNDS = 8
 # Deterministic cap on evidence segment ids embedded in prompts.
@@ -770,8 +812,7 @@ def run_hierarchical_synthesis(
                     "INVALID_PROVIDER_JSON",
                     "Provider response is not valid JSON",
                 ) from exc
-            if not isinstance(parsed, dict):
-                raise StudyValidationError("INVALID_BATCH_JSON", "Batch JSON invalid")
+            parsed = _coerce_synthesis_provider_object(parsed, context="batch")
             parsed["sourceMeetingIds"] = [int(s["meetingId"]) for s in batch]
             logger.info(
                 "event=SUBJECT_SYNTHESIS_BATCH_COMPLETED meetingCount=%s",
@@ -987,8 +1028,7 @@ def _reduce_intermediate_batch(
                 "INVALID_PROVIDER_JSON",
                 "Provider response is not valid JSON",
             ) from exc
-        if not isinstance(merged, dict):
-            raise StudyValidationError("INVALID_FINAL_JSON", "Final JSON invalid")
+        merged = _coerce_synthesis_provider_object(merged, context="final")
         meeting_ids: list[int] = []
         seen: set[int] = set()
         for batch in batches:

@@ -12,6 +12,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
+from app.services.gemini_policy import GeminiWorkload
 from app.models import (
     StudyArtifact,
     StudyArtifactSource,
@@ -1568,6 +1569,19 @@ def get_synthesis_for_owner(
     )
     if row is None:
         return None
+    if row.status != STATUS_COMPLETED:
+        completed = (
+            _live_synthesis_query(db)
+            .filter(
+                SubjectSynthesis.subject_id == subject_id,
+                SubjectSynthesis.owner_user_id == owner_user_id,
+                SubjectSynthesis.status == STATUS_COMPLETED,
+            )
+            .order_by(SubjectSynthesis.version.desc(), SubjectSynthesis.id.desc())
+            .first()
+        )
+        if completed is not None:
+            row = completed
     stale = False
     if row.status == STATUS_COMPLETED:
         stale = evaluate_stale_for_row(
@@ -1682,14 +1696,16 @@ def soft_delete_artifact(db: Session, *, artifact_id: int, owner_user_id: int) -
     db.commit()
 
 
-def _gemini_caller():
+def _gemini_caller(*, workload: GeminiWorkload = GeminiWorkload.STRUCTURED_ANALYSIS):
     from app.services.analysis_factory import build_analysis_analyzer
 
     settings = get_settings()
     analyzer = build_analysis_analyzer(settings)
 
     def call_gemini(*, prompt: str, system_prompt: str, response_schema: Any = None) -> str:
-        model = getattr(analyzer, "model", None) or "gemini-2.0-flash"
+        model = getattr(analyzer, "model", None) or getattr(
+            settings, "gemini_analysis_model", "gemini-3.1-flash-lite"
+        )
         return analyzer._call_gemini_text(
             prompt=prompt,
             system_prompt=system_prompt,
@@ -1697,6 +1713,7 @@ def _gemini_caller():
             temperature=0.2,
             response_json=True,
             response_schema=response_schema,
+            workload=workload,
         )
 
     return call_gemini

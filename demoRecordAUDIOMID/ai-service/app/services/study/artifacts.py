@@ -507,6 +507,50 @@ def validate_flashcards(
     return FlashcardsContent(cards=cards).model_dump()
 
 
+def _normalize_mcq_provider_payload(raw: dict[str, Any]) -> dict[str, Any]:
+    """Loosen common Gemini shapes before strict pydantic validation."""
+    payload = dict(raw or {})
+    questions = payload.get("questions")
+    if not isinstance(questions, list):
+        for alt in ("multipleChoice", "quiz", "items", "mcq", "multiple_choice"):
+            candidate = payload.get(alt)
+            if isinstance(candidate, list):
+                questions = candidate
+                break
+    if not isinstance(questions, list):
+        questions = []
+
+    normalized_questions: list[dict[str, Any]] = []
+    for item in questions:
+        if not isinstance(item, dict):
+            continue
+        question = dict(item)
+        options = question.get("options")
+        if isinstance(options, list) and options:
+            if all(isinstance(opt, str) for opt in options):
+                question["options"] = [
+                    {"id": letter, "text": text}
+                    for letter, text in zip("ABCD", options[:4])
+                ]
+            else:
+                fixed_options: list[dict[str, str]] = []
+                for index, opt in enumerate(options):
+                    if isinstance(opt, str):
+                        fixed_options.append(
+                            {"id": "ABCD"[index] if index < 4 else str(index), "text": opt}
+                        )
+                    elif isinstance(opt, dict):
+                        option = dict(opt)
+                        text = str(option.get("text") or option.get("label") or "").strip()
+                        option_id = str(option.get("id") or option.get("key") or "").strip()
+                        if not option_id and index < 4:
+                            option_id = "ABCD"[index]
+                        fixed_options.append({"id": option_id, "text": text})
+                question["options"] = fixed_options
+        normalized_questions.append(question)
+    return {"questions": normalized_questions}
+
+
 def validate_mcq(
     raw: dict[str, Any],
     *,
@@ -514,7 +558,7 @@ def validate_mcq(
     allowed_segments_by_meeting: dict[int, set[str]],
 ) -> dict[str, Any]:
     settings = get_settings()
-    content = MultipleChoiceContent.model_validate(raw or {})
+    content = MultipleChoiceContent.model_validate(_normalize_mcq_provider_payload(raw or {}))
     questions: list[McqQuestion] = []
     for idx, q in enumerate(content.questions, start=1):
         if not q.question.strip() or not q.explanation.strip():
@@ -849,6 +893,39 @@ def _prepare_artifact_prompt(
     return prompt
 
 
+def _coerce_provider_object(
+    parsed: Any, artifact_type: str
+) -> dict[str, Any]:
+    """Normalize schema-less Gemini retries that return bare arrays."""
+    if isinstance(parsed, dict):
+        if artifact_type == ARTIFACT_MULTIPLE_CHOICE:
+            return _normalize_mcq_provider_payload(parsed)
+        return parsed
+    if isinstance(parsed, list):
+        if artifact_type == ARTIFACT_FLASHCARDS:
+            logger.warning(
+                "event=STUDY_ARTIFACT_JSON_COERCED type=%s shape=list->object",
+                artifact_type,
+            )
+            return {"cards": parsed}
+        if artifact_type == ARTIFACT_MULTIPLE_CHOICE:
+            logger.warning(
+                "event=STUDY_ARTIFACT_JSON_COERCED type=%s shape=list->object",
+                artifact_type,
+            )
+            return {"questions": parsed}
+        if artifact_type == ARTIFACT_ESSAY_QUESTIONS:
+            logger.warning(
+                "event=STUDY_ARTIFACT_JSON_COERCED type=%s shape=list->object",
+                artifact_type,
+            )
+            return {"questions": parsed}
+    raise StudyValidationError(
+        "INVALID_ARTIFACT_JSON",
+        f"Artifact JSON invalid (expected object, got {type(parsed).__name__})",
+    )
+
+
 def generate_artifact_content(
     artifact_type: str,
     *,
@@ -904,8 +981,7 @@ def generate_artifact_content(
                 "INVALID_PROVIDER_JSON",
                 "Provider response is not valid JSON",
             ) from exc
-        if not isinstance(parsed, dict):
-            raise StudyValidationError("INVALID_ARTIFACT_JSON", "Artifact JSON invalid")
+        parsed = _coerce_provider_object(parsed, artifact_type)
 
         if artifact_type == ARTIFACT_MIND_MAP:
             return validate_mind_map(parsed, allowed_segments_by_meeting=allowed_segments_by_meeting)

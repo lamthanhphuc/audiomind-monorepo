@@ -18,6 +18,7 @@ from app.services.study import (
     ARTIFACT_MIND_MAP,
     ARTIFACT_MULTIPLE_CHOICE,
     MODE_EXPLICIT,
+    STATUS_COMPLETED,
     STATUS_FAILED,
     STATUS_QUEUED,
     StudyTransientError,
@@ -445,6 +446,70 @@ def test_malformed_provider_json_marks_validation_no_retry(db_session, monkeypat
     # Validation failures must not requeue (QUEUED + TRANSIENT_AI_ERROR).
     assert row.status != STATUS_QUEUED
     assert row.error_code != "TRANSIENT_AI_ERROR"
+
+
+def test_synthesis_list_json_coerced_to_batch_object():
+    from app.services.study.synthesis import _coerce_synthesis_provider_object
+
+    coerced = _coerce_synthesis_provider_object(
+        [{"id": "chapter-1", "title": "VPC", "keyPoints": []}],
+        context="batch",
+    )
+    assert isinstance(coerced, dict)
+    assert len(coerced["chapters"]) == 1
+
+
+def test_mcq_string_options_normalized_before_validation():
+    from app.services.study.artifacts import _normalize_mcq_provider_payload, validate_mcq
+
+    raw = _normalize_mcq_provider_payload(
+        {
+            "questions": [
+                {
+                    "question": f"Question {i}?",
+                    "options": [f"A{i}", f"B{i}", f"C{i}", f"D{i}"],
+                    "correctOptionId": "A",
+                    "explanation": f"Because {i}.",
+                }
+                for i in range(1, 6)
+            ]
+        }
+    )
+    result = validate_mcq(raw, max_count=5, allowed_segments_by_meeting={101: {"seg-1"}})
+    assert result["questions"][0]["options"][0]["id"] == "A"
+
+
+def test_provider_list_json_coerced_to_flashcard_object(db_session, monkeypatch):
+    artifact_id = _prepare_flashcards(db_session, monkeypatch)
+    row = study_service._live_artifact_query(db_session).filter_by(id=artifact_id).first()
+
+    def list_caller():
+        def call_gemini(**_kwargs):
+            return json.dumps(
+                [
+                    {
+                        "id": f"c{i}",
+                        "front": f"Question {i}?",
+                        "back": f"Answer {i}",
+                    }
+                    for i in range(1, 6)
+                ]
+            )
+
+        return call_gemini
+
+    monkeypatch.setattr(study_service, "_gemini_caller", list_caller)
+    monkeypatch.setattr(
+        study_service,
+        "fetch_subject_meeting_ids",
+        lambda subject_id, owner_user_id: [101, 102],
+    )
+
+    study_service.process_artifact_job(db_session, artifact_id)
+    db_session.refresh(row)
+    assert row.status == STATUS_COMPLETED
+    assert isinstance(row.content_json, dict)
+    assert row.content_json.get("cards")
 
 
 def test_valid_json_wrong_schema_marks_validation_no_retry(db_session, monkeypatch):
