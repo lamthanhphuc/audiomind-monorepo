@@ -36,11 +36,11 @@ ALL_ARTIFACT_TYPES = (
     ARTIFACT_EXAM_BRIEF,
 )
 
-SYNTHESIS_PROMPT_VERSION = "subject-synthesis-v1"
+SYNTHESIS_PROMPT_VERSION = "subject-synthesis-v2"
 SYNTHESIS_SCHEMA_VERSION = "subject-synthesis-schema-v1"
 
 ARTIFACT_VERSIONS: dict[str, tuple[str, str]] = {
-    ARTIFACT_MIND_MAP: ("mind-map-v1", "mind-map-schema-v1"),
+    ARTIFACT_MIND_MAP: ("mind-map-v2", "mind-map-schema-v1"),
     ARTIFACT_FLASHCARDS: ("flashcards-v1", "flashcards-schema-v1"),
     ARTIFACT_MULTIPLE_CHOICE: ("multiple-choice-v1", "multiple-choice-schema-v1"),
     ARTIFACT_ESSAY_QUESTIONS: ("essay-questions-v1", "essay-questions-schema-v1"),

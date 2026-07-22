@@ -210,7 +210,30 @@ def build_synthesis_system_instruction() -> str:
         "(educationStudy-shaped inputs from any analysis domain). "
         "Do not invent facts, exams, or segment IDs. Empty arrays must be []. "
         "Respond with pure JSON matching the schema. Vietnamese Unicode when language=vi; "
-        "keep English terms when needed and explain in Vietnamese."
+        "keep English terms when needed and explain in Vietnamese. "
+        "Prefer a RICH subject-level synthesis: detailed overview, many objectives, "
+        "one chapter per distinct lecture/topic when possible, and dense keyPoints/"
+        "glossary/mustRemember that preserve the depth of each source lecture."
+    )
+
+
+def _synthesis_depth_instructions(*, meeting_count_hint: int | None = None) -> str:
+    meeting_hint = (
+        f" Cover about {meeting_count_hint} source lectures without collapsing them into one thin chapter."
+        if meeting_count_hint and meeting_count_hint > 1
+        else ""
+    )
+    return (
+        "Depth requirements:\n"
+        "- subjectOverview: 2-4 sentences summarizing the whole subject.\n"
+        "- learningObjectives: at least 6 concrete objectives when sources support them.\n"
+        "- chapters: prefer one chapter per distinct lecture/topic;"
+        f"{meeting_hint}\n"
+        "- each chapter: summary 2-4 sentences, at least 5 keyPoints, include glossary and "
+        "mustRemember taken from that lecture when available.\n"
+        "- importantTerms / mustRemember / knowledgeGaps / examFocus: be comprehensive; "
+        "deduplicate only exact duplicates, do not drop unique content.\n"
+        "- Keep evidence segment IDs from allowedSegmentIds only."
     )
 
 
@@ -405,17 +428,28 @@ def build_batch_prompt(batch: list[dict[str, Any]], *, language: str) -> str:
     payload = [_compact_source(item) for item in batch]
     return (
         f"Language: {language}\n"
-        "Synthesize this batch of meeting educationStudy objects into one batch JSON.\n"
+        "Synthesize this batch of meeting educationStudy objects into one rich batch JSON.\n"
         "Preserve sourceMeetingIds and only use allowedSegmentIds for evidence.\n"
+        f"{_synthesis_depth_instructions(meeting_count_hint=len(batch))}\n"
         f"SOURCES:\n{json.dumps(payload, ensure_ascii=False)}"
     )
 
 
 def build_reducer_prompt(batches: list[dict[str, Any]], *, language: str) -> str:
+    meeting_ids: set[int] = set()
+    for batch in batches:
+        for mid in batch.get("sourceMeetingIds") or []:
+            try:
+                meeting_ids.add(int(mid))
+            except (TypeError, ValueError):
+                continue
     return (
         f"Language: {language}\n"
-        "Merge batch synthesis results into one subject synthesis JSON. "
-        "Do not drop evidence. Deduplicate chapters/terms. "
+        "Merge batch synthesis results into one RICH subject synthesis JSON. "
+        "Union chapters and lists across batches; do not collapse multiple lectures into one thin chapter. "
+        "Deduplicate only exact duplicate titles/terms; keep unique keyPoints, glossary, and mustRemember. "
+        "Do not drop evidence.\n"
+        f"{_synthesis_depth_instructions(meeting_count_hint=len(meeting_ids) or None)}\n"
         f"BATCHES:\n{json.dumps(batches, ensure_ascii=False)}"
     )
 
@@ -748,20 +782,37 @@ def _build_prompt_within_limit(
             )
             for item in items
         ]
-        # Absolute floor: keep only tiny provenance stubs.
+        # Absolute floor: keep chapter stubs instead of wiping all depth.
         if round_idx >= 16:
             items = [
                 {
                     "subjectOverview": str(
                         item.get("subjectOverview") or item.get("overview") or ""
-                    )[:40],
-                    "sourceMeetingIds": (item.get("sourceMeetingIds") or [])[:8],
-                    "chapters": [],
-                    "importantTerms": [],
-                    "mustRemember": [],
-                    "learningObjectives": [],
-                    "knowledgeGaps": [],
-                    "examFocus": [],
+                    )[:240],
+                    "batchOverview": str(item.get("batchOverview") or "")[:240],
+                    "sourceMeetingIds": (item.get("sourceMeetingIds") or [])[:16],
+                    "learningObjectives": list(item.get("learningObjectives") or [])[
+                        :8
+                    ],
+                    "chapters": [
+                        {
+                            "id": str(ch.get("id") or f"chapter-{idx}"),
+                            "title": str(ch.get("title") or "")[:120],
+                            "summary": str(ch.get("summary") or "")[:240],
+                            "keyPoints": list(ch.get("keyPoints") or [])[:5],
+                            "glossary": list(ch.get("glossary") or [])[:5],
+                            "mustRemember": list(ch.get("mustRemember") or [])[:5],
+                            "sourceMeetingIds": list(ch.get("sourceMeetingIds") or [])[
+                                :8
+                            ],
+                        }
+                        for idx, ch in enumerate(list(item.get("chapters") or [])[:8])
+                        if isinstance(ch, dict)
+                    ],
+                    "importantTerms": list(item.get("importantTerms") or [])[:12],
+                    "mustRemember": list(item.get("mustRemember") or [])[:12],
+                    "knowledgeGaps": list(item.get("knowledgeGaps") or [])[:8],
+                    "examFocus": list(item.get("examFocus") or [])[:8],
                     "meetingId": item.get("meetingId"),
                 }
                 for item in items
@@ -808,8 +859,9 @@ def run_hierarchical_synthesis(
         prompt, _ = _build_prompt_within_limit(
             build_prompt=lambda items, language: (
                 f"Language: {language}\n"
-                "Synthesize this batch of meeting educationStudy objects into one batch JSON.\n"
+                "Synthesize this batch of meeting educationStudy objects into one rich batch JSON.\n"
                 "Preserve sourceMeetingIds and only use allowedSegmentIds for evidence.\n"
+                f"{_synthesis_depth_instructions(meeting_count_hint=len(items))}\n"
                 f"SOURCES:\n{json.dumps(items, ensure_ascii=False)}"
             ),
             payload_items=compact_batch,

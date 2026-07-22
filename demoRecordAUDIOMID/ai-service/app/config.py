@@ -116,7 +116,7 @@ class Settings(BaseSettings):
     gemini_chat_max_output_tokens: int = 1200
     gemini_summary_max_output_tokens: int = 2048
     gemini_structured_analysis_max_output_tokens: int = 4096
-    gemini_study_artifact_max_output_tokens: int = 3072
+    gemini_study_artifact_max_output_tokens: int = 12288
     gemini_chat_max_input_tokens: int = 12000
     gemini_chat_history_max_tokens: int = 3000
     gemini_rag_context_max_tokens: int = 8000
@@ -391,7 +391,7 @@ class Settings(BaseSettings):
     study_artifact_list_default_size: int = Field(default=20)
     study_artifact_list_max_size: int = Field(default=100)
     subject_synthesis_max_meetings_per_batch: int = Field(
-        default=3,
+        default=2,
         validation_alias=AliasChoices("SUBJECT_SYNTHESIS_MAX_MEETINGS_PER_BATCH"),
     )
     subject_synthesis_max_input_tokens: int = Field(

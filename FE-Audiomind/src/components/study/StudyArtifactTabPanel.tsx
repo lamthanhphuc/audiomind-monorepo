@@ -246,7 +246,14 @@ export function StudyArtifactTabPanel({
   const showStale = Boolean(artifact?.stale || status === 'STALE')
 
   return (
-    <div className="subjects-tab-panel" data-testid={`study-artifact-tab-${artifactType}`}>
+    <div
+      className={
+        artifactType === 'MIND_MAP'
+          ? 'subjects-tab-panel subjects-tab-panel--mindmap-stage'
+          : 'subjects-tab-panel'
+      }
+      data-testid={`study-artifact-tab-${artifactType}`}
+    >
       <StudyArtifactGenerator
         subjectId={subjectId}
         meetings={meetings}
