@@ -617,9 +617,11 @@ def _resolve_mcq_correct_option_id(question: dict[str, Any]) -> None:
     answer_raw = (
         question.get("answer")
         if question.get("answer") is not None
-        else question.get("correctAnswer")
-        if question.get("correctAnswer") is not None
-        else question.get("correct")
+        else (
+            question.get("correctAnswer")
+            if question.get("correctAnswer") is not None
+            else question.get("correct")
+        )
     )
     if answer_raw is None and question.get("correctIndex") is not None:
         try:
