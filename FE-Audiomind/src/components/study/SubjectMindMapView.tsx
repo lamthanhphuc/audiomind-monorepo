@@ -133,7 +133,6 @@ export const layoutNodes = (content: MindMapContent): { nodes: Node[]; edges: Ed
         source: parentId,
         target: child.id,
         type: 'smoothstep',
-        pathOptions: { offset: 28 + depth * 4, borderRadius: 18 },
         className:
           depth === 1 ? 'mindmap-flow-edge mindmap-flow-edge--primary' : 'mindmap-flow-edge',
       })
@@ -179,7 +178,6 @@ export const layoutNodes = (content: MindMapContent): { nodes: Node[]; edges: Ed
       source: edge.source,
       target: edge.target,
       type: 'smoothstep',
-      pathOptions: { offset: 28, borderRadius: 18 },
       className: 'mindmap-flow-edge',
     })
     treeEdgeIds.add(id)
@@ -266,7 +264,6 @@ export function SubjectMindMapView({
             maxZoom={1.85}
             defaultEdgeOptions={{
               type: 'smoothstep',
-              pathOptions: { offset: 28, borderRadius: 18 },
               className: 'mindmap-flow-edge',
             }}
             onNodeClick={onOpenEvidence ? handleNodeClick : undefined}
