@@ -515,6 +515,52 @@ def test_mcq_string_options_normalized_before_validation():
     assert result["questions"][0]["options"][0]["id"] == "A"
 
 
+def test_mcq_answer_text_normalized_to_correct_option_id():
+    from app.services.study.artifacts import (
+        _normalize_mcq_provider_payload,
+        validate_mcq,
+    )
+
+    raw = _normalize_mcq_provider_payload(
+        {
+            "questions": [
+                {
+                    "question": f"Question {i}?",
+                    "options": [f"A{i}", f"B{i}", f"C{i}", f"D{i}"],
+                    "answer": f"B{i}",
+                    "explanation": f"Because {i}.",
+                }
+                for i in range(1, 6)
+            ]
+        }
+    )
+    result = validate_mcq(
+        raw, max_count=5, allowed_segments_by_meeting={101: {"seg-1"}}
+    )
+    assert result["questions"][0]["correctOptionId"] == "B"
+
+
+def test_flashcard_term_definition_normalized_before_validation():
+    from app.services.study.artifacts import (
+        _normalize_flashcard_provider_payload,
+        validate_flashcards,
+    )
+
+    raw = _normalize_flashcard_provider_payload(
+        {
+            "cards": [
+                {"term": f"Term {i}", "definition": f"Definition {i}"}
+                for i in range(1, 6)
+            ]
+        }
+    )
+    result = validate_flashcards(
+        raw, max_count=5, allowed_segments_by_meeting={101: {"seg-1"}}
+    )
+    assert result["cards"][0]["front"] == "Term 1"
+    assert result["cards"][0]["back"] == "Definition 1"
+
+
 def test_provider_list_json_coerced_to_flashcard_object(db_session, monkeypatch):
     artifact_id = _prepare_flashcards(db_session, monkeypatch)
     row = (

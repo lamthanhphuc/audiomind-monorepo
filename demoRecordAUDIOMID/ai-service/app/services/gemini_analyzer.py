@@ -22,7 +22,7 @@ class GeminiAnalyzer(AIAnalyzer):
         chat_max_output_tokens: int = 1200,
         summary_max_output_tokens: int = 2048,
         structured_analysis_max_output_tokens: int | None = None,
-        study_artifact_max_output_tokens: int = 3072,
+        study_artifact_max_output_tokens: int = 12288,
         analysis_retry_max_attempts: int = 2,
         gemini_rate_limit_retry_base_seconds: float = 30.0,
         gemini_rate_limit_retry_max_seconds: float = 90.0,

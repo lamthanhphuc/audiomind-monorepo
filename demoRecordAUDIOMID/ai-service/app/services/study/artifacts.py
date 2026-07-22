@@ -149,10 +149,33 @@ class ExamBriefContent(BaseModel):
 
 
 def artifact_system_instruction(artifact_type: str) -> str:
-    return (
+    base = (
         f"You generate AudioMind study artifact type {artifact_type}. "
         "Use ONLY provided synthesis/education sources. No invented facts or segment IDs. "
         "Return pure JSON. Empty arrays []. Vietnamese Unicode when language=vi."
+    )
+    if artifact_type == ARTIFACT_MIND_MAP:
+        return (
+            base
+            + " Build a RICH subject mind map: one hub chapter/topic per distinct lecture when possible, "
+            "each hub with several leaf concepts (key points, terms, must-remember). "
+            "Prefer breadth and depth over a tiny shallow tree. "
+            "Attach evidence only from allowedSegmentIds."
+        )
+    return base
+
+
+def _artifact_depth_instructions(artifact_type: str, *, meeting_count: int) -> str:
+    if artifact_type != ARTIFACT_MIND_MAP:
+        return ""
+    return (
+        "Mind map depth requirements:\n"
+        f"- Cover about {max(1, meeting_count)} source lectures.\n"
+        "- root.label: clear subject title.\n"
+        "- nodes: prefer one CHAPTER/TOPIC hub per lecture, plus 4-8 CONCEPT leaves under each hub.\n"
+        "- Total nodes should usually be >= 5 * meetingCount when sources are rich.\n"
+        "- edges: connect root->hub and hub->leaf; keep the tree acyclic.\n"
+        "- Keep labels short but specific; put longer detail in description.\n"
     )
 
 
@@ -484,7 +507,9 @@ def validate_flashcards(
     allowed_segments_by_meeting: dict[int, set[str]],
 ) -> dict[str, Any]:
     settings = get_settings()
-    content = FlashcardsContent.model_validate(raw or {})
+    content = FlashcardsContent.model_validate(
+        _normalize_flashcard_provider_payload(raw or {})
+    )
     seen_front: set[str] = set()
     cards: list[Flashcard] = []
     for idx, card in enumerate(content.cards, start=1):
@@ -529,6 +554,106 @@ def validate_flashcards(
         ),
     )
     return FlashcardsContent(cards=cards).model_dump()
+
+
+def _first_non_empty_str(item: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = item.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return ""
+
+
+def _normalize_flashcard_provider_payload(raw: dict[str, Any]) -> dict[str, Any]:
+    """Loosen common Gemini shapes before strict flashcard validation."""
+    payload = dict(raw or {})
+    cards = payload.get("cards")
+    if not isinstance(cards, list):
+        for alt in ("flashcards", "flashCards", "items", "deck"):
+            candidate = payload.get(alt)
+            if isinstance(candidate, list):
+                cards = candidate
+                break
+    if not isinstance(cards, list):
+        cards = []
+
+    normalized_cards: list[dict[str, Any]] = []
+    for item in cards:
+        if not isinstance(item, dict):
+            continue
+        card = dict(item)
+        front = _first_non_empty_str(
+            card, "front", "question", "term", "prompt", "title"
+        )
+        back = _first_non_empty_str(
+            card, "back", "answer", "definition", "response", "content"
+        )
+        if front:
+            card["front"] = front
+        if back:
+            card["back"] = back
+        normalized_cards.append(card)
+    return {"cards": normalized_cards}
+
+
+def _resolve_mcq_correct_option_id(question: dict[str, Any]) -> None:
+    existing = str(
+        question.get("correctOptionId")
+        or question.get("correct_option_id")
+        or question.get("correctAnswerId")
+        or ""
+    ).strip()
+    if existing:
+        question["correctOptionId"] = existing.upper()
+        return
+
+    options = question.get("options")
+    if not isinstance(options, list):
+        return
+
+    answer_raw = (
+        question.get("answer")
+        if question.get("answer") is not None
+        else (
+            question.get("correctAnswer")
+            if question.get("correctAnswer") is not None
+            else question.get("correct")
+        )
+    )
+    if answer_raw is None and question.get("correctIndex") is not None:
+        try:
+            idx = int(question["correctIndex"])
+        except (TypeError, ValueError):
+            idx = -1
+        if 0 <= idx < 4:
+            question["correctOptionId"] = "ABCD"[idx]
+            return
+
+    if answer_raw is None:
+        return
+
+    answer_text = str(answer_raw).strip()
+    if not answer_text:
+        return
+
+    if answer_text.upper() in {"A", "B", "C", "D"}:
+        question["correctOptionId"] = answer_text.upper()
+        return
+
+    for opt in options:
+        if not isinstance(opt, dict):
+            continue
+        text = str(opt.get("text") or opt.get("label") or "").strip()
+        option_id = str(opt.get("id") or opt.get("key") or "").strip().upper()
+        if text and text.lower() == answer_text.lower():
+            question["correctOptionId"] = option_id or "A"
+            return
+        if option_id and option_id == answer_text.upper():
+            question["correctOptionId"] = option_id
+            return
 
 
 def _normalize_mcq_provider_payload(raw: dict[str, Any]) -> dict[str, Any]:
@@ -578,6 +703,9 @@ def _normalize_mcq_provider_payload(raw: dict[str, Any]) -> dict[str, Any]:
                             option_id = "ABCD"[index]
                         fixed_options.append({"id": option_id, "text": text})
                 question["options"] = fixed_options
+        _resolve_mcq_correct_option_id(question)
+        if not str(question.get("explanation") or "").strip():
+            question["explanation"] = "Theo nguồn học liệu đã cung cấp."
         normalized_questions.append(question)
     return {"questions": normalized_questions}
 
@@ -804,10 +932,14 @@ def _build_artifact_user_prompt(
     options: dict[str, Any],
     source_payload: dict[str, Any],
 ) -> str:
+    meetings = source_payload.get("meetings")
+    meeting_count = len(meetings) if isinstance(meetings, list) else 0
+    depth = _artifact_depth_instructions(artifact_type, meeting_count=meeting_count)
     return (
         f"Generate {artifact_type} JSON. prompt={prompt_version} schema={schema_version}. "
         f"Requested count={count_hint}. Difficulty={options['difficulty']}. "
         f"Language={options['language']}.\n"
+        f"{depth}"
         f"SOURCE:\n{json.dumps(source_payload, ensure_ascii=False)}"
     )
 
@@ -952,6 +1084,8 @@ def _coerce_provider_object(parsed: Any, artifact_type: str) -> dict[str, Any]:
     if isinstance(parsed, dict):
         if artifact_type == ARTIFACT_MULTIPLE_CHOICE:
             return _normalize_mcq_provider_payload(parsed)
+        if artifact_type == ARTIFACT_FLASHCARDS:
+            return _normalize_flashcard_provider_payload(parsed)
         return parsed
     if isinstance(parsed, list):
         if artifact_type == ARTIFACT_FLASHCARDS:
@@ -959,13 +1093,13 @@ def _coerce_provider_object(parsed: Any, artifact_type: str) -> dict[str, Any]:
                 "event=STUDY_ARTIFACT_JSON_COERCED type=%s shape=list->object",
                 artifact_type,
             )
-            return {"cards": parsed}
+            return _normalize_flashcard_provider_payload({"cards": parsed})
         if artifact_type == ARTIFACT_MULTIPLE_CHOICE:
             logger.warning(
                 "event=STUDY_ARTIFACT_JSON_COERCED type=%s shape=list->object",
                 artifact_type,
             )
-            return {"questions": parsed}
+            return _normalize_mcq_provider_payload({"questions": parsed})
         if artifact_type == ARTIFACT_ESSAY_QUESTIONS:
             logger.warning(
                 "event=STUDY_ARTIFACT_JSON_COERCED type=%s shape=list->object",

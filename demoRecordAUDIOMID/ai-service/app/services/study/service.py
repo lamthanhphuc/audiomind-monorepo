@@ -1833,7 +1833,9 @@ def process_synthesis_job(db: Session, synthesis_id: int) -> None:
         options = row.options_json if isinstance(row.options_json, dict) else {}
         language = str(options.get("language") or "vi")
         content = run_hierarchical_synthesis(
-            ready, language=language, call_gemini=_lazy_gemini_caller()
+            ready,
+            language=language,
+            call_gemini=_lazy_gemini_caller(workload=GeminiWorkload.STUDY_ARTIFACT),
         )
         warnings = []
         if isinstance(content, dict) and isinstance(content.get("warnings"), list):
@@ -1985,7 +1987,7 @@ def process_artifact_job(db: Session, artifact_id: int) -> None:
             synthesis_content=synthesis_content,
             ready_sources=ready,
             options=row.options_json or {},
-            call_gemini=_lazy_gemini_caller(),
+            call_gemini=_lazy_gemini_caller(workload=GeminiWorkload.STUDY_ARTIFACT),
         )
         row.content_json = content
         row.status = STATUS_COMPLETED

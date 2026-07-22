@@ -71,24 +71,47 @@ export const layoutNodes = (content: MindMapContent): { nodes: Node[]; edges: Ed
     children.set(parent, list)
   }
 
+  // Stable visual order: hubs with larger subtrees first, then label.
+  const subtreeSize = (id: string): number => {
+    const kids = children.get(id) ?? []
+    if (kids.length === 0) return 1
+    return kids.reduce((sum, kid) => sum + subtreeSize(kid.id), 0)
+  }
+  for (const [parent, kids] of children) {
+    kids.sort((a, b) => {
+      const sizeDiff = subtreeSize(b.id) - subtreeSize(a.id)
+      if (sizeDiff !== 0) return sizeDiff
+      return (a.label || a.id).localeCompare(b.label || b.id, 'vi')
+    })
+    children.set(parent, kids)
+  }
+
   const flowNodes: Node[] = []
   const flowEdges: Edge[] = []
-  const levelGapX = 260
-  const levelGapY = 88
+  const levelGapX = 360
+  const leafGapY = 156
 
-  const walk = (parentId: string, depth: number, yStart: number): number => {
+  const measureLeaves = (id: string): number => {
+    const kids = children.get(id) ?? []
+    if (kids.length === 0) return 1
+    return kids.reduce((sum, kid) => sum + measureLeaves(kid.id), 0)
+  }
+
+  const walk = (parentId: string, depth: number, leafStart: number): number => {
     const kids = children.get(parentId) ?? []
     if (kids.length === 0) {
-      return yStart
+      return leafStart + 1
     }
-    let y = yStart
-    for (const child of kids) {
-      const subtreeStart = y
-      const subtreeEnd = walk(child.id, depth + 1, y)
-      const midY =
-        kids.length === 1
-          ? subtreeStart
-          : (subtreeStart + Math.max(subtreeEnd - levelGapY, subtreeStart)) / 2
+
+    let cursor = leafStart
+    for (let index = 0; index < kids.length; index += 1) {
+      const child = kids[index]
+      const leafCount = measureLeaves(child.id)
+      const childLeafStart = cursor
+      const childLeafEnd = walk(child.id, depth + 1, childLeafStart)
+      const centerLeaf = childLeafStart + (leafCount - 1) / 2
+      const midY = centerLeaf * leafGapY
+
       const childEvidence = pickStudyEvidence(child)
       const hasChildren = (children.get(child.id) ?? []).length > 0
       const kind = resolveKind(depth, child.type, hasChildren)
@@ -110,17 +133,31 @@ export const layoutNodes = (content: MindMapContent): { nodes: Node[]; edges: Ed
         source: parentId,
         target: child.id,
         type: 'smoothstep',
-        className: depth === 1 ? 'mindmap-flow-edge mindmap-flow-edge--primary' : 'mindmap-flow-edge',
+        className:
+          depth === 1 ? 'mindmap-flow-edge mindmap-flow-edge--primary' : 'mindmap-flow-edge',
       })
-      y = Math.max(subtreeEnd, midY + levelGapY)
+      cursor = childLeafEnd
+      // Extra leaf slots between sibling subtrees so fan-out edges stay readable.
+      if (index < kids.length - 1) {
+        cursor += 0.55
+      }
     }
-    return y
+    return cursor
   }
 
-  flowNodes.push({
+  const totalLeafSlots = walk(rootId, 1, 0)
+  const treeHeight = Math.max(0, (totalLeafSlots - 1) * leafGapY)
+  const rootY =
+    (children.get(rootId) ?? []).length > 0
+      ? flowNodes
+          .filter((node) => (node.position.x ?? 0) === levelGapX)
+          .reduce((sum, node, _i, arr) => sum + node.position.y / arr.length, 0)
+      : treeHeight / 2
+
+  flowNodes.unshift({
     id: rootId,
     type: 'mindmap',
-    position: { x: 0, y: 0 },
+    position: { x: 0, y: Number.isFinite(rootY) ? rootY : 0 },
     data: {
       label: content.root.label || 'Subject',
       kind: 'root',
@@ -128,24 +165,26 @@ export const layoutNodes = (content: MindMapContent): { nodes: Node[]; edges: Ed
     },
   })
 
+  // Only keep tree edges (parentId links). Extra model edges create crossing wires.
+  const treeEdgeIds = new Set(flowEdges.map((edge) => edge.id))
+  const parentById = new Map(validNodes.map((node) => [node.id, node.parentId || rootId]))
   for (const edge of content.edges ?? []) {
     if (!edge.source || !edge.target) continue
     const id = `${edge.source}->${edge.target}`
-    if (!flowEdges.some((e) => e.id === id)) {
-      flowEdges.push({
-        id,
-        source: edge.source,
-        target: edge.target,
-        type: 'smoothstep',
-        className: 'mindmap-flow-edge',
-      })
-    }
+    if (treeEdgeIds.has(id)) continue
+    if (parentById.get(edge.target) !== edge.source) continue
+    flowEdges.push({
+      id,
+      source: edge.source,
+      target: edge.target,
+      type: 'smoothstep',
+      className: 'mindmap-flow-edge',
+    })
+    treeEdgeIds.add(id)
   }
 
-  walk(rootId, 1, 0)
-
   const placed = new Set(flowNodes.map((n) => n.id))
-  let orphanY = 0
+  let orphanY = treeHeight + leafGapY
   for (const node of validNodes) {
     if (placed.has(node.id)) continue
     const orphanEvidence = pickStudyEvidence(node)
@@ -162,7 +201,7 @@ export const layoutNodes = (content: MindMapContent): { nodes: Node[]; edges: Ed
       },
       style: orphanEvidence ? { cursor: 'pointer' } : undefined,
     })
-    orphanY += levelGapY
+    orphanY += leafGapY
   }
 
   return { nodes: flowNodes, edges: flowEdges }
@@ -204,7 +243,7 @@ export function SubjectMindMapView({
   }
 
   return (
-    <div className="study-mindmap" data-testid={testId}>
+    <div className="study-mindmap study-mindmap--stage" data-testid={testId}>
       <div className="mindmap-flow-view study-mindmap__shell">
         <p className="mindmap-flow-view__hint">
           Sơ đồ cây trái → phải · kéo node để sắp xếp · zoom bằng nút điều khiển · bấm node có bằng
@@ -217,12 +256,12 @@ export function SubjectMindMapView({
             nodeTypes={nodeTypes}
             nodeOrigin={[0.5, 0.5]}
             fitView
-            fitViewOptions={{ padding: 0.24 }}
+            fitViewOptions={{ padding: 0.1, maxZoom: 1.15 }}
             nodesDraggable
             nodesConnectable={false}
             elementsSelectable
-            minZoom={0.2}
-            maxZoom={1.75}
+            minZoom={0.15}
+            maxZoom={1.85}
             defaultEdgeOptions={{
               type: 'smoothstep',
               className: 'mindmap-flow-edge',
@@ -230,7 +269,7 @@ export function SubjectMindMapView({
             onNodeClick={onOpenEvidence ? handleNodeClick : undefined}
             proOptions={{ hideAttribution: true }}
           >
-            <Background gap={20} size={1} color="rgba(148,163,184,0.18)" />
+            <Background gap={22} size={1} color="rgba(148,163,184,0.16)" />
             <Controls showInteractive />
             <MiniMap
               pannable
