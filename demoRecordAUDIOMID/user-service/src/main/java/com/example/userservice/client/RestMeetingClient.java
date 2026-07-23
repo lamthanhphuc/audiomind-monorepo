@@ -29,6 +29,9 @@ public class RestMeetingClient implements MeetingClient {
     @Value("${audiomind.meeting-api.base-url:http://localhost:8081}")
     private String meetingApiBaseUrl;
 
+    @Value("${app.internal.service-token:}")
+    private String internalServiceToken;
+
     @Override
     public Map<String, Object> getUserMeetings(Long userId, String authorization) {
         Map<String, Object> response = new LinkedHashMap<>();
@@ -97,6 +100,36 @@ public class RestMeetingClient implements MeetingClient {
                 }
         );
         return entity.getBody() == null ? Map.of() : entity.getBody();
+    }
+
+    @Override
+    public Map<String, Object> getWorkspaceSummary(Long userId, String email) {
+        Map<String, Object> fallback = new LinkedHashMap<>();
+        fallback.put("members", List.of());
+        fallback.put("pendingInvites", List.of());
+        fallback.put("sharedMeetings", List.of());
+        fallback.put("source", "meeting-service");
+        if (userId == null || !StringUtils.hasText(internalServiceToken)) {
+            fallback.put("error", "workspace_summary_unavailable");
+            return fallback;
+        }
+        try {
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.APPLICATION_JSON);
+            headers.add("X-Internal-Service-Token", internalServiceToken);
+            ResponseEntity<Map<String, Object>> entity = restTemplate.exchange(
+                    normalizeBaseUrl(meetingApiBaseUrl) + "/internal/workspace/summary",
+                    HttpMethod.POST,
+                    new HttpEntity<>(Map.of("userId", userId, "email", email == null ? "" : email), headers),
+                    new ParameterizedTypeReference<>() {
+                    }
+            );
+            return entity.getBody() == null ? fallback : entity.getBody();
+        } catch (Exception ex) {
+            log.warn("event=WORKSPACE_SUMMARY_FAILED userId={} errorCode={}", userId, ex.getClass().getSimpleName());
+            fallback.put("error", "upstream_unavailable");
+            return fallback;
+        }
     }
 
     private static String normalizeBaseUrl(String baseUrl) {

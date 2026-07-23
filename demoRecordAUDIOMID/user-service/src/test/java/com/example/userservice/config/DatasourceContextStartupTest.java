@@ -25,7 +25,7 @@ import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.utility.DockerImageName;
 
 /**
- * Context-level datasource + Flyway coverage for user-service (through V11 quota ledger).
+ * Context-level datasource + Flyway coverage for user-service (through V14 workspace/API key auth).
  */
 @DataJpaTest(
         properties = {
@@ -95,7 +95,7 @@ class DatasourceContextStartupTest {
     private StartupConfigValidator startupConfigValidator;
 
     @Test
-    void contextStartsWithValidJdbcAndFlywayThroughV11() throws Exception {
+    void contextStartsWithValidJdbcAndFlywayThroughV14() throws Exception {
         assertNotNull(dataSource);
         assertNotNull(flyway);
         assertNotNull(startupConfigValidator);
@@ -109,7 +109,7 @@ class DatasourceContextStartupTest {
                                         + " WHERE success = true"
                                         + " ORDER BY installed_rank DESC LIMIT 1")) {
             assertTrue(rs.next());
-            assertTrue(Integer.parseInt(rs.getString(1)) >= 11);
+            assertTrue(Integer.parseInt(rs.getString(1)) >= 14);
         }
     }
 }

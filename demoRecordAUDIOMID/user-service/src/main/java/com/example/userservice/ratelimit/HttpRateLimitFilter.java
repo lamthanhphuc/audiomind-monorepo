@@ -8,6 +8,9 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.util.HexFormat;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Map;
@@ -79,6 +82,13 @@ public class HttpRateLimitFilter extends OncePerRequestFilter {
                     HttpRateLimitFilter::clientIp
             ));
         }
+        if (resolveApiKey(request).isPresent()) {
+            return Optional.of(new RateLimitRule(
+                    "api-key",
+                    properties.getApiKeyPerMinute(),
+                    requestWithKey -> "key:" + sha256Hex(resolveApiKey(requestWithKey).orElse(""))
+            ));
+        }
         return Optional.empty();
     }
 
@@ -111,6 +121,27 @@ public class HttpRateLimitFilter extends OncePerRequestFilter {
             return "user:" + request.getUserPrincipal().getName();
         }
         return "ip:" + clientIp(request);
+    }
+
+    private static Optional<String> resolveApiKey(HttpServletRequest request) {
+        String explicit = request.getHeader("X-API-Key");
+        if (explicit != null && !explicit.isBlank()) {
+            return Optional.of(explicit.trim());
+        }
+        String authorization = request.getHeader("Authorization");
+        if (authorization != null && authorization.startsWith("ApiKey ")) {
+            return Optional.of(authorization.substring("ApiKey ".length()).trim());
+        }
+        return Optional.empty();
+    }
+
+    private static String sha256Hex(String value) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            return HexFormat.of().formatHex(digest.digest(value.getBytes(StandardCharsets.UTF_8)));
+        } catch (Exception ex) {
+            return "hash-error";
+        }
     }
 
     private record RateLimitRule(String name, int limit, java.util.function.Function<HttpServletRequest, String> keyFn) {

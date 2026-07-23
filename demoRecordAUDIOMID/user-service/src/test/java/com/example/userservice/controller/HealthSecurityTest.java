@@ -10,6 +10,8 @@ import com.example.userservice.client.MeetingClient;
 import com.example.userservice.client.ProcessingClient;
 import com.example.userservice.config.SecurityConfig;
 import com.example.userservice.repository.UserAccountRepository;
+import com.example.userservice.security.ApiKeyAuthenticationFilter;
+import com.example.userservice.security.ApiKeyScopeFilter;
 import com.example.userservice.security.JwtAuthenticationFilter;
 import com.example.userservice.security.JwtUtil;
 import com.example.userservice.security.TokenBlacklistStore;
@@ -58,7 +60,11 @@ class HealthSecurityTest {
             mock(JwtUtil.class),
             mock(TokenBlacklistStore.class)
         );
-        SecurityConfig securityConfig = new SecurityConfig(jwtAuthenticationFilter);
+        SecurityConfig securityConfig = new SecurityConfig(
+            jwtAuthenticationFilter,
+            mock(ApiKeyAuthenticationFilter.class),
+            mock(ApiKeyScopeFilter.class)
+        );
         AuthenticationEntryPoint authenticationEntryPoint = securityConfig.authenticationEntryPoint();
 
         OncePerRequestFilter authGuardFilter = new OncePerRequestFilter() {
