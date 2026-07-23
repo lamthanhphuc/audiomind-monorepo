@@ -1,6 +1,7 @@
 package com.example.meetingservice.service;
 
 import com.example.meetingservice.client.InternalUserLookupClient;
+import com.example.meetingservice.client.AuditEventClient;
 import com.example.meetingservice.client.ShareNotificationClient;
 import com.example.meetingservice.client.ShareNotificationResponse;
 import com.example.meetingservice.entity.Meeting;
@@ -40,6 +41,7 @@ public class MeetingShareService {
     private final MeetingShareInviteRepository meetingShareInviteRepository;
     private final InternalUserLookupClient userLookupClient;
     private final ShareNotificationClient shareNotificationClient;
+    private final AuditEventClient auditEventClient;
 
     public List<Map<String, Object>> listShares(Long meetingId, Long ownerUserId) {
         assertOwner(meetingId, ownerUserId);
@@ -74,6 +76,14 @@ public class MeetingShareService {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Share not found");
         }
         meetingShareRepository.deleteByMeetingIdAndSharedWithUserId(meetingId, sharedWithUserId);
+        recordAudit(
+                ownerUserId,
+                "MEETING_SHARE_REVOKED",
+                "MEETING",
+                String.valueOf(meetingId),
+                "Meeting share revoked",
+                Map.of("sharedWithUserId", sharedWithUserId)
+        );
     }
 
     @Transactional
@@ -94,6 +104,14 @@ public class MeetingShareService {
                 meetingId,
                 normalizedEmail,
                 STATUS_PENDING
+        );
+        recordAudit(
+                ownerUserId,
+                "MEETING_SHARE_PENDING_REVOKED",
+                "MEETING",
+                String.valueOf(meetingId),
+                "Pending meeting share invite revoked",
+                Map.of("email", normalizedEmail)
         );
     }
 
@@ -195,6 +213,14 @@ public class MeetingShareService {
                 user.get("email"),
                 share.getRole()
         );
+        recordAudit(
+                ownerUserId,
+                "MEETING_SHARED",
+                "MEETING",
+                String.valueOf(meetingId),
+                "Meeting shared with existing user",
+                Map.of("sharedWithUserId", targetUserId, "email", user.get("email"), "role", share.getRole())
+        );
         return view;
     }
 
@@ -256,6 +282,14 @@ public class MeetingShareService {
                 invite.getRole(),
                 notification.sent(),
                 notification.channel()
+        );
+        recordAudit(
+                ownerUserId,
+                "MEETING_SHARE_PENDING_INVITED",
+                "MEETING",
+                String.valueOf(meetingId),
+                "Pending meeting share invite created",
+                Map.of("email", normalizedEmail, "role", invite.getRole())
         );
         Map<String, Object> view = toPendingInviteView(saved);
         enrichEmailFields(view, notification);
@@ -375,5 +409,19 @@ public class MeetingShareService {
             return ROLE_VIEWER;
         }
         return role.trim().toUpperCase(Locale.ROOT);
+    }
+
+    private void recordAudit(
+            Long actorUserId,
+            String eventType,
+            String targetType,
+            String targetId,
+            String summary,
+            Map<String, Object> metadata
+    ) {
+        if (auditEventClient == null) {
+            return;
+        }
+        auditEventClient.record(actorUserId, eventType, targetType, targetId, summary, metadata);
     }
 }

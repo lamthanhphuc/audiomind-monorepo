@@ -11,9 +11,13 @@ public interface MeetingShareRepository extends JpaRepository<MeetingShare, Long
 
     List<MeetingShare> findBySharedWithUserIdOrderByCreatedAtDesc(Long sharedWithUserId);
 
+    List<MeetingShare> findByInvitedByUserIdOrderByCreatedAtDesc(Long invitedByUserId);
+
     Optional<MeetingShare> findByMeetingIdAndSharedWithUserId(Long meetingId, Long sharedWithUserId);
 
     boolean existsByMeetingIdAndSharedWithUserId(Long meetingId, Long sharedWithUserId);
+
+    long countBySharedWithUserId(Long sharedWithUserId);
 
     void deleteByMeetingIdAndSharedWithUserId(Long meetingId, Long sharedWithUserId);
 }

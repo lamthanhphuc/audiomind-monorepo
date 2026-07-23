@@ -48,6 +48,12 @@ from app.job_status_store import (
 from app.metrics import gemini_metrics, stt_metrics
 from app.models import Analysis, Transcript
 from app.logging_utils import safe_error_message, transcript_hash_prefix
+from app.services.api_key_auth import (
+    API_KEY_STATE_ATTR,
+    has_required_scope,
+    introspect_api_key,
+    resolve_api_key,
+)
 from app.services.ai_analyzer import AIAnalyzer
 from app.schemas import (
     ActionItem,
@@ -1017,10 +1023,26 @@ app.add_middleware(
     allow_origins=_resolve_cors_origins(),
     allow_credentials=False,
     allow_methods=["GET", "POST", "PUT", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "X-Request-ID", "X-Trace-ID"],
+    allow_headers=["Authorization", "Content-Type", "X-Request-ID", "X-Trace-ID", "X-API-Key"],
 )
 
 TRACE_HEADER_NAME = "X-Trace-Id"
+
+
+@app.middleware("http")
+async def api_key_auth_middleware(request: Request, call_next) -> Response:
+    api_key = resolve_api_key(request)
+    if not api_key:
+        return await call_next(request)
+    try:
+        identity = await introspect_api_key(api_key, request.method, request.url.path)
+    except Exception as exc:
+        logger.warning("event=API_KEY_INTROSPECTION_FAILED path={} errorCode={}", request.url.path, type(exc).__name__)
+        raise HTTPException(status_code=401, detail="Invalid API key")
+    if not identity or not has_required_scope(identity.get("scopes"), request.method):
+        raise HTTPException(status_code=403, detail="API key scope is not allowed")
+    setattr(request.state, API_KEY_STATE_ATTR, identity)
+    return await call_next(request)
 
 
 @app.middleware("http")
