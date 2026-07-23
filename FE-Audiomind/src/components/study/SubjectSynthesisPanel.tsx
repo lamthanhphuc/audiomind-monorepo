@@ -117,7 +117,7 @@ const ChapterCard = ({
     <GlossaryList title="Thuật ngữ" items={chapter.glossary} onOpenEvidence={onOpenEvidence} />
     <EvidencedList title="Cần nhớ" items={chapter.mustRemember} onOpenEvidence={onOpenEvidence} />
     {chapter.sourceMeetingIds?.length ? (
-      <p className="study-muted">Nguồn: buổi {chapter.sourceMeetingIds.join(', ')}</p>
+      <p className="study-muted">Nguồn: buổi {chapter.sourceMeetingIds.map((meetingId) => `mã hỗ trợ #${String(meetingId).slice(-6)}`).join(', ')}</p>
     ) : null}
   </article>
 )
@@ -258,7 +258,9 @@ export function SubjectSynthesisPanel({
               <h3>Nguồn</h3>
               <p className="study-muted">
                 Buổi học:{' '}
-                {(synthesis.sourceMeetingIds ?? synthesis.sources?.map((s) => s.meetingId) ?? []).join(', ')}
+                {(synthesis.sourceMeetingIds ?? synthesis.sources?.map((s) => s.meetingId) ?? [])
+                  .map((meetingId) => `mã hỗ trợ #${String(meetingId).slice(-6)}`)
+                  .join(', ')}
               </p>
             </section>
           ) : null}

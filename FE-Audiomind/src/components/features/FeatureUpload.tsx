@@ -100,7 +100,7 @@ export default function FeatureUpload({
   }
 
   return (
-    <div className="dashboard-page bg-gray-light pb-0">
+    <div className="dashboard-page pb-0">
       <div className="upload-container">
         <div className="upload-content studio-reveal studio-reveal--delay-1">
           {showOnboarding && onDismissOnboarding && onNavigateRealtime && onNavigateIntegrations && (

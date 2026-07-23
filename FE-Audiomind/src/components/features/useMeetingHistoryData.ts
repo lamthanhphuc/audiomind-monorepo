@@ -24,6 +24,8 @@ import {
   type MeetingResultScope,
 } from '../../utils/meetingResultScope'
 import type { HistoryLanguageFilter, HistoryStatusFilter } from '../../app/useHistorySearchFilters'
+import { resolveErrorPresentation } from '../../constants/errorCatalog'
+import { ERROR_UX_ENABLED } from '../../services/config'
 
 export type DetailAnalysisState = 'idle' | 'processing' | 'completed' | 'failed' | 'failed_retryable' | 'missing'
 export type ListState = 'idle' | 'loading' | 'ready' | 'empty' | 'error'
@@ -158,10 +160,15 @@ const getAnalysisStateFromResponse = (analysis: AiAnalysis | null): { state: Det
   }
   if (status === 'FAILED' || status === 'RATE_LIMITED') {
     const retryAfter = analysis.retryAfterSeconds && analysis.retryAfterSeconds > 0
-      ? ` Retry after ${analysis.retryAfterSeconds}s.`
+      ? ` Thử lại sau ${analysis.retryAfterSeconds}s.`
       : ''
-    const detail = analysis.errorCode ? ` ${analysis.errorCode}.` : ''
-    return { state: 'failed', analysis: null, error: `Phân tích AI tạm thời thất bại. Có thể thử lại.${detail}${retryAfter}` }
+    const fallback = `Phân tích AI tạm thời thất bại. Có thể thử lại.${retryAfter}`
+    const message = resolveErrorPresentation(analysis.errorCode, fallback, ERROR_UX_ENABLED).message
+    return {
+      state: 'failed',
+      analysis: null,
+      error: `${message}${message.endsWith(retryAfter.trim()) ? '' : retryAfter}`,
+    }
   }
   if (status === 'ANALYZING' || status === 'RUNNING' || status === 'QUEUED' || status === 'PENDING') {
     return { state: 'processing', analysis: null, error: null }

@@ -70,7 +70,7 @@ describe('DashboardLayout global meeting search', () => {
     const toggle = container.querySelector('[data-testid="theme-mode-toggle"]') as HTMLButtonElement
     expect(toggle).toBeTruthy()
     expect(toggle.getAttribute('aria-pressed')).toBe('true')
-    expect(container.querySelector('[data-testid="theme-mode-toggle-label"]')?.textContent).toBe('Light')
+    expect(container.querySelector('[data-testid="theme-mode-toggle-label"]')?.textContent).toBe('Chế độ sáng')
 
     await act(async () => {
       toggle.click()
@@ -96,7 +96,7 @@ describe('DashboardLayout global meeting search', () => {
 
     const toggle = container.querySelector('[data-testid="theme-mode-toggle"]') as HTMLButtonElement
     expect(toggle.getAttribute('aria-pressed')).toBe('false')
-    expect(container.querySelector('[data-testid="theme-mode-toggle-label"]')?.textContent).toBe('Night')
+    expect(container.querySelector('[data-testid="theme-mode-toggle-label"]')?.textContent).toBe('Chế độ tối')
   })
 })
 

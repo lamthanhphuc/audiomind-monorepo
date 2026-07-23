@@ -1,6 +1,8 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import {
   AudioLines,
+  BarChart3,
+  Bell,
   BrainCircuit,
   CreditCard,
   History,
@@ -12,8 +14,12 @@ import {
   Puzzle,
   Radio,
   Search,
+  Settings,
+  Shield,
   Sparkles,
   Sun,
+  User,
+  Users,
   type LucideIcon,
 } from 'lucide-react'
 import SubjectSidebarSection from '../subjects/SubjectSidebarSection'
@@ -25,12 +31,13 @@ import type { HistoryLanguageFilter, HistoryStatusFilter } from '../../app/useHi
 import type { ThemeMode } from '../../utils/themeMode'
 import { themeToggleLabel } from '../../utils/themeMode'
 
-export type DashboardScene = 'upload' | 'realtime' | 'analysis' | 'files' | 'mindmap' | 'knowledge' | 'insights' | 'integrations' | 'billing' | 'subjects' | 'subjectDetail' | 'unclassified'
+export type DashboardScene = 'upload' | 'realtime' | 'analysis' | 'files' | 'mindmap' | 'knowledge' | 'insights' | 'integrations' | 'billing' | 'subjects' | 'subjectDetail' | 'unclassified' | 'profile' | 'settings' | 'admin' | 'notifications' | 'usage' | 'team' | 'audit'
 
 type DashboardUser = {
   name: string
   email?: string
   plan?: string
+  role?: string
 }
 
 type DashboardLayoutProps = {
@@ -98,6 +105,7 @@ export default function DashboardLayout({
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const themeActionLabel = themeToggleLabel(theme)
   const ThemeIcon = theme === 'night' ? Sun : Moon
+  const isAdmin = user.role?.toUpperCase() === 'ADMIN'
 
   const handleNavigate = (scene: DashboardScene) => {
     onNavigate(scene)
@@ -130,6 +138,27 @@ export default function DashboardLayout({
       ],
     },
   ]
+
+  navGroups.push({
+    title: 'Tài khoản',
+    items: [
+      { scene: 'profile', label: 'Hồ sơ cá nhân', icon: User, testId: 'dashboard-nav-profile' },
+      { scene: 'settings', label: 'Cài đặt', icon: Settings, testId: 'dashboard-nav-settings' },
+      { scene: 'notifications', label: 'Thông báo', icon: Bell, testId: 'dashboard-nav-notifications' },
+      { scene: 'usage', label: 'Usage & quota', icon: BarChart3, testId: 'dashboard-nav-usage' },
+      { scene: 'team', label: 'Team / Workspace', icon: Users, testId: 'dashboard-nav-team' },
+    ],
+  })
+
+  if (isAdmin) {
+    navGroups.push({
+      title: 'Quản trị',
+      items: [
+        { scene: 'admin', label: 'Admin dashboard', icon: Shield, testId: 'dashboard-nav-admin' },
+        { scene: 'audit', label: 'Audit log', icon: Shield, testId: 'dashboard-nav-audit' },
+      ],
+    })
+  }
 
   const footerItems: DashboardNavItem[] = [
     { scene: 'billing', label: 'Gói & thanh toán', icon: CreditCard, testId: 'dashboard-nav-billing' },
@@ -284,8 +313,8 @@ export default function DashboardLayout({
                   onClick={onToggleTheme}
                   data-testid="theme-mode-toggle"
                   aria-pressed={theme === 'night'}
-                  aria-label={`Switch to ${themeActionLabel} mode`}
-                  title={`Switch to ${themeActionLabel}`}
+                  aria-label={`Chuyển sang ${themeActionLabel.toLowerCase()}`}
+                  title={`Chuyển sang ${themeActionLabel.toLowerCase()}`}
                 >
                   <span className="dashboard-icon-badge" aria-hidden>
                     <ThemeIcon size={16} strokeWidth={2.2} />

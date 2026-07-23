@@ -160,6 +160,22 @@ const JOB_STATUS_VI: Record<string, string> = {
   FAILED: 'Thất bại',
 }
 
+const STUDY_ARTIFACT_TYPE_VI: Record<string, string> = {
+  FLASHCARDS: 'Thẻ ghi nhớ',
+  MULTIPLE_CHOICE: 'Trắc nghiệm',
+  ESSAY_QUESTIONS: 'Câu hỏi tự luận',
+  EXAM_BRIEF: 'Đề cương ôn tập',
+  MIND_MAP: 'Sơ đồ tư duy',
+}
+
+const STUDY_ARTIFACT_STATUS_VI: Record<string, string> = {
+  QUEUED: 'Đang chờ',
+  PROCESSING: 'Đang tạo',
+  COMPLETED: 'Hoàn tất',
+  FAILED: 'Thất bại',
+  STALE: 'Cần cập nhật',
+}
+
 export const formatNotificationType = (type: string): string => {
   const key = type.trim().toUpperCase()
   return NOTIFICATION_TYPE_VI[key] ?? 'Thông báo'
@@ -168,5 +184,15 @@ export const formatNotificationType = (type: string): string => {
 export const formatJobStatus = (status: string): string => {
   const key = status.trim().toUpperCase()
   return JOB_STATUS_VI[key] ?? status
+}
+
+export const formatStudyArtifactType = (type: string): string => {
+  const key = type.trim().toUpperCase()
+  return STUDY_ARTIFACT_TYPE_VI[key] ?? type
+}
+
+export const formatStudyArtifactStatus = (status: string): string => {
+  const key = status.trim().toUpperCase()
+  return STUDY_ARTIFACT_STATUS_VI[key] ?? status
 }
 

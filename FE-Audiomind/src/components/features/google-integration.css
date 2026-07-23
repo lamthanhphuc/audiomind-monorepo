@@ -66,14 +66,17 @@
 /* Isolate card from studio dark-theme heading colors (.dashboard-page h3) */
 .app--studio .dashboard-page .google-calendar-event-card,
 .google-calendar-event-card {
-  --gcal-surface: #ffffff;
-  --gcal-surface-muted: #f8f9fa;
-  --gcal-border: #e0e3e7;
-  --gcal-text: #1f1f1f;
-  --gcal-text-secondary: #444746;
-  --gcal-text-muted: #5f6368;
-  --gcal-blue: #1a73e8;
-  --gcal-blue-hover: #1765cc;
+  --gcal-surface: var(--studio-elevated, #12141c);
+  --gcal-surface-muted: var(--studio-panel, #0c0e14);
+  --gcal-border: var(--studio-border, rgba(255, 255, 255, 0.12));
+  --gcal-text: var(--studio-text, #f4f6fb);
+  --gcal-text-secondary: var(--studio-muted, #cbd5e1);
+  --gcal-text-muted: var(--studio-muted, #94a3b8);
+  --gcal-blue: var(--studio-accent-2, #38bdf8);
+  --gcal-blue-hover: #67d8ff;
+  --gcal-header-bg: linear-gradient(180deg, rgba(255, 255, 255, 0.05) 0%, rgba(255, 255, 255, 0.02) 100%);
+  --gcal-copy-bg: rgba(255, 255, 255, 0.06);
+  --gcal-copy-hover-bg: rgba(56, 189, 248, 0.12);
   display: grid;
   gap: 0;
   border: 1px solid var(--gcal-border);
@@ -86,6 +89,20 @@
   overflow: hidden;
 }
 
+.app--light .google-calendar-event-card {
+  --gcal-surface: #ffffff;
+  --gcal-surface-muted: #f8f9fa;
+  --gcal-border: #e0e3e7;
+  --gcal-text: #1f1f1f;
+  --gcal-text-secondary: #444746;
+  --gcal-text-muted: #5f6368;
+  --gcal-blue: #1a73e8;
+  --gcal-blue-hover: #1765cc;
+  --gcal-header-bg: linear-gradient(180deg, #fafbfc 0%, #fff 100%);
+  --gcal-copy-bg: #fff;
+  --gcal-copy-hover-bg: #e8f0fe;
+}
+
 .google-calendar-event-card--popover {
   max-width: 440px;
 }
@@ -95,7 +112,7 @@
   gap: 14px;
   padding: 20px 20px 16px;
   border-bottom: 1px solid var(--gcal-border);
-  background: linear-gradient(180deg, #fafbfc 0%, #fff 100%);
+  background: var(--gcal-header-bg);
 }
 
 .google-calendar-event-card__accent {
@@ -193,7 +210,7 @@
   border: 0;
   border-radius: 8px;
   padding: 6px 10px;
-  background: #fff;
+  background: var(--gcal-copy-bg);
   color: var(--gcal-blue);
   font-size: 0.8125rem;
   font-weight: 600;
@@ -203,7 +220,7 @@
 }
 
 .google-calendar-event-card__copy-btn:hover {
-  background: #e8f0fe;
+  background: var(--gcal-copy-hover-bg);
 }
 
 .google-calendar-event-card__footer {

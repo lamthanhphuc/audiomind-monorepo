@@ -20,21 +20,28 @@ import {
   type LiveLifecycleState,
 } from './liveLifecycle'
 import { StudyWorkspaceProvider } from '../contexts/StudyWorkspaceProvider'
-import SubjectsListScene from '../components/subjects/SubjectsListScene'
-import SubjectDetailScene from '../components/subjects/SubjectDetailScene'
-import UnclassifiedMeetingsScene from '../components/subjects/UnclassifiedMeetingsScene'
 import FeatureAnalysis from '../components/features/FeatureAnalysis'
 import FeatureUpload from '../components/features/FeatureUpload'
 import MeetingHistoryScene from '../components/features/MeetingHistoryScene'
-import FeatureIntegrations from '../components/features/FeatureIntegrations'
-import ExpansionDashboardScene from '../components/features/ExpansionDashboardScene'
-import RealtimeDashboardScene from '../components/features/RealtimeDashboardScene'
 import { LoadingState } from '../components/ui/LoadingState'
 import { QuotaWarningBanner } from '../components/ui/QuotaWarningBanner'
 
+const AdminDashboardScene = lazy(() => import('../components/features/AdminDashboardScene'))
+const AuditLogScene = lazy(() => import('../components/features/AuditLogScene'))
 const BillingScene = lazy(() => import('../components/features/BillingScene'))
+const ExpansionDashboardScene = lazy(() => import('../components/features/ExpansionDashboardScene'))
+const FeatureIntegrations = lazy(() => import('../components/features/FeatureIntegrations'))
 const FeatureMindmap = lazy(() => import('../components/features/FeatureMindmap'))
 const KnowledgeVaultScene = lazy(() => import('../components/features/KnowledgeVaultScene'))
+const NotificationsScene = lazy(() => import('../components/features/NotificationsScene'))
+const ProfileScene = lazy(() => import('../components/features/ProfileScene'))
+const RealtimeDashboardScene = lazy(() => import('../components/features/RealtimeDashboardScene'))
+const SettingsScene = lazy(() => import('../components/features/SettingsScene'))
+const SubjectDetailScene = lazy(() => import('../components/subjects/SubjectDetailScene'))
+const SubjectsListScene = lazy(() => import('../components/subjects/SubjectsListScene'))
+const TeamWorkspaceScene = lazy(() => import('../components/features/TeamWorkspaceScene'))
+const UnclassifiedMeetingsScene = lazy(() => import('../components/subjects/UnclassifiedMeetingsScene'))
+const UsageScene = lazy(() => import('../components/features/UsageScene'))
 import { useThemeMode } from '../hooks/useThemeMode'
 import { themeClassName } from '../utils/themeMode'
 import { useAudioRecorder } from '../hooks/useAudioRecorder'
@@ -110,6 +117,7 @@ import {
   getCurrentUserId,
   getGoogleLoginUrl,
   getJwtPlan,
+  getJwtRole,
   login,
   refreshAccessToken,
   register,
@@ -600,15 +608,21 @@ const getRealtimeAnalysisFailureMessage = (metadata: AiAnalysis | null, fallback
 
   if (isRetryable) {
     const retrySuffix = retryAfter && retryAfter > 0 ? ` Thử lại sau ${retryAfter}s.` : ''
+    const baseMessage = resolveErrorPresentation(
+      errorCode,
+      'Phân tích AI tạm thời chưa sẵn sàng.',
+      ERROR_UX_ENABLED,
+    ).message
     if (metadata?.transcriptSaved) {
-      return `Transcript đã lưu. Phân tích AI tạm thời chưa sẵn sàng (${errorCode || 'temporary'}).${retrySuffix}`
+      return `Transcript đã lưu. ${baseMessage}${retrySuffix}`
     }
-    return `Phân tích AI tạm thời chưa sẵn sàng (${errorCode || 'temporary'}).${retrySuffix}`
+    return `${baseMessage}${retrySuffix}`
   }
 
-  const details = [errorCode, errorMessage].filter(Boolean).join(': ')
-  const retrySuffix = retryAfter && retryAfter > 0 ? ` Retry after ${retryAfter}s.` : ''
-  return `${fallback || 'Analysis failed temporarily. Retry available.'}${details ? ` ${details}.` : ''}${retrySuffix}`
+  const retrySuffix = retryAfter && retryAfter > 0 ? ` Thử lại sau ${retryAfter}s.` : ''
+  const fallbackMessage = fallback || errorMessage || 'Phân tích tạm thời thất bại. Có thể thử lại.'
+  const presentation = resolveErrorPresentation(errorCode, fallbackMessage, ERROR_UX_ENABLED)
+  return `${presentation.message}${retrySuffix}`
 }
 
 const metadataFromAnalysisError = (meetingId: number, error: ApiError): AiAnalysis => {
@@ -2183,29 +2197,30 @@ export default function App() {
       await openAnalysisForMeeting(meetingId, 'COMPLETED')
       setUploadNotice(null)
     } catch (error: any) {
-      if (isMissingSavedTranscriptRerunError(error)) {
+      let effectiveError = error
+      if (isMissingSavedTranscriptRerunError(effectiveError)) {
         try {
           await runFullPipelineRestart()
           return
         } catch (restartError: any) {
-          error = restartError
+          effectiveError = restartError
         }
       }
 
       setStatus('failed')
-      if (error instanceof ApiError) {
-        const resolvedCode = error.errorCode || (error.status === 402 ? 'QUOTA_EXCEEDED' : undefined)
-        const presentation = resolveErrorPresentation(resolvedCode, error.message, ERROR_UX_ENABLED)
+      if (effectiveError instanceof ApiError) {
+        const resolvedCode = effectiveError.errorCode || (effectiveError.status === 402 ? 'QUOTA_EXCEEDED' : undefined)
+        const presentation = resolveErrorPresentation(resolvedCode, effectiveError.message, ERROR_UX_ENABLED)
         setErrorMessage(presentation.message)
         setUploadErrorCode(resolvedCode ?? null)
       } else {
-        const pipelineErrorCode = resolveBatchPipelineErrorCode(error?.message)
+        const pipelineErrorCode = resolveBatchPipelineErrorCode(effectiveError?.message)
         if (pipelineErrorCode) {
-          const presentation = resolveErrorPresentation(pipelineErrorCode, error.message, ERROR_UX_ENABLED)
+          const presentation = resolveErrorPresentation(pipelineErrorCode, effectiveError.message, ERROR_UX_ENABLED)
           setErrorMessage(presentation.message)
           setUploadErrorCode(pipelineErrorCode)
         } else {
-          setErrorMessage(error?.message || 'Không phân tích lại được. Thử lại sau.')
+          setErrorMessage(effectiveError?.message || 'Không phân tích lại được. Thử lại sau.')
           setUploadErrorCode(null)
         }
       }
@@ -2268,6 +2283,7 @@ export default function App() {
     name: username.trim() || `User ${currentUserId || ''}`.trim() || 'AudioMind',
     email: currentUserId ? `user-${currentUserId}@audiomind` : undefined,
     plan: getJwtPlan(),
+    role: getJwtRole(),
   }), [currentUserId, username, sessionPlanSyncTick])
 
   const recentFiles = useMemo(() => {
@@ -2315,6 +2331,57 @@ export default function App() {
     ?? null
 
   const renderDashboardScene = () => {
+    if (featureScene === 'profile') {
+      return (
+        <ProfileScene
+          fallbackUser={dashboardUser}
+          domainMode={selectedDomainMode}
+          onRefreshJwt={async () => {
+            await refreshAccessToken()
+            setSessionPlanSyncTick((tick) => tick + 1)
+          }}
+          onNavigateIntegrations={() => navigateFeatureScene('integrations')}
+        />
+      )
+    }
+    if (featureScene === 'settings') {
+      return (
+        <SettingsScene
+          theme={theme}
+          role={dashboardUser.role}
+          uploadLanguage={selectedUploadLanguage}
+          realtimeLanguage={selectedRealtimeLanguage}
+          domainMode={selectedDomainMode}
+          realtimeSpeakerMode={selectedRealtimeSpeakerMode}
+          micSensitivity={selectedMicSensitivity}
+          noiseSuppressionEnabled={noiseSuppressionEnabled}
+          noiseSuppressionSupported={noiseSuppressionSupported}
+          onToggleTheme={toggleTheme}
+          onUploadLanguageChange={setSelectedUploadLanguage}
+          onRealtimeLanguageChange={(value) => setSelectedRealtimeLanguage(normalizeRealtimeLanguage(value))}
+          onDomainModeChange={handleDomainModeChange}
+          onRealtimeSpeakerModeChange={(value) => setSelectedRealtimeSpeakerMode(normalizeRealtimeSpeakerMode(value))}
+          onMicSensitivityChange={(value) => setSelectedMicSensitivity(normalizeMicSensitivityMode(value))}
+          onNoiseSuppressionChange={setNoiseSuppressionEnabled}
+          onResetOnboarding={() => setShowOnboarding(true)}
+        />
+      )
+    }
+    if (featureScene === 'admin') {
+      return <AdminDashboardScene role={dashboardUser.role} />
+    }
+    if (featureScene === 'notifications') {
+      return <NotificationsScene onOpenMeeting={(meetingId) => navigateFeatureScene('analysis', { meetingId })} />
+    }
+    if (featureScene === 'usage') {
+      return <UsageScene />
+    }
+    if (featureScene === 'team') {
+      return <TeamWorkspaceScene onNavigateHistory={() => navigateFeatureScene('files')} />
+    }
+    if (featureScene === 'audit') {
+      return <AuditLogScene role={dashboardUser.role} onNavigateAdmin={() => navigateFeatureScene('admin')} />
+    }
     if (featureScene === 'billing') {
       return (
         <BillingScene

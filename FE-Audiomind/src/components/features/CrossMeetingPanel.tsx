@@ -112,7 +112,7 @@ export default function CrossMeetingPanel({ onOpenMeeting }: CrossMeetingPanelPr
                       className="studio-link-btn"
                       onClick={() => onOpenMeeting?.(meeting.meetingId)}
                     >
-                      #{meeting.meetingId} {meeting.title || meeting.originalFileName || 'Meeting'}
+                      {meeting.title || meeting.originalFileName || 'Meeting liên quan'}
                     </button>
                     {meeting.reason && <span className="studio-muted-text">— {meeting.reason}</span>}
                   </li>

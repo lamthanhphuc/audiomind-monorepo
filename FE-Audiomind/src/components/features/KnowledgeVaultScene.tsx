@@ -198,7 +198,7 @@ export default function KnowledgeVaultScene({ onOpenMeeting }: Props) {
                   </button>
                   <div>
                     <h2 className="knowledge-vault-scene__group-title">
-                      {group.meetingId != null ? `Cuộc họp #${group.meetingId}` : 'Ghi chú chung'}
+                      {group.meetingId != null ? `Mã hỗ trợ #${String(group.meetingId).slice(-6)}` : 'Ghi chú chung'}
                     </h2>
                     <p className="knowledge-vault-scene__group-meta">
                       {group.notes.length} ghi chú

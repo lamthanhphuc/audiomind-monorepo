@@ -41,7 +41,7 @@ export default function FeatureIntegrations({
   onMeetingImported,
 }: FeatureIntegrationsProps) {
   return (
-    <div className="dashboard-page feature-integrations-page bg-gray-light" data-testid="feature-integrations">
+    <div className="dashboard-page feature-integrations-page" data-testid="feature-integrations">
       <GoogleIntegrationSection
         meetings={meetings}
         callbackNotice={callbackNotice}

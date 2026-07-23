@@ -106,7 +106,7 @@ describe('AnalysisStatusPanel', () => {
 
     const button = container.querySelector('[data-testid="analysis-reanalyze-button"]') as HTMLButtonElement
     expect(button.disabled).toBe(true)
-    expect(container.querySelector('[data-testid="analysis-error-metadata"]')?.textContent).toContain('GEMINI_UNAVAILABLE')
+    expect(container.querySelector('[data-testid="analysis-error-metadata"]')?.textContent).toContain('AI đang bận')
     expect(container.textContent).toContain('Thử lại sau 45 giây')
   })
 
@@ -184,7 +184,7 @@ describe('AnalysisStatusPanel', () => {
     expect(container.textContent).toContain('abc123hash')
     expect(container.textContent).toContain('canonical-transcript-v2')
     expect(container.textContent).toContain('Lần thử lại')
-    expect(container.textContent).toContain('trace-7u-1')
+    expect(container.textContent).not.toContain('trace-7u-1')
   })
 })
 

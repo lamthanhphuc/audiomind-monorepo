@@ -28,6 +28,7 @@ import type {
 import { EmptyState } from '../ui/EmptyState'
 import { ErrorState } from '../ui/ErrorState'
 import { LoadingState } from '../ui/LoadingState'
+import { formatStudyArtifactStatus, formatStudyArtifactType } from '../../utils/uiLabels'
 import './study.css'
 
 export type StudyArtifactTabPanelProps = {
@@ -276,7 +277,7 @@ export function StudyArtifactTabPanel({
       {!loading && artifact ? (
         <div className="study-panel-toolbar" data-testid="artifact-toolbar">
           <span className="study-muted">
-            {artifact.title ?? artifact.artifactType}
+            {artifact.title ?? formatStudyArtifactType(artifact.artifactType)}
             {artifact.version > 1 ? ` (v${artifact.version})` : ''}
           </span>
           <div className="study-panel-toolbar__actions">
@@ -301,8 +302,8 @@ export function StudyArtifactTabPanel({
         <ul className="study-polling-status" data-testid="polling-status-list">
           {pollingArtifacts.map((row) => (
             <li key={row.id} data-testid={`polling-status-item-${row.artifactType}`}>
-              <span className="study-muted">{row.artifactType}:</span>{' '}
-              <span>{String(row.status)}</span>
+              <span className="study-muted">{formatStudyArtifactType(row.artifactType)}:</span>{' '}
+              <span>{formatStudyArtifactStatus(String(row.status))}</span>
             </li>
           ))}
         </ul>

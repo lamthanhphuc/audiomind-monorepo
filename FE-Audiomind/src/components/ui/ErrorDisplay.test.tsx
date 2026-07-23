@@ -35,7 +35,7 @@ describe('ErrorDisplay', () => {
     const traceNode = container.querySelector('[data-testid="error-trace-id"]')
     expect(traceNode).not.toBeNull()
     expect(container.textContent).toContain('trace-abc-123')
-    expect(container.textContent).toContain('INTERNAL_ERROR')
+    expect(container.textContent).not.toContain('INTERNAL_ERROR')
   })
 
   it('renders CTA button for catalog error codes', () => {

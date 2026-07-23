@@ -35,7 +35,7 @@ export function EducationEvidenceButton({
       className="education-evidence-btn"
       onClick={() => onEvidenceClick(segmentIds)}
       data-testid="education-evidence-button"
-      title={`Segment: ${segmentIds.join(', ')}`}
+      title="Mở đoạn trích liên quan"
     >
       <Link2 size={12} aria-hidden />
       {label}

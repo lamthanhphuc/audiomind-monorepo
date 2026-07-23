@@ -73,7 +73,7 @@ export function StudySourceSelector({
                     disabled={disabled}
                     onChange={() => toggle(meeting.id)}
                   />
-                  <span>{meeting.title || `Meeting #${meeting.id}`}</span>
+                  <span>{meeting.title || 'Buổi học chưa đặt tên'}</span>
                 </label>
               </li>
             ))

@@ -177,7 +177,7 @@ export function useGoogleCalendarScheduler({
 
   const handleJoinLinkedMeeting = useCallback((row: GoogleCalendarMeetingListItem) => {
     const captureTitle = row.title?.trim()
-      || (row.meetingId != null ? `Cuộc họp #${row.meetingId}` : 'Cuộc họp')
+      || 'Cuộc họp Google Meet'
     try {
       sessionStorage.setItem(REALTIME_MEET_CAPTURE_TITLE_KEY, captureTitle)
     } catch {

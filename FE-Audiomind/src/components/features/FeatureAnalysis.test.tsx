@@ -574,7 +574,7 @@ describe('FeatureAnalysis', () => {
     expect(container.textContent).toContain('Saved transcript line')
     expect(container.querySelector('[data-testid="feature-analysis-hydrate-error"]')).toBeNull()
     await clickModelTab(container)
-    expect(container.textContent).toContain('Phân tích AI tạm thời chưa sẵn sàng')
+    expect(container.textContent).toContain('AI đang bận, vui lòng thử lại sau')
   })
 })
 

@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from 'react'
 
+import { resolveErrorPresentation } from '../../constants/errorCatalog'
 import {
   MEET_CAPTURE_GUIDE_STEPS,
   MEET_BROWSER_COMPAT_NOTES,
@@ -14,6 +15,7 @@ import {
   type GoogleCalendarStatus,
   type GoogleStatus,
 } from '../../services/googleIntegration'
+import { ERROR_UX_ENABLED } from '../../services/config'
 import { LoadingState } from '../ui/LoadingState'
 
 const AUDIOMIND_CALENDAR_DESCRIPTION = 'Audiomind sẽ tự động phân tích bản ghi sau cuộc họp.'
@@ -44,6 +46,14 @@ const formatCalendarRowTitle = (title: string, linkedMeeting: boolean): string =
   if (!linkedMeeting) return trimmed
   return trimmed.startsWith('Audiomind - ') ? trimmed : `Audiomind - ${trimmed}`
 }
+
+const getGoogleCalendarErrorMessage = (errorCode: string | null | undefined): string => (
+  resolveErrorPresentation(
+    errorCode ?? undefined,
+    'Google không tạo được Meet link.',
+    ERROR_UX_ENABLED,
+  ).message
+)
 
 type GoogleCalendarEventCardProps = {
   title: string
@@ -190,7 +200,7 @@ export function GoogleCalendarMeetingsTable({ rows, loading, onJoin }: GoogleCal
               <td className="google-calendar-meetings-table__title">
                 <span className="google-calendar-event-card__color-dot" aria-hidden="true" />
                 {formatCalendarRowTitle(
-                  row.title || (row.meetingId != null ? `Cuộc họp #${row.meetingId}` : 'Cuộc họp'),
+                  row.title || 'Cuộc họp Google Meet',
                   row.meetingId != null,
                 )}
               </td>
@@ -553,7 +563,7 @@ export function CalendarScheduler({
             <>
               {calendarStatus.creationStatus === 'failed' && (
                 <p className="google-integration__result-hint" data-testid="google-calendar-error">
-                  {calendarStatus.errorCode || 'Google không tạo được Meet link.'}
+                  {getGoogleCalendarErrorMessage(calendarStatus.errorCode)}
                 </p>
               )}
 

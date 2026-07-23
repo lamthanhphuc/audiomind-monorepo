@@ -184,7 +184,10 @@ describe('useAudioRecorder', () => {
     expect(result?.postStopChunkCount).toBeGreaterThanOrEqual(1)
     expect(latestRecorder?.state).toBe('stopped')
 
-    latestRecorder!.cleanupRecordingResources()
+    await act(async () => {
+      latestRecorder!.cleanupRecordingResources()
+      await flush()
+    })
     expect(MockMediaRecorder.instances[0].ondataavailable).toBeNull()
   })
 
@@ -203,7 +206,10 @@ describe('useAudioRecorder', () => {
     })
 
     expect(recorder.stream.getTracks).toBeDefined()
-    latestRecorder!.cleanupRecordingResources()
+    await act(async () => {
+      latestRecorder!.cleanupRecordingResources()
+      await flush()
+    })
   })
 
   it('ignores stale chunks from a previous recording session after restart', async () => {

@@ -57,7 +57,6 @@ export function GoogleIntegrationSection({
     setScheduleMode,
     title,
     setTitle,
-    meetingId,
     startAt,
     setStartAt,
     endAt,
@@ -130,7 +129,7 @@ export function GoogleIntegrationSection({
     }
     const cardTitle = scheduleMode === 'new'
       ? title.trim()
-      : (selectedMeeting?.title?.trim() || `Cuộc họp #${meetingId}`)
+      : (selectedMeeting?.title?.trim() || 'Cuộc họp Google Meet')
     return (
       <GoogleCalendarEventCard
         title={cardTitle}

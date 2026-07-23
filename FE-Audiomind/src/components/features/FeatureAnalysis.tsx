@@ -30,6 +30,8 @@ import { AnalysisPanel } from '../analysis/AnalysisPanel'
 import { useTranscriptEvidenceNavigation } from '../../hooks/useTranscriptEvidenceNavigation'
 import { ErrorState } from '../ui/ErrorState'
 import { LoadingState } from '../ui/LoadingState'
+import { resolveErrorPresentation } from '../../constants/errorCatalog'
+import { ERROR_UX_ENABLED } from '../../services/config'
 
 type FeatureAnalysisProps = {
   meetingId?: number | null
@@ -69,22 +71,24 @@ const getAnalysisStateFromResponse = (
     const retryAfter = analysis.retryAfterSeconds && analysis.retryAfterSeconds > 0
       ? ` Thử lại sau ${analysis.retryAfterSeconds}s.`
       : ''
-    const detail = analysis.errorCode ? ` (${analysis.errorCode})` : ''
+    const fallback = `Phân tích AI tạm thời chưa sẵn sàng.${retryAfter}`
+    const message = resolveErrorPresentation(analysis.errorCode, fallback, ERROR_UX_ENABLED).message
     return {
       state: 'failed',
       analysis: null,
-      error: `Phân tích AI tạm thời chưa sẵn sàng${detail}.${retryAfter}`,
+      error: `${message}${message.endsWith(retryAfter.trim()) ? '' : retryAfter}`,
     }
   }
   if (status === 'FAILED' || status === 'RATE_LIMITED' || status === 'QUOTA_BLOCKED') {
     const retryAfter = analysis.retryAfterSeconds && analysis.retryAfterSeconds > 0
       ? ` Thử lại sau ${analysis.retryAfterSeconds}s.`
       : ''
-    const detail = analysis.errorCode ? ` ${analysis.errorCode}.` : ''
+    const fallback = `Phân tích AI tạm thời thất bại. Có thể thử lại.${retryAfter}`
+    const message = resolveErrorPresentation(analysis.errorCode, fallback, ERROR_UX_ENABLED).message
     return {
       state: 'failed',
       analysis: null,
-      error: `Phân tích AI tạm thời thất bại. Có thể thử lại.${detail}${retryAfter}`,
+      error: `${message}${message.endsWith(retryAfter.trim()) ? '' : retryAfter}`,
     }
   }
   if (status === 'ANALYZING' || status === 'RUNNING' || status === 'QUEUED' || status === 'PENDING') {
@@ -422,7 +426,7 @@ export default function FeatureAnalysis({
 
   if (hydrateFromApi && hydrateState === 'loading') {
     return (
-      <div className="dashboard-page feature-analysis-page bg-gray-light" data-testid="feature-analysis-hydrating">
+      <div className="dashboard-page feature-analysis-page" data-testid="feature-analysis-hydrating">
         <header className="analysis-page-header">
           <div className="breadcrumbs">
             <button
@@ -435,7 +439,6 @@ export default function FeatureAnalysis({
               ←
             </button>
             <span>{title}</span>
-            {meetingId && <span className="meta-pill">ID {meetingId}</span>}
           </div>
         </header>
         <LoadingState message="Đang tải transcript và phân tích đã lưu..." />
@@ -445,7 +448,7 @@ export default function FeatureAnalysis({
 
   if (hydrateFromApi && hydrateState === 'error') {
     return (
-      <div className="dashboard-page feature-analysis-page bg-gray-light" data-testid="feature-analysis-hydrate-error">
+      <div className="dashboard-page feature-analysis-page" data-testid="feature-analysis-hydrate-error">
         <header className="analysis-page-header">
           <div className="breadcrumbs">
             <button
@@ -458,7 +461,6 @@ export default function FeatureAnalysis({
               ←
             </button>
             <span>{title}</span>
-            {meetingId && <span className="meta-pill">ID {meetingId}</span>}
           </div>
         </header>
         <ErrorState title="Không thể mở kết quả phân tích" message={hydrateError || 'Không thể tải dữ liệu meeting'} />
@@ -467,7 +469,7 @@ export default function FeatureAnalysis({
   }
 
   return (
-    <div className="dashboard-page feature-analysis-page bg-gray-light">
+    <div className="dashboard-page feature-analysis-page">
       <header className="analysis-page-header">
         <div className="breadcrumbs">
           <button
@@ -480,7 +482,6 @@ export default function FeatureAnalysis({
             ←
           </button>
           <span>{title}</span>
-          {meetingId && <span className="meta-pill">ID {meetingId}</span>}
           {statusBadge}
         </div>
       </header>

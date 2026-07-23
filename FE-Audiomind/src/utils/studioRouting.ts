@@ -30,6 +30,13 @@ export const STUDIO_SCENE_PATHS: Record<DashboardScene, string> = {
   subjects: '/studio/subjects',
   subjectDetail: '/studio/subjects/:subjectId',
   unclassified: '/studio/unclassified',
+  profile: '/studio/profile',
+  settings: '/studio/settings',
+  admin: '/studio/admin',
+  notifications: '/studio/notifications',
+  usage: '/studio/usage',
+  team: '/studio/team',
+  audit: '/studio/audit',
 }
 
 const SCENE_BY_PATH = Object.fromEntries(

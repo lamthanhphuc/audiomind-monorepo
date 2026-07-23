@@ -61,6 +61,10 @@ describe('SubjectDetailScene', () => {
   let container: HTMLDivElement
   let root: ReturnType<typeof createRoot>
 
+  const flush = async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  }
+
   beforeEach(() => {
     container = document.createElement('div')
     document.body.appendChild(container)
@@ -93,7 +97,7 @@ describe('SubjectDetailScene', () => {
     expect(container.textContent).toContain('Toán rời rạc')
   })
 
-  it('switches to synthesis tab without auto-generating', () => {
+  it('switches to synthesis tab without auto-generating', async () => {
     const onTabChange = vi.fn()
     act(() => {
       root.render(
@@ -108,8 +112,9 @@ describe('SubjectDetailScene', () => {
     })
 
     const synthesisTab = container.querySelector('[data-testid="subject-tab-synthesis"]') as HTMLButtonElement
-    act(() => {
+    await act(async () => {
       synthesisTab.click()
+      await flush()
     })
     expect(onTabChange).toHaveBeenCalledWith('synthesis')
   })

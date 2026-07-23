@@ -26,7 +26,7 @@ export const ErrorState = ({
       ctaLabel={presentation.ctaLabel}
       onCtaClick={onCtaClick}
       className={className}
-      showTraceId={ERROR_UX_ENABLED}
+      showTraceId={false}
       showCta={ERROR_UX_ENABLED}
     />
   )

@@ -462,9 +462,8 @@ body:has(.app--studio) {
 }
 
 .app--studio .analysis-left-panel .transcript-display__container {
-  max-height: min(62vh, 680px);
-  overflow-y: auto;
-  overscroll-behavior: contain;
+  max-height: none;
+  overflow: visible;
 }
 
 @media (max-width: 960px) {
@@ -1956,6 +1955,29 @@ body:has(.app--light) {
 }
 
 .app--light .dashboard-page {
+  color: var(--color-ink);
+}
+
+.app--light .feature-analysis-page .analysis-page-header,
+.app--light .feature-analysis-page .analysis-right-panel,
+.app--light .feature-analysis-page .doc-content {
+  background: #ffffff;
+  border-color: var(--color-border);
+  color: var(--color-ink);
+}
+
+.app--light .feature-analysis-page .analysis-left-panel {
+  background: transparent;
+}
+
+.app--light .feature-analysis-page .analysis-tabs {
+  background: var(--color-surface-sunken);
+  border-bottom-color: var(--color-border);
+}
+
+.app--light .feature-analysis-page .analysis-collapsible-panel__toggle {
+  background: #ffffff;
+  border-color: var(--color-border);
   color: var(--color-ink);
 }
 

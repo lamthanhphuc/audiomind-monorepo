@@ -17,12 +17,11 @@ export const ErrorDisplay = ({
   message,
   title = 'Lỗi',
   traceId,
-  errorCode,
   ctaId,
   ctaLabel,
   onCtaClick,
   className = '',
-  showTraceId = true,
+  showTraceId = false,
   showCta = true,
 }: ErrorDisplayProps) => (
   <div className={`ui-state ui-state--error ${className}`.trim()} role="alert">
@@ -42,7 +41,6 @@ export const ErrorDisplay = ({
     {showTraceId && traceId && (
       <p className="ui-state__trace-id" data-testid="error-trace-id">
         Mã hỗ trợ: <code>{traceId}</code>
-        {errorCode ? ` (${errorCode})` : ''}
       </p>
     )}
   </div>
