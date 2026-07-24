@@ -1,17 +1,19 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { AlertTriangle, Copy, KeyRound, RefreshCw } from 'lucide-react'
+import { AlertTriangle, CreditCard, RefreshCw, Save, Server, UsersRound } from 'lucide-react'
 import {
-  createUserApiKey,
+  deployRuntimeConfig,
+  getRuntimeConfig,
   listAdminTransactions,
   listAdminUsers,
-  listUserApiKeys,
   markBillingOrderPaid,
-  revokeUserApiKey,
+  updateRuntimeConfig,
   updateAdminUserPlan,
   updateAdminUserRole,
-  type AdminApiKey,
   type AdminTransaction,
   type AdminUser,
+  type RuntimeConfigItem,
+  type RuntimeConfigView,
+  type RuntimeDeployResult,
 } from '../../services/admin'
 import { LoadingState } from '../ui/LoadingState'
 import './account-scenes.css'
@@ -20,7 +22,7 @@ type Props = {
   role?: string
 }
 
-type AdminTab = 'users' | 'apiKeys' | 'transactions' | 'manualPaid'
+type AdminTab = 'users' | 'runtimeConfig' | 'billing'
 
 const formatMoney = (amount: number, currency = 'VND') => (
   currency.toUpperCase() === 'VND'
@@ -33,25 +35,20 @@ export default function AdminDashboardScene({ role = 'USER' }: Props) {
   const [activeTab, setActiveTab] = useState<AdminTab>('users')
   const [users, setUsers] = useState<AdminUser[]>([])
   const [transactions, setTransactions] = useState<AdminTransaction[]>([])
-  const [apiKeys, setApiKeys] = useState<AdminApiKey[]>([])
+  const [runtimeConfig, setRuntimeConfig] = useState<RuntimeConfigView | null>(null)
+  const [configDrafts, setConfigDrafts] = useState<Record<string, string>>({})
+  const [deployTarget, setDeployTarget] = useState<'local' | 'vps'>('local')
+  const [deployResult, setDeployResult] = useState<RuntimeDeployResult | null>(null)
   const [query, setQuery] = useState('')
   const [selectedUserId, setSelectedUserId] = useState('')
   const [transactionStatus, setTransactionStatus] = useState('')
-  const [loading, setLoading] = useState(isAdmin)
-  const [busyUserId, setBusyUserId] = useState<number | null>(null)
-  const [busyKeyId, setBusyKeyId] = useState<number | null>(null)
-  const [keyName, setKeyName] = useState('')
-  const [keyScopes, setKeyScopes] = useState('read')
-  const [newApiKey, setNewApiKey] = useState('')
   const [orderCode, setOrderCode] = useState('')
   const [manualNote, setManualNote] = useState('')
+  const [loading, setLoading] = useState(isAdmin)
+  const [busyUserId, setBusyUserId] = useState<number | null>(null)
+  const [deploying, setDeploying] = useState(false)
   const [notice, setNotice] = useState('')
   const [error, setError] = useState('')
-
-  const selectedUser = useMemo(
-    () => users.find((user) => user.id === Number(selectedUserId)) ?? null,
-    [selectedUserId, users],
-  )
 
   const loadUsers = useCallback(async () => {
     if (!isAdmin) return
@@ -70,20 +67,7 @@ export default function AdminDashboardScene({ role = 'USER' }: Props) {
     }
   }, [isAdmin, selectedUserId])
 
-  const loadApiKeys = useCallback(async () => {
-    if (!isAdmin || !selectedUser) return
-    setLoading(true)
-    setError('')
-    try {
-      setApiKeys(await listUserApiKeys(selectedUser.id))
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Không tải được API key')
-    } finally {
-      setLoading(false)
-    }
-  }, [isAdmin, selectedUser])
-
-  const loadTransactions = useCallback(async () => {
+  const loadBilling = useCallback(async () => {
     if (!isAdmin) return
     setLoading(true)
     setError('')
@@ -95,32 +79,46 @@ export default function AdminDashboardScene({ role = 'USER' }: Props) {
         limit: 100,
       }))
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Không tải được giao dịch')
+      setError(cause instanceof Error ? cause.message : 'Không tải được billing')
     } finally {
       setLoading(false)
     }
   }, [isAdmin, selectedUserId, transactionStatus])
 
+  const loadRuntimeConfig = useCallback(async () => {
+    if (!isAdmin) return
+    setLoading(true)
+    setError('')
+    try {
+      setRuntimeConfig(await getRuntimeConfig())
+      setConfigDrafts({})
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Không tải được cấu hình runtime')
+    } finally {
+      setLoading(false)
+    }
+  }, [isAdmin])
+
   const loadCurrentTab = useCallback(async () => {
-    if (activeTab === 'transactions') {
-      await loadTransactions()
+    if (activeTab === 'runtimeConfig') {
+      await loadRuntimeConfig()
       return
     }
-    if (activeTab === 'apiKeys') {
-      await loadApiKeys()
+    if (activeTab === 'billing') {
+      await loadBilling()
       return
     }
     await loadUsers()
-  }, [activeTab, loadApiKeys, loadTransactions, loadUsers])
+  }, [activeTab, loadBilling, loadRuntimeConfig, loadUsers])
 
   useEffect(() => {
     void loadUsers()
   }, [loadUsers])
 
   useEffect(() => {
-    if (activeTab === 'apiKeys') void loadApiKeys()
-    if (activeTab === 'transactions') void loadTransactions()
-  }, [activeTab, loadApiKeys, loadTransactions])
+    if (activeTab === 'runtimeConfig') void loadRuntimeConfig()
+    if (activeTab === 'billing') void loadBilling()
+  }, [activeTab, loadBilling, loadRuntimeConfig])
 
   const filteredUsers = useMemo(() => {
     const normalized = query.trim().toLowerCase()
@@ -166,51 +164,66 @@ export default function AdminDashboardScene({ role = 'USER' }: Props) {
     }
   }
 
-  const handleCreateApiKey = async () => {
-    if (!selectedUser) {
-      setError('Hãy chọn user trước khi tạo API key.')
-      return
-    }
-    if (!keyName.trim()) {
-      setError('Tên API key không được trống.')
-      return
-    }
-    if (!window.confirm(`Tạo API key mới cho ${selectedUser.username || selectedUser.email}? Key chỉ hiển thị một lần.`)) return
-    setError('')
-    setNotice('')
-    try {
-      const created = await createUserApiKey(selectedUser.id, { name: keyName.trim(), scopes: keyScopes.trim() || 'read' })
-      setApiKeys((items) => [created, ...items])
-      setNewApiKey(created.apiKey || '')
-      setKeyName('')
-      setKeyScopes('read')
-      setNotice('Đã tạo API key. Sao chép ngay vì key chỉ hiển thị một lần.')
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Không tạo được API key')
-    }
+  const handleConfigDraftChange = (key: string, value: string) => {
+    setConfigDrafts((current) => ({ ...current, [key]: value }))
   }
 
-  const handleRevokeApiKey = async (key: AdminApiKey) => {
-    if (!selectedUser || !window.confirm(`Thu hồi API key "${key.name}"?`)) return
-    setBusyKeyId(key.id)
+  const nonEmptyConfigDrafts = () => Object.fromEntries(
+    Object.entries(configDrafts).filter(([, value]) => value.trim().length > 0),
+  )
+
+  const handleSaveRuntimeConfig = async (deploy: boolean) => {
+    const values = nonEmptyConfigDrafts()
+    if (Object.keys(values).length === 0) {
+      setError('Nhập ít nhất một giá trị cấu hình cần cập nhật.')
+      return
+    }
+    if (deploy && !window.confirm(`Lưu cấu hình và deploy lại ${deployTarget.toUpperCase()} cho ai-api/celery-worker?`)) return
+    setDeploying(deploy)
     setError('')
     setNotice('')
+    setDeployResult(null)
     try {
-      const revoked = await revokeUserApiKey(selectedUser.id, key.id)
-      setApiKeys((items) => items.map((item) => (item.id === revoked.id ? revoked : item)))
-      setNotice('Đã thu hồi API key.')
+      const result = await updateRuntimeConfig({ values, deploy, deployTarget })
+      setRuntimeConfig(result.config)
+      setConfigDrafts({})
+      if (result.deploy) {
+        setDeployResult(result.deploy)
+      }
+      setNotice(deploy ? 'Đã lưu cấu hình và chạy deploy.' : 'Đã lưu cấu hình runtime.')
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Không thu hồi được API key')
+      setError(cause instanceof Error ? cause.message : 'Không lưu được cấu hình runtime')
     } finally {
-      setBusyKeyId(null)
+      setDeploying(false)
     }
   }
 
-  const handleCopyApiKey = async () => {
-    if (!newApiKey) return
-    await navigator.clipboard?.writeText(newApiKey)
-    setNotice('Đã sao chép API key.')
+  const handleDeployRuntimeConfig = async () => {
+    if (!window.confirm(`Deploy lại ${deployTarget.toUpperCase()} cho ai-api/celery-worker?`)) return
+    setDeploying(true)
+    setError('')
+    setNotice('')
+    setDeployResult(null)
+    try {
+      const result = await deployRuntimeConfig({ target: deployTarget, services: ['ai-api', 'celery-worker'] })
+      setDeployResult(result)
+      setNotice(result.success ? 'Deploy hoàn tất.' : 'Deploy thất bại, xem log bên dưới.')
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Không deploy được cấu hình runtime')
+    } finally {
+      setDeploying(false)
+    }
   }
+
+  const groupedRuntimeConfig = useMemo(() => {
+    const groups = new Map<string, RuntimeConfigItem[]>()
+    runtimeConfig?.items.forEach((item) => {
+      const current = groups.get(item.group) ?? []
+      current.push(item)
+      groups.set(item.group, current)
+    })
+    return Array.from(groups.entries())
+  }, [runtimeConfig])
 
   const handleManualPaid = async () => {
     const parsed = Number(orderCode)
@@ -226,9 +239,7 @@ export default function AdminDashboardScene({ role = 'USER' }: Props) {
       setNotice(result.message || `Đã ghi nhận thanh toán thủ công cho orderCode ${result.orderCode}.`)
       setOrderCode('')
       setManualNote('')
-      if (activeTab === 'transactions') {
-        await loadTransactions()
-      }
+      await loadBilling()
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Không ghi nhận được thanh toán thủ công')
     }
@@ -248,9 +259,9 @@ export default function AdminDashboardScene({ role = 'USER' }: Props) {
     <section className="feature-scene account-scene" data-testid="admin-dashboard-scene">
       <header className="account-scene__hero">
         <div>
-          <p className="account-scene__eyebrow">Admin dashboard</p>
-          <h1>Quản lý hệ thống</h1>
-          <p className="account-scene__subtitle">Quản lý user, API key, giao dịch và thao tác thanh toán thủ công có audit.</p>
+          <p className="account-scene__eyebrow">Admin console</p>
+          <h1>Quản trị vận hành</h1>
+          <p className="account-scene__subtitle">Quản lý người dùng, cấu hình runtime Deepgram/Gemini và billing.</p>
         </div>
         <button type="button" className="btn btn--secondary" onClick={() => void loadCurrentTab()} disabled={loading}>
           <RefreshCw size={16} aria-hidden /> Làm mới
@@ -258,21 +269,26 @@ export default function AdminDashboardScene({ role = 'USER' }: Props) {
       </header>
 
       <div className="account-warning">
-        <AlertTriangle size={16} aria-hidden /> Các thao tác role, plan, API key và manual paid là thao tác nhạy cảm. Backend đã ghi audit log lâu dài.
+        <AlertTriangle size={16} aria-hidden /> Các thao tác role, plan, cấu hình và billing là thao tác nhạy cảm. Backend đã ghi audit log lâu dài.
       </div>
       {notice && <div className="account-notice" role="status">{notice}</div>}
       {error && <div className="account-error" role="alert">{error}</div>}
 
       <div className="account-tabs" role="tablist" aria-label="Admin sections">
-        <button type="button" className="account-tab" data-active={activeTab === 'users'} onClick={() => setActiveTab('users')}>Users</button>
-        <button type="button" className="account-tab" data-active={activeTab === 'apiKeys'} onClick={() => setActiveTab('apiKeys')}>API keys</button>
-        <button type="button" className="account-tab" data-active={activeTab === 'transactions'} onClick={() => setActiveTab('transactions')}>Giao dịch</button>
-        <button type="button" className="account-tab" data-active={activeTab === 'manualPaid'} onClick={() => setActiveTab('manualPaid')}>Manual paid</button>
+        <button type="button" className="account-tab" data-active={activeTab === 'users'} onClick={() => setActiveTab('users')}>
+          <UsersRound size={16} aria-hidden /> Người dùng
+        </button>
+        <button type="button" className="account-tab" data-active={activeTab === 'runtimeConfig'} onClick={() => setActiveTab('runtimeConfig')}>
+          <Server size={16} aria-hidden /> Cấu hình & deploy
+        </button>
+        <button type="button" className="account-tab" data-active={activeTab === 'billing'} onClick={() => setActiveTab('billing')}>
+          <CreditCard size={16} aria-hidden /> Billing
+        </button>
       </div>
 
       {activeTab === 'users' && (
         <article className="account-card account-card--wide">
-          <h2>Danh sách users</h2>
+          <h2>Danh sách người dùng</h2>
           <div className="account-filter-row">
             <input
               className="account-input"
@@ -280,7 +296,7 @@ export default function AdminDashboardScene({ role = 'USER' }: Props) {
               onChange={(event) => setQuery(event.target.value)}
               placeholder="Tìm theo tên, email hoặc mã user"
             />
-            <span className="account-muted">{filteredUsers.length} user</span>
+            <span className="account-muted">{filteredUsers.length} người dùng</span>
           </div>
           {loading ? (
             <LoadingState message="Đang tải danh sách user..." />
@@ -313,122 +329,126 @@ export default function AdminDashboardScene({ role = 'USER' }: Props) {
         </article>
       )}
 
-      {activeTab === 'apiKeys' && (
-        <div className="account-grid">
-          <article className="account-card">
-            <h2><KeyRound size={18} aria-hidden /> Tạo API key</h2>
-            <label className="account-setting">
-              <span>User</span>
-              <select className="account-select" value={selectedUserId} onChange={(event) => setSelectedUserId(event.target.value)}>
-                {users.map((user) => <option key={user.id} value={user.id}>{user.username || user.email || `User #${user.id}`}</option>)}
+      {activeTab === 'runtimeConfig' && (
+        <article className="account-card account-card--wide">
+          <h2><Server size={18} aria-hidden /> Cấu hình runtime</h2>
+          <p className="account-muted">
+            Lưu vào {runtimeConfig?.envFile || 'infra/.env'} rồi deploy lại đúng container nhận Deepgram/Gemini.
+          </p>
+          <div className="account-filter-row">
+            <label className="account-inline-control">
+              <span>Môi trường</span>
+              <select className="account-select" value={deployTarget} onChange={(event) => setDeployTarget(event.target.value as 'local' | 'vps')}>
+                <option value="local">Local</option>
+                <option value="vps">VPS</option>
               </select>
             </label>
+            <button type="button" className="btn btn--secondary" onClick={() => void loadRuntimeConfig()} disabled={loading || deploying}>
+              <RefreshCw size={16} aria-hidden /> Tải lại
+            </button>
+            <button type="button" className="btn btn--secondary" onClick={() => void handleSaveRuntimeConfig(false)} disabled={loading || deploying}>
+              <Save size={16} aria-hidden /> Lưu env
+            </button>
+            <button type="button" className="btn btn--primary" onClick={() => void handleSaveRuntimeConfig(true)} disabled={loading || deploying}>
+              Lưu & deploy
+            </button>
+            <button type="button" className="btn btn--secondary" onClick={() => void handleDeployRuntimeConfig()} disabled={loading || deploying}>
+              Deploy lại
+            </button>
+          </div>
+          {loading ? <LoadingState message="Đang tải cấu hình runtime..." /> : (
+            <div className="account-config-groups">
+              {groupedRuntimeConfig.map(([group, items]) => (
+                <section key={group} className="account-config-group">
+                  <h3>{group === 'STT' ? 'Deepgram / STT' : 'Gemini / AI'}</h3>
+                  <div className="account-config-grid">
+                    {items.map((item) => (
+                      <label key={item.key} className="account-config-field">
+                        <span>{item.label}</span>
+                        <input
+                          className="account-input"
+                          type={item.secret ? 'password' : 'text'}
+                          value={configDrafts[item.key] ?? ''}
+                          onChange={(event) => handleConfigDraftChange(item.key, event.target.value)}
+                          placeholder={item.secret && item.configured ? item.value : (item.value || item.key)}
+                        />
+                        <small>{item.key}{item.configured ? ' - đang có cấu hình' : ' - chưa cấu hình'}</small>
+                      </label>
+                    ))}
+                  </div>
+                </section>
+              ))}
+            </div>
+          )}
+          {deployResult && (
+            <div className="account-deploy-log" data-success={deployResult.success}>
+              <strong>{deployResult.success ? 'Deploy thành công' : 'Deploy chưa thành công'}: {deployResult.services.join(', ')}</strong>
+              {deployResult.commands.map((command, index) => (
+                <pre key={`${command.exitCode}-${index}`}>{`$ ${command.command.join(' ')}\nexit ${command.exitCode}\n${command.output || ''}`}</pre>
+              ))}
+            </div>
+          )}
+        </article>
+      )}
+
+      {activeTab === 'billing' && (
+        <div className="account-grid">
+          <article className="account-card">
+            <h2><CreditCard size={18} aria-hidden /> Manual paid</h2>
             <label className="account-setting">
-              <span>Tên key</span>
-              <input className="account-input" value={keyName} onChange={(event) => setKeyName(event.target.value)} placeholder="VD: Local automation" />
+              <span>OrderCode</span>
+              <input className="account-input" value={orderCode} onChange={(event) => setOrderCode(event.target.value)} inputMode="numeric" />
             </label>
             <label className="account-setting">
-              <span>Scopes</span>
-              <input className="account-input" value={keyScopes} onChange={(event) => setKeyScopes(event.target.value)} placeholder="read,write" />
+              <span>Ghi chú audit</span>
+              <textarea className="account-textarea" value={manualNote} onChange={(event) => setManualNote(event.target.value)} />
             </label>
-            <button type="button" className="btn btn--primary" onClick={() => void handleCreateApiKey()}>Tạo key</button>
-            {newApiKey && (
-              <div className="account-secret-box">
-                <span>{newApiKey}</span>
-                <button type="button" className="btn btn--secondary" onClick={() => void handleCopyApiKey()}>
-                  <Copy size={16} aria-hidden /> Sao chép
-                </button>
-              </div>
-            )}
+            <button type="button" className="btn btn--primary" onClick={() => void handleManualPaid()}>
+              Xác nhận paid
+            </button>
           </article>
           <article className="account-card account-card--wide">
-            <h2>API key của {selectedUser?.username || selectedUser?.email || 'user đã chọn'}</h2>
-            {loading ? <LoadingState message="Đang tải API key..." /> : (
+            <h2>Giao dịch / hóa đơn</h2>
+            <div className="account-filter-row">
+              <select className="account-select" value={selectedUserId} onChange={(event) => setSelectedUserId(event.target.value)}>
+                <option value="">Tất cả user</option>
+                {users.map((user) => <option key={user.id} value={user.id}>{user.username || user.email || `User #${user.id}`}</option>)}
+              </select>
+              <select className="account-select" value={transactionStatus} onChange={(event) => setTransactionStatus(event.target.value)}>
+                <option value="">Tất cả trạng thái</option>
+                <option value="PENDING">Pending</option>
+                <option value="PAID">Paid</option>
+                <option value="CANCELLED">Cancelled</option>
+                <option value="EXPIRED">Expired</option>
+              </select>
+              <button type="button" className="btn btn--secondary" onClick={() => void loadBilling()} disabled={loading}>Lọc</button>
+            </div>
+            {loading ? <LoadingState message="Đang tải billing..." /> : (
               <div className="account-table-wrap">
                 <table className="account-table">
-                  <thead><tr><th>Tên</th><th>Key</th><th>Scopes</th><th>Tạo lúc</th><th>Trạng thái</th><th>Thao tác</th></tr></thead>
+                  <thead><tr><th>Order</th><th>User</th><th>Số tiền</th><th>Trạng thái</th><th>Provider</th><th>Tạo lúc</th><th>Paid</th><th>Ghi chú</th></tr></thead>
                   <tbody>
-                    {apiKeys.map((key) => (
-                      <tr key={key.id}>
-                        <td>{key.name}</td>
-                        <td>{key.prefix}...{key.suffix}</td>
-                        <td>{key.scopes}</td>
-                        <td>{key.createdAt ? new Date(key.createdAt).toLocaleString('vi-VN') : ''}</td>
-                        <td>{key.revokedAt ? 'Đã thu hồi' : 'Đang hoạt động'}</td>
-                        <td>
-                          <button type="button" className="btn btn--secondary" disabled={busyKeyId === key.id || Boolean(key.revokedAt)} onClick={() => void handleRevokeApiKey(key)}>
-                            Thu hồi
-                          </button>
-                        </td>
+                    {transactions.map((tx) => (
+                      <tr key={tx.id}>
+                        <td>#{tx.orderCode}</td>
+                        <td>{tx.userId}</td>
+                        <td>{formatMoney(tx.amountVnd, tx.currency)}</td>
+                        <td><span className="account-badge">{tx.status}</span></td>
+                        <td>{tx.provider}</td>
+                        <td>{tx.createdAt ? new Date(tx.createdAt).toLocaleString('vi-VN') : ''}</td>
+                        <td>{tx.paidAt ? new Date(tx.paidAt).toLocaleString('vi-VN') : ''}</td>
+                        <td>{tx.manualNote || ''}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
-                {apiKeys.length === 0 && <div className="account-empty">User này chưa có API key.</div>}
+                {transactions.length === 0 && <div className="account-empty">Không có giao dịch phù hợp.</div>}
               </div>
             )}
           </article>
         </div>
       )}
 
-      {activeTab === 'transactions' && (
-        <article className="account-card account-card--wide">
-          <h2>Giao dịch / hóa đơn</h2>
-          <div className="account-filter-row">
-            <select className="account-select" value={selectedUserId} onChange={(event) => setSelectedUserId(event.target.value)}>
-              <option value="">Tất cả user</option>
-              {users.map((user) => <option key={user.id} value={user.id}>{user.username || user.email || `User #${user.id}`}</option>)}
-            </select>
-            <select className="account-select" value={transactionStatus} onChange={(event) => setTransactionStatus(event.target.value)}>
-              <option value="">Tất cả trạng thái</option>
-              <option value="PENDING">Pending</option>
-              <option value="PAID">Paid</option>
-              <option value="CANCELLED">Cancelled</option>
-              <option value="EXPIRED">Expired</option>
-            </select>
-            <button type="button" className="btn btn--secondary" onClick={() => void loadTransactions()} disabled={loading}>Lọc</button>
-          </div>
-          {loading ? <LoadingState message="Đang tải giao dịch..." /> : (
-            <div className="account-table-wrap">
-              <table className="account-table">
-                <thead><tr><th>Order</th><th>User</th><th>Số tiền</th><th>Trạng thái</th><th>Provider</th><th>Tạo lúc</th><th>Paid</th><th>Ghi chú</th></tr></thead>
-                <tbody>
-                  {transactions.map((tx) => (
-                    <tr key={tx.id}>
-                      <td>#{tx.orderCode}</td>
-                      <td>{tx.userId}</td>
-                      <td>{formatMoney(tx.amountVnd, tx.currency)}</td>
-                      <td><span className="account-badge">{tx.status}</span></td>
-                      <td>{tx.provider}</td>
-                      <td>{tx.createdAt ? new Date(tx.createdAt).toLocaleString('vi-VN') : ''}</td>
-                      <td>{tx.paidAt ? new Date(tx.paidAt).toLocaleString('vi-VN') : ''}</td>
-                      <td>{tx.manualNote || ''}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              {transactions.length === 0 && <div className="account-empty">Không có giao dịch phù hợp.</div>}
-            </div>
-          )}
-        </article>
-      )}
-
-      {activeTab === 'manualPaid' && (
-        <article className="account-card">
-          <h2>Manual mark paid</h2>
-          <label className="account-setting">
-            <span>OrderCode</span>
-            <input className="account-input" value={orderCode} onChange={(event) => setOrderCode(event.target.value)} inputMode="numeric" />
-          </label>
-          <label className="account-setting">
-            <span>Ghi chú audit</span>
-            <textarea className="account-textarea" value={manualNote} onChange={(event) => setManualNote(event.target.value)} />
-          </label>
-          <button type="button" className="btn btn--primary" onClick={() => void handleManualPaid()}>
-            Xác nhận paid
-          </button>
-        </article>
-      )}
     </section>
   )
 }

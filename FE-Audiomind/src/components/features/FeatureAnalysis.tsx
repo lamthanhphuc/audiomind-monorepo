@@ -66,6 +66,10 @@ const getAnalysisStateFromResponse = (
     return { state: 'missing', analysis: null, error: null }
   }
 
+  if (hasStructuredAnalysisData(analysis)) {
+    return { state: 'completed', analysis, error: null }
+  }
+
   const status = String(analysis.analysisStatus ?? analysis.status ?? '').trim().toUpperCase()
   if (status === 'ANALYSIS_FAILED_RETRYABLE' || analysis.retryable === true) {
     const retryAfter = analysis.retryAfterSeconds && analysis.retryAfterSeconds > 0
@@ -153,7 +157,7 @@ export default function FeatureAnalysis({
   evidenceSegmentId = null,
   onBackToHistory,
 }: FeatureAnalysisProps) {
-  const [activeTab, setActiveTab] = useState<'content' | 'model' | 'mindmap'>('content')
+  const [activeTab, setActiveTab] = useState<'content' | 'model' | 'mindmap' | 'notes'>('content')
   const [hydrateState, setHydrateState] = useState<HydrationState>('idle')
   const [hydrateError, setHydrateError] = useState<string | null>(null)
   const [hydratedAnalysis, setHydratedAnalysis] = useState<AiAnalysis | null>(null)
@@ -346,7 +350,7 @@ export default function FeatureAnalysis({
   }, [loadSavedAnalysis, meetingId, resultScope])
 
   useEffect(() => {
-    if ((activeTab === 'mindmap' || activeTab === 'model') && meetingId != null) {
+    if ((activeTab === 'mindmap' || activeTab === 'model' || activeTab === 'notes') && meetingId != null) {
       void loadSavedAnalysis(meetingId, resultScope)
     }
   }, [activeTab, loadSavedAnalysis, meetingId, resultScope])
@@ -512,6 +516,14 @@ export default function FeatureAnalysis({
             >
               Sơ đồ
             </button>
+            <button
+              type="button"
+              className={`tab-btn ${activeTab === 'notes' ? 'active' : ''}`}
+              onClick={() => setActiveTab('notes')}
+              data-testid="feature-analysis-notes-tab"
+            >
+              Ghi chú & thuật ngữ
+            </button>
           </div>
 
           <div className="doc-content">
@@ -583,6 +595,11 @@ export default function FeatureAnalysis({
                 {evidenceWarning ? (
                   <p className="ui-status-strip" role="status">{evidenceWarning}</p>
                 ) : null}
+              </div>
+            )}
+
+            {activeTab === 'notes' && (
+              <div className="analysis-inline-panel" data-testid="feature-analysis-notes">
                 <AnalysisTermNotesSection
                   meetingId={meetingId}
                   analysis={displayAnalysis}

@@ -16,14 +16,12 @@ FROM eclipse-temurin:21-jre
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends curl \
+RUN apt-get update && apt-get install -y --no-install-recommends curl docker.io docker-compose-v2 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN groupadd -g 10001 app && useradd -u 10001 -g app -m app
 
 COPY --from=build --chown=10001:10001 /workspace/user-service/target/user-service-0.0.1-SNAPSHOT.jar app.jar
-
-USER 10001
 
 EXPOSE 8083
 

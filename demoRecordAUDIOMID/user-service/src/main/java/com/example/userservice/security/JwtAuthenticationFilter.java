@@ -10,6 +10,7 @@ import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.util.List;
 import org.slf4j.MDC;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpHeaders;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -23,6 +24,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     private final TokenBlacklistStore tokenBlacklistStore;
     private final UserAccountRepository userAccountRepository;
 
+    @Autowired
     public JwtAuthenticationFilter(
             JwtUtil jwtUtil,
             TokenBlacklistStore tokenBlacklistStore,

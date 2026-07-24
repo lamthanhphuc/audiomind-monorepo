@@ -1309,7 +1309,7 @@ public class ProcessingService {
         );
         try {
             enforceGeminiQuotaForText(transcriptText);
-            return aiServiceClient.rerunAnalysis(
+            Map<String, Object> response = aiServiceClient.rerunAnalysis(
                     meetingId,
                     mode,
                     reason,
@@ -1326,6 +1326,19 @@ public class ProcessingService {
                     traceId,
                     authorization
             );
+            if (hasStructuredAnalysis(response)) {
+                try {
+                    meetingServiceClient.updateMeetingStatus(meetingId, MEETING_STATUS_COMPLETED, traceId, authorization);
+                    log.info("event=ANALYSIS_RERUN_MEETING_STATUS_REPAIRED meetingId={} status={}", meetingId, MEETING_STATUS_COMPLETED);
+                } catch (Exception statusError) {
+                    log.warn(
+                            "event=ANALYSIS_RERUN_MEETING_STATUS_REPAIR_FAILED meetingId={} errorCode={}",
+                            meetingId,
+                            statusError.getClass().getSimpleName()
+                    );
+                }
+            }
+            return response;
         } catch (HttpStatusCodeException ex) {
             if (ex.getStatusCode().value() == HttpStatus.NOT_FOUND.value() && transcriptText.isBlank()) {
                 throw new ResponseStatusException(

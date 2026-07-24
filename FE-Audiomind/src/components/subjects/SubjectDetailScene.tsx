@@ -277,6 +277,12 @@ export function SubjectDetailScene({
   }
 
   const artifactType = artifactTypeForTab(tab)
+  const reusableSynthesisId =
+    synthesis?.id != null &&
+    synthesis.content &&
+    ['COMPLETED', 'STALE'].includes(String(synthesis.status).toUpperCase())
+      ? synthesis.id
+      : null
 
   return (
     <section className="subjects-scene" data-testid="subject-detail-scene">
@@ -352,6 +358,7 @@ export function SubjectDetailScene({
       {artifactType ? (
         <StudyArtifactTabPanel
           subjectId={subjectId}
+          synthesisId={reusableSynthesisId}
           artifactType={artifactType}
           meetings={meetingOptions}
           onOpenEvidence={onOpenEvidence}

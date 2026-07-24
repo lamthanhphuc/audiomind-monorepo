@@ -31,6 +31,18 @@ const flush = async () => {
   })
 }
 
+const setInputValue = (input: HTMLInputElement, value: string) => {
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set
+  setter?.call(input, value)
+  input.dispatchEvent(new Event('input', { bubbles: true }))
+}
+
+const setTextareaValue = (textarea: HTMLTextAreaElement, value: string) => {
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set
+  setter?.call(textarea, value)
+  textarea.dispatchEvent(new Event('input', { bubbles: true }))
+}
+
 const clickMindmapTab = async (container: HTMLElement) => {
   const mindmapTab = container.querySelector('[data-testid="feature-analysis-mindmap-tab"]') as HTMLButtonElement
   await act(async () => {
@@ -43,6 +55,14 @@ const clickModelTab = async (container: HTMLElement) => {
   const modelTab = container.querySelector('[data-testid="feature-analysis-model-tab"]') as HTMLButtonElement
   await act(async () => {
     modelTab.click()
+  })
+  await flush()
+}
+
+const clickNotesTab = async (container: HTMLElement) => {
+  const notesTab = container.querySelector('[data-testid="feature-analysis-notes-tab"]') as HTMLButtonElement
+  await act(async () => {
+    notesTab.click()
   })
   await flush()
 }
@@ -155,9 +175,65 @@ describe('FeatureAnalysis', () => {
     expect(container.querySelector('[data-testid="glossary-notes-panel"]')).toBeNull()
 
     await clickModelTab(container)
+    expect(container.querySelector('[data-testid="analysis-term-notes"]')).toBeNull()
+
+    await clickNotesTab(container)
     expect(container.querySelector('[data-testid="analysis-term-notes"]')).toBeTruthy()
     expect(container.textContent).toContain('API')
     expect(container.textContent).toContain('Giao dien')
+  })
+
+  it('lets reviewers add a custom term from the notes tab', async () => {
+    vi.mocked(knowledgeLayer.createKnowledgeNote).mockResolvedValue({
+      id: 700,
+      meetingId: 42,
+      term: 'SLA',
+      noteType: 'term',
+      title: 'SLA',
+      body: 'Cam kết mức dịch vụ',
+    })
+
+    await act(async () => {
+      root.render(
+        <FeatureAnalysis
+          meetingId={42}
+          meetingTitle="Custom term session"
+          busy={false}
+          analysis={{
+            summary: 'Tong hop',
+            keywords: [],
+            technicalTerms: [],
+            painPoints: [],
+            actionItems: [],
+            domainMode: 'it',
+          } as any}
+          transcriptSegments={[]}
+          transcriptText=""
+        />,
+      )
+    })
+    await clickNotesTab(container)
+
+    const termInput = container.querySelector('[data-testid="analysis-custom-term-input"]') as HTMLInputElement
+    const noteInput = container.querySelector('[data-testid="analysis-custom-term-note-input"]') as HTMLTextAreaElement
+    const saveButton = container.querySelector('[data-testid="analysis-custom-term-save"]') as HTMLButtonElement
+
+    await act(async () => {
+      setInputValue(termInput, 'SLA')
+      setTextareaValue(noteInput, 'Cam kết mức dịch vụ')
+    })
+    await act(async () => {
+      saveButton.click()
+    })
+    await flush()
+
+    expect(knowledgeLayer.createKnowledgeNote).toHaveBeenCalledWith({
+      meetingId: 42,
+      term: 'SLA',
+      noteType: 'term',
+      title: 'SLA',
+      body: 'Cam kết mức dịch vụ',
+    })
   })
 
   it('switches upload-result evidence to transcript and renders the highlight', async () => {

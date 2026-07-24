@@ -117,6 +117,10 @@ class Settings(BaseSettings):
     gemini_summary_max_output_tokens: int = 2048
     gemini_structured_analysis_max_output_tokens: int = 4096
     gemini_study_artifact_max_output_tokens: int = 12288
+    gemini_study_mind_map_max_output_tokens: int = Field(
+        default=24576,
+        validation_alias=AliasChoices("GEMINI_STUDY_MIND_MAP_MAX_OUTPUT_TOKENS"),
+    )
     gemini_chat_max_input_tokens: int = 12000
     gemini_chat_history_max_tokens: int = 3000
     gemini_rag_context_max_tokens: int = 8000
@@ -397,6 +401,10 @@ class Settings(BaseSettings):
     subject_synthesis_max_input_tokens: int = Field(
         default=24000,
         validation_alias=AliasChoices("SUBJECT_SYNTHESIS_MAX_INPUT_TOKENS"),
+    )
+    study_mind_map_max_input_tokens: int = Field(
+        default=48000,
+        validation_alias=AliasChoices("STUDY_MIND_MAP_MAX_INPUT_TOKENS"),
     )
     subject_synthesis_max_parallel_batches: int = Field(
         default=2,
@@ -692,6 +700,10 @@ class Settings(BaseSettings):
         self.gemini_study_artifact_max_output_tokens = max(
             1, int(self.gemini_study_artifact_max_output_tokens or 3072)
         )
+        self.gemini_study_mind_map_max_output_tokens = min(
+            32768,
+            max(4096, int(self.gemini_study_mind_map_max_output_tokens or 24576)),
+        )
         self.gemini_chat_max_input_tokens = max(
             1, int(self.gemini_chat_max_input_tokens or 12000)
         )
@@ -785,6 +797,13 @@ class Settings(BaseSettings):
             raise ValueError("gemini_cost_guard_namespace is invalid")
         self.analysis_background_retry_max_attempts = max(
             0, int(self.analysis_background_retry_max_attempts or 4)
+        )
+        self.subject_synthesis_max_input_tokens = max(
+            1, int(self.subject_synthesis_max_input_tokens or 24000)
+        )
+        self.study_mind_map_max_input_tokens = max(
+            self.subject_synthesis_max_input_tokens,
+            int(self.study_mind_map_max_input_tokens or 48000),
         )
 
         self.audio_enhancement_provider = (

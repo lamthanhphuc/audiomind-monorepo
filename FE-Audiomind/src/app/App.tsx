@@ -559,10 +559,6 @@ const pollAnalysisUntilSettled = async (
     const analysisStatus = getAnalysisStatusValue(analysis)
 
     if (hasStructuredAnalysisData(analysis) && !isPendingAnalysisStatus(analysisStatus)) {
-      if (isFailedAnalysisStatus(analysisStatus)) {
-        const detail = [analysis.errorCode, analysis.errorMessage].filter(Boolean).join(': ')
-        throw new Error(detail || 'Analysis failed after re-run')
-      }
       return analysis
     }
 
@@ -2184,7 +2180,7 @@ export default function App() {
         reanalysis_generation: Date.now(),
       })
       const responseStatus = getAnalysisStatusValue(response)
-      if (hasStructuredAnalysisData(response) && !isPendingAnalysisStatus(responseStatus) && !isFailedAnalysisStatus(responseStatus)) {
+      if (hasStructuredAnalysisData(response) && !isPendingAnalysisStatus(responseStatus)) {
         await openAnalysisForMeeting(meetingId, 'COMPLETED')
         setUploadNotice(null)
         return
@@ -2285,6 +2281,17 @@ export default function App() {
     plan: getJwtPlan(),
     role: getJwtRole(),
   }), [currentUserId, username, sessionPlanSyncTick])
+
+  useEffect(() => {
+    if (!isAuthenticated || dashboardUser.role?.toUpperCase() !== 'ADMIN') {
+      return
+    }
+    if (featureScene === 'admin' || featureScene === 'audit') {
+      return
+    }
+    setFeatureScene('admin')
+    pushStudioRoute('admin', { replace: true })
+  }, [dashboardUser.role, featureScene, isAuthenticated])
 
   const recentFiles = useMemo(() => {
     const activeMeetingId = featureScene === 'analysis'

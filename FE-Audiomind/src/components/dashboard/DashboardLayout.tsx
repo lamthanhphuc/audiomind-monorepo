@@ -112,58 +112,55 @@ export default function DashboardLayout({
     setSidebarOpen(false)
   }
 
-  const navGroups: DashboardNavGroup[] = [
-    {
-      title: 'Tạo mới',
-      items: [
-        { scene: 'upload', label: 'Tải & phân tích', icon: AudioLines },
-        ...(showRealtime
-          ? [{ scene: 'realtime' as const, label: 'Ghi âm trực tiếp', icon: Radio, testId: 'dashboard-nav-realtime' }]
-          : []),
-      ],
-    },
-    {
-      title: 'Lịch sử',
-      items: [
-        { scene: 'files', label: 'Lịch sử cuộc họp', icon: History, testId: 'dashboard-nav-history' },
-        { scene: 'analysis', label: 'Kết quả phân tích', icon: BrainCircuit },
-      ],
-    },
-    {
-      title: 'Tri thức',
-      items: [
-        { scene: 'mindmap', label: 'Sơ đồ mindmap', icon: Network },
-        { scene: 'knowledge', label: 'Kho tri thức', icon: Search, testId: 'dashboard-nav-knowledge' },
-        { scene: 'insights', label: 'Insights', icon: Lightbulb, testId: 'dashboard-nav-insights' },
-      ],
-    },
-  ]
-
-  navGroups.push({
-    title: 'Tài khoản',
-    items: [
-      { scene: 'profile', label: 'Hồ sơ cá nhân', icon: User, testId: 'dashboard-nav-profile' },
-      { scene: 'settings', label: 'Cài đặt', icon: Settings, testId: 'dashboard-nav-settings' },
-      { scene: 'notifications', label: 'Thông báo', icon: Bell, testId: 'dashboard-nav-notifications' },
-      { scene: 'usage', label: 'Usage & quota', icon: BarChart3, testId: 'dashboard-nav-usage' },
-      { scene: 'team', label: 'Team / Workspace', icon: Users, testId: 'dashboard-nav-team' },
-    ],
-  })
-
-  if (isAdmin) {
-    navGroups.push({
+  const navGroups: DashboardNavGroup[] = isAdmin
+    ? [{
       title: 'Quản trị',
       items: [
         { scene: 'admin', label: 'Admin dashboard', icon: Shield, testId: 'dashboard-nav-admin' },
-        { scene: 'audit', label: 'Audit log', icon: Shield, testId: 'dashboard-nav-audit' },
+        { scene: 'audit', label: 'Log', icon: Shield, testId: 'dashboard-nav-audit' },
       ],
-    })
-  }
+    }]
+    : [
+      {
+        title: 'Tạo mới',
+        items: [
+          { scene: 'upload', label: 'Tải & phân tích', icon: AudioLines },
+          ...(showRealtime
+            ? [{ scene: 'realtime' as const, label: 'Ghi âm trực tiếp', icon: Radio, testId: 'dashboard-nav-realtime' }]
+            : []),
+        ],
+      },
+      {
+        title: 'Lịch sử',
+        items: [
+          { scene: 'files', label: 'Lịch sử cuộc họp', icon: History, testId: 'dashboard-nav-history' },
+          { scene: 'analysis', label: 'Kết quả phân tích', icon: BrainCircuit },
+        ],
+      },
+      {
+        title: 'Tri thức',
+        items: [
+          { scene: 'mindmap', label: 'Sơ đồ mindmap', icon: Network },
+          { scene: 'knowledge', label: 'Kho tri thức', icon: Search, testId: 'dashboard-nav-knowledge' },
+          { scene: 'insights', label: 'Insights', icon: Lightbulb, testId: 'dashboard-nav-insights' },
+        ],
+      },
+      {
+        title: 'Tài khoản',
+        items: [
+          { scene: 'profile', label: 'Hồ sơ cá nhân', icon: User, testId: 'dashboard-nav-profile' },
+          { scene: 'settings', label: 'Cài đặt', icon: Settings, testId: 'dashboard-nav-settings' },
+          { scene: 'notifications', label: 'Thông báo', icon: Bell, testId: 'dashboard-nav-notifications' },
+          { scene: 'usage', label: 'Usage & quota', icon: BarChart3, testId: 'dashboard-nav-usage' },
+          { scene: 'team', label: 'Team / Workspace', icon: Users, testId: 'dashboard-nav-team' },
+        ],
+      },
+    ]
 
-  const footerItems: DashboardNavItem[] = [
-    { scene: 'billing', label: 'Gói & thanh toán', icon: CreditCard, testId: 'dashboard-nav-billing' },
-    { scene: 'integrations', label: 'Tích hợp', icon: Puzzle, testId: 'dashboard-nav-integrations' },
-  ]
+  const footerItems: DashboardNavItem[] = isAdmin ? [] : [
+      { scene: 'billing', label: 'Gói & thanh toán', icon: CreditCard, testId: 'dashboard-nav-billing' },
+      { scene: 'integrations', label: 'Tích hợp', icon: Puzzle, testId: 'dashboard-nav-integrations' },
+    ]
 
   useEffect(() => {
     const handleShortcut = (event: KeyboardEvent) => {
@@ -211,13 +208,17 @@ export default function DashboardLayout({
               <span className="dashboard-user__email">{user.email || 'audiomind@local'}</span>
             </div>
           </div>
-          <div className="studio-engine-badge">
-            <span className="studio-engine-badge__dot" />
-            Neural pipeline · trực tuyến
-          </div>
-          <button type="button" className="dashboard-btn-new" onClick={() => handleNavigate('upload')}>
-            <Plus size={16} aria-hidden /> Tải file mới
-          </button>
+          {!isAdmin && (
+            <>
+              <div className="studio-engine-badge">
+                <span className="studio-engine-badge__dot" />
+                Neural pipeline · trực tuyến
+              </div>
+              <button type="button" className="dashboard-btn-new" onClick={() => handleNavigate('upload')}>
+                <Plus size={16} aria-hidden /> Tải file mới
+              </button>
+            </>
+          )}
         </div>
 
         <div className="dashboard-sidebar__body">
@@ -248,7 +249,7 @@ export default function DashboardLayout({
             </div>
           ))}
 
-          {onNavigateSubjects && onNavigateSubjectDetail && onNavigateUnclassified ? (
+          {!isAdmin && onNavigateSubjects && onNavigateSubjectDetail && onNavigateUnclassified ? (
             <SubjectSidebarSection
               activeScene={activeMenu}
               selectedSubjectId={selectedSubjectId}
@@ -258,6 +259,7 @@ export default function DashboardLayout({
             />
           ) : null}
 
+        {!isAdmin && (
         <div className="dashboard-sidebar__section dashboard-sidebar__recents">
           <div className="dashboard-sidebar__title">Gần đây</div>
           <ul className="dashboard-recents-list">
@@ -285,6 +287,7 @@ export default function DashboardLayout({
             )}
           </ul>
         </div>
+        )}
         </div>
 
         <div className="dashboard-sidebar__footer">
@@ -338,7 +341,7 @@ export default function DashboardLayout({
       <main className="dashboard-main">
         <StudioAmbientBackground variant="dashboard" muted={theme === 'light'} />
         <div className="dashboard-main__topbar">
-          {onGlobalMeetingSearchSubmit && (
+          {!isAdmin && onGlobalMeetingSearchSubmit && (
             <GlobalMeetingSearch
               value={globalMeetingSearch}
               onValueChange={onGlobalMeetingSearchChange}
@@ -349,8 +352,8 @@ export default function DashboardLayout({
               onLanguageFilterChange={onGlobalLanguageFilterChange}
             />
           )}
-          {onOpenMeeting && <ActiveJobsBanner onOpenMeeting={onOpenMeeting} />}
-          {onOpenMeeting && <NotificationCenter onOpenMeeting={onOpenMeeting} />}
+          {!isAdmin && onOpenMeeting && <ActiveJobsBanner onOpenMeeting={onOpenMeeting} />}
+          {!isAdmin && onOpenMeeting && <NotificationCenter onOpenMeeting={onOpenMeeting} />}
         </div>
         <div className="dashboard-main__content studio-reveal">
           {children}

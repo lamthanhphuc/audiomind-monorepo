@@ -57,6 +57,40 @@ export type AdminApiKey = {
   apiKey?: string
 }
 
+export type RuntimeConfigItem = {
+  key: string
+  label: string
+  group: string
+  secret: boolean
+  configured: boolean
+  value: string
+}
+
+export type RuntimeConfigView = {
+  envFile: string
+  workdir: string
+  items: RuntimeConfigItem[]
+}
+
+export type RuntimeDeployCommand = {
+  command: string[]
+  exitCode: number
+  output: string
+}
+
+export type RuntimeDeployResult = {
+  target: 'local' | 'vps'
+  services: string[]
+  commands: RuntimeDeployCommand[]
+  success: boolean
+}
+
+export type RuntimeConfigUpdateResult = {
+  updatedKeys: string[]
+  config: RuntimeConfigView
+  deploy?: RuntimeDeployResult | null
+}
+
 export type AuditEventFilters = {
   actorUserId?: number
   eventType?: string
@@ -204,6 +238,47 @@ export const revokeUserApiKey = async (userId: number, keyId: number): Promise<A
     throw new Error(await readMessage(response, 'Không thu hồi được API key'))
   }
   return response.json() as Promise<AdminApiKey>
+}
+
+export const getRuntimeConfig = async (): Promise<RuntimeConfigView> => {
+  const response = await fetch(`${USER_API_BASE}/api/admin/runtime-config`, {
+    headers: authHeaders(),
+  })
+  if (!response.ok) {
+    throw new Error(await readMessage(response, 'Không tải được cấu hình runtime'))
+  }
+  return response.json() as Promise<RuntimeConfigView>
+}
+
+export const updateRuntimeConfig = async (payload: {
+  values: Record<string, string>
+  deployTarget: 'local' | 'vps'
+  deploy: boolean
+}): Promise<RuntimeConfigUpdateResult> => {
+  const response = await fetch(`${USER_API_BASE}/api/admin/runtime-config`, {
+    method: 'PATCH',
+    headers: authHeaders(),
+    body: JSON.stringify(payload),
+  })
+  if (!response.ok) {
+    throw new Error(await readMessage(response, 'Không lưu được cấu hình runtime'))
+  }
+  return response.json() as Promise<RuntimeConfigUpdateResult>
+}
+
+export const deployRuntimeConfig = async (payload: {
+  target: 'local' | 'vps'
+  services?: string[]
+}): Promise<RuntimeDeployResult> => {
+  const response = await fetch(`${USER_API_BASE}/api/admin/runtime-config/deploy`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify(payload),
+  })
+  if (!response.ok) {
+    throw new Error(await readMessage(response, 'Không deploy được cấu hình runtime'))
+  }
+  return response.json() as Promise<RuntimeDeployResult>
 }
 
 export const listAuditEvents = async (filters: AuditEventFilters | number = 100): Promise<AuditEvent[]> => {

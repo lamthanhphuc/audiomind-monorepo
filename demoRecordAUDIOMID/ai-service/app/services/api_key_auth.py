@@ -7,7 +7,6 @@ from starlette.requests import Request
 
 from app.config import get_settings
 
-
 API_KEY_STATE_ATTR = "api_key_user"
 
 
@@ -43,7 +42,9 @@ async def introspect_api_key(api_key: str, method: str, path: str) -> dict | Non
 
 
 def has_required_scope(scopes: str | None, method: str) -> bool:
-    normalized = {item.strip().lower() for item in (scopes or "read").split(",") if item.strip()}
+    normalized = {
+        item.strip().lower() for item in (scopes or "read").split(",") if item.strip()
+    }
     if "admin" in normalized:
         return True
     write = method.upper() not in {"GET", "HEAD", "OPTIONS"}

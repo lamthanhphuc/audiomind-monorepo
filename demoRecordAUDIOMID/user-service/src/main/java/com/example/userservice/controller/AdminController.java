@@ -8,6 +8,7 @@ import com.example.userservice.repository.BillingInvoiceRepository;
 import com.example.userservice.repository.UserApiKeyRepository;
 import com.example.userservice.repository.UserAccountRepository;
 import com.example.userservice.security.UserPrincipal;
+import com.example.userservice.service.AdminRuntimeConfigService;
 import com.example.userservice.service.AuditEventService;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Min;
@@ -50,6 +51,7 @@ public class AdminController {
     private final UserApiKeyRepository userApiKeyRepository;
     private final BillingInvoiceRepository billingInvoiceRepository;
     private final AuditEventService auditEventService;
+    private final AdminRuntimeConfigService adminRuntimeConfigService;
 
     @GetMapping("/users")
     public List<Map<String, Object>> listUsers(Authentication authentication) {
@@ -227,6 +229,59 @@ public class AdminController {
         return apiKeyView(key);
     }
 
+    @GetMapping("/runtime-config")
+    public AdminRuntimeConfigService.RuntimeConfigView getRuntimeConfig(Authentication authentication) {
+        requireAdmin(authentication);
+        return adminRuntimeConfigService.readConfig();
+    }
+
+    @PatchMapping("/runtime-config")
+    public AdminRuntimeConfigService.RuntimeConfigUpdateResult updateRuntimeConfig(
+            @Valid @RequestBody RuntimeConfigUpdateRequest request,
+            Authentication authentication
+    ) {
+        UserPrincipal admin = requireAdmin(authentication);
+        AdminRuntimeConfigService.RuntimeConfigUpdateResult result = adminRuntimeConfigService.updateConfig(
+                request.values(),
+                request.deployTarget(),
+                Boolean.TRUE.equals(request.deploy())
+        );
+        auditEventService.record(
+                admin.userId(),
+                "ADMIN_RUNTIME_CONFIG_UPDATED",
+                "RUNTIME_CONFIG",
+                "infra/.env",
+                "Admin updated runtime config",
+                Map.of(
+                        "keys", result.updatedKeys(),
+                        "deployTarget", request.deployTarget() == null ? "local" : request.deployTarget(),
+                        "deploy", Boolean.TRUE.equals(request.deploy())
+                )
+        );
+        return result;
+    }
+
+    @PostMapping("/runtime-config/deploy")
+    public AdminRuntimeConfigService.DeployResult deployRuntimeConfig(
+            @Valid @RequestBody RuntimeDeployRequest request,
+            Authentication authentication
+    ) {
+        UserPrincipal admin = requireAdmin(authentication);
+        AdminRuntimeConfigService.DeployResult result = adminRuntimeConfigService.deploy(
+                request.target(),
+                request.services()
+        );
+        auditEventService.record(
+                admin.userId(),
+                "ADMIN_RUNTIME_CONFIG_DEPLOYED",
+                "RUNTIME_CONFIG",
+                result.target(),
+                "Admin triggered runtime config deploy",
+                Map.of("target", result.target(), "services", result.services(), "success", result.success())
+        );
+        return result;
+    }
+
     private static UserPrincipal requireAdmin(Authentication authentication) {
         if (authentication == null || !(authentication.getPrincipal() instanceof UserPrincipal principal)) {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Unauthorized");
@@ -252,6 +307,19 @@ public class AdminController {
     public record CreateApiKeyRequest(
             @NotBlank @Size(max = 120) String name,
             @Size(max = 255) String scopes
+    ) {
+    }
+
+    public record RuntimeConfigUpdateRequest(
+            Map<String, String> values,
+            String deployTarget,
+            Boolean deploy
+    ) {
+    }
+
+    public record RuntimeDeployRequest(
+            String target,
+            List<String> services
     ) {
     }
 

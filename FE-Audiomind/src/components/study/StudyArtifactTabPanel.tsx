@@ -33,6 +33,7 @@ import './study.css'
 
 export type StudyArtifactTabPanelProps = {
   subjectId: number
+  synthesisId?: number | null
   artifactType: StudyArtifactType
   meetings: StudySourceMeetingOption[]
   onOpenEvidence?: (meetingId: number, segmentId: string) => void
@@ -48,6 +49,7 @@ const pickLatest = (artifacts: StudyArtifact[]): StudyArtifact | null => {
 
 export function StudyArtifactTabPanel({
   subjectId,
+  synthesisId = null,
   artifactType,
   meetings,
   onOpenEvidence,
@@ -138,6 +140,7 @@ export function StudyArtifactTabPanel({
         artifactTypes: [artifactType],
         sourceSelectionMode: input.sourceSelectionMode,
         options: input.options,
+        synthesisId: input.sourceSelectionMode === 'ALL_READY' ? synthesisId : null,
         force: input.force,
       })
       setAggregateStatus(String(response.status))

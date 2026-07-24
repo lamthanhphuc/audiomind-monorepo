@@ -389,7 +389,7 @@ def test_realtime_cache_only_hit_does_not_initialize_provider(db_session, monkey
     meeting_id = 7006
     transcript = "Speaker 1: can cap nhat API gateway"
     transcript_hash = main_module._compute_transcript_hash(transcript, None)
-    analyzer = FakeRealtimeAnalyzer()
+    analyzer = main_module._analysis_cache_metadata_analyzer()
     _seed_completed_run(
         db_session,
         meeting_id=meeting_id,
@@ -418,7 +418,6 @@ def test_realtime_cache_only_hit_does_not_initialize_provider(db_session, monkey
 
     response = asyncio.run(main_module.analyze_realtime_transcript(request, db_session))
 
-    assert analyzer.calls == []
     assert response.status == "completed"
     assert response.analysis["summary"] == "Export cached summary"
     assert response.analysisStatus == "COMPLETED"

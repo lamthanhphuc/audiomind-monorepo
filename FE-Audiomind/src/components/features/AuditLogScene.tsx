@@ -13,15 +13,13 @@ const EVENT_OPTIONS = [
   { value: '', label: 'Tất cả sự kiện' },
   { value: 'ADMIN_USER_ROLE_CHANGED', label: 'Đổi quyền user' },
   { value: 'ADMIN_USER_PLAN_CHANGED', label: 'Đổi gói user' },
-  { value: 'ADMIN_BILLING_MANUAL_PAID', label: 'Manual paid' },
+  { value: 'ADMIN_BILLING_MANUAL_PAID', label: 'Manual paid billing' },
   { value: 'ADMIN_USER_API_KEY_CREATED', label: 'Tạo API key' },
   { value: 'ADMIN_USER_API_KEY_REVOKED', label: 'Thu hồi API key' },
+  { value: 'ADMIN_RUNTIME_CONFIG_UPDATED', label: 'Cập nhật cấu hình' },
+  { value: 'ADMIN_RUNTIME_CONFIG_DEPLOYED', label: 'Deploy cấu hình' },
   { value: 'ACCOUNT_PASSWORD_CHANGED', label: 'Đổi mật khẩu' },
   { value: 'ACCOUNT_LOGOUT_ALL', label: 'Đăng xuất mọi thiết bị' },
-  { value: 'MEETING_SHARED', label: 'Chia sẻ meeting' },
-  { value: 'MEETING_SHARE_REVOKED', label: 'Thu hồi chia sẻ' },
-  { value: 'MEETING_SHARE_PENDING_INVITED', label: 'Mời chia sẻ' },
-  { value: 'MEETING_SHARE_PENDING_REVOKED', label: 'Thu hồi lời mời' },
 ]
 
 const toIsoBoundary = (date: string, endOfDay = false): string | undefined => {
@@ -87,8 +85,8 @@ export default function AuditLogScene({ role = 'USER', onNavigateAdmin }: Props)
       <header className="account-scene__hero">
         <div>
           <p className="account-scene__eyebrow">Audit / Activity Log</p>
-          <h1>Nhật ký hoạt động</h1>
-          <p className="account-scene__subtitle">Theo dõi role, plan, manual paid, bảo mật tài khoản và chia sẻ meeting.</p>
+          <h1>Log quản trị</h1>
+          <p className="account-scene__subtitle">Theo dõi thao tác admin, cấu hình runtime, API key và bảo mật tài khoản.</p>
         </div>
         <button type="button" className="btn btn--secondary" onClick={onNavigateAdmin}>Mở Admin Dashboard</button>
       </header>
@@ -117,7 +115,7 @@ export default function AuditLogScene({ role = 'USER', onNavigateAdmin }: Props)
         </div>
       </article>
       <article className="account-card account-card--wide">
-        <h2><ShieldAlert size={18} aria-hidden /> Audit events</h2>
+        <h2><ShieldAlert size={18} aria-hidden /> Sự kiện quản trị</h2>
         {loading ? <LoadingState message="Đang tải audit log..." /> : (
           <div className="account-table-wrap">
             <table className="account-table">
