@@ -73,6 +73,9 @@ export default function AnalysisTermNotesSection({ meetingId, analysis }: Props)
   const [loading, setLoading] = useState(false)
   const [savingTerm, setSavingTerm] = useState<string | null>(null)
   const [savingAll, setSavingAll] = useState(false)
+  const [customTerm, setCustomTerm] = useState('')
+  const [customTermNote, setCustomTermNote] = useState('')
+  const [savingCustomTerm, setSavingCustomTerm] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [savedHint, setSavedHint] = useState('')
 
@@ -237,6 +240,70 @@ export default function AnalysisTermNotesSection({ meetingId, analysis }: Props)
     }
   }
 
+  const persistCustomTerm = async () => {
+    if (!meetingId) {
+      return
+    }
+
+    const term = customTerm.trim()
+    const body = customTermNote.trim()
+    setError(null)
+
+    if (!term) {
+      setError('Nhập thuật ngữ trước khi lưu')
+      return
+    }
+    if (!body) {
+      setError('Nhập định nghĩa hoặc ghi chú cho thuật ngữ')
+      return
+    }
+
+    setSavingCustomTerm(true)
+    try {
+      const existingDraft = termDrafts.find((item) => item.term.trim().toLowerCase() === term.toLowerCase())
+      if (existingDraft?.serverNoteId != null) {
+        await updateKnowledgeNote(existingDraft.serverNoteId, {
+          body,
+          noteType: TERM_NOTE_TYPE,
+          term,
+          title: term,
+        })
+      } else {
+        await createKnowledgeNote({
+          meetingId,
+          term,
+          noteType: TERM_NOTE_TYPE,
+          title: term,
+          body,
+        })
+      }
+
+      setTermDrafts((current) => {
+        const existing = current.find((item) => item.term.trim().toLowerCase() === term.toLowerCase())
+        if (existing) {
+          return current.map((item) => (
+            item.term.trim().toLowerCase() === term.toLowerCase()
+              ? { ...item, note: body, meaning: item.meaning || body }
+              : item
+          ))
+        }
+        return [
+          { term, meaning: body, note: body, serverNoteId: null },
+          ...current,
+        ]
+      })
+      setCustomTerm('')
+      setCustomTermNote('')
+      notifyGlossaryNotesChanged()
+      showSavedHint(`Đã lưu thuật ngữ "${term}"`)
+      void loadNotes()
+    } catch (saveError) {
+      setError(getSaveErrorMessage(saveError))
+    } finally {
+      setSavingCustomTerm(false)
+    }
+  }
+
   const persistAllTermNotes = async () => {
     if (!meetingId || terms.length === 0) {
       return
@@ -320,6 +387,44 @@ export default function AnalysisTermNotesSection({ meetingId, analysis }: Props)
           rows={3}
           data-testid="analysis-general-note-input"
         />
+      </div>
+
+      <div className="analysis-term-notes__custom">
+        <div className="analysis-term-notes__custom-head">
+          <h4>Tự thêm thuật ngữ</h4>
+          <button
+            type="button"
+            className="btn btn--secondary"
+            onClick={() => void persistCustomTerm()}
+            disabled={loading || savingAll || savingCustomTerm || Boolean(savingTerm)}
+            data-testid="analysis-custom-term-save"
+          >
+            {savingCustomTerm ? 'Đang lưu…' : 'Lưu thuật ngữ'}
+          </button>
+        </div>
+        <div className="analysis-term-notes__custom-grid">
+          <label>
+            <span>Thuật ngữ</span>
+            <input
+              type="text"
+              value={customTerm}
+              onChange={(event) => setCustomTerm(event.target.value)}
+              placeholder="Ví dụ: SLA, Backlog grooming..."
+              data-testid="analysis-custom-term-input"
+            />
+          </label>
+          <label>
+            <span>Định nghĩa / ghi chú</span>
+            <textarea
+              className="analysis-term-notes__editor"
+              value={customTermNote}
+              onChange={(event) => setCustomTermNote(event.target.value)}
+              placeholder="Ý nghĩa trong ngữ cảnh cuộc họp hoặc dự án này..."
+              rows={2}
+              data-testid="analysis-custom-term-note-input"
+            />
+          </label>
+        </div>
       </div>
 
       {terms.length > 0 ? (

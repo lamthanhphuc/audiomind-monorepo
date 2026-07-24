@@ -1043,7 +1043,7 @@ describe('pollRealtimeAnalysisAfterStop', () => {
     expect(result.status).toBe('failed')
     expect(result.metadata?.errorCode).toBe('GEMINI_UNAVAILABLE')
     expect(result.metadata?.retryAfterSeconds).toBe(30)
-    expect(result.reason).toContain('Phân tích AI tạm thời chưa sẵn sàng')
+    expect(result.reason).toContain('AI đang bận')
   })
 
   it('stops polling when backend marks analysis as retryable circuit open', async () => {
@@ -1074,7 +1074,7 @@ describe('pollRealtimeAnalysisAfterStop', () => {
     expect(result.status).toBe('failed')
     expect(result.metadata?.errorCode).toBe('CIRCUIT_OPEN')
     expect(result.reason).toContain('Transcript đã lưu')
-    expect(result.reason).toContain('CIRCUIT_OPEN')
+    expect(result.reason).toContain('AI đang bận')
   })
 })
 

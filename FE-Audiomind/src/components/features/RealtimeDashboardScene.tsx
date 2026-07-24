@@ -330,7 +330,7 @@ export default function RealtimeDashboardScene({
       : 'Bật để giảm tiếng quạt, bàn phím, tạp âm nền. Tắt nếu giọng bị méo hoặc mất âm.'
 
   return (
-    <div className="dashboard-page bg-gray-light">
+    <div className="dashboard-page">
       <section className="realtime-panel realtime-panel--dashboard">
         <div className="realtime-hero">
           <div className="realtime-panel__header">
@@ -354,7 +354,7 @@ export default function RealtimeDashboardScene({
               </div>
             </div>
             {liveMeetingId && (
-              <span className="realtime-panel__meeting-badge">Cuộc họp #{liveMeetingId}</span>
+              <span className="realtime-panel__meeting-badge">Cuộc họp đang ghi</span>
             )}
           </div>
 
@@ -536,7 +536,7 @@ export default function RealtimeDashboardScene({
             <strong>Tham gia cuộc họp khác</strong>
             <input
               type="number"
-              placeholder="ID cuộc họp"
+              placeholder="Mã cuộc họp"
               value={joinMeetingIdInput}
               onChange={(event) => onJoinMeetingIdChange(event.target.value)}
             />

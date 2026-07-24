@@ -231,7 +231,7 @@ export default function MindmapView({
       {isPageLayout && (
         <div className="mindmap-view__toolbar">
           <div className="mindmap-view__status">
-            <span className="feature-chip">Cuộc họp #{meetingId ?? '—'}</span>
+            <span className="feature-chip">{meetingTitle || 'Cuộc họp đang chọn'}</span>
             <span className="mindmap-status__dot" />
             <span>
               {analysis
@@ -270,7 +270,7 @@ export default function MindmapView({
 
         <div className="mindmap-view__status">
 
-        <span className="feature-chip">Cuộc họp #{meetingId ?? '—'}</span>
+        <span className="feature-chip">{meetingTitle || 'Cuộc họp đang chọn'}</span>
 
         <span className="mindmap-status__dot" />
 

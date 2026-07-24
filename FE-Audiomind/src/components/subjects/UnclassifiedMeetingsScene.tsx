@@ -111,7 +111,7 @@ export function UnclassifiedMeetingsScene({
                   const busy = rowBusyId === meeting.id
                   return (
                     <tr key={meeting.id}>
-                      <td>{meeting.title || meeting.originalFileName || `Meeting #${meeting.id}`}</td>
+                      <td>{meeting.title || meeting.originalFileName || 'Meeting chưa đặt tên'}</td>
                       <td>{formatDateVi(meeting.createdAt)}</td>
                       <td>{formatLanguage(String(meeting.language ?? 'vi'))}</td>
                       <td>{formatMeetingStatus(String(meeting.status ?? ''))}</td>

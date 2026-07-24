@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { BookOpenText, RefreshCw, Search } from 'lucide-react'
 
 import {
   createKnowledgeNote,
@@ -34,6 +35,7 @@ export default function KnowledgeVaultScene({ onOpenMeeting }: Props) {
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({})
 
   const groups = useMemo(() => groupVaultNotesByMeeting(items), [items])
+  const localOnlyCount = useMemo(() => items.filter((item) => item.localOnly).length, [items])
 
   useEffect(() => {
     const timer = window.setTimeout(() => setDebouncedQuery(query.trim()), 250)
@@ -147,31 +149,57 @@ export default function KnowledgeVaultScene({ onOpenMeeting }: Props) {
   return (
     <section className="feature-scene knowledge-vault-scene" data-testid="knowledge-vault-scene">
       <header className="knowledge-vault-scene__hero">
-        <div>
-          <p className="knowledge-vault-scene__eyebrow">Lớp tri thức AI</p>
-          <h1>Kho tri thức</h1>
-          <p className="knowledge-vault-scene__subtitle">
-            Tìm lại ghi chú thuật ngữ và giải thích đã lưu từ mọi cuộc họp.
-          </p>
+        <div className="knowledge-vault-scene__hero-copy">
+          <span className="knowledge-vault-scene__icon" aria-hidden="true">
+            <BookOpenText size={20} />
+          </span>
+          <div>
+            <h1>Kho tri thức</h1>
+            <p className="knowledge-vault-scene__subtitle">
+              Tìm lại ghi chú, thuật ngữ và giải thích đã lưu từ mọi cuộc họp.
+            </p>
+          </div>
         </div>
+        <button
+          type="button"
+          className="btn btn--secondary knowledge-vault-scene__refresh"
+          onClick={() => setRefreshToken((value) => value + 1)}
+          disabled={loading}
+          data-testid="knowledge-vault-refresh"
+        >
+          <RefreshCw size={16} aria-hidden="true" />
+          {loading ? 'Đang tải' : 'Làm mới'}
+        </button>
       </header>
 
-      <div className="knowledge-vault-scene__search">
-        <input
-          type="search"
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          placeholder="Tìm theo thuật ngữ hoặc nội dung…"
-          data-testid="knowledge-vault-search"
-        />
+      <div className="knowledge-vault-scene__toolbar">
+        <label className="knowledge-vault-scene__search">
+          <Search size={17} aria-hidden="true" />
+          <span className="sr-only">Tìm trong Kho tri thức</span>
+          <input
+            type="search"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Tìm theo thuật ngữ, nội dung hoặc meeting…"
+            data-testid="knowledge-vault-search"
+          />
+        </label>
+        <div className="knowledge-vault-scene__stats" aria-label="Thống kê kho tri thức">
+          <span><strong>{items.length}</strong> ghi chú</span>
+          <span><strong>{groups.length}</strong> nhóm</span>
+          <span><strong>{localOnlyCount}</strong> chờ đồng bộ</span>
+        </div>
       </div>
 
-      {loading && <p className="knowledge-vault-scene__loading">Đang tải…</p>}
-      {error && <p className="knowledge-vault-scene__error" role="alert">{error}</p>}
-      {info && !loading && <p className="knowledge-vault-scene__info">{info}</p>}
+      {loading && <p className="knowledge-vault-scene__status knowledge-vault-scene__loading">Đang tải…</p>}
+      {error && <p className="knowledge-vault-scene__status knowledge-vault-scene__error" role="alert">{error}</p>}
+      {info && !loading && <p className="knowledge-vault-scene__status knowledge-vault-scene__info">{info}</p>}
 
       {!loading && items.length === 0 && !error && (
-        <p className="knowledge-vault-scene__empty">Chưa có ghi chú nào. Hãy lưu từ transcript hoặc bảng thuật ngữ.</p>
+        <div className="knowledge-vault-scene__empty">
+          <strong>Chưa có ghi chú nào</strong>
+          <p>Hãy lưu thuật ngữ hoặc ghi chú từ tab “Ghi chú & thuật ngữ” trong màn phân tích.</p>
+        </div>
       )}
 
       <ul className="knowledge-vault-scene__list">
@@ -198,7 +226,7 @@ export default function KnowledgeVaultScene({ onOpenMeeting }: Props) {
                   </button>
                   <div>
                     <h2 className="knowledge-vault-scene__group-title">
-                      {group.meetingId != null ? `Cuộc họp #${group.meetingId}` : 'Ghi chú chung'}
+                      {group.meetingId != null ? `Mã hỗ trợ #${String(group.meetingId).slice(-6)}` : 'Ghi chú chung'}
                     </h2>
                     <p className="knowledge-vault-scene__group-meta">
                       {group.notes.length} ghi chú

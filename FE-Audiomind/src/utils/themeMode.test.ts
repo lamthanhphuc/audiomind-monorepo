@@ -39,8 +39,8 @@ describe('themeMode', () => {
   it('maps theme classes and toggle labels', () => {
     expect(themeClassName('night')).toBe('app--studio')
     expect(themeClassName('light')).toBe('app--light')
-    expect(themeToggleLabel('night')).toBe('Light')
-    expect(themeToggleLabel('light')).toBe('Night')
+    expect(themeToggleLabel('night')).toBe('Chế độ sáng')
+    expect(themeToggleLabel('light')).toBe('Chế độ tối')
     expect(nextThemeMode('night')).toBe('light')
     expect(nextThemeMode('light')).toBe('night')
   })

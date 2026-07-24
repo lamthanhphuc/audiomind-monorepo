@@ -1,5 +1,6 @@
 package com.example.userservice.security;
 
+import com.example.userservice.repository.UserAccountRepository;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.JwtException;
 import jakarta.servlet.FilterChain;
@@ -9,6 +10,7 @@ import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.util.List;
 import org.slf4j.MDC;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpHeaders;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -20,10 +22,21 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
     private final JwtUtil jwtUtil;
     private final TokenBlacklistStore tokenBlacklistStore;
+    private final UserAccountRepository userAccountRepository;
 
-    public JwtAuthenticationFilter(JwtUtil jwtUtil, TokenBlacklistStore tokenBlacklistStore) {
+    @Autowired
+    public JwtAuthenticationFilter(
+            JwtUtil jwtUtil,
+            TokenBlacklistStore tokenBlacklistStore,
+            UserAccountRepository userAccountRepository
+    ) {
         this.jwtUtil = jwtUtil;
         this.tokenBlacklistStore = tokenBlacklistStore;
+        this.userAccountRepository = userAccountRepository;
+    }
+
+    public JwtAuthenticationFilter(JwtUtil jwtUtil, TokenBlacklistStore tokenBlacklistStore) {
+        this(jwtUtil, tokenBlacklistStore, null);
     }
 
     @Override
@@ -91,6 +104,11 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         try {
             Claims claims = jwtUtil.parseClaims(token);
             Long userId = Long.parseLong(claims.getSubject());
+            if (isRevokedByAccountVersion(userId, claims)) {
+                SecurityContextHolder.clearContext();
+                filterChain.doFilter(request, response);
+                return;
+            }
             String username = claims.get("username", String.class);
             String role = claims.get("role", String.class);
             String plan = claims.get("plan", String.class);
@@ -115,5 +133,19 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         } finally {
             MDC.remove("userId");
         }
+    }
+
+    private boolean isRevokedByAccountVersion(Long userId, Claims claims) {
+        if (userAccountRepository == null) {
+            return false;
+        }
+        return userAccountRepository.findById(userId)
+                .map(user -> {
+                    if (user.getTokensValidAfter() == null || claims.getIssuedAt() == null) {
+                        return false;
+                    }
+                    return claims.getIssuedAt().toInstant().isBefore(user.getTokensValidAfter());
+                })
+                .orElse(true);
     }
 }

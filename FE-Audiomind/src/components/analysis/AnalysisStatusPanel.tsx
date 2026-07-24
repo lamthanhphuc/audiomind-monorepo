@@ -190,6 +190,13 @@ export const AnalysisStatusPanel = ({
     || isGeminiBillingBlocked
     || retryAfterSeconds > 0
     || (isRetryableFailure && !normalized.retryExhausted && retryAfterSeconds > 0)
+  const userFacingErrorMessage = normalized.errorCode || normalized.errorMessage
+    ? resolveErrorPresentation(
+      normalized.errorCode,
+      normalized.errorMessage || 'Phân tích tạm thời chưa sẵn sàng. Vui lòng thử lại sau.',
+      ERROR_UX_ENABLED,
+    ).message
+    : null
 
   const statusBanner = (() => {
     if (normalized.status === 'ANALYZING') {
@@ -228,9 +235,6 @@ export const AnalysisStatusPanel = ({
       : []),
     ...(normalized.analysisNextRetryAt
       ? [['Thử lại lúc', formatDateTime(normalized.analysisNextRetryAt)] as [string, string]]
-      : []),
-    ...(normalized.analysisTraceId
-      ? [['Trace ID', normalized.analysisTraceId] as [string, string]]
       : []),
   ]
   const technicalRows = [
@@ -295,9 +299,9 @@ export const AnalysisStatusPanel = ({
           Thử lại sau {retryAfterSeconds} giây
         </p>
       )}
-      {(normalized.errorCode || normalized.errorMessage) && (
+      {userFacingErrorMessage && (
         <p className="analysis-status-panel__error" data-testid="analysis-error-metadata">
-          {[normalized.errorCode, normalized.errorMessage].filter(Boolean).join(': ')}
+          {userFacingErrorMessage}
         </p>
       )}
       {technicalRows.length > 0 && (

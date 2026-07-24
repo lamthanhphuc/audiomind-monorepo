@@ -47,7 +47,7 @@ export default function ActiveJobsBanner({ onOpenMeeting }: ActiveJobsBannerProp
                 className="active-jobs-banner__item"
                 onClick={() => onOpenMeeting(job.meetingId)}
               >
-                <span>{job.meetingTitle?.trim() || `Cuộc họp #${job.meetingId}`}</span>
+                <span>{job.meetingTitle?.trim() || 'Cuộc họp đang xử lý'}</span>
                 <span className="active-jobs-banner__status">{formatJobStatus(job.status)}</span>
               </button>
             </li>

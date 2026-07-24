@@ -106,7 +106,7 @@ function MeetingsTab({
                     const busy = rowBusyId === meeting.id
                     return (
                       <tr key={meeting.id}>
-                        <td>{meeting.title || `Meeting #${meeting.id}`}</td>
+                        <td>{meeting.title || 'Meeting chưa đặt tên'}</td>
                         <td>{formatDateVi(meeting.createdAt)}</td>
                         <td>{formatLanguage(String(meeting.language ?? 'vi'))}</td>
                         <td>{formatMeetingStatus(String(meeting.status ?? ''))}</td>
@@ -203,7 +203,7 @@ export function SubjectDetailScene({
     () =>
       (meetingsPage?.items ?? []).map((meeting) => ({
         id: meeting.id,
-        title: meeting.title || `Meeting #${meeting.id}`,
+        title: meeting.title || 'Meeting chưa đặt tên',
         createdAt: meeting.createdAt,
       })),
     [meetingsPage?.items],
@@ -277,6 +277,12 @@ export function SubjectDetailScene({
   }
 
   const artifactType = artifactTypeForTab(tab)
+  const reusableSynthesisId =
+    synthesis?.id != null &&
+    synthesis.content &&
+    ['COMPLETED', 'STALE'].includes(String(synthesis.status).toUpperCase())
+      ? synthesis.id
+      : null
 
   return (
     <section className="subjects-scene" data-testid="subject-detail-scene">
@@ -352,6 +358,7 @@ export function SubjectDetailScene({
       {artifactType ? (
         <StudyArtifactTabPanel
           subjectId={subjectId}
+          synthesisId={reusableSynthesisId}
           artifactType={artifactType}
           meetings={meetingOptions}
           onOpenEvidence={onOpenEvidence}

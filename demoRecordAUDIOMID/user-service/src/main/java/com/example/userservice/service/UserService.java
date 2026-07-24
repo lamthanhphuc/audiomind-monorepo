@@ -27,6 +27,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.Map;
+import java.time.Instant;
 
 @Service
 @RequiredArgsConstructor
@@ -40,6 +41,7 @@ public class UserService {
     private final TokenBlacklistStore tokenBlacklistStore;
     private final PendingMeetingShareClient pendingMeetingShareClient;
     private final UserPlanService userPlanService;
+    private final AuditEventService auditEventService;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @Value("${app.security.jwt.access-expiration-seconds}")
@@ -134,6 +136,91 @@ public class UserService {
                 MDC.get("traceId"),
                 resolveRequestId(),
                 claims.getSubject()
+        );
+    }
+
+    @Transactional
+    public Map<String, Object> changePassword(UserPrincipal principal, String currentPassword, String newPassword) {
+        UserAccount user = userAccountRepository.findById(principal.userId())
+                .orElseThrow(() -> new BadCredentialsException("User not found"));
+        if (user.getPasswordHash() == null || user.getPasswordHash().isBlank()) {
+            throw new BadCredentialsException("Local password is not enabled for this account");
+        }
+        if (currentPassword == null || !passwordEncoder.matches(currentPassword, user.getPasswordHash())) {
+            throw new BadCredentialsException("Current password is invalid");
+        }
+        if (newPassword == null || newPassword.length() < 8) {
+            throw new IllegalArgumentException("New password must be at least 8 characters");
+        }
+        user.setPasswordHash(passwordEncoder.encode(newPassword));
+        user.setTokensValidAfter(Instant.now().minusSeconds(1));
+        userAccountRepository.save(user);
+        auditEventService.record(
+                user.getId(),
+                "ACCOUNT_PASSWORD_CHANGED",
+                "USER",
+                String.valueOf(user.getId()),
+                "User changed account password"
+        );
+        return Map.of(
+                "ok", true,
+                "tokensRevoked", true,
+                "userId", user.getId(),
+                "accessToken", issueAccessToken(user),
+                "expiresInSeconds", accessExpirationSeconds
+        );
+    }
+
+    @Transactional
+    public Map<String, Object> logoutAllDevices(UserPrincipal principal) {
+        UserAccount user = userAccountRepository.findById(principal.userId())
+                .orElseThrow(() -> new BadCredentialsException("User not found"));
+        user.setTokensValidAfter(Instant.now().minusSeconds(1));
+        userAccountRepository.save(user);
+        auditEventService.record(
+                user.getId(),
+                "ACCOUNT_LOGOUT_ALL",
+                "USER",
+                String.valueOf(user.getId()),
+                "User revoked all active JWT sessions"
+        );
+        return Map.of(
+                "ok", true,
+                "tokensValidAfter", user.getTokensValidAfter().toString(),
+                "userId", user.getId(),
+                "accessToken", issueAccessToken(user),
+                "expiresInSeconds", accessExpirationSeconds
+        );
+    }
+
+    private String issueAccessToken(UserAccount user) {
+        String effectivePlan = userPlanService.resolveEffectivePlan(user);
+        return jwtUtil.createAccessToken(
+                user.getId(),
+                user.getUsername(),
+                user.getRole(),
+                effectivePlan
+        );
+    }
+
+    @Transactional(readOnly = true)
+    public Map<String, Object> securityOverview(UserPrincipal principal, String bearerToken) {
+        UserAccount user = userAccountRepository.findById(principal.userId())
+                .orElseThrow(() -> new BadCredentialsException("User not found"));
+        Claims claims = null;
+        try {
+            claims = jwtUtil.parseClaims(extractBearerToken(bearerToken));
+        } catch (Exception ignored) {
+            // Keep overview useful even when the current header is unavailable to tests/tools.
+        }
+        return Map.of(
+                "localPasswordEnabled", user.getPasswordHash() != null && !user.getPasswordHash().isBlank(),
+                "tokensValidAfter", user.getTokensValidAfter() == null ? "" : user.getTokensValidAfter().toString(),
+                "currentSession", Map.of(
+                        "issuedAt", claims == null || claims.getIssuedAt() == null ? "" : claims.getIssuedAt().toInstant().toString(),
+                        "expiresAt", claims == null || claims.getExpiration() == null ? "" : claims.getExpiration().toInstant().toString()
+                ),
+                "supportsLogoutAll", true
         );
     }
 

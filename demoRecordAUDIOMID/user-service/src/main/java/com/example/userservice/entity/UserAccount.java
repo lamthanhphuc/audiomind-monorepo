@@ -46,6 +46,9 @@ public class UserAccount {
     @Column(name = "preferences_json")
     private String preferencesJson;
 
+    @Column(name = "tokens_valid_after")
+    private Instant tokensValidAfter;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
 

@@ -3,6 +3,8 @@ package com.example.userservice.config;
 import com.example.userservice.controller.ApiErrorResponse;
 import com.example.userservice.controller.ErrorCode;
 import com.example.userservice.logging.TraceIdFilter;
+import com.example.userservice.security.ApiKeyAuthenticationFilter;
+import com.example.userservice.security.ApiKeyScopeFilter;
 import com.example.userservice.security.JwtAuthenticationFilter;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
@@ -39,12 +41,20 @@ public class SecurityConfig {
     private static final Logger log = LoggerFactory.getLogger(SecurityConfig.class);
 
     private final JwtAuthenticationFilter jwtAuthenticationFilter;
+    private final ApiKeyAuthenticationFilter apiKeyAuthenticationFilter;
+    private final ApiKeyScopeFilter apiKeyScopeFilter;
 
     @Value("${cors.allowed-origins}")
     private String allowedOrigins;
 
-    public SecurityConfig(JwtAuthenticationFilter jwtAuthenticationFilter) {
+    public SecurityConfig(
+            JwtAuthenticationFilter jwtAuthenticationFilter,
+            ApiKeyAuthenticationFilter apiKeyAuthenticationFilter,
+            ApiKeyScopeFilter apiKeyScopeFilter
+    ) {
         this.jwtAuthenticationFilter = jwtAuthenticationFilter;
+        this.apiKeyAuthenticationFilter = apiKeyAuthenticationFilter;
+        this.apiKeyScopeFilter = apiKeyScopeFilter;
     }
 
     @Bean
@@ -73,11 +83,15 @@ public class SecurityConfig {
                         .requestMatchers("/internal/google/**").permitAll()
                         .requestMatchers("/internal/quota/**").permitAll()
                         .requestMatchers("/internal/users/**").permitAll()
+                        .requestMatchers("/internal/api-keys/**").permitAll()
+                        .requestMatchers("/internal/workspaces/**").permitAll()
                         .requestMatchers("/internal/notifications/**").permitAll()
                         .requestMatchers(HttpMethod.GET, "/health", "/ready").permitAll()
                         .requestMatchers("/actuator/**").permitAll()
                         .anyRequest().authenticated())
+                .addFilterBefore(apiKeyAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)
                 .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)
+                .addFilterAfter(apiKeyScopeFilter, UsernamePasswordAuthenticationFilter.class)
                 .build();
     }
 
@@ -108,7 +122,7 @@ public class SecurityConfig {
 
         config.setAllowedOrigins(origins);
         config.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
-        config.setAllowedHeaders(List.of("Authorization", "Content-Type", "X-Trace-Id", "X-Request-ID"));
+        config.setAllowedHeaders(List.of("Authorization", "Content-Type", "X-Trace-Id", "X-Request-ID", "X-API-Key"));
         config.setExposedHeaders(List.of("X-Trace-Id"));
         config.setAllowCredentials(true);
 

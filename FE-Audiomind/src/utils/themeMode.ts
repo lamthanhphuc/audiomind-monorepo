@@ -43,4 +43,4 @@ export const nextThemeMode = (mode: ThemeMode): ThemeMode =>
 
 /** Label shown on the toggle = the mode you switch *to*. */
 export const themeToggleLabel = (mode: ThemeMode): string =>
-  mode === 'night' ? 'Light' : 'Night'
+  mode === 'night' ? 'Chế độ sáng' : 'Chế độ tối'

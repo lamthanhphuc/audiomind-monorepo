@@ -2,6 +2,7 @@ package com.example.meetingservice.service;
 
 import com.example.meetingservice.entity.Meeting;
 import com.example.meetingservice.entity.Subject;
+import com.example.meetingservice.client.WorkspaceAccessClient;
 import com.example.meetingservice.repository.MeetingRepository;
 import com.example.meetingservice.repository.MeetingShareRepository;
 import com.example.meetingservice.repository.SubjectRepository;
@@ -53,6 +54,7 @@ public class MeetingService {
     private final MeetingRepository meetingRepository;
     private final MeetingShareRepository meetingShareRepository;
     private final SubjectRepository subjectRepository;
+    private final WorkspaceAccessClient workspaceAccessClient;
 
     public Meeting saveMeeting(String title, String audioPath){
         return saveMeeting(title, audioPath, null);
@@ -180,6 +182,13 @@ public class MeetingService {
                     .filter(meeting -> meeting.getDeletedAt() == null)
                     .orElseThrow(() -> new NoSuchElementException("Meeting not found: " + id));
         }
+        Optional<Meeting> workspaceMeeting = meetingRepository.findById(id)
+                .filter(meeting -> meeting.getDeletedAt() == null)
+                .filter(meeting -> workspaceAccessClient.canAccessOwnerMeetings(userId, meeting.getOwnerUserId()));
+        if (workspaceMeeting.isPresent()) {
+            workspaceMeeting.get().setSharedWithMe(true);
+            return workspaceMeeting.get();
+        }
         throw new NoSuchElementException("Meeting not found: " + id);
     }
 
@@ -250,8 +259,15 @@ public class MeetingService {
                         }
                     });
         }
+        List<Meeting> workspaceMeetings = meetingRepository.findTop20ByOrderByIdDesc().stream()
+                .filter(meeting -> !seen.contains(meeting.getId()))
+                .filter(meeting -> meeting.getDeletedAt() == null)
+                .filter(meeting -> workspaceAccessClient.canAccessOwnerMeetings(userId, meeting.getOwnerUserId()))
+                .peek(meeting -> meeting.setSharedWithMe(true))
+                .toList();
         List<Meeting> merged = new ArrayList<>(owned);
         merged.addAll(sharedMeetings);
+        merged.addAll(workspaceMeetings);
         return merged;
     }
 

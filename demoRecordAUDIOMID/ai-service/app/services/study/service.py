@@ -1742,7 +1742,11 @@ def _gemini_caller(*, workload: GeminiWorkload = GeminiWorkload.STRUCTURED_ANALY
     analyzer = build_analysis_analyzer(settings)
 
     def call_gemini(
-        *, prompt: str, system_prompt: str, response_schema: Any = None
+        *,
+        prompt: str,
+        system_prompt: str,
+        response_schema: Any = None,
+        max_output_tokens: int | None = None,
     ) -> str:
         model = getattr(analyzer, "model", None) or getattr(
             settings, "gemini_analysis_model", "gemini-3.1-flash-lite"
@@ -1755,6 +1759,7 @@ def _gemini_caller(*, workload: GeminiWorkload = GeminiWorkload.STRUCTURED_ANALY
             response_json=True,
             response_schema=response_schema,
             workload=workload,
+            max_output_tokens=max_output_tokens,
         )
 
     return call_gemini
@@ -1768,18 +1773,25 @@ def _lazy_gemini_caller(
     holder: dict[str, Any] = {}
 
     def call_gemini(
-        *, prompt: str, system_prompt: str, response_schema: Any = None
+        *,
+        prompt: str,
+        system_prompt: str,
+        response_schema: Any = None,
+        max_output_tokens: int | None = None,
     ) -> str:
         if "fn" not in holder:
             try:
                 holder["fn"] = _gemini_caller(workload=workload)
             except TypeError:
                 holder["fn"] = _gemini_caller()
-        return holder["fn"](
-            prompt=prompt,
-            system_prompt=system_prompt,
-            response_schema=response_schema,
-        )
+        call_kwargs = {
+            "prompt": prompt,
+            "system_prompt": system_prompt,
+            "response_schema": response_schema,
+        }
+        if max_output_tokens is not None:
+            call_kwargs["max_output_tokens"] = max_output_tokens
+        return holder["fn"](**call_kwargs)
 
     return call_gemini
 

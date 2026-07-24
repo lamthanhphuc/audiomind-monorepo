@@ -264,7 +264,10 @@
 .feature-analysis-scene,
 .dashboard-page.feature-analysis-page {
   min-height: 0;
-  overflow: hidden;
+}
+
+.dashboard-page.feature-analysis-page {
+  overflow: visible;
 }
 
 .analysis-page-header {
@@ -304,7 +307,8 @@
   flex: 1;
   min-height: 0;
   display: flex;
-  overflow: hidden;
+  align-items: flex-start;
+  overflow: visible;
 }
 
 .analysis-left-panel {
@@ -315,8 +319,7 @@
   flex-direction: column;
   gap: 18px;
   padding: 20px 24px;
-  overflow-y: auto;
-  overscroll-behavior: contain;
+  overflow: visible;
 }
 
 .analysis-right-panel {
@@ -325,10 +328,13 @@
   gap: 14px;
   width: min(380px, 34vw);
   min-width: 300px;
+  max-height: calc(100vh - 112px);
   min-height: 0;
   padding: 14px 14px 18px;
   border-left: 1px solid #e1e4f0;
   background: #fff;
+  position: sticky;
+  top: 0;
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -433,9 +439,8 @@
 }
 
 .analysis-left-panel .transcript-display__container {
-  max-height: min(62vh, 680px);
-  overflow-y: auto;
-  overscroll-behavior: contain;
+  max-height: none;
+  overflow: visible;
 }
 
 .analysis-mindmap-tab {
@@ -677,7 +682,9 @@
   .analysis-right-panel {
     border-left: none;
     border-top: 1px solid #e1e4f0;
+    max-height: none;
     min-height: 320px;
+    position: static;
   }
 
   .analysis-tabs {

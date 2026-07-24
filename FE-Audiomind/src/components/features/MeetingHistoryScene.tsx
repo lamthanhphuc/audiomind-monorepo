@@ -76,7 +76,7 @@ type MeetingHistorySceneProps = {
 }
 
 const getMeetingLabel = (meeting: Meeting): string => {
-  return meeting.title?.trim() || meeting.originalFileName?.trim() || `Meeting #${meeting.id}`
+  return meeting.title?.trim() || meeting.originalFileName?.trim() || 'Meeting chưa đặt tên'
 }
 
 const getMeetingLanguage = (meeting: Meeting): string => {
@@ -447,7 +447,7 @@ export default function MeetingHistoryScene({
   }))
 
   return (
-    <div className="dashboard-page bg-gray-light">
+    <div className="dashboard-page">
       {!isSearchControlled && (
         <header className="dashboard-header border-b">
           <div className="search-bar">
@@ -548,7 +548,7 @@ export default function MeetingHistoryScene({
                         selectMeeting(result.meetingId)
                       }}
                     >
-                      #{result.meetingId} {result.title || result.originalFileName || 'Meeting'}
+                      {result.title || result.originalFileName || 'Meeting liên quan'}
                     </button>
                     {result.reason && <p>{result.reason}</p>}
                   </li>
@@ -630,7 +630,7 @@ export default function MeetingHistoryScene({
                   <div>
                     <h2 className="studio-page-head">{getMeetingLabel(selectedMeetingSummary)}</h2>
                     <div className="history-detail-meta">
-                      ID {selectedMeetingSummary.id} • {formatLanguage(getMeetingLanguage(selectedMeetingSummary))} • {formatDateVi(selectedMeetingSummary.scheduledStartAt || selectedMeetingSummary.createdAt)}
+                      {formatLanguage(getMeetingLanguage(selectedMeetingSummary))} • {formatDateVi(selectedMeetingSummary.scheduledStartAt || selectedMeetingSummary.createdAt)}
                     </div>
                   </div>
                   <span className="meta-pill">{getMeetingStatus(selectedMeetingSummary)}</span>

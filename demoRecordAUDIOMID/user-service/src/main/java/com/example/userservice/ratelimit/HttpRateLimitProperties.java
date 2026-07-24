@@ -23,5 +23,7 @@ public class HttpRateLimitProperties {
 
     private int googleOAuthPerMinute = 30;
 
+    private int apiKeyPerMinute = 120;
+
     private Map<String, Integer> overrides = new HashMap<>();
 }

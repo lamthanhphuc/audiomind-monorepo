@@ -159,7 +159,8 @@ def artifact_system_instruction(artifact_type: str) -> str:
             base
             + " Build a RICH subject mind map: one hub chapter/topic per distinct lecture when possible, "
             "each hub with several leaf concepts (key points, terms, must-remember). "
-            "Prefer breadth and depth over a tiny shallow tree. "
+            "Prefer breadth and depth over a tiny shallow tree. For multi-lecture subjects, preserve "
+            "lecture coverage first, then merge only truly duplicate concepts. "
             "Attach evidence only from allowedSegmentIds."
         )
     return base
@@ -172,8 +173,9 @@ def _artifact_depth_instructions(artifact_type: str, *, meeting_count: int) -> s
         "Mind map depth requirements:\n"
         f"- Cover about {max(1, meeting_count)} source lectures.\n"
         "- root.label: clear subject title.\n"
-        "- nodes: prefer one CHAPTER/TOPIC hub per lecture, plus 4-8 CONCEPT leaves under each hub.\n"
-        "- Total nodes should usually be >= 5 * meetingCount when sources are rich.\n"
+        "- nodes: prefer one CHAPTER/TOPIC hub per lecture or chapter, plus 6-12 CONCEPT leaves under each hub.\n"
+        "- Add second-level detail leaves for definitions, workflows, trade-offs, formulas, or examples when sources support them.\n"
+        "- Total nodes should usually be >= 8 * meetingCount when sources are rich.\n"
         "- edges: connect root->hub and hub->leaf; keep the tree acyclic.\n"
         "- Keep labels short but specific; put longer detail in description.\n"
     )
@@ -1126,6 +1128,12 @@ def generate_artifact_content(
 
     settings = get_settings()
     max_input_tokens = max(1, int(settings.subject_synthesis_max_input_tokens))
+    if artifact_type == ARTIFACT_MIND_MAP:
+        configured_mind_map_tokens = int(
+            getattr(settings, "study_mind_map_max_input_tokens", 48000) or 48000
+        )
+        if max_input_tokens >= 4096:
+            max_input_tokens = max(max_input_tokens, configured_mind_map_tokens)
     chars_per_token = max(1, int(settings.subject_synthesis_chars_per_token))
 
     count_hint = {
@@ -1135,6 +1143,13 @@ def generate_artifact_content(
     }.get(artifact_type)
 
     system_prompt = artifact_system_instruction(artifact_type)
+    max_output_tokens = (
+        int(
+            getattr(settings, "gemini_study_mind_map_max_output_tokens", 24576) or 24576
+        )
+        if artifact_type == ARTIFACT_MIND_MAP
+        else None
+    )
     user_prompt = _prepare_artifact_prompt(
         artifact_type=artifact_type,
         prompt_version=prompt_version,
@@ -1155,11 +1170,23 @@ def generate_artifact_content(
     )
 
     try:
-        raw_text = call_gemini(
-            prompt=user_prompt,
-            system_prompt=system_prompt,
-            response_schema=artifact_gemini_schema(artifact_type),
-        )
+        call_kwargs = {
+            "prompt": user_prompt,
+            "system_prompt": system_prompt,
+            "response_schema": artifact_gemini_schema(artifact_type),
+        }
+        if max_output_tokens is not None:
+            call_kwargs["max_output_tokens"] = max_output_tokens
+        try:
+            raw_text = call_gemini(**call_kwargs)
+        except TypeError as exc:
+            if (
+                "max_output_tokens" not in call_kwargs
+                or "max_output_tokens" not in str(exc)
+            ):
+                raise
+            call_kwargs.pop("max_output_tokens", None)
+            raw_text = call_gemini(**call_kwargs)
         try:
             parsed = json.loads(raw_text) if isinstance(raw_text, str) else raw_text
         except json.JSONDecodeError as exc:

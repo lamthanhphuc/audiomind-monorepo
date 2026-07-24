@@ -18,6 +18,7 @@ public interface MeetingRepository extends JpaRepository<Meeting,Long> {
 	Optional<Meeting> findByIdAndOwnerUserIdAndDeletedAtIsNull(Long id, Long ownerUserId);
 	List<Meeting> findByOwnerUserIdAndDeletedAtIsNullOrderByCreatedAtDescIdDesc(Long ownerUserId);
 	List<Meeting> findByOwnerUserIdAndDeletedAtIsNullOrderByCreatedAtAscIdAsc(Long ownerUserId);
+	long countByOwnerUserIdAndDeletedAtIsNull(Long ownerUserId);
 	Optional<Meeting> findFirstByOwnerUserIdAndAudioHashAndDeletedAtIsNullOrderByIdDesc(Long ownerUserId, String audioHash);
 
 	long countBySubjectIdAndOwnerUserIdAndDeletedAtIsNull(Long subjectId, Long ownerUserId);

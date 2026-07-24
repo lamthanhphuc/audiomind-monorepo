@@ -2,6 +2,8 @@ package com.example.processingservice.config;
 
 import com.example.processingservice.controller.ApiErrorResponse;
 import com.example.processingservice.controller.ErrorCode;
+import com.example.processingservice.security.ApiKeyAuthenticationFilter;
+import com.example.processingservice.security.ApiKeyScopeFilter;
 import com.example.processingservice.security.JwtAuthenticationFilter;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
@@ -33,12 +35,19 @@ public class SecurityConfig {
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
     private final JwtAuthenticationFilter jwtAuthenticationFilter;
+    private final ApiKeyAuthenticationFilter apiKeyAuthenticationFilter;
+    private final ApiKeyScopeFilter apiKeyScopeFilter;
 
     @Value("${cors.allowed-origins}")
     private String allowedOrigins;
 
-    public SecurityConfig(JwtAuthenticationFilter jwtAuthenticationFilter) {
+    public SecurityConfig(
+            JwtAuthenticationFilter jwtAuthenticationFilter,
+            ApiKeyAuthenticationFilter apiKeyAuthenticationFilter,
+            ApiKeyScopeFilter apiKeyScopeFilter) {
         this.jwtAuthenticationFilter = jwtAuthenticationFilter;
+        this.apiKeyAuthenticationFilter = apiKeyAuthenticationFilter;
+        this.apiKeyScopeFilter = apiKeyScopeFilter;
     }
 
     @Bean
@@ -60,7 +69,9 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.GET, "/ws/**").permitAll()
                         .requestMatchers(HttpMethod.GET, Epic3ApiPaths.TRANSCRIPT_QUALITY_CONFIG).permitAll()
                         .anyRequest().authenticated())
+                .addFilterBefore(apiKeyAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)
                 .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)
+                .addFilterAfter(apiKeyScopeFilter, UsernamePasswordAuthenticationFilter.class)
                 .build();
     }
 
@@ -86,7 +97,7 @@ public class SecurityConfig {
 
         config.setAllowedOrigins(origins);
         config.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
-        config.setAllowedHeaders(List.of("Authorization", "Content-Type", "X-Trace-Id", "X-Request-ID"));
+        config.setAllowedHeaders(List.of("Authorization", "Content-Type", "X-Trace-Id", "X-Request-ID", "X-API-Key"));
         config.setExposedHeaders(List.of("X-Trace-Id"));
         config.setAllowCredentials(true);
 

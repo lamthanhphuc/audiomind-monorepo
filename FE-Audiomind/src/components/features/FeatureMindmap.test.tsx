@@ -76,7 +76,7 @@ describe('FeatureMindmap', () => {
     })
 
     expect(container.querySelector('[data-testid="mindmap-meeting-picker"]')).toBeTruthy()
-    expect(container.textContent).toContain('Cuộc họp #42')
+    expect(container.textContent).toContain('Cuộc họp đang chọn')
     expect(container.textContent).toContain('Tong hop')
     expect(container.textContent).toContain('API')
     expect(container.textContent).toContain('Do tre')

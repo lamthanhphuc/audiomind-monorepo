@@ -5,6 +5,8 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.mockito.Mockito.mock;
 
 import com.example.userservice.logging.TraceIdFilter;
+import com.example.userservice.security.ApiKeyAuthenticationFilter;
+import com.example.userservice.security.ApiKeyScopeFilter;
 import com.example.userservice.security.JwtAuthenticationFilter;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -22,7 +24,11 @@ class SecurityConfigErrorResponseTest {
 
     @Test
     void authenticationEntryPoint_shouldReturnCanonical401() throws Exception {
-        SecurityConfig config = new SecurityConfig(mock(JwtAuthenticationFilter.class));
+        SecurityConfig config = new SecurityConfig(
+                mock(JwtAuthenticationFilter.class),
+                mock(ApiKeyAuthenticationFilter.class),
+                mock(ApiKeyScopeFilter.class)
+        );
         ObjectMapper objectMapper = new ObjectMapper();
         AuthenticationEntryPoint entryPoint = config.authenticationEntryPoint();
 
@@ -45,7 +51,11 @@ class SecurityConfigErrorResponseTest {
 
     @Test
     void accessDeniedHandler_shouldReturnCanonical403() throws Exception {
-        SecurityConfig config = new SecurityConfig(mock(JwtAuthenticationFilter.class));
+        SecurityConfig config = new SecurityConfig(
+                mock(JwtAuthenticationFilter.class),
+                mock(ApiKeyAuthenticationFilter.class),
+                mock(ApiKeyScopeFilter.class)
+        );
         ObjectMapper objectMapper = new ObjectMapper();
         AccessDeniedHandler handler = config.accessDeniedHandler();
 

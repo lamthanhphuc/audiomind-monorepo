@@ -48,6 +48,12 @@ from app.job_status_store import (
 from app.metrics import gemini_metrics, stt_metrics
 from app.models import Analysis, Transcript
 from app.logging_utils import safe_error_message, transcript_hash_prefix
+from app.services.api_key_auth import (
+    API_KEY_STATE_ATTR,
+    has_required_scope,
+    introspect_api_key,
+    resolve_api_key,
+)
 from app.services.ai_analyzer import AIAnalyzer
 from app.schemas import (
     ActionItem,
@@ -1017,10 +1023,36 @@ app.add_middleware(
     allow_origins=_resolve_cors_origins(),
     allow_credentials=False,
     allow_methods=["GET", "POST", "PUT", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "X-Request-ID", "X-Trace-ID"],
+    allow_headers=[
+        "Authorization",
+        "Content-Type",
+        "X-Request-ID",
+        "X-Trace-ID",
+        "X-API-Key",
+    ],
 )
 
 TRACE_HEADER_NAME = "X-Trace-Id"
+
+
+@app.middleware("http")
+async def api_key_auth_middleware(request: Request, call_next) -> Response:
+    api_key = resolve_api_key(request)
+    if not api_key:
+        return await call_next(request)
+    try:
+        identity = await introspect_api_key(api_key, request.method, request.url.path)
+    except Exception as exc:
+        logger.warning(
+            "event=API_KEY_INTROSPECTION_FAILED path={} errorCode={}",
+            request.url.path,
+            type(exc).__name__,
+        )
+        raise HTTPException(status_code=401, detail="Invalid API key")
+    if not identity or not has_required_scope(identity.get("scopes"), request.method):
+        raise HTTPException(status_code=403, detail="API key scope is not allowed")
+    setattr(request.state, API_KEY_STATE_ATTR, identity)
+    return await call_next(request)
 
 
 @app.middleware("http")
@@ -1858,6 +1890,64 @@ def _normalize_analysis_payload(raw_analysis: dict[str, Any]) -> dict[str, Any]:
             True if raw_analysis.get("evidenceUnavailable") is True else None
         ),
     }
+
+
+def _has_structured_analysis_payload(analysis: dict[str, Any] | None) -> bool:
+    if not isinstance(analysis, dict) or not analysis:
+        return False
+    if str(analysis.get("summary") or analysis.get("meetingSummary") or "").strip():
+        return True
+    education_study = analysis.get("educationStudy")
+    if isinstance(education_study, dict) and education_study:
+        return True
+    for key in (
+        "keywords",
+        "technical_terms",
+        "technicalTerms",
+        "painPoints",
+        "action_items",
+        "actionItems",
+        "businessActionItems",
+        "keyDecisions",
+        "risks",
+        "blockers",
+        "nextSteps",
+    ):
+        value = analysis.get(key)
+        if isinstance(value, list) and value:
+            return True
+    return False
+
+
+def _completed_status_for_structured_analysis(
+    status: Any,
+    analysis_status: Any,
+    analysis: dict[str, Any],
+) -> tuple[str, str]:
+    normalized_status = str(status or "COMPLETED").strip().upper() or "COMPLETED"
+    normalized_analysis_status = (
+        str(analysis_status or normalized_status).strip().upper() or normalized_status
+    )
+    if _has_structured_analysis_payload(analysis):
+        if normalized_status in {
+            "FAILED",
+            "ANALYSIS_FAILED_RETRYABLE",
+            "RATE_LIMITED",
+            "QUOTA_BLOCKED",
+            "NOT_FOUND",
+            "NO_ANALYSIS",
+        }:
+            normalized_status = "COMPLETED"
+        if normalized_analysis_status in {
+            "FAILED",
+            "ANALYSIS_FAILED_RETRYABLE",
+            "RATE_LIMITED",
+            "QUOTA_BLOCKED",
+            "NOT_FOUND",
+            "NO_ANALYSIS",
+        }:
+            normalized_analysis_status = "COMPLETED"
+    return normalized_status, normalized_analysis_status
 
 
 def _normalize_transcript_text(transcript: str) -> str:
@@ -3127,14 +3217,35 @@ async def get_analysis(
         job_analysis = _extract_analysis_from_job_state(job_state)
         if job_analysis:
             normalized = _normalize_analysis_payload(job_analysis)
-            run_metadata = analysis_run_response_metadata(
-                latest_completed_analysis_run(db, meeting_id)
-            )
+            latest_run = latest_completed_analysis_run(db, meeting_id)
+            run_metadata = analysis_run_response_metadata(latest_run)
             job_status = (
                 str(job_state.get("status") or "COMPLETED")
                 if isinstance(job_state, dict)
                 else "COMPLETED"
             )
+            effective_status, effective_analysis_status = (
+                _completed_status_for_structured_analysis(
+                    job_status,
+                    run_metadata.get("analysisStatus")
+                    or normalized.get("analysisStatus")
+                    or job_status,
+                    normalized,
+                )
+            )
+            if effective_status == "COMPLETED" and job_status.upper() != "COMPLETED":
+                set_job_status(
+                    meeting_id=meeting_id,
+                    status="COMPLETED",
+                    result=build_completed_analysis_job_result(
+                        meeting_id=meeting_id,
+                        analysis=normalized,
+                        source=normalized["source"] or "job_state_recovered",
+                        domain_mode=normalized["domainMode"],
+                    ),
+                    stage="completed",
+                    progress=100,
+                )
             action_items = [ActionItem(**item) for item in normalized["action_items"]]
             technical_terms = [
                 AnalysisTechnicalTerm(**item) for item in normalized["technicalTerms"]
@@ -3175,10 +3286,10 @@ async def get_analysis(
                 painPoints=pain_points,
                 actionItems=normalized["actionItems"],
                 domainMode=normalized["domainMode"],
-                status=job_status,
+                status=effective_status,
                 source=normalized["source"] or "job_state",
                 transcript_hash=normalized["transcript_hash"],
-                analysisStatus=run_metadata.get("analysisStatus") or job_status,
+                analysisStatus=effective_analysis_status,
                 cacheHit=normalized.get("cacheHit"),
                 provider=run_metadata.get("provider"),
                 model=run_metadata.get("model"),

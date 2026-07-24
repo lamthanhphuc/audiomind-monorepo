@@ -11,6 +11,8 @@ public interface MeetingShareInviteRepository extends JpaRepository<MeetingShare
 
     List<MeetingShareInvite> findByInviteeEmailAndStatusOrderByCreatedAtAsc(String inviteeEmail, String status);
 
+    List<MeetingShareInvite> findByInvitedByUserIdAndStatusOrderByCreatedAtDesc(Long invitedByUserId, String status);
+
     Optional<MeetingShareInvite> findByMeetingIdAndInviteeEmailAndStatus(
             Long meetingId,
             String inviteeEmail,
