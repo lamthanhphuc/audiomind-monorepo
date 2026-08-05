@@ -53,7 +53,7 @@ describe('RecordingSourceSelector', () => {
     })
 
     expect(container.querySelector('[data-testid="recording-source-tab-guide"]')).not.toBeNull()
-    expect(container.textContent).toContain('Meet, Teams')
+    expect(container.textContent).toContain('tab đang phát âm thanh cuộc họp hoặc video')
     expect(container.textContent).toContain('Chia sẻ âm thanh tab')
     expect(container.textContent).not.toContain('Nên dùng tai nghe')
   })

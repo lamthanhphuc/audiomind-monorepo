@@ -86,7 +86,7 @@ export function RecordingSourceSelector({
             ))}
           </ol>
           <p className="recording-source-guide__note">
-            Hãy chọn tab đang phát âm thanh (Meet, Teams, YouTube, v.v.), bật &quot;Chia sẻ âm thanh tab&quot;,
+            Hãy chọn tab đang phát âm thanh cuộc họp hoặc video, bật &quot;Chia sẻ âm thanh tab&quot;,
             và có thể tắt loa/mute mic — âm thanh tab vẫn được ghi trực tiếp.
           </p>
           {showHeadphoneNote && (

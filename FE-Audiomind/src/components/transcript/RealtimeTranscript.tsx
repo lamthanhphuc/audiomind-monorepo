@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { DEFAULT_IT_TERMS } from '../../constants/itTerms'
 import { useDomainLexiconTerms } from '../../hooks/useDomainLexiconTerms'
 import type { TranscriptSegment } from '../../hooks/useRealtimeMeetingStream'
@@ -30,6 +30,9 @@ const segmentOverlapsHighlight = (
   return startSeconds <= highlightRange.endTime && endSeconds >= highlightRange.startTime
 }
 
+const isScrolledNearBottom = (container: HTMLDivElement, threshold = 80): boolean =>
+  container.scrollHeight - container.scrollTop - container.clientHeight <= threshold
+
 export const RealtimeTranscript: React.FC<RealtimeTranscriptProps> = ({
   segments,
   isPaused = false,
@@ -43,6 +46,22 @@ export const RealtimeTranscript: React.FC<RealtimeTranscriptProps> = ({
   const lexiconTerms = useDomainLexiconTerms(domainMode)
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const animationFrameRef = useRef<number | null>(null)
+  const shouldStickToBottomRef = useRef(true)
+  const [hasNewSegmentsBelow, setHasNewSegmentsBelow] = useState(false)
+
+  const scrollToLatest = (behavior: ScrollBehavior = 'smooth') => {
+    const container = scrollContainerRef.current
+    if (!container) {
+      return
+    }
+    if (typeof container.scrollTo === 'function') {
+      container.scrollTo({ top: container.scrollHeight, behavior })
+    } else {
+      container.scrollTop = container.scrollHeight
+    }
+    shouldStickToBottomRef.current = true
+    setHasNewSegmentsBelow(false)
+  }
 
   useEffect(() => {
     if (isPaused || segments.length === 0) {
@@ -59,7 +78,11 @@ export const RealtimeTranscript: React.FC<RealtimeTranscriptProps> = ({
         return
       }
 
-      container.scrollTop = container.scrollHeight
+      if (shouldStickToBottomRef.current || isScrolledNearBottom(container)) {
+        scrollToLatest('smooth')
+      } else {
+        setHasNewSegmentsBelow(true)
+      }
     })
 
     return () => {
@@ -68,6 +91,18 @@ export const RealtimeTranscript: React.FC<RealtimeTranscriptProps> = ({
       }
     }
   }, [segments, isPaused])
+
+  const handleScroll = () => {
+    const container = scrollContainerRef.current
+    if (!container) {
+      return
+    }
+    const isNearBottom = isScrolledNearBottom(container)
+    shouldStickToBottomRef.current = isNearBottom
+    if (isNearBottom) {
+      setHasNewSegmentsBelow(false)
+    }
+  }
 
   const displaySegments = useMemo(() => sortTranscriptSegmentsByTimeline(segments), [segments])
 
@@ -117,50 +152,62 @@ export const RealtimeTranscript: React.FC<RealtimeTranscriptProps> = ({
         <span className="segment-count">{displaySegments.length} đoạn</span>
       </div>
 
-      <div
-        className="transcript-container"
-        style={cssVars({ '--scroll-max-height': maxHeight })}
-        ref={scrollContainerRef}
-        data-testid="realtime-transcript-scroll"
-      >
-        {displaySegments.map((segment) => {
-          const startSeconds = segment.start ?? segment.timestamp ?? 0
-          const endSeconds = segment.end ?? startSeconds
-          const timestampLabel = endSeconds > startSeconds
-            ? `${formatTranscriptTimestamp(startSeconds)} - ${formatTranscriptTimestamp(endSeconds)}`
-            : formatTranscriptTimestamp(startSeconds)
-          const isHighlighted = segmentOverlapsHighlight(startSeconds, endSeconds, highlightRange)
+      <div className="realtime-transcript__scroll-wrap">
+        <div
+          className="transcript-container"
+          style={cssVars({ '--scroll-max-height': maxHeight })}
+          ref={scrollContainerRef}
+          onScroll={handleScroll}
+          data-testid="realtime-transcript-scroll"
+        >
+          {displaySegments.map((segment) => {
+            const startSeconds = segment.start ?? segment.timestamp ?? 0
+            const endSeconds = segment.end ?? startSeconds
+            const timestampLabel = endSeconds > startSeconds
+              ? `${formatTranscriptTimestamp(startSeconds)} - ${formatTranscriptTimestamp(endSeconds)}`
+              : formatTranscriptTimestamp(startSeconds)
+            const isHighlighted = segmentOverlapsHighlight(startSeconds, endSeconds, highlightRange)
 
-          return (
-            <div
-              key={segment.mergeKey ?? segment.id}
-              className={`transcript-segment${isHighlighted ? ' transcript-display__segment--highlight' : ''}`}
-              data-segment-start={startSeconds}
-              data-segment-end={endSeconds}
-            >
-              <div className="segment-speaker">{formatDualStreamSpeakerLabel(segment.speaker, segment.streamId)}</div>
-              <div className="segment-text">
-                {segment.text && segment.text.trim().length > 0 ? (
-                  <HighlightedTranscriptText
-                    text={segment.text}
-                    terms={mergedHighlightTerms}
-                    enabled={mergedHighlightTerms.length > 0}
-                  />
-                ) : (
-                  <div className="listening-placeholder">Đang lắng nghe...</div>
-                )}
-                {segment.confidence !== undefined && segment.confidence < 0.9 && (
-                  <span className="confidence-badge">
-                    {Math.round(segment.confidence * 100)}%
-                  </span>
-                )}
+            return (
+              <div
+                key={segment.mergeKey ?? segment.id}
+                className={`transcript-segment${isHighlighted ? ' transcript-display__segment--highlight' : ''}`}
+                data-segment-start={startSeconds}
+                data-segment-end={endSeconds}
+              >
+                <div className="segment-speaker">{formatDualStreamSpeakerLabel(segment.speaker, segment.streamId)}</div>
+                <div className="segment-text">
+                  {segment.text && segment.text.trim().length > 0 ? (
+                    <HighlightedTranscriptText
+                      text={segment.text}
+                      terms={mergedHighlightTerms}
+                      enabled={mergedHighlightTerms.length > 0}
+                    />
+                  ) : (
+                    <div className="listening-placeholder">Đang lắng nghe...</div>
+                  )}
+                  {segment.confidence !== undefined && segment.confidence < 0.9 && (
+                    <span className="confidence-badge">
+                      {Math.round(segment.confidence * 100)}%
+                    </span>
+                  )}
+                </div>
+                <div className="segment-timestamp">
+                  {timestampLabel}
+                </div>
               </div>
-              <div className="segment-timestamp">
-                {timestampLabel}
-              </div>
-            </div>
-          )
-        })}
+            )
+          })}
+        </div>
+        {hasNewSegmentsBelow && (
+          <button
+            type="button"
+            className="realtime-transcript__jump"
+            onClick={() => scrollToLatest()}
+          >
+            Có transcript mới
+          </button>
+        )}
       </div>
     </div>
   )

@@ -473,9 +473,23 @@ export default function MeetingHistoryScene({
           <div className="history-page-head studio-page-head">
             <div>
               <h1>Lịch sử cuộc họp</h1>
-              <p>Tìm kiếm, lọc, đổi tên và xoá mềm meeting.</p>
+              <p>Tìm meeting, mở transcript, xem phân tích và xuất báo cáo từ một nơi.</p>
             </div>
             <span className="meta-pill">{listTotal}</span>
+          </div>
+          <div className="workflow-guide workflow-guide--compact" aria-label="Hướng dẫn lịch sử cuộc họp">
+            <div>
+              <strong>1. Chọn meeting</strong>
+              <span>Dùng bộ lọc hoặc tìm kiếm để thu hẹp danh sách.</span>
+            </div>
+            <div>
+              <strong>2. Kiểm tra nội dung</strong>
+              <span>Mở transcript và evidence trước khi dùng kết quả AI.</span>
+            </div>
+            <div>
+              <strong>3. Chia sẻ / xuất</strong>
+              <span>Dùng tab Export hoặc Sharing trong khung chi tiết.</span>
+            </div>
           </div>
 
           <div className="history-toolbar ui-toolbar">
@@ -772,7 +786,7 @@ export default function MeetingHistoryScene({
               {listState === 'loading' ? (
                 <LoadingState message="Đang chuẩn bị history..." />
               ) : (
-                <EmptyState message="Chọn một meeting để xem transcript và analysis đã lưu" />
+                <EmptyState message="Chọn một meeting bên trái để xem transcript, phân tích, export và chia sẻ." />
               )}
             </div>
           )}

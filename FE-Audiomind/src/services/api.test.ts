@@ -20,6 +20,7 @@ import {
   resolveMeetingResultScope,
   searchMeetingTranscriptEvidence,
   startProcessingByPath,
+  updateUserProfile,
   uploadToMeetingApi,
 } from './api'
 
@@ -657,5 +658,29 @@ describe('user profile', () => {
     expect(profile.domainMode).toBe('business')
     const [url] = fetchMock.mock.calls[0] as [string]
     expect(url).toContain('/api/users/me')
+  })
+
+  it('updates current user profile display name', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        userId: 42,
+        username: 'Thanh Phuc',
+        email: 'tester@example.com',
+        domainMode: 'education',
+        accessToken: 'next-token',
+        expiresInSeconds: 3600,
+      }),
+      headers: new Headers(),
+    })
+
+    const profile = await updateUserProfile('Thanh Phuc')
+
+    expect(profile.username).toBe('Thanh Phuc')
+    expect(profile.accessToken).toBe('next-token')
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(url).toContain('/api/users/me/profile')
+    expect(init.method).toBe('PATCH')
+    expect(init.body).toBe(JSON.stringify({ username: 'Thanh Phuc' }))
   })
 })

@@ -252,7 +252,7 @@ describe('MeetingHistoryScene', () => {
     expect(api.listMeetingsPage).toHaveBeenCalledTimes(1)
     expect(api.getTranscript).not.toHaveBeenCalled()
     expect(api.getSavedAnalysis).not.toHaveBeenCalled()
-    expect(container.textContent).toContain('Chọn một meeting để xem transcript và analysis đã lưu')
+    expect(container.textContent).toContain('Chọn một meeting bên trái để xem transcript, phân tích, export và chia sẻ.')
   })
 
   it('restores stored selection after list load and loads detail from list summary only', async () => {

@@ -112,14 +112,6 @@ describe('RealtimeDashboardScene', () => {
     onJoinMeeting: vi.fn(),
     liveTranscriptSegments: [],
     liveTranscriptKeywords: [],
-    realtimeKeywordCount: 0,
-    currentUserId: '7',
-    connectionViewForAside: {
-      title: 'Ready',
-      detail: 'Ready',
-      closeReason: null,
-      closeReasonIsError: false,
-    },
     liveAnalysis: null,
     liveAnalysisMetadata: null,
     liveAnalysisStatus: 'idle' as const,
@@ -141,12 +133,6 @@ describe('RealtimeDashboardScene', () => {
             closeReasonIsError: false,
           }}
           liveLifecycleState="stopped"
-          connectionViewForAside={{
-            title: 'Complete',
-            detail: 'Transcript saved',
-            closeReason: null,
-            closeReasonIsError: false,
-          }}
           liveAnalysis={analysis}
           liveAnalysisMetadata={analysis}
           liveAnalysisStatus="completed"
@@ -357,12 +343,6 @@ describe('RealtimeDashboardScene', () => {
           }}
           liveLifecycleState="stopped_no_analysis"
           livePartialWarning="Chưa có transcript"
-          connectionViewForAside={{
-            title: 'Chưa có transcript',
-            detail: 'Không có nội dung để phân tích',
-            closeReason: null,
-            closeReasonIsError: false,
-          }}
           liveAnalysisMetadata={metadata}
           liveAnalysisStatus="pending"
           showLiveAnalysis

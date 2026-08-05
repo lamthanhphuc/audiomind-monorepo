@@ -57,15 +57,12 @@ export default function AdminDashboardScene({ role = 'USER' }: Props) {
     try {
       const loadedUsers = await listAdminUsers()
       setUsers(loadedUsers)
-      if (!selectedUserId && loadedUsers.length > 0) {
-        setSelectedUserId(String(loadedUsers[0].id))
-      }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Không tải được danh sách user')
     } finally {
       setLoading(false)
     }
-  }, [isAdmin, selectedUserId])
+  }, [isAdmin])
 
   const loadBilling = useCallback(async () => {
     if (!isAdmin) return
@@ -129,6 +126,18 @@ export default function AdminDashboardScene({ role = 'USER' }: Props) {
       || String(user.id).includes(normalized)
     ))
   }, [query, users])
+
+  const userSummary = useMemo(() => {
+    const total = users.length
+    const pro = users.filter((user) => user.plan.toUpperCase() === 'PRO').length
+    const admins = users.filter((user) => user.role.toUpperCase() === 'ADMIN').length
+    return {
+      total,
+      visible: filteredUsers.length,
+      pro,
+      admins,
+    }
+  }, [filteredUsers.length, users])
 
   const applyUserUpdate = (updated: AdminUser) => {
     setUsers((items) => items.map((item) => (item.id === updated.id ? { ...item, ...updated } : item)))
@@ -289,6 +298,24 @@ export default function AdminDashboardScene({ role = 'USER' }: Props) {
       {activeTab === 'users' && (
         <article className="account-card account-card--wide">
           <h2>Danh sách người dùng</h2>
+          <div className="account-summary-row" aria-label="Tổng quan người dùng">
+            <div className="account-summary-item">
+              <span className="account-summary-item__value">{userSummary.total.toLocaleString('vi-VN')}</span>
+              <span className="account-summary-item__label">Tổng user</span>
+            </div>
+            <div className="account-summary-item">
+              <span className="account-summary-item__value">{userSummary.visible.toLocaleString('vi-VN')}</span>
+              <span className="account-summary-item__label">Đang hiển thị</span>
+            </div>
+            <div className="account-summary-item">
+              <span className="account-summary-item__value">{userSummary.pro.toLocaleString('vi-VN')}</span>
+              <span className="account-summary-item__label">Gói Pro</span>
+            </div>
+            <div className="account-summary-item">
+              <span className="account-summary-item__value">{userSummary.admins.toLocaleString('vi-VN')}</span>
+              <span className="account-summary-item__label">Admin</span>
+            </div>
+          </div>
           <div className="account-filter-row">
             <input
               className="account-input"
@@ -296,17 +323,20 @@ export default function AdminDashboardScene({ role = 'USER' }: Props) {
               onChange={(event) => setQuery(event.target.value)}
               placeholder="Tìm theo tên, email hoặc mã user"
             />
-            <span className="account-muted">{filteredUsers.length} người dùng</span>
+            <span className="account-muted">
+              {userSummary.visible.toLocaleString('vi-VN')} / {userSummary.total.toLocaleString('vi-VN')} người dùng
+            </span>
           </div>
           {loading ? (
             <LoadingState message="Đang tải danh sách user..." />
           ) : (
             <div className="account-table-wrap">
               <table className="account-table">
-                <thead><tr><th>User</th><th>Email</th><th>Role</th><th>Plan</th><th>Thao tác</th></tr></thead>
+                <thead><tr><th>#</th><th>User</th><th>Email</th><th>Role</th><th>Plan</th><th>Thao tác</th></tr></thead>
                 <tbody>
-                  {filteredUsers.map((user) => (
+                  {filteredUsers.map((user, index) => (
                     <tr key={user.id}>
+                      <td className="account-table__index">{index + 1}</td>
                       <td>{user.username || `User #${user.id}`}</td>
                       <td>{user.email || 'Chưa có email'}</td>
                       <td><span className="account-badge">{user.role}</span></td>
@@ -411,7 +441,7 @@ export default function AdminDashboardScene({ role = 'USER' }: Props) {
             <h2>Giao dịch / hóa đơn</h2>
             <div className="account-filter-row">
               <select className="account-select" value={selectedUserId} onChange={(event) => setSelectedUserId(event.target.value)}>
-                <option value="">Tất cả user</option>
+                <option value="">Tất cả billing</option>
                 {users.map((user) => <option key={user.id} value={user.id}>{user.username || user.email || `User #${user.id}`}</option>)}
               </select>
               <select className="account-select" value={transactionStatus} onChange={(event) => setTransactionStatus(event.target.value)}>

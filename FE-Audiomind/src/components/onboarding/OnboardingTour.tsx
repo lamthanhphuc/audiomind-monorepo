@@ -3,7 +3,6 @@ import { dismissOnboarding } from '../../utils/userPreferences'
 type OnboardingTourProps = {
   onNavigateUpload: () => void
   onNavigateRealtime: () => void
-  onNavigateIntegrations: () => void
   onDismiss: () => void
 }
 
@@ -21,20 +20,19 @@ const STEPS = [
     cta: 'Mở ghi âm',
   },
   {
-    title: 'Ghi âm tab trình duyệt',
-    body: 'Chọn "Ghi âm tab trình duyệt" để capture âm thanh từ Meet, Teams, YouTube... transcript live qua Deepgram.',
-    action: 'integrations' as const,
-    cta: 'Xem hướng dẫn Meet',
+    title: 'Xem lại kết quả',
+    body: 'Sau khi xử lý, mở Lịch sử để kiểm tra transcript, phân tích, export hoặc chia sẻ.',
+    action: 'upload' as const,
+    cta: 'Ở lại upload',
   },
 ]
 
 export default function OnboardingTour({
   onNavigateUpload,
   onNavigateRealtime,
-  onNavigateIntegrations,
   onDismiss,
 }: OnboardingTourProps) {
-  const handleAction = (action: 'upload' | 'realtime' | 'integrations') => {
+  const handleAction = (action: 'upload' | 'realtime') => {
     dismissOnboarding()
     onDismiss()
     if (action === 'upload') {
@@ -45,7 +43,6 @@ export default function OnboardingTour({
       onNavigateRealtime()
       return
     }
-    onNavigateIntegrations()
   }
 
   const handleDismiss = () => {

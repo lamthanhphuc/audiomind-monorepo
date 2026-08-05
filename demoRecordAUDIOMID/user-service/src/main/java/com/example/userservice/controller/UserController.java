@@ -8,6 +8,7 @@ import com.example.userservice.controller.dto.RegisterRequest;
 import com.example.userservice.controller.dto.RegisterResponse;
 import com.example.userservice.controller.dto.UserPreferencesRequest;
 import com.example.userservice.controller.dto.UserProfileResponse;
+import com.example.userservice.controller.dto.UserProfileUpdateRequest;
 import com.example.userservice.security.UserPrincipal;
 import com.example.userservice.service.UserService;
 import jakarta.validation.Valid;
@@ -61,6 +62,15 @@ public class UserController {
     public UserProfileResponse me(Authentication authentication) {
         UserPrincipal principal = (UserPrincipal) authentication.getPrincipal();
         return userService.me(principal);
+    }
+
+    @PatchMapping("/me/profile")
+    public Map<String, Object> updateProfile(
+            Authentication authentication,
+            @Valid @RequestBody UserProfileUpdateRequest request
+    ) {
+        UserPrincipal principal = (UserPrincipal) authentication.getPrincipal();
+        return userService.updateProfile(principal, request);
     }
 
     @PatchMapping("/me/preferences")

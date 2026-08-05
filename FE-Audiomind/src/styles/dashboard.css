@@ -66,6 +66,7 @@
   display: flex;
   align-items: center;
   gap: 12px;
+  min-width: 0;
 }
 
 .dashboard-user__avatar {
@@ -93,6 +94,15 @@
   font-size: 14px;
   font-weight: 600;
   color: #1a1a1a;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.dashboard-user__name-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .dashboard-user__email {
@@ -106,6 +116,7 @@
 .dashboard-plan-badge {
   display: inline-flex;
   align-items: center;
+  flex: 0 0 auto;
   padding: 2px 7px;
   border-radius: 999px;
   background: rgba(99, 102, 241, 0.12);
@@ -166,6 +177,13 @@
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: #94a3b8;
+}
+
+.dashboard-sidebar__hint {
+  margin: -4px 0 8px;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.35;
 }
 
 .dashboard-nav-list,

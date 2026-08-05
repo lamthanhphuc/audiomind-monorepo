@@ -7,6 +7,7 @@ import com.example.userservice.controller.dto.RegisterRequest;
 import com.example.userservice.controller.dto.RegisterResponse;
 import com.example.userservice.controller.dto.UserPreferencesRequest;
 import com.example.userservice.controller.dto.UserProfileResponse;
+import com.example.userservice.controller.dto.UserProfileUpdateRequest;
 import com.example.userservice.entity.UserAccount;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -238,6 +239,34 @@ public class UserService {
     }
 
     @Transactional
+    public Map<String, Object> updateProfile(UserPrincipal principal, UserProfileUpdateRequest request) {
+        UserAccount user = userAccountRepository.findById(principal.userId())
+                .orElseThrow(() -> new IllegalArgumentException("User not found"));
+        String username = normalizeUsername(request.username());
+        if (!user.getUsername().equals(username) && userAccountRepository.existsByUsername(username)) {
+            throw new IllegalArgumentException("Username already exists");
+        }
+        user.setUsername(username);
+        UserAccount saved = userAccountRepository.save(user);
+        auditEventService.record(
+                saved.getId(),
+                "ACCOUNT_PROFILE_UPDATED",
+                "USER",
+                String.valueOf(saved.getId()),
+                "User updated profile display name"
+        );
+        String accessToken = issueAccessToken(saved);
+        return Map.of(
+                "userId", saved.getId(),
+                "username", saved.getUsername(),
+                "email", saved.getEmail(),
+                "domainMode", readDomainModePreference(saved),
+                "accessToken", accessToken,
+                "expiresInSeconds", accessExpirationSeconds
+        );
+    }
+
+    @Transactional
     public Map<String, Object> updatePreferences(UserPrincipal principal, UserPreferencesRequest request) {
         UserAccount user = userAccountRepository.findById(principal.userId())
                 .orElseThrow(() -> new IllegalArgumentException("User not found"));
@@ -278,6 +307,17 @@ public class UserService {
             return normalized;
         }
         return "it";
+    }
+
+    private static String normalizeUsername(String value) {
+        String normalized = value == null ? "" : value.trim();
+        if (normalized.length() < 3 || normalized.length() > 50) {
+            throw new IllegalArgumentException("Username must be 3-50 characters");
+        }
+        if (!normalized.matches("[\\p{L}\\p{N} ._-]+")) {
+            throw new IllegalArgumentException("Display name can only contain letters, numbers, spaces, dot, underscore, and hyphen");
+        }
+        return normalized;
     }
 
     private String extractBearerToken(String bearerToken) {

@@ -29,7 +29,6 @@ import { QuotaWarningBanner } from '../components/ui/QuotaWarningBanner'
 const AdminDashboardScene = lazy(() => import('../components/features/AdminDashboardScene'))
 const AuditLogScene = lazy(() => import('../components/features/AuditLogScene'))
 const BillingScene = lazy(() => import('../components/features/BillingScene'))
-const ExpansionDashboardScene = lazy(() => import('../components/features/ExpansionDashboardScene'))
 const FeatureIntegrations = lazy(() => import('../components/features/FeatureIntegrations'))
 const FeatureMindmap = lazy(() => import('../components/features/FeatureMindmap'))
 const KnowledgeVaultScene = lazy(() => import('../components/features/KnowledgeVaultScene'))
@@ -39,7 +38,6 @@ const RealtimeDashboardScene = lazy(() => import('../components/features/Realtim
 const SettingsScene = lazy(() => import('../components/features/SettingsScene'))
 const SubjectDetailScene = lazy(() => import('../components/subjects/SubjectDetailScene'))
 const SubjectsListScene = lazy(() => import('../components/subjects/SubjectsListScene'))
-const TeamWorkspaceScene = lazy(() => import('../components/features/TeamWorkspaceScene'))
 const UnclassifiedMeetingsScene = lazy(() => import('../components/subjects/UnclassifiedMeetingsScene'))
 const UsageScene = lazy(() => import('../components/features/UsageScene'))
 import { useThemeMode } from '../hooks/useThemeMode'
@@ -84,6 +82,7 @@ import {
 } from '../utils/studioRouting'
 import { DEFAULT_SUBJECT_TAB, type SubjectDetailTab } from '../utils/subjectTabs'
 import { navigateToSubjectEvidence, readEvidenceSegmentId } from '../utils/subjectEvidence'
+import { resolveDisplayName } from '../utils/userDisplay'
 import type { MeetingResultScope } from '../utils/meetingResultScope'
 import { scopeCacheKey } from '../utils/meetingResultScope'
 import {
@@ -99,7 +98,7 @@ import {
   resolvePostAuthDestination,
 } from '../utils/inviteAuth'
 import { realtimeInfo, realtimeWarn } from '../utils/realtimeTelemetry'
-import { ApiError, getAnalysis, getProcessingStatus, getTranscript, getUserProfile, reanalyzeMeetingAnalysis, startProcessingByPath, updateUserPreferences, uploadToMeetingApi, type AnalysisScopeOptions } from '../services/api'
+import { ApiError, getAnalysis, getProcessingStatus, getTranscript, getUserProfile, reanalyzeMeetingAnalysis, startProcessingByPath, updateUserPreferences, uploadToMeetingApi, type AnalysisScopeOptions, type UserProfile } from '../services/api'
 import { resolveBatchPipelineErrorCode, resolveErrorPresentation } from '../constants/errorCatalog'
 import { ERROR_UX_ENABLED } from '../services/config'
 import {
@@ -1178,6 +1177,7 @@ export default function App() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [selectedUploadLanguage, setSelectedUploadLanguage] = useState<'vi' | 'en' | 'multi'>('vi')
   const [selectedDomainMode, setSelectedDomainMode] = useState<DomainMode>(() => loadUserPreferences().domainMode)
+  const [userProfile, setUserProfile] = useState<UserProfile | null>(null)
   const [showOnboarding, setShowOnboarding] = useState(() => !isOnboardingDismissed())
   const handleDomainModeChange = useCallback((mode: DomainMode) => {
     const normalized = normalizeDomainMode(mode)
@@ -1190,6 +1190,7 @@ export default function App() {
   const syncUserPreferencesFromServer = useCallback(async () => {
     try {
       const profile = await getUserProfile()
+      setUserProfile(profile)
       const normalized = applyServerDomainMode(profile.domainMode)
       if (normalized) {
         setSelectedDomainMode(normalized)
@@ -1205,10 +1206,6 @@ export default function App() {
   const [result, setResult] = useState<ResultView | null>(null)
   const [uploadNotice, setUploadNotice] = useState<string | null>(null)
   const [lastUploadMeetingId, setLastUploadMeetingId] = useState<number | null>(null)
-  const [zoomIntegrationNotice, setZoomIntegrationNotice] = useState<string | null>(null)
-  const [zoomIntegrationNoticeTone, setZoomIntegrationNoticeTone] = useState<'success' | 'error' | 'info'>('info')
-  const [teamsIntegrationNotice, setTeamsIntegrationNotice] = useState<string | null>(null)
-  const [teamsIntegrationNoticeTone, setTeamsIntegrationNoticeTone] = useState<'success' | 'error' | 'info'>('info')
   const [historyFocusMeetingId, setHistoryFocusMeetingId] = useState<number | null>(null)
   const [liveMeetingId, setLiveMeetingId] = useState<number | null>(null)
   const [liveError, setLiveError] = useState<string | null>(null)
@@ -1449,10 +1446,6 @@ export default function App() {
     setBillingActivationOrderCode,
     setBillingPaymentNotice,
     setGoogleIntegrationNotice,
-    setZoomIntegrationNotice,
-    setZoomIntegrationNoticeTone,
-    setTeamsIntegrationNotice,
-    setTeamsIntegrationNoticeTone,
     setOauthRefreshTick,
     setSessionPlanSyncTick,
     setGoogleCallbackState,
@@ -1673,10 +1666,6 @@ export default function App() {
     },
     {
       setGoogleIntegrationNotice,
-      setZoomIntegrationNotice,
-      setZoomIntegrationNoticeTone,
-      setTeamsIntegrationNotice,
-      setTeamsIntegrationNoticeTone,
       bumpOauthRefreshTick: () => setOauthRefreshTick((tick) => tick + 1),
     },
   )
@@ -1789,6 +1778,7 @@ export default function App() {
     setLiveAnalysisStatus('idle')
     setLiveAnalysisError(null)
     setLiveLifecycleState('idle')
+    setUserProfile(null)
     setPassword('')
     setRegisterPassword('')
     setRegisterConfirmPassword('')
@@ -1843,10 +1833,6 @@ export default function App() {
   }, [liveMeetingId, featureScene])
 
   useEffect(() => {
-    if (featureScene !== 'upload') {
-      setZoomIntegrationNotice(null)
-      setTeamsIntegrationNotice(null)
-    }
     if (featureScene !== 'files') {
       setHistoryFocusMeetingId(null)
     }
@@ -2230,57 +2216,19 @@ export default function App() {
     await handleProcess(file)
   }
 
-  const handleImportedMeeting = async (
-    meetingId: number,
-    meta: { duplicate: boolean; reused: boolean; processingStarted: boolean },
-  ) => {
-    if (!Number.isFinite(meetingId) || meetingId <= 0) {
-      setErrorMessage('Meeting ID import không hợp lệ')
-      return
-    }
-    setBusy(true)
-    setErrorMessage(null)
-    setUploadNotice(null)
-    abortControllerRef.current?.abort()
-    abortControllerRef.current = new AbortController()
-    try {
-      navigateFeatureScene('upload')
-      if (meta.duplicate && meta.reused) {
-        setUploadNotice('Recording đã được phân tích trước đó. Đang mở kết quả cũ.')
-        await openAnalysisForMeeting(meetingId, 'COMPLETED')
-        return
-      }
-      if (!meta.processingStarted) {
-        setUploadNotice('Đã nhập cuộc họp. Kiểm tra Lịch sử cuộc họp nếu phân tích chưa chạy.')
-        setStatus('processing')
-        return
-      }
-      setStatus('processing')
-      await pollUntilCompleted(meetingId, abortControllerRef.current.signal)
-      await openAnalysisForMeeting(meetingId, 'COMPLETED')
-    } catch (error: unknown) {
-      setStatus('failed')
-      if (error instanceof DOMException && error.name === 'AbortError') {
-        setErrorMessage('Processing cancelled')
-      } else if (error instanceof ApiError) {
-        setErrorMessage(error.message)
-      } else if (error instanceof Error) {
-        setErrorMessage(error.message)
-      } else {
-        setErrorMessage('Import cloud recording thất bại')
-      }
-    } finally {
-      abortControllerRef.current = null
-      setBusy(false)
-    }
-  }
-
   const dashboardUser = useMemo(() => ({
-    name: username.trim() || `User ${currentUserId || ''}`.trim() || 'AudioMind',
-    email: currentUserId ? `user-${currentUserId}@audiomind` : undefined,
+    name: resolveDisplayName(userProfile?.username, userProfile?.email, username.trim() || 'Người dùng'),
+    email: userProfile?.email?.trim() || undefined,
     plan: getJwtPlan(),
     role: getJwtRole(),
-  }), [currentUserId, username, sessionPlanSyncTick])
+  }), [userProfile, username, sessionPlanSyncTick])
+
+  const handleProfileUpdated = useCallback((profile: UserProfile) => {
+    setUserProfile(profile)
+    if (profile.username.trim()) {
+      setUsername(profile.username.trim())
+    }
+  }, [])
 
   useEffect(() => {
     if (!isAuthenticated || dashboardUser.role?.toUpperCase() !== 'ADMIN') {
@@ -2347,7 +2295,7 @@ export default function App() {
             await refreshAccessToken()
             setSessionPlanSyncTick((tick) => tick + 1)
           }}
-          onNavigateIntegrations={() => navigateFeatureScene('integrations')}
+          onProfileUpdated={handleProfileUpdated}
         />
       )
     }
@@ -2383,9 +2331,6 @@ export default function App() {
     if (featureScene === 'usage') {
       return <UsageScene />
     }
-    if (featureScene === 'team') {
-      return <TeamWorkspaceScene onNavigateHistory={() => navigateFeatureScene('files')} />
-    }
     if (featureScene === 'audit') {
       return <AuditLogScene role={dashboardUser.role} onNavigateAdmin={() => navigateFeatureScene('admin')} />
     }
@@ -2411,15 +2356,8 @@ export default function App() {
           callbackNotice={googleIntegrationNotice}
           oauthEnabled={GOOGLE_LOGIN_ENABLED}
           realtimeEnabled={isRealtimeEnabled}
-          uploadLanguage={selectedUploadLanguage}
-          zoomCallbackNotice={zoomIntegrationNotice}
-          zoomCallbackNoticeTone={zoomIntegrationNoticeTone}
-          teamsCallbackNotice={teamsIntegrationNotice}
-          teamsCallbackNoticeTone={teamsIntegrationNoticeTone}
-          integrationsBusy={busy}
           oauthRefreshTick={oauthRefreshTick}
           onNavigateRealtimeMeetCapture={handleNavigateRealtimeMeetCapture}
-          onMeetingImported={handleImportedMeeting}
         />
       )
     }
@@ -2483,16 +2421,6 @@ export default function App() {
         />
       )
     }
-    if (featureScene === 'insights') {
-      return (
-        <ExpansionDashboardScene
-          embeddingSearchEnabled={import.meta.env.VITE_EMBEDDING_SEARCH_ENABLED !== 'false'}
-          onOpenMeeting={(meetingId) => {
-            handleOpenMeetingAnalysisFromHistory(meetingId)
-          }}
-        />
-      )
-    }
     if (featureScene === 'realtime' && isRealtimeEnabled && realtimeUserId !== null) {
       return (
         <>
@@ -2541,9 +2469,6 @@ export default function App() {
           onJoinMeeting={handleJoinMeeting}
           liveTranscriptSegments={liveTranscriptSegmentsForDisplay}
           liveTranscriptKeywords={liveTranscriptKeywords}
-          realtimeKeywordCount={realtimeStream.keywords.length}
-          currentUserId={currentUserId}
-          connectionViewForAside={connectionView}
           liveAnalysis={liveAnalysis}
           liveAnalysisMetadata={liveAnalysisMetadata}
           liveAnalysisStatus={liveAnalysisStatus}
@@ -2672,7 +2597,6 @@ export default function App() {
         showOnboarding={showOnboarding}
         onDismissOnboarding={() => setShowOnboarding(false)}
         onNavigateRealtime={() => navigateFeatureScene('realtime')}
-        onNavigateIntegrations={() => navigateFeatureScene('integrations')}
         status={status}
         errorMessage={errorMessage}
         errorCode={uploadErrorCode ?? undefined}
