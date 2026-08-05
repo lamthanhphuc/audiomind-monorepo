@@ -22,10 +22,6 @@ type StudioRouteStateSetters = {
 
 type OAuthNoticeHandlers = {
   setGoogleIntegrationNotice: (message: string | null) => void
-  setZoomIntegrationNotice: (message: string | null) => void
-  setZoomIntegrationNoticeTone: (tone: 'success' | 'error' | 'info') => void
-  setTeamsIntegrationNotice: (message: string | null) => void
-  setTeamsIntegrationNoticeTone: (tone: 'success' | 'error' | 'info') => void
   bumpOauthRefreshTick: () => void
 }
 
@@ -58,12 +54,6 @@ export const useStudioRouteSync = (
       }
       if (event.provider === 'google') {
         noticeHandlers.setGoogleIntegrationNotice(event.message)
-      } else if (event.provider === 'zoom') {
-        noticeHandlers.setZoomIntegrationNotice(event.message)
-        noticeHandlers.setZoomIntegrationNoticeTone(event.tone ?? (event.status === 'success' ? 'success' : 'error'))
-      } else if (event.provider === 'teams') {
-        noticeHandlers.setTeamsIntegrationNotice(event.message)
-        noticeHandlers.setTeamsIntegrationNoticeTone(event.tone ?? (event.status === 'success' ? 'success' : 'error'))
       }
       noticeHandlers.bumpOauthRefreshTick()
     })

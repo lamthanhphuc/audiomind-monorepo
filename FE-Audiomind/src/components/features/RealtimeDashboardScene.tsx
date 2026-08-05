@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type MutableRefObject } from 'react'
+import { useEffect, useMemo, useRef, useState, type MutableRefObject } from 'react'
 import { AnalysisPanel } from '../analysis/AnalysisPanel'
 import { AnalysisStatusPanel } from '../analysis/AnalysisStatusPanel'
 import { collectEvidenceMatchesFromAnalysis } from '../../utils/evidenceMatches'
@@ -110,9 +110,6 @@ type RealtimeDashboardSceneProps = {
   onJoinMeeting: () => void
   liveTranscriptSegments: TranscriptSegment[]
   liveTranscriptKeywords: string[]
-  realtimeKeywordCount: number
-  currentUserId: string | null
-  connectionViewForAside: RealtimeConnectionView
   liveAnalysis: AiAnalysis | null
   liveAnalysisMetadata: AiAnalysis | null
   liveAnalysisStatus: 'idle' | 'polling' | 'completed' | 'pending' | 'failed'
@@ -215,9 +212,6 @@ export default function RealtimeDashboardScene({
   onJoinMeeting,
   liveTranscriptSegments,
   liveTranscriptKeywords,
-  realtimeKeywordCount,
-  currentUserId,
-  connectionViewForAside,
   liveAnalysis,
   liveAnalysisMetadata,
   liveAnalysisStatus,
@@ -233,6 +227,7 @@ export default function RealtimeDashboardScene({
   const [advancedSettingsOpen, setAdvancedSettingsOpen] = useState(liveLifecycleState === 'recording')
   const [liveHighlightRange, setLiveHighlightRange] = useState<TranscriptHighlightRange | null>(null)
   const [liveEvidenceWarning, setLiveEvidenceWarning] = useState<string | null>(null)
+  const liveAnalysisSectionRef = useRef<HTMLElement>(null)
 
   // Realtime scene has no transcript tab to switch to, so evidence clicks only
   // highlight + scroll the live transcript (no setActiveTab call here).
@@ -328,6 +323,17 @@ export default function RealtimeDashboardScene({
     : isRecordingActive
       ? 'Áp dụng ở lần ghi tiếp theo.'
       : 'Bật để giảm tiếng quạt, bàn phím, tạp âm nền. Tắt nếu giọng bị méo hoặc mất âm.'
+
+  useEffect(() => {
+    if (!showLiveAnalysis || liveAnalysisStatus !== 'completed') {
+      return
+    }
+    window.requestAnimationFrame(() => {
+      if (typeof liveAnalysisSectionRef.current?.scrollIntoView === 'function') {
+        liveAnalysisSectionRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      }
+    })
+  }, [showLiveAnalysis, liveAnalysisStatus, liveAnalysis])
 
   return (
     <div className="dashboard-page">
@@ -547,11 +553,17 @@ export default function RealtimeDashboardScene({
         )}
 
         <section className="ui-section realtime-stage realtime-stage--live">
-          <div>
-            <p className="ui-section__eyebrow">Bản ghi trực tiếp</p>
-            <h3 className="ui-section__title">Nội dung đang ghi</h3>
+          <div className="ui-section__header realtime-stage__header">
+            <div>
+              <p className="ui-section__eyebrow">Bản ghi trực tiếp</p>
+              <h3 className="ui-section__title">Nội dung đang ghi</h3>
+            </div>
+            <span className="realtime-stage__summary">
+              {liveTranscriptSegments.length > 0
+                ? `${liveTranscriptSegments.length} đoạn`
+                : 'Đang chờ transcript'}
+            </span>
           </div>
-        <div className="realtime-panel__grid realtime-panel__grid--transcript">
           <RealtimeTranscript
             segments={liveTranscriptSegments}
             isPaused={liveLifecycleState === 'silent_paused'}
@@ -561,30 +573,24 @@ export default function RealtimeDashboardScene({
             domainMode={liveAnalysis?.domainMode}
             highlightRange={liveHighlightRange}
           />
-
-          <aside className="realtime-panel__aside">
-            <div className="status-card status-card--live">
-              <div className="status-card__label">Kết nối</div>
-              <div className="status-card__value">{connectionViewForAside.title}</div>
-              <div className="status-card__detail">{connectionViewForAside.detail}</div>
-            </div>
-            <div className="status-card">
-              <div className="status-card__label">Từ khóa</div>
-              <div className="status-card__value">{realtimeKeywordCount}</div>
-            </div>
-            <div className="status-card">
-              <div className="status-card__label">Người dùng</div>
-              <div className="status-card__value">{currentUserId || 'Chưa rõ'}</div>
-            </div>
-          </aside>
-        </div>
         </section>
 
         {showLiveAnalysis && (
-          <section className="ui-section realtime-analysis-section">
-            <div>
-              <p className="ui-section__eyebrow">3. Sau khi ghi</p>
-              <h3 className="ui-section__title">Phân tích realtime</h3>
+          <section className="ui-section realtime-analysis-section" ref={liveAnalysisSectionRef}>
+            <div className="ui-section__header realtime-stage__header">
+              <div>
+                <p className="ui-section__eyebrow">Sau khi ghi</p>
+                <h3 className="ui-section__title">Phân tích realtime</h3>
+              </div>
+              <span className={`realtime-analysis-status realtime-analysis-status--${liveAnalysisStatus}`}>
+                {liveAnalysisStatus === 'completed'
+                  ? 'Hoàn tất'
+                  : liveAnalysisStatus === 'polling'
+                    ? 'Đang phân tích'
+                    : liveAnalysisStatus === 'failed'
+                      ? 'Cần kiểm tra'
+                      : 'Chờ kết quả'}
+              </span>
             </div>
             <AnalysisStatusPanel
               metadata={liveAnalysisMetadata ?? liveAnalysis}

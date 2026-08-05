@@ -78,7 +78,7 @@ describe('App mindmap analysis scope', () => {
     await flush()
 
     const mindmapMenu = Array.from(container.querySelectorAll('li')).find((item) =>
-      item.textContent?.includes('Sơ đồ mindmap'),
+      item.textContent?.includes('Mindmap'),
     )
     expect(mindmapMenu).toBeTruthy()
 

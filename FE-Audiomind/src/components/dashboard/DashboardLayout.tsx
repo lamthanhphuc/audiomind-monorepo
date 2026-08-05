@@ -6,12 +6,10 @@ import {
   BrainCircuit,
   CreditCard,
   History,
-  Lightbulb,
   LogOut,
   Moon,
   Network,
   Plus,
-  Puzzle,
   Radio,
   Search,
   Settings,
@@ -31,7 +29,7 @@ import type { HistoryLanguageFilter, HistoryStatusFilter } from '../../app/useHi
 import type { ThemeMode } from '../../utils/themeMode'
 import { themeToggleLabel } from '../../utils/themeMode'
 
-export type DashboardScene = 'upload' | 'realtime' | 'analysis' | 'files' | 'mindmap' | 'knowledge' | 'insights' | 'integrations' | 'billing' | 'subjects' | 'subjectDetail' | 'unclassified' | 'profile' | 'settings' | 'admin' | 'notifications' | 'usage' | 'team' | 'audit'
+export type DashboardScene = 'upload' | 'realtime' | 'analysis' | 'files' | 'mindmap' | 'knowledge' | 'integrations' | 'billing' | 'subjects' | 'subjectDetail' | 'unclassified' | 'profile' | 'settings' | 'admin' | 'notifications' | 'usage' | 'audit'
 
 type DashboardUser = {
   name: string
@@ -74,6 +72,7 @@ type DashboardNavItem = {
 
 type DashboardNavGroup = {
   title: string
+  description?: string
   items: DashboardNavItem[]
 }
 
@@ -115,51 +114,46 @@ export default function DashboardLayout({
   const navGroups: DashboardNavGroup[] = isAdmin
     ? [{
       title: 'Quản trị',
+      description: 'Dành cho vận hành hệ thống',
       items: [
-        { scene: 'admin', label: 'Admin dashboard', icon: Shield, testId: 'dashboard-nav-admin' },
-        { scene: 'audit', label: 'Log', icon: Shield, testId: 'dashboard-nav-audit' },
+        { scene: 'admin', label: 'Console admin', icon: Shield, testId: 'dashboard-nav-admin' },
+        { scene: 'audit', label: 'Audit log', icon: Shield, testId: 'dashboard-nav-audit' },
       ],
     }]
     : [
       {
-        title: 'Tạo mới',
+        title: 'Làm việc',
+        description: 'Tạo, ghi âm và xem kết quả',
         items: [
-          { scene: 'upload', label: 'Tải & phân tích', icon: AudioLines },
+          { scene: 'upload', label: 'Upload file', icon: AudioLines },
           ...(showRealtime
-            ? [{ scene: 'realtime' as const, label: 'Ghi âm trực tiếp', icon: Radio, testId: 'dashboard-nav-realtime' }]
+            ? [{ scene: 'realtime' as const, label: 'Ghi realtime', icon: Radio, testId: 'dashboard-nav-realtime' }]
             : []),
-        ],
-      },
-      {
-        title: 'Lịch sử',
-        items: [
-          { scene: 'files', label: 'Lịch sử cuộc họp', icon: History, testId: 'dashboard-nav-history' },
-          { scene: 'analysis', label: 'Kết quả phân tích', icon: BrainCircuit },
-        ],
-      },
-      {
-        title: 'Tri thức',
-        items: [
-          { scene: 'mindmap', label: 'Sơ đồ mindmap', icon: Network },
-          { scene: 'knowledge', label: 'Kho tri thức', icon: Search, testId: 'dashboard-nav-knowledge' },
-          { scene: 'insights', label: 'Insights', icon: Lightbulb, testId: 'dashboard-nav-insights' },
+          { scene: 'files', label: 'Cuộc họp của tôi', icon: History, testId: 'dashboard-nav-history' },
+          { scene: 'analysis', label: 'Phân tích gần đây', icon: BrainCircuit },
         ],
       },
       {
         title: 'Tài khoản',
+        description: 'Gói, quota và hồ sơ',
         items: [
+          { scene: 'billing', label: 'Gói & thanh toán', icon: CreditCard, testId: 'dashboard-nav-billing' },
+          { scene: 'usage', label: 'Quota sử dụng', icon: BarChart3, testId: 'dashboard-nav-usage' },
           { scene: 'profile', label: 'Hồ sơ cá nhân', icon: User, testId: 'dashboard-nav-profile' },
-          { scene: 'settings', label: 'Cài đặt', icon: Settings, testId: 'dashboard-nav-settings' },
-          { scene: 'notifications', label: 'Thông báo', icon: Bell, testId: 'dashboard-nav-notifications' },
-          { scene: 'usage', label: 'Usage & quota', icon: BarChart3, testId: 'dashboard-nav-usage' },
-          { scene: 'team', label: 'Team / Workspace', icon: Users, testId: 'dashboard-nav-team' },
         ],
       },
-    ]
-
-  const footerItems: DashboardNavItem[] = isAdmin ? [] : [
-      { scene: 'billing', label: 'Gói & thanh toán', icon: CreditCard, testId: 'dashboard-nav-billing' },
-      { scene: 'integrations', label: 'Tích hợp', icon: Puzzle, testId: 'dashboard-nav-integrations' },
+      {
+        title: 'Nâng cao',
+        description: 'Mở khi cần tổ chức và tích hợp',
+        items: [
+          { scene: 'subjects', label: 'Môn học / thư mục', icon: Users, testId: 'dashboard-nav-subjects' },
+          { scene: 'mindmap', label: 'Mindmap', icon: Network },
+          { scene: 'integrations', label: 'Google tích hợp', icon: Search, testId: 'dashboard-nav-integrations' },
+          { scene: 'knowledge', label: 'Kho tri thức', icon: Search, testId: 'dashboard-nav-knowledge' },
+          { scene: 'settings', label: 'Cài đặt', icon: Settings, testId: 'dashboard-nav-settings' },
+          { scene: 'notifications', label: 'Thông báo', icon: Bell, testId: 'dashboard-nav-notifications' },
+        ],
+      },
     ]
 
   useEffect(() => {
@@ -198,7 +192,7 @@ export default function DashboardLayout({
             <div className="dashboard-user__avatar">{initial}</div>
             <div className="dashboard-user__info">
               <span className="dashboard-user__name">
-                {user.name}
+                <span className="dashboard-user__name-text">{user.name}</span>
                 {user.plan && (
                   <span className="dashboard-plan-badge" data-testid="dashboard-plan-badge">
                     {user.plan.toUpperCase() === 'PRO' ? 'Pro' : 'Free'}
@@ -212,7 +206,7 @@ export default function DashboardLayout({
             <>
               <div className="studio-engine-badge">
                 <span className="studio-engine-badge__dot" />
-                Neural pipeline · trực tuyến
+                Sẵn sàng xử lý
               </div>
               <button type="button" className="dashboard-btn-new" onClick={() => handleNavigate('upload')}>
                 <Plus size={16} aria-hidden /> Tải file mới
@@ -225,6 +219,9 @@ export default function DashboardLayout({
           {navGroups.map((group) => (
             <div className="dashboard-sidebar__section" key={group.title}>
               <div className="dashboard-sidebar__title">{group.title}</div>
+              {group.description ? (
+                <p className="dashboard-sidebar__hint">{group.description}</p>
+              ) : null}
               <ul className="dashboard-nav-list">
                 {group.items.map((item) => {
                   const Icon = item.icon
@@ -292,22 +289,6 @@ export default function DashboardLayout({
 
         <div className="dashboard-sidebar__footer">
           <ul className="dashboard-nav-list">
-            {footerItems.map((item) => (
-              <li key={item.scene} className={activeMenu === item.scene ? 'active' : ''}>
-                <button
-                  type="button"
-                  className="dashboard-nav-button"
-                  onClick={() => handleNavigate(item.scene)}
-                  data-testid={item.testId}
-                  aria-current={activeMenu === item.scene ? 'page' : undefined}
-                >
-                  <span className="dashboard-icon-badge" aria-hidden>
-                    <item.icon size={16} strokeWidth={2.2} />
-                  </span>
-                  <span>{item.label}</span>
-                </button>
-              </li>
-            ))}
             {onToggleTheme ? (
               <li className="dashboard-theme-toggle">
                 <button

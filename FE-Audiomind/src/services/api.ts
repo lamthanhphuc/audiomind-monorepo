@@ -1211,6 +1211,11 @@ export type UserProfile = {
   domainMode?: string | null
 }
 
+export type UserProfileUpdateResponse = UserProfile & {
+  accessToken?: string
+  expiresInSeconds?: number
+}
+
 export const getUserProfile = async (): Promise<UserProfile> => {
   const payload = await fetchJson<Record<string, unknown>>(`${USER_API_BASE}/api/users/me`)
   return {
@@ -1218,6 +1223,22 @@ export const getUserProfile = async (): Promise<UserProfile> => {
     username: String(payload.username ?? ''),
     email: String(payload.email ?? ''),
     domainMode: firstString(payload.domainMode, payload.domain_mode) ?? null,
+  }
+}
+
+export const updateUserProfile = async (username: string): Promise<UserProfileUpdateResponse> => {
+  const payload = await fetchJson<Record<string, unknown>>(`${USER_API_BASE}/api/users/me/profile`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username }),
+  })
+  return {
+    userId: Number(payload.userId ?? payload.user_id ?? 0),
+    username: String(payload.username ?? ''),
+    email: String(payload.email ?? ''),
+    domainMode: firstString(payload.domainMode, payload.domain_mode) ?? null,
+    accessToken: firstString(payload.accessToken, payload.access_token),
+    expiresInSeconds: Number(payload.expiresInSeconds ?? payload.expires_in_seconds ?? 0) || undefined,
   }
 }
 

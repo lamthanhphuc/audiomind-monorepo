@@ -22,12 +22,9 @@ import {
 } from '../utils/studioRouting'
 import {
   resolveGoogleLoginError,
-  resolveTeamsCallbackMessage,
-  resolveZoomCallbackMessage,
 } from './integrationCallbackMessages'
 
 type GoogleCallbackState = 'idle' | 'processing' | 'linking'
-type NoticeTone = 'success' | 'error' | 'info'
 
 type RouteSetters = {
   setFeatureScene: (scene: DashboardScene) => void
@@ -44,10 +41,6 @@ type InitialRedirectHandlingOptions = RouteSetters & {
   setBillingActivationOrderCode: (orderCode: number | null) => void
   setBillingPaymentNotice: (message: string | null) => void
   setGoogleIntegrationNotice: (message: string | null) => void
-  setZoomIntegrationNotice: (message: string | null) => void
-  setZoomIntegrationNoticeTone: (tone: NoticeTone) => void
-  setTeamsIntegrationNotice: (message: string | null) => void
-  setTeamsIntegrationNoticeTone: (tone: NoticeTone) => void
   setOauthRefreshTick: (updater: (tick: number) => number) => void
   setSessionPlanSyncTick: (updater: (tick: number) => number) => void
   setGoogleCallbackState: (state: GoogleCallbackState) => void
@@ -60,7 +53,6 @@ const googleAlreadyLinkedMessage = 'Tài khoản Google này đã được liên
 const googleConnectionFailedMessage = 'Không thể kết nối Google. Vui lòng thử lại.'
 const googleConnectedMessage = 'Đã kết nối Google và cập nhật quyền truy cập.'
 const googleLoginInvalidMessage = 'Phiên đăng nhập Google không hợp lệ. Vui lòng thử lại.'
-const zoomConnectedMessage = 'Đã kết nối Zoom thành công. Chọn cloud recording để import.'
 const billingSyncingMessage = 'Thanh toán PayOS thành công. Đang đồng bộ gói Pro...'
 const billingFallbackMessage = 'Thanh toán thành công. Gói đã cập nhật trên server - bấm "Đồng bộ JWT" nếu badge vẫn hiện Free.'
 const billingCancelledMessage = 'Bạn đã hủy thanh toán. Bạn có thể thử lại bất cứ lúc nào.'
@@ -77,10 +69,6 @@ export const useInitialRedirectHandling = ({
   setBillingActivationOrderCode,
   setBillingPaymentNotice,
   setGoogleIntegrationNotice,
-  setZoomIntegrationNotice,
-  setZoomIntegrationNoticeTone,
-  setTeamsIntegrationNotice,
-  setTeamsIntegrationNoticeTone,
   setOauthRefreshTick,
   setSessionPlanSyncTick,
   setGoogleCallbackState,
@@ -227,74 +215,6 @@ export const useInitialRedirectHandling = ({
         void syncUserPreferencesFromServer()
       }
       const params = new URLSearchParams(window.location.search)
-      const zoom = params.get('zoom')
-      const teams = params.get('teams')
-      if (zoom || teams) {
-        const redirectAfter = params.get('redirectAfter')
-        const route = resolveStudioRedirectAfter(redirectAfter)
-        if (zoom === 'linked') {
-          const message = zoomConnectedMessage
-          if (returnToOAuthOpener({
-            provider: 'zoom',
-            status: 'success',
-            message,
-            route,
-            tone: 'success',
-          })) {
-            return cleanup
-          }
-        } else if (zoom === 'error') {
-          const message = resolveZoomCallbackMessage(params.get('reason'))
-          if (returnToOAuthOpener({
-            provider: 'zoom',
-            status: 'error',
-            message,
-            route,
-            tone: 'error',
-          })) {
-            return cleanup
-          }
-        }
-        if (teams === 'linked') {
-          const message = resolveTeamsCallbackMessage(null, 'linked')
-          if (returnToOAuthOpener({
-            provider: 'teams',
-            status: 'success',
-            message,
-            route,
-            tone: 'success',
-          })) {
-            return cleanup
-          }
-        } else if (teams === 'error') {
-          const message = resolveTeamsCallbackMessage(params.get('reason'), 'error')
-          if (returnToOAuthOpener({
-            provider: 'teams',
-            status: 'error',
-            message,
-            route,
-            tone: 'error',
-          })) {
-            return cleanup
-          }
-        }
-        window.history.replaceState({}, '', buildStudioPath('integrations'))
-        setFeatureScene('integrations')
-        if (zoom === 'linked') {
-          setZoomIntegrationNotice(zoomConnectedMessage)
-          setZoomIntegrationNoticeTone('success')
-        } else if (zoom === 'error') {
-          setZoomIntegrationNotice(resolveZoomCallbackMessage(params.get('reason')))
-          setZoomIntegrationNoticeTone('error')
-        }
-        if (teams === 'linked') {
-          setTeamsIntegrationNotice(resolveTeamsCallbackMessage(null, 'linked'))
-          setTeamsIntegrationNoticeTone('success')
-        } else if (teams === 'error') {
-          setTeamsIntegrationNotice(resolveTeamsCallbackMessage(params.get('reason'), 'error'))
-          setTeamsIntegrationNoticeTone('error')
-        }
-      }
       if (hasToken) {
         const inviteDestination = resolvePostAuthDestination(params.toString())
         if (inviteDestination.scene === 'analysis') {
@@ -330,10 +250,6 @@ export const useInitialRedirectHandling = ({
     setMindmapSelectedScope,
     setOauthRefreshTick,
     setSessionPlanSyncTick,
-    setTeamsIntegrationNotice,
-    setTeamsIntegrationNoticeTone,
-    setZoomIntegrationNotice,
-    setZoomIntegrationNoticeTone,
     syncUserPreferencesFromServer,
   ])
 }

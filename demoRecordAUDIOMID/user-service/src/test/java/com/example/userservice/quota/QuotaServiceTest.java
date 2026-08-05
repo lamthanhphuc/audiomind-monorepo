@@ -158,6 +158,33 @@ class QuotaServiceTest {
   }
 
   @Test
+  void consume_usesConfiguredQuotaZoneForMonthlyPeriod() {
+    ReflectionTestUtils.setField(
+        quotaService,
+        "clock",
+        Clock.fixed(Instant.parse("2026-05-31T17:30:00Z"), ZoneOffset.UTC));
+    ReflectionTestUtils.setField(quotaService, "quotaZoneId", "Asia/Ho_Chi_Minh");
+
+    UserAccount user = userWithPlan("FREE");
+    when(userAccountRepository.findById(7L)).thenReturn(Optional.of(user));
+    UsageCounter counter = new UsageCounter();
+    counter.setUserId(7L);
+    counter.setPeriodYyyymm("202606");
+    counter.setSttSecondsUsed(0);
+    counter.setGeminiInputCharsUsed(0);
+    when(usageCounterRepository.lockByUserAndPeriod(7L, "202606"))
+        .thenReturn(Optional.of(counter));
+    when(usageCounterRepository.save(any(UsageCounter.class)))
+        .thenAnswer(invocation -> invocation.getArgument(0));
+
+    QuotaConsumeResult result = quotaService.consume(7L, 60L, 100L);
+
+    assertTrue(result.allowed());
+    assertEquals("202606", result.periodYyyymm());
+    verify(usageCounterRepository).lockByUserAndPeriod(7L, "202606");
+  }
+
+  @Test
   void consume_shouldRejectWhenGeminiCharsWouldExceedFreePlan() {
     UserAccount user = userWithPlan("FREE");
     UsageCounter counter = new UsageCounter();

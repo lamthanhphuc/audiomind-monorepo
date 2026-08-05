@@ -11,6 +11,7 @@ import jakarta.persistence.EntityManager;
 import jakarta.persistence.Query;
 import java.time.Clock;
 import java.time.LocalDate;
+import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.Objects;
@@ -18,6 +19,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -35,6 +37,9 @@ public class QuotaService {
     private final QuotaConsumptionRepository quotaConsumptionRepository;
     private final EntityManager entityManager;
     private final Clock clock = Clock.systemUTC();
+
+    @Value("${billing.quota-zone-id:Asia/Ho_Chi_Minh}")
+    private String quotaZoneId;
 
     /**
      * Self-proxy for race recovery: unique-constraint failures mark the insert TX
@@ -390,8 +395,20 @@ public class QuotaService {
     }
 
     private String currentPeriod() {
-        LocalDate date = LocalDate.now(clock.withZone(ZoneOffset.UTC));
+        ZoneId zone = resolveQuotaZone();
+        LocalDate date = LocalDate.now(clock.withZone(zone));
         return date.format(YYYYMM);
+    }
+
+    private ZoneId resolveQuotaZone() {
+        if (!StringUtils.hasText(quotaZoneId)) {
+            return ZoneOffset.UTC;
+        }
+        try {
+            return ZoneId.of(quotaZoneId.trim());
+        } catch (RuntimeException ex) {
+            return ZoneOffset.UTC;
+        }
     }
 
     private static long safeAdd(long a, long b) {

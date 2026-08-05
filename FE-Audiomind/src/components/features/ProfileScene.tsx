@@ -1,10 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import { RefreshCw, ShieldCheck, Trash2 } from 'lucide-react'
-import { getUserProfile, type UserProfile } from '../../services/api'
+import { getUserProfile, updateUserProfile, type UserProfile } from '../../services/api'
+import { setAccessToken } from '../../services/auth'
 import { getBillingOverview, type BillingOverview } from '../../services/billing'
-import { getGoogleStatus, type GoogleStatus } from '../../services/googleIntegration'
-import { getZoomStatus, type ZoomStatus } from '../../services/zoomIntegration'
-import { getTeamsStatus, type TeamsStatus } from '../../services/teamsIntegration'
 import {
   changeAccountPassword,
   getAccountSecurityOverview,
@@ -12,6 +10,7 @@ import {
   type AccountSecurityOverview,
 } from '../../services/accountSecurity'
 import { formatDomainModeLabel } from '../../constants/domainMode'
+import { emailPrefix, isTechnicalUsername, resolveDisplayName } from '../../utils/userDisplay'
 import { LoadingState } from '../ui/LoadingState'
 import './account-scenes.css'
 
@@ -24,33 +23,24 @@ type Props = {
   }
   domainMode: string
   onRefreshJwt: () => Promise<void>
-  onNavigateIntegrations: () => void
-}
-
-type IntegrationState = {
-  google: GoogleStatus | null
-  zoom: ZoomStatus | null
-  teams: TeamsStatus | null
+  onProfileUpdated?: (profile: UserProfile) => void
 }
 
 const planLabel = (plan?: string | null) => (String(plan || 'FREE').toUpperCase() === 'PRO' ? 'Pro' : 'Free')
 const roleLabel = (role?: string | null) => (String(role || 'USER').toUpperCase() === 'ADMIN' ? 'Admin' : 'User')
-const linkedLabel = (linked?: boolean, email?: string | null) => (
-  linked ? `Đã liên kết${email ? ` (${email})` : ''}` : 'Chưa liên kết'
-)
 
 export default function ProfileScene({
   fallbackUser,
   domainMode,
   onRefreshJwt,
-  onNavigateIntegrations,
+  onProfileUpdated,
 }: Props) {
   const [profile, setProfile] = useState<UserProfile | null>(null)
   const [billing, setBilling] = useState<BillingOverview | null>(null)
-  const [integrations, setIntegrations] = useState<IntegrationState>({ google: null, zoom: null, teams: null })
   const [security, setSecurity] = useState<AccountSecurityOverview | null>(null)
   const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
+  const [displayNameInput, setDisplayNameInput] = useState('')
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState('')
@@ -60,22 +50,14 @@ export default function ProfileScene({
     setLoading(true)
     setError('')
     try {
-      const [profileResult, billingResult, googleResult, zoomResult, teamsResult, securityResult] = await Promise.allSettled([
+      const [profileResult, billingResult, securityResult] = await Promise.allSettled([
         getUserProfile(),
         getBillingOverview(),
-        getGoogleStatus(),
-        getZoomStatus(),
-        getTeamsStatus(),
         getAccountSecurityOverview(),
       ])
       if (profileResult.status === 'fulfilled') setProfile(profileResult.value)
       if (billingResult.status === 'fulfilled') setBilling(billingResult.value)
       if (securityResult.status === 'fulfilled') setSecurity(securityResult.value)
-      setIntegrations({
-        google: googleResult.status === 'fulfilled' ? googleResult.value : null,
-        zoom: zoomResult.status === 'fulfilled' ? zoomResult.value : null,
-        teams: teamsResult.status === 'fulfilled' ? teamsResult.value : null,
-      })
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Không tải được hồ sơ tài khoản')
     } finally {
@@ -86,6 +68,43 @@ export default function ProfileScene({
   useEffect(() => {
     void load()
   }, [load])
+
+  useEffect(() => {
+    const preferred = profile
+      ? resolveDisplayName(profile.username, profile.email)
+      : fallbackUser.name
+    setDisplayNameInput(preferred)
+  }, [fallbackUser.name, profile])
+
+  const handleUpdateDisplayName = async () => {
+    const normalized = displayNameInput.trim()
+    if (normalized.length < 3) {
+      setError('Tên hiển thị cần ít nhất 3 ký tự.')
+      return
+    }
+    setBusy(true)
+    setNotice('')
+    setError('')
+    try {
+      const updated = await updateUserProfile(normalized)
+      if (updated.accessToken) {
+        setAccessToken(updated.accessToken, updated.expiresInSeconds)
+      }
+      const nextProfile: UserProfile = {
+        userId: updated.userId,
+        username: updated.username,
+        email: updated.email,
+        domainMode: updated.domainMode,
+      }
+      setProfile(nextProfile)
+      onProfileUpdated?.(nextProfile)
+      setNotice('Đã cập nhật tên hiển thị.')
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Không cập nhật được tên hiển thị')
+    } finally {
+      setBusy(false)
+    }
+  }
 
   const handleRefreshJwt = async () => {
     setBusy(true)
@@ -136,8 +155,10 @@ export default function ProfileScene({
     }
   }
 
-  const displayName = profile?.username || fallbackUser.name
+  const rawUsername = profile?.username || fallbackUser.name
   const email = profile?.email || fallbackUser.email || 'Chưa có email'
+  const displayName = resolveDisplayName(rawUsername, email, fallbackUser.name)
+  const needsDisplayName = isTechnicalUsername(profile?.username) || displayName === emailPrefix(email)
   const plan = billing?.plan || fallbackUser.plan || 'FREE'
   const role = fallbackUser.role || 'USER'
 
@@ -168,7 +189,31 @@ export default function ProfileScene({
         <div className="account-grid">
           <article className="account-card">
             <h2>Thông tin chính</h2>
-            <div className="account-row"><span className="account-label">Tên</span><span className="account-value">{displayName}</span></div>
+            {needsDisplayName ? (
+              <p className="account-inline-hint">
+                Tài khoản Google đang dùng tên kỹ thuật. Đặt tên dễ nhớ để hiển thị trong sidebar và hồ sơ.
+              </p>
+            ) : null}
+            <div className="account-row account-row--stack">
+              <span className="account-label">Tên hiển thị</span>
+              <div className="account-edit-line">
+                <input
+                  className="account-input"
+                  value={displayNameInput}
+                  onChange={(event) => setDisplayNameInput(event.target.value)}
+                  placeholder="Tên hiển thị"
+                  maxLength={50}
+                />
+                <button
+                  type="button"
+                  className="btn btn--secondary"
+                  disabled={busy || displayNameInput.trim().length < 3 || (!needsDisplayName && displayNameInput.trim() === displayName)}
+                  onClick={() => void handleUpdateDisplayName()}
+                >
+                  Lưu tên
+                </button>
+              </div>
+            </div>
             <div className="account-row"><span className="account-label">Email</span><span className="account-value">{email}</span></div>
             <div className="account-row"><span className="account-label">Gói</span><span className="account-badge">{planLabel(plan)}</span></div>
             <div className="account-row"><span className="account-label">Vai trò</span><span className="account-badge">{roleLabel(role)}</span></div>
@@ -181,33 +226,6 @@ export default function ProfileScene({
               <span className="account-value">{formatDomainModeLabel(profile?.domainMode || domainMode)}</span>
             </div>
             <p className="account-muted">Có thể đổi domain mặc định chi tiết trong màn Cài đặt.</p>
-          </article>
-
-          <article className="account-card account-card--wide">
-            <h2>Tích hợp đã liên kết</h2>
-            <div className="account-row">
-              <span>Google</span>
-              <span className="account-status" data-state={integrations.google?.linked ? 'ok' : 'warn'}>
-                {linkedLabel(integrations.google?.linked, integrations.google?.googleEmail)}
-              </span>
-            </div>
-            <div className="account-row">
-              <span>Zoom</span>
-              <span className="account-status" data-state={integrations.zoom?.linked ? 'ok' : 'warn'}>
-                {linkedLabel(integrations.zoom?.linked, integrations.zoom?.zoomEmail)}
-              </span>
-            </div>
-            <div className="account-row">
-              <span>Microsoft Teams</span>
-              <span className="account-status" data-state={integrations.teams?.linked ? 'ok' : 'warn'}>
-                {linkedLabel(integrations.teams?.linked, integrations.teams?.teamsEmail)}
-              </span>
-            </div>
-            <div className="account-actions">
-              <button type="button" className="btn btn--secondary" onClick={onNavigateIntegrations}>
-                Quản lý tích hợp
-              </button>
-            </div>
           </article>
 
           <article className="account-card account-card--wide">

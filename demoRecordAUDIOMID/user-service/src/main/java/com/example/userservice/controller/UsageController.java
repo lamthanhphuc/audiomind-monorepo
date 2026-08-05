@@ -6,10 +6,12 @@ import com.example.userservice.repository.QuotaConsumptionRepository;
 import com.example.userservice.security.UserPrincipal;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -23,6 +25,9 @@ public class UsageController {
 
     private final QuotaService quotaService;
     private final QuotaConsumptionRepository quotaConsumptionRepository;
+
+    @Value("${billing.quota-zone-id:Asia/Ho_Chi_Minh}")
+    private String quotaZoneId;
 
     public UsageController(QuotaService quotaService, QuotaConsumptionRepository quotaConsumptionRepository) {
         this.quotaService = quotaService;
@@ -38,8 +43,9 @@ public class UsageController {
         UserPrincipal principal = (UserPrincipal) authentication.getPrincipal();
         int safeDays = Math.max(1, Math.min(days, 366));
         int safeLimit = Math.max(1, Math.min(limit, 500));
+        ZoneId quotaZone = resolveQuotaZone();
         Instant to = Instant.now();
-        Instant from = LocalDate.now(ZoneOffset.UTC).minusDays(safeDays - 1L).atStartOfDay().toInstant(ZoneOffset.UTC);
+        Instant from = LocalDate.now(quotaZone).minusDays(safeDays - 1L).atStartOfDay(quotaZone).toInstant();
         List<QuotaConsumption> rows = quotaConsumptionRepository.findByOwnerUserIdAndCreatedAtBetweenOrderByCreatedAtDesc(
                 principal.userId(),
                 from,
@@ -48,7 +54,7 @@ public class UsageController {
         );
         Map<String, DayBucket> byDay = new LinkedHashMap<>();
         for (QuotaConsumption row : rows) {
-            String day = row.getCreatedAt().atZone(ZoneOffset.UTC).toLocalDate().toString();
+            String day = row.getCreatedAt().atZone(quotaZone).toLocalDate().toString();
             DayBucket bucket = byDay.computeIfAbsent(day, DayBucket::new);
             if (QuotaConsumption.STATUS_ALLOWED.equals(row.getStatus())) {
                 bucket.sttSeconds += row.getSttSecondsDelta();
@@ -63,6 +69,17 @@ public class UsageController {
                 "daily", byDay.values().stream().map(DayBucket::toMap).toList(),
                 "events", rows.stream().map(this::eventView).toList()
         );
+    }
+
+    private ZoneId resolveQuotaZone() {
+        if (quotaZoneId == null || quotaZoneId.isBlank()) {
+            return ZoneOffset.UTC;
+        }
+        try {
+            return ZoneId.of(quotaZoneId.trim());
+        } catch (RuntimeException ex) {
+            return ZoneOffset.UTC;
+        }
     }
 
     private Map<String, Object> eventView(QuotaConsumption row) {

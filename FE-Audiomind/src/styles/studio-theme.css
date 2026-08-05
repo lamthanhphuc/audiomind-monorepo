@@ -298,6 +298,27 @@ body:has(.app--studio) {
   gap: 10px;
 }
 
+.app--studio .dashboard-sidebar__hint,
+.app--light .dashboard-sidebar__hint {
+  color: var(--studio-muted);
+}
+
+.app--studio .workflow-guide > div,
+.app--light .workflow-guide > div {
+  background: rgba(148, 163, 184, 0.08);
+  border-color: var(--studio-border);
+}
+
+.app--studio .workflow-guide strong,
+.app--light .workflow-guide strong {
+  color: var(--studio-text);
+}
+
+.app--studio .workflow-guide span,
+.app--light .workflow-guide span {
+  color: var(--studio-muted);
+}
+
 .app--studio .dashboard-page,
 .app--studio .bg-gray-light,
 .app--light .dashboard-page,
@@ -604,10 +625,19 @@ body:has(.app--studio) {
   padding: 24px 32px 40px;
 }
 
-.app--studio .realtime-hero,
 .app--studio .realtime-panel__grid .status-card,
 .app--studio .audio-recorder-widget {
   background: var(--studio-elevated);
+  border-color: var(--studio-border);
+}
+
+.app--studio .realtime-hero {
+  background: transparent;
+  border-color: transparent;
+}
+
+.app--studio .realtime-panel__header {
+  background: rgba(255, 255, 255, 0.035);
   border-color: var(--studio-border);
 }
 
@@ -659,6 +689,32 @@ body:has(.app--studio) {
 }
 
 .app--studio .realtime-status-badge--error {
+  border-color: rgba(248, 113, 113, 0.35);
+  background: rgba(248, 113, 113, 0.1);
+  color: #fca5a5;
+}
+
+.app--studio .realtime-stage__summary,
+.app--studio .realtime-analysis-status {
+  border-color: var(--studio-border);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--studio-muted);
+}
+
+.app--studio .realtime-analysis-status--completed {
+  border-color: rgba(52, 211, 153, 0.35);
+  background: rgba(52, 211, 153, 0.1);
+  color: #86efac;
+}
+
+.app--studio .realtime-analysis-status--polling,
+.app--studio .realtime-analysis-status--pending {
+  border-color: rgba(56, 189, 248, 0.35);
+  background: rgba(56, 189, 248, 0.1);
+  color: #7dd3fc;
+}
+
+.app--studio .realtime-analysis-status--failed {
   border-color: rgba(248, 113, 113, 0.35);
   background: rgba(248, 113, 113, 0.1);
   color: #fca5a5;

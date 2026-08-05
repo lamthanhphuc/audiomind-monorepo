@@ -24,7 +24,6 @@ export const STUDIO_SCENE_PATHS: Record<DashboardScene, string> = {
   files: '/studio/history',
   mindmap: '/studio/mindmap',
   knowledge: '/studio/knowledge',
-  insights: '/studio/insights',
   integrations: '/studio/integrations',
   billing: '/studio/billing',
   subjects: '/studio/subjects',
@@ -35,7 +34,6 @@ export const STUDIO_SCENE_PATHS: Record<DashboardScene, string> = {
   admin: '/studio/admin',
   notifications: '/studio/notifications',
   usage: '/studio/usage',
-  team: '/studio/team',
   audit: '/studio/audit',
 }
 

@@ -55,7 +55,7 @@ public class GoogleUserProvisioningService {
         }
 
         UserAccount user = new UserAccount();
-        user.setUsername(createGoogleUsername(googleIdentity.subject()));
+        user.setUsername(createGoogleUsername(googleIdentity.email(), googleIdentity.subject()));
         user.setEmail(googleIdentity.email());
         user.setPasswordHash(null);
         user.setAuthProviderPrimary(PROVIDER);
@@ -77,11 +77,34 @@ public class GoogleUserProvisioningService {
         return savedUser;
     }
 
-    private String createGoogleUsername(String subject) {
+    private String createGoogleUsername(String email, String subject) {
+        String prefix = email == null ? "" : email.split("@", 2)[0];
+        String base = prefix
+                .trim()
+                .replaceAll("[^\\p{L}\\p{N}._-]+", "_")
+                .replaceAll("_+", "_")
+                .replaceAll("^[_ .-]+|[_ .-]+$", "");
+        if (base.length() < 3) {
+            base = "google_user";
+        }
+        if (base.length() > 50) {
+            base = base.substring(0, 50);
+        }
+        if (!userAccountRepository.existsByUsername(base)) {
+            return base;
+        }
+
+        String suffix = shortSubjectHash(subject);
+        int maxBaseLength = Math.max(3, 49 - suffix.length());
+        String candidateBase = base.length() > maxBaseLength ? base.substring(0, maxBaseLength) : base;
+        return candidateBase + "_" + suffix;
+    }
+
+    private String shortSubjectHash(String subject) {
         try {
             byte[] digest = MessageDigest.getInstance("SHA-256")
                     .digest(subject.getBytes(StandardCharsets.UTF_8));
-            return "google_" + HexFormat.of().formatHex(digest, 0, 12);
+            return HexFormat.of().formatHex(digest, 0, 4);
         } catch (NoSuchAlgorithmException ex) {
             throw new IllegalStateException("SHA-256 is unavailable", ex);
         }

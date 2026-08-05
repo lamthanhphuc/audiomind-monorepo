@@ -21,7 +21,6 @@ type FeatureUploadProps = {
   showOnboarding?: boolean
   onDismissOnboarding?: () => void
   onNavigateRealtime?: () => void
-  onNavigateIntegrations?: () => void
   status?: string
   errorMessage?: string | null
   errorCode?: string
@@ -45,7 +44,6 @@ export default function FeatureUpload({
   showOnboarding = false,
   onDismissOnboarding,
   onNavigateRealtime,
-  onNavigateIntegrations,
   status = 'idle',
   errorMessage,
   errorCode,
@@ -103,11 +101,10 @@ export default function FeatureUpload({
     <div className="dashboard-page pb-0">
       <div className="upload-container">
         <div className="upload-content studio-reveal studio-reveal--delay-1">
-          {showOnboarding && onDismissOnboarding && onNavigateRealtime && onNavigateIntegrations && (
+          {showOnboarding && onDismissOnboarding && onNavigateRealtime && (
             <OnboardingTour
               onNavigateUpload={() => undefined}
               onNavigateRealtime={onNavigateRealtime}
-              onNavigateIntegrations={onNavigateIntegrations}
               onDismiss={onDismissOnboarding}
             />
           )}
@@ -116,6 +113,20 @@ export default function FeatureUpload({
               <p className="ui-section__eyebrow">Tạo phân tích mới</p>
               <h1 className="upload-welcome">Chào mừng trở lại, {userName}!</h1>
               <p className="upload-title">Chọn file âm thanh, kiểm tra tùy chọn và bắt đầu phân tích.</p>
+            </div>
+          </div>
+          <div className="workflow-guide" aria-label="Hướng dẫn chọn luồng xử lý">
+            <div>
+              <strong>Upload file</strong>
+              <span>Dùng khi bạn đã có bản ghi cuộc họp.</span>
+            </div>
+            <div>
+              <strong>Ghi realtime</strong>
+              <span>Dùng khi cuộc họp đang diễn ra và cần transcript trực tiếp.</span>
+            </div>
+            <div>
+              <strong>Sau khi xử lý</strong>
+              <span>Mở lịch sử để xem transcript, phân tích, chia sẻ hoặc xuất báo cáo.</span>
             </div>
           </div>
           <ol className="upload-steps" aria-label="Các bước xử lý file">

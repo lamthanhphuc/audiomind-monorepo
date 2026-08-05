@@ -13,14 +13,6 @@ vi.mock('../../services/googleIntegration', async () => {
   }
 })
 
-vi.mock('./ZoomIntegrationPanel', () => ({
-  default: () => <div data-testid="mock-zoom-panel">Zoom</div>,
-}))
-
-vi.mock('./TeamsIntegrationPanel', () => ({
-  default: () => <div data-testid="mock-teams-panel">Teams</div>,
-}))
-
 describe('FeatureIntegrations', () => {
   let container: HTMLDivElement
   let root: ReturnType<typeof createRoot>
@@ -45,12 +37,11 @@ describe('FeatureIntegrations', () => {
     vi.restoreAllMocks()
   })
 
-  it('renders integrations shell with Google, Zoom and Teams sections', async () => {
+  it('renders integrations shell with Google only', async () => {
     await act(async () => {
       root.render(
         <FeatureIntegrations
           meetings={[]}
-          uploadLanguage="vi"
         />,
       )
     })
@@ -60,10 +51,10 @@ describe('FeatureIntegrations', () => {
 
     expect(container.querySelector('[data-testid="feature-integrations"]')).toBeTruthy()
     expect(container.textContent).toContain('user@example.com')
-    expect(container.querySelector('[data-testid="integrations-zoom-section"]')).toBeTruthy()
-    expect(container.querySelector('[data-testid="integrations-teams-section"]')).toBeTruthy()
-    expect(container.querySelector('[data-testid="mock-zoom-panel"]')).toBeTruthy()
-    expect(container.querySelector('[data-testid="mock-teams-panel"]')).toBeTruthy()
+    expect(container.querySelector('[data-testid="integrations-zoom-section"]')).toBeNull()
+    expect(container.querySelector('[data-testid="integrations-teams-section"]')).toBeNull()
+    expect(container.textContent).not.toContain('Zoom')
+    expect(container.textContent).not.toContain('Teams')
     expect(container.textContent).not.toContain('import cloud recording hoặc chọn file export thủ công')
   })
 })
