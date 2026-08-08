@@ -131,8 +131,8 @@ async function installMockApi(page: Page) {
     }
     if (path === '/api/admin/billing/transactions') {
       await route.fulfill({ json: { items: [
-        { id: 71, userId: 1, provider: 'PAYOS', orderCode: 2026072301, amountVnd: 79000, currency: 'VND', status: 'PAID', createdAt: '2026-07-23T07:00:00Z', paidAt: '2026-07-23T07:05:00Z' },
-        { id: 72, userId: 2, provider: 'PAYOS', orderCode: 2026072302, amountVnd: 79000, currency: 'VND', status: 'PENDING', createdAt: '2026-07-23T08:00:00Z' },
+        { id: 71, userId: 1, username: 'admin', email: 'admin@audiomind.local', provider: 'PAYOS', orderCode: 2026072301, amountVnd: 79000, currency: 'VND', status: 'PAID', createdAt: '2026-07-23T07:00:00Z', paidAt: '2026-07-23T07:05:00Z' },
+        { id: 72, userId: 2, username: 'student', email: 'student@audiomind.local', provider: 'PAYOS', orderCode: 2026072302, amountVnd: 79000, currency: 'VND', status: 'PENDING', createdAt: '2026-07-23T08:00:00Z' },
       ] } })
       return
     }
