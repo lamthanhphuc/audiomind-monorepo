@@ -548,12 +548,6 @@ describe('MeetingHistoryScene', () => {
     await openExportsTab()
     expect(container.textContent).toContain('Bản dễ đọc phù hợp để chia sẻ; bản dữ liệu gốc dùng cho kiểm tra và audit.')
 
-    const exportButton = container.querySelector('[data-testid="meeting-export-transcript"]') as HTMLButtonElement
-    await act(async () => {
-      exportButton.click()
-    })
-    await flush()
-
     const menu = container.querySelector('[data-testid="meeting-export-transcript-menu"]')
     expect(menu).toBeTruthy()
 
@@ -565,11 +559,6 @@ describe('MeetingHistoryScene', () => {
 
     expect(api.downloadMeetingTranscript).toHaveBeenCalledWith(7, 'txt', 'readable')
 
-    await act(async () => {
-      exportButton.click()
-    })
-    await flush()
-
     const readableCsvButton = container.querySelector('[data-testid="meeting-export-transcript-readable-csv"]') as HTMLButtonElement
     await act(async () => {
       readableCsvButton.click()
@@ -578,11 +567,6 @@ describe('MeetingHistoryScene', () => {
 
     expect(api.downloadMeetingTranscript).toHaveBeenCalledWith(7, 'csv', 'readable')
 
-    await act(async () => {
-      exportButton.click()
-    })
-    await flush()
-
     const rawTxtButton = container.querySelector('[data-testid="meeting-export-transcript-raw-txt"]') as HTMLButtonElement
     await act(async () => {
       rawTxtButton.click()
@@ -590,11 +574,6 @@ describe('MeetingHistoryScene', () => {
     await flush()
 
     expect(api.downloadMeetingTranscript).toHaveBeenCalledWith(7, 'txt', 'raw')
-
-    await act(async () => {
-      exportButton.click()
-    })
-    await flush()
 
     const rawCsvButton = container.querySelector('[data-testid="meeting-export-transcript-raw-csv"]') as HTMLButtonElement
     await act(async () => {
@@ -615,12 +594,6 @@ describe('MeetingHistoryScene', () => {
 
     await mountWithStoredSelection()
     await openExportsTab()
-
-    const exportButton = container.querySelector('[data-testid="meeting-export-transcript"]') as HTMLButtonElement
-    await act(async () => {
-      exportButton.click()
-    })
-    await flush()
 
     const txtButton = container.querySelector('[data-testid="meeting-export-transcript-readable-txt"]') as HTMLButtonElement
     await act(async () => {
@@ -647,7 +620,15 @@ describe('MeetingHistoryScene', () => {
     })
     await flush()
 
-    expect(api.downloadMeetingReport).toHaveBeenCalledWith(7, 'docx')
+    expect(api.downloadMeetingReport).toHaveBeenCalledWith(7, 'docx', {})
+
+    const pdfButton = container.querySelector('[data-testid="meeting-export-report-pdf"]') as HTMLButtonElement
+    await act(async () => {
+      pdfButton.click()
+    })
+    await flush()
+
+    expect(api.downloadMeetingReport).toHaveBeenCalledWith(7, 'pdf', {})
   })
 
   it('shows loading state while exporting report', async () => {
@@ -817,8 +798,8 @@ describe('MeetingHistoryScene', () => {
     })
     await flush()
 
-    expect(api.getMeetingActionPlan).toHaveBeenCalledWith(7)
-    expect(api.downloadMeetingActionPlan).toHaveBeenCalledWith(7, 'docx')
+    expect(api.getMeetingActionPlan).toHaveBeenCalledWith(7, {})
+    expect(api.downloadMeetingActionPlan).toHaveBeenCalledWith(7, 'docx', {})
     expect(api.reanalyzeMeetingAnalysis).not.toHaveBeenCalled()
     expect(container.textContent).toContain('Action summary')
     expect(container.textContent).toContain('Công việc chung')

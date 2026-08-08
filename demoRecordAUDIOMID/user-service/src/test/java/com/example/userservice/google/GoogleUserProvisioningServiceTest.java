@@ -58,7 +58,7 @@ class GoogleUserProvisioningServiceTest {
         assertEquals(41L, user.getId());
         assertEquals("google", user.getAuthProviderPrimary());
         assertNull(user.getPasswordHash());
-        assertEquals("PRO", user.getPlan());
+        assertEquals("STANDARD", user.getPlan());
         assertTrue(user.getPlanExpiresAt() != null);
         ArgumentCaptor<UserIdentity> identityCaptor = ArgumentCaptor.forClass(UserIdentity.class);
         verify(userIdentityRepository).save(identityCaptor.capture());

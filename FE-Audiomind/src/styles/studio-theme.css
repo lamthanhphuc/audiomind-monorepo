@@ -2126,7 +2126,36 @@ body:has(.app--light) {
 }
 
 .app--light .google-btn--primary {
+  background: #4f46e5;
+  border-color: #4338ca;
   color: #ffffff;
+}
+
+.app--light .google-btn--primary:hover {
+  background: #4338ca;
+}
+
+.app--light .google-btn--danger {
+  color: #b91c1c;
+}
+
+.app--light .google-integration__state.is-linked,
+.app--light .google-integration__connection-state.is-connected {
+  color: #15803d;
+}
+
+.app--light .google-integration__state.needs-grant {
+  color: #a16207;
+}
+
+.app--light .google-integration__eyebrow,
+.app--light .google-integration__meet-capture-eyebrow,
+.app--light .google-integration__meet-link {
+  color: #4f46e5;
+}
+
+.app--light .google-integration__meet-note {
+  color: #5b21b6 !important;
 }
 
 .app--light .integration-import-section {

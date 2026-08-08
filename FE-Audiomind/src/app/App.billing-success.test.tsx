@@ -127,7 +127,7 @@ vi.mock('../components/features/BillingScene', () => ({
 
     return (
       <section data-testid="billing-scene">
-        {paymentNotice || 'Thanh toán PayOS thành công. Gói Pro đã được kích hoạt.'}
+        {paymentNotice || 'Thanh toán PayOS thành công. Gói của bạn đã được kích hoạt.'}
       </section>
     )
   },

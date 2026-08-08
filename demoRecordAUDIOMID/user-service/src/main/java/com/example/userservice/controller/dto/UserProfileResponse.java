@@ -1,4 +1,11 @@
 package com.example.userservice.controller.dto;
 
-public record UserProfileResponse(Long userId, String username, String email, String domainMode) {
+public record UserProfileResponse(
+        Long userId,
+        String username,
+        String email,
+        String domainMode,
+        String plan,
+        String role
+) {
 }

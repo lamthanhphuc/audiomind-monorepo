@@ -41,6 +41,7 @@ import org.springframework.web.server.ResponseStatusException;
 
 import com.example.processingservice.client.AIServiceClient;
 import com.example.processingservice.client.MeetingServiceClient;
+import com.example.processingservice.config.Epic3FeatureFlags;
 import com.example.processingservice.controller.dto.ProcessingStatusResponse;
 import com.example.processingservice.service.report.MeetingReportDocxGenerator;
 
@@ -1867,6 +1868,25 @@ class ProcessingServiceTest {
         verify(aiServiceClient).getAnalysis(606L, "trace-606");
     }
 
+    @Test
+    void getAnalysisReadOnly_shouldNotRecursivelyBuildEvidence() {
+        Epic3FeatureFlags featureFlags = new Epic3FeatureFlags();
+        featureFlags.setEvidenceQaEnabled(true);
+        ReflectionTestUtils.setField(processingService, "epic3FeatureFlags", featureFlags);
+        when(jobStateStore.getJobState(607L)).thenReturn(Optional.empty());
+        when(aiServiceClient.getAnalysis(607L, "trace-607")).thenReturn(Map.of(
+                "meeting_id", 607L,
+                "status", "COMPLETED",
+                "analysisStatus", "COMPLETED",
+                "summary", "Persisted analysis"
+        ));
+
+        Map<String, Object> response = processingService.getAnalysisReadOnly(607L, "trace-607", AUTH_HEADER);
+
+        assertEquals("Persisted analysis", response.get("summary"));
+        assertEquals("SUCCEEDED", response.get("status"));
+    }
+
         @Test
         void getAnalysisReadOnly_shouldReturnStoredAnalysisWithoutLazyTrigger() {
                 when(jobStateStore.getJobState(700L)).thenReturn(Optional.empty());
@@ -1916,7 +1936,7 @@ class ProcessingServiceTest {
         }
 
         @Test
-        void getAnalysisReadOnly_shouldMapNotReadyAndNotFoundForPollingContract() {
+    void getAnalysisReadOnly_shouldMapNotReadyAndNotFoundForPollingContract() {
                 when(jobStateStore.getJobState(702L)).thenReturn(Optional.of(Map.of("status", "NOT_READY")));
                 when(aiServiceClient.getAnalysis(702L, "trace-702")).thenThrow(new HttpClientErrorException(HttpStatus.NOT_FOUND));
 
@@ -1931,6 +1951,25 @@ class ProcessingServiceTest {
 
                 assertEquals("NOT_STARTED", notFound.get("status"));
         }
+
+    @Test
+    void getAnalysis_shouldPreferSavedAnalysisStatusOverFailedJobState() {
+        when(jobStateStore.getJobState(704L)).thenReturn(Optional.of(Map.of("status", "FAILED")));
+        when(aiServiceClient.getAnalysis(704L, "trace-704")).thenReturn(Map.of(
+                "meeting_id", 704L,
+                "status", "FAILED",
+                "analysisStatus", "FAILED",
+                "summary", "Recovered saved analysis",
+                "keywords", List.of("cache"),
+                "provider", "gemini"
+        ));
+
+        Map<String, Object> response = processingService.getAnalysis(704L, "trace-704", AUTH_HEADER);
+
+        assertEquals("SUCCEEDED", response.get("status"));
+        assertEquals("COMPLETED", response.get("analysisStatus"));
+        assertEquals("Recovered saved analysis", response.get("summary"));
+    }
 
     @Test
     void generateMeetingReportDocx_shouldIncludeAppendixAndAnalyzedHighlights() throws Exception {
@@ -1961,10 +2000,53 @@ class ProcessingServiceTest {
         Map<String, Object> analysis = new HashMap<>();
         analysis.put("summary", "Discussion about release planning");
         analysis.put("keyDecisions", List.of("Ship on Friday"));
+        analysis.put("painPoints", List.of(Map.of(
+                "title", "Registration overload",
+                "severity", "medium",
+                "evidence", "Teams may exceed the limit before confirmation"
+        )));
         analysis.put("risks", List.of("Vendor delay"));
         analysis.put("nextSteps", List.of("Share launch notes"));
+        analysis.put("businessImpact", "Reduce manual contest operations");
+        analysis.put("customerImpact", "Participants can register more smoothly");
+        analysis.put("technicalImpact", "Stabilize scoring and repository workflows");
+        analysis.put("confidence", 0.9d);
+        analysis.put("educationStudy", Map.of(
+                "title", "IT orientation",
+                "overview", "Students learn what information technology means.",
+                "learningObjectives", List.of("Understand IT career paths"),
+                "sections", List.of(Map.of(
+                        "title", "Core concepts",
+                        "summary", "Software, networks, data and security",
+                        "keyPoints", List.of("IT supports most modern industries")
+                )),
+                "keyPoints", List.of(Map.of(
+                        "content", "IT is a broad infrastructure field",
+                        "importance", "HIGH"
+                )),
+                "glossary", List.of(Map.of(
+                        "term", "Repository",
+                        "definition", "A place to store source code"
+                )),
+                "mustRemember", List.of(Map.of(
+                        "content", "Choose a specialization based on strengths",
+                        "importance", "MEDIUM",
+                        "reason", "Different roles need different skills"
+                )),
+                "unclearPoints", List.of(Map.of(
+                        "content", "Which university is best",
+                        "reason", "Depends on goals"
+                ))
+        ));
         analysis.put("businessActionItems", List.of(
-                Map.of("task", "Prepare rollout checklist", "owner", "Alice", "dueDate", "2026-06-01", "evidence", "Confirmed by team")
+                Map.of(
+                        "task", "Prepare rollout checklist",
+                        "owner", "Alice",
+                        "dueDate", "2026-06-01",
+                        "priority", "high",
+                        "status", "open",
+                        "evidence", "Confirmed by team"
+                )
         ));
         analysis.put("promptVersion", "gemini-business-v1");
         analysis.put("schemaVersion", "gemini-business-v1");
@@ -2025,9 +2107,25 @@ class ProcessingServiceTest {
             assertTrue(content.contains("Let's review blockers and dependencies."));
             assertTrue(content.contains("We should finalize the launch plan."));
             assertTrue(content.contains("Ship on Friday"));
+            assertTrue(content.contains("Registration overload"));
+            assertTrue(content.contains("Teams may exceed the limit before confirmation"));
             assertTrue(content.contains("Prepare rollout checklist"));
+            assertTrue(content.contains("priority: high"));
+            assertTrue(content.contains("status: open"));
             assertTrue(content.contains("Vendor delay"));
             assertTrue(content.contains("Share launch notes"));
+            assertTrue(content.contains("Reduce manual contest operations"));
+            assertTrue(content.contains("Participants can register more smoothly"));
+            assertTrue(content.contains("Stabilize scoring and repository workflows"));
+            assertTrue(content.contains("0.9"));
+            assertTrue(content.contains("Nội dung học tập"));
+            assertTrue(content.contains("IT orientation"));
+            assertTrue(content.contains("Understand IT career paths"));
+            assertTrue(content.contains("Core concepts"));
+            assertTrue(content.contains("IT supports most modern industries"));
+            assertTrue(content.contains("Repository - A place to store source code"));
+            assertTrue(content.contains("Choose a specialization based on strengths"));
+            assertTrue(content.contains("Which university is best"));
             assertTrue(content.contains("Action Item"));
             assertTrue(!content.contains("35.829998"));
             assertTrue(appendixRows.size() <= 30);
@@ -2812,7 +2910,7 @@ class ProcessingServiceTest {
 
         Map<String, Object> response = processingService.getAnalysis(607L, "trace-607", AUTH_HEADER);
 
-        assertEquals("RUNNING", response.get("status"));
+        assertEquals("SUCCEEDED", response.get("status"));
         assertEquals("Ready", response.get("summary"));
         verify(aiServiceClient).getAnalysis(607L, "trace-607");
     }

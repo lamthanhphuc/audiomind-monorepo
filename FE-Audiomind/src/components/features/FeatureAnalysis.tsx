@@ -30,6 +30,7 @@ import { AnalysisPanel } from '../analysis/AnalysisPanel'
 import { useTranscriptEvidenceNavigation } from '../../hooks/useTranscriptEvidenceNavigation'
 import { ErrorState } from '../ui/ErrorState'
 import { LoadingState } from '../ui/LoadingState'
+import { SponsoredAdPanel } from '../ui/SponsoredAdPanel'
 import { resolveErrorPresentation } from '../../constants/errorCatalog'
 import { ERROR_UX_ENABLED } from '../../services/config'
 
@@ -47,6 +48,7 @@ type FeatureAnalysisProps = {
   evidenceSegmentId?: string | null
   onBackToHistory?: () => void
   preferredDomainMode?: string
+  mindmapEnabled?: boolean
 }
 
 type HydrationState = 'idle' | 'loading' | 'ready' | 'error'
@@ -156,8 +158,15 @@ export default function FeatureAnalysis({
   resultScope = null,
   evidenceSegmentId = null,
   onBackToHistory,
+  mindmapEnabled = true,
 }: FeatureAnalysisProps) {
   const [activeTab, setActiveTab] = useState<'content' | 'model' | 'mindmap' | 'notes'>('content')
+
+  useEffect(() => {
+    if (!mindmapEnabled && activeTab === 'mindmap') {
+      setActiveTab('model')
+    }
+  }, [activeTab, mindmapEnabled])
   const [hydrateState, setHydrateState] = useState<HydrationState>('idle')
   const [hydrateError, setHydrateError] = useState<string | null>(null)
   const [hydratedAnalysis, setHydratedAnalysis] = useState<AiAnalysis | null>(null)
@@ -490,6 +499,8 @@ export default function FeatureAnalysis({
         </div>
       </header>
 
+      <SponsoredAdPanel placement="POST_ANALYSIS" />
+
       <div className="analysis-main-content">
         <div className="analysis-left-panel">
           <div className="analysis-tabs">
@@ -508,14 +519,16 @@ export default function FeatureAnalysis({
             >
               Phân tích AI
             </button>
-            <button
-              type="button"
-              className={`tab-btn ${activeTab === 'mindmap' ? 'active' : ''}`}
-              onClick={() => setActiveTab('mindmap')}
-              data-testid="feature-analysis-mindmap-tab"
-            >
-              Sơ đồ
-            </button>
+            {mindmapEnabled && (
+              <button
+                type="button"
+                className={`tab-btn ${activeTab === 'mindmap' ? 'active' : ''}`}
+                onClick={() => setActiveTab('mindmap')}
+                data-testid="feature-analysis-mindmap-tab"
+              >
+                Sơ đồ
+              </button>
+            )}
             <button
               type="button"
               className={`tab-btn ${activeTab === 'notes' ? 'active' : ''}`}
@@ -527,7 +540,7 @@ export default function FeatureAnalysis({
           </div>
 
           <div className="doc-content">
-            {activeTab === 'mindmap' && (
+            {mindmapEnabled && activeTab === 'mindmap' && (
               <div className="analysis-mindmap-tab" data-testid="feature-analysis-mindmap">
                 <MindmapView
                   analysis={displayAnalysis}

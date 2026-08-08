@@ -39,12 +39,12 @@ class UserPlanServiceTest {
     }
 
     @Test
-    void applyNewUserTrial_setsProPlanWithExpiry() {
+    void applyNewUserTrial_setsStandardPlanWithExpiry() {
         UserAccount user = new UserAccount();
 
         userPlanService.applyNewUserTrial(user);
 
-        assertEquals("PRO", user.getPlan());
+        assertEquals("STANDARD", user.getPlan());
         assertEquals(now.plusSeconds(3 * 24 * 60 * 60), user.getPlanExpiresAt());
     }
 
@@ -74,14 +74,14 @@ class UserPlanServiceTest {
     }
 
     @Test
-    void markPermanentPro_clearsExpiry() {
+    void markPermanentPro_mapsLegacyCallToStandardAndClearsExpiry() {
         UserAccount user = new UserAccount();
         user.setPlan("FREE");
         user.setPlanExpiresAt(now.plusSeconds(3600));
 
         userPlanService.markPermanentPro(user);
 
-        assertEquals("PRO", user.getPlan());
+        assertEquals("STANDARD", user.getPlan());
         assertNull(user.getPlanExpiresAt());
         assertTrue(userPlanService.hasPermanentPro(user));
     }
@@ -93,6 +93,6 @@ class UserPlanServiceTest {
         user.setPlanExpiresAt(now.plusSeconds(3600));
 
         assertTrue(userPlanService.isOnTrial(user));
-        assertEquals("PRO", userPlanService.resolveEffectivePlan(user));
+        assertEquals("STANDARD", userPlanService.resolveEffectivePlan(user));
     }
 }

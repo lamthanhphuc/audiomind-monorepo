@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.mockito.ArgumentMatchers.eq;
 
 import java.util.Map;
 
@@ -17,8 +18,10 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.web.server.ResponseStatusException;
 
+import com.example.processingservice.client.UserQuotaClient;
 import com.example.processingservice.controller.dto.AnalysisResponse;
 import com.example.processingservice.controller.dto.AnalysisRerunRequest;
 import com.example.processingservice.security.UserPrincipal;
@@ -37,13 +40,13 @@ class ProcessingControllerReportTest {
         ProcessingController controller = new ProcessingController(processingService);
         byte[] payload = "docx-bytes".getBytes();
 
-        when(processingService.generateMeetingReportDocx(15L, "trace-15", "Bearer token")).thenReturn(payload);
+        when(processingService.generateMeetingReportDocx(15L, "trace-15", "Bearer token", null, null)).thenReturn(payload);
         SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(
                 new UserPrincipal(11L, "tester", "USER", "FREE"),
                 null
         ));
 
-        ResponseEntity<?> response = controller.exportReport(15L, "docx", "trace-15", "Bearer token");
+        ResponseEntity<?> response = controller.exportReport(15L, "docx", null, null, "trace-15", "Bearer token");
 
         assertEquals(HttpStatus.OK, response.getStatusCode());
         assertEquals(
@@ -65,13 +68,13 @@ class ProcessingControllerReportTest {
         ProcessingController controller = new ProcessingController(processingService);
         byte[] payload = "pdf-bytes".getBytes();
 
-        when(processingService.generateMeetingReportPdf(15L, "trace-15", "Bearer token")).thenReturn(payload);
+        when(processingService.generateMeetingReportPdf(15L, "trace-15", "Bearer token", null, null)).thenReturn(payload);
         SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(
                 new UserPrincipal(11L, "tester", "USER", "FREE"),
                 null
         ));
 
-        ResponseEntity<?> response = controller.exportReport(15L, "pdf", "trace-15", "Bearer token");
+        ResponseEntity<?> response = controller.exportReport(15L, "pdf", null, null, "trace-15", "Bearer token");
 
         assertEquals(HttpStatus.OK, response.getStatusCode());
         assertEquals("application/pdf", response.getHeaders().getContentType().toString());
@@ -94,7 +97,69 @@ class ProcessingControllerReportTest {
 
         ResponseStatusException ex = assertThrows(
                 ResponseStatusException.class,
-                () -> controller.exportReport(15L, "html", "trace-15", "Bearer token")
+                () -> controller.exportReport(15L, "html", null, null, "trace-15", "Bearer token")
+        );
+
+        assertEquals(HttpStatus.BAD_REQUEST, ex.getStatusCode());
+    }
+
+    @Test
+    void exportReport_shouldRejectPlansWithoutExportFeature() {
+        ProcessingController controller = new ProcessingController(mock(ProcessingService.class));
+        UserQuotaClient quotaClient = mock(UserQuotaClient.class);
+        ReflectionTestUtils.setField(controller, "userQuotaClient", quotaClient);
+        when(quotaClient.authorizeFeature(11L, "export"))
+                .thenReturn(new UserQuotaClient.FeatureAuthorizationResult(false, true, "FREE"));
+        SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(
+                new UserPrincipal(11L, "tester", "USER", "FREE"),
+                null
+        ));
+
+        ResponseStatusException ex = assertThrows(
+                ResponseStatusException.class,
+                () -> controller.exportReport(15L, "pdf", null, null, "trace-15", "Bearer token")
+        );
+
+        assertEquals(HttpStatus.FORBIDDEN, ex.getStatusCode());
+    }
+
+    @Test
+    void exportReport_shouldForwardScopedAnalysisSelection() {
+        ProcessingService processingService = mock(ProcessingService.class);
+        ProcessingController controller = new ProcessingController(processingService);
+        byte[] payload = "scoped-pdf-bytes".getBytes();
+
+        when(processingService.generateMeetingReportPdf(15L, "trace-15", "Bearer token", 901L, 3L)).thenReturn(payload);
+        SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(
+                new UserPrincipal(11L, "tester", "USER", "FREE"),
+                null
+        ));
+
+        ResponseEntity<?> response = controller.exportReport(15L, "pdf", 901L, 3L, "trace-15", "Bearer token");
+
+        assertEquals(HttpStatus.OK, response.getStatusCode());
+        verify(processingService).generateMeetingReportPdf(
+                eq(15L),
+                eq("trace-15"),
+                eq("Bearer token"),
+                eq(901L),
+                eq(3L)
+        );
+        ByteArrayResource resource = (ByteArrayResource) response.getBody();
+        assertArrayEquals(payload, resource.getByteArray());
+    }
+
+    @Test
+    void exportReport_shouldRejectIncompleteScopedAnalysisSelection() {
+        ProcessingController controller = new ProcessingController(mock(ProcessingService.class));
+        SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(
+                new UserPrincipal(11L, "tester", "USER", "FREE"),
+                null
+        ));
+
+        ResponseStatusException ex = assertThrows(
+                ResponseStatusException.class,
+                () -> controller.exportReport(15L, "pdf", 901L, null, "trace-15", "Bearer token")
         );
 
         assertEquals(HttpStatus.BAD_REQUEST, ex.getStatusCode());

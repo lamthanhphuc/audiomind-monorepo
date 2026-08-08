@@ -2,6 +2,7 @@ import { useCallback, useState } from 'react'
 
 import {
   ApiError,
+  type AnalysisScopeOptions,
   downloadMeetingActionPlan,
   downloadMeetingReport,
   downloadMeetingTranscript,
@@ -23,6 +24,7 @@ type UseMeetingHistoryExportsOptions = {
   selectedMeetingSummary: Meeting | null | undefined
   transcriptState: TranscriptState
   analysisState: AnalysisState
+  analysisScope?: AnalysisScopeOptions
 }
 
 const ACTION_PLAN_REQUIRED_MESSAGE = 'Cần có phân tích cuộc họp trước khi xuất action plan.'
@@ -69,13 +71,12 @@ export function useMeetingHistoryExports({
   selectedMeetingSummary,
   transcriptState,
   analysisState,
+  analysisScope = {},
 }: UseMeetingHistoryExportsOptions) {
   const [exportBusy, setExportBusy] = useState(false)
   const [exportError, setExportError] = useState<string | null>(null)
   const [transcriptExportBusy, setTranscriptExportBusy] = useState<TranscriptExportRequest | null>(null)
   const [transcriptExportError, setTranscriptExportError] = useState<string | null>(null)
-  const [transcriptExportMenuOpen, setTranscriptExportMenuOpen] = useState(false)
-  const [exportActionsMenuOpen, setExportActionsMenuOpen] = useState(false)
   const [actionPlanState, setActionPlanState] = useState<ActionPlanState>({
     preview: null,
     loading: false,
@@ -96,7 +97,7 @@ export function useMeetingHistoryExports({
     setExportBusy(true)
     setExportError(null)
     try {
-      const { blob, filename } = await downloadMeetingReport(selectedMeetingSummary.id, 'docx')
+      const { blob, filename } = await downloadMeetingReport(selectedMeetingSummary.id, 'docx', analysisScope)
       saveBlobToFile(blob, filename)
     } catch (error) {
       setExportError(error instanceof Error ? error.message : 'Không thể xuất report')
@@ -117,7 +118,7 @@ export function useMeetingHistoryExports({
     setExportBusy(true)
     setExportError(null)
     try {
-      const { blob, filename } = await downloadMeetingReport(selectedMeetingSummary.id, 'pdf')
+      const { blob, filename } = await downloadMeetingReport(selectedMeetingSummary.id, 'pdf', analysisScope)
       saveBlobToFile(blob, filename)
     } catch (error) {
       setExportError(error instanceof Error ? error.message : 'Không thể xuất PDF')
@@ -132,7 +133,6 @@ export function useMeetingHistoryExports({
     }
     setTranscriptExportBusy({ mode, format })
     setTranscriptExportError(null)
-    setTranscriptExportMenuOpen(false)
     try {
       const { blob, filename } = await downloadMeetingTranscript(selectedMeetingSummary.id, format, mode)
       saveBlobToFile(blob, filename)
@@ -156,7 +156,7 @@ export function useMeetingHistoryExports({
       success: null,
     }))
     try {
-      const preview = await getMeetingActionPlan(meetingId)
+      const preview = await getMeetingActionPlan(meetingId, analysisScope)
       setActionPlanState({
         preview,
         loading: false,
@@ -164,7 +164,7 @@ export function useMeetingHistoryExports({
         error: null,
         success: null,
       })
-      const { blob, filename } = await downloadMeetingActionPlan(meetingId, format)
+      const { blob, filename } = await downloadMeetingActionPlan(meetingId, format, analysisScope)
       saveBlobToFile(blob, filename)
       setActionPlanState({
         preview,
@@ -209,8 +209,6 @@ export function useMeetingHistoryExports({
   }
 
   const resetExportState = useCallback(() => {
-    setTranscriptExportMenuOpen(false)
-    setExportActionsMenuOpen(false)
     setTranscriptExportBusy(null)
     setTranscriptExportError(null)
     setExportError(null)
@@ -228,10 +226,6 @@ export function useMeetingHistoryExports({
     exportError,
     transcriptExportBusy,
     transcriptExportError,
-    transcriptExportMenuOpen,
-    setTranscriptExportMenuOpen,
-    exportActionsMenuOpen,
-    setExportActionsMenuOpen,
     actionPlanState,
     handleExportDocx,
     handleExportPdf,

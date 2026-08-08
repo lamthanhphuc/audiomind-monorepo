@@ -170,6 +170,57 @@
   border-top: 1px solid #eef0f6;
 }
 
+.sponsored-ad-panel {
+  margin: 10px 16px 12px;
+  padding: 12px;
+  border: 1px solid #dbe3f1;
+  border-radius: 8px;
+  background: #f8fafc;
+  color: #334155;
+}
+
+.sponsored-ad-panel__label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+  color: #6366f1;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.sponsored-ad-panel__media {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  margin: 0 0 10px;
+  border: 0;
+  border-radius: 8px;
+  background: #e2e8f0;
+  object-fit: cover;
+}
+
+.sponsored-ad-panel__media--video {
+  min-height: 132px;
+}
+
+.sponsored-ad-panel strong {
+  display: block;
+  margin-bottom: 6px;
+  color: #0f172a;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.sponsored-ad-panel p {
+  margin: 0 0 10px;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .dashboard-sidebar__title {
   margin-bottom: 10px;
   font-size: 11px;

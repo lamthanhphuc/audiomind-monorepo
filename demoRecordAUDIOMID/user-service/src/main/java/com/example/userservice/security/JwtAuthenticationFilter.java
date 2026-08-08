@@ -1,5 +1,7 @@
 package com.example.userservice.security;
 
+import com.example.userservice.entity.UserAccount;
+import com.example.userservice.plan.UserPlanService;
 import com.example.userservice.repository.UserAccountRepository;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.JwtException;
@@ -23,20 +25,31 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     private final JwtUtil jwtUtil;
     private final TokenBlacklistStore tokenBlacklistStore;
     private final UserAccountRepository userAccountRepository;
+    private final UserPlanService userPlanService;
 
     @Autowired
     public JwtAuthenticationFilter(
             JwtUtil jwtUtil,
             TokenBlacklistStore tokenBlacklistStore,
-            UserAccountRepository userAccountRepository
+            UserAccountRepository userAccountRepository,
+            UserPlanService userPlanService
     ) {
         this.jwtUtil = jwtUtil;
         this.tokenBlacklistStore = tokenBlacklistStore;
         this.userAccountRepository = userAccountRepository;
+        this.userPlanService = userPlanService;
+    }
+
+    public JwtAuthenticationFilter(
+            JwtUtil jwtUtil,
+            TokenBlacklistStore tokenBlacklistStore,
+            UserAccountRepository userAccountRepository
+    ) {
+        this(jwtUtil, tokenBlacklistStore, userAccountRepository, null);
     }
 
     public JwtAuthenticationFilter(JwtUtil jwtUtil, TokenBlacklistStore tokenBlacklistStore) {
-        this(jwtUtil, tokenBlacklistStore, null);
+        this(jwtUtil, tokenBlacklistStore, null, null);
     }
 
     @Override
@@ -109,9 +122,12 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                 filterChain.doFilter(request, response);
                 return;
             }
-            String username = claims.get("username", String.class);
-            String role = claims.get("role", String.class);
-            String plan = claims.get("plan", String.class);
+            UserAccount currentUser = currentUser(userId);
+            String username = currentUser == null ? claims.get("username", String.class) : currentUser.getUsername();
+            String role = currentUser == null ? claims.get("role", String.class) : currentUser.getRole();
+            String plan = currentUser == null
+                    ? claims.get("plan", String.class)
+                    : userPlanService.resolveEffectivePlan(currentUser);
 
             UserPrincipal principal = new UserPrincipal(
                     userId,
@@ -147,5 +163,14 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                     return claims.getIssuedAt().toInstant().isBefore(user.getTokensValidAfter());
                 })
                 .orElse(true);
+    }
+
+    private UserAccount currentUser(Long userId) {
+        if (userAccountRepository == null || userPlanService == null) {
+            return null;
+        }
+        return userAccountRepository.findById(userId)
+                .map(userPlanService::refreshExpiredPlan)
+                .orElseThrow(() -> new IllegalArgumentException("User not found"));
     }
 }

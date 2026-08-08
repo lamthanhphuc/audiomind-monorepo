@@ -3,6 +3,7 @@ package com.example.userservice.quota;
 import com.example.userservice.entity.QuotaConsumption;
 import com.example.userservice.entity.UsageCounter;
 import com.example.userservice.entity.UserAccount;
+import com.example.userservice.plan.SubscriptionPlanService;
 import com.example.userservice.plan.UserPlanService;
 import com.example.userservice.repository.QuotaConsumptionRepository;
 import com.example.userservice.repository.UsageCounterRepository;
@@ -34,6 +35,7 @@ public class QuotaService {
     private final UsageCounterRepository usageCounterRepository;
     private final UserAccountRepository userAccountRepository;
     private final UserPlanService userPlanService;
+    private final SubscriptionPlanService subscriptionPlanService;
     private final QuotaConsumptionRepository quotaConsumptionRepository;
     private final EntityManager entityManager;
     private final Clock clock = Clock.systemUTC();
@@ -178,7 +180,7 @@ public class QuotaService {
                     .findByOwnerUserIdAndIdempotencyKey(userId, idempotencyKey)
                     .orElse(null);
             if (afterLock != null && QuotaConsumption.STATUS_ALLOWED.equals(afterLock.getStatus())) {
-                QuotaPolicy.PlanLimits limits = QuotaPolicy.limitsForPlan(effectivePlan);
+                SubscriptionPlanService.PlanLimits limits = subscriptionPlanService.limitsForPlan(effectivePlan);
                 return new QuotaConsumeResult(
                         true,
                         period,
@@ -190,7 +192,7 @@ public class QuotaService {
             }
         }
 
-        QuotaPolicy.PlanLimits limits = QuotaPolicy.limitsForPlan(effectivePlan);
+        SubscriptionPlanService.PlanLimits limits = subscriptionPlanService.limitsForPlan(effectivePlan);
         long nextStt = safeAdd(counter.getSttSecondsUsed(), sttSecondsDelta);
         long nextChars = safeAdd(counter.getGeminiInputCharsUsed(), geminiCharsDelta);
 
@@ -331,7 +333,7 @@ public class QuotaService {
         String period = currentPeriod();
         UsageCounter counter = usageCounterRepository.findByUserIdAndPeriodYyyymm(userId, period)
                 .orElse(null);
-        QuotaPolicy.PlanLimits limits = QuotaPolicy.limitsForPlan(effectivePlan);
+        SubscriptionPlanService.PlanLimits limits = subscriptionPlanService.limitsForPlan(effectivePlan);
         return new QuotaConsumeResult(
                 true,
                 period,
@@ -350,7 +352,7 @@ public class QuotaService {
         String period = currentPeriod();
         UsageCounter counter = usageCounterRepository.findByUserIdAndPeriodYyyymm(userId, period)
                 .orElse(null);
-        QuotaPolicy.PlanLimits limits = QuotaPolicy.limitsForPlan(effectivePlan);
+        SubscriptionPlanService.PlanLimits limits = subscriptionPlanService.limitsForPlan(effectivePlan);
         return new QuotaConsumeResult(
                 false,
                 period,
@@ -383,7 +385,7 @@ public class QuotaService {
         String period = currentPeriod();
         UsageCounter counter = usageCounterRepository.findByUserIdAndPeriodYyyymm(userId, period)
                 .orElse(null);
-        QuotaPolicy.PlanLimits limits = QuotaPolicy.limitsForPlan(effectivePlan);
+        SubscriptionPlanService.PlanLimits limits = subscriptionPlanService.limitsForPlan(effectivePlan);
         return new QuotaSnapshot(
                 effectivePlan,
                 period,

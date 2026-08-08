@@ -181,8 +181,11 @@ class UserServiceTest {
         user.setId(22L);
         user.setUsername("dana");
         user.setEmail("dana@example.com");
+        user.setPlan("FREE");
+        user.setRole("USER");
 
-        when(userAccountRepository.findById(22L)).thenReturn(Optional.of(user));
+        when(userPlanService.requireUserWithCurrentPlan(22L)).thenReturn(user);
+        when(userPlanService.resolveEffectivePlan(user)).thenReturn("FREE");
 
         UserProfileResponse response = userService.me(principal);
 
@@ -190,5 +193,7 @@ class UserServiceTest {
         assertEquals("dana", response.username());
         assertEquals("dana@example.com", response.email());
         assertEquals("it", response.domainMode());
+        assertEquals("FREE", response.plan());
+        assertEquals("USER", response.role());
     }
 }

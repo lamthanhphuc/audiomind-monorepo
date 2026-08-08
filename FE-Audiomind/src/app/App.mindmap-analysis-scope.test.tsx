@@ -41,6 +41,8 @@ const flush = async () => {
   })
 }
 
+const standardToken = `e30.${btoa(JSON.stringify({ sub: '1', role: 'USER', plan: 'STANDARD' }))}.signature`
+
 describe('App mindmap analysis scope', () => {
   let container: HTMLDivElement
   let root: ReturnType<typeof createRoot>
@@ -54,7 +56,7 @@ describe('App mindmap analysis scope', () => {
     container = document.createElement('div')
     document.body.appendChild(container)
     root = createRoot(container)
-    localStorage.setItem('audiomind.access_token', 'dummy-token')
+    localStorage.setItem('audiomind.access_token', standardToken)
 
     vi.spyOn(api, 'listMeetingsWithParams').mockResolvedValue([meeting7, meeting8])
     vi.spyOn(api, 'getUserProfile').mockResolvedValue({ id: 1, username: 'tester' } as any)

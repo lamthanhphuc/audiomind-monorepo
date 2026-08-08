@@ -89,8 +89,16 @@ type StudyWorkspaceContextValue = {
 
 const StudyWorkspaceContext = createContext<StudyWorkspaceContextValue | null>(null)
 
-export function StudyWorkspaceProvider({ children }: { children: ReactNode }) {
+export function StudyWorkspaceProvider({
+  children,
+  enabled = true,
+}: {
+  children: ReactNode
+  enabled?: boolean
+}) {
   const mountedRef = useRef(true)
+  const enabledRef = useRef(enabled)
+  enabledRef.current = enabled
   const [folderTree, setFolderTree] = useState<StudyFolderTreeResponse | null>(null)
   const [catalogSubjects, setCatalogSubjects] = useState<SubjectSummary[]>([])
   const [treeRevision, setTreeRevision] = useState(0)
@@ -108,12 +116,12 @@ export function StudyWorkspaceProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const refreshFolderTree = useCallback(async () => {
-    if (!mountedRef.current) return
+    if (!mountedRef.current || !enabled) return
     setTreeLoading(true)
     setTreeError(null)
     try {
       const tree = await getStudyFolderTree()
-      if (!mountedRef.current) return
+      if (!mountedRef.current || !enabledRef.current) return
       setFolderTree(tree)
       setTreeRevision((value) => value + 1)
     } catch (error) {
@@ -124,15 +132,15 @@ export function StudyWorkspaceProvider({ children }: { children: ReactNode }) {
         setTreeLoading(false)
       }
     }
-  }, [])
+  }, [enabled])
 
   const refreshCatalog = useCallback(async () => {
-    if (!mountedRef.current) return
+    if (!mountedRef.current || !enabled) return
     setCatalogLoading(true)
     setCatalogError(null)
     try {
       const subjects = await fetchFullSubjectCatalog()
-      if (!mountedRef.current) return
+      if (!mountedRef.current || !enabledRef.current) return
       setCatalogSubjects(subjects)
       setCatalogRevision((value) => value + 1)
     } catch (error) {
@@ -143,12 +151,21 @@ export function StudyWorkspaceProvider({ children }: { children: ReactNode }) {
         setCatalogLoading(false)
       }
     }
-  }, [])
+  }, [enabled])
 
   useEffect(() => {
+    if (!enabled) {
+      setFolderTree(null)
+      setCatalogSubjects([])
+      setTreeError(null)
+      setCatalogError(null)
+      setTreeLoading(false)
+      setCatalogLoading(false)
+      return
+    }
     void refreshFolderTree()
     void refreshCatalog()
-  }, [refreshCatalog, refreshFolderTree])
+  }, [enabled, refreshCatalog, refreshFolderTree])
 
   const invalidateAfterFolderMutation = useCallback(async () => {
     await Promise.all([refreshFolderTree(), refreshCatalog()])

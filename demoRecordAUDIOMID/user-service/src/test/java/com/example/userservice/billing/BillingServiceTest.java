@@ -5,20 +5,19 @@ import com.example.userservice.billing.payos.PayosModels;
 import com.example.userservice.entity.BillingInvoice;
 import com.example.userservice.entity.BillingWebhookEvent;
 import com.example.userservice.entity.UserAccount;
+import com.example.userservice.plan.SubscriptionPlanService;
 import com.example.userservice.repository.BillingInvoiceRepository;
 import com.example.userservice.repository.BillingWebhookEventRepository;
 import com.example.userservice.plan.UserPlanService;
 import com.example.userservice.repository.UserAccountRepository;
 import java.util.Map;
 import java.util.Optional;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.test.util.ReflectionTestUtils;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
@@ -45,13 +44,11 @@ class BillingServiceTest {
   @Mock
   private UserPlanService userPlanService;
 
+  @Mock
+  private SubscriptionPlanService subscriptionPlanService;
+
   @InjectMocks
   private BillingService billingService;
-
-  @BeforeEach
-  void setUp() {
-    ReflectionTestUtils.setField(billingService, "proPriceVnd", 79000L);
-  }
 
   @Test
   void handlePayosWebhook_shouldMarkPaidAndUpgradeUserOnSuccess() {
@@ -81,7 +78,7 @@ class BillingServiceTest {
     billingService.handlePayosWebhook(webhook);
 
     assertEquals("PAID", invoice.getStatus());
-    verify(userPlanService).markPermanentPro(user);
+    assertEquals("STANDARD", user.getPlan());
     verify(webhookEventRepository).save(any(BillingWebhookEvent.class));
     verify(invoiceRepository).save(invoice);
     verify(userAccountRepository).save(user);
@@ -224,7 +221,7 @@ class BillingServiceTest {
     BillingInvoice result = billingService.syncProPayment(42L, 9004L);
 
     assertEquals("PAID", result.getStatus());
-    verify(userPlanService).markPermanentPro(user);
+    assertEquals("STANDARD", user.getPlan());
     verify(invoiceRepository).save(invoice);
     verify(userAccountRepository).save(user);
   }

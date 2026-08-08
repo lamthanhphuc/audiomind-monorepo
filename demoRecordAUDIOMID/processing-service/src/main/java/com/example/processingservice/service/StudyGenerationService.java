@@ -51,6 +51,7 @@ public class StudyGenerationService {
             boolean force,
             String traceId,
             String authorization) {
+        requireFeature(ownerUserId, "studySynthesis");
         List<Long> resolvedMeetingIds = resolveAndValidateMeetings(
                 subjectId, ownerUserId, meetingIds, sourceSelectionMode, traceId, authorization);
 
@@ -129,6 +130,7 @@ public class StudyGenerationService {
             Long ownerUserId,
             String traceId,
             String authorization) {
+        requireFeature(ownerUserId, "studySynthesis");
         List<Long> allMeetingIds = listSubjectMeetingIds(subjectId, traceId, authorization);
         try {
             return aiServiceClient.getSubjectSynthesis(subjectId, ownerUserId, allMeetingIds, traceId);
@@ -148,6 +150,7 @@ public class StudyGenerationService {
             boolean force,
             String traceId,
             String authorization) {
+        requireFeature(ownerUserId, "subjectManagement");
         List<Long> resolvedMeetingIds = resolveAndValidateMeetings(
                 subjectId, ownerUserId, meetingIds, sourceSelectionMode, traceId, authorization);
 
@@ -198,6 +201,7 @@ public class StudyGenerationService {
             Long ownerUserId,
             String traceId,
             String authorization) {
+        requireFeature(ownerUserId, "subjectManagement");
         try {
             Map<String, Object> artifact = aiServiceClient.getStudyArtifact(
                     artifactId, ownerUserId, List.of(), traceId);
@@ -222,6 +226,7 @@ public class StudyGenerationService {
             String sort,
             String traceId,
             String authorization) {
+        requireFeature(ownerUserId, "subjectManagement");
         meetingServiceClient.getSubjectById(subjectId, traceId, authorization);
         List<Long> meetingIds = listSubjectMeetingIds(subjectId, traceId, authorization);
         try {
@@ -244,6 +249,7 @@ public class StudyGenerationService {
             Long artifactId,
             Long ownerUserId,
             String traceId) {
+        requireFeature(ownerUserId, "subjectManagement");
         try {
             return aiServiceClient.deleteStudyArtifact(artifactId, ownerUserId, traceId);
         } catch (HttpStatusCodeException ex) {
@@ -390,6 +396,20 @@ public class StudyGenerationService {
                 unknownNonRetryable,
                 details,
                 firstNonRetryableError);
+    }
+
+    private void requireFeature(Long ownerUserId, String feature) {
+        UserQuotaClient.FeatureAuthorizationResult access = userQuotaClient.authorizeFeature(ownerUserId, feature);
+        if (!access.available()) {
+            throw new ResponseStatusException(
+                    HttpStatus.SERVICE_UNAVAILABLE,
+                    "PLAN_AUTHORIZATION_UNAVAILABLE");
+        }
+        if (!access.allowed()) {
+            throw new ResponseStatusException(
+                    HttpStatus.FORBIDDEN,
+                    "PLAN_FEATURE_REQUIRED");
+        }
     }
 
     /**

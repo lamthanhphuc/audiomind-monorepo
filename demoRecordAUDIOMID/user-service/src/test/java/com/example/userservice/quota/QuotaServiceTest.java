@@ -3,6 +3,7 @@ package com.example.userservice.quota;
 import com.example.userservice.entity.QuotaConsumption;
 import com.example.userservice.entity.UsageCounter;
 import com.example.userservice.entity.UserAccount;
+import com.example.userservice.plan.SubscriptionPlanService;
 import com.example.userservice.plan.UserPlanService;
 import com.example.userservice.repository.QuotaConsumptionRepository;
 import com.example.userservice.repository.UsageCounterRepository;
@@ -70,6 +71,9 @@ class QuotaServiceTest {
   private UserPlanService userPlanService;
 
   @Mock
+  private SubscriptionPlanService subscriptionPlanService;
+
+  @Mock
   private QuotaConsumptionRepository quotaConsumptionRepository;
 
   @Mock
@@ -92,6 +96,15 @@ class QuotaServiceTest {
         .thenAnswer(invocation -> {
           UserAccount account = invocation.getArgument(0);
           return account.getPlan();
+        });
+    lenient().when(subscriptionPlanService.limitsForPlan(anyString()))
+        .thenAnswer(invocation -> {
+          Object value = invocation.getArgument(0);
+          String plan = value == null ? "" : value.toString();
+          if ("PRO".equalsIgnoreCase(plan)) {
+            return new SubscriptionPlanService.PlanLimits(60L * 60L * 10L, 2_000_000L);
+          }
+          return new SubscriptionPlanService.PlanLimits(60L * 10L, 50_000L);
         });
     stubAdvisoryLockAndUpsert();
   }

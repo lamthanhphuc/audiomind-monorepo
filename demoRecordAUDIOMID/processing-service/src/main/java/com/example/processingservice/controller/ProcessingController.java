@@ -6,6 +6,7 @@ import java.util.Map;
 import java.util.UUID;
 
 import org.slf4j.MDC;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.io.ByteArrayResource;
 import org.springframework.core.io.Resource;
 import org.springframework.http.HttpHeaders;
@@ -34,6 +35,7 @@ import com.example.processingservice.controller.dto.ProcessStartResponse;
 import com.example.processingservice.controller.dto.ProcessingStatusResponse;
 import com.example.processingservice.controller.dto.TranscriptSearchResponse;
 import com.example.processingservice.controller.dto.TranscriptResponse;
+import com.example.processingservice.client.UserQuotaClient;
 import com.example.processingservice.security.UserPrincipal;
 import com.example.processingservice.service.ProcessingService;
 import com.example.processingservice.service.report.MeetingActionPlanData;
@@ -47,6 +49,9 @@ import lombok.RequiredArgsConstructor;
 public class ProcessingController {
 
     private final ProcessingService processingService;
+
+    @Autowired(required = false)
+    private UserQuotaClient userQuotaClient;
 
     @PostMapping("/upload")
     public Map<String, Object> upload(
@@ -202,7 +207,7 @@ public class ProcessingController {
             @RequestParam(defaultValue = "readable") String mode,
             @RequestHeader(value = "x-trace-id", required = false) String traceId,
             @RequestHeader(HttpHeaders.AUTHORIZATION) String authorization) {
-        requirePrincipal();
+        requireFeature(requirePrincipal(), "export");
 
         String normalizedFormat = format == null ? "txt" : format.trim().toLowerCase();
         String normalizedMode = mode == null ? "readable" : mode.trim().toLowerCase();
@@ -274,10 +279,19 @@ public class ProcessingController {
     @GetMapping("/{meetingId}/action-plan")
     public MeetingActionPlanData actionPlan(
             @PathVariable Long meetingId,
+            @RequestParam(name = "recording_session_id", required = false) Long recordingSessionId,
+            @RequestParam(name = "attempt_id", required = false) Long attemptId,
             @RequestHeader(value = "x-trace-id", required = false) String traceId,
             @RequestHeader(HttpHeaders.AUTHORIZATION) String authorization) {
         requirePrincipal();
-        return processingService.getMeetingActionPlan(meetingId, ensureTraceId(traceId), authorization);
+        validateOptionalScope(recordingSessionId, attemptId);
+        return processingService.getMeetingActionPlan(
+                meetingId,
+                ensureTraceId(traceId),
+                authorization,
+                recordingSessionId,
+                attemptId
+        );
     }
 
     @PostMapping("/{meetingId}/analysis/rerun")
@@ -313,19 +327,34 @@ public class ProcessingController {
     public ResponseEntity<Resource> exportReport(
             @PathVariable Long meetingId,
             @RequestParam(defaultValue = "docx") String format,
+            @RequestParam(name = "recording_session_id", required = false) Long recordingSessionId,
+            @RequestParam(name = "attempt_id", required = false) Long attemptId,
             @RequestHeader(value = "x-trace-id", required = false) String traceId,
             @RequestHeader(HttpHeaders.AUTHORIZATION) String authorization) {
-        requirePrincipal();
+        requireFeature(requirePrincipal(), "export");
+        validateOptionalScope(recordingSessionId, attemptId);
         String normalizedFormat = format == null ? "docx" : format.trim().toLowerCase(Locale.ROOT);
         byte[] reportBytes;
         MediaType contentType;
         String filename;
         if ("pdf".equals(normalizedFormat)) {
-            reportBytes = processingService.generateMeetingReportPdf(meetingId, ensureTraceId(traceId), authorization);
+            reportBytes = processingService.generateMeetingReportPdf(
+                    meetingId,
+                    ensureTraceId(traceId),
+                    authorization,
+                    recordingSessionId,
+                    attemptId
+            );
             contentType = MediaType.APPLICATION_PDF;
             filename = "meeting-" + meetingId + "-report.pdf";
         } else if ("docx".equals(normalizedFormat)) {
-            reportBytes = processingService.generateMeetingReportDocx(meetingId, ensureTraceId(traceId), authorization);
+            reportBytes = processingService.generateMeetingReportDocx(
+                    meetingId,
+                    ensureTraceId(traceId),
+                    authorization,
+                    recordingSessionId,
+                    attemptId
+            );
             contentType = MediaType.parseMediaType("application/vnd.openxmlformats-officedocument.wordprocessingml.document");
             filename = "meeting-" + meetingId + "-report.docx";
         } else {
@@ -342,19 +371,34 @@ public class ProcessingController {
     public ResponseEntity<Resource> exportActionPlan(
             @PathVariable Long meetingId,
             @RequestParam(defaultValue = "docx") String format,
+            @RequestParam(name = "recording_session_id", required = false) Long recordingSessionId,
+            @RequestParam(name = "attempt_id", required = false) Long attemptId,
             @RequestHeader(value = "x-trace-id", required = false) String traceId,
             @RequestHeader(HttpHeaders.AUTHORIZATION) String authorization) {
-        requirePrincipal();
+        requireFeature(requirePrincipal(), "export");
+        validateOptionalScope(recordingSessionId, attemptId);
         String normalizedFormat = format == null ? "docx" : format.trim().toLowerCase(Locale.ROOT);
         byte[] exportBytes;
         MediaType contentType;
         String filename;
         if ("pdf".equals(normalizedFormat)) {
-            exportBytes = processingService.generateMeetingActionPlanPdf(meetingId, ensureTraceId(traceId), authorization);
+            exportBytes = processingService.generateMeetingActionPlanPdf(
+                    meetingId,
+                    ensureTraceId(traceId),
+                    authorization,
+                    recordingSessionId,
+                    attemptId
+            );
             contentType = MediaType.APPLICATION_PDF;
             filename = "meeting-" + meetingId + "-action-plan.pdf";
         } else if ("docx".equals(normalizedFormat)) {
-            exportBytes = processingService.generateMeetingActionPlanDocx(meetingId, ensureTraceId(traceId), authorization);
+            exportBytes = processingService.generateMeetingActionPlanDocx(
+                    meetingId,
+                    ensureTraceId(traceId),
+                    authorization,
+                    recordingSessionId,
+                    attemptId
+            );
             contentType = MediaType.parseMediaType("application/vnd.openxmlformats-officedocument.wordprocessingml.document");
             filename = "meeting-" + meetingId + "-action-plan.docx";
         } else {
@@ -433,6 +477,20 @@ public class ProcessingController {
         return principal;
     }
 
+    private void requireFeature(UserPrincipal principal, String feature) {
+        if (userQuotaClient == null) {
+            return;
+        }
+        UserQuotaClient.FeatureAuthorizationResult access =
+                userQuotaClient.authorizeFeature(principal.userId(), feature);
+        if (!access.available()) {
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "PLAN_AUTHORIZATION_UNAVAILABLE");
+        }
+        if (!access.allowed()) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "PLAN_FEATURE_NOT_AVAILABLE");
+        }
+    }
+
     private Long parseMeetingId(String meetingId) {
         if (meetingId == null || meetingId.isBlank()) {
             throw new ResponseStatusException(
@@ -482,6 +540,12 @@ public class ProcessingController {
             return Math.min(parsed, 3);
         } catch (NumberFormatException ex) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "INVALID_SEARCH_CONTEXT");
+        }
+    }
+
+    private void validateOptionalScope(Long recordingSessionId, Long attemptId) {
+        if ((recordingSessionId == null) != (attemptId == null)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "recording_session_id and attempt_id must be provided together");
         }
     }
 

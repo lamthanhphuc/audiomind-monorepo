@@ -3659,6 +3659,6 @@ class MeetingWebSocketHandlerTest {
         @SuppressWarnings("unchecked")
         Map<String, Object> parsed = new ObjectMapper().readValue(sent.getPayload(), Map.class);
         assertEquals("QUOTA_EXCEEDED", parsed.get("errorCode"));
-        assertTrue(String.valueOf(parsed.get("message")).contains("Nâng cấp Pro"));
+        assertTrue(String.valueOf(parsed.get("message")).contains("Nâng cấp"));
     }
 }

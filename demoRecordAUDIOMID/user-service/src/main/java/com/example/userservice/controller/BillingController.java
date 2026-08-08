@@ -4,6 +4,7 @@ import com.example.userservice.billing.BillingService;
 import com.example.userservice.billing.payos.PayosModels;
 import com.example.userservice.entity.BillingInvoice;
 import com.example.userservice.entity.UserAccount;
+import com.example.userservice.plan.SubscriptionPlanService;
 import com.example.userservice.plan.UserPlanService;
 import com.example.userservice.quota.QuotaService;
 import com.example.userservice.security.UserPrincipal;
@@ -29,6 +30,7 @@ public class BillingController {
     private final BillingService billingService;
     private final QuotaService quotaService;
     private final UserPlanService userPlanService;
+    private final SubscriptionPlanService subscriptionPlanService;
 
     @GetMapping("/me")
     public Map<String, Object> me(Authentication authentication) {
@@ -42,25 +44,55 @@ public class BillingController {
         response.put("jwtPlan", principal.plan());
         response.put("trialActive", userPlanService.isOnTrial(user));
         if (user.getPlanExpiresAt() != null) {
-            response.put("planExpiresAt", user.getPlanExpiresAt());
+        response.put("planExpiresAt", user.getPlanExpiresAt());
         }
         response.put("quota", quota);
         response.put("invoices", invoices);
-        response.put("proPriceVnd", billingService.proPriceVnd());
+        List<Map<String, Object>> plans = subscriptionPlanService.listActive().stream()
+                .map(subscriptionPlanService::toView)
+                .toList();
+        response.put("plans", plans);
+        response.put("standardPriceVnd", priceForPlan(plans, UserPlanService.PLAN_STANDARD));
+        response.put("premiumPriceVnd", priceForPlan(plans, UserPlanService.PLAN_PREMIUM));
+        // Compatibility for older clients while /checkout/pro now activates STANDARD.
+        response.put("proPriceVnd", priceForPlan(plans, UserPlanService.PLAN_STANDARD));
+        response.put("advertisementEnabled", subscriptionPlanService.requireByCode(quota.plan()).isAdvertisementEnabled());
         response.put("payosEnabled", billingService.payosEnabled());
         return response;
+    }
+
+    @PostMapping("/checkout/student")
+    public Map<String, Object> checkoutStudent(Authentication authentication) {
+        UserPrincipal principal = requirePrincipal(authentication);
+        BillingInvoice invoice = billingService.createStudentCheckout(principal.userId());
+        return checkoutPayload(invoice);
     }
 
     @PostMapping("/checkout/pro")
     public Map<String, Object> checkoutPro(Authentication authentication) {
         UserPrincipal principal = requirePrincipal(authentication);
         BillingInvoice invoice = billingService.createProCheckout(principal.userId());
+        return checkoutPayload(invoice);
+    }
+
+    @PostMapping("/checkout/{planCode}")
+    public Map<String, Object> checkoutPlan(
+            Authentication authentication,
+            @PathVariable String planCode
+    ) {
+        UserPrincipal principal = requirePrincipal(authentication);
+        BillingInvoice invoice = billingService.createCheckout(principal.userId(), planCode);
+        return checkoutPayload(invoice);
+    }
+
+    private static Map<String, Object> checkoutPayload(BillingInvoice invoice) {
         return Map.of(
                 "orderCode", invoice.getOrderCode(),
                 "checkoutUrl", invoice.getCheckoutUrl(),
                 "paymentLinkId", invoice.getPaymentLinkId(),
                 "status", invoice.getStatus(),
-                "amountVnd", invoice.getAmountVnd()
+                "amountVnd", invoice.getAmountVnd(),
+                "planCode", invoice.getPlanCode()
         );
     }
 
@@ -110,6 +142,18 @@ public class BillingController {
         if (invoice.getCheckoutUrl() != null) {
             payload.put("checkoutUrl", invoice.getCheckoutUrl());
         }
+        payload.put("planCode", invoice.getPlanCode());
         return payload;
+    }
+
+    private static long priceForPlan(List<Map<String, Object>> plans, String code) {
+        return plans.stream()
+                .filter(plan -> code.equalsIgnoreCase(String.valueOf(plan.get("code"))))
+                .map(plan -> plan.get("priceVnd"))
+                .filter(Number.class::isInstance)
+                .map(Number.class::cast)
+                .mapToLong(Number::longValue)
+                .findFirst()
+                .orElse(0L);
     }
 }

@@ -123,7 +123,6 @@ teams:
     allowed-redirect-origins: ${TEAMS_OAUTH_ALLOWED_REDIRECT_ORIGINS:http://localhost:8080,http://127.0.0.1:8080}
 
 billing:
-  pro-price-vnd: ${BILLING_PRO_PRICE_VND:79000}
   new-user-trial-days: ${BILLING_NEW_USER_TRIAL_DAYS:3}
   quota-zone-id: ${BILLING_QUOTA_ZONE_ID:Asia/Ho_Chi_Minh}
 

@@ -11,7 +11,8 @@ vi.mock('../../services/auth')
 const overviewFixture: billing.BillingOverview = {
   userId: 1,
   plan: 'FREE',
-  proPriceVnd: 79000,
+  standardPriceVnd: 79000,
+  premiumPriceVnd: 168000,
   payosEnabled: true,
   quota: {
     plan: 'FREE',
@@ -26,7 +27,7 @@ const overviewFixture: billing.BillingOverview = {
       orderCode: 1001,
       status: 'PENDING',
       amountVnd: 79000,
-      description: 'Audiomind PRO',
+      description: 'AudioMind Standard',
       checkoutUrl: 'https://pay.payos.vn/web/1001',
     },
   ],
@@ -43,7 +44,7 @@ describe('BillingScene', () => {
     vi.mocked(auth.getJwtPlan).mockReturnValue('FREE')
     vi.mocked(auth.getJwtRole).mockReturnValue('USER')
     vi.mocked(billing.getBillingOverview).mockResolvedValue(overviewFixture)
-    vi.mocked(billing.checkoutProPlan).mockResolvedValue({
+    vi.mocked(billing.checkoutSubscriptionPlan).mockResolvedValue({
       orderCode: 2002,
       checkoutUrl: 'https://pay.payos.vn/web/2002',
       status: 'PENDING',
@@ -70,6 +71,8 @@ describe('BillingScene', () => {
 
     expect(container.querySelector('[data-testid="billing-scene"]')).toBeTruthy()
     expect(container.textContent).toContain('Quota STT')
+    expect(container.textContent).toContain('Standard')
+    expect(container.textContent).toContain('Premium')
     expect(container.textContent).toContain('#1001')
     expect(container.textContent).toContain('79.000')
   })
@@ -91,7 +94,7 @@ describe('BillingScene', () => {
       await Promise.resolve()
     })
 
-    expect(billing.checkoutProPlan).toHaveBeenCalled()
+    expect(billing.checkoutSubscriptionPlan).toHaveBeenCalledWith('STANDARD')
   })
 
   it('disables PayOS upgrade and shows notice when payosEnabled is false', async () => {
@@ -116,7 +119,7 @@ describe('BillingScene', () => {
       await Promise.resolve()
     })
 
-    expect(billing.checkoutProPlan).not.toHaveBeenCalled()
+    expect(billing.checkoutSubscriptionPlan).not.toHaveBeenCalled()
   })
 })
 

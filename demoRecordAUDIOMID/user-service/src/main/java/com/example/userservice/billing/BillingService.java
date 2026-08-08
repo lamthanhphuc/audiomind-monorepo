@@ -5,6 +5,8 @@ import com.example.userservice.billing.payos.PayosModels;
 import com.example.userservice.entity.BillingInvoice;
 import com.example.userservice.entity.BillingWebhookEvent;
 import com.example.userservice.entity.UserAccount;
+import com.example.userservice.entity.SubscriptionPlan;
+import com.example.userservice.plan.SubscriptionPlanService;
 import com.example.userservice.repository.BillingInvoiceRepository;
 import com.example.userservice.repository.BillingWebhookEventRepository;
 import com.example.userservice.plan.UserPlanService;
@@ -17,7 +19,6 @@ import java.util.Optional;
 import java.util.concurrent.ThreadLocalRandom;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -34,13 +35,7 @@ public class BillingService {
     private final BillingWebhookEventRepository webhookEventRepository;
     private final UserAccountRepository userAccountRepository;
     private final UserPlanService userPlanService;
-
-    @Value("${billing.pro-price-vnd:79000}")
-    private long proPriceVnd;
-
-    public long proPriceVnd() {
-        return proPriceVnd;
-    }
+    private final SubscriptionPlanService subscriptionPlanService;
 
     public boolean payosEnabled() {
         return payosClient.isEnabled();
@@ -48,14 +43,26 @@ public class BillingService {
 
     @Transactional
     public BillingInvoice createProCheckout(Long userId) {
+        return createCheckout(userId, UserPlanService.PLAN_STANDARD);
+    }
+
+    @Transactional
+    public BillingInvoice createStudentCheckout(Long userId) {
+        return createCheckout(userId, UserPlanService.PLAN_STANDARD);
+    }
+
+    @Transactional
+    public BillingInvoice createCheckout(Long userId, String targetPlan) {
+        targetPlan = UserPlanService.normalizePlanOrFree(SubscriptionPlanService.normalizeCode(targetPlan));
         UserAccount user = userAccountRepository.findById(userId)
                 .orElseThrow(() -> new IllegalArgumentException("User not found"));
         userPlanService.refreshExpiredPlan(user);
-        if (userPlanService.hasPermanentPro(user)) {
-            throw new IllegalArgumentException("Tài khoản đã là gói Pro");
+        String currentPlan = userPlanService.resolveEffectivePlan(user);
+        if (currentPlan.equalsIgnoreCase(targetPlan) && user.getPlanExpiresAt() == null) {
+            throw new IllegalArgumentException("Tài khoản đã là gói " + targetPlan);
         }
-
-        long amountVnd = proPriceVnd;
+        SubscriptionPlan plan = subscriptionPlanService.requireActiveByCode(targetPlan);
+        long amountVnd = plan.getPriceVnd();
         long orderCode = generateOrderCode();
         // PayOS giới hạn mô tả ngắn (9 ký tự với một số kênh thanh toán).
         String description = "Audiomind";
@@ -67,6 +74,7 @@ public class BillingService {
         invoice.setProvider("PAYOS");
         invoice.setOrderCode(orderCode);
         invoice.setAmountVnd(amountVnd);
+        invoice.setPlanCode(plan.getCode());
         invoice.setCurrency("VND");
         invoice.setStatus("PENDING");
         invoice.setDescription(description);
@@ -93,7 +101,7 @@ public class BillingService {
         PayosClient.PayosPaymentInfo payment = payosClient.getPaymentRequest(orderCode);
         if (isPayosPaymentSettled(payment, invoice.getAmountVnd())) {
             markInvoicePaid(invoice, "payos_sync");
-            upgradeUserToPro(invoice.getUserId());
+            activateInvoicePlan(invoice);
             invoice.setUpdatedAt(Instant.now());
             invoiceRepository.save(invoice);
             log.info(
@@ -176,7 +184,7 @@ public class BillingService {
         if (paymentSucceeded && amountMatches) {
             if (!"PAID".equalsIgnoreCase(invoice.getStatus())) {
                 markInvoicePaid(invoice, "payos_webhook");
-                upgradeUserToPro(invoice.getUserId());
+                activateInvoicePlan(invoice);
             }
         } else if (paymentSucceeded) {
             log.warn(
@@ -198,7 +206,7 @@ public class BillingService {
         markInvoicePaid(invoice, "manual_admin");
         invoice.setManualNote(note);
         invoiceRepository.save(invoice);
-        upgradeUserToPro(invoice.getUserId());
+        activateInvoicePlan(invoice);
     }
 
     private void markInvoicePaid(BillingInvoice invoice, String source) {
@@ -210,10 +218,13 @@ public class BillingService {
         invoice.setManualNote(source);
     }
 
-    private void upgradeUserToPro(Long userId) {
-        UserAccount user = userAccountRepository.findById(userId)
+    private void activateInvoicePlan(BillingInvoice invoice) {
+        UserAccount user = userAccountRepository.findById(invoice.getUserId())
                 .orElseThrow(() -> new IllegalArgumentException("User not found"));
-        userPlanService.markPermanentPro(user);
+        String targetPlan = UserPlanService.normalizePlanOrFree(
+                SubscriptionPlanService.normalizeCode(invoice.getPlanCode()));
+        user.setPlan(targetPlan);
+        user.setPlanExpiresAt(null);
         userAccountRepository.save(user);
     }
 

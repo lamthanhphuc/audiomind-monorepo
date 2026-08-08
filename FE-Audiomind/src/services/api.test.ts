@@ -402,13 +402,19 @@ describe('upload language request wiring', () => {
       headers: new Headers(),
     })
 
-    const analysis = await reanalyzeMeetingAnalysis(7, { mode: 'force', reason: 'manual_reanalyze' })
+    const controller = new AbortController()
+    const analysis = await reanalyzeMeetingAnalysis(
+      7,
+      { mode: 'force', reason: 'manual_reanalyze' },
+      { signal: controller.signal },
+    )
 
     expect(analysis.analysisStatus).toBe('ANALYZING')
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
     expect(url).toContain('/processing/7/analysis/rerun')
     expect(url).not.toContain('/api/meeting/7/analysis/rerun')
     expect(init.method).toBe('POST')
+    expect(init.signal).toBe(controller.signal)
     expect(JSON.parse(String(init.body))).toEqual({
       mode: 'force',
       reason: 'manual_reanalyze',
@@ -461,6 +467,54 @@ describe('upload language request wiring', () => {
 
     const [url] = fetchMock.mock.calls[0] as [string]
     expect(url).toContain('/processing/7/report?format=docx')
+  })
+
+  it('passes provenance scope when downloading report and action plan exports', async () => {
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        blob: async () => new Blob(['report']),
+        headers: new Headers(),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          meeting: { meetingId: 7, title: 'History item' },
+          summary: 'Summary',
+          domainMode: 'it',
+          actionItems: [],
+          painPoints: [],
+          risks: [],
+          blockers: [],
+          generatedAt: '2026-06-11T00:00:00Z',
+          note: null,
+          analysisMetadata: { analysisSource: 'saved', cacheOnly: false, stale: false },
+        }),
+        headers: new Headers(),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        blob: async () => new Blob(['action-plan']),
+        headers: new Headers(),
+      })
+
+    const scope = { recordingSessionId: 9001, attemptId: 2 }
+    await downloadMeetingReport(7, 'pdf', scope)
+    await getMeetingActionPlan(7, scope)
+    await downloadMeetingActionPlanDocx(7, scope)
+
+    const urls = fetchMock.mock.calls.map((call) => call[0] as string)
+    expect(urls[0]).toContain('/processing/7/report?')
+    expect(urls[0]).toContain('format=pdf')
+    expect(urls[0]).toContain('recording_session_id=9001')
+    expect(urls[0]).toContain('attempt_id=2')
+    expect(urls[1]).toContain('/processing/7/action-plan?')
+    expect(urls[1]).toContain('recording_session_id=9001')
+    expect(urls[1]).toContain('attempt_id=2')
+    expect(urls[2]).toContain('/processing/7/action-plan/export?')
+    expect(urls[2]).toContain('format=docx')
+    expect(urls[2]).toContain('recording_session_id=9001')
+    expect(urls[2]).toContain('attempt_id=2')
   })
 
   it('searches transcript evidence with encoded query and default context options', async () => {
@@ -647,6 +701,8 @@ describe('user profile', () => {
         username: 'tester',
         email: 'tester@example.com',
         domainMode: 'business',
+        plan: 'FREE',
+        role: 'USER',
       }),
       headers: new Headers(),
     })
@@ -656,6 +712,8 @@ describe('user profile', () => {
     expect(profile.userId).toBe(42)
     expect(profile.username).toBe('tester')
     expect(profile.domainMode).toBe('business')
+    expect(profile.plan).toBe('FREE')
+    expect(profile.role).toBe('USER')
     const [url] = fetchMock.mock.calls[0] as [string]
     expect(url).toContain('/api/users/me')
   })

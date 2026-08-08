@@ -315,7 +315,7 @@ describe('App auth entry', () => {
     })
     expect(window.location.pathname).toBe('/')
     expect(container.textContent).toContain('Đăng nhập studio và tiếp tục từ nơi giọng nói của bạn dừng lại.')
-    expect(container.textContent).toContain('Đăng ký thành công. Bạn được dùng gói Pro miễn phí 3 ngày sau khi đăng nhập.')
+    expect(container.textContent).toContain('Đăng ký thành công. Bạn được dùng gói Standard miễn phí 3 ngày sau khi đăng nhập.')
   })
 
   it('switches between login and register from the guest page links', async () => {

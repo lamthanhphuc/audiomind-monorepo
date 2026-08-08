@@ -19,7 +19,7 @@ public class MeetingReportDocxGenerator {
         try (XWPFDocument doc = new XWPFDocument();
              ByteArrayOutputStream out = new ByteArrayOutputStream()) {
 
-            addTitle(doc, "Meeting Report");
+            addTitle(doc, "Báo cáo phân tích");
             addParagraph(doc, "Meeting #" + safe(report.meetingMetadata().meetingId()));
 
             addHeading(doc, "Meeting Metadata");
@@ -48,6 +48,12 @@ public class MeetingReportDocxGenerator {
             addHeading(doc, "Key Decisions");
             addBulletList(doc, report.decisions(), report.analysisAvailable());
 
+            addHeading(doc, "Pain Points");
+            addBulletList(doc, report.painPoints(), report.analysisAvailable());
+
+            addHeading(doc, "Nội dung học tập");
+            addBulletList(doc, report.educationStudyHighlights(), report.analysisAvailable());
+
             addHeading(doc, "Action Items");
             addActionItems(doc, report.actionItems(), report.analysisAvailable());
 
@@ -56,6 +62,9 @@ public class MeetingReportDocxGenerator {
 
             addHeading(doc, "Next Steps");
             addBulletList(doc, report.nextSteps(), report.analysisAvailable());
+
+            addHeading(doc, "Impact");
+            addImpactSummary(doc, report.impactSummary(), report.analysisAvailable());
 
             addHeading(doc, "Analyzed Highlights Table");
             addParagraph(doc, "Highlights are derived from saved analysis and linked to transcript evidence when available.");
@@ -167,16 +176,29 @@ public class MeetingReportDocxGenerator {
         }
 
         for (MeetingReportData.ReportActionItem item : items) {
-            String text = "%s (owner: %s, due: %s)".formatted(
+            String text = "%s (owner: %s, due: %s, priority: %s, status: %s)".formatted(
                     defaultText(item.task()),
                     defaultText(item.owner()),
-                    defaultText(item.dueDate())
+                    defaultText(item.dueDate()),
+                    defaultText(item.priority()),
+                    defaultText(item.status())
             );
             addParagraph(doc, "- " + text);
             if (item.evidence() != null && !item.evidence().isBlank()) {
                 addParagraph(doc, "  note: " + item.evidence());
             }
         }
+    }
+
+    private void addImpactSummary(XWPFDocument doc, MeetingReportData.ImpactSummary impact, boolean analysisAvailable) {
+        if (!analysisAvailable || impact == null) {
+            addParagraph(doc, "Analysis not available");
+            return;
+        }
+        addParagraph(doc, "- Business: " + defaultText(impact.businessImpact()));
+        addParagraph(doc, "- Customer: " + defaultText(impact.customerImpact()));
+        addParagraph(doc, "- Technical: " + defaultText(impact.technicalImpact()));
+        addParagraph(doc, "- Confidence: " + defaultText(impact.confidence()));
     }
 
     private void appendRow(XWPFTable table, String key, String value) {

@@ -2519,6 +2519,67 @@ def _finish_realtime_analysis(
             _realtime_analysis_completed_hash[meeting_id] = (analysis_cache_key, now)
 
 
+def _is_max_tokens_analysis_error(exc: Exception) -> bool:
+    message = safe_error_message(exc).upper()
+    error_code = str(getattr(exc, "error_code", "") or "").upper()
+    return "MAX_TOKENS" in message or "MAX_TOKENS" in error_code
+
+
+def _build_realtime_max_tokens_fallback_analysis(
+    *,
+    analyzer,
+    transcript_text: str,
+    transcript_hash: str,
+    requested_domain_mode: str,
+    prompt_version: str,
+    schema_version: str,
+    analysis_feature_set: str,
+    source: str,
+    reason: str,
+) -> dict[str, Any]:
+    fallback_builder = getattr(analyzer, "_default_structured_analysis", None)
+    if callable(fallback_builder):
+        fallback = dict(fallback_builder(transcript_text, reason))
+    else:
+        summary = re.sub(r"\s+", " ", str(transcript_text or "")).strip()
+        if len(summary) > 240:
+            summary = summary[:237].rstrip() + "..."
+        fallback = {
+            "summary": summary or "Transcript was saved, but AI analysis was incomplete.",
+            "meetingSummary": summary
+            or "Transcript was saved, but AI analysis was incomplete.",
+            "keywords": [],
+            "technicalTerms": [],
+            "painPoints": [],
+            "actionItems": [],
+            "businessActionItems": [],
+            "keyDecisions": [],
+            "risks": [],
+            "blockers": [],
+            "questions": [],
+            "deadlines": [],
+            "owners": [],
+            "nextSteps": [],
+            "businessImpact": "",
+            "customerImpact": "",
+            "technicalImpact": "",
+            "confidence": 0.2,
+            "groupedActionPlan": _fallback_grouped_action_plan([]),
+        }
+
+    fallback["domainMode"] = requested_domain_mode
+    fallback["domain_mode"] = requested_domain_mode
+    fallback["promptVersion"] = prompt_version
+    fallback["schemaVersion"] = schema_version
+    fallback["analysisFeatureSet"] = analysis_feature_set
+    fallback["transcriptHash"] = transcript_hash
+    fallback["transcript_hash"] = transcript_hash
+    fallback["source"] = source
+    fallback["analysisFallback"] = True
+    fallback["fallbackReason"] = "max_tokens"
+    return fallback
+
+
 def _analyze_and_persist_realtime_transcript(
     *,
     meeting_id: int,
@@ -2563,10 +2624,31 @@ def _analyze_and_persist_realtime_transcript(
         metadata["evidenceUnavailable"] = True
 
     if getattr(analyzer, "provider", "") == "gemini":
-        structured_analysis = analyzer._analyze_with_gemini(
-            transcript_text,
-            metadata=metadata,
-        )
+        try:
+            structured_analysis = analyzer._analyze_with_gemini(
+                transcript_text,
+                metadata=metadata,
+            )
+        except AnalysisUnavailableError as exc:
+            if not _is_max_tokens_analysis_error(exc):
+                raise
+            logger.warning(
+                "REALTIME_ANALYSIS_MAX_TOKENS_FALLBACK meetingId={} source={} error={}",
+                meeting_id,
+                source,
+                safe_error_message(exc),
+            )
+            structured_analysis = _build_realtime_max_tokens_fallback_analysis(
+                analyzer=analyzer,
+                transcript_text=transcript_text,
+                transcript_hash=transcript_hash,
+                requested_domain_mode=requested_domain_mode,
+                prompt_version=prompt_version,
+                schema_version=schema_version,
+                analysis_feature_set=analysis_feature_set,
+                source=source,
+                reason=safe_error_message(exc),
+            )
     else:
         structured_analysis = analyzer.analyze_meeting(
             transcript_text,
@@ -2631,6 +2713,12 @@ def _analyze_and_persist_realtime_transcript(
         or evidence_unavailable
     ):
         technical_terms_payload["evidenceUnavailable"] = True
+    if structured_analysis.get("analysisFallback") is True:
+        technical_terms_payload["analysisFallback"] = True
+    if structured_analysis.get("fallbackReason"):
+        technical_terms_payload["fallbackReason"] = structured_analysis.get(
+            "fallbackReason"
+        )
     analysis_row = db.query(Analysis).filter(Analysis.meeting_id == meeting_id).first()
     if analysis_row is None:
         analysis_row = Analysis(meeting_id=meeting_id)
@@ -2656,6 +2744,12 @@ def _analyze_and_persist_realtime_transcript(
         ]
     if technical_terms_payload.get("evidenceUnavailable") is True:
         analysis_for_job_state["evidenceUnavailable"] = True
+    if technical_terms_payload.get("analysisFallback") is True:
+        analysis_for_job_state["analysisFallback"] = True
+    if technical_terms_payload.get("fallbackReason"):
+        analysis_for_job_state["fallbackReason"] = technical_terms_payload[
+            "fallbackReason"
+        ]
     analysis_run = persist_completed_analysis_run(
         db=db,
         meeting_id=meeting_id,

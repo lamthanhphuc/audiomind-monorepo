@@ -1,5 +1,6 @@
 package com.example.meetingservice.controller;
 
+import com.example.meetingservice.client.PlanEntitlementClient;
 import com.example.meetingservice.controller.dto.CreateSubjectRequest;
 import com.example.meetingservice.controller.dto.PageResponse;
 import com.example.meetingservice.controller.dto.SubjectDetailResponse;
@@ -26,15 +27,19 @@ import org.springframework.web.server.ResponseStatusException;
 public class SubjectController {
 
     private final SubjectService subjectService;
+    private final PlanEntitlementClient planEntitlementClient;
 
-    public SubjectController(SubjectService subjectService) {
+    public SubjectController(SubjectService subjectService, PlanEntitlementClient planEntitlementClient) {
         this.subjectService = subjectService;
+        this.planEntitlementClient = planEntitlementClient;
     }
 
     @PostMapping
     public SubjectResponse create(
             @RequestBody CreateSubjectRequest request, Authentication authentication) {
-        return subjectService.create(requirePrincipal(authentication).userId(), request);
+        UserPrincipal principal = requirePrincipal(authentication);
+        requireSubjectManagement(principal);
+        return subjectService.create(principal.userId(), request);
     }
 
     @GetMapping
@@ -46,8 +51,10 @@ public class SubjectController {
             @RequestParam(required = false) Integer pageSize,
             @RequestParam(required = false) String sort,
             Authentication authentication) {
+        UserPrincipal principal = requirePrincipal(authentication);
+        requireSubjectManagement(principal);
         return subjectService.list(
-                requirePrincipal(authentication).userId(),
+                principal.userId(),
                 folderId,
                 search,
                 archived,
@@ -58,7 +65,9 @@ public class SubjectController {
 
     @GetMapping("/{subjectId}")
     public SubjectDetailResponse get(@PathVariable Long subjectId, Authentication authentication) {
-        return subjectService.get(subjectId, requirePrincipal(authentication).userId());
+        UserPrincipal principal = requirePrincipal(authentication);
+        requireSubjectManagement(principal);
+        return subjectService.get(subjectId, principal.userId());
     }
 
     @PatchMapping("/{subjectId}")
@@ -66,12 +75,16 @@ public class SubjectController {
             @PathVariable Long subjectId,
             @RequestBody Map<String, Object> payload,
             Authentication authentication) {
-        return subjectService.update(subjectId, requirePrincipal(authentication).userId(), payload);
+        UserPrincipal principal = requirePrincipal(authentication);
+        requireSubjectManagement(principal);
+        return subjectService.update(subjectId, principal.userId(), payload);
     }
 
     @DeleteMapping("/{subjectId}")
     public SubjectResponse archive(@PathVariable Long subjectId, Authentication authentication) {
-        return subjectService.archive(subjectId, requirePrincipal(authentication).userId());
+        UserPrincipal principal = requirePrincipal(authentication);
+        requireSubjectManagement(principal);
+        return subjectService.archive(subjectId, principal.userId());
     }
 
     @GetMapping("/{subjectId}/meetings")
@@ -80,8 +93,14 @@ public class SubjectController {
             @RequestParam(required = false) Integer page,
             @RequestParam(required = false) Integer pageSize,
             Authentication authentication) {
+        UserPrincipal principal = requirePrincipal(authentication);
+        requireSubjectManagement(principal);
         return subjectService.listMeetings(
-                subjectId, requirePrincipal(authentication).userId(), page, pageSize);
+                subjectId, principal.userId(), page, pageSize);
+    }
+
+    private void requireSubjectManagement(UserPrincipal principal) {
+        planEntitlementClient.requireFeature(principal.userId(), "subjectManagement");
     }
 
     private UserPrincipal requirePrincipal(Authentication authentication) {

@@ -58,7 +58,8 @@ function Invoke-AdminPromotion {
   $sql = @"
 UPDATE app_users
 SET role = 'ADMIN',
-    plan = 'PRO',
+    plan = 'PREMIUM',
+    plan_expires_at = NULL,
     updated_at = NOW()
 WHERE username = $usernameSql OR email = $emailSql
 RETURNING id, username, email, role, plan;
@@ -76,16 +77,37 @@ RETURNING id, username, email, role, plan;
   } else {
     $container = $DbContainer
     if (-not $container) {
+      $container = (& docker ps --filter "label=com.docker.compose.service=$DbService" --format "{{.Names}}" | Select-Object -First 1)
+    }
+    if (-not $container) {
       $container = (& docker ps --filter "ancestor=postgres:15.7" --format "{{.Names}}" | Select-Object -First 1)
     }
     if (-not $container) {
-      $container = (& docker ps --filter "name=db" --format "{{.Names}}" | Select-Object -First 1)
+      $container = (& docker ps --filter "name=$DbService" --format "{{.Names}}" | Select-Object -First 1)
     }
 
     if ($container) {
       $output = & docker exec -i $container psql -v ON_ERROR_STOP=1 -U $DbUser -d $DbName -t -A -F "|" -c $sql
     } else {
-      $output = & docker compose -f infra/docker-compose.dev.yml -f $ComposeFile exec -T $DbService psql -v ON_ERROR_STOP=1 -U $DbUser -d $DbName -t -A -F "|" -c $sql
+      $composeArgs = @("compose")
+      $envFile = Join-Path (Get-Location) "infra/.env"
+      if (Test-Path -LiteralPath $envFile) {
+        $composeArgs += @("--env-file", $envFile)
+      }
+      $devCompose = Join-Path (Get-Location) "infra/docker-compose.dev.yml"
+      if (Test-Path -LiteralPath $devCompose) {
+        $composeArgs += @("-f", $devCompose)
+      }
+      $composePath = if ([System.IO.Path]::IsPathRooted($ComposeFile)) {
+        $ComposeFile
+      } else {
+        Join-Path (Get-Location) $ComposeFile
+      }
+      if (Test-Path -LiteralPath $composePath) {
+        $composeArgs += @("-f", $composePath)
+      }
+      $composeArgs += @("exec", "-T", $DbService, "psql", "-v", "ON_ERROR_STOP=1", "-U", $DbUser, "-d", $DbName, "-t", "-A", "-F", "|", "-c", $sql)
+      $output = & docker @composeArgs
     }
   }
 

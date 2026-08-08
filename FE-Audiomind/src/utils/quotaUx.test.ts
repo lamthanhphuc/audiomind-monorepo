@@ -38,13 +38,13 @@ describe('quotaUx', () => {
     expect(presentation.ctaLabel).toBe('Xem gói & thanh toán')
   })
 
-  it('returns Pro-specific message for PRO plan', () => {
+  it('keeps legacy PRO sessions on the paid-plan quota path', () => {
     const presentation = resolveQuotaPresentation(
       { errorCode: 'QUOTA_EXCEEDED' },
       'PRO',
       true,
     )
-    expect(presentation.message).toContain('quota Pro')
+    expect(presentation.message).toContain('quota gói hiện tại')
     expect(presentation.ctaId).toBe('upgrade_plan')
   })
 

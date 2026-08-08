@@ -647,8 +647,17 @@ export const getSavedAnalysis = async (
   return normalized
 }
 
-export const getMeetingActionPlan = async (meetingId: number): Promise<MeetingActionPlanData> => {
-  const response = await fetchJsonNoConsole<unknown>(`${API_BASE}/processing/${meetingId}/action-plan`)
+export const getMeetingActionPlan = async (
+  meetingId: number,
+  options: AnalysisScopeOptions = {},
+): Promise<MeetingActionPlanData> => {
+  const params = new URLSearchParams()
+  appendProvenanceParams(params, options)
+  const query = params.toString()
+  const response = await fetchJsonNoConsole<unknown>(
+    `${API_BASE}/processing/${meetingId}/action-plan${query ? `?${query}` : ''}`,
+    { signal: options.signal },
+  )
   return normalizeMeetingActionPlanData(response)
 }
 
@@ -657,6 +666,7 @@ const reanalysisRequestsInFlight = new Map<number, Promise<AiAnalysis>>()
 export const reanalyzeMeetingAnalysis = (
   meetingId: number,
   request: AnalysisRerunRequest = { mode: 'force', reason: 'manual_reanalyze' },
+  options: { signal?: AbortSignal } = {},
 ): Promise<AiAnalysis> => {
   const existing = reanalysisRequestsInFlight.get(meetingId)
   if (existing) return existing
@@ -671,6 +681,7 @@ export const reanalyzeMeetingAnalysis = (
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(operationRequest),
+      signal: options.signal,
     },
   ).then(normalizeAnalysisResponse)
 
@@ -688,12 +699,16 @@ export const reanalyzeMeetingAnalysis = (
 export const downloadMeetingReport = async (
   meetingId: number,
   format: 'docx' | string = 'docx',
+  options: AnalysisScopeOptions = {},
 ): Promise<{ blob: Blob; filename: string }> => {
+  const params = new URLSearchParams({ format })
+  appendProvenanceParams(params, options)
   const response = await fetch(
-    `${API_BASE}/processing/${meetingId}/report?format=${encodeURIComponent(format)}`,
+    `${API_BASE}/processing/${meetingId}/report?${params.toString()}`,
     {
       method: 'GET',
       headers: withTraceHeaders(),
+      signal: options.signal,
     },
   )
 
@@ -721,12 +736,16 @@ export const downloadMeetingReport = async (
 export const downloadMeetingActionPlan = async (
   meetingId: number,
   format: 'docx' | 'pdf' | string = 'docx',
+  options: AnalysisScopeOptions = {},
 ): Promise<{ blob: Blob; filename: string }> => {
+  const params = new URLSearchParams({ format })
+  appendProvenanceParams(params, options)
   const response = await fetch(
-    `${API_BASE}/processing/${meetingId}/action-plan/export?format=${encodeURIComponent(format)}`,
+    `${API_BASE}/processing/${meetingId}/action-plan/export?${params.toString()}`,
     {
       method: 'GET',
       headers: withTraceHeaders(),
+      signal: options.signal,
     },
   )
 
@@ -741,8 +760,8 @@ export const downloadMeetingActionPlan = async (
 }
 
 /** @deprecated Use downloadMeetingActionPlan */
-export const downloadMeetingActionPlanDocx = async (meetingId: number) =>
-  downloadMeetingActionPlan(meetingId, 'docx')
+export const downloadMeetingActionPlanDocx = async (meetingId: number, options: AnalysisScopeOptions = {}) =>
+  downloadMeetingActionPlan(meetingId, 'docx', options)
 
 export const askMeetingChat = async (
   meetingId: number,
@@ -1209,6 +1228,8 @@ export type UserProfile = {
   username: string
   email: string
   domainMode?: string | null
+  plan?: string | null
+  role?: string | null
 }
 
 export type UserProfileUpdateResponse = UserProfile & {
@@ -1223,6 +1244,8 @@ export const getUserProfile = async (): Promise<UserProfile> => {
     username: String(payload.username ?? ''),
     email: String(payload.email ?? ''),
     domainMode: firstString(payload.domainMode, payload.domain_mode) ?? null,
+    plan: firstString(payload.plan)?.toUpperCase() ?? null,
+    role: firstString(payload.role)?.toUpperCase() ?? null,
   }
 }
 
@@ -1237,6 +1260,8 @@ export const updateUserProfile = async (username: string): Promise<UserProfileUp
     username: String(payload.username ?? ''),
     email: String(payload.email ?? ''),
     domainMode: firstString(payload.domainMode, payload.domain_mode) ?? null,
+    plan: firstString(payload.plan)?.toUpperCase() ?? null,
+    role: firstString(payload.role)?.toUpperCase() ?? null,
     accessToken: firstString(payload.accessToken, payload.access_token),
     expiresInSeconds: Number(payload.expiresInSeconds ?? payload.expires_in_seconds ?? 0) || undefined,
   }

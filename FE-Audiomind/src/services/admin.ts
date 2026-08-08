@@ -1,5 +1,7 @@
 import { getAccessToken } from './auth'
 import { USER_API_BASE } from './config'
+import { normalizeSubscriptionPlan, type SubscriptionPlan } from './billing'
+import { type AdvertisementItem } from './advertisements'
 
 export type AdminUser = {
   id: number
@@ -33,6 +35,7 @@ export type AdminTransaction = {
   provider: string
   orderCode: number
   paymentLinkId?: string | null
+  planCode?: string | null
   amountVnd: number
   currency: string
   status: string
@@ -143,7 +146,9 @@ export const listAdminUsers = async (): Promise<AdminUser[]> => {
   return rawUsers.map(normalizeUser)
 }
 
-export const updateAdminUserPlan = async (userId: number, plan: 'FREE' | 'PRO'): Promise<AdminUser> => {
+export type AdminPlan = string
+
+export const updateAdminUserPlan = async (userId: number, plan: AdminPlan): Promise<AdminUser> => {
   const response = await fetch(`${USER_API_BASE}/api/admin/users/${userId}/plan`, {
     method: 'PATCH',
     headers: authHeaders(),
@@ -153,6 +158,126 @@ export const updateAdminUserPlan = async (userId: number, plan: 'FREE' | 'PRO'):
     throw new Error(await readMessage(response, 'Không cập nhật được gói người dùng'))
   }
   return normalizeUser(await response.json())
+}
+
+export type AdminPlanPayload = Omit<SubscriptionPlan, 'id'> & { id?: number }
+
+export type AdminAdvertisementPayload = {
+  brandName: string
+  title: string
+  description?: string | null
+  mediaUrl?: string | null
+  thumbnailUrl?: string | null
+  targetUrl?: string | null
+  type: string
+  placement: string
+  duration?: number | null
+  status: string
+  targetPlans: string[]
+  startAt?: string | null
+  endAt?: string | null
+}
+
+export const listAdminPlans = async (): Promise<SubscriptionPlan[]> => {
+  const response = await fetch(`${USER_API_BASE}/api/admin/plans`, {
+    headers: authHeaders(),
+  })
+  if (!response.ok) {
+    throw new Error(await readMessage(response, 'Không tải được danh sách gói'))
+  }
+  const body = await response.json() as { items?: unknown[] }
+  return Array.isArray(body.items) ? body.items.map(normalizeSubscriptionPlan) : []
+}
+
+export const saveAdminPlan = async (payload: AdminPlanPayload): Promise<SubscriptionPlan> => {
+  const isUpdate = payload.id != null && payload.id > 0
+  const response = await fetch(`${USER_API_BASE}/api/admin/plans${isUpdate ? `/${payload.id}` : ''}`, {
+    method: isUpdate ? 'PUT' : 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify(payload),
+  })
+  if (!response.ok) {
+    throw new Error(await readMessage(response, 'Không lưu được gói'))
+  }
+  return normalizeSubscriptionPlan(await response.json())
+}
+
+export const updateAdminPlanStatus = async (planId: number, active: boolean): Promise<SubscriptionPlan> => {
+  const response = await fetch(`${USER_API_BASE}/api/admin/plans/${planId}/status`, {
+    method: 'PATCH',
+    headers: authHeaders(),
+    body: JSON.stringify({ active }),
+  })
+  if (!response.ok) {
+    throw new Error(await readMessage(response, 'Không cập nhật trạng thái gói'))
+  }
+  return normalizeSubscriptionPlan(await response.json())
+}
+
+const normalizeAdvertisement = (raw: unknown): AdvertisementItem => {
+  const record = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
+  return {
+    id: String(record.id ?? ''),
+    brandName: record.brandName == null ? undefined : String(record.brandName),
+    type: record.type == null ? undefined : String(record.type),
+    placement: String(record.placement ?? 'DASHBOARD'),
+    mediaUrl: record.mediaUrl == null ? null : String(record.mediaUrl),
+    thumbnailUrl: record.thumbnailUrl == null ? null : String(record.thumbnailUrl),
+    targetUrl: record.targetUrl == null ? null : String(record.targetUrl),
+    duration: record.duration == null ? null : Number(record.duration),
+    status: record.status == null ? undefined : String(record.status),
+    targetPlans: Array.isArray(record.targetPlans) ? record.targetPlans.map(String) : [],
+    label: String(record.brandName ?? 'Sponsored'),
+    title: String(record.title ?? ''),
+    body: String(record.description ?? record.body ?? ''),
+    ctaLabel: 'Mở quảng cáo',
+  }
+}
+
+export const listAdminAdvertisements = async (): Promise<AdvertisementItem[]> => {
+  const response = await fetch(`${USER_API_BASE}/api/admin/advertisements`, {
+    headers: authHeaders(),
+  })
+  if (!response.ok) {
+    throw new Error(await readMessage(response, 'Không tải được danh sách quảng cáo'))
+  }
+  const body = await response.json() as { items?: unknown[] }
+  return Array.isArray(body.items) ? body.items.map(normalizeAdvertisement) : []
+}
+
+export const saveAdminAdvertisement = async (payload: AdminAdvertisementPayload & { id?: number }): Promise<AdvertisementItem> => {
+  const isUpdate = payload.id != null && Number(payload.id) > 0
+  const response = await fetch(`${USER_API_BASE}/api/admin/advertisements${isUpdate ? `/${payload.id}` : ''}`, {
+    method: isUpdate ? 'PUT' : 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify({
+      ...payload,
+      startAt: normalizeInstantInput(payload.startAt),
+      endAt: normalizeInstantInput(payload.endAt),
+    }),
+  })
+  if (!response.ok) {
+    throw new Error(await readMessage(response, 'Không lưu được quảng cáo'))
+  }
+  return normalizeAdvertisement(await response.json())
+}
+
+const normalizeInstantInput = (value?: string | null): string | null => {
+  if (!value?.trim()) return null
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? value : date.toISOString()
+}
+
+export const updateAdminAdvertisementStatus = async (adId: number, status: string): Promise<AdvertisementItem> => {
+  const response = await fetch(`${USER_API_BASE}/api/admin/advertisements/${adId}/status`, {
+    method: 'PATCH',
+    headers: authHeaders(),
+    body: JSON.stringify({ status }),
+  })
+  if (!response.ok) {
+    throw new Error(await readMessage(response, 'Không cập nhật trạng thái quảng cáo'))
+  }
+  return normalizeAdvertisement(await response.json())
 }
 
 export const updateAdminUserRole = async (userId: number, role: 'USER' | 'ADMIN'): Promise<AdminUser> => {
@@ -199,8 +324,41 @@ export const listAdminTransactions = async (filters: {
   if (!response.ok) {
     throw new Error(await readMessage(response, 'Không tải được danh sách giao dịch'))
   }
-  const body = await response.json() as { items?: AdminTransaction[] }
-  return Array.isArray(body.items) ? body.items : []
+  const body = await response.json() as { items?: unknown[] }
+  return Array.isArray(body.items) ? body.items.map(normalizeTransaction) : []
+}
+
+const normalizeTransaction = (raw: unknown): AdminTransaction => {
+  const record = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
+  return {
+    id: Number(record.id ?? 0),
+    userId: Number(record.userId ?? record.user_id ?? 0),
+    provider: String(record.provider ?? 'PAYOS'),
+    orderCode: Number(record.orderCode ?? record.order_code ?? 0),
+    paymentLinkId: record.paymentLinkId == null
+      ? (record.payment_link_id == null ? null : String(record.payment_link_id))
+      : String(record.paymentLinkId),
+    planCode: record.planCode == null
+      ? (record.plan_code == null ? null : String(record.plan_code))
+      : String(record.planCode),
+    amountVnd: Number(record.amountVnd ?? record.amount_vnd ?? 0),
+    currency: String(record.currency ?? 'VND'),
+    status: String(record.status ?? 'PENDING'),
+    description: record.description == null ? null : String(record.description),
+    createdAt: record.createdAt == null
+      ? (record.created_at == null ? null : String(record.created_at))
+      : String(record.createdAt),
+    paidAt: record.paidAt == null ? (record.paid_at == null ? null : String(record.paid_at)) : String(record.paidAt),
+    cancelledAt: record.cancelledAt == null
+      ? (record.cancelled_at == null ? null : String(record.cancelled_at))
+      : String(record.cancelledAt),
+    expiredAt: record.expiredAt == null
+      ? (record.expired_at == null ? null : String(record.expired_at))
+      : String(record.expiredAt),
+    manualNote: record.manualNote == null
+      ? (record.manual_note == null ? null : String(record.manual_note))
+      : String(record.manualNote),
+  }
 }
 
 export const listUserApiKeys = async (userId: number): Promise<AdminApiKey[]> => {

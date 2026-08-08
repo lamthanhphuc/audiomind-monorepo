@@ -202,6 +202,38 @@ class ProcessingServiceActionPlanTest {
     }
 
     @Test
+    void generateMeetingActionPlanPdf_shouldExportGroupedPlanAndMetadata() {
+        when(jobStateStore.getJobState(110L)).thenReturn(Optional.of(state(
+                List.of(row("Speaker 1", 12.3d, 18.7d, "Scale workers for the queue before Friday.")),
+                analysis(Map.of(
+                        "summary", "Kế hoạch tiếng Việt",
+                        "domainMode", "it",
+                        "provider", "gemini",
+                        "model", "gemini-2.5-flash",
+                        "promptVersion", "gemini-business-v2",
+                        "schemaVersion", "gemini-business-v2",
+                        "painPoints", List.of(Map.of(
+                                "title", "Quá tải hàng đợi",
+                                "severity", "high",
+                                "evidence", "workers for the queue"
+                        )),
+                        "risks", List.of("Rủi ro trễ tiến độ"),
+                        "businessActionItems", List.of(Map.of(
+                                "task", "Scale workers",
+                                "priority", "high",
+                                "status", "pending",
+                                "evidenceKeywords", List.of("workers", "queue"),
+                                "evidenceQuote", "model quote should lose"
+                        ))
+                ))
+        )));
+
+        byte[] bytes = processingService.generateMeetingActionPlanPdf(110L, "trace-pdf", AUTH_HEADER);
+
+        assertTrue(bytes.length > 0);
+    }
+
+    @Test
     void getMeetingActionPlan_shouldPropagateForbiddenBeforeReadingState() {
         when(meetingServiceClient.getMeetingById(107L, "trace-forbidden", AUTH_HEADER))
                 .thenThrow(new HttpClientErrorException(HttpStatus.FORBIDDEN));
@@ -233,6 +265,58 @@ class ProcessingServiceActionPlanTest {
         assertEquals("cache_only", response.analysisMetadata().analysisSource());
         assertTrue(response.analysisMetadata().cacheOnly());
         assertTrue(response.analysisMetadata().stale());
+    }
+
+    @Test
+    void getMeetingActionPlan_shouldFallbackToScopedSavedAnalysisWhenExportCacheIsEmpty() {
+        when(jobStateStore.getJobState(109L)).thenReturn(Optional.empty());
+        when(aiServiceClient.getTranscript(109L, "trace-scoped-action", 901L, 3L))
+                .thenReturn(Map.of("transcripts", List.of(row(
+                        "Speaker 1",
+                        1d,
+                        4d,
+                        "Build the scoring interface before the final round."
+                ))));
+        when(aiServiceClient.getSavedAnalysisCacheOnly(
+                anyLong(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                any(),
+                any(),
+                anyString(),
+                anyString(),
+                anyString()
+        )).thenReturn(
+                Map.of("analysis", Map.of()),
+                Map.of(
+                        "analysis", analysis(Map.of(
+                                "summary", "Scoped saved summary",
+                                "businessActionItems", List.of(Map.of(
+                                        "task", "Build the scoring interface",
+                                        "priority", "high",
+                                        "status", "open"
+                                ))
+                        )),
+                        "provider", "gemini",
+                        "cacheHit", true
+                )
+        );
+
+        MeetingActionPlanData response = processingService.getMeetingActionPlan(
+                109L,
+                "trace-scoped-action",
+                AUTH_HEADER,
+                901L,
+                3L
+        );
+
+        assertEquals("Scoped saved summary", response.summary());
+        assertEquals(1, response.actionItems().size());
+        assertEquals("Build the scoring interface", response.actionItems().get(0).task());
+        assertEquals("gemini", response.analysisMetadata().provider());
     }
 
     private static Map<String, Object> meeting(Long id) {

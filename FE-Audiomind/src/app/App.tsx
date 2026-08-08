@@ -107,6 +107,7 @@ import {
   type QuotaSignal,
   type UserPlan,
 } from '../utils/quotaUx'
+import { canUseMindmap, canUseStudyWorkspace } from '../utils/planCapabilities'
 import { validateUploadFile } from '../hooks/useUpload'
 import { getBundledUploadConfig } from '../services/configService'
 import type { Meeting } from '../types'
@@ -359,6 +360,41 @@ const waitWithSignal = (delayMs: number, signal: AbortSignal): Promise<void> => 
 
     signal.addEventListener('abort', onAbort, { once: true })
   })
+}
+
+const RESULT_FETCH_TIMEOUT_MS = 30_000
+
+const withLinkedTimeout = async <T,>(
+  parentSignal: AbortSignal,
+  timeoutMs: number,
+  operation: (signal: AbortSignal) => Promise<T>,
+): Promise<T> => {
+  const controller = new AbortController()
+  let timedOut = false
+  const abortFromParent = () => controller.abort(parentSignal.reason)
+
+  if (parentSignal.aborted) {
+    abortFromParent()
+  } else {
+    parentSignal.addEventListener('abort', abortFromParent, { once: true })
+  }
+
+  const timeoutId = window.setTimeout(() => {
+    timedOut = true
+    controller.abort()
+  }, timeoutMs)
+
+  try {
+    return await operation(controller.signal)
+  } catch (error) {
+    if (timedOut) {
+      throw new Error('Không tải được kết quả sau 30 giây. Vui lòng thử lại.')
+    }
+    throw error
+  } finally {
+    window.clearTimeout(timeoutId)
+    parentSignal.removeEventListener('abort', abortFromParent)
+  }
 }
 
 const pollWithRetry = async (meetingId: number, retries = 3, delay = 2000) => {
@@ -1455,6 +1491,21 @@ export default function App() {
   })
 
   useEffect(() => {
+    if (!isAuthenticated) return undefined
+    let active = true
+    void refreshAccessToken()
+      .then(() => {
+        if (active) setSessionPlanSyncTick((tick) => tick + 1)
+      })
+      .catch(() => {
+        // Keep the current session usable; protected API calls still enforce the server-side plan.
+      })
+    return () => {
+      active = false
+    }
+  }, [isAuthenticated])
+
+  useEffect(() => {
     liveMeetingIdRef.current = liveMeetingId
   }, [liveMeetingId])
 
@@ -1469,6 +1520,15 @@ export default function App() {
       replace?: boolean
     },
   ) => {
+    const currentPlan = getJwtPlan()
+    const requiresMindmap = scene === 'mindmap'
+    const requiresStudyWorkspace = scene === 'subjects' || scene === 'subjectDetail' || scene === 'unclassified'
+    if ((requiresMindmap && !canUseMindmap(currentPlan))
+      || (requiresStudyWorkspace && !canUseStudyWorkspace(currentPlan))) {
+      setFeatureScene('billing')
+      pushStudioRoute('billing', { replace: true })
+      return
+    }
     setFeatureScene(scene)
     const meetingId = options?.meetingId
     const subjectId = options?.subjectId
@@ -1743,7 +1803,7 @@ export default function App() {
         password: registerPassword,
       })
 
-      setAuthNotice('Đăng ký thành công. Bạn được dùng gói Pro miễn phí 3 ngày sau khi đăng nhập.')
+      setAuthNotice('Đăng ký thành công. Bạn được dùng gói Standard miễn phí 3 ngày sau khi đăng nhập.')
       setUsername(normalizedUsername)
       setPassword('')
       navigateAuthRoute('login', true)
@@ -1974,14 +2034,25 @@ export default function App() {
     navigateFeatureScene('files')
   }
 
-  const openAnalysisForMeeting = async (meetingId: number, statusValue: string = 'COMPLETED') => {
+  const openAnalysisForMeeting = async (
+    meetingId: number,
+    statusValue: string = 'COMPLETED',
+    signal: AbortSignal,
+    prefetchedAnalysis?: AiAnalysis,
+  ) => {
     setHistoryAnalysisMeetingId(null)
     setHistoryAnalysisTitle(null)
     setStatus('fetching-result')
-    const [transcript, analysis] = await Promise.all([
-      getTranscript(meetingId),
-      getAnalysis(meetingId),
-    ])
+    const [transcript, analysis] = await withLinkedTimeout(
+      signal,
+      RESULT_FETCH_TIMEOUT_MS,
+      (requestSignal) => Promise.all([
+        getTranscript(meetingId, { signal: requestSignal }),
+        prefetchedAnalysis
+          ? Promise.resolve(prefetchedAnalysis)
+          : getAnalysis(meetingId, { signal: requestSignal }),
+      ]),
+    )
 
     // Preserve canonical persisted IDs for education evidence navigation.
     // FeatureAnalysis/TranscriptDisplay handles visual grouping separately.
@@ -2055,7 +2126,7 @@ export default function App() {
       if (isDuplicate) {
         if (duplicateStatus === 'completed' && meeting.reused && meetingId > 0) {
           setUploadNotice('File âm thanh này đã được phân tích trước đó. Đang mở kết quả cũ.')
-          await openAnalysisForMeeting(meetingId, 'COMPLETED')
+          await openAnalysisForMeeting(meetingId, 'COMPLETED', abortControllerRef.current.signal)
           return
         }
 
@@ -2064,7 +2135,7 @@ export default function App() {
           setStatus('processing')
           await startProcessingByPath(meetingId, effectiveUploadLanguage, selectedDomainMode)
           await pollUntilCompleted(meetingId, abortControllerRef.current.signal)
-          await openAnalysisForMeeting(meetingId, 'COMPLETED')
+          await openAnalysisForMeeting(meetingId, 'COMPLETED', abortControllerRef.current.signal)
           return
         }
 
@@ -2077,12 +2148,13 @@ export default function App() {
       await startProcessingByPath(meetingId, effectiveUploadLanguage, selectedDomainMode)
 
       await pollUntilCompleted(meetingId, abortControllerRef.current.signal)
-      await openAnalysisForMeeting(meetingId, 'COMPLETED')
+      await openAnalysisForMeeting(meetingId, 'COMPLETED', abortControllerRef.current.signal)
     } catch (error: any) {
-      setStatus('failed')
       if (error instanceof DOMException && error.name === 'AbortError') {
-        setErrorMessage('Processing cancelled')
+        setStatus('cancelled')
+        setErrorMessage('Đã hủy xử lý.')
       } else if (error instanceof ApiError) {
+        setStatus('failed')
         const resolvedCode = error.errorCode || (error.status === 402 ? 'QUOTA_EXCEEDED' : undefined)
         const quotaSignal: QuotaSignal = {
           httpStatus: error.status,
@@ -2102,6 +2174,7 @@ export default function App() {
           handleLogout()
         }
       } else {
+        setStatus('failed')
         const pipelineErrorCode = resolveBatchPipelineErrorCode(error?.message)
         if (pipelineErrorCode) {
           const quotaSignal: QuotaSignal = {
@@ -2147,14 +2220,15 @@ export default function App() {
     setUploadNotice('Đang phân tích lại…')
     setStatus('processing')
     abortControllerRef.current?.abort()
-    abortControllerRef.current = new AbortController()
+    const operationController = new AbortController()
+    abortControllerRef.current = operationController
 
     const runFullPipelineRestart = async () => {
       const effectiveUploadLanguage = normalizeRealtimeLanguage(selectedUploadLanguage)
       setUploadNotice('Chưa có transcript đã lưu — đang chạy lại toàn bộ pipeline…')
       await startProcessingByPath(meetingId, effectiveUploadLanguage, selectedDomainMode)
-      await pollUntilCompleted(meetingId, abortControllerRef.current!.signal)
-      await openAnalysisForMeeting(meetingId, 'COMPLETED')
+      await pollUntilCompleted(meetingId, operationController.signal)
+      await openAnalysisForMeeting(meetingId, 'COMPLETED', operationController.signal)
       setUploadNotice(null)
     }
 
@@ -2164,10 +2238,10 @@ export default function App() {
         reason: 'manual_reanalyze',
         domainMode: selectedDomainMode,
         reanalysis_generation: Date.now(),
-      })
+      }, { signal: operationController.signal })
       const responseStatus = getAnalysisStatusValue(response)
       if (hasStructuredAnalysisData(response) && !isPendingAnalysisStatus(responseStatus)) {
-        await openAnalysisForMeeting(meetingId, 'COMPLETED')
+        await openAnalysisForMeeting(meetingId, 'COMPLETED', operationController.signal, response)
         setUploadNotice(null)
         return
       }
@@ -2175,8 +2249,8 @@ export default function App() {
         const detail = [response.errorCode, response.errorMessage].filter(Boolean).join(': ')
         throw new Error(detail || 'Analysis failed after re-run')
       }
-      await pollAnalysisUntilSettled(meetingId, abortControllerRef.current.signal)
-      await openAnalysisForMeeting(meetingId, 'COMPLETED')
+      const analysis = await pollAnalysisUntilSettled(meetingId, operationController.signal)
+      await openAnalysisForMeeting(meetingId, 'COMPLETED', operationController.signal, analysis)
       setUploadNotice(null)
     } catch (error: any) {
       let effectiveError = error
@@ -2189,13 +2263,19 @@ export default function App() {
         }
       }
 
-      setStatus('failed')
-      if (effectiveError instanceof ApiError) {
+      if (effectiveError instanceof DOMException && effectiveError.name === 'AbortError') {
+        setStatus('cancelled')
+        setUploadNotice(null)
+        setErrorMessage('Đã hủy phân tích lại.')
+        setUploadErrorCode(null)
+      } else if (effectiveError instanceof ApiError) {
+        setStatus('failed')
         const resolvedCode = effectiveError.errorCode || (effectiveError.status === 402 ? 'QUOTA_EXCEEDED' : undefined)
         const presentation = resolveErrorPresentation(resolvedCode, effectiveError.message, ERROR_UX_ENABLED)
         setErrorMessage(presentation.message)
         setUploadErrorCode(resolvedCode ?? null)
       } else {
+        setStatus('failed')
         const pipelineErrorCode = resolveBatchPipelineErrorCode(effectiveError?.message)
         if (pipelineErrorCode) {
           const presentation = resolveErrorPresentation(pipelineErrorCode, effectiveError.message, ERROR_UX_ENABLED)
@@ -2207,6 +2287,9 @@ export default function App() {
         }
       }
     } finally {
+      if (abortControllerRef.current === operationController) {
+        abortControllerRef.current = null
+      }
       setBusy(false)
     }
   }
@@ -2219,8 +2302,8 @@ export default function App() {
   const dashboardUser = useMemo(() => ({
     name: resolveDisplayName(userProfile?.username, userProfile?.email, username.trim() || 'Người dùng'),
     email: userProfile?.email?.trim() || undefined,
-    plan: getJwtPlan(),
-    role: getJwtRole(),
+    plan: userProfile?.plan?.trim() || getJwtPlan(),
+    role: userProfile?.role?.trim() || getJwtRole(),
   }), [userProfile, username, sessionPlanSyncTick])
 
   const handleProfileUpdated = useCallback((profile: UserProfile) => {
@@ -2240,6 +2323,18 @@ export default function App() {
     setFeatureScene('admin')
     pushStudioRoute('admin', { replace: true })
   }, [dashboardUser.role, featureScene, isAuthenticated])
+
+  useEffect(() => {
+    if (!isAuthenticated || dashboardUser.role?.toUpperCase() === 'ADMIN') return
+    const requiresMindmap = featureScene === 'mindmap'
+    const requiresStudyWorkspace = featureScene === 'subjects'
+      || featureScene === 'subjectDetail'
+      || featureScene === 'unclassified'
+    if ((requiresMindmap && !canUseMindmap(dashboardUser.plan))
+      || (requiresStudyWorkspace && !canUseStudyWorkspace(dashboardUser.plan))) {
+      navigateFeatureScene('billing', { replace: true })
+    }
+  }, [dashboardUser.plan, dashboardUser.role, featureScene, isAuthenticated, navigateFeatureScene])
 
   const recentFiles = useMemo(() => {
     const activeMeetingId = featureScene === 'analysis'
@@ -2500,6 +2595,7 @@ export default function App() {
             evidenceSegmentId={readEvidenceSegmentId() ?? undefined}
             onBackToHistory={handleBackToHistory}
             preferredDomainMode={selectedDomainMode}
+            mindmapEnabled={canUseMindmap(dashboardUser.plan)}
           />
         )
       }
@@ -2515,6 +2611,7 @@ export default function App() {
           transcriptText={result?.transcript}
           statusLabel={status}
           preferredDomainMode={selectedDomainMode}
+          mindmapEnabled={canUseMindmap(dashboardUser.plan)}
         />
       )
     }
@@ -2566,7 +2663,7 @@ export default function App() {
         <MeetingHistoryScene
           focusMeetingId={historyFocusMeetingId}
           onOpenAnalysis={handleOpenMeetingAnalysisFromHistory}
-          onOpenMindmap={handleOpenMindmapFromHistory}
+          onOpenMindmap={canUseMindmap(dashboardUser.plan) ? handleOpenMindmapFromHistory : undefined}
           searchQuery={globalMeetingSearch}
           onSearchQueryChange={setGlobalMeetingSearch}
           statusFilter={historyStatusFilter}
@@ -2659,8 +2756,8 @@ export default function App() {
   }
 
   return (
-    <StudyWorkspaceProvider>
-    <div className={`app app--dashboard ${themeClassName(theme)}`} data-testid="app-root" data-theme={theme}>
+    <StudyWorkspaceProvider enabled={canUseStudyWorkspace(dashboardUser.plan)}>
+      <div className={`app app--dashboard ${themeClassName(theme)}`} data-testid="app-root" data-theme={theme}>
       {authNotice ? (
         <p className="studio-auth__notice studio-auth__notice--dashboard" data-testid="auth-notice-banner" role="status">
           {authNotice}
@@ -2696,7 +2793,7 @@ export default function App() {
           {renderDashboardScene()}
         </Suspense>
       </DashboardLayout>
-    </div>
+      </div>
     </StudyWorkspaceProvider>
   )
 }

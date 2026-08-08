@@ -61,6 +61,8 @@ class MimeSnifferTest {
         sample[1] = 'D';
         sample[2] = '3';
 
+        mimeSniffer.sniff(sample, ".mp3", sample.length, "perf-warmup");
+
         long started = System.nanoTime();
         mimeSniffer.sniff(sample, ".mp3", sample.length, "perf-prefix");
         long elapsedMs = (System.nanoTime() - started) / 1_000_000L;
