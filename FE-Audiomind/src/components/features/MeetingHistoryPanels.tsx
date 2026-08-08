@@ -41,16 +41,12 @@ type HistoryDetailTabsProps = {
 type HistoryExportPanelProps = {
   transcriptState: 'loading' | 'ready' | 'empty' | 'error'
   exportBusy: boolean
-  exportActionsMenuOpen: boolean
-  transcriptExportMenuOpen: boolean
   transcriptExportBusy: TranscriptExportRequest | null
   transcriptExportError: string | null
   exportError: string | null
   actionPlanState: ActionPlanState
   onExportPdf: () => void
   onExportDocx: () => void
-  onToggleExportActionsMenu: () => void
-  onToggleTranscriptExportMenu: () => void
   onTranscriptExport: (mode: TranscriptExportMode, format: TranscriptExportFormat) => void
   onActionPlanExport: (format: 'docx' | 'pdf') => void
   onActionPlanCopy: () => void
@@ -239,56 +235,76 @@ export function HistoryDetailTabs({ activeTab, onTabChange }: HistoryDetailTabsP
 export function HistoryExportPanel({
   transcriptState,
   exportBusy,
-  exportActionsMenuOpen,
-  transcriptExportMenuOpen,
   transcriptExportBusy,
   transcriptExportError,
   exportError,
   actionPlanState,
   onExportPdf,
   onExportDocx,
-  onToggleExportActionsMenu,
-  onToggleTranscriptExportMenu,
   onTranscriptExport,
   onActionPlanExport,
   onActionPlanCopy,
 }: HistoryExportPanelProps) {
+  const exportDisabled = exportBusy || transcriptState !== 'ready'
+  const actionPlanBusy = actionPlanState.loading || actionPlanState.exporting
+  const actionPlanBusyLabel = actionPlanState.loading ? 'Đang chuẩn bị...' : 'Đang tải...'
+
   return (
     <>
-      <div className="history-actions">
-        <div className="history-actions__group">
-          <span className="history-actions__label">Xuất file</span>
-          <button type="button" className="btn btn--primary btn--compact" onClick={onExportPdf} disabled={exportBusy || transcriptState !== 'ready'} data-testid="meeting-export-report-pdf">
-            {exportBusy ? 'Đang xuất...' : 'PDF báo cáo'}
+      <div className="history-export-grid" data-testid="meeting-export-more">
+        <section className="history-export-card" aria-labelledby="history-export-report-title">
+          <div>
+            <h4 id="history-export-report-title">Báo cáo phân tích</h4>
+            <p>Tóm tắt, insight, pain point và action item.</p>
+          </div>
+          <div className="history-export-card__actions">
+            <button type="button" className="btn btn--primary btn--compact" onClick={onExportDocx} disabled={exportDisabled} data-testid="meeting-export-report">
+              {exportBusy ? 'Đang xuất...' : 'DOCX'}
+            </button>
+            <button type="button" className="btn btn--secondary btn--compact" onClick={onExportPdf} disabled={exportDisabled} data-testid="meeting-export-report-pdf">
+              {exportBusy ? 'Đang xuất...' : 'PDF'}
+            </button>
+          </div>
+        </section>
+
+        <section className="history-export-card" aria-labelledby="history-export-transcript-title">
+          <div>
+            <h4 id="history-export-transcript-title">Transcript</h4>
+            <p>Bản dễ đọc để chia sẻ, bản dữ liệu gốc để kiểm tra.</p>
+          </div>
+          <div className="history-export-transcript-grid" data-testid="meeting-export-transcript-menu">
+            <button type="button" className="btn btn--secondary btn--compact" data-testid="meeting-export-transcript-readable-txt" onClick={() => onTranscriptExport('readable', 'txt')} disabled={transcriptState !== 'ready' || transcriptExportBusy !== null}>
+              {transcriptExportBusy?.mode === 'readable' && transcriptExportBusy.format === 'txt' ? 'Đang xuất...' : 'Dễ đọc TXT'}
+            </button>
+            <button type="button" className="btn btn--secondary btn--compact" data-testid="meeting-export-transcript-readable-csv" onClick={() => onTranscriptExport('readable', 'csv')} disabled={transcriptState !== 'ready' || transcriptExportBusy !== null}>
+              {transcriptExportBusy?.mode === 'readable' && transcriptExportBusy.format === 'csv' ? 'Đang xuất...' : 'Dễ đọc CSV'}
+            </button>
+            <button type="button" className="btn btn--secondary btn--compact" data-testid="meeting-export-transcript-raw-txt" onClick={() => onTranscriptExport('raw', 'txt')} disabled={transcriptState !== 'ready' || transcriptExportBusy !== null}>
+              {transcriptExportBusy?.mode === 'raw' && transcriptExportBusy.format === 'txt' ? 'Đang xuất...' : 'Gốc TXT'}
+            </button>
+            <button type="button" className="btn btn--secondary btn--compact" data-testid="meeting-export-transcript-raw-csv" onClick={() => onTranscriptExport('raw', 'csv')} disabled={transcriptState !== 'ready' || transcriptExportBusy !== null}>
+              {transcriptExportBusy?.mode === 'raw' && transcriptExportBusy.format === 'csv' ? 'Đang xuất...' : 'Gốc CSV'}
+            </button>
+          </div>
+          <button type="button" className="history-export-card__hidden-trigger" data-testid="meeting-export-transcript" aria-hidden="true" tabIndex={-1}>
+            {transcriptExportBusy ? `Đang xuất ${formatTranscriptExportRequest(transcriptExportBusy)}...` : 'Xuất bản ghi'}
           </button>
-          <button type="button" className="btn btn--secondary btn--compact" onClick={onToggleExportActionsMenu} disabled={transcriptState !== 'ready'} data-testid="meeting-export-more">
-            Thêm định dạng
-          </button>
-          {exportActionsMenuOpen && transcriptState === 'ready' && (
-            <div className="history-export-menu" data-testid="meeting-export-more-menu">
-              <button type="button" data-testid="meeting-export-report" onClick={onExportDocx}>
-                {exportBusy ? 'Đang xuất...' : 'DOCX báo cáo'}
-              </button>
-              <button type="button" data-testid="meeting-export-transcript" onClick={onToggleTranscriptExportMenu} disabled={transcriptExportBusy !== null}>
-                {transcriptExportBusy ? `Đang xuất ${formatTranscriptExportRequest(transcriptExportBusy)}...` : 'Xuất bản ghi'}
-              </button>
-              {transcriptExportMenuOpen && transcriptExportBusy === null && (
-                <div className="history-export-submenu" data-testid="meeting-export-transcript-menu">
-                  <button type="button" data-testid="meeting-export-transcript-readable-txt" onClick={() => onTranscriptExport('readable', 'txt')}>Bản dễ đọc TXT</button>
-                  <button type="button" data-testid="meeting-export-transcript-readable-csv" onClick={() => onTranscriptExport('readable', 'csv')}>Bản dễ đọc CSV</button>
-                  <button type="button" data-testid="meeting-export-transcript-raw-txt" onClick={() => onTranscriptExport('raw', 'txt')}>Bản dữ liệu gốc TXT</button>
-                  <button type="button" data-testid="meeting-export-transcript-raw-csv" onClick={() => onTranscriptExport('raw', 'csv')}>Bản dữ liệu gốc CSV</button>
-                </div>
-              )}
-            </div>
-          )}
-          <button type="button" className="btn btn--secondary btn--compact" data-testid="meeting-export-action-plan" onClick={() => onActionPlanExport('docx')} disabled={actionPlanState.loading || actionPlanState.exporting}>
-            {actionPlanState.loading || actionPlanState.exporting ? 'Đang xuất kế hoạch...' : 'DOCX kế hoạch'}
-          </button>
-          <button type="button" className="btn btn--secondary btn--compact" data-testid="meeting-export-action-plan-pdf" onClick={() => onActionPlanExport('pdf')} disabled={actionPlanState.loading || actionPlanState.exporting}>
-            {actionPlanState.loading || actionPlanState.exporting ? 'Đang xuất kế hoạch...' : 'PDF kế hoạch'}
-          </button>
-        </div>
+        </section>
+
+        <section className="history-export-card" aria-labelledby="history-export-action-plan-title">
+          <div>
+            <h4 id="history-export-action-plan-title">Kế hoạch hành động</h4>
+            <p>Danh sách việc cần làm theo nhóm chức năng.</p>
+          </div>
+          <div className="history-export-card__actions">
+            <button type="button" className="btn btn--secondary btn--compact" data-testid="meeting-export-action-plan" onClick={() => onActionPlanExport('docx')} disabled={actionPlanBusy}>
+              {actionPlanBusy ? actionPlanBusyLabel : 'DOCX'}
+            </button>
+            <button type="button" className="btn btn--secondary btn--compact" data-testid="meeting-export-action-plan-pdf" onClick={() => onActionPlanExport('pdf')} disabled={actionPlanBusy}>
+              {actionPlanBusy ? actionPlanBusyLabel : 'PDF'}
+            </button>
+          </div>
+        </section>
       </div>
       {exportError && <ErrorState title="Xuất report thất bại" message={exportError} />}
       {transcriptExportError && <ErrorState title="Xuất transcript thất bại" message={transcriptExportError} />}

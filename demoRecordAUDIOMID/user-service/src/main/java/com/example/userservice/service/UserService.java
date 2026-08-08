@@ -225,16 +225,17 @@ public class UserService {
         );
     }
 
-    @Transactional(readOnly = true)
+    @Transactional
     public UserProfileResponse me(UserPrincipal principal) {
-        UserAccount user = userAccountRepository.findById(principal.userId())
-                .orElseThrow(() -> new IllegalArgumentException("User not found"));
+        UserAccount user = userPlanService.requireUserWithCurrentPlan(principal.userId());
 
         return new UserProfileResponse(
                 user.getId(),
                 user.getUsername(),
                 user.getEmail(),
-                readDomainModePreference(user)
+                readDomainModePreference(user),
+                userPlanService.resolveEffectivePlan(user),
+                user.getRole()
         );
     }
 
@@ -261,6 +262,8 @@ public class UserService {
                 "username", saved.getUsername(),
                 "email", saved.getEmail(),
                 "domainMode", readDomainModePreference(saved),
+                "plan", userPlanService.resolveEffectivePlan(saved),
+                "role", saved.getRole(),
                 "accessToken", accessToken,
                 "expiresInSeconds", accessExpirationSeconds
         );

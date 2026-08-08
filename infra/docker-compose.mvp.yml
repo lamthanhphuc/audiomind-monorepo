@@ -127,7 +127,6 @@ services:
       PAYOS_CHECKSUM_KEY: ${PAYOS_CHECKSUM_KEY:-}
       PAYOS_RETURN_URL: ${PAYOS_RETURN_URL:-http://localhost:8080/billing/success}
       PAYOS_CANCEL_URL: ${PAYOS_CANCEL_URL:-http://localhost:8080/billing/cancel}
-      BILLING_PRO_PRICE_VND: ${BILLING_PRO_PRICE_VND:-79000}
       SMTP_HOST: ${SMTP_HOST:-}
       SMTP_PORT: ${SMTP_PORT:-587}
       SMTP_USER: ${SMTP_USER:-}
@@ -523,3 +522,6 @@ services:
       timeout: 5s
       retries: 5
       start_period: 20s
+
+volumes:
+  uploads:

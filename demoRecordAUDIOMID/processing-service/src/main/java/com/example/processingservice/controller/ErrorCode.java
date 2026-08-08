@@ -112,7 +112,7 @@ public enum ErrorCode {
     QUOTA_EXCEEDED(
             402,
             "Usage quota exceeded",
-            "Bạn đã vượt quota sử dụng tháng này. Nâng cấp Pro để tiếp tục.",
+            "Bạn đã vượt quota sử dụng tháng này. Nâng cấp gói để tiếp tục.",
             "upgrade_plan",
             "Xem gói & thanh toán"
     ),

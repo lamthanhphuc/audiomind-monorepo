@@ -1192,7 +1192,7 @@ public class ProcessingService {
             Long recordingSessionId,
             Long attemptId
     ) {
-        return getAnalysisInternal(meetingId, traceId, authorization, true, recordingSessionId, attemptId);
+        return getAnalysisInternal(meetingId, traceId, authorization, true, true, recordingSessionId, attemptId);
     }
 
     public Map<String, Object> getAnalysisReadOnly(Long meetingId, String traceId, String authorization) {
@@ -1206,7 +1206,7 @@ public class ProcessingService {
             Long recordingSessionId,
             Long attemptId
     ) {
-        return getAnalysisInternal(meetingId, traceId, authorization, false, recordingSessionId, attemptId);
+        return getAnalysisInternal(meetingId, traceId, authorization, false, false, recordingSessionId, attemptId);
     }
 
     public Map<String, Object> reanalyzeMeetingAnalysis(
@@ -1352,13 +1352,25 @@ public class ProcessingService {
     }
 
     public byte[] generateMeetingReportDocx(Long meetingId, String traceId, String authorization) {
+        return generateMeetingReportDocx(meetingId, traceId, authorization, null, null);
+    }
+
+    public byte[] generateMeetingReportDocx(
+            Long meetingId,
+            String traceId,
+            String authorization,
+            Long recordingSessionId,
+            Long attemptId
+    ) {
         Map<String, Object> meeting = fetchAccessibleMeeting(meetingId, traceId, authorization);
         TranscriptPayload transcriptPayload = loadSavedTranscriptPayloadForExport(
                 meetingId,
                 traceId,
                 authorization,
                 false,
-                TranscriptExportMode.READABLE
+                TranscriptExportMode.READABLE,
+                recordingSessionId,
+                attemptId
         );
         List<Map<String, Object>> originalTranscriptRows = transcriptPayload.readableRows();
         StabilizedTranscriptResult stabilizedTranscript = stabilizeReadableTranscriptRows(originalTranscriptRows, meetingId);
@@ -1369,15 +1381,28 @@ public class ProcessingService {
                 authorization
         );
         Map<String, Object> state = jobStateStore.getJobState(meetingId).orElse(null);
-        Map<String, Object> analysisPayload = extractAnalysisFromState(state);
-        boolean stateAnalysisCompatible = hasStructuredAnalysis(analysisPayload) && hasAnalysisCacheMetadata(analysisPayload);
+        boolean scopedExport = recordingSessionId != null && attemptId != null;
+        Map<String, Object> analysisPayload = scopedExport ? Map.of() : extractAnalysisFromState(state);
+        boolean stateAnalysisCompatible = !scopedExport && hasStructuredAnalysis(analysisPayload) && hasAnalysisCacheMetadata(analysisPayload);
         if (!stateAnalysisCompatible) {
             analysisPayload = fetchSavedAnalysisCacheOnlyForReport(
                     meetingId,
                     traceId,
                     authorization,
                     transcriptPayload,
-                    transcriptRows
+                    transcriptRows,
+                    recordingSessionId,
+                    attemptId
+            );
+        }
+        if (!hasStructuredAnalysis(analysisPayload)) {
+            analysisPayload = fetchSavedAnalysisReadOnlyForExport(
+                    meetingId,
+                    traceId,
+                    authorization,
+                    recordingSessionId,
+                    attemptId,
+                    analysisPayload
             );
         }
         boolean analysisAvailable = hasStructuredAnalysis(analysisPayload);
@@ -1410,13 +1435,25 @@ public class ProcessingService {
     }
 
     public byte[] generateMeetingReportPdf(Long meetingId, String traceId, String authorization) {
+        return generateMeetingReportPdf(meetingId, traceId, authorization, null, null);
+    }
+
+    public byte[] generateMeetingReportPdf(
+            Long meetingId,
+            String traceId,
+            String authorization,
+            Long recordingSessionId,
+            Long attemptId
+    ) {
         Map<String, Object> meeting = fetchAccessibleMeeting(meetingId, traceId, authorization);
         TranscriptPayload transcriptPayload = loadSavedTranscriptPayloadForExport(
                 meetingId,
                 traceId,
                 authorization,
                 false,
-                TranscriptExportMode.READABLE
+                TranscriptExportMode.READABLE,
+                recordingSessionId,
+                attemptId
         );
         List<Map<String, Object>> originalTranscriptRows = transcriptPayload.readableRows();
         StabilizedTranscriptResult stabilizedTranscript = stabilizeReadableTranscriptRows(originalTranscriptRows, meetingId);
@@ -1427,15 +1464,28 @@ public class ProcessingService {
                 authorization
         );
         Map<String, Object> state = jobStateStore.getJobState(meetingId).orElse(null);
-        Map<String, Object> analysisPayload = extractAnalysisFromState(state);
-        boolean stateAnalysisCompatible = hasStructuredAnalysis(analysisPayload) && hasAnalysisCacheMetadata(analysisPayload);
+        boolean scopedExport = recordingSessionId != null && attemptId != null;
+        Map<String, Object> analysisPayload = scopedExport ? Map.of() : extractAnalysisFromState(state);
+        boolean stateAnalysisCompatible = !scopedExport && hasStructuredAnalysis(analysisPayload) && hasAnalysisCacheMetadata(analysisPayload);
         if (!stateAnalysisCompatible) {
             analysisPayload = fetchSavedAnalysisCacheOnlyForReport(
                     meetingId,
                     traceId,
                     authorization,
                     transcriptPayload,
-                    transcriptRows
+                    transcriptRows,
+                    recordingSessionId,
+                    attemptId
+            );
+        }
+        if (!hasStructuredAnalysis(analysisPayload)) {
+            analysisPayload = fetchSavedAnalysisReadOnlyForExport(
+                    meetingId,
+                    traceId,
+                    authorization,
+                    recordingSessionId,
+                    attemptId,
+                    analysisPayload
             );
         }
         boolean analysisAvailable = hasStructuredAnalysis(analysisPayload);
@@ -1468,12 +1518,32 @@ public class ProcessingService {
     }
 
     public MeetingActionPlanData getMeetingActionPlan(Long meetingId, String traceId, String authorization) {
-        return buildMeetingActionPlan(meetingId, traceId, authorization);
+        return buildMeetingActionPlan(meetingId, traceId, authorization, null, null);
+    }
+
+    public MeetingActionPlanData getMeetingActionPlan(
+            Long meetingId,
+            String traceId,
+            String authorization,
+            Long recordingSessionId,
+            Long attemptId
+    ) {
+        return buildMeetingActionPlan(meetingId, traceId, authorization, recordingSessionId, attemptId);
     }
 
     public byte[] generateMeetingActionPlanDocx(Long meetingId, String traceId, String authorization) {
+        return generateMeetingActionPlanDocx(meetingId, traceId, authorization, null, null);
+    }
+
+    public byte[] generateMeetingActionPlanDocx(
+            Long meetingId,
+            String traceId,
+            String authorization,
+            Long recordingSessionId,
+            Long attemptId
+    ) {
         long startedAtNanos = System.nanoTime();
-        MeetingActionPlanData actionPlan = buildMeetingActionPlan(meetingId, traceId, authorization);
+        MeetingActionPlanData actionPlan = buildMeetingActionPlan(meetingId, traceId, authorization, recordingSessionId, attemptId);
         runExportVerifyPreflight(meetingId, "docx", "readable", actionPlan.actionItems().size());
         byte[] docxBytes = meetingActionPlanDocxGenerator.generate(actionPlan);
         long durationMs = Duration.ofNanos(System.nanoTime() - startedAtNanos).toMillis();
@@ -1499,7 +1569,17 @@ public class ProcessingService {
     }
 
     public byte[] generateMeetingActionPlanPdf(Long meetingId, String traceId, String authorization) {
-        MeetingActionPlanData actionPlan = buildMeetingActionPlan(meetingId, traceId, authorization);
+        return generateMeetingActionPlanPdf(meetingId, traceId, authorization, null, null);
+    }
+
+    public byte[] generateMeetingActionPlanPdf(
+            Long meetingId,
+            String traceId,
+            String authorization,
+            Long recordingSessionId,
+            Long attemptId
+    ) {
+        MeetingActionPlanData actionPlan = buildMeetingActionPlan(meetingId, traceId, authorization, recordingSessionId, attemptId);
         runExportVerifyPreflight(meetingId, "pdf", "readable", actionPlan.actionItems().size());
         byte[] pdfBytes = meetingActionPlanPdfGenerator.generate(actionPlan);
         logExportVerifyCompleted(
@@ -2007,11 +2087,13 @@ public class ProcessingService {
         List<String> decisions = extractStringList(analysisPayload, "keyDecisions", "decisions");
         List<String> keywords = extractStringList(analysisPayload, "keywords");
         List<String> technicalTerms = extractTechnicalTerms(analysisPayload);
+        List<String> painPoints = extractPainPointsForReport(analysisPayload);
         List<MeetingReportData.ReportActionItem> actionItems = extractReportActionItems(analysisPayload);
         List<String> risks = extractStringList(analysisPayload, "risks");
         List<String> blockers = extractStringList(analysisPayload, "blockers");
         List<String> questions = extractStringList(analysisPayload, "questions");
         List<String> nextSteps = extractStringList(analysisPayload, "nextSteps", "next_steps");
+        List<String> educationStudyHighlights = extractEducationStudyHighlights(analysisPayload);
         String summary = resolveSummary(analysisPayload, analysisAvailable);
 
         List<MeetingReportData.AnalyzedHighlightRow> analyzedHighlightRows = buildAnalyzedHighlights(
@@ -2054,6 +2136,7 @@ public class ProcessingService {
                         ? null
                         : (transcriptPayload.isCanonicalMode() ? "canonical" : "readable_fallback")
         );
+        String confidence = safeCell(analysisPayload.get("confidence"));
         String source = resolveAnalysisMetadataSource(analysisPayload, promptVersion, schemaVersion, analysisAvailable);
 
         MeetingReportData.AnalysisMetadata analysisMetadata = new MeetingReportData.AnalysisMetadata(
@@ -2071,9 +2154,16 @@ public class ProcessingService {
                 analysisInputMode,
                 safeCell(analysisPayload.get("lastAnalyzedAt")),
                 safeCell(analysisPayload.get("retryAfterSeconds")),
-                safeCell(analysisPayload.get("confidence")),
+                confidence,
                 firstNonBlank(analysisPayload.get("domainMode"), analysisPayload.get("domain_mode")),
                 source
+        );
+
+        MeetingReportData.ImpactSummary impactSummary = new MeetingReportData.ImpactSummary(
+                safeCell(analysisPayload.get("businessImpact")),
+                safeCell(analysisPayload.get("customerImpact")),
+                safeCell(analysisPayload.get("technicalImpact")),
+                confidence
         );
 
         return new MeetingReportData(
@@ -2082,11 +2172,14 @@ public class ProcessingService {
                 keywords,
                 technicalTerms,
                 decisions,
+                painPoints,
                 actionItems,
                 risks,
                 blockers,
-                questions,
                 nextSteps,
+                questions,
+                educationStudyHighlights,
+                impactSummary,
                 transcriptPreviewRows,
                 transcriptPreviewLimited,
                 analyzedHighlightRows,
@@ -2095,27 +2188,48 @@ public class ProcessingService {
         );
     }
 
-    private MeetingActionPlanData buildMeetingActionPlan(Long meetingId, String traceId, String authorization) {
+    private MeetingActionPlanData buildMeetingActionPlan(
+            Long meetingId,
+            String traceId,
+            String authorization,
+            Long recordingSessionId,
+            Long attemptId
+    ) {
         Map<String, Object> meeting = fetchAccessibleMeeting(meetingId, traceId, authorization);
         TranscriptPayload transcriptPayload = loadSavedTranscriptPayloadForExport(
                 meetingId,
                 traceId,
                 authorization,
                 false,
-                TranscriptExportMode.READABLE
+                TranscriptExportMode.READABLE,
+                recordingSessionId,
+                attemptId
         );
         List<Map<String, Object>> transcriptRows = transcriptPayload.readableRows().isEmpty()
                 ? List.of()
                 : stabilizeReadableTranscriptRows(transcriptPayload.readableRows(), meetingId).rows();
         Map<String, Object> state = jobStateStore.getJobState(meetingId).orElse(null);
-        Map<String, Object> analysisPayload = extractAnalysisFromState(state);
+        boolean scopedExport = recordingSessionId != null && attemptId != null;
+        Map<String, Object> analysisPayload = scopedExport ? Map.of() : extractAnalysisFromState(state);
         if (!hasStructuredAnalysis(analysisPayload) && !transcriptRows.isEmpty()) {
             analysisPayload = fetchSavedAnalysisCacheOnlyForReport(
                     meetingId,
                     traceId,
                     authorization,
                     transcriptPayload,
-                    transcriptRows
+                    transcriptRows,
+                    recordingSessionId,
+                    attemptId
+            );
+        }
+        if (!hasStructuredAnalysis(analysisPayload)) {
+            analysisPayload = fetchSavedAnalysisReadOnlyForExport(
+                    meetingId,
+                    traceId,
+                    authorization,
+                    recordingSessionId,
+                    attemptId,
+                    analysisPayload
             );
         }
         if (!hasStructuredAnalysis(analysisPayload)) {
@@ -2195,7 +2309,7 @@ public class ProcessingService {
             return response;
         }
         try {
-            MeetingActionPlanData plan = buildMeetingActionPlan(meetingId, traceId, authorization);
+            MeetingActionPlanData plan = buildMeetingActionPlan(meetingId, traceId, authorization, null, null);
             List<Map<String, Object>> matches = plan.actionItems().stream()
                     .map(MeetingActionPlanData.ActionItem::evidence)
                     .filter(java.util.Objects::nonNull)
@@ -3351,12 +3465,16 @@ public class ProcessingService {
             String task = "";
             String owner = "";
             String dueDate = "";
+            String priority = "";
+            String status = "";
             String evidence = "";
 
             if (item instanceof Map<?, ?> map) {
                 task = firstNonBlank(map.get("task"), map.get("description"), map.get("text"), map.get("title"));
                 owner = firstNonBlank(map.get("owner"));
                 dueDate = firstNonBlank(map.get("dueDate"), map.get("due_date"), map.get("deadline"));
+                priority = firstNonBlank(map.get("priority"));
+                status = firstNonBlank(map.get("status"));
                 evidence = firstNonBlank(map.get("evidence"));
             } else if (item != null) {
                 task = String.valueOf(item).trim();
@@ -3374,10 +3492,186 @@ public class ProcessingService {
                     task,
                     safeCell(owner),
                     safeCell(dueDate),
+                    safeCell(priority),
+                    safeCell(status),
                     safeCell(evidence)
             ));
         }
         return results;
+    }
+
+    private List<String> extractPainPointsForReport(Map<String, Object> analysisPayload) {
+        Object raw = analysisPayload.get("painPoints");
+        if (!(raw instanceof List<?>)) {
+            raw = analysisPayload.get("pain_points");
+        }
+        if (!(raw instanceof List<?> items) || items.isEmpty()) {
+            return List.of();
+        }
+        List<String> results = new ArrayList<>();
+        Set<String> seen = new LinkedHashSet<>();
+        for (Object item : items) {
+            String text;
+            if (item instanceof Map<?, ?> map) {
+                String title = firstNonBlank(map.get("title"), map.get("name"), map.get("text"));
+                String severity = firstNonBlank(map.get("severity"));
+                String evidence = firstNonBlank(map.get("evidence"), map.get("description"));
+                StringBuilder builder = new StringBuilder(title);
+                if (!severity.isBlank()) {
+                    builder.append(" [").append(severity).append("]");
+                }
+                if (!evidence.isBlank()) {
+                    builder.append(" - ").append(evidence);
+                }
+                text = builder.toString().trim();
+            } else {
+                text = item == null ? "" : String.valueOf(item).trim();
+            }
+            if (text.isBlank()) {
+                continue;
+            }
+            String key = text.toLowerCase(Locale.ROOT);
+            if (seen.add(key)) {
+                results.add(text);
+            }
+        }
+        return results;
+    }
+
+    private List<String> extractEducationStudyHighlights(Map<String, Object> analysisPayload) {
+        Object raw = analysisPayload.get("educationStudy");
+        if (!(raw instanceof Map<?, ?> study) || study.isEmpty()) {
+            return List.of();
+        }
+        List<String> results = new ArrayList<>();
+        appendReportLine(results, "Tiêu đề", firstNonBlank(study.get("title")));
+        appendReportLine(results, "Tổng quan", firstNonBlank(study.get("overview")));
+        appendStringGroup(results, "Mục tiêu học tập", study.get("learningObjectives"), study.get("learning_objectives"));
+        appendEducationSections(results, study.get("sections"));
+        appendEducationKeyPoints(results, study.get("keyPoints"), study.get("key_points"));
+        appendStringGroup(results, "Từ khóa học tập", study.get("keywords"));
+        appendEducationGlossary(results, study.get("glossary"));
+        appendEducationMustRemember(results, study.get("mustRemember"), study.get("must_remember"));
+        appendEducationUnclearPoints(results, study.get("unclearPoints"), study.get("unclear_points"));
+        return results;
+    }
+
+    private void appendEducationSections(List<String> results, Object raw) {
+        if (!(raw instanceof List<?> sections)) {
+            return;
+        }
+        for (Object item : sections) {
+            if (!(item instanceof Map<?, ?> section)) {
+                continue;
+            }
+            String title = firstNonBlank(section.get("title"));
+            String summary = firstNonBlank(section.get("summary"));
+            if (!title.isBlank() || !summary.isBlank()) {
+                appendReportLine(results, "Phần học", title + (summary.isBlank() ? "" : " - " + summary));
+            }
+            appendStringGroup(results, "Ý chính trong phần", section.get("keyPoints"), section.get("key_points"));
+        }
+    }
+
+    private void appendEducationKeyPoints(List<String> results, Object... candidates) {
+        Object raw = firstList(candidates);
+        if (!(raw instanceof List<?> points)) {
+            return;
+        }
+        for (Object item : points) {
+            if (item instanceof Map<?, ?> point) {
+                String content = firstNonBlank(point.get("content"));
+                String importance = firstNonBlank(point.get("importance"));
+                appendReportLine(results, "Điểm trọng tâm", content + (importance.isBlank() ? "" : " [" + importance + "]"));
+            } else {
+                appendReportLine(results, "Điểm trọng tâm", firstNonBlank(item));
+            }
+        }
+    }
+
+    private void appendEducationGlossary(List<String> results, Object raw) {
+        if (!(raw instanceof List<?> glossary)) {
+            return;
+        }
+        for (Object item : glossary) {
+            if (!(item instanceof Map<?, ?> term)) {
+                continue;
+            }
+            String name = firstNonBlank(term.get("term"));
+            String definition = firstNonBlank(term.get("definition"));
+            String example = firstNonBlank(term.get("example"));
+            appendReportLine(
+                    results,
+                    "Thuật ngữ học tập",
+                    name + (definition.isBlank() ? "" : " - " + definition) + (example.isBlank() ? "" : " Ví dụ: " + example)
+            );
+        }
+    }
+
+    private void appendEducationMustRemember(List<String> results, Object... candidates) {
+        Object raw = firstList(candidates);
+        if (!(raw instanceof List<?> items)) {
+            return;
+        }
+        for (Object item : items) {
+            if (item instanceof Map<?, ?> map) {
+                String content = firstNonBlank(map.get("content"));
+                String importance = firstNonBlank(map.get("importance"));
+                String reason = firstNonBlank(map.get("reason"));
+                appendReportLine(
+                        results,
+                        "Cần nhớ",
+                        content + (importance.isBlank() ? "" : " [" + importance + "]") + (reason.isBlank() ? "" : " - " + reason)
+                );
+            } else {
+                appendReportLine(results, "Cần nhớ", firstNonBlank(item));
+            }
+        }
+    }
+
+    private void appendEducationUnclearPoints(List<String> results, Object... candidates) {
+        Object raw = firstList(candidates);
+        if (!(raw instanceof List<?> items)) {
+            return;
+        }
+        for (Object item : items) {
+            if (item instanceof Map<?, ?> map) {
+                String content = firstNonBlank(map.get("content"));
+                String reason = firstNonBlank(map.get("reason"));
+                appendReportLine(results, "Điểm chưa rõ", content + (reason.isBlank() ? "" : " - " + reason));
+            } else {
+                appendReportLine(results, "Điểm chưa rõ", firstNonBlank(item));
+            }
+        }
+    }
+
+    private void appendStringGroup(List<String> results, String label, Object... candidates) {
+        Object raw = firstList(candidates);
+        if (!(raw instanceof List<?> items)) {
+            return;
+        }
+        for (Object item : items) {
+            appendReportLine(results, label, firstNonBlank(item));
+        }
+    }
+
+    private Object firstList(Object... candidates) {
+        if (candidates == null) {
+            return null;
+        }
+        for (Object candidate : candidates) {
+            if (candidate instanceof List<?> list && !list.isEmpty()) {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
+    private void appendReportLine(List<String> results, String label, String value) {
+        String text = value == null ? "" : value.trim();
+        if (!text.isBlank()) {
+            results.add(label + ": " + text);
+        }
     }
 
     private List<String> extractTechnicalTerms(Map<String, Object> analysisPayload) {
@@ -4127,6 +4421,7 @@ public class ProcessingService {
             String traceId,
             String authorization,
             boolean allowLazyTrigger,
+            boolean includeEvidence,
             Long recordingSessionId,
             Long attemptId
     ) {
@@ -4185,7 +4480,9 @@ public class ProcessingService {
                     meetingId,
                     stateStatus
             );
-            return attachEvidenceBlockIfEnabled(meetingId, traceId, authorization, response);
+            return includeEvidence
+                    ? attachEvidenceBlockIfEnabled(meetingId, traceId, authorization, response)
+                    : response;
         }
 
         log.info(
@@ -4199,14 +4496,23 @@ public class ProcessingService {
         if (!aiAnalysis.isEmpty()) {
             Map<String, Object> response = new HashMap<>();
             response.put("meeting_id", meetingId);
-            String aiStatus = normalizeStatus(aiAnalysis.get("status"));
-            String sourceStatus = "NOT_FOUND".equals(stateStatus) ? aiStatus : stateStatus;
-            response.put("status", toFeAnalysisPollingStatus(sourceStatus));
             for (Map.Entry<String, Object> entry : aiAnalysis.entrySet()) {
                 if ("meeting_id".equals(entry.getKey()) || "status".equals(entry.getKey())) {
                     continue;
                 }
                 response.put(entry.getKey(), entry.getValue());
+            }
+            String aiStatus = normalizeStatus(firstNonBlank(
+                    aiAnalysis.get("analysisStatus"),
+                    aiAnalysis.get("analysis_status"),
+                    aiAnalysis.get("status")
+            ));
+            String sourceStatus = hasStructuredAnalysis(response)
+                    ? (aiStatus.isBlank() || "FAILED".equals(aiStatus) ? "COMPLETED" : aiStatus)
+                    : ("NOT_FOUND".equals(stateStatus) ? aiStatus : stateStatus);
+            response.put("status", toFeAnalysisPollingStatus(sourceStatus));
+            if (hasStructuredAnalysis(response) && "FAILED".equals(normalizeStatus(response.get("analysisStatus")))) {
+                response.put("analysisStatus", "COMPLETED");
             }
             log.info(
                     "event=ANALYSIS_GET_RESULT traceId={} requestId={} meetingId={} analysisStatus={}",
@@ -4215,7 +4521,9 @@ public class ProcessingService {
                     meetingId,
                     response.get("status")
             );
-            return attachEvidenceBlockIfEnabled(meetingId, traceId, authorization, response);
+            return includeEvidence
+                    ? attachEvidenceBlockIfEnabled(meetingId, traceId, authorization, response)
+                    : response;
         }
 
         if (!allowLazyTrigger) {
@@ -4819,12 +5127,33 @@ public class ProcessingService {
             boolean required,
             TranscriptExportMode exportMode
     ) {
+        return loadSavedTranscriptPayloadForExport(
+                meetingId,
+                traceId,
+                authorization,
+                required,
+                exportMode,
+                null,
+                null
+        );
+    }
+
+    private TranscriptPayload loadSavedTranscriptPayloadForExport(
+            Long meetingId,
+            String traceId,
+            String authorization,
+            boolean required,
+            TranscriptExportMode exportMode,
+            Long recordingSessionId,
+            Long attemptId
+    ) {
         assertMeetingAccess(meetingId, traceId, authorization);
-        Map<String, Object> state = jobStateStore.getJobState(meetingId).orElse(null);
-        TranscriptPayload statePayload = buildStateTranscriptPayload(state);
+        boolean scopedExport = recordingSessionId != null && attemptId != null;
+        Map<String, Object> state = scopedExport ? null : jobStateStore.getJobState(meetingId).orElse(null);
+        TranscriptPayload statePayload = scopedExport ? TranscriptPayload.empty() : buildStateTranscriptPayload(state);
         boolean shouldFetchPersisted = exportMode == TranscriptExportMode.READABLE || statePayload.rawRows().isEmpty();
         TranscriptPayload persistedTranscriptPayload = shouldFetchPersisted
-                ? fetchPersistedTranscriptPayloadForExport(meetingId, traceId)
+                ? fetchPersistedTranscriptPayloadForExport(meetingId, traceId, recordingSessionId, attemptId)
                 : TranscriptPayload.empty();
         TranscriptSourceDecision decision = exportMode == TranscriptExportMode.READABLE
                 ? selectReadableTranscriptSource(statePayload, persistedTranscriptPayload, meetingId, traceId)
@@ -4968,9 +5297,20 @@ public class ProcessingService {
     }
 
     private TranscriptPayload fetchPersistedTranscriptPayloadForExport(Long meetingId, String traceId) {
+        return fetchPersistedTranscriptPayloadForExport(meetingId, traceId, null, null);
+    }
+
+    private TranscriptPayload fetchPersistedTranscriptPayloadForExport(
+            Long meetingId,
+            String traceId,
+            Long recordingSessionId,
+            Long attemptId
+    ) {
         try {
             // This endpoint reads persisted transcript rows only; it does not trigger STT/processing start.
-            Map<String, Object> aiResponse = aiServiceClient.getTranscript(meetingId, traceId);
+            Map<String, Object> aiResponse = recordingSessionId == null
+                    ? aiServiceClient.getTranscript(meetingId, traceId)
+                    : aiServiceClient.getTranscript(meetingId, traceId, recordingSessionId, attemptId);
             return normalizeTranscriptPayload(aiResponse);
         } catch (HttpStatusCodeException ex) {
             if (ex.getStatusCode().value() == HttpStatus.NOT_FOUND.value()) {
@@ -5217,12 +5557,75 @@ public class ProcessingService {
         return Map.of();
     }
 
+    private Map<String, Object> fetchSavedAnalysisReadOnlyForExport(
+            Long meetingId,
+            String traceId,
+            String authorization,
+            Long recordingSessionId,
+            Long attemptId,
+            Map<String, Object> fallback
+    ) {
+        try {
+            Map<String, Object> response = getAnalysisReadOnly(
+                    meetingId,
+                    traceId,
+                    authorization,
+                    recordingSessionId,
+                    attemptId
+            );
+            if (hasStructuredAnalysis(response)) {
+                return response;
+            }
+        } catch (ResponseStatusException ex) {
+            log.info(
+                    "event=EXPORT_ANALYSIS_READ_ONLY_MISS traceId={} requestId={} meetingId={} recordingSessionId={} attemptId={} httpStatus={}",
+                    traceId,
+                    currentRequestId(traceId),
+                    meetingId,
+                    recordingSessionId,
+                    attemptId,
+                    ex.getStatusCode().value()
+            );
+        } catch (Exception ex) {
+            log.warn(
+                    "event=EXPORT_ANALYSIS_READ_ONLY_FAILED traceId={} requestId={} meetingId={} recordingSessionId={} attemptId={} errorCode={}",
+                    traceId,
+                    currentRequestId(traceId),
+                    meetingId,
+                    recordingSessionId,
+                    attemptId,
+                    ex.getClass().getSimpleName()
+            );
+        }
+        return fallback == null ? Map.of() : fallback;
+    }
+
     private Map<String, Object> fetchSavedAnalysisCacheOnlyForReport(
             Long meetingId,
             String traceId,
             String authorization,
             TranscriptPayload transcriptPayload,
             List<Map<String, Object>> transcriptRows
+    ) {
+        return fetchSavedAnalysisCacheOnlyForReport(
+                meetingId,
+                traceId,
+                authorization,
+                transcriptPayload,
+                transcriptRows,
+                null,
+                null
+        );
+    }
+
+    private Map<String, Object> fetchSavedAnalysisCacheOnlyForReport(
+            Long meetingId,
+            String traceId,
+            String authorization,
+            TranscriptPayload transcriptPayload,
+            List<Map<String, Object>> transcriptRows,
+            Long recordingSessionId,
+            Long attemptId
     ) {
         String transcriptText = buildTranscriptText(transcriptRows);
         String transcriptHash = resolveReportTranscriptHash(transcriptPayload, transcriptText);
@@ -5253,8 +5656,8 @@ public class ProcessingService {
                     promptVersion,
                     schemaVersion,
                     analysisFeatureSet,
-                    null,
-                    null,
+                    recordingSessionId,
+                    attemptId,
                     domainMode,
                     traceId,
                     authorization

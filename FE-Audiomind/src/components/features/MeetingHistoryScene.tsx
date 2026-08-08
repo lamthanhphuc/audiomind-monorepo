@@ -8,6 +8,7 @@ import { isGeminiBillingBlocked, isUserQuotaExceeded } from '../../utils/quotaUx
 import {
   formatResultScopeLabel,
   scopeCacheKey,
+  scopeToAnalysisOptions,
   type MeetingResultScope,
 } from '../../utils/meetingResultScope'
 import TermExplainPopover from './TermExplainPopover'
@@ -23,6 +24,7 @@ import { type MeetingChatCitation } from '../../utils/meetingChatbot'
 import { EmptyState } from '../ui/EmptyState'
 import { ErrorState } from '../ui/ErrorState'
 import { LoadingState } from '../ui/LoadingState'
+import { SponsoredAdPanel } from '../ui/SponsoredAdPanel'
 import { formatDateVi, formatLanguage, formatMeetingStatus } from '../../utils/uiLabels'
 import type { HistoryLanguageFilter, HistoryStatusFilter } from '../../app/useHistorySearchFilters'
 import {
@@ -390,10 +392,6 @@ export default function MeetingHistoryScene({
     exportError,
     transcriptExportBusy,
     transcriptExportError,
-    transcriptExportMenuOpen,
-    setTranscriptExportMenuOpen,
-    exportActionsMenuOpen,
-    setExportActionsMenuOpen,
     actionPlanState,
     handleExportDocx,
     handleExportPdf,
@@ -405,6 +403,7 @@ export default function MeetingHistoryScene({
     selectedMeetingSummary,
     transcriptState: detail.transcriptState,
     analysisState: detail.analysisState,
+    analysisScope: selectedScope ? scopeToAnalysisOptions(selectedScope) : {},
   })
 
   useEffect(() => {
@@ -652,46 +651,48 @@ export default function MeetingHistoryScene({
                 <HistoryDetailTabs activeTab={activeDetailTab} onTabChange={setActiveDetailTab} />
 
                 {activeDetailTab === 'overview' && (
-                  <HistoryOverviewPanel
-                    selectedMeeting={selectedMeetingSummary}
-                    availableScopes={availableScopes}
-                    selectedScope={selectedScope}
-                    scopeState={scopeState}
-                    renameValue={renameValue}
-                    renameBusy={renameBusy}
-                    deleteBusy={deleteBusy}
-                    listError={listError}
-                    subjectBusy={subjectBusy}
-                    subjectError={subjectError}
-                    onSelectedScopeChange={setSelectedScope}
-                    onRenameValueChange={setRenameValue}
-                    onRename={handleRename}
-                    onDelete={handleDelete}
-                    onShareLink={() => void handleShareMeetingLink()}
-                    onSubjectChange={(subjectId) => void handleSubjectChange(subjectId)}
-                    onOpenAnalysis={onOpenAnalysis}
-                    onOpenMindmap={onOpenMindmap}
-                  />
+                  <>
+                    <SponsoredAdPanel placement="MEETING_DETAIL" onNavigateBilling={onNavigateBilling} />
+                    <HistoryOverviewPanel
+                      selectedMeeting={selectedMeetingSummary}
+                      availableScopes={availableScopes}
+                      selectedScope={selectedScope}
+                      scopeState={scopeState}
+                      renameValue={renameValue}
+                      renameBusy={renameBusy}
+                      deleteBusy={deleteBusy}
+                      listError={listError}
+                      subjectBusy={subjectBusy}
+                      subjectError={subjectError}
+                      onSelectedScopeChange={setSelectedScope}
+                      onRenameValueChange={setRenameValue}
+                      onRename={handleRename}
+                      onDelete={handleDelete}
+                      onShareLink={() => void handleShareMeetingLink()}
+                      onSubjectChange={(subjectId) => void handleSubjectChange(subjectId)}
+                      onOpenAnalysis={onOpenAnalysis}
+                      onOpenMindmap={onOpenMindmap}
+                    />
+                  </>
                 )}
 
                 {activeDetailTab === 'exports' && (
-                  <HistoryExportPanel
-                    transcriptState={detail.transcriptState}
-                    exportBusy={exportBusy}
-                    exportActionsMenuOpen={exportActionsMenuOpen}
-                    transcriptExportMenuOpen={transcriptExportMenuOpen}
-                    transcriptExportBusy={transcriptExportBusy}
-                    transcriptExportError={transcriptExportError}
-                    exportError={exportError}
-                    actionPlanState={actionPlanState}
-                    onExportPdf={() => void handleExportPdf()}
-                    onExportDocx={() => void handleExportDocx()}
-                    onToggleExportActionsMenu={() => setExportActionsMenuOpen((value) => !value)}
-                    onToggleTranscriptExportMenu={() => setTranscriptExportMenuOpen((value) => !value)}
-                    onTranscriptExport={(mode, format) => void handleTranscriptExport(mode, format)}
-                    onActionPlanExport={(format) => void handleActionPlanExport(format)}
-                    onActionPlanCopy={() => void handleActionPlanCopy()}
-                  />
+                  <>
+                    <SponsoredAdPanel placement="EXPORT" onNavigateBilling={onNavigateBilling} />
+                    <HistoryExportPanel
+                      transcriptState={detail.transcriptState}
+                      exportBusy={exportBusy}
+                      transcriptExportBusy={transcriptExportBusy}
+                      transcriptExportError={transcriptExportError}
+                      exportError={exportError}
+                      actionPlanState={actionPlanState}
+                      onExportPdf={() => void handleExportPdf()}
+                      onExportDocx={() => void handleExportDocx()}
+                      onTranscriptExport={(mode, format) => void handleTranscriptExport(mode, format)}
+                      onActionPlanExport={(format) => void handleActionPlanExport(format)}
+                      onActionPlanCopy={() => void handleActionPlanCopy()}
+                    />
+                  </>
                 )}
 
                 {activeDetailTab === 'sharing' && (

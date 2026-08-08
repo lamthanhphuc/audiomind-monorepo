@@ -1,14 +1,16 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
-  checkoutProPlan,
+  checkoutSubscriptionPlan,
   formatCharsShort,
   formatDurationShort,
   formatQuotaPercent,
   getBillingOverview,
   pollBillingActivation,
   type BillingOverview,
+  type SubscriptionPlan,
 } from '../../services/billing'
 import { getJwtPlan, getJwtRole } from '../../services/auth'
+import { normalizePlanCode } from '../../utils/planCapabilities'
 import { LoadingState } from '../ui/LoadingState'
 import { formatInvoiceStatus } from '../../utils/uiLabels'
 import { cssVars } from '../../utils/cssVars'
@@ -23,7 +25,74 @@ type Props = {
   onCheckoutRedirect?: (checkoutUrl: string) => void
 }
 
-const planLabel = (plan: string): string => (plan.toUpperCase() === 'PRO' ? 'Pro' : 'Free')
+const planLabel = (plan: string): string => {
+  const normalized = normalizePlanCode(plan)
+  if (normalized === 'STANDARD') return 'Standard'
+  if (normalized === 'PREMIUM') return 'Premium'
+  if (normalized === 'FREE') return 'Free'
+  return normalized
+}
+
+const formatPlanPrice = (plan: SubscriptionPlan): string => (
+  plan.priceVnd <= 0
+    ? '0đ/tháng'
+    : `${plan.priceVnd.toLocaleString('vi-VN')}đ/${plan.billingPeriod === 'YEARLY' ? 'năm' : 'tháng'}`
+)
+
+const fallbackPlansFromOverview = (overview: BillingOverview | null): SubscriptionPlan[] => {
+  if (!overview) return []
+  const currentPlan = normalizePlanCode(overview.plan)
+  const sttMinutes = Math.round((overview.quota?.sttSecondsLimit ?? 0) / 60)
+  const aiLimit = overview.quota?.geminiInputCharsLimit ?? 0
+  const freePlan: SubscriptionPlan = {
+    id: 0,
+    code: 'FREE',
+    name: 'Free',
+    description: null,
+    priceVnd: 0,
+    currency: 'VND',
+    billingPeriod: 'MONTHLY',
+    advertisementEnabled: true,
+    recordingMinutesLimit: currentPlan === 'FREE' ? sttMinutes : 0,
+    aiAnalysisLimit: currentPlan === 'FREE' ? aiLimit : 0,
+    uploadLimit: 0,
+    flashcardLimit: 0,
+    quizLimit: 0,
+    mindmapLimit: 0,
+    exportLimit: 0,
+    featuresJson: null,
+    active: true,
+    sortOrder: 10,
+  }
+  const plans: SubscriptionPlan[] = [freePlan]
+  if ((overview.standardPriceVnd ?? overview.proPriceVnd ?? 0) > 0) {
+    plans.push({
+      ...freePlan,
+      id: 1,
+      code: 'STANDARD',
+      name: 'Standard',
+      priceVnd: overview.standardPriceVnd ?? overview.proPriceVnd ?? 0,
+      advertisementEnabled: false,
+      recordingMinutesLimit: currentPlan === 'STANDARD' ? sttMinutes : 0,
+      aiAnalysisLimit: currentPlan === 'STANDARD' ? aiLimit : 0,
+      sortOrder: 20,
+    })
+  }
+  if ((overview.premiumPriceVnd ?? 0) > 0) {
+    plans.push({
+      ...freePlan,
+      id: 2,
+      code: 'PREMIUM',
+      name: 'Premium',
+      priceVnd: overview.premiumPriceVnd ?? 0,
+      advertisementEnabled: false,
+      recordingMinutesLimit: currentPlan === 'PREMIUM' ? sttMinutes : 0,
+      aiAnalysisLimit: currentPlan === 'PREMIUM' ? aiLimit : 0,
+      sortOrder: 30,
+    })
+  }
+  return plans
+}
 
 export default function BillingScene({
   paymentNotice,
@@ -71,8 +140,8 @@ export default function BillingScene({
     void pollBillingActivation(activationOrderCode)
       .then(({ invoice, overview }) => {
         if (!active) return
-        if (invoice.status === 'PAID' || overview.plan.toUpperCase() === 'PRO') {
-          setNotice('Thanh toán PayOS thành công. Gói Pro đã được kích hoạt.')
+        if (invoice.status === 'PAID') {
+          setNotice(`Thanh toán PayOS thành công. Gói ${planLabel(overview.plan)} đã được kích hoạt.`)
           return
         }
         setNotice('Thanh toán đã ghi nhận nhưng gói chưa đồng bộ. Bấm "Đồng bộ JWT" hoặc chờ vài giây rồi tải lại trang.')
@@ -95,10 +164,19 @@ export default function BillingScene({
   const quota = overview?.quota
   const sttPercent = formatQuotaPercent(quota?.sttSecondsUsed ?? 0, quota?.sttSecondsLimit ?? 0)
   const geminiPercent = formatQuotaPercent(quota?.geminiInputCharsUsed ?? 0, quota?.geminiInputCharsLimit ?? 0)
-  const isPro = (overview?.plan || jwtPlan || 'FREE').toUpperCase() === 'PRO'
+  const currentPlanCode = normalizePlanCode(overview?.plan || jwtPlan || 'FREE')
+  const isPremium = currentPlanCode === 'PREMIUM'
   const trialActive = overview?.trialActive === true
-  const proPriceVnd = overview?.proPriceVnd ?? 79_000
+  const advertisementEnabled = overview?.advertisementEnabled ?? currentPlanCode === 'FREE'
   const payosCheckoutEnabled = payosEnabled && (overview?.payosEnabled ?? true)
+  const plans = (overview?.plans?.length ?? 0) > 0 ? overview?.plans ?? [] : fallbackPlansFromOverview(overview)
+  const standardPlan = plans.find((plan) => normalizePlanCode(plan.code) === 'STANDARD')
+  const premiumPlan = plans.find((plan) => normalizePlanCode(plan.code) === 'PREMIUM')
+  const primaryUpgradePlan = currentPlanCode === 'FREE'
+    ? standardPlan
+    : currentPlanCode === 'STANDARD'
+      ? (trialActive ? standardPlan : premiumPlan)
+      : undefined
 
   const quotaWarnings = useMemo(() => {
     const warnings: string[] = []
@@ -107,12 +185,12 @@ export default function BillingScene({
     return warnings
   }, [sttPercent, geminiPercent])
 
-  const handleUpgrade = async () => {
+  const handleCheckout = async (planCode: string) => {
     setBusy(true)
     setError('')
     setNotice('')
     try {
-      const checkout = await checkoutProPlan()
+      const checkout = await checkoutSubscriptionPlan(normalizePlanCode(planCode))
       if (!checkout.checkoutUrl) {
         throw new Error('PayOS chưa trả về link thanh toán')
       }
@@ -131,24 +209,24 @@ export default function BillingScene({
           <p className="billing-scene__eyebrow">Gói & thanh toán</p>
           <h1>Gói {planLabel(overview?.plan || jwtPlan || 'FREE')}{trialActive ? ' (dùng thử)' : ''}</h1>
           <p className="billing-scene__subtitle">
-            {trialActive
-              ? 'Bạn đang dùng thử gói Pro miễn phí. Sau khi hết hạn, tài khoản sẽ chuyển về Free trừ khi bạn nâng cấp qua PayOS.'
-              : 'Theo dõi quota ghi âm và phân tích AI, nâng cấp Pro qua PayOS, hoặc liên hệ quản trị viên để thanh toán thủ công.'}
+              {trialActive
+              ? 'Bạn đang dùng thử gói Standard miễn phí. Sau khi hết hạn, tài khoản sẽ chuyển về Free nếu chưa thanh toán.'
+              : 'Theo dõi quota ghi âm, phân tích AI, quảng cáo và nâng cấp gói qua PayOS khi cần.'}
           </p>
         </div>
         <div className="billing-scene__hero-actions">
           <button type="button" className="btn btn--secondary" onClick={() => void load()} disabled={loading || busy}>
             Làm mới
           </button>
-          {(!isPro || trialActive) && (
+          {!isPremium && primaryUpgradePlan && (
             <button
               type="button"
               className="btn btn--primary"
-              onClick={() => void handleUpgrade()}
+              onClick={() => void handleCheckout(primaryUpgradePlan.code)}
               disabled={busy || !payosCheckoutEnabled}
               title={!payosCheckoutEnabled ? 'Thanh toán PayOS chưa bật trên môi trường này' : undefined}
             >
-              {busy ? 'Đang tạo link PayOS…' : `Nâng cấp Pro (${proPriceVnd.toLocaleString('vi-VN')}đ)`}
+              {busy ? 'Đang tạo link PayOS…' : `${trialActive ? 'Duy trì' : 'Nâng cấp'} ${primaryUpgradePlan.name} (${formatPlanPrice(primaryUpgradePlan)})`}
             </button>
           )}
         </div>
@@ -162,7 +240,7 @@ export default function BillingScene({
 
       {trialActive && overview?.planExpiresAt && (
         <div className="billing-scene__notice" data-testid="billing-trial-notice">
-          Gói Pro dùng thử đến {new Date(overview.planExpiresAt).toLocaleString('vi-VN')}.
+          Gói Standard dùng thử đến {new Date(overview.planExpiresAt).toLocaleString('vi-VN')}.
         </div>
       )}
       {notice && <div className="billing-scene__notice" data-testid="billing-notice">{notice}</div>}
@@ -211,18 +289,39 @@ export default function BillingScene({
 
           <article className="billing-card billing-card--wide">
             <h2>So sánh gói</h2>
+            <p className="billing-plan-current">
+              Plan hiện tại: <strong>{planLabel(overview?.plan || jwtPlan || 'FREE')}</strong>
+              {' - '}
+              {advertisementEnabled ? 'Ads enabled' : 'Ad-free'}
+            </p>
             <div className="billing-plans">
-              <div className={`billing-plan ${!isPro ? 'billing-plan--active' : ''}`}>
-                <strong>Free</strong>
-                <span>~10 phút STT/tháng</span>
-                <span>~50K ký tự phân tích/tháng</span>
-              </div>
-              <div className={`billing-plan ${isPro ? 'billing-plan--active' : ''}`}>
-                <strong>Pro</strong>
-                <span>~10 giờ STT/tháng</span>
-                <span>~2M ký tự phân tích/tháng</span>
-                <span>{proPriceVnd.toLocaleString('vi-VN')}đ/tháng qua PayOS</span>
-              </div>
+              {plans.map((plan) => {
+                const active = currentPlanCode === normalizePlanCode(plan.code)
+                return (
+                  <div className={`billing-plan ${active ? 'billing-plan--active' : ''}`} key={plan.id || plan.code}>
+                    <strong>{plan.name}</strong>
+                    <span>{formatPlanPrice(plan)}</span>
+                    <span>{formatDurationShort(plan.recordingMinutesLimit * 60)} STT/tháng</span>
+                    <span>{formatCharsShort(plan.aiAnalysisLimit)} ký tự phân tích/tháng</span>
+                    <span>{plan.advertisementEnabled ? 'Có quảng cáo' : 'Không quảng cáo'}</span>
+                    {plan.uploadLimit > 0 && <span>{plan.uploadLimit} lượt upload</span>}
+                    {plan.flashcardLimit > 0 && <span>{plan.flashcardLimit} flashcard</span>}
+                    {plan.quizLimit > 0 && <span>{plan.quizLimit} quiz</span>}
+                    {plan.mindmapLimit > 0 && <span>{plan.mindmapLimit} mindmap</span>}
+                    {plan.exportLimit > 0 && <span>{plan.exportLimit} lượt export</span>}
+                    {!active && plan.priceVnd > 0 && (
+                      <button
+                        type="button"
+                        className="btn btn--secondary btn--block"
+                        onClick={() => void handleCheckout(plan.code)}
+                        disabled={busy || !payosCheckoutEnabled}
+                      >
+                        {busy ? 'Đang tạo link PayOS…' : `Chọn ${plan.name}`}
+                      </button>
+                    )}
+                  </div>
+                )
+              })}
             </div>
             {jwtPlan !== (overview?.plan || 'FREE').toUpperCase() && onRefreshTokenHint && (
               <p className="billing-scene__hint">
@@ -242,7 +341,7 @@ export default function BillingScene({
                   <li key={invoice.orderCode}>
                     <div>
                       <strong>#{invoice.orderCode}</strong>
-                      <span>{invoice.description || 'Audiomind PRO'}</span>
+                      <span>{invoice.description || `AudioMind ${planLabel(invoice.planCode || '')}`}</span>
                     </div>
                     <div className="billing-invoice-list__meta">
                       <span className={`billing-status billing-status--${invoice.status.toLowerCase()}`}>

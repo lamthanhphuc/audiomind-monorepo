@@ -68,7 +68,7 @@ public class HttpRateLimitFilter extends OncePerRequestFilter {
         if ("POST".equalsIgnoreCase(method) && path.endsWith("/api/users/register")) {
             return Optional.of(new RateLimitRule("register", properties.getRegisterPerMinute(), HttpRateLimitFilter::clientIp));
         }
-        if ("POST".equalsIgnoreCase(method) && path.endsWith("/api/billing/checkout/pro")) {
+        if ("POST".equalsIgnoreCase(method) && path.contains("/api/billing/checkout/")) {
             return Optional.of(new RateLimitRule(
                     "checkout",
                     properties.getCheckoutPerMinute(),

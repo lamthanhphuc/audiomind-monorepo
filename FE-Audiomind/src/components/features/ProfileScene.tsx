@@ -26,7 +26,12 @@ type Props = {
   onProfileUpdated?: (profile: UserProfile) => void
 }
 
-const planLabel = (plan?: string | null) => (String(plan || 'FREE').toUpperCase() === 'PRO' ? 'Pro' : 'Free')
+const planLabel = (plan?: string | null) => String(plan || 'FREE')
+  .trim()
+  .toUpperCase()
+  .replace(/^PRO$|^STUDENT$/, 'STANDARD')
+  .toLowerCase()
+  .replace(/\b\w/g, (char) => char.toUpperCase())
 const roleLabel = (role?: string | null) => (String(role || 'USER').toUpperCase() === 'ADMIN' ? 'Admin' : 'User')
 
 export default function ProfileScene({

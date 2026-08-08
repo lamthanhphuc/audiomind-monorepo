@@ -42,6 +42,12 @@ public class UserQuotaClient {
         UNKNOWN
     }
 
+    public record FeatureAuthorizationResult(boolean allowed, boolean available, String plan) {
+        public static FeatureAuthorizationResult unavailable() {
+            return new FeatureAuthorizationResult(false, false, null);
+        }
+    }
+
     public record QuotaConsumeResult(
             QuotaConsumeStatus status,
             String idempotencyKey,
@@ -123,6 +129,35 @@ public class UserQuotaClient {
             }
         }
         return last;
+    }
+
+    public FeatureAuthorizationResult authorizeFeature(Long userId, String feature) {
+        if (userId == null || userId <= 0 || !StringUtils.hasText(feature)
+                || !StringUtils.hasText(internalServiceToken)) {
+            return FeatureAuthorizationResult.unavailable();
+        }
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.add("X-Internal-Service-Token", internalServiceToken);
+        Map<String, Object> body = Map.of("userId", userId, "feature", feature.trim());
+        try {
+            ResponseEntity<Map> response = restTemplate.exchange(
+                    normalizeBaseUrl(userApiBaseUrl) + "/internal/quota/authorize-feature",
+                    HttpMethod.POST,
+                    new HttpEntity<>(body, headers),
+                    Map.class
+            );
+            Map<?, ?> payload = response.getBody();
+            if (payload == null || !(payload.get("allowed") instanceof Boolean allowed)) {
+                return FeatureAuthorizationResult.unavailable();
+            }
+            String plan = payload.get("plan") == null ? null : String.valueOf(payload.get("plan"));
+            return new FeatureAuthorizationResult(allowed, true, plan);
+        } catch (RestClientException ex) {
+            log.error("event=FEATURE_AUTHORIZATION_UNAVAILABLE userId={} feature={} message={}",
+                    userId, feature, ex.getMessage());
+            return FeatureAuthorizationResult.unavailable();
+        }
     }
 
     private QuotaConsumeResult consumeOnce(

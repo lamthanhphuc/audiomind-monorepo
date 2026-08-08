@@ -9,6 +9,7 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -50,6 +51,8 @@ class StudyGenerationServiceTest {
     @BeforeEach
     void setUp() {
         ReflectionTestUtils.setField(studyGenerationService, "geminiCharsPerArtifact", 8000L);
+        lenient().when(userQuotaClient.authorizeFeature(anyLong(), anyString()))
+                .thenReturn(new UserQuotaClient.FeatureAuthorizationResult(true, true, "PREMIUM"));
     }
 
     @Test

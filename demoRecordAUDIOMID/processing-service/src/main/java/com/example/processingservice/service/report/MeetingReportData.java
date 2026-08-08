@@ -8,11 +8,14 @@ public record MeetingReportData(
         List<String> keywords,
         List<String> technicalTerms,
         List<String> decisions,
+        List<String> painPoints,
         List<ReportActionItem> actionItems,
         List<String> risks,
         List<String> blockers,
         List<String> nextSteps,
         List<String> questions,
+        List<String> educationStudyHighlights,
+        ImpactSummary impactSummary,
         List<RawTranscriptRow> rawTranscriptRows,
         boolean transcriptPreviewLimited,
         List<AnalyzedHighlightRow> analyzedHighlightRows,
@@ -55,7 +58,17 @@ public record MeetingReportData(
             String task,
             String owner,
             String dueDate,
+            String priority,
+            String status,
             String evidence
+    ) {
+    }
+
+    public record ImpactSummary(
+            String businessImpact,
+            String customerImpact,
+            String technicalImpact,
+            String confidence
     ) {
     }
 

@@ -12,10 +12,10 @@ export type QuotaSignal = {
   fallbackMessage?: string
 }
 
-export type UserPlan = 'FREE' | 'PRO'
+export type UserPlan = 'FREE' | 'STANDARD' | 'PREMIUM' | 'PRO'
 
-const QUOTA_PRO_MESSAGE =
-  'Bạn đã vượt quota Pro tháng này. Liên hệ admin để gia hạn hoặc tăng hạn mức.'
+const QUOTA_PAID_PLAN_MESSAGE =
+  'Bạn đã vượt quota gói hiện tại trong tháng này. Liên hệ admin để gia hạn hoặc tăng hạn mức.'
 
 const normalizeErrorCode = (errorCode?: string | null): string | undefined => {
   if (!errorCode) return undefined
@@ -72,9 +72,9 @@ export function resolveQuotaPresentation(
     return { message: fallbackMessage }
   }
 
-  if (plan === 'PRO') {
+  if (plan !== 'FREE') {
     return {
-      message: QUOTA_PRO_MESSAGE,
+      message: QUOTA_PAID_PLAN_MESSAGE,
       ctaId: presentation.ctaId,
       ctaLabel: presentation.ctaLabel,
     }

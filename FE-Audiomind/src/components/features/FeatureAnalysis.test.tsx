@@ -142,6 +142,21 @@ describe('FeatureAnalysis', () => {
     vi.restoreAllMocks()
   })
 
+  it('hides the mindmap tab when the current plan does not allow it', async () => {
+    await act(async () => {
+      root.render(
+        <FeatureAnalysis
+          meetingId={42}
+          analysis={educationAnalysis([]) as any}
+          mindmapEnabled={false}
+        />,
+      )
+    })
+
+    expect(container.querySelector('[data-testid="feature-analysis-mindmap-tab"]')).toBeNull()
+    expect(container.querySelector('[data-testid="feature-analysis-mindmap"]')).toBeNull()
+  })
+
   it('renders transcript tab without topic graph or sidebar glossary panel', async () => {
     act(() => {
       root.render(

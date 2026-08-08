@@ -144,7 +144,7 @@ export const ERROR_CATALOG: Record<string, ErrorCatalogEntry> = {
     ctaLabel: 'Liên hệ hỗ trợ',
   },
   QUOTA_EXCEEDED: {
-    message: 'Bạn đã vượt quota sử dụng tháng này. Nâng cấp Pro để tiếp tục.',
+    message: 'Bạn đã vượt quota sử dụng tháng này. Nâng cấp gói để tiếp tục.',
     ctaId: 'upgrade_plan',
     ctaLabel: 'Xem gói & thanh toán',
   },

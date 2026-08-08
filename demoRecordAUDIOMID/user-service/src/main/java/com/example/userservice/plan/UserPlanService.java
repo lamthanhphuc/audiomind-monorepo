@@ -14,6 +14,12 @@ import org.springframework.transaction.annotation.Transactional;
 @RequiredArgsConstructor
 public class UserPlanService {
 
+    public static final String PLAN_FREE = "FREE";
+    public static final String PLAN_STANDARD = "STANDARD";
+    public static final String PLAN_PREMIUM = "PREMIUM";
+    private static final String LEGACY_PLAN_PRO = "PRO";
+    private static final String LEGACY_PLAN_STUDENT = "STUDENT";
+
     private final UserAccountRepository userAccountRepository;
     private final Clock clock = Clock.systemUTC();
 
@@ -24,7 +30,7 @@ public class UserPlanService {
         if (user == null || newUserTrialDays <= 0) {
             return;
         }
-        user.setPlan("PRO");
+        user.setPlan(PLAN_STANDARD);
         user.setPlanExpiresAt(clock.instant().plus(newUserTrialDays, ChronoUnit.DAYS));
     }
 
@@ -33,12 +39,12 @@ public class UserPlanService {
         if (user == null || !isExpiredTrial(user)) {
             return user;
         }
-        user.setPlan("FREE");
+        user.setPlan(PLAN_FREE);
         user.setPlanExpiresAt(null);
         return userAccountRepository.save(user);
     }
 
-    @Transactional(readOnly = true)
+    @Transactional
     public UserAccount requireUserWithCurrentPlan(Long userId) {
         UserAccount user = userAccountRepository.findById(userId)
                 .orElseThrow(() -> new IllegalArgumentException("User not found"));
@@ -47,31 +53,63 @@ public class UserPlanService {
 
     public String resolveEffectivePlan(UserAccount user) {
         if (user == null) {
-            return "FREE";
+            return PLAN_FREE;
         }
         if (isExpiredTrial(user)) {
-            return "FREE";
+            return PLAN_FREE;
         }
         String plan = user.getPlan() == null ? "" : user.getPlan().trim().toUpperCase();
-        return plan.isBlank() ? "FREE" : plan;
+        return normalizePlanOrFree(plan);
     }
 
     public boolean isOnTrial(UserAccount user) {
         return user != null
-                && "PRO".equalsIgnoreCase(user.getPlan())
+                && PLAN_STANDARD.equalsIgnoreCase(normalizePlanOrFree(user.getPlan()))
                 && user.getPlanExpiresAt() != null
                 && !isExpiredTrial(user);
     }
 
-    public boolean hasPermanentPro(UserAccount user) {
+    public boolean hasPermanentStandard(UserAccount user) {
         return user != null
-                && "PRO".equalsIgnoreCase(user.getPlan())
+                && PLAN_STANDARD.equalsIgnoreCase(normalizePlanOrFree(user.getPlan()))
                 && user.getPlanExpiresAt() == null;
     }
 
-    public void markPermanentPro(UserAccount user) {
-        user.setPlan("PRO");
+    /** Backward-compatible alias for callers compiled against the legacy plan name. */
+    public boolean hasPermanentPro(UserAccount user) {
+        return hasPermanentStandard(user);
+    }
+
+    public void markPermanentStandard(UserAccount user) {
+        user.setPlan(PLAN_STANDARD);
         user.setPlanExpiresAt(null);
+    }
+
+    public void markPermanentPremium(UserAccount user) {
+        user.setPlan(PLAN_PREMIUM);
+        user.setPlanExpiresAt(null);
+    }
+
+    /** Backward-compatible alias: legacy Pro now means Standard. */
+    public void markPermanentPro(UserAccount user) {
+        markPermanentStandard(user);
+    }
+
+    /** Backward-compatible alias: legacy Student users are migrated to Standard. */
+    public void markPermanentStudent(UserAccount user) {
+        markPermanentStandard(user);
+    }
+
+    public static boolean isSupportedPlan(String plan) {
+        return plan != null && plan.matches("[A-Z0-9_]{2,50}");
+    }
+
+    public static String normalizePlanOrFree(String plan) {
+        String normalized = plan == null ? "" : plan.trim().toUpperCase();
+        if (LEGACY_PLAN_PRO.equals(normalized) || LEGACY_PLAN_STUDENT.equals(normalized)) {
+            return PLAN_STANDARD;
+        }
+        return isSupportedPlan(normalized) ? normalized : PLAN_FREE;
     }
 
     private boolean isExpiredTrial(UserAccount user) {

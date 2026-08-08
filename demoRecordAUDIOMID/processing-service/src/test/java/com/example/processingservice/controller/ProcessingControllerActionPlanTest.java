@@ -7,6 +7,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.mockito.ArgumentMatchers.eq;
 
 import java.util.List;
 
@@ -38,7 +39,7 @@ class ProcessingControllerActionPlanTest {
 
         ResponseStatusException ex = assertThrows(
                 ResponseStatusException.class,
-                () -> controller.actionPlan(15L, "trace-15", "Bearer token")
+                () -> controller.actionPlan(15L, null, null, "trace-15", "Bearer token")
         );
 
         assertEquals(HttpStatus.UNAUTHORIZED, ex.getStatusCode());
@@ -51,12 +52,12 @@ class ProcessingControllerActionPlanTest {
         ProcessingController controller = new ProcessingController(processingService);
         authenticate();
         MeetingActionPlanData expected = actionPlan(16L);
-        when(processingService.getMeetingActionPlan(16L, "trace-16", "Bearer token")).thenReturn(expected);
+        when(processingService.getMeetingActionPlan(16L, "trace-16", "Bearer token", null, null)).thenReturn(expected);
 
-        MeetingActionPlanData response = controller.actionPlan(16L, "trace-16", "Bearer token");
+        MeetingActionPlanData response = controller.actionPlan(16L, null, null, "trace-16", "Bearer token");
 
         assertEquals(expected, response);
-        verify(processingService).getMeetingActionPlan(16L, "trace-16", "Bearer token");
+        verify(processingService).getMeetingActionPlan(16L, "trace-16", "Bearer token", null, null);
     }
 
     @Test
@@ -65,9 +66,9 @@ class ProcessingControllerActionPlanTest {
         ProcessingController controller = new ProcessingController(processingService);
         authenticate();
         byte[] payload = "docx-bytes".getBytes();
-        when(processingService.generateMeetingActionPlanDocx(17L, "trace-17", "Bearer token")).thenReturn(payload);
+        when(processingService.generateMeetingActionPlanDocx(17L, "trace-17", "Bearer token", null, null)).thenReturn(payload);
 
-        ResponseEntity<?> response = controller.exportActionPlan(17L, "docx", "trace-17", "Bearer token");
+        ResponseEntity<?> response = controller.exportActionPlan(17L, "docx", null, null, "trace-17", "Bearer token");
 
         assertEquals(HttpStatus.OK, response.getStatusCode());
         assertEquals(
@@ -89,7 +90,62 @@ class ProcessingControllerActionPlanTest {
 
         ResponseStatusException ex = assertThrows(
                 ResponseStatusException.class,
-                () -> controller.exportActionPlan(18L, "html", "trace-18", "Bearer token")
+                () -> controller.exportActionPlan(18L, "html", null, null, "trace-18", "Bearer token")
+        );
+
+        assertEquals(HttpStatus.BAD_REQUEST, ex.getStatusCode());
+    }
+
+    @Test
+    void actionPlan_shouldForwardScopedAnalysisSelection() {
+        ProcessingService processingService = mock(ProcessingService.class);
+        ProcessingController controller = new ProcessingController(processingService);
+        authenticate();
+        MeetingActionPlanData expected = actionPlan(16L);
+        when(processingService.getMeetingActionPlan(16L, "trace-16", "Bearer token", 901L, 3L)).thenReturn(expected);
+
+        MeetingActionPlanData response = controller.actionPlan(16L, 901L, 3L, "trace-16", "Bearer token");
+
+        assertEquals(expected, response);
+        verify(processingService).getMeetingActionPlan(
+                eq(16L),
+                eq("trace-16"),
+                eq("Bearer token"),
+                eq(901L),
+                eq(3L)
+        );
+    }
+
+    @Test
+    void exportActionPlan_shouldForwardScopedAnalysisSelection() {
+        ProcessingService processingService = mock(ProcessingService.class);
+        ProcessingController controller = new ProcessingController(processingService);
+        authenticate();
+        byte[] payload = "scoped-docx-bytes".getBytes();
+        when(processingService.generateMeetingActionPlanDocx(17L, "trace-17", "Bearer token", 901L, 3L)).thenReturn(payload);
+
+        ResponseEntity<?> response = controller.exportActionPlan(17L, "docx", 901L, 3L, "trace-17", "Bearer token");
+
+        assertEquals(HttpStatus.OK, response.getStatusCode());
+        verify(processingService).generateMeetingActionPlanDocx(
+                eq(17L),
+                eq("trace-17"),
+                eq("Bearer token"),
+                eq(901L),
+                eq(3L)
+        );
+        ByteArrayResource resource = (ByteArrayResource) response.getBody();
+        assertArrayEquals(payload, resource.getByteArray());
+    }
+
+    @Test
+    void exportActionPlan_shouldRejectIncompleteScopedAnalysisSelection() {
+        ProcessingController controller = new ProcessingController(mock(ProcessingService.class));
+        authenticate();
+
+        ResponseStatusException ex = assertThrows(
+                ResponseStatusException.class,
+                () -> controller.exportActionPlan(18L, "docx", 901L, null, "trace-18", "Bearer token")
         );
 
         assertEquals(HttpStatus.BAD_REQUEST, ex.getStatusCode());

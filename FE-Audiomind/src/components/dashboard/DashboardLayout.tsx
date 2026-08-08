@@ -25,9 +25,11 @@ import GlobalMeetingSearch from './GlobalMeetingSearch'
 import { StudioAmbientBackground } from '../ui/StudioAmbientBackground'
 import ActiveJobsBanner from './ActiveJobsBanner'
 import NotificationCenter from './NotificationCenter'
+import { SponsoredAdPanel } from '../ui/SponsoredAdPanel'
 import type { HistoryLanguageFilter, HistoryStatusFilter } from '../../app/useHistorySearchFilters'
 import type { ThemeMode } from '../../utils/themeMode'
 import { themeToggleLabel } from '../../utils/themeMode'
+import { canUseMindmap, canUseStudyWorkspace, normalizePlanCode } from '../../utils/planCapabilities'
 
 export type DashboardScene = 'upload' | 'realtime' | 'analysis' | 'files' | 'mindmap' | 'knowledge' | 'integrations' | 'billing' | 'subjects' | 'subjectDetail' | 'unclassified' | 'profile' | 'settings' | 'admin' | 'notifications' | 'usage' | 'audit'
 
@@ -105,6 +107,12 @@ export default function DashboardLayout({
   const themeActionLabel = themeToggleLabel(theme)
   const ThemeIcon = theme === 'night' ? Sun : Moon
   const isAdmin = user.role?.toUpperCase() === 'ADMIN'
+  const normalizedPlan = normalizePlanCode(user.plan)
+  const planLabel = user.plan
+    ? normalizedPlan.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, (char) => char.toUpperCase())
+    : ''
+  const mindmapEnabled = canUseMindmap(normalizedPlan)
+  const studyWorkspaceEnabled = canUseStudyWorkspace(normalizedPlan)
 
   const handleNavigate = (scene: DashboardScene) => {
     onNavigate(scene)
@@ -146,8 +154,12 @@ export default function DashboardLayout({
         title: 'Nâng cao',
         description: 'Mở khi cần tổ chức và tích hợp',
         items: [
-          { scene: 'subjects', label: 'Môn học / thư mục', icon: Users, testId: 'dashboard-nav-subjects' },
-          { scene: 'mindmap', label: 'Mindmap', icon: Network },
+          ...(studyWorkspaceEnabled
+            ? [{ scene: 'subjects' as const, label: 'Môn học / thư mục', icon: Users, testId: 'dashboard-nav-subjects' }]
+            : []),
+          ...(mindmapEnabled
+            ? [{ scene: 'mindmap' as const, label: 'Mindmap', icon: Network }]
+            : []),
           { scene: 'integrations', label: 'Google tích hợp', icon: Search, testId: 'dashboard-nav-integrations' },
           { scene: 'knowledge', label: 'Kho tri thức', icon: Search, testId: 'dashboard-nav-knowledge' },
           { scene: 'settings', label: 'Cài đặt', icon: Settings, testId: 'dashboard-nav-settings' },
@@ -195,7 +207,7 @@ export default function DashboardLayout({
                 <span className="dashboard-user__name-text">{user.name}</span>
                 {user.plan && (
                   <span className="dashboard-plan-badge" data-testid="dashboard-plan-badge">
-                    {user.plan.toUpperCase() === 'PRO' ? 'Pro' : 'Free'}
+                    {planLabel}
                   </span>
                 )}
               </span>
@@ -246,7 +258,7 @@ export default function DashboardLayout({
             </div>
           ))}
 
-          {!isAdmin && onNavigateSubjects && onNavigateSubjectDetail && onNavigateUnclassified ? (
+          {!isAdmin && studyWorkspaceEnabled && onNavigateSubjects && onNavigateSubjectDetail && onNavigateUnclassified ? (
             <SubjectSidebarSection
               activeScene={activeMenu}
               selectedSubjectId={selectedSubjectId}
@@ -255,6 +267,14 @@ export default function DashboardLayout({
               onNavigateUnclassified={onNavigateUnclassified}
             />
           ) : null}
+
+          {!isAdmin && (
+            <SponsoredAdPanel
+              plan={user.plan}
+              placement="DASHBOARD"
+              onNavigateBilling={() => handleNavigate('billing')}
+            />
+          )}
 
         {!isAdmin && (
         <div className="dashboard-sidebar__section dashboard-sidebar__recents">

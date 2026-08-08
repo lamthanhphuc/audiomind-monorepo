@@ -53,7 +53,7 @@ const googleAlreadyLinkedMessage = 'Tài khoản Google này đã được liên
 const googleConnectionFailedMessage = 'Không thể kết nối Google. Vui lòng thử lại.'
 const googleConnectedMessage = 'Đã kết nối Google và cập nhật quyền truy cập.'
 const googleLoginInvalidMessage = 'Phiên đăng nhập Google không hợp lệ. Vui lòng thử lại.'
-const billingSyncingMessage = 'Thanh toán PayOS thành công. Đang đồng bộ gói Pro...'
+const billingSyncingMessage = 'Thanh toán PayOS thành công. Đang đồng bộ gói của bạn...'
 const billingFallbackMessage = 'Thanh toán thành công. Gói đã cập nhật trên server - bấm "Đồng bộ JWT" nếu badge vẫn hiện Free.'
 const billingCancelledMessage = 'Bạn đã hủy thanh toán. Bạn có thể thử lại bất cứ lúc nào.'
 

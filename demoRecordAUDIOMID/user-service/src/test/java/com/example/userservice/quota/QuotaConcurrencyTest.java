@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.example.userservice.entity.QuotaConsumption;
 import com.example.userservice.entity.UsageCounter;
 import com.example.userservice.entity.UserAccount;
+import com.example.userservice.plan.SubscriptionPlanService;
 import com.example.userservice.plan.UserPlanService;
 import com.example.userservice.quota.QuotaService.QuotaConsumeResult;
 import com.example.userservice.repository.QuotaConsumptionRepository;
@@ -60,7 +61,7 @@ import org.testcontainers.utility.DockerImageName;
         })
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
 @ImportAutoConfiguration(FlywayAutoConfiguration.class)
-@Import({QuotaService.class, UserPlanService.class})
+@Import({QuotaService.class, UserPlanService.class, SubscriptionPlanService.class})
 @Transactional(propagation = Propagation.NOT_SUPPORTED)
 class QuotaConcurrencyTest {
 

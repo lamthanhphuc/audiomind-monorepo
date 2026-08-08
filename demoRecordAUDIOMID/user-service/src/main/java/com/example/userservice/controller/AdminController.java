@@ -7,6 +7,8 @@ import com.example.userservice.entity.UserAccount;
 import com.example.userservice.repository.BillingInvoiceRepository;
 import com.example.userservice.repository.UserApiKeyRepository;
 import com.example.userservice.repository.UserAccountRepository;
+import com.example.userservice.plan.SubscriptionPlanService;
+import com.example.userservice.plan.UserPlanService;
 import com.example.userservice.security.UserPrincipal;
 import com.example.userservice.service.AdminRuntimeConfigService;
 import com.example.userservice.service.AuditEventService;
@@ -26,6 +28,7 @@ import java.util.Map;
 import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -52,22 +55,14 @@ public class AdminController {
     private final BillingInvoiceRepository billingInvoiceRepository;
     private final AuditEventService auditEventService;
     private final AdminRuntimeConfigService adminRuntimeConfigService;
+    private final SubscriptionPlanService subscriptionPlanService;
 
     @GetMapping("/users")
     public List<Map<String, Object>> listUsers(Authentication authentication) {
         requireAdmin(authentication);
-        return userAccountRepository.findAll().stream()
+        return userAccountRepository.findAll(Sort.by(Sort.Direction.DESC, "createdAt")).stream()
                 .limit(200)
-                .map(u -> {
-                    Map<String, Object> out = new LinkedHashMap<>();
-                    out.put("id", u.getId());
-                    out.put("username", u.getUsername());
-                    out.put("email", u.getEmail());
-                    out.put("role", u.getRole());
-                    out.put("plan", u.getPlan());
-                    out.put("createdAt", u.getCreatedAt() == null ? null : u.getCreatedAt().toString());
-                    return out;
-                })
+                .map(this::userView)
                 .toList();
     }
 
@@ -80,9 +75,12 @@ public class AdminController {
         UserPrincipal admin = requireAdmin(authentication);
         UserAccount user = userAccountRepository.findById(userId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "User not found"));
-        String nextPlan = normalizePlan(request.plan());
+        String nextPlan = UserPlanService.normalizePlanOrFree(
+                SubscriptionPlanService.normalizeCode(request.plan()));
+        subscriptionPlanService.requireActiveByCode(nextPlan);
         String previousPlan = user.getPlan();
         user.setPlan(nextPlan);
+        user.setPlanExpiresAt(null);
         userAccountRepository.save(user);
         auditEventService.record(
                 admin.userId(),
@@ -92,7 +90,7 @@ public class AdminController {
                 "Admin changed user plan",
                 Map.of("previousPlan", previousPlan, "nextPlan", nextPlan)
         );
-        return Map.of("ok", true, "userId", user.getId(), "plan", user.getPlan());
+        return userView(user);
     }
 
     @PatchMapping("/users/{userId}/role")
@@ -116,7 +114,7 @@ public class AdminController {
                 "Admin changed user role",
                 Map.of("previousRole", previousRole, "nextRole", nextRole)
         );
-        return Map.of("ok", true, "userId", user.getId(), "role", user.getRole());
+        return userView(user);
     }
 
     @PostMapping("/billing/manual-paid")
@@ -323,14 +321,6 @@ public class AdminController {
     ) {
     }
 
-    private static String normalizePlan(String plan) {
-        String normalized = plan == null ? "" : plan.trim().toUpperCase();
-        if (!"FREE".equals(normalized) && !"PRO".equals(normalized)) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid plan");
-        }
-        return normalized;
-    }
-
     private static String normalizeRole(String role) {
         String normalized = role == null ? "" : role.trim().toUpperCase();
         if (!"USER".equals(normalized) && !"ADMIN".equals(normalized)) {
@@ -359,6 +349,17 @@ public class AdminController {
         return out;
     }
 
+    private Map<String, Object> userView(UserAccount user) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("id", user.getId());
+        out.put("username", user.getUsername());
+        out.put("email", user.getEmail());
+        out.put("role", user.getRole());
+        out.put("plan", user.getPlan());
+        out.put("createdAt", user.getCreatedAt() == null ? null : user.getCreatedAt().toString());
+        return out;
+    }
+
     private Map<String, Object> invoiceView(BillingInvoice invoice) {
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("id", invoice.getId());
@@ -366,6 +367,7 @@ public class AdminController {
         out.put("provider", invoice.getProvider());
         out.put("orderCode", invoice.getOrderCode());
         out.put("paymentLinkId", invoice.getPaymentLinkId());
+        out.put("planCode", invoice.getPlanCode());
         out.put("amountVnd", invoice.getAmountVnd());
         out.put("currency", invoice.getCurrency());
         out.put("status", invoice.getStatus());

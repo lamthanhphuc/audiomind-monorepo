@@ -43,6 +43,9 @@ public class BillingInvoice {
     @Column(name = "amount_vnd", nullable = false)
     private long amountVnd;
 
+    @Column(name = "plan_code", nullable = false, length = 50)
+    private String planCode = "STANDARD";
+
     @Column(name = "currency", nullable = false, length = 10)
     private String currency = "VND";
 

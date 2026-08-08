@@ -113,6 +113,15 @@ class FakeRateLimitAnalyzer(FakeRealtimeAnalyzer):
         )
 
 
+class FakeMaxTokensAnalyzer(FakeRealtimeAnalyzer):
+    def _analyze_with_gemini(self, transcript, metadata=None):
+        raise main_module.AnalysisUnavailableError(
+            "Gemini response incomplete due to MAX_TOKENS",
+            provider="gemini",
+            retryable=True,
+        )
+
+
 class FakeRedisClient:
     def __init__(self):
         self.hashes: dict[str, dict[str, str]] = {}
@@ -372,6 +381,40 @@ def test_realtime_analysis_returns_503_when_analyzer_unavailable(
         "errorCode": "GEMINI_UNAVAILABLE",
     }
     assert db_session.query(Analysis).filter(Analysis.meeting_id == 903).first() is None
+
+
+def test_realtime_analysis_max_tokens_soft_completes_with_fallback(
+    db_session, monkeypatch
+):
+    monkeypatch.setattr(main_module, "_get_client", lambda: FakeRedisClient())
+    monkeypatch.setattr(
+        main_module,
+        "_realtime_analysis_analyzer",
+        FakeMaxTokensAnalyzer(),
+    )
+    request = RealtimeTranscriptAnalysisRequest(
+        meeting_id=913,
+        transcript="Speaker 1: realtime transcript should still produce fallback",
+        source="realtime",
+        transcript_hash="b" * 64,
+    )
+
+    response = asyncio.run(main_module.analyze_realtime_transcript(request, db_session))
+
+    assert response.status == "completed"
+    assert response.analysis is not None
+    assert response.analysis["analysisFallback"] is True
+    assert response.analysis["fallbackReason"] == "max_tokens"
+    saved = db_session.query(Analysis).filter(Analysis.meeting_id == 913).first()
+    assert saved is not None
+    assert saved.technical_terms["transcript_hash"] == "b" * 64
+    run = (
+        db_session.query(MeetingAnalysisRun)
+        .filter(MeetingAnalysisRun.meeting_id == 913)
+        .one()
+    )
+    assert run.status == "COMPLETED"
+    assert run.error_code is None
 
 
 def test_realtime_analysis_returns_502_when_parse_fails(db_session, monkeypatch):
