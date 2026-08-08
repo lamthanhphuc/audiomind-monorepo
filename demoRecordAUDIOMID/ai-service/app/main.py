@@ -2545,7 +2545,8 @@ def _build_realtime_max_tokens_fallback_analysis(
         if len(summary) > 240:
             summary = summary[:237].rstrip() + "..."
         fallback = {
-            "summary": summary or "Transcript was saved, but AI analysis was incomplete.",
+            "summary": summary
+            or "Transcript was saved, but AI analysis was incomplete.",
             "meetingSummary": summary
             or "Transcript was saved, but AI analysis was incomplete.",
             "keywords": [],
