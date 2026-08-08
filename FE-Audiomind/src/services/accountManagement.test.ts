@@ -184,13 +184,24 @@ describe('admin transaction service', () => {
     setAccessToken('admin-token')
     globalThis.fetch = vi.fn().mockResolvedValue({
       ok: true,
-      json: async () => ({ items: [{ id: 1, userId: 42, orderCode: 9001, status: 'PAID' }] }),
+      json: async () => ({
+        items: [{
+          id: 1,
+          userId: 42,
+          username: 'alice',
+          email: 'alice@example.com',
+          orderCode: 9001,
+          status: 'PAID',
+        }],
+      }),
     })
 
     const result = await listAdminTransactions({ userId: 42, status: 'paid', limit: 25 })
 
     const calledUrl = String(vi.mocked(globalThis.fetch).mock.calls[0][0])
     expect(result[0].orderCode).toBe(9001)
+    expect(result[0].username).toBe('alice')
+    expect(result[0].email).toBe('alice@example.com')
     expect(calledUrl).toContain('/api/admin/billing/transactions?')
     expect(calledUrl).toContain('userId=42')
     expect(calledUrl).toContain('status=PAID')

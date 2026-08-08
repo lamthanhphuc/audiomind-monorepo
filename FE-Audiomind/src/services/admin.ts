@@ -32,6 +32,8 @@ export type AuditEvent = {
 export type AdminTransaction = {
   id: number
   userId: number
+  username?: string | null
+  email?: string | null
   provider: string
   orderCode: number
   paymentLinkId?: string | null
@@ -333,6 +335,12 @@ const normalizeTransaction = (raw: unknown): AdminTransaction => {
   return {
     id: Number(record.id ?? 0),
     userId: Number(record.userId ?? record.user_id ?? 0),
+    username: record.username == null || String(record.username).trim() === ''
+      ? null
+      : String(record.username),
+    email: record.email == null || String(record.email).trim() === ''
+      ? null
+      : String(record.email),
     provider: String(record.provider ?? 'PAYOS'),
     orderCode: Number(record.orderCode ?? record.order_code ?? 0),
     paymentLinkId: record.paymentLinkId == null

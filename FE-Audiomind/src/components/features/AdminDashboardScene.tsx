@@ -362,6 +362,18 @@ export default function AdminDashboardScene({ role = 'USER' }: Props) {
     setUserSortOrder('NEWEST')
   }
 
+  const userLabelById = useMemo(() => {
+    const labels = new Map<number, string>()
+    for (const user of users) {
+      labels.set(user.id, user.username || user.email || `User #${user.id}`)
+    }
+    return labels
+  }, [users])
+
+  const transactionUserLabel = (tx: AdminTransaction) => (
+    tx.username || tx.email || userLabelById.get(tx.userId) || `User #${tx.userId}`
+  )
+
   const userSummary = useMemo(() => {
     const total = users.length
     const paid = users.filter((user) => user.plan.toUpperCase() !== 'FREE').length
@@ -903,7 +915,15 @@ export default function AdminDashboardScene({ role = 'USER' }: Props) {
                     {transactions.map((tx) => (
                       <tr key={tx.id}>
                         <td>#{tx.orderCode}</td>
-                        <td>{tx.userId}</td>
+                        <td>
+                          {transactionUserLabel(tx)}
+                          {tx.username && tx.email ? (
+                            <>
+                              <br />
+                              <span className="account-muted">{tx.email}</span>
+                            </>
+                          ) : null}
+                        </td>
                         <td>{formatMoney(tx.amountVnd, tx.currency)}</td>
                         <td><span className="account-badge">{tx.status}</span></td>
                         <td>{tx.provider}</td>

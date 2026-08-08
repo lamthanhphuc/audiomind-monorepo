@@ -156,7 +156,13 @@ public class AdminController {
         } else {
             invoices = billingInvoiceRepository.findByOrderByCreatedAtDesc(page);
         }
-        return Map.of("items", invoices.stream().map(this::invoiceView).toList());
+        Map<Long, UserAccount> usersById = loadUsersById(invoices);
+        return Map.of(
+                "items",
+                invoices.stream()
+                        .map(invoice -> invoiceView(invoice, usersById.get(invoice.getUserId())))
+                        .toList()
+        );
     }
 
     @GetMapping("/users/{userId}/api-keys")
@@ -360,10 +366,25 @@ public class AdminController {
         return out;
     }
 
-    private Map<String, Object> invoiceView(BillingInvoice invoice) {
+    private Map<Long, UserAccount> loadUsersById(List<BillingInvoice> invoices) {
+        List<Long> userIds = invoices.stream()
+                .map(BillingInvoice::getUserId)
+                .filter(userId -> userId != null)
+                .distinct()
+                .toList();
+        if (userIds.isEmpty()) {
+            return Map.of();
+        }
+        return userAccountRepository.findAllById(userIds).stream()
+                .collect(Collectors.toMap(UserAccount::getId, user -> user));
+    }
+
+    private Map<String, Object> invoiceView(BillingInvoice invoice, UserAccount user) {
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("id", invoice.getId());
         out.put("userId", invoice.getUserId());
+        out.put("username", user == null ? null : user.getUsername());
+        out.put("email", user == null ? null : user.getEmail());
         out.put("provider", invoice.getProvider());
         out.put("orderCode", invoice.getOrderCode());
         out.put("paymentLinkId", invoice.getPaymentLinkId());
