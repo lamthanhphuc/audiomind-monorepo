@@ -12,6 +12,36 @@ export type AdminUser = {
   createdAt?: string | null
 }
 
+export type AdminKpis = {
+  registeredUsers: number
+  activeUsers: number
+  fullWorkflowCompletion: number
+  payingCustomers: number
+  revenue: number
+  currency: string
+  activeUsersWindowDays: number
+}
+
+export type AdminWebsiteTrafficDaily = {
+  date: string
+  visits: number
+  uniqueVisitors: number
+}
+
+export type AdminWebsiteTraffic = {
+  visits: number
+  uniqueVisitors: number
+  todayVisits: number
+  todayUniqueVisitors: number
+  observationStart?: string | null
+  observationEnd?: string | null
+  source: string
+  partialHistory: boolean
+  timezone: string
+  generatedAt?: string | null
+  daily: AdminWebsiteTrafficDaily[]
+}
+
 export type ManualPaidResult = {
   orderCode: number
   status?: string
@@ -146,6 +176,72 @@ export const listAdminUsers = async (): Promise<AdminUser[]> => {
       ? ((body as Record<string, unknown>).items as unknown[])
       : []
   return rawUsers.map(normalizeUser)
+}
+
+const normalizeKpis = (raw: unknown): AdminKpis => {
+  const record = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
+  return {
+    registeredUsers: Number(record.registeredUsers ?? record.registered_users ?? 0),
+    activeUsers: Number(record.activeUsers ?? record.active_users ?? 0),
+    fullWorkflowCompletion: Number(record.fullWorkflowCompletion ?? record.full_workflow_completion ?? 0),
+    payingCustomers: Number(record.payingCustomers ?? record.paying_customers ?? 0),
+    revenue: Number(record.revenue ?? 0),
+    currency: String(record.currency ?? 'VND'),
+    activeUsersWindowDays: Number(record.activeUsersWindowDays ?? record.active_users_window_days ?? 30),
+  }
+}
+
+export const getAdminKpis = async (): Promise<AdminKpis> => {
+  const response = await fetch(`${USER_API_BASE}/api/admin/kpis`, {
+    headers: authHeaders(),
+  })
+  if (!response.ok) {
+    throw new Error(await readMessage(response, 'Không tải được KPI admin'))
+  }
+  return normalizeKpis(await response.json())
+}
+
+const normalizeWebsiteTraffic = (raw: unknown): AdminWebsiteTraffic => {
+  const record = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
+  const daily = Array.isArray(record.daily)
+    ? record.daily.map((item) => {
+      const row = item && typeof item === 'object' ? (item as Record<string, unknown>) : {}
+      return {
+        date: String(row.date ?? ''),
+        visits: Number(row.visits ?? 0),
+        uniqueVisitors: Number(row.uniqueVisitors ?? row.unique_visitors ?? 0),
+      }
+    }).filter((row) => row.date)
+    : []
+  return {
+    visits: Number(record.visits ?? 0),
+    uniqueVisitors: Number(record.uniqueVisitors ?? record.unique_visitors ?? 0),
+    todayVisits: Number(record.todayVisits ?? record.today_visits ?? 0),
+    todayUniqueVisitors: Number(record.todayUniqueVisitors ?? record.today_unique_visitors ?? 0),
+    observationStart: record.observationStart == null
+      ? (record.observation_start == null ? null : String(record.observation_start))
+      : String(record.observationStart),
+    observationEnd: record.observationEnd == null
+      ? (record.observation_end == null ? null : String(record.observation_end))
+      : String(record.observationEnd),
+    source: String(record.source ?? 'nginx_access_log'),
+    partialHistory: Boolean(record.partialHistory ?? record.partial_history ?? false),
+    timezone: String(record.timezone ?? 'Asia/Ho_Chi_Minh'),
+    generatedAt: record.generatedAt == null
+      ? (record.generated_at == null ? null : String(record.generated_at))
+      : String(record.generatedAt),
+    daily,
+  }
+}
+
+export const getAdminWebsiteTraffic = async (): Promise<AdminWebsiteTraffic> => {
+  const response = await fetch(`${USER_API_BASE}/api/admin/analytics/website-traffic`, {
+    headers: authHeaders(),
+  })
+  if (!response.ok) {
+    throw new Error(await readMessage(response, 'Không tải được Website Traffic'))
+  }
+  return normalizeWebsiteTraffic(await response.json())
 }
 
 export type AdminPlan = string

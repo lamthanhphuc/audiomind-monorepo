@@ -11,6 +11,8 @@ import com.example.userservice.plan.SubscriptionPlanService;
 import com.example.userservice.plan.UserPlanService;
 import com.example.userservice.security.UserPrincipal;
 import com.example.userservice.service.AdminRuntimeConfigService;
+import com.example.userservice.service.AdminWebsiteTrafficService;
+import com.example.userservice.service.AdminWorkflowMetricsService;
 import com.example.userservice.service.AuditEventService;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Min;
@@ -18,6 +20,7 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
+import java.time.temporal.ChronoUnit;
 import java.time.Instant;
 import java.util.Base64;
 import java.util.HexFormat;
@@ -55,6 +58,8 @@ public class AdminController {
     private final BillingInvoiceRepository billingInvoiceRepository;
     private final AuditEventService auditEventService;
     private final AdminRuntimeConfigService adminRuntimeConfigService;
+    private final AdminWebsiteTrafficService adminWebsiteTrafficService;
+    private final AdminWorkflowMetricsService adminWorkflowMetricsService;
     private final SubscriptionPlanService subscriptionPlanService;
 
     @GetMapping("/users")
@@ -64,6 +69,31 @@ public class AdminController {
                 .limit(200)
                 .map(this::userView)
                 .toList();
+    }
+
+    @GetMapping("/kpis")
+    public Map<String, Object> getKpis(Authentication authentication) {
+        requireAdmin(authentication);
+        long registeredUsers = userAccountRepository.count();
+        long activeUsers = userAccountRepository.countByUpdatedAtAfter(Instant.now().minus(30, ChronoUnit.DAYS));
+        long payingCustomers = billingInvoiceRepository.countDistinctUsersByStatus("PAID");
+        long revenue = billingInvoiceRepository.sumAmountVndByStatus("PAID");
+        long fullWorkflowCompletion = adminWorkflowMetricsService.countFullWorkflowCompletions();
+        return Map.of(
+                "registeredUsers", registeredUsers,
+                "activeUsers", activeUsers,
+                "fullWorkflowCompletion", fullWorkflowCompletion,
+                "payingCustomers", payingCustomers,
+                "revenue", revenue,
+                "currency", "VND",
+                "activeUsersWindowDays", 30
+        );
+    }
+
+    @GetMapping("/analytics/website-traffic")
+    public AdminWebsiteTrafficService.WebsiteTrafficView getWebsiteTraffic(Authentication authentication) {
+        requireAdmin(authentication);
+        return adminWebsiteTrafficService.readWebsiteTraffic();
     }
 
     @PatchMapping("/users/{userId}/plan")

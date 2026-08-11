@@ -125,6 +125,30 @@ async function installMockApi(page: Page) {
       await route.fulfill({ json: users })
       return
     }
+    if (path === '/api/admin/kpis') {
+      await route.fulfill({ json: { registeredUsers: 35, activeUsers: 12, fullWorkflowCompletion: 8, payingCustomers: 7, revenue: 553000, currency: 'VND', activeUsersWindowDays: 30 } })
+      return
+    }
+    if (path === '/api/admin/analytics/website-traffic') {
+      await route.fulfill({ json: {
+        visits: 11,
+        uniqueVisitors: 9,
+        todayVisits: 3,
+        todayUniqueVisitors: 2,
+        observationStart: '2026-08-08T21:05:42+07:00',
+        observationEnd: '2026-08-11T11:30:00+07:00',
+        source: 'nginx_access_log',
+        partialHistory: true,
+        timezone: 'Asia/Ho_Chi_Minh',
+        daily: [
+          { date: '2026-08-08', visits: 1, uniqueVisitors: 1 },
+          { date: '2026-08-09', visits: 6, uniqueVisitors: 6 },
+          { date: '2026-08-10', visits: 1, uniqueVisitors: 1 },
+          { date: '2026-08-11', visits: 3, uniqueVisitors: 2 },
+        ],
+      } })
+      return
+    }
     if (path.includes('/api-keys')) {
       await route.fulfill({ json: { items: [{ id: 91, userId: 1, name: 'CI smoke key', prefix: 'ak_live', suffix: '9xyz', scopes: 'read,write', lastUsedAt: '2026-07-22T10:00:00Z' }] } })
       return
