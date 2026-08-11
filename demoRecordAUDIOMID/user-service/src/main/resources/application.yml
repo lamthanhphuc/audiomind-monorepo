@@ -72,6 +72,10 @@ app:
     checkout-per-minute: ${HTTP_RATE_LIMIT_CHECKOUT_PER_MINUTE:5}
     google-oauth-per-minute: ${HTTP_RATE_LIMIT_GOOGLE_OAUTH_PER_MINUTE:30}
 
+admin:
+  analytics:
+    website-traffic-file: ${WEBSITE_TRAFFIC_ANALYTICS_FILE:/var/lib/audiomind/analytics/website-traffic.json}
+
 audiomind:
   meeting-api:
     base-url: ${AUDIOMIND_MEETING_API_BASE_URL:http://localhost:8081}

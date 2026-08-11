@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { AlertTriangle, ArrowDownUp, CreditCard, RefreshCw, Save, Search, Server, UsersRound, X } from 'lucide-react'
+import { AlertTriangle, ArrowDownUp, CreditCard, Info, RefreshCw, Save, Search, Server, UsersRound, X } from 'lucide-react'
 import {
   deployRuntimeConfig,
+  getAdminKpis,
+  getAdminWebsiteTraffic,
   getRuntimeConfig,
   listAdminAdvertisements,
   listAdminPlans,
@@ -16,6 +18,8 @@ import {
   updateAdminAdvertisementStatus,
   updateAdminPlanStatus,
   type AdminAdvertisementPayload,
+  type AdminKpis,
+  type AdminWebsiteTraffic,
   type AdminPlanPayload,
   type AdminTransaction,
   type AdminUser,
@@ -41,6 +45,13 @@ const formatMoney = (amount: number, currency = 'VND') => (
     ? `${amount.toLocaleString('vi-VN')}đ`
     : `${amount.toLocaleString('vi-VN')} ${currency}`
 )
+
+const formatDate = (value?: string | null) => {
+  if (!value) return ''
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  return date.toLocaleDateString('vi-VN', { day: '2-digit', month: 'short', year: 'numeric' })
+}
 
 const emptyPlanDraft = (): AdminPlanPayload => ({
   code: '',
@@ -192,6 +203,8 @@ export default function AdminDashboardScene({ role = 'USER' }: Props) {
   const isAdmin = role.toUpperCase() === 'ADMIN'
   const [activeTab, setActiveTab] = useState<AdminTab>('users')
   const [users, setUsers] = useState<AdminUser[]>([])
+  const [kpis, setKpis] = useState<AdminKpis | null>(null)
+  const [websiteTraffic, setWebsiteTraffic] = useState<AdminWebsiteTraffic | null>(null)
   const [transactions, setTransactions] = useState<AdminTransaction[]>([])
   const [plans, setPlans] = useState<SubscriptionPlan[]>([])
   const [advertisements, setAdvertisements] = useState<AdvertisementItem[]>([])
@@ -210,10 +223,44 @@ export default function AdminDashboardScene({ role = 'USER' }: Props) {
   const [orderCode, setOrderCode] = useState('')
   const [manualNote, setManualNote] = useState('')
   const [loading, setLoading] = useState(isAdmin)
+  const [kpisLoading, setKpisLoading] = useState(isAdmin)
+  const [trafficLoading, setTrafficLoading] = useState(isAdmin)
+  const [kpisError, setKpisError] = useState('')
+  const [trafficError, setTrafficError] = useState('')
   const [busyUserId, setBusyUserId] = useState<number | null>(null)
   const [deploying, setDeploying] = useState(false)
   const [notice, setNotice] = useState('')
   const [error, setError] = useState('')
+
+  const loadKpis = useCallback(async () => {
+    if (!isAdmin) return
+    setKpisLoading(true)
+    setKpisError('')
+    try {
+      setKpis(await getAdminKpis())
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : 'Không tải được dashboard admin'
+      setKpis(null)
+      setKpisError(message)
+      setError(message)
+    } finally {
+      setKpisLoading(false)
+    }
+  }, [isAdmin])
+
+  const loadWebsiteTraffic = useCallback(async () => {
+    if (!isAdmin) return
+    setTrafficLoading(true)
+    setTrafficError('')
+    try {
+      setWebsiteTraffic(await getAdminWebsiteTraffic())
+    } catch (cause) {
+      setWebsiteTraffic(null)
+      setTrafficError(cause instanceof Error ? cause.message : 'Traffic data unavailable')
+    } finally {
+      setTrafficLoading(false)
+    }
+  }, [isAdmin])
 
   const loadUsers = useCallback(async () => {
     if (!isAdmin) return
@@ -312,8 +359,10 @@ export default function AdminDashboardScene({ role = 'USER' }: Props) {
   }, [activeTab, loadAdvertisements, loadBilling, loadPlans, loadRuntimeConfig, loadUsers])
 
   useEffect(() => {
+    void loadKpis()
+    void loadWebsiteTraffic()
     void loadUsers()
-  }, [loadUsers])
+  }, [loadKpis, loadUsers, loadWebsiteTraffic])
 
   useEffect(() => {
     if (activeTab === 'runtimeConfig') void loadRuntimeConfig()
@@ -385,6 +434,90 @@ export default function AdminDashboardScene({ role = 'USER' }: Props) {
       admins,
     }
   }, [filteredUsers.length, users])
+
+  const trafficObservationLabel = websiteTraffic?.partialHistory && websiteTraffic.observationStart
+    ? `Since ${formatDate(websiteTraffic.observationStart)}`
+    : ''
+
+  const kpiRows = useMemo(() => {
+    const dashboardUnavailable = Boolean(kpisError) || !kpis
+    const dashboardValue = (value: number | undefined, formatter?: (value: number) => string) => {
+      if (dashboardUnavailable || value == null || Number.isNaN(value)) return 'N/A'
+      return formatter ? formatter(value) : value.toLocaleString('vi-VN')
+    }
+    const trafficValue = trafficError || !websiteTraffic
+      ? 'N/A'
+      : websiteTraffic.visits.toLocaleString('vi-VN')
+    return [
+      {
+        key: 'registeredUsers',
+        label: 'Registered Users',
+        value: dashboardValue(kpis?.registeredUsers),
+        source: dashboardUnavailable ? 'Unavailable' : 'app_users',
+        loading: kpisLoading,
+      },
+      {
+        key: 'websiteVisits',
+        label: 'Website Visits',
+        value: trafficValue,
+        source: trafficError ? 'Traffic data unavailable' : `website-traffic${trafficObservationLabel ? ` · ${trafficObservationLabel}` : ''}`,
+        loading: trafficLoading,
+        tooltip: trafficError ? 'Traffic data is currently unavailable.' : undefined,
+      },
+      {
+        key: 'activeUsers',
+        label: 'Active Users',
+        value: dashboardValue(kpis?.activeUsers),
+        source: dashboardUnavailable ? 'Unavailable' : `${kpis?.activeUsersWindowDays ?? 30} ngày gần nhất`,
+        loading: kpisLoading,
+      },
+      {
+        key: 'fullWorkflowCompletion',
+        label: 'Full Workflow Completion',
+        value: dashboardValue(kpis?.fullWorkflowCompletion),
+        source: dashboardUnavailable ? 'Unavailable' : 'meeting + meeting_analysis_runs',
+        loading: kpisLoading,
+        tooltip: 'Number of unique users who completed at least one full workflow from recording/upload through successful AI analysis.',
+      },
+      {
+        key: 'payingCustomers',
+        label: 'Paying Customers',
+        value: dashboardValue(kpis?.payingCustomers),
+        source: dashboardUnavailable ? 'Unavailable' : 'billing_invoices PAID',
+        loading: kpisLoading,
+      },
+      {
+        key: 'revenue',
+        label: 'Revenue',
+        value: dashboardValue(kpis?.revenue, (value) => formatMoney(value, kpis?.currency ?? 'VND')),
+        source: dashboardUnavailable ? 'Unavailable' : 'billing_invoices PAID',
+        loading: kpisLoading,
+      },
+    ]
+  }, [kpis, kpisError, kpisLoading, trafficError, trafficLoading, trafficObservationLabel, websiteTraffic])
+
+  const trafficSummaryRows = useMemo(() => [
+    {
+      key: 'visits',
+      label: 'Website Visits',
+      value: websiteTraffic?.visits.toLocaleString('vi-VN') ?? '',
+    },
+    {
+      key: 'uniqueVisitors',
+      label: 'Unique Visitors',
+      value: websiteTraffic?.uniqueVisitors.toLocaleString('vi-VN') ?? '',
+    },
+    {
+      key: 'todayVisits',
+      label: "Today's Visits",
+      value: websiteTraffic?.todayVisits.toLocaleString('vi-VN') ?? '',
+    },
+    {
+      key: 'todayUniqueVisitors',
+      label: "Today's Unique Visitors",
+      value: websiteTraffic?.todayUniqueVisitors.toLocaleString('vi-VN') ?? '',
+    },
+  ], [websiteTraffic])
 
   const applyUserUpdate = (updated: AdminUser) => {
     setUsers((items) => items.map((item) => (item.id === updated.id ? { ...item, ...updated } : item)))
@@ -583,7 +716,12 @@ export default function AdminDashboardScene({ role = 'USER' }: Props) {
           <h1>Quản trị vận hành</h1>
           <p className="account-scene__subtitle">Quản lý người dùng, cấu hình runtime Deepgram/Gemini và billing.</p>
         </div>
-        <button type="button" className="btn btn--secondary" onClick={() => void loadCurrentTab()} disabled={loading}>
+        <button
+          type="button"
+          className="btn btn--secondary"
+          onClick={() => void Promise.all([loadKpis(), loadWebsiteTraffic(), loadCurrentTab()])}
+          disabled={loading || kpisLoading || trafficLoading}
+        >
           <RefreshCw size={16} aria-hidden /> Làm mới
         </button>
       </header>
@@ -593,6 +731,108 @@ export default function AdminDashboardScene({ role = 'USER' }: Props) {
       </div>
       {notice && <div className="account-notice" role="status">{notice}</div>}
       {error && <div className="account-error" role="alert">{error}</div>}
+
+      <article className="account-card account-card--wide admin-kpi-panel" aria-labelledby="admin-kpi-title">
+        <div className="admin-kpi-panel__header">
+          <div>
+            <h2 id="admin-kpi-title">Dashboard</h2>
+            <p className="account-muted">Registered Users lấy từ database; billing lấy từ hóa đơn đã paid.</p>
+          </div>
+          <button type="button" className="btn btn--secondary" onClick={() => void loadKpis()} disabled={kpisLoading}>
+            <RefreshCw size={16} aria-hidden /> Cập nhật
+          </button>
+        </div>
+        <div className="admin-kpi-table-wrap">
+          <table className="admin-kpi-table">
+            <thead>
+              <tr>
+                <th>Metric</th>
+                <th>Giá trị</th>
+                <th>Nguồn</th>
+              </tr>
+            </thead>
+            <tbody>
+              {kpiRows.map((row) => (
+                <tr key={row.key}>
+                  <td>
+                    <span className="admin-kpi-label">
+                      {row.label}
+                      {row.tooltip ? (
+                        <span className="admin-kpi-info" title={row.tooltip}>
+                          <Info size={14} aria-label={row.tooltip} />
+                        </span>
+                      ) : null}
+                    </span>
+                  </td>
+                  <td>{row.loading ? '...' : row.value}</td>
+                  <td title={row.tooltip}>{row.source}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </article>
+
+      <article className="account-card account-card--wide admin-kpi-panel" aria-labelledby="website-traffic-title">
+        <div className="admin-kpi-panel__header">
+          <div>
+            <h2 id="website-traffic-title">Website Traffic</h2>
+            <p className="account-muted">
+              Qualified SPA page visits từ Nginx access log production. Static assets, healthcheck và bot/scanner đã bị loại.
+            </p>
+          </div>
+          <button type="button" className="btn btn--secondary" onClick={() => void loadWebsiteTraffic()} disabled={trafficLoading}>
+            <RefreshCw size={16} aria-hidden /> Cập nhật traffic
+          </button>
+        </div>
+        {trafficError ? (
+          <div className="account-empty admin-traffic-unavailable" role="status">
+            Traffic data unavailable. Kiểm tra file analytics trên VPS.
+          </div>
+        ) : (
+          <>
+            <div className="account-summary-row admin-traffic-summary" aria-label="Website traffic summary">
+              {trafficSummaryRows.map((row) => (
+                <div className="account-summary-item" key={row.key}>
+                  <span className="account-summary-item__value">{trafficLoading ? '...' : row.value}</span>
+                  <span className="account-summary-item__label">{row.label}</span>
+                  {trafficObservationLabel && row.key !== 'todayVisits' && row.key !== 'todayUniqueVisitors' ? (
+                    <span className="account-summary-item__note">{trafficObservationLabel}</span>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+            <div className="admin-kpi-table-wrap">
+              <table className="admin-kpi-table">
+                <thead>
+                  <tr>
+                    <th>Date</th>
+                    <th>Visits</th>
+                    <th>Unique Visitors</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(websiteTraffic?.daily ?? []).slice(-7).map((row) => (
+                    <tr key={row.date}>
+                      <td>{row.date}</td>
+                      <td>{row.visits.toLocaleString('vi-VN')}</td>
+                      <td>{row.uniqueVisitors.toLocaleString('vi-VN')}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {!trafficLoading && websiteTraffic?.daily.length === 0 && (
+                <div className="account-empty">Chưa có qualified page visit trong analytics file.</div>
+              )}
+            </div>
+            {websiteTraffic?.partialHistory && websiteTraffic.observationStart ? (
+              <p className="account-muted admin-traffic-note">
+                Traffic data available since latest production log window: {formatDate(websiteTraffic.observationStart)}.
+              </p>
+            ) : null}
+          </>
+        )}
+      </article>
 
       <div className="account-tabs" role="tablist" aria-label="Admin sections">
         <button type="button" className="account-tab" data-active={activeTab === 'users'} onClick={() => setActiveTab('users')}>
